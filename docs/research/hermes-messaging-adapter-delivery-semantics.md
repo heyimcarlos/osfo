@@ -1,6 +1,6 @@
 # Hermes messaging adapter delivery semantics
 
-Accessed: 2026-08-01  
+Accessed: 2026-08-01
 Hermes commit: [`470cf66b039c73bdd2c21d43094ce41a4db74eae`](https://github.com/NousResearch/hermes-agent/tree/470cf66b039c73bdd2c21d43094ce41a4db74eae)
 
 ## Executive judgment

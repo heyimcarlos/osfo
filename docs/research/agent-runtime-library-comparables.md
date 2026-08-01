@@ -156,4 +156,3 @@ model/tool loop, provider streaming, and resumable run machinery. Keep Osfo's
 small durable Thread interface because it is the product-independent stable
 contract no candidate supplies. Do not adopt graph-flow for this role; its
 resume means workflow-snapshot resume, not multi-device output replay.
-
