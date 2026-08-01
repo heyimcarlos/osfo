@@ -12,10 +12,12 @@ example:
 ## Collaboration Notes
 
 - The user uses speech-to-text; infer likely intent from odd wording, ask only when needed.
+- Code is cheap to write: no time estimates, implementation time isn't a blocker.
+- Never use em-dashes anywhere. Use commas, colons, parentheses, or separate sentences.
 
 ## Reference Repositories
 
-Repos in `.reference` (Effect, effect-atom, agaro-knowledge-base/books/golang/100-go-mistakes.md, …) are available for patterns. Clone a given Git URL into `.reference` and pull latest before using it.
+Repos in `.reference` (rig, codex, …) are available for patterns. Clone a given Git URL into `.reference` and pull latest before using it.
 
 ## Engineering boundaries
 
