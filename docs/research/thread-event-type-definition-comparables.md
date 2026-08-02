@@ -24,15 +24,18 @@ persistence contract. I recommend these changes before implementation:
 4. Allocate contiguous per-Thread positions transactionally. Never use a
    PostgreSQL sequence, because rolled-back `nextval` calls create gaps.
 5. Keep `ThreadCursor` opaque and separate from `ThreadPosition`.
-6. Persist an open envelope with event type, payload-local version, and raw
+6. Persist an open envelope with event type, payload-local versio
+7.
+8.
+9. n, and raw
    JSON. Decode known events into Rust enums separately and preserve unknown
    future events.
-7. Replace ambiguous `schema_version` with payload-local versioning.
-8. Use database-assigned `recorded_at` for persistence time. PostgreSQL cannot
+10. Replace ambiguous `schema_version` with payload-local versioning.
+11. Use database-assigned `recorded_at` for persistence time. PostgreSQL cannot
    atomically stamp the literal commit instant into the row, so
    `committed_at` would overstate the guarantee.
-9. Never use timestamp, provider sequence, or UUID ordering as Thread order.
-10. Keep the three settled output events, but add a normalized completion
+12. Never use timestamp, provider sequence, or UUID ordering as Thread order.
+13. Keep the three settled output events, but add a normalized completion
     reason and use an open, safe interruption-cause code.
 
 The strongest new evidence is KurrentDB and Marten for durable streams, Matrix
