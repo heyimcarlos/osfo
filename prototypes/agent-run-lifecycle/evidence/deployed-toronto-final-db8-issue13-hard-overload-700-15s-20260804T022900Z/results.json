@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "scenario": "toronto-final-db8-issue13-hard-overload-700-15s",
+  "started_at_unix_microseconds": 1785810411551775,
+  "ended_at_unix_microseconds": 1785810524740265,
+  "journey_profile": "issue13",
+  "journey_override": null,
+  "arrival_pattern": "uniform",
+  "rate_per_second": 700.0,
+  "start_rate_per_second": null,
+  "duration_seconds": 15.0,
+  "idle_before_seconds": 0.0,
+  "maximum_in_flight": 8192,
+  "offered": 10500,
+  "caller_drop": 0,
+  "accepted": 10496,
+  "completed": 10447,
+  "accepted_within_offer_window": 6171,
+  "completed_within_offer_window": 5765,
+  "authoritative_completed_within_offer_window": 6146,
+  "rejected_or_failed": 53,
+  "duplicate_checks": 104,
+  "duplicate_checks_passed": 104,
+  "evidence_checks": 10496,
+  "evidence_checks_passed": 10496,
+  "amplification": {
+    "agent_runs_per_message": 1.1000381097560976,
+    "child_agent_runs_per_message": 0.10003810975609756,
+    "thread_events_per_message": 2.0,
+    "workflow_instances_per_message": 0.040015243902439025,
+    "workflow_deliveries_per_message": 0.040015243902439025,
+    "tool_calls_per_message": 0.020007621951219513,
+    "approvals_per_message": 0.020007621951219513,
+    "tool_attempts_per_message": 0.020007621951219513
+  },
+  "elapsed_seconds": 113.188490382,
+  "drain_seconds": 98.188490382,
+  "accepted_during_offer_per_second": 411.4,
+  "completed_during_offer_per_second": 384.3333333333333,
+  "authoritative_completed_during_offer_per_second": 409.73333333333335,
+  "accepted_per_second": 92.73027641394486,
+  "completed_per_second": 92.297370207363,
+  "admission_latency": {
+    "sample_count": 10500,
+    "p50_ms": 3676.159,
+    "p90_ms": 11124.735,
+    "p95_ms": 11476.991,
+    "p99_ms": 11722.751,
+    "maximum_ms": 98631.679
+  },
+  "completion_latency": {
+    "sample_count": 10447,
+    "p50_ms": 4714.495,
+    "p90_ms": 12115.967,
+    "p95_ms": 12500.991,
+    "p99_ms": 12959.743,
+    "maximum_ms": 98697.215
+  },
+  "authoritative_completion_latency": {
+    "sample_count": 10496,
+    "p50_ms": 3747.839,
+    "p90_ms": 11157.503,
+    "p95_ms": 11493.375,
+    "p99_ms": 11722.751,
+    "maximum_ms": 11943.935
+  },
+  "arrival_lag": {
+    "sample_count": 10500,
+    "p50_ms": 0.925,
+    "p90_ms": 1.526,
+    "p95_ms": 1.699,
+    "p99_ms": 2.041,
+    "maximum_ms": 5.119
+  },
+  "evidence_reconciliation_seconds": 106.074521532,
+  "correctness_passed": false,
+  "errors": [
+    "completion-timeout-or-stream",
+    "admission-transport"
+  ]
+}

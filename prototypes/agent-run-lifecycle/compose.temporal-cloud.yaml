@@ -1,0 +1,6 @@
+services:
+  prometheus:
+    volumes: !override
+      - ./observability/prometheus.temporal-cloud.yml:/etc/prometheus/prometheus.yml:ro
+      - ${TEMPORAL_METRICS_API_KEY_FILE:?TEMPORAL_METRICS_API_KEY_FILE is required}:/run/secrets/temporal-metrics-api-key:ro
+      - prometheus-data:/prometheus

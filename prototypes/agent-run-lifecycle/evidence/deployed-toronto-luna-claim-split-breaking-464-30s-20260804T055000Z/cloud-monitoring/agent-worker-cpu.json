@@ -1,0 +1,95 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/cpu/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "revision_name": "osfo-agent-run-worker-toronto-00009-92n",
+          "configuration_name": "osfo-agent-run-worker-toronto",
+          "location": "northamerica-northeast2",
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:39:00.001Z",
+            "endTime": "2026-08-04T05:40:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "16",
+              "mean": 0.09824317145093972,
+              "sumOfSquaredDeviation": 0.024936869448897645,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "1",
+                "0",
+                "1",
+                "1",
+                "1",
+                "3",
+                "0",
+                "2",
+                "0",
+                "0",
+                "2",
+                "1",
+                "2",
+                "2"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:38:00.001Z",
+            "endTime": "2026-08-04T05:39:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "16",
+              "mean": 0.045798189112122516,
+              "sumOfSquaredDeviation": 0.018189497233562415,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "5",
+                "2",
+                "0",
+                "1",
+                "1",
+                "2",
+                "0",
+                "1",
+                "2",
+                "1",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

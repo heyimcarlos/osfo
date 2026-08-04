@@ -1,0 +1,131 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "2xx",
+          "response_code": "200",
+          "route": ""
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "revision_name": "osfo-stream-toronto-00004-p9s",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "service_name": "osfo-stream-toronto",
+          "configuration_name": "osfo-stream-toronto"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:51:00.001Z",
+            "endTime": "2026-08-04T04:52:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:50:00.001Z",
+            "endTime": "2026-08-04T04:51:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "response_code": "204",
+          "response_code_class": "2xx",
+          "route": ""
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-stream-toronto-00004-p9s",
+          "service_name": "osfo-stream-toronto",
+          "location": "northamerica-northeast2",
+          "configuration_name": "osfo-stream-toronto"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:51:00.001Z",
+            "endTime": "2026-08-04T04:52:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:50:00.001Z",
+            "endTime": "2026-08-04T04:51:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "response_code": "200",
+          "response_code_class": "2xx",
+          "route": ""
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-stream-toronto-00005-8t5",
+          "location": "northamerica-northeast2",
+          "configuration_name": "osfo-stream-toronto",
+          "service_name": "osfo-stream-toronto"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:51:00.001Z",
+            "endTime": "2026-08-04T04:52:00Z"
+          },
+          "value": {
+            "int64Value": "10033"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:50:00.001Z",
+            "endTime": "2026-08-04T04:51:00Z"
+          },
+          "value": {
+            "int64Value": "758"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

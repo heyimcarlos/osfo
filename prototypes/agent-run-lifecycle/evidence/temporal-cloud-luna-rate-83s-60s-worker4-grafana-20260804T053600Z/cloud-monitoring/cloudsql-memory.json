@@ -1,0 +1,40 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "cloudsql.googleapis.com/database/memory/utilization"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "region": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:37:00Z",
+            "endTime": "2026-08-04T05:37:00Z"
+          },
+          "value": {
+            "doubleValue": 0.45091813933801522
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:36:00Z",
+            "endTime": "2026-08-04T05:36:00Z"
+          },
+          "value": {
+            "doubleValue": 0.45035153252600951
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

@@ -1,0 +1,25 @@
+{
+  "captured_at": "2026-08-03T21:15:00Z",
+  "project": "even-affinity-497006-u6",
+  "runner": {
+    "machineType": "https://www.googleapis.com/compute/v1/projects/even-affinity-497006-u6/zones/northamerica-northeast1-c/machineTypes/n2-highcpu-32",
+    "name": "osfo-issue13-runner-143446",
+    "status": "TERMINATED",
+    "zone": "https://www.googleapis.com/compute/v1/projects/even-affinity-497006-u6/zones/northamerica-northeast1-c"
+  },
+  "cloud_sql": {
+    "name": "osfo-issue13-20260803t143446z",
+    "region": "northamerica-northeast1",
+    "settings": {
+      "activationPolicy": "NEVER",
+      "tier": "db-custom-64-61440"
+    },
+    "state": "STOPPED"
+  },
+  "global_cpu_quota_after_stop": {
+    "limit": 32.0,
+    "metric": "CPUS_ALL_REGIONS",
+    "usage": 0.0
+  },
+  "action": "compute stopped without deletion; disks and database remain recoverable for focused follow-up issue 19"
+}

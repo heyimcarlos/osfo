@@ -1,0 +1,4493 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "access_type": "hit",
+          "user": "<redacted-principal>",
+          "querystring": "CREATE INDEX agent_runs_dispatch_active_idx ON agent_runs(created_at, run_id)",
+          "query_hash": "16566795648997719735",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.993307Z",
+            "endTime": "2026-08-04T06:04:16.341964Z"
+          },
+          "value": {
+            "int64Value": "68"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "querystring": "CREATE INDEX agent_runs_dispatch_claimable_idx ON agent_runs(created_at, run_id)",
+          "access_type": "hit",
+          "query_hash": "1329517642367842131",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:25:25.760326Z",
+            "endTime": "2026-08-04T06:04:16.341744Z"
+          },
+          "value": {
+            "int64Value": "46170"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "access_type": "hit",
+          "user": "<redacted-principal>",
+          "querystring": "CREATE INDEX agent_runs_dispatch_expired_idx ON agent_runs(lease_until, created_at, run_id)",
+          "client_addr": "[local]",
+          "query_hash": "18321671108566177956"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:25:25.784097Z",
+            "endTime": "2026-08-04T06:04:16.341779Z"
+          },
+          "value": {
+            "int64Value": "43407"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "query_hash": "6584196240624918006",
+          "querystring": "CREATE INDEX thread_events_run_lookup_idx ON thread_events(run_id, event_type)",
+          "access_type": "hit"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.993478Z",
+            "endTime": "2026-08-04T06:04:16.341941Z"
+          },
+          "value": {
+            "int64Value": "120"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "query_hash": "157398006755327047",
+          "querystring": "CREATE TABLE agent_decisions",
+          "access_type": "hit",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.979934Z",
+            "endTime": "2026-08-04T06:04:16.341823Z"
+          },
+          "value": {
+            "int64Value": "1078"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "9833274314992118948",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "querystring": "CREATE TABLE artifact_commits",
+          "access_type": "hit"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.991935Z",
+            "endTime": "2026-08-04T06:04:16.341888Z"
+          },
+          "value": {
+            "int64Value": "849"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "querystring": "CREATE TABLE proactive_messages",
+          "query_hash": "3184925665022596799"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.987486Z",
+            "endTime": "2026-08-04T06:04:16.341899Z"
+          },
+          "value": {
+            "int64Value": "685"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "5486585716634521103",
+          "access_type": "hit",
+          "querystring": "CREATE TABLE sandbox_jobs",
+          "user": "<redacted-principal>",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.990681Z",
+            "endTime": "2026-08-04T06:04:16.341914Z"
+          },
+          "value": {
+            "int64Value": "683"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "access_type": "hit",
+          "querystring": "CREATE TABLE scheduled_reminders",
+          "query_hash": "7966972734259607056"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.988764Z",
+            "endTime": "2026-08-04T06:04:16.341874Z"
+          },
+          "value": {
+            "int64Value": "834"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "user": "<redacted-principal>",
+          "querystring": "CREATE TABLE workflow_activities",
+          "query_hash": "1741747613615852783"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.946196Z",
+            "endTime": "2026-08-04T06:04:16.341802Z"
+          },
+          "value": {
+            "int64Value": "1175"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "INSERT INTO agent_run_lifecycle.agent_decisions (run_id, source, quick_reply, child_agent_runs, awaited_child_agent_runs, detached_child_agent_runs, temporal_workflows, temporal_activities, approvals, tool_calls, proactive_messages, scheduled_reminders, sandbox_jobs, artifact_commits) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+          "user": "<redacted-principal>",
+          "query_hash": "17639986774959315689",
+          "access_type": "hit",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:09.344409Z",
+            "endTime": "2026-08-04T06:04:16.340974Z"
+          },
+          "value": {
+            "int64Value": "680900"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "query_hash": "15890987848078577610",
+          "querystring": "INSERT INTO agent_run_lifecycle.agent_runs (run_id, parent_run_id, root_run_id, principal_id, journey_kind, persistence_profile, workload_ordinal, state) VALUES ($1, $2, $3, $4, $7, $5, $6, $8)"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.649688Z",
+            "endTime": "2026-08-04T06:04:16.341039Z"
+          },
+          "value": {
+            "int64Value": "561897"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "INSERT INTO agent_run_lifecycle.agent_runs (run_id, root_run_id, principal_id, journey_kind, persistence_profile, workload_ordinal, state) VALUES ($1, $1, $2, $3, $5, $4, $6)",
+          "access_type": "hit",
+          "client_addr": "[local]",
+          "query_hash": "9635620973860566832",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.128029Z",
+            "endTime": "2026-08-04T06:04:16.340916Z"
+          },
+          "value": {
+            "int64Value": "1299723"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "querystring": "INSERT INTO agent_run_lifecycle.approvals (approval_id, tool_call_id, state, decision_id, decided_at) VALUES ($1, $2, $4, $3, clock_timestamp())",
+          "access_type": "hit",
+          "user": "<redacted-principal>",
+          "query_hash": "10757790096709585853"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.619268Z",
+            "endTime": "2026-08-04T06:04:16.341420Z"
+          },
+          "value": {
+            "int64Value": "114755"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "querystring": "INSERT INTO agent_run_lifecycle.artifact_commits (artifact_id, run_id, sandbox_job_id, state, checksum_verified) VALUES ($1, $2, $3, $4, $5)",
+          "user": "<redacted-principal>",
+          "query_hash": "17733358202543978619"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:09.351194Z",
+            "endTime": "2026-08-04T06:04:16.341303Z"
+          },
+          "value": {
+            "int64Value": "109420"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "10358105789397372479",
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "querystring": "INSERT INTO agent_run_lifecycle.child_join_members (join_id, child_run_id, stable_order) VALUES ($1, $2, $3)"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.656555Z",
+            "endTime": "2026-08-04T06:04:16.341053Z"
+          },
+          "value": {
+            "int64Value": "668282"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "query_hash": "13298890899706701998",
+          "querystring": "INSERT INTO agent_run_lifecycle.child_joins (join_id, parent_run_id, mode) VALUES ($1, $2, $3)",
+          "user": "<redacted-principal>",
+          "access_type": "hit"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.646084Z",
+            "endTime": "2026-08-04T06:04:16.341202Z"
+          },
+          "value": {
+            "int64Value": "162944"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "querystring": "INSERT INTO agent_run_lifecycle.interaction_records (run_id, sequence, semantic_record) SELECT $1, COALESCE(max(sequence), $2) + $3, $4 FROM agent_run_lifecycle.interaction_records WHERE run_id = $1",
+          "access_type": "hit",
+          "query_hash": "17981371700362340597",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.733570Z",
+            "endTime": "2026-08-04T06:04:16.341143Z"
+          },
+          "value": {
+            "int64Value": "513198"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "INSERT INTO agent_run_lifecycle.interaction_records (run_id, sequence, semantic_record) SELECT $1, COALESCE(max(sequence), $3) + $4, $2 FROM agent_run_lifecycle.interaction_records WHERE run_id = $1",
+          "access_type": "hit",
+          "query_hash": "13331583886938668785",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.601872Z",
+            "endTime": "2026-08-04T06:04:16.340946Z"
+          },
+          "value": {
+            "int64Value": "1630087"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "querystring": "INSERT INTO agent_run_lifecycle.interaction_records (run_id, sequence, semantic_record) SELECT claimed.run_id, COALESCE(max(existing.sequence), $3) + $4, claimed.semantic_record FROM unnest($1::text[], $2::text[]) AS claimed(run_id, semantic_record) LEFT JOIN agent_run_lifecycle.interaction_records existing ON existing.run_id = claimed.run_id GROUP BY claimed.run_id, claimed.semantic_record",
+          "user": "<redacted-principal>",
+          "access_type": "hit",
+          "query_hash": "5063659492191897390"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.251851Z",
+            "endTime": "2026-08-04T06:04:16.340861Z"
+          },
+          "value": {
+            "int64Value": "2933878"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "access_type": "hit",
+          "querystring": "INSERT INTO agent_run_lifecycle.interaction_records (run_id, sequence, semantic_record) VALUES ($1, $2, $3)",
+          "query_hash": "12425491759900471851",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.653147Z",
+            "endTime": "2026-08-04T06:04:16.341120Z"
+          },
+          "value": {
+            "int64Value": "387384"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "access_type": "hit",
+          "querystring": "INSERT INTO agent_run_lifecycle.interaction_records (run_id, sequence, semantic_record) VALUES ($1, $3, $4), ($1, $5, $2)",
+          "query_hash": "13514127555909304701",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.139492Z",
+            "endTime": "2026-08-04T06:04:16.340877Z"
+          },
+          "value": {
+            "int64Value": "2735568"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "query_hash": "9607441176093159038",
+          "user": "<redacted-principal>",
+          "querystring": "INSERT INTO agent_run_lifecycle.message_admission_receipts (account_id, idempotency_key, request_hash, thread_id, event_sequence, run_id) VALUES ($1, $2, $3, $4, $5, $6)",
+          "access_type": "hit"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.183304Z",
+            "endTime": "2026-08-04T06:04:16.340825Z"
+          },
+          "value": {
+            "int64Value": "2245552"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "13722536967953288047",
+          "access_type": "hit",
+          "querystring": "INSERT INTO agent_run_lifecycle.proactive_messages (proactive_message_id, run_id, state) VALUES ($1, $2, $3)",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:11.819366Z",
+            "endTime": "2026-08-04T06:04:16.341216Z"
+          },
+          "value": {
+            "int64Value": "153021"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "14759394431565131447",
+          "querystring": "INSERT INTO agent_run_lifecycle.sandbox_jobs (sandbox_job_id, run_id, state) VALUES ($1, $2, $3)",
+          "access_type": "hit",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:09.347836Z",
+            "endTime": "2026-08-04T06:04:16.341576Z"
+          },
+          "value": {
+            "int64Value": "58126"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "querystring": "INSERT INTO agent_run_lifecycle.scheduled_reminders (reminder_id, run_id, workflow_instance_id, state) VALUES ($1, $2, $3, $4)",
+          "query_hash": "1642054829105353033",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:12.710634Z",
+            "endTime": "2026-08-04T06:04:16.341326Z"
+          },
+          "value": {
+            "int64Value": "85465"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "query_hash": "13876925653057817507",
+          "access_type": "hit",
+          "querystring": "INSERT INTO agent_run_lifecycle.thread_events (account_id, thread_id, sequence, event_id, event_type, content, run_id) VALUES ($1, $2, $3, $4, $7, $5, $6)",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.157490Z",
+            "endTime": "2026-08-04T06:04:16.340776Z"
+          },
+          "value": {
+            "int64Value": "3545892"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "query_hash": "13774161191809917958",
+          "querystring": "INSERT INTO agent_run_lifecycle.threads (account_id, thread_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+          "access_type": "hit"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.096084Z",
+            "endTime": "2026-08-04T06:04:16.340928Z"
+          },
+          "value": {
+            "int64Value": "1123302"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "query_hash": "3348457957659889118",
+          "querystring": "INSERT INTO agent_run_lifecycle.tool_attempts (attempt_id, tool_call_id, claim_epoch, state, outcome, completed_at) VALUES ($1, $2, $3, $4, $5, clock_timestamp())",
+          "access_type": "hit"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.626017Z",
+            "endTime": "2026-08-04T06:04:16.341626Z"
+          },
+          "value": {
+            "int64Value": "62953"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "10216545108997060551",
+          "access_type": "hit",
+          "user": "<redacted-principal>",
+          "querystring": "INSERT INTO agent_run_lifecycle.tool_calls (tool_call_id, run_id, kind, state, attempt_count, terminal_outcome, terminal_at) VALUES ($1, $2, $3, $4, $5, $6, clock_timestamp())",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.616328Z",
+            "endTime": "2026-08-04T06:04:16.341447Z"
+          },
+          "value": {
+            "int64Value": "68815"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "querystring": "INSERT INTO agent_run_lifecycle.workflow_activities (activity_id, workflow_instance_id, state) VALUES ($1, $2, $3)",
+          "query_hash": "17465023140865985508",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:09.391214Z",
+            "endTime": "2026-08-04T06:04:16.341156Z"
+          },
+          "value": {
+            "int64Value": "281988"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "query_hash": "1980983095185175303",
+          "access_type": "hit",
+          "querystring": "INSERT INTO agent_run_lifecycle.workflow_deliveries (delivery_id, workflow_instance_id) VALUES ($1, $2)",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.598512Z",
+            "endTime": "2026-08-04T06:04:16.341172Z"
+          },
+          "value": {
+            "int64Value": "267034"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "querystring": "INSERT INTO agent_run_lifecycle.workflow_instances (workflow_instance_id, parent_run_id, tool_call_id, mode, state, outcome, terminal_at) VALUES ($1, $2, $3, $4, $5, $6, clock_timestamp())",
+          "user": "<redacted-principal>",
+          "query_hash": "13843815730286057903"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.594819Z",
+            "endTime": "2026-08-04T06:04:16.341097Z"
+          },
+          "value": {
+            "int64Value": "350572"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "SELECT $1",
+          "access_type": "hit",
+          "query_hash": "3382979652570490612",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:12:58.625770Z",
+            "endTime": "2026-08-04T06:04:16.341927Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "access_type": "hit",
+          "querystring": "SELECT EXISTS ( SELECT $2 FROM agent_run_lifecycle.agent_runs child WHERE child.parent_run_id = $1 AND child.run_id LIKE $1 || $3 )",
+          "query_hash": "16731520020622379471",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:13.231208Z",
+            "endTime": "2026-08-04T06:04:16.340699Z"
+          },
+          "value": {
+            "int64Value": "21452349"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "15449806879472742254",
+          "client_addr": "[local]",
+          "querystring": "SELECT EXISTS ( SELECT $2 FROM agent_run_lifecycle.child_joins WHERE parent_run_id = $1 )",
+          "access_type": "hit",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.633755Z",
+            "endTime": "2026-08-04T06:04:16.340797Z"
+          },
+          "value": {
+            "int64Value": "4427048"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "query_hash": "13634517950336770498",
+          "querystring": "SELECT count(*) FROM agent_run_lifecycle.child_join_members WHERE join_id = $1 AND terminal = $2",
+          "access_type": "hit",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.745045Z",
+            "endTime": "2026-08-04T06:04:16.341533Z"
+          },
+          "value": {
+            "int64Value": "116937"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "query_hash": "11354710252319512785",
+          "querystring": "SELECT join_id, terminal FROM agent_run_lifecycle.child_join_members WHERE child_run_id = $1 FOR UPDATE",
+          "access_type": "hit"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.722981Z",
+            "endTime": "2026-08-04T06:04:16.341496Z"
+          },
+          "value": {
+            "int64Value": "151974"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "SELECT nextval($1)",
+          "access_type": "hit",
+          "client_addr": "[local]",
+          "query_hash": "13257299209487617258",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.122271Z",
+            "endTime": "2026-08-04T06:04:16.341473Z"
+          },
+          "value": {
+            "int64Value": "139203"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "querystring": "SELECT pg_advisory_xact_lock( hashtextextended($1 || $3 || $2, $4) )",
+          "user": "<redacted-principal>",
+          "query_hash": "1502872279592190269"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.079126Z",
+            "endTime": "2026-08-04T06:04:16.341699Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "querystring": "SELECT pg_advisory_xact_lock($1)",
+          "query_hash": "18123151220906491803"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.940331Z",
+            "endTime": "2026-08-04T06:04:16.341954Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "3388962125530049694",
+          "querystring": "SELECT pg_notify($2, $1)",
+          "access_type": "hit",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.193048Z",
+            "endTime": "2026-08-04T06:04:16.341721Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "14428224734608395066",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "querystring": "SELECT request_hash, thread_id, event_sequence, run_id FROM agent_run_lifecycle.message_admission_receipts WHERE account_id = $1 AND idempotency_key = $2",
+          "access_type": "hit"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.083062Z",
+            "endTime": "2026-08-04T06:04:16.341068Z"
+          },
+          "value": {
+            "int64Value": "408709"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "15587483208151371762",
+          "access_type": "hit",
+          "querystring": "SELECT root.run_id, root.journey_kind, root.state, CASE WHEN root.terminal_at IS NULL THEN $3 ELSE (extract($4 FROM root.terminal_at) * $5)::bigint END, root.claim_epoch, root.wake_count, (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id), (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id AND a.parent_run_id IS NOT NULL), (SELECT count(*) FROM agent_run_lifecycle.agent_runs a JOIN agent_run_lifecycle.child_join_members member ON member.child_run_id = a.run_id WHERE a.root_run_id = root.root_run_id), (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id AND a.parent_run_id IS NOT NULL AND NOT EXISTS ( SELECT $6 FROM agent_run_lifecycle.child_join_members member WHERE member.child_run_id = a.run_id )), (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id AND a.state IN ($7, $8, $9)), (SELECT count(*) FROM agent_run_lifecycle.interaction_records r JOIN agent_run_lifecycle.agent_runs a ON a.run_id = r.run_id WHERE a.root_run_id = root.root_run_id), (SELECT count(*) FROM agent_run_lifecycle.thread_events e WHERE e.account_id = $1 AND e.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.workflow_instances w WHERE w.parent_run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.workflow_deliveries d JOIN agent_run_lifecycle.workflow_instances w ON w.workflow_instance_id = d.workflow_instance_id WHERE w.parent_run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.workflow_activities activity JOIN agent_run_lifecycle.workflow_instances w ON w.workflow_instance_id = activity.workflow_instance_id WHERE w.parent_run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.tool_calls t WHERE t.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.approvals approval JOIN agent_run_lifecycle.tool_calls t ON t.tool_call_id = approval.tool_call_id WHERE t.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.tool_attempts attempt JOIN agent_run_lifecycle.tool_calls t ON t.tool_call_id = attempt.tool_call_id WHERE t.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.proactive_messages message WHERE message.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.scheduled_reminders reminder WHERE reminder.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.sandbox_jobs job WHERE job.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.artifact_commits artifact WHERE artifact.run_id = root.run_id), COALESCE(( SELECT decision.quick_reply FROM agent_run_lifecycle.agent_decisions decision WHERE decision.run_id = root.run_id ), $10), COALESCE(( SELECT decision.child_agent_runs = ( SELECT count(*) FROM agent_run_lifecycle.agent_runs child WHERE child.root_run_id = root.root_run_id AND child.parent_run_id IS NOT NULL ) AND decision.awaited_child_agent_runs = ( SELECT count(*) FROM agent_run_lifecycle.agent_runs child JOIN agent_run_lifecycle.child_join_members member ON member.child_run_id = child.run_id WHERE child.root_run_id = root.root_run_id ) AND decision.detached_child_agent_runs = ( SELECT count(*) FROM agent_run_lifecycle.agent_runs child WHERE child.root_run_id = root.root_run_id AND child.parent_run_id IS NOT NULL AND NOT EXISTS ( SELECT $11 FROM agent_run_lifecycle.child_join_members member WHERE member.child_run_id = child.run_id ) ) AND decision.temporal_workflows = ( SELECT count(*) FROM agent_run_lifecycle.workflow_instances workflow WHERE workflow.parent_run_id = root.run_id ) AND decision.temporal_activities = ( SELECT count(*) FROM agent_run_lifecycle.workflow_activities activity JOIN agent_run_lifecycle.workflow_instances workflow ON workflow.workflow_instance_id = activity.workflow_instance_id WHERE workflow.parent_run_id = root.run_id ) AND decision.approvals = ( SELECT count(*) FROM agent_run_lifecycle.approvals approval JOIN agent_run_lifecycle.tool_calls tool ON tool.tool_call_id = approval.tool_call_id WHERE tool.run_id = root.run_id ) AND decision.tool_calls = ( SELECT count(*) FROM agent_run_lifecycle.tool_calls tool WHERE tool.run_id = root.run_id ) AND decision.proactive_messages = ( SELECT count(*) FROM agent_run_lifecycle.proactive_messages message WHERE message.run_id = root.run_id ) AND decision.scheduled_reminders = ( SELECT count(*) FROM agent_run_lifecycle.scheduled_reminders reminder WHERE reminder.run_id = root.run_id ) AND decisio",
+          "user": "<redacted-principal>",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:15.838886Z",
+            "endTime": "2026-08-04T06:04:16.340498Z"
+          },
+          "value": {
+            "int64Value": "3125409804"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "querystring": "SELECT root.run_id, root.journey_kind, root.state, CASE WHEN root.terminal_at IS NULL THEN $3 ELSE (extract($4 FROM root.terminal_at) * $5)::bigint END, root.claim_epoch, root.wake_count, (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id), (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id AND a.parent_run_id IS NOT NULL), (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id AND a.state IN ($6, $7, $8)), (SELECT count(*) FROM agent_run_lifecycle.interaction_records r JOIN agent_run_lifecycle.agent_runs a ON a.run_id = r.run_id WHERE a.root_run_id = root.root_run_id), (SELECT count(*) FROM agent_run_lifecycle.thread_events e WHERE e.account_id = $1 AND e.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.workflow_instances w WHERE w.parent_run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.workflow_deliveries d JOIN agent_run_lifecycle.workflow_instances w ON w.workflow_instance_id = d.workflow_instance_id WHERE w.parent_run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.tool_calls t WHERE t.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.approvals approval JOIN agent_run_lifecycle.tool_calls t ON t.tool_call_id = approval.tool_call_id WHERE t.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.tool_attempts attempt JOIN agent_run_lifecycle.tool_calls t ON t.tool_call_id = attempt.tool_call_id WHERE t.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.stale_commit_rejections rejection JOIN agent_run_lifecycle.agent_runs a ON a.run_id = rejection.run_id WHERE a.root_run_id = root.root_run_id) FROM agent_run_lifecycle.agent_runs root WHERE root.run_id = $2 AND root.principal_id = $1 AND root.parent_run_id IS NULL",
+          "query_hash": "6330215074546061403",
+          "access_type": "hit",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:24.071857Z",
+            "endTime": "2026-08-04T06:04:16.340569Z"
+          },
+          "value": {
+            "int64Value": "698765746"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "16240746354798077815",
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "querystring": "SELECT sequence, event_id, event_type, content, run_id FROM agent_run_lifecycle.thread_events WHERE account_id = $1 AND thread_id = $2 AND sequence > $3 ORDER BY sequence LIMIT $4",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.354979Z",
+            "endTime": "2026-08-04T06:04:16.340960Z"
+          },
+          "value": {
+            "int64Value": "1084529"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "access_type": "hit",
+          "querystring": "SELECT settled FROM agent_run_lifecycle.child_joins WHERE join_id = $1 FOR UPDATE",
+          "query_hash": "6914237213514287495"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.726142Z",
+            "endTime": "2026-08-04T06:04:16.340684Z"
+          },
+          "value": {
+            "int64Value": "132964"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "querystring": "SELECT state, claim_epoch, journey_kind FROM agent_run_lifecycle.agent_runs WHERE run_id = $1 FOR UPDATE",
+          "access_type": "hit",
+          "query_hash": "7742227331351200970"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.311862Z",
+            "endTime": "2026-08-04T06:04:16.340811Z"
+          },
+          "value": {
+            "int64Value": "346889"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "1659819666799943073",
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "querystring": "SELECT state, claim_epoch, journey_kind, workload_ordinal FROM agent_run_lifecycle.agent_runs WHERE run_id = $1 FOR UPDATE",
+          "access_type": "hit"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:09.340979Z",
+            "endTime": "2026-08-04T06:04:16.340718Z"
+          },
+          "value": {
+            "int64Value": "374200"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "16007702219351411395",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "querystring": "SELECT state, claim_epoch, parent_run_id FROM agent_run_lifecycle.agent_runs WHERE run_id = $1 FOR UPDATE",
+          "access_type": "hit"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.719727Z",
+            "endTime": "2026-08-04T06:04:16.340758Z"
+          },
+          "value": {
+            "int64Value": "198780"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "querystring": "SELECT state, claim_epoch, root_run_id, principal_id, persistence_profile, workload_ordinal FROM agent_run_lifecycle.agent_runs WHERE run_id = $1 FOR UPDATE",
+          "access_type": "hit",
+          "query_hash": "7565720937404493710"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.642496Z",
+            "endTime": "2026-08-04T06:04:16.340846Z"
+          },
+          "value": {
+            "int64Value": "112722"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "TRANSACTION BEGIN/COMMIT/PREPARE",
+          "user": "<redacted-principal>",
+          "access_type": "hit",
+          "query_hash": "5472279400312520892",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:10:15.989025Z",
+            "endTime": "2026-08-04T06:04:16.341676Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "user": "<redacted-principal>",
+          "querystring": "TRANSACTION BEGIN/COMMIT/PREPARE",
+          "query_hash": "5472279400312520892"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.996416Z",
+            "endTime": "2026-08-04T06:04:16.341976Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "UPDATE agent_run_lifecycle.agent_runs SET state = $2, owner = $3, lease_until = $4 WHERE run_id = $1",
+          "query_hash": "13442471428646632220",
+          "access_type": "hit",
+          "user": "<redacted-principal>",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.672363Z",
+            "endTime": "2026-08-04T06:04:16.341249Z"
+          },
+          "value": {
+            "int64Value": "206281"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "UPDATE agent_run_lifecycle.agent_runs SET state = $2, owner = $3, lease_until = $4, terminal_at = clock_timestamp() WHERE run_id = $1",
+          "query_hash": "1060575852263178809",
+          "access_type": "hit",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.729788Z",
+            "endTime": "2026-08-04T06:04:16.341081Z"
+          },
+          "value": {
+            "int64Value": "482860"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "access_type": "hit",
+          "querystring": "UPDATE agent_run_lifecycle.agent_runs SET state = $2, wake_count = wake_count + $3 WHERE run_id = $1 AND state = $4",
+          "query_hash": "16942175746394940596"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.779876Z",
+            "endTime": "2026-08-04T06:04:16.341277Z"
+          },
+          "value": {
+            "int64Value": "307427"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "access_type": "hit",
+          "querystring": "UPDATE agent_run_lifecycle.child_join_members SET terminal = $4, outcome = $2 WHERE join_id = $1 AND child_run_id = $3",
+          "user": "<redacted-principal>",
+          "query_hash": "1717795816664075881",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.736714Z",
+            "endTime": "2026-08-04T06:04:16.341374Z"
+          },
+          "value": {
+            "int64Value": "229506"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "querystring": "UPDATE agent_run_lifecycle.child_joins SET settled = $2, settled_at = clock_timestamp() WHERE join_id = $1",
+          "access_type": "hit",
+          "query_hash": "16919344507342174883"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.775644Z",
+            "endTime": "2026-08-04T06:04:16.341652Z"
+          },
+          "value": {
+            "int64Value": "103689"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "7943782800034525386",
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "user": "<redacted-principal>",
+          "querystring": "UPDATE agent_run_lifecycle.threads SET next_sequence = next_sequence + $3 WHERE account_id = $1 AND thread_id = $2 RETURNING next_sequence - $4"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.108368Z",
+            "endTime": "2026-08-04T06:04:16.340988Z"
+          },
+          "value": {
+            "int64Value": "961259"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "query_hash": "6276547442122221410",
+          "querystring": "UTILITY COMMAND",
+          "access_type": "hit"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:10:15.563579Z",
+            "endTime": "2026-08-04T06:04:16.341599Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "6276547442122221410",
+          "querystring": "UTILITY COMMAND",
+          "user": "<redacted-principal>",
+          "access_type": "hit",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.937477Z",
+            "endTime": "2026-08-04T06:04:16.341838Z"
+          },
+          "value": {
+            "int64Value": "163"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "access_type": "hit",
+          "querystring": "WITH candidate AS ( SELECT run_id, state FROM agent_run_lifecycle.agent_runs WHERE workload_ordinal IS NOT NULL AND ( state IN ($4, $5) OR (state = $6 AND lease_until < clock_timestamp()) ) ORDER BY created_at, run_id FOR UPDATE SKIP LOCKED LIMIT $3 ) UPDATE agent_run_lifecycle.agent_runs a SET state = $7, claim_epoch = claim_epoch + $8, owner = $1, lease_until = clock_timestamp() + ($2::bigint * interval $9) FROM candidate WHERE a.run_id = candidate.run_id RETURNING a.run_id, a.parent_run_id, a.claim_epoch, a.principal_id, a.journey_kind, a.workload_ordinal, candidate.state",
+          "query_hash": "14977317548149996884",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:47:11.904282Z",
+            "endTime": "2026-08-04T06:04:16.340624Z"
+          },
+          "value": {
+            "int64Value": "190915210"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "access_type": "hit",
+          "querystring": "WITH candidate AS ( SELECT run_id, state FROM agent_run_lifecycle.agent_runs WHERE workload_ordinal IS NOT NULL AND ( state IN ($4, $5) OR (state = $6 AND lease_until < clock_timestamp()) ) ORDER BY created_at, run_id FOR UPDATE SKIP LOCKED LIMIT $3 ) UPDATE agent_run_lifecycle.agent_runs a SET state = $7, claim_epoch = claim_epoch + $8, owner = $1, lease_until = clock_timestamp() + ($2::bigint * interval $9) FROM candidate WHERE a.run_id = candidate.run_id RETURNING a.run_id, a.parent_run_id, a.claim_epoch, a.principal_id, a.journey_kind, candidate.state",
+          "user": "<redacted-principal>",
+          "query_hash": "293632249636542438",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:10:15.596411Z",
+            "endTime": "2026-08-04T06:04:16.340666Z"
+          },
+          "value": {
+            "int64Value": "309907951"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "16967461321473218883",
+          "user": "<redacted-principal>",
+          "access_type": "hit",
+          "querystring": "WITH candidate AS ( SELECT run_id, state FROM agent_run_lifecycle.agent_runs WHERE workload_ordinal IS NOT NULL AND state = $4 AND lease_until < clock_timestamp() ORDER BY lease_until, created_at, run_id FOR UPDATE SKIP LOCKED LIMIT $3 ) UPDATE agent_run_lifecycle.agent_runs a SET state = $5, claim_epoch = claim_epoch + $6, owner = $1, lease_until = clock_timestamp() + ($2::bigint * interval $7) FROM candidate WHERE a.run_id = candidate.run_id RETURNING a.run_id, a.parent_run_id, a.claim_epoch, a.principal_id, a.journey_kind, a.workload_ordinal, candidate.state",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:26:43.138050Z",
+            "endTime": "2026-08-04T06:04:16.341188Z"
+          },
+          "value": {
+            "int64Value": "3538329"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "15251293456262260540",
+          "client_addr": "[local]",
+          "access_type": "hit",
+          "user": "<redacted-principal>",
+          "querystring": "WITH candidate AS ( SELECT run_id, state FROM agent_run_lifecycle.agent_runs WHERE workload_ordinal IS NOT NULL AND state IN ($4, $5) ORDER BY created_at, run_id FOR UPDATE SKIP LOCKED LIMIT $3 ) UPDATE agent_run_lifecycle.agent_runs a SET state = $6, claim_epoch = claim_epoch + $7, owner = $1, lease_until = clock_timestamp() + ($2::bigint * interval $8) FROM candidate WHERE a.run_id = candidate.run_id RETURNING a.run_id, a.parent_run_id, a.claim_epoch, a.principal_id, a.journey_kind, a.workload_ordinal, candidate.state"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:26:43.130882Z",
+            "endTime": "2026-08-04T06:04:16.340896Z"
+          },
+          "value": {
+            "int64Value": "12182168"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "14314879518130891563",
+          "user": "<redacted-principal>",
+          "querystring": "WITH location AS ( SELECT account_id, thread_id FROM agent_run_lifecycle.thread_events WHERE run_id = $1 AND event_type = $5 ), advanced AS ( UPDATE agent_run_lifecycle.threads thread SET next_sequence = thread.next_sequence + $6 FROM location WHERE thread.account_id = location.account_id AND thread.thread_id = location.thread_id RETURNING thread.account_id, thread.thread_id, thread.next_sequence - $7 AS sequence ), inserted_event AS ( INSERT INTO agent_run_lifecycle.thread_events (account_id, thread_id, sequence, event_id, event_type, content, run_id) SELECT account_id, thread_id, sequence, $3, $8, $4, $1 FROM advanced RETURNING account_id, thread_id, sequence, event_id ), interaction AS ( INSERT INTO agent_run_lifecycle.interaction_records (run_id, sequence, record_id, semantic_record) SELECT $1, COALESCE(max(sequence), $10) + $11, $3, $12 FROM agent_run_lifecycle.interaction_records WHERE run_id = $1 RETURNING run_id ), terminal AS ( UPDATE agent_run_lifecycle.agent_runs SET state = $14, owner = $15, lease_until = $16, terminal_at = clock_timestamp() WHERE run_id = $1 AND state = $17 AND claim_epoch = $2 AND EXISTS (SELECT $18 FROM interaction) RETURNING run_id ), notified AS ( SELECT pg_notify( $19, inserted_event.account_id || $20 || inserted_event.thread_id ) FROM inserted_event, terminal ) SELECT inserted_event.account_id, inserted_event.thread_id, inserted_event.sequence, inserted_event.event_id FROM inserted_event, terminal, notified",
+          "access_type": "hit",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.317734Z",
+            "endTime": "2026-08-04T06:04:16.340741Z"
+          },
+          "value": {
+            "int64Value": "9282508"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "CREATE INDEX agent_runs_dispatch_active_idx ON agent_runs(created_at, run_id)",
+          "access_type": "miss",
+          "query_hash": "16566795648997719735",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.993307Z",
+            "endTime": "2026-08-04T06:04:16.341965Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "query_hash": "1329517642367842131",
+          "access_type": "miss",
+          "querystring": "CREATE INDEX agent_runs_dispatch_claimable_idx ON agent_runs(created_at, run_id)"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:25:25.760326Z",
+            "endTime": "2026-08-04T06:04:16.341745Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "query_hash": "18321671108566177956",
+          "querystring": "CREATE INDEX agent_runs_dispatch_expired_idx ON agent_runs(lease_until, created_at, run_id)",
+          "access_type": "miss"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:25:25.784097Z",
+            "endTime": "2026-08-04T06:04:16.341780Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "6584196240624918006",
+          "user": "<redacted-principal>",
+          "access_type": "miss",
+          "querystring": "CREATE INDEX thread_events_run_lookup_idx ON thread_events(run_id, event_type)",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.993478Z",
+            "endTime": "2026-08-04T06:04:16.341941Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "CREATE TABLE agent_decisions",
+          "access_type": "miss",
+          "query_hash": "157398006755327047",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.979934Z",
+            "endTime": "2026-08-04T06:04:16.341824Z"
+          },
+          "value": {
+            "int64Value": "8"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "9833274314992118948",
+          "client_addr": "[local]",
+          "access_type": "miss",
+          "user": "<redacted-principal>",
+          "querystring": "CREATE TABLE artifact_commits"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.991935Z",
+            "endTime": "2026-08-04T06:04:16.341888Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "access_type": "miss",
+          "querystring": "CREATE TABLE proactive_messages",
+          "query_hash": "3184925665022596799"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.987486Z",
+            "endTime": "2026-08-04T06:04:16.341899Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "CREATE TABLE sandbox_jobs",
+          "access_type": "miss",
+          "query_hash": "5486585716634521103",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.990681Z",
+            "endTime": "2026-08-04T06:04:16.341915Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "query_hash": "7966972734259607056",
+          "querystring": "CREATE TABLE scheduled_reminders",
+          "access_type": "miss",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.988764Z",
+            "endTime": "2026-08-04T06:04:16.341875Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "access_type": "miss",
+          "querystring": "CREATE TABLE workflow_activities",
+          "user": "<redacted-principal>",
+          "query_hash": "1741747613615852783"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.946196Z",
+            "endTime": "2026-08-04T06:04:16.341803Z"
+          },
+          "value": {
+            "int64Value": "52"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "17639986774959315689",
+          "querystring": "INSERT INTO agent_run_lifecycle.agent_decisions (run_id, source, quick_reply, child_agent_runs, awaited_child_agent_runs, detached_child_agent_runs, temporal_workflows, temporal_activities, approvals, tool_calls, proactive_messages, scheduled_reminders, sandbox_jobs, artifact_commits) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+          "access_type": "miss",
+          "user": "<redacted-principal>",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:09.344409Z",
+            "endTime": "2026-08-04T06:04:16.340975Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "access_type": "miss",
+          "querystring": "INSERT INTO agent_run_lifecycle.agent_runs (run_id, parent_run_id, root_run_id, principal_id, journey_kind, persistence_profile, workload_ordinal, state) VALUES ($1, $2, $3, $4, $7, $5, $6, $8)",
+          "query_hash": "15890987848078577610"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.649688Z",
+            "endTime": "2026-08-04T06:04:16.341040Z"
+          },
+          "value": {
+            "int64Value": "25"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "INSERT INTO agent_run_lifecycle.agent_runs (run_id, root_run_id, principal_id, journey_kind, persistence_profile, workload_ordinal, state) VALUES ($1, $1, $2, $3, $5, $4, $6)",
+          "user": "<redacted-principal>",
+          "access_type": "miss",
+          "client_addr": "[local]",
+          "query_hash": "9635620973860566832"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.128029Z",
+            "endTime": "2026-08-04T06:04:16.340916Z"
+          },
+          "value": {
+            "int64Value": "154"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "INSERT INTO agent_run_lifecycle.approvals (approval_id, tool_call_id, state, decision_id, decided_at) VALUES ($1, $2, $4, $3, clock_timestamp())",
+          "query_hash": "10757790096709585853",
+          "access_type": "miss",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.619268Z",
+            "endTime": "2026-08-04T06:04:16.341421Z"
+          },
+          "value": {
+            "int64Value": "4"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "query_hash": "17733358202543978619",
+          "access_type": "miss",
+          "querystring": "INSERT INTO agent_run_lifecycle.artifact_commits (artifact_id, run_id, sandbox_job_id, state, checksum_verified) VALUES ($1, $2, $3, $4, $5)"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:09.351194Z",
+            "endTime": "2026-08-04T06:04:16.341303Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "access_type": "miss",
+          "querystring": "INSERT INTO agent_run_lifecycle.child_join_members (join_id, child_run_id, stable_order) VALUES ($1, $2, $3)",
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "query_hash": "10358105789397372479"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.656555Z",
+            "endTime": "2026-08-04T06:04:16.341053Z"
+          },
+          "value": {
+            "int64Value": "7"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "querystring": "INSERT INTO agent_run_lifecycle.child_joins (join_id, parent_run_id, mode) VALUES ($1, $2, $3)",
+          "access_type": "miss",
+          "query_hash": "13298890899706701998",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.646084Z",
+            "endTime": "2026-08-04T06:04:16.341202Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "query_hash": "17981371700362340597",
+          "querystring": "INSERT INTO agent_run_lifecycle.interaction_records (run_id, sequence, semantic_record) SELECT $1, COALESCE(max(sequence), $2) + $3, $4 FROM agent_run_lifecycle.interaction_records WHERE run_id = $1",
+          "user": "<redacted-principal>",
+          "access_type": "miss"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.733570Z",
+            "endTime": "2026-08-04T06:04:16.341144Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "querystring": "INSERT INTO agent_run_lifecycle.interaction_records (run_id, sequence, semantic_record) SELECT $1, COALESCE(max(sequence), $3) + $4, $2 FROM agent_run_lifecycle.interaction_records WHERE run_id = $1",
+          "access_type": "miss",
+          "client_addr": "[local]",
+          "query_hash": "13331583886938668785"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.601872Z",
+            "endTime": "2026-08-04T06:04:16.340947Z"
+          },
+          "value": {
+            "int64Value": "12"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "5063659492191897390",
+          "user": "<redacted-principal>",
+          "querystring": "INSERT INTO agent_run_lifecycle.interaction_records (run_id, sequence, semantic_record) SELECT claimed.run_id, COALESCE(max(existing.sequence), $3) + $4, claimed.semantic_record FROM unnest($1::text[], $2::text[]) AS claimed(run_id, semantic_record) LEFT JOIN agent_run_lifecycle.interaction_records existing ON existing.run_id = claimed.run_id GROUP BY claimed.run_id, claimed.semantic_record",
+          "access_type": "miss",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.251851Z",
+            "endTime": "2026-08-04T06:04:16.340862Z"
+          },
+          "value": {
+            "int64Value": "77"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "query_hash": "12425491759900471851",
+          "access_type": "miss",
+          "querystring": "INSERT INTO agent_run_lifecycle.interaction_records (run_id, sequence, semantic_record) VALUES ($1, $2, $3)"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.653147Z",
+            "endTime": "2026-08-04T06:04:16.341120Z"
+          },
+          "value": {
+            "int64Value": "5"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "13514127555909304701",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "querystring": "INSERT INTO agent_run_lifecycle.interaction_records (run_id, sequence, semantic_record) VALUES ($1, $3, $4), ($1, $5, $2)",
+          "access_type": "miss"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.139492Z",
+            "endTime": "2026-08-04T06:04:16.340877Z"
+          },
+          "value": {
+            "int64Value": "368"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "access_type": "miss",
+          "querystring": "INSERT INTO agent_run_lifecycle.message_admission_receipts (account_id, idempotency_key, request_hash, thread_id, event_sequence, run_id) VALUES ($1, $2, $3, $4, $5, $6)",
+          "query_hash": "9607441176093159038",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.183304Z",
+            "endTime": "2026-08-04T06:04:16.340825Z"
+          },
+          "value": {
+            "int64Value": "186"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "access_type": "miss",
+          "querystring": "INSERT INTO agent_run_lifecycle.proactive_messages (proactive_message_id, run_id, state) VALUES ($1, $2, $3)",
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "query_hash": "13722536967953288047"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:11.819366Z",
+            "endTime": "2026-08-04T06:04:16.341216Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "access_type": "miss",
+          "querystring": "INSERT INTO agent_run_lifecycle.sandbox_jobs (sandbox_job_id, run_id, state) VALUES ($1, $2, $3)",
+          "user": "<redacted-principal>",
+          "query_hash": "14759394431565131447"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:09.347836Z",
+            "endTime": "2026-08-04T06:04:16.341577Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "query_hash": "1642054829105353033",
+          "client_addr": "[local]",
+          "access_type": "miss",
+          "querystring": "INSERT INTO agent_run_lifecycle.scheduled_reminders (reminder_id, run_id, workflow_instance_id, state) VALUES ($1, $2, $3, $4)"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:12.710634Z",
+            "endTime": "2026-08-04T06:04:16.341327Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "13876925653057817507",
+          "user": "<redacted-principal>",
+          "querystring": "INSERT INTO agent_run_lifecycle.thread_events (account_id, thread_id, sequence, event_id, event_type, content, run_id) VALUES ($1, $2, $3, $4, $7, $5, $6)",
+          "access_type": "miss",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.157490Z",
+            "endTime": "2026-08-04T06:04:16.340777Z"
+          },
+          "value": {
+            "int64Value": "848"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "query_hash": "13774161191809917958",
+          "querystring": "INSERT INTO agent_run_lifecycle.threads (account_id, thread_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+          "access_type": "miss"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.096084Z",
+            "endTime": "2026-08-04T06:04:16.340929Z"
+          },
+          "value": {
+            "int64Value": "517"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "access_type": "miss",
+          "querystring": "INSERT INTO agent_run_lifecycle.tool_attempts (attempt_id, tool_call_id, claim_epoch, state, outcome, completed_at) VALUES ($1, $2, $3, $4, $5, clock_timestamp())",
+          "query_hash": "3348457957659889118",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.626017Z",
+            "endTime": "2026-08-04T06:04:16.341628Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "access_type": "miss",
+          "querystring": "INSERT INTO agent_run_lifecycle.tool_calls (tool_call_id, run_id, kind, state, attempt_count, terminal_outcome, terminal_at) VALUES ($1, $2, $3, $4, $5, $6, clock_timestamp())",
+          "user": "<redacted-principal>",
+          "query_hash": "10216545108997060551",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.616328Z",
+            "endTime": "2026-08-04T06:04:16.341449Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "querystring": "INSERT INTO agent_run_lifecycle.workflow_activities (activity_id, workflow_instance_id, state) VALUES ($1, $2, $3)",
+          "user": "<redacted-principal>",
+          "access_type": "miss",
+          "query_hash": "17465023140865985508"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:09.391214Z",
+            "endTime": "2026-08-04T06:04:16.341157Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "query_hash": "1980983095185175303",
+          "access_type": "miss",
+          "querystring": "INSERT INTO agent_run_lifecycle.workflow_deliveries (delivery_id, workflow_instance_id) VALUES ($1, $2)",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.598512Z",
+            "endTime": "2026-08-04T06:04:16.341173Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "13843815730286057903",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "querystring": "INSERT INTO agent_run_lifecycle.workflow_instances (workflow_instance_id, parent_run_id, tool_call_id, mode, state, outcome, terminal_at) VALUES ($1, $2, $3, $4, $5, $6, clock_timestamp())",
+          "access_type": "miss"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.594819Z",
+            "endTime": "2026-08-04T06:04:16.341097Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "SELECT $1",
+          "query_hash": "3382979652570490612",
+          "user": "<redacted-principal>",
+          "access_type": "miss",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:12:58.625770Z",
+            "endTime": "2026-08-04T06:04:16.341927Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "16731520020622379471",
+          "access_type": "miss",
+          "querystring": "SELECT EXISTS ( SELECT $2 FROM agent_run_lifecycle.agent_runs child WHERE child.parent_run_id = $1 AND child.run_id LIKE $1 || $3 )",
+          "user": "<redacted-principal>",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:13.231208Z",
+            "endTime": "2026-08-04T06:04:16.340700Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "query_hash": "15449806879472742254",
+          "client_addr": "[local]",
+          "access_type": "miss",
+          "querystring": "SELECT EXISTS ( SELECT $2 FROM agent_run_lifecycle.child_joins WHERE parent_run_id = $1 )"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.633755Z",
+            "endTime": "2026-08-04T06:04:16.340797Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "13634517950336770498",
+          "user": "<redacted-principal>",
+          "querystring": "SELECT count(*) FROM agent_run_lifecycle.child_join_members WHERE join_id = $1 AND terminal = $2",
+          "access_type": "miss",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.745045Z",
+            "endTime": "2026-08-04T06:04:16.341534Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "SELECT join_id, terminal FROM agent_run_lifecycle.child_join_members WHERE child_run_id = $1 FOR UPDATE",
+          "access_type": "miss",
+          "query_hash": "11354710252319512785",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.722981Z",
+            "endTime": "2026-08-04T06:04:16.341496Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "querystring": "SELECT nextval($1)",
+          "access_type": "miss",
+          "query_hash": "13257299209487617258"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.122271Z",
+            "endTime": "2026-08-04T06:04:16.341474Z"
+          },
+          "value": {
+            "int64Value": "4"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "query_hash": "1502872279592190269",
+          "querystring": "SELECT pg_advisory_xact_lock( hashtextextended($1 || $3 || $2, $4) )",
+          "access_type": "miss"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.079126Z",
+            "endTime": "2026-08-04T06:04:16.341700Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "query_hash": "18123151220906491803",
+          "access_type": "miss",
+          "querystring": "SELECT pg_advisory_xact_lock($1)",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.940331Z",
+            "endTime": "2026-08-04T06:04:16.341954Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "query_hash": "3388962125530049694",
+          "access_type": "miss",
+          "querystring": "SELECT pg_notify($2, $1)"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.193048Z",
+            "endTime": "2026-08-04T06:04:16.341721Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "querystring": "SELECT request_hash, thread_id, event_sequence, run_id FROM agent_run_lifecycle.message_admission_receipts WHERE account_id = $1 AND idempotency_key = $2",
+          "access_type": "miss",
+          "query_hash": "14428224734608395066",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.083062Z",
+            "endTime": "2026-08-04T06:04:16.341068Z"
+          },
+          "value": {
+            "int64Value": "10"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "query_hash": "15587483208151371762",
+          "querystring": "SELECT root.run_id, root.journey_kind, root.state, CASE WHEN root.terminal_at IS NULL THEN $3 ELSE (extract($4 FROM root.terminal_at) * $5)::bigint END, root.claim_epoch, root.wake_count, (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id), (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id AND a.parent_run_id IS NOT NULL), (SELECT count(*) FROM agent_run_lifecycle.agent_runs a JOIN agent_run_lifecycle.child_join_members member ON member.child_run_id = a.run_id WHERE a.root_run_id = root.root_run_id), (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id AND a.parent_run_id IS NOT NULL AND NOT EXISTS ( SELECT $6 FROM agent_run_lifecycle.child_join_members member WHERE member.child_run_id = a.run_id )), (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id AND a.state IN ($7, $8, $9)), (SELECT count(*) FROM agent_run_lifecycle.interaction_records r JOIN agent_run_lifecycle.agent_runs a ON a.run_id = r.run_id WHERE a.root_run_id = root.root_run_id), (SELECT count(*) FROM agent_run_lifecycle.thread_events e WHERE e.account_id = $1 AND e.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.workflow_instances w WHERE w.parent_run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.workflow_deliveries d JOIN agent_run_lifecycle.workflow_instances w ON w.workflow_instance_id = d.workflow_instance_id WHERE w.parent_run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.workflow_activities activity JOIN agent_run_lifecycle.workflow_instances w ON w.workflow_instance_id = activity.workflow_instance_id WHERE w.parent_run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.tool_calls t WHERE t.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.approvals approval JOIN agent_run_lifecycle.tool_calls t ON t.tool_call_id = approval.tool_call_id WHERE t.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.tool_attempts attempt JOIN agent_run_lifecycle.tool_calls t ON t.tool_call_id = attempt.tool_call_id WHERE t.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.proactive_messages message WHERE message.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.scheduled_reminders reminder WHERE reminder.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.sandbox_jobs job WHERE job.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.artifact_commits artifact WHERE artifact.run_id = root.run_id), COALESCE(( SELECT decision.quick_reply FROM agent_run_lifecycle.agent_decisions decision WHERE decision.run_id = root.run_id ), $10), COALESCE(( SELECT decision.child_agent_runs = ( SELECT count(*) FROM agent_run_lifecycle.agent_runs child WHERE child.root_run_id = root.root_run_id AND child.parent_run_id IS NOT NULL ) AND decision.awaited_child_agent_runs = ( SELECT count(*) FROM agent_run_lifecycle.agent_runs child JOIN agent_run_lifecycle.child_join_members member ON member.child_run_id = child.run_id WHERE child.root_run_id = root.root_run_id ) AND decision.detached_child_agent_runs = ( SELECT count(*) FROM agent_run_lifecycle.agent_runs child WHERE child.root_run_id = root.root_run_id AND child.parent_run_id IS NOT NULL AND NOT EXISTS ( SELECT $11 FROM agent_run_lifecycle.child_join_members member WHERE member.child_run_id = child.run_id ) ) AND decision.temporal_workflows = ( SELECT count(*) FROM agent_run_lifecycle.workflow_instances workflow WHERE workflow.parent_run_id = root.run_id ) AND decision.temporal_activities = ( SELECT count(*) FROM agent_run_lifecycle.workflow_activities activity JOIN agent_run_lifecycle.workflow_instances workflow ON workflow.workflow_instance_id = activity.workflow_instance_id WHERE workflow.parent_run_id = root.run_id ) AND decision.approvals = ( SELECT count(*) FROM agent_run_lifecycle.approvals approval JOIN agent_run_lifecycle.tool_calls tool ON tool.tool_call_id = approval.tool_call_id WHERE tool.run_id = root.run_id ) AND decision.tool_calls = ( SELECT count(*) FROM agent_run_lifecycle.tool_calls tool WHERE tool.run_id = root.run_id ) AND decision.proactive_messages = ( SELECT count(*) FROM agent_run_lifecycle.proactive_messages message WHERE message.run_id = root.run_id ) AND decision.scheduled_reminders = ( SELECT count(*) FROM agent_run_lifecycle.scheduled_reminders reminder WHERE reminder.run_id = root.run_id ) AND decisio",
+          "access_type": "miss",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:15.838886Z",
+            "endTime": "2026-08-04T06:04:16.340499Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]",
+          "access_type": "miss",
+          "query_hash": "6330215074546061403",
+          "querystring": "SELECT root.run_id, root.journey_kind, root.state, CASE WHEN root.terminal_at IS NULL THEN $3 ELSE (extract($4 FROM root.terminal_at) * $5)::bigint END, root.claim_epoch, root.wake_count, (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id), (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id AND a.parent_run_id IS NOT NULL), (SELECT count(*) FROM agent_run_lifecycle.agent_runs a WHERE a.root_run_id = root.root_run_id AND a.state IN ($6, $7, $8)), (SELECT count(*) FROM agent_run_lifecycle.interaction_records r JOIN agent_run_lifecycle.agent_runs a ON a.run_id = r.run_id WHERE a.root_run_id = root.root_run_id), (SELECT count(*) FROM agent_run_lifecycle.thread_events e WHERE e.account_id = $1 AND e.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.workflow_instances w WHERE w.parent_run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.workflow_deliveries d JOIN agent_run_lifecycle.workflow_instances w ON w.workflow_instance_id = d.workflow_instance_id WHERE w.parent_run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.tool_calls t WHERE t.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.approvals approval JOIN agent_run_lifecycle.tool_calls t ON t.tool_call_id = approval.tool_call_id WHERE t.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.tool_attempts attempt JOIN agent_run_lifecycle.tool_calls t ON t.tool_call_id = attempt.tool_call_id WHERE t.run_id = root.run_id), (SELECT count(*) FROM agent_run_lifecycle.stale_commit_rejections rejection JOIN agent_run_lifecycle.agent_runs a ON a.run_id = rejection.run_id WHERE a.root_run_id = root.root_run_id) FROM agent_run_lifecycle.agent_runs root WHERE root.run_id = $2 AND root.principal_id = $1 AND root.parent_run_id IS NULL"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:24.071857Z",
+            "endTime": "2026-08-04T06:04:16.340570Z"
+          },
+          "value": {
+            "int64Value": "501"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "querystring": "SELECT sequence, event_id, event_type, content, run_id FROM agent_run_lifecycle.thread_events WHERE account_id = $1 AND thread_id = $2 AND sequence > $3 ORDER BY sequence LIMIT $4",
+          "access_type": "miss",
+          "query_hash": "16240746354798077815",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.354979Z",
+            "endTime": "2026-08-04T06:04:16.340960Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "query_hash": "6914237213514287495",
+          "access_type": "miss",
+          "querystring": "SELECT settled FROM agent_run_lifecycle.child_joins WHERE join_id = $1 FOR UPDATE",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.726142Z",
+            "endTime": "2026-08-04T06:04:16.340684Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "access_type": "miss",
+          "querystring": "SELECT state, claim_epoch, journey_kind FROM agent_run_lifecycle.agent_runs WHERE run_id = $1 FOR UPDATE",
+          "user": "<redacted-principal>",
+          "query_hash": "7742227331351200970"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.311862Z",
+            "endTime": "2026-08-04T06:04:16.340811Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "1659819666799943073",
+          "querystring": "SELECT state, claim_epoch, journey_kind, workload_ordinal FROM agent_run_lifecycle.agent_runs WHERE run_id = $1 FOR UPDATE",
+          "access_type": "miss",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:49:09.340979Z",
+            "endTime": "2026-08-04T06:04:16.340719Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "querystring": "SELECT state, claim_epoch, parent_run_id FROM agent_run_lifecycle.agent_runs WHERE run_id = $1 FOR UPDATE",
+          "access_type": "miss",
+          "client_addr": "[local]",
+          "query_hash": "16007702219351411395",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.719727Z",
+            "endTime": "2026-08-04T06:04:16.340760Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "access_type": "miss",
+          "user": "<redacted-principal>",
+          "querystring": "SELECT state, claim_epoch, root_run_id, principal_id, persistence_profile, workload_ordinal FROM agent_run_lifecycle.agent_runs WHERE run_id = $1 FOR UPDATE",
+          "query_hash": "7565720937404493710"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.642496Z",
+            "endTime": "2026-08-04T06:04:16.340846Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "5472279400312520892",
+          "querystring": "TRANSACTION BEGIN/COMMIT/PREPARE",
+          "access_type": "miss",
+          "user": "<redacted-principal>",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:10:15.989025Z",
+            "endTime": "2026-08-04T06:04:16.341677Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "5472279400312520892",
+          "client_addr": "[local]",
+          "access_type": "miss",
+          "querystring": "TRANSACTION BEGIN/COMMIT/PREPARE",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.996416Z",
+            "endTime": "2026-08-04T06:04:16.341977Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "13442471428646632220",
+          "access_type": "miss",
+          "querystring": "UPDATE agent_run_lifecycle.agent_runs SET state = $2, owner = $3, lease_until = $4 WHERE run_id = $1",
+          "user": "<redacted-principal>",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.672363Z",
+            "endTime": "2026-08-04T06:04:16.341250Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "query_hash": "1060575852263178809",
+          "user": "<redacted-principal>",
+          "querystring": "UPDATE agent_run_lifecycle.agent_runs SET state = $2, owner = $3, lease_until = $4, terminal_at = clock_timestamp() WHERE run_id = $1",
+          "access_type": "miss"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.729788Z",
+            "endTime": "2026-08-04T06:04:16.341082Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "access_type": "miss",
+          "query_hash": "16942175746394940596",
+          "querystring": "UPDATE agent_run_lifecycle.agent_runs SET state = $2, wake_count = wake_count + $3 WHERE run_id = $1 AND state = $4",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.779876Z",
+            "endTime": "2026-08-04T06:04:16.341278Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "querystring": "UPDATE agent_run_lifecycle.child_join_members SET terminal = $4, outcome = $2 WHERE join_id = $1 AND child_run_id = $3",
+          "access_type": "miss",
+          "user": "<redacted-principal>",
+          "query_hash": "1717795816664075881"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.736714Z",
+            "endTime": "2026-08-04T06:04:16.341375Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "query_hash": "16919344507342174883",
+          "user": "<redacted-principal>",
+          "querystring": "UPDATE agent_run_lifecycle.child_joins SET settled = $2, settled_at = clock_timestamp() WHERE join_id = $1",
+          "access_type": "miss"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:19:55.775644Z",
+            "endTime": "2026-08-04T06:04:16.341653Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "7943782800034525386",
+          "querystring": "UPDATE agent_run_lifecycle.threads SET next_sequence = next_sequence + $3 WHERE account_id = $1 AND thread_id = $2 RETURNING next_sequence - $4",
+          "access_type": "miss",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.108368Z",
+            "endTime": "2026-08-04T06:04:16.340989Z"
+          },
+          "value": {
+            "int64Value": "112"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "querystring": "UTILITY COMMAND",
+          "query_hash": "6276547442122221410",
+          "access_type": "miss"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:10:15.563579Z",
+            "endTime": "2026-08-04T06:04:16.341600Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "query_hash": "6276547442122221410",
+          "access_type": "miss",
+          "querystring": "UTILITY COMMAND",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.937477Z",
+            "endTime": "2026-08-04T06:04:16.341838Z"
+          },
+          "value": {
+            "int64Value": "5"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "access_type": "miss",
+          "querystring": "WITH candidate AS ( SELECT run_id, state FROM agent_run_lifecycle.agent_runs WHERE workload_ordinal IS NOT NULL AND ( state IN ($4, $5) OR (state = $6 AND lease_until < clock_timestamp()) ) ORDER BY created_at, run_id FOR UPDATE SKIP LOCKED LIMIT $3 ) UPDATE agent_run_lifecycle.agent_runs a SET state = $7, claim_epoch = claim_epoch + $8, owner = $1, lease_until = clock_timestamp() + ($2::bigint * interval $9) FROM candidate WHERE a.run_id = candidate.run_id RETURNING a.run_id, a.parent_run_id, a.claim_epoch, a.principal_id, a.journey_kind, a.workload_ordinal, candidate.state",
+          "user": "<redacted-principal>",
+          "query_hash": "14977317548149996884"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:47:11.904282Z",
+            "endTime": "2026-08-04T06:04:16.340625Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "293632249636542438",
+          "querystring": "WITH candidate AS ( SELECT run_id, state FROM agent_run_lifecycle.agent_runs WHERE workload_ordinal IS NOT NULL AND ( state IN ($4, $5) OR (state = $6 AND lease_until < clock_timestamp()) ) ORDER BY created_at, run_id FOR UPDATE SKIP LOCKED LIMIT $3 ) UPDATE agent_run_lifecycle.agent_runs a SET state = $7, claim_epoch = claim_epoch + $8, owner = $1, lease_until = clock_timestamp() + ($2::bigint * interval $9) FROM candidate WHERE a.run_id = candidate.run_id RETURNING a.run_id, a.parent_run_id, a.claim_epoch, a.principal_id, a.journey_kind, candidate.state",
+          "user": "<redacted-principal>",
+          "access_type": "miss",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:10:15.596411Z",
+            "endTime": "2026-08-04T06:04:16.340668Z"
+          },
+          "value": {
+            "int64Value": "5491"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "query_hash": "16967461321473218883",
+          "access_type": "miss",
+          "querystring": "WITH candidate AS ( SELECT run_id, state FROM agent_run_lifecycle.agent_runs WHERE workload_ordinal IS NOT NULL AND state = $4 AND lease_until < clock_timestamp() ORDER BY lease_until, created_at, run_id FOR UPDATE SKIP LOCKED LIMIT $3 ) UPDATE agent_run_lifecycle.agent_runs a SET state = $5, claim_epoch = claim_epoch + $6, owner = $1, lease_until = clock_timestamp() + ($2::bigint * interval $7) FROM candidate WHERE a.run_id = candidate.run_id RETURNING a.run_id, a.parent_run_id, a.claim_epoch, a.principal_id, a.journey_kind, a.workload_ordinal, candidate.state",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:26:43.138050Z",
+            "endTime": "2026-08-04T06:04:16.341189Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "query_hash": "15251293456262260540",
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "querystring": "WITH candidate AS ( SELECT run_id, state FROM agent_run_lifecycle.agent_runs WHERE workload_ordinal IS NOT NULL AND state IN ($4, $5) ORDER BY created_at, run_id FOR UPDATE SKIP LOCKED LIMIT $3 ) UPDATE agent_run_lifecycle.agent_runs a SET state = $6, claim_epoch = claim_epoch + $7, owner = $1, lease_until = clock_timestamp() + ($2::bigint * interval $8) FROM candidate WHERE a.run_id = candidate.run_id RETURNING a.run_id, a.parent_run_id, a.claim_epoch, a.principal_id, a.journey_kind, a.workload_ordinal, candidate.state",
+          "access_type": "miss"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:26:43.130882Z",
+            "endTime": "2026-08-04T06:04:16.340897Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>",
+          "query_hash": "14314879518130891563",
+          "querystring": "WITH location AS ( SELECT account_id, thread_id FROM agent_run_lifecycle.thread_events WHERE run_id = $1 AND event_type = $5 ), advanced AS ( UPDATE agent_run_lifecycle.threads thread SET next_sequence = thread.next_sequence + $6 FROM location WHERE thread.account_id = location.account_id AND thread.thread_id = location.thread_id RETURNING thread.account_id, thread.thread_id, thread.next_sequence - $7 AS sequence ), inserted_event AS ( INSERT INTO agent_run_lifecycle.thread_events (account_id, thread_id, sequence, event_id, event_type, content, run_id) SELECT account_id, thread_id, sequence, $3, $8, $4, $1 FROM advanced RETURNING account_id, thread_id, sequence, event_id ), interaction AS ( INSERT INTO agent_run_lifecycle.interaction_records (run_id, sequence, record_id, semantic_record) SELECT $1, COALESCE(max(sequence), $10) + $11, $3, $12 FROM agent_run_lifecycle.interaction_records WHERE run_id = $1 RETURNING run_id ), terminal AS ( UPDATE agent_run_lifecycle.agent_runs SET state = $14, owner = $15, lease_until = $16, terminal_at = clock_timestamp() WHERE run_id = $1 AND state = $17 AND claim_epoch = $2 AND EXISTS (SELECT $18 FROM interaction) RETURNING run_id ), notified AS ( SELECT pg_notify( $19, inserted_event.account_id || $20 || inserted_event.thread_id ) FROM inserted_event, terminal ) SELECT inserted_event.account_id, inserted_event.thread_id, inserted_event.sequence, inserted_event.event_id FROM inserted_event, terminal, notified",
+          "access_type": "miss"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/perquery/shared_blk_access_count"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:13:08.317734Z",
+            "endTime": "2026-08-04T06:04:16.340741Z"
+          },
+          "value": {
+            "int64Value": "907"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

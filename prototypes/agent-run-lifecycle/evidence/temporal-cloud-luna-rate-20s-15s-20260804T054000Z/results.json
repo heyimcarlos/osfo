@@ -1,0 +1,3638 @@
+{
+  "schema_version": 1,
+  "generated_at_unix_milliseconds": 1785820273600,
+  "temporal_service": "Temporal Cloud",
+  "temporal_sdk": "temporalio 0.5.0 Public Preview",
+  "arrival_pattern": "uniform",
+  "offered": 300,
+  "completed": 300,
+  "failed": 0,
+  "offered_per_second": 20.0,
+  "completed_per_second": 17.297836750439252,
+  "offer_duration_seconds": 14.950661816,
+  "elapsed_seconds": 17.343209115,
+  "history_events": 11400,
+  "worker_identities": [
+    "osfo-temporal-cloud-worker-toronto"
+  ],
+  "completion_latency_ms": {
+    "sample_count": 300,
+    "p50": 2436.768176,
+    "p90": 2484.260124,
+    "p95": 2493.165152,
+    "p99": 2515.7770610000002,
+    "maximum": 2559.866931
+  },
+  "schedule_lag_ms": {
+    "sample_count": 300,
+    "p50": 0.9823040000000001,
+    "p90": 1.414126,
+    "p95": 1.502209,
+    "p99": 1.698897,
+    "maximum": 2.272036
+  },
+  "error_classes": {},
+  "correctness_passed": true,
+  "samples": [
+    {
+      "ordinal": 0,
+      "completion_latency_ms": 2492.061343,
+      "schedule_lag_ms": 1.3424960000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 1,
+      "completion_latency_ms": 2436.768176,
+      "schedule_lag_ms": 0.7904490000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 2,
+      "completion_latency_ms": 2433.051557,
+      "schedule_lag_ms": 0.705364,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 3,
+      "completion_latency_ms": 2400.8766659999997,
+      "schedule_lag_ms": 0.9806979999999998,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 4,
+      "completion_latency_ms": 2412.7444210000003,
+      "schedule_lag_ms": 0.752988,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 5,
+      "completion_latency_ms": 2433.474894,
+      "schedule_lag_ms": 0.7559170000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 6,
+      "completion_latency_ms": 2501.2365760000002,
+      "schedule_lag_ms": 1.29368,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 7,
+      "completion_latency_ms": 2377.1283099999996,
+      "schedule_lag_ms": 0.817533,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 8,
+      "completion_latency_ms": 2458.8035449999998,
+      "schedule_lag_ms": 1.26504,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 9,
+      "completion_latency_ms": 2440.220121,
+      "schedule_lag_ms": 1.344739,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 10,
+      "completion_latency_ms": 2410.438318,
+      "schedule_lag_ms": 0.473433,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 11,
+      "completion_latency_ms": 2468.581502,
+      "schedule_lag_ms": 1.370323,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 12,
+      "completion_latency_ms": 2434.388078,
+      "schedule_lag_ms": 1.789358,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 13,
+      "completion_latency_ms": 2466.794378,
+      "schedule_lag_ms": 1.281101,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 14,
+      "completion_latency_ms": 2397.5927189999998,
+      "schedule_lag_ms": 0.857659,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 15,
+      "completion_latency_ms": 2455.1614,
+      "schedule_lag_ms": 0.524141,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 16,
+      "completion_latency_ms": 2486.220258,
+      "schedule_lag_ms": 0.9682799999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 17,
+      "completion_latency_ms": 2375.425389,
+      "schedule_lag_ms": 1.334915,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 18,
+      "completion_latency_ms": 2413.9771250000003,
+      "schedule_lag_ms": 1.383877,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 19,
+      "completion_latency_ms": 2395.4655869999997,
+      "schedule_lag_ms": 1.094963,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 20,
+      "completion_latency_ms": 2393.470849,
+      "schedule_lag_ms": 0.954114,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 21,
+      "completion_latency_ms": 2394.5226009999997,
+      "schedule_lag_ms": 0.680933,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 22,
+      "completion_latency_ms": 2494.477818,
+      "schedule_lag_ms": 0.895109,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 23,
+      "completion_latency_ms": 2396.7611079999997,
+      "schedule_lag_ms": 1.027949,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 24,
+      "completion_latency_ms": 2423.8547129999997,
+      "schedule_lag_ms": 1.380329,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 25,
+      "completion_latency_ms": 2455.176873,
+      "schedule_lag_ms": 1.3501699999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 26,
+      "completion_latency_ms": 2489.116079,
+      "schedule_lag_ms": 1.0866689999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 27,
+      "completion_latency_ms": 2439.201882,
+      "schedule_lag_ms": 1.285491,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 28,
+      "completion_latency_ms": 2471.8795670000004,
+      "schedule_lag_ms": 0.700619,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 29,
+      "completion_latency_ms": 2423.8330389999996,
+      "schedule_lag_ms": 0.665134,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 30,
+      "completion_latency_ms": 2439.659494,
+      "schedule_lag_ms": 0.6801510000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 31,
+      "completion_latency_ms": 2396.898222,
+      "schedule_lag_ms": 1.4651530000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 32,
+      "completion_latency_ms": 2479.337549,
+      "schedule_lag_ms": 2.272036,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 33,
+      "completion_latency_ms": 2417.105842,
+      "schedule_lag_ms": 0.9880539999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 34,
+      "completion_latency_ms": 2412.579598,
+      "schedule_lag_ms": 1.494219,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 35,
+      "completion_latency_ms": 2448.049756,
+      "schedule_lag_ms": 1.130257,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 36,
+      "completion_latency_ms": 2389.313193,
+      "schedule_lag_ms": 1.12362,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 37,
+      "completion_latency_ms": 2493.165152,
+      "schedule_lag_ms": 1.188777,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 38,
+      "completion_latency_ms": 2495.504946,
+      "schedule_lag_ms": 1.189258,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 39,
+      "completion_latency_ms": 2514.22906,
+      "schedule_lag_ms": 1.05838,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 40,
+      "completion_latency_ms": 2467.319456,
+      "schedule_lag_ms": 0.621301,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 41,
+      "completion_latency_ms": 2511.094451,
+      "schedule_lag_ms": 1.498982,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 42,
+      "completion_latency_ms": 2420.577878,
+      "schedule_lag_ms": 0.854883,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 43,
+      "completion_latency_ms": 2499.5787800000003,
+      "schedule_lag_ms": 0.7484069999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 44,
+      "completion_latency_ms": 2416.438725,
+      "schedule_lag_ms": 0.941615,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 45,
+      "completion_latency_ms": 2357.793288,
+      "schedule_lag_ms": 1.492322,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 46,
+      "completion_latency_ms": 2438.6904870000003,
+      "schedule_lag_ms": 0.442788,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 47,
+      "completion_latency_ms": 2384.500997,
+      "schedule_lag_ms": 1.23914,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 48,
+      "completion_latency_ms": 2456.025615,
+      "schedule_lag_ms": 1.300513,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 49,
+      "completion_latency_ms": 2447.115588,
+      "schedule_lag_ms": 0.510474,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 50,
+      "completion_latency_ms": 2481.401387,
+      "schedule_lag_ms": 1.344288,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 51,
+      "completion_latency_ms": 2425.6609080000003,
+      "schedule_lag_ms": 0.9607910000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 52,
+      "completion_latency_ms": 2467.6504069999996,
+      "schedule_lag_ms": 1.139681,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 53,
+      "completion_latency_ms": 2403.3255360000003,
+      "schedule_lag_ms": 0.657281,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 54,
+      "completion_latency_ms": 2440.775734,
+      "schedule_lag_ms": 0.828139,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 55,
+      "completion_latency_ms": 2429.8266719999997,
+      "schedule_lag_ms": 1.3390959999999998,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 56,
+      "completion_latency_ms": 2419.3290269999998,
+      "schedule_lag_ms": 1.528954,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 57,
+      "completion_latency_ms": 2400.329782,
+      "schedule_lag_ms": 1.30135,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 58,
+      "completion_latency_ms": 2428.1367760000003,
+      "schedule_lag_ms": 0.6010460000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 59,
+      "completion_latency_ms": 2509.937646,
+      "schedule_lag_ms": 0.6913680000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 60,
+      "completion_latency_ms": 2441.4979580000004,
+      "schedule_lag_ms": 1.060673,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 61,
+      "completion_latency_ms": 2479.595688,
+      "schedule_lag_ms": 0.678193,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 62,
+      "completion_latency_ms": 2413.1230729999997,
+      "schedule_lag_ms": 1.056024,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 63,
+      "completion_latency_ms": 2411.654802,
+      "schedule_lag_ms": 1.414126,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 64,
+      "completion_latency_ms": 2396.612129,
+      "schedule_lag_ms": 0.5305880000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 65,
+      "completion_latency_ms": 2466.499102,
+      "schedule_lag_ms": 1.283662,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 66,
+      "completion_latency_ms": 2426.772838,
+      "schedule_lag_ms": 1.3656199999999998,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 67,
+      "completion_latency_ms": 2392.180604,
+      "schedule_lag_ms": 0.6515730000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 68,
+      "completion_latency_ms": 2391.8503100000003,
+      "schedule_lag_ms": 0.792627,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 69,
+      "completion_latency_ms": 2396.6422039999998,
+      "schedule_lag_ms": 0.813212,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 70,
+      "completion_latency_ms": 2389.528439,
+      "schedule_lag_ms": 1.2164890000000002,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 71,
+      "completion_latency_ms": 2408.812427,
+      "schedule_lag_ms": 0.825572,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 72,
+      "completion_latency_ms": 2468.1295,
+      "schedule_lag_ms": 0.771976,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 73,
+      "completion_latency_ms": 2435.821451,
+      "schedule_lag_ms": 1.442715,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 74,
+      "completion_latency_ms": 2455.9308619999997,
+      "schedule_lag_ms": 0.47268,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 75,
+      "completion_latency_ms": 2494.1761749999996,
+      "schedule_lag_ms": 1.117965,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 76,
+      "completion_latency_ms": 2424.269922,
+      "schedule_lag_ms": 1.390463,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 77,
+      "completion_latency_ms": 2515.7770610000002,
+      "schedule_lag_ms": 1.1835179999999998,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 78,
+      "completion_latency_ms": 2462.64357,
+      "schedule_lag_ms": 1.261833,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 79,
+      "completion_latency_ms": 2451.6863820000003,
+      "schedule_lag_ms": 1.3779720000000002,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 80,
+      "completion_latency_ms": 2472.189234,
+      "schedule_lag_ms": 1.523117,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 81,
+      "completion_latency_ms": 2399.458147,
+      "schedule_lag_ms": 0.8954329999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 82,
+      "completion_latency_ms": 2434.776208,
+      "schedule_lag_ms": 0.719514,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 83,
+      "completion_latency_ms": 2383.316307,
+      "schedule_lag_ms": 1.040796,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 84,
+      "completion_latency_ms": 2359.934457,
+      "schedule_lag_ms": 0.604188,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 85,
+      "completion_latency_ms": 2433.396697,
+      "schedule_lag_ms": 1.1218409999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 86,
+      "completion_latency_ms": 2559.866931,
+      "schedule_lag_ms": 1.2521069999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 87,
+      "completion_latency_ms": 2464.717941,
+      "schedule_lag_ms": 0.527109,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 88,
+      "completion_latency_ms": 2430.166572,
+      "schedule_lag_ms": 1.17768,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 89,
+      "completion_latency_ms": 2440.008894,
+      "schedule_lag_ms": 1.177078,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 90,
+      "completion_latency_ms": 2480.3957309999996,
+      "schedule_lag_ms": 0.535087,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 91,
+      "completion_latency_ms": 2481.090451,
+      "schedule_lag_ms": 1.3776730000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 92,
+      "completion_latency_ms": 2454.181604,
+      "schedule_lag_ms": 0.5050570000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 93,
+      "completion_latency_ms": 2369.735573,
+      "schedule_lag_ms": 1.046929,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 94,
+      "completion_latency_ms": 2378.573329,
+      "schedule_lag_ms": 0.9484349999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 95,
+      "completion_latency_ms": 2450.927885,
+      "schedule_lag_ms": 1.263528,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 96,
+      "completion_latency_ms": 2406.362822,
+      "schedule_lag_ms": 1.446962,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 97,
+      "completion_latency_ms": 2390.261698,
+      "schedule_lag_ms": 0.651564,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 98,
+      "completion_latency_ms": 2438.504889,
+      "schedule_lag_ms": 0.768269,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 99,
+      "completion_latency_ms": 2443.844554,
+      "schedule_lag_ms": 1.4715189999999998,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 100,
+      "completion_latency_ms": 2446.565818,
+      "schedule_lag_ms": 1.1461139999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 101,
+      "completion_latency_ms": 2520.5118390000002,
+      "schedule_lag_ms": 1.223668,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 102,
+      "completion_latency_ms": 2476.462457,
+      "schedule_lag_ms": 1.010619,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 103,
+      "completion_latency_ms": 2424.524202,
+      "schedule_lag_ms": 0.854479,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 104,
+      "completion_latency_ms": 2404.061994,
+      "schedule_lag_ms": 0.38444,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 105,
+      "completion_latency_ms": 2423.170972,
+      "schedule_lag_ms": 0.590796,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 106,
+      "completion_latency_ms": 2382.199185,
+      "schedule_lag_ms": 1.502209,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 107,
+      "completion_latency_ms": 2450.351195,
+      "schedule_lag_ms": 1.023857,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 108,
+      "completion_latency_ms": 2419.31764,
+      "schedule_lag_ms": 1.232355,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 109,
+      "completion_latency_ms": 2492.739387,
+      "schedule_lag_ms": 1.127339,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 110,
+      "completion_latency_ms": 2440.323277,
+      "schedule_lag_ms": 1.0941180000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 111,
+      "completion_latency_ms": 2457.759641,
+      "schedule_lag_ms": 1.2747979999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 112,
+      "completion_latency_ms": 2452.557816,
+      "schedule_lag_ms": 1.275755,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 113,
+      "completion_latency_ms": 2446.592232,
+      "schedule_lag_ms": 1.081035,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 114,
+      "completion_latency_ms": 2435.770778,
+      "schedule_lag_ms": 0.899389,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 115,
+      "completion_latency_ms": 2487.0801610000003,
+      "schedule_lag_ms": 0.843932,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 116,
+      "completion_latency_ms": 2437.371744,
+      "schedule_lag_ms": 0.621827,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 117,
+      "completion_latency_ms": 2448.774901,
+      "schedule_lag_ms": 0.883288,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 118,
+      "completion_latency_ms": 2406.1373860000003,
+      "schedule_lag_ms": 0.45658299999999996,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 119,
+      "completion_latency_ms": 2435.827849,
+      "schedule_lag_ms": 1.570517,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 120,
+      "completion_latency_ms": 2393.143897,
+      "schedule_lag_ms": 1.182935,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 121,
+      "completion_latency_ms": 2464.454804,
+      "schedule_lag_ms": 0.9453670000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 122,
+      "completion_latency_ms": 2462.355369,
+      "schedule_lag_ms": 0.8269599999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 123,
+      "completion_latency_ms": 2451.2659000000003,
+      "schedule_lag_ms": 0.874949,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 124,
+      "completion_latency_ms": 2410.571134,
+      "schedule_lag_ms": 1.4972860000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 125,
+      "completion_latency_ms": 2446.1523500000003,
+      "schedule_lag_ms": 1.348178,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 126,
+      "completion_latency_ms": 2439.1948,
+      "schedule_lag_ms": 0.713829,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 127,
+      "completion_latency_ms": 2418.414167,
+      "schedule_lag_ms": 0.559617,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 128,
+      "completion_latency_ms": 2477.56876,
+      "schedule_lag_ms": 1.2271429999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 129,
+      "completion_latency_ms": 2379.583938,
+      "schedule_lag_ms": 0.6332300000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 130,
+      "completion_latency_ms": 2447.6168559999996,
+      "schedule_lag_ms": 1.292745,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 131,
+      "completion_latency_ms": 2381.476734,
+      "schedule_lag_ms": 0.646767,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 132,
+      "completion_latency_ms": 2470.085578,
+      "schedule_lag_ms": 0.7772859999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 133,
+      "completion_latency_ms": 2461.487024,
+      "schedule_lag_ms": 1.2021709999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 134,
+      "completion_latency_ms": 2512.835966,
+      "schedule_lag_ms": 0.617003,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 135,
+      "completion_latency_ms": 2399.043551,
+      "schedule_lag_ms": 1.247528,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 136,
+      "completion_latency_ms": 2391.205672,
+      "schedule_lag_ms": 1.436936,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 137,
+      "completion_latency_ms": 2433.076512,
+      "schedule_lag_ms": 0.678093,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 138,
+      "completion_latency_ms": 2412.479361,
+      "schedule_lag_ms": 0.5525070000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 139,
+      "completion_latency_ms": 2417.724562,
+      "schedule_lag_ms": 1.345502,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 140,
+      "completion_latency_ms": 2450.949639,
+      "schedule_lag_ms": 1.326611,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 141,
+      "completion_latency_ms": 2420.044609,
+      "schedule_lag_ms": 1.125537,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 142,
+      "completion_latency_ms": 2385.672814,
+      "schedule_lag_ms": 0.9823040000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 143,
+      "completion_latency_ms": 2443.183305,
+      "schedule_lag_ms": 1.523987,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 144,
+      "completion_latency_ms": 2447.850189,
+      "schedule_lag_ms": 1.36564,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 145,
+      "completion_latency_ms": 2458.8473510000003,
+      "schedule_lag_ms": 1.345274,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 146,
+      "completion_latency_ms": 2529.195533,
+      "schedule_lag_ms": 0.542175,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 147,
+      "completion_latency_ms": 2409.586791,
+      "schedule_lag_ms": 1.1978010000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 148,
+      "completion_latency_ms": 2490.6521540000003,
+      "schedule_lag_ms": 1.119062,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 149,
+      "completion_latency_ms": 2432.316911,
+      "schedule_lag_ms": 1.2901259999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 150,
+      "completion_latency_ms": 2450.704527,
+      "schedule_lag_ms": 0.955376,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 151,
+      "completion_latency_ms": 2383.017183,
+      "schedule_lag_ms": 1.360111,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 152,
+      "completion_latency_ms": 2364.724943,
+      "schedule_lag_ms": 0.6651009999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 153,
+      "completion_latency_ms": 2434.2097009999998,
+      "schedule_lag_ms": 0.5320550000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 154,
+      "completion_latency_ms": 2476.83522,
+      "schedule_lag_ms": 0.735028,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 155,
+      "completion_latency_ms": 2426.146648,
+      "schedule_lag_ms": 1.698897,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 156,
+      "completion_latency_ms": 2392.7767750000003,
+      "schedule_lag_ms": 0.584766,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 157,
+      "completion_latency_ms": 2408.6891299999997,
+      "schedule_lag_ms": 0.6096050000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 158,
+      "completion_latency_ms": 2461.6786469999997,
+      "schedule_lag_ms": 1.036416,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 159,
+      "completion_latency_ms": 2429.02279,
+      "schedule_lag_ms": 0.47500800000000004,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 160,
+      "completion_latency_ms": 2437.985884,
+      "schedule_lag_ms": 1.34352,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 161,
+      "completion_latency_ms": 2384.5541519999997,
+      "schedule_lag_ms": 0.9460700000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 162,
+      "completion_latency_ms": 2459.607735,
+      "schedule_lag_ms": 0.635572,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 163,
+      "completion_latency_ms": 2408.506698,
+      "schedule_lag_ms": 1.303347,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 164,
+      "completion_latency_ms": 2437.1162809999996,
+      "schedule_lag_ms": 1.3562319999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 165,
+      "completion_latency_ms": 2399.93658,
+      "schedule_lag_ms": 0.989223,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 166,
+      "completion_latency_ms": 2473.053927,
+      "schedule_lag_ms": 1.3152000000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 167,
+      "completion_latency_ms": 2429.844788,
+      "schedule_lag_ms": 0.668428,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 168,
+      "completion_latency_ms": 2410.992726,
+      "schedule_lag_ms": 1.1955,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 169,
+      "completion_latency_ms": 2440.973215,
+      "schedule_lag_ms": 0.824044,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 170,
+      "completion_latency_ms": 2448.2599609999997,
+      "schedule_lag_ms": 1.58418,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 171,
+      "completion_latency_ms": 2463.5943469999997,
+      "schedule_lag_ms": 0.866031,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 172,
+      "completion_latency_ms": 2411.68084,
+      "schedule_lag_ms": 1.341502,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 173,
+      "completion_latency_ms": 2393.1388829999996,
+      "schedule_lag_ms": 1.015609,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 174,
+      "completion_latency_ms": 2431.893665,
+      "schedule_lag_ms": 1.16794,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 175,
+      "completion_latency_ms": 2470.7758860000004,
+      "schedule_lag_ms": 1.3999119999999998,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 176,
+      "completion_latency_ms": 2473.605193,
+      "schedule_lag_ms": 1.408488,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 177,
+      "completion_latency_ms": 2396.157742,
+      "schedule_lag_ms": 1.1620899999999998,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 178,
+      "completion_latency_ms": 2488.849299,
+      "schedule_lag_ms": 1.2258410000000002,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 179,
+      "completion_latency_ms": 2447.669047,
+      "schedule_lag_ms": 0.641284,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 180,
+      "completion_latency_ms": 2462.956326,
+      "schedule_lag_ms": 0.834046,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 181,
+      "completion_latency_ms": 2439.574056,
+      "schedule_lag_ms": 1.490926,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 182,
+      "completion_latency_ms": 2468.525654,
+      "schedule_lag_ms": 0.635186,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 183,
+      "completion_latency_ms": 2450.775282,
+      "schedule_lag_ms": 0.631914,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 184,
+      "completion_latency_ms": 2388.928128,
+      "schedule_lag_ms": 0.596622,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 185,
+      "completion_latency_ms": 2385.93688,
+      "schedule_lag_ms": 1.2714429999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 186,
+      "completion_latency_ms": 2505.512944,
+      "schedule_lag_ms": 0.785762,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 187,
+      "completion_latency_ms": 2405.730168,
+      "schedule_lag_ms": 0.48715400000000003,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 188,
+      "completion_latency_ms": 2464.393714,
+      "schedule_lag_ms": 0.66515,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 189,
+      "completion_latency_ms": 2382.331048,
+      "schedule_lag_ms": 1.442595,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 190,
+      "completion_latency_ms": 2471.646235,
+      "schedule_lag_ms": 1.083761,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 191,
+      "completion_latency_ms": 2422.5409889999996,
+      "schedule_lag_ms": 0.48812099999999997,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 192,
+      "completion_latency_ms": 2448.5796060000002,
+      "schedule_lag_ms": 0.44820899999999997,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 193,
+      "completion_latency_ms": 2436.413124,
+      "schedule_lag_ms": 1.163573,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 194,
+      "completion_latency_ms": 2389.059963,
+      "schedule_lag_ms": 1.2995750000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 195,
+      "completion_latency_ms": 2484.260124,
+      "schedule_lag_ms": 0.8207369999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 196,
+      "completion_latency_ms": 2438.118851,
+      "schedule_lag_ms": 0.597629,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 197,
+      "completion_latency_ms": 2399.2058890000003,
+      "schedule_lag_ms": 1.176489,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 198,
+      "completion_latency_ms": 2478.133132,
+      "schedule_lag_ms": 1.3281239999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 199,
+      "completion_latency_ms": 2469.054981,
+      "schedule_lag_ms": 1.3499720000000002,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 200,
+      "completion_latency_ms": 2462.490689,
+      "schedule_lag_ms": 0.974715,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 201,
+      "completion_latency_ms": 2489.7873,
+      "schedule_lag_ms": 0.613368,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 202,
+      "completion_latency_ms": 2492.128283,
+      "schedule_lag_ms": 0.835231,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 203,
+      "completion_latency_ms": 2409.40403,
+      "schedule_lag_ms": 1.354328,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 204,
+      "completion_latency_ms": 2432.18231,
+      "schedule_lag_ms": 1.044754,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 205,
+      "completion_latency_ms": 2421.001636,
+      "schedule_lag_ms": 1.127924,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 206,
+      "completion_latency_ms": 2451.85997,
+      "schedule_lag_ms": 1.322978,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 207,
+      "completion_latency_ms": 2402.37378,
+      "schedule_lag_ms": 1.101566,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 208,
+      "completion_latency_ms": 2395.833139,
+      "schedule_lag_ms": 1.0600559999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 209,
+      "completion_latency_ms": 2378.562337,
+      "schedule_lag_ms": 1.0179099999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 210,
+      "completion_latency_ms": 2433.6396090000003,
+      "schedule_lag_ms": 0.936841,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 211,
+      "completion_latency_ms": 2409.93908,
+      "schedule_lag_ms": 1.522804,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 212,
+      "completion_latency_ms": 2419.577819,
+      "schedule_lag_ms": 0.6283610000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 213,
+      "completion_latency_ms": 2444.0292480000003,
+      "schedule_lag_ms": 1.594573,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 214,
+      "completion_latency_ms": 2391.0137109999996,
+      "schedule_lag_ms": 0.953441,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 215,
+      "completion_latency_ms": 2438.804187,
+      "schedule_lag_ms": 0.7684340000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 216,
+      "completion_latency_ms": 2400.502903,
+      "schedule_lag_ms": 0.6392680000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 217,
+      "completion_latency_ms": 2366.551272,
+      "schedule_lag_ms": 0.919416,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 218,
+      "completion_latency_ms": 2429.961117,
+      "schedule_lag_ms": 0.969469,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 219,
+      "completion_latency_ms": 2391.162558,
+      "schedule_lag_ms": 0.5185059999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 220,
+      "completion_latency_ms": 2456.0839379999998,
+      "schedule_lag_ms": 0.8200339999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 221,
+      "completion_latency_ms": 2431.006635,
+      "schedule_lag_ms": 0.534624,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 222,
+      "completion_latency_ms": 2434.283947,
+      "schedule_lag_ms": 1.633876,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 223,
+      "completion_latency_ms": 2426.708825,
+      "schedule_lag_ms": 0.420572,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 224,
+      "completion_latency_ms": 2484.010145,
+      "schedule_lag_ms": 0.624035,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 225,
+      "completion_latency_ms": 2474.088407,
+      "schedule_lag_ms": 0.576501,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 226,
+      "completion_latency_ms": 2389.7873440000003,
+      "schedule_lag_ms": 1.326025,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 227,
+      "completion_latency_ms": 2416.879836,
+      "schedule_lag_ms": 0.7357699999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 228,
+      "completion_latency_ms": 2463.438138,
+      "schedule_lag_ms": 0.60898,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 229,
+      "completion_latency_ms": 2463.346402,
+      "schedule_lag_ms": 0.869138,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 230,
+      "completion_latency_ms": 2417.85507,
+      "schedule_lag_ms": 0.9318249999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 231,
+      "completion_latency_ms": 2388.204402,
+      "schedule_lag_ms": 1.363151,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 232,
+      "completion_latency_ms": 2466.026974,
+      "schedule_lag_ms": 0.543377,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 233,
+      "completion_latency_ms": 2431.566105,
+      "schedule_lag_ms": 0.636013,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 234,
+      "completion_latency_ms": 2492.208051,
+      "schedule_lag_ms": 0.7347929999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 235,
+      "completion_latency_ms": 2361.638026,
+      "schedule_lag_ms": 0.832201,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 236,
+      "completion_latency_ms": 2475.1167,
+      "schedule_lag_ms": 1.344409,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 237,
+      "completion_latency_ms": 2442.7127459999997,
+      "schedule_lag_ms": 1.224029,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 238,
+      "completion_latency_ms": 2434.14275,
+      "schedule_lag_ms": 1.201476,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 239,
+      "completion_latency_ms": 2484.582553,
+      "schedule_lag_ms": 0.994238,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 240,
+      "completion_latency_ms": 2419.88562,
+      "schedule_lag_ms": 1.416589,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 241,
+      "completion_latency_ms": 2372.697388,
+      "schedule_lag_ms": 0.622273,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 242,
+      "completion_latency_ms": 2396.30194,
+      "schedule_lag_ms": 1.355562,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 243,
+      "completion_latency_ms": 2435.321794,
+      "schedule_lag_ms": 0.483425,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 244,
+      "completion_latency_ms": 2454.662592,
+      "schedule_lag_ms": 0.41119,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 245,
+      "completion_latency_ms": 2385.422059,
+      "schedule_lag_ms": 0.901359,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 246,
+      "completion_latency_ms": 2470.091677,
+      "schedule_lag_ms": 0.91601,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 247,
+      "completion_latency_ms": 2381.936897,
+      "schedule_lag_ms": 0.809534,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 248,
+      "completion_latency_ms": 2443.986748,
+      "schedule_lag_ms": 1.207989,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 249,
+      "completion_latency_ms": 2397.548531,
+      "schedule_lag_ms": 0.8403520000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 250,
+      "completion_latency_ms": 2500.848217,
+      "schedule_lag_ms": 1.61043,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 251,
+      "completion_latency_ms": 2434.698366,
+      "schedule_lag_ms": 0.841538,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 252,
+      "completion_latency_ms": 2463.8363910000003,
+      "schedule_lag_ms": 0.936071,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 253,
+      "completion_latency_ms": 2449.760216,
+      "schedule_lag_ms": 0.812012,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 254,
+      "completion_latency_ms": 2445.7565290000002,
+      "schedule_lag_ms": 0.757132,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 255,
+      "completion_latency_ms": 2425.6635429999997,
+      "schedule_lag_ms": 0.700037,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 256,
+      "completion_latency_ms": 2471.373495,
+      "schedule_lag_ms": 0.72839,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 257,
+      "completion_latency_ms": 2445.160827,
+      "schedule_lag_ms": 0.478195,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 258,
+      "completion_latency_ms": 2465.785931,
+      "schedule_lag_ms": 1.38154,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 259,
+      "completion_latency_ms": 2376.4975480000003,
+      "schedule_lag_ms": 0.794161,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 260,
+      "completion_latency_ms": 2446.893338,
+      "schedule_lag_ms": 1.3404230000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 261,
+      "completion_latency_ms": 2433.2776369999997,
+      "schedule_lag_ms": 1.4163050000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 262,
+      "completion_latency_ms": 2424.32905,
+      "schedule_lag_ms": 0.91451,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 263,
+      "completion_latency_ms": 2452.474302,
+      "schedule_lag_ms": 1.439386,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 264,
+      "completion_latency_ms": 2476.792216,
+      "schedule_lag_ms": 0.801768,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 265,
+      "completion_latency_ms": 2394.240503,
+      "schedule_lag_ms": 1.328085,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 266,
+      "completion_latency_ms": 2461.2295639999998,
+      "schedule_lag_ms": 0.746871,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 267,
+      "completion_latency_ms": 2449.263015,
+      "schedule_lag_ms": 0.714291,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 268,
+      "completion_latency_ms": 2449.98533,
+      "schedule_lag_ms": 1.2365270000000002,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 269,
+      "completion_latency_ms": 2456.14952,
+      "schedule_lag_ms": 1.5058179999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 270,
+      "completion_latency_ms": 2489.520326,
+      "schedule_lag_ms": 1.004075,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 271,
+      "completion_latency_ms": 2402.619099,
+      "schedule_lag_ms": 1.348697,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 272,
+      "completion_latency_ms": 2441.335192,
+      "schedule_lag_ms": 1.1831800000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 273,
+      "completion_latency_ms": 2492.8305339999997,
+      "schedule_lag_ms": 1.388757,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 274,
+      "completion_latency_ms": 2392.339817,
+      "schedule_lag_ms": 1.845597,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 275,
+      "completion_latency_ms": 2461.221359,
+      "schedule_lag_ms": 0.425929,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 276,
+      "completion_latency_ms": 2402.851809,
+      "schedule_lag_ms": 1.025099,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 277,
+      "completion_latency_ms": 2403.122184,
+      "schedule_lag_ms": 0.6433450000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 278,
+      "completion_latency_ms": 2385.273963,
+      "schedule_lag_ms": 1.0131700000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 279,
+      "completion_latency_ms": 2389.646607,
+      "schedule_lag_ms": 0.402943,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 280,
+      "completion_latency_ms": 2438.188832,
+      "schedule_lag_ms": 0.9950619999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 281,
+      "completion_latency_ms": 2451.513689,
+      "schedule_lag_ms": 0.681097,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 282,
+      "completion_latency_ms": 2478.178491,
+      "schedule_lag_ms": 0.877939,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 283,
+      "completion_latency_ms": 2439.054256,
+      "schedule_lag_ms": 0.577298,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 284,
+      "completion_latency_ms": 2417.048381,
+      "schedule_lag_ms": 0.9254349999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 285,
+      "completion_latency_ms": 2446.085627,
+      "schedule_lag_ms": 1.0246039999999998,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 286,
+      "completion_latency_ms": 2467.438559,
+      "schedule_lag_ms": 0.9767549999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 287,
+      "completion_latency_ms": 2417.4297619999998,
+      "schedule_lag_ms": 0.450957,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 288,
+      "completion_latency_ms": 2408.079931,
+      "schedule_lag_ms": 0.5839610000000001,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 289,
+      "completion_latency_ms": 2437.6540059999998,
+      "schedule_lag_ms": 0.406041,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 290,
+      "completion_latency_ms": 2395.1313710000004,
+      "schedule_lag_ms": 0.9410459999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 291,
+      "completion_latency_ms": 2453.328987,
+      "schedule_lag_ms": 1.6450639999999999,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 292,
+      "completion_latency_ms": 2401.359104,
+      "schedule_lag_ms": 0.906721,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 293,
+      "completion_latency_ms": 2435.9368,
+      "schedule_lag_ms": 1.149421,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 294,
+      "completion_latency_ms": 2470.436529,
+      "schedule_lag_ms": 1.277514,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 295,
+      "completion_latency_ms": 2484.891368,
+      "schedule_lag_ms": 0.5355,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 296,
+      "completion_latency_ms": 2401.256582,
+      "schedule_lag_ms": 0.681916,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 297,
+      "completion_latency_ms": 2452.527161,
+      "schedule_lag_ms": 0.715696,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 298,
+      "completion_latency_ms": 2375.288651,
+      "schedule_lag_ms": 0.645788,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    },
+    {
+      "ordinal": 299,
+      "completion_latency_ms": 2392.914527,
+      "schedule_lag_ms": 0.618072,
+      "completed": true,
+      "semantic_checks_passed": true,
+      "history_event_count": 38,
+      "worker_identities": [
+        "osfo-temporal-cloud-worker-toronto"
+      ],
+      "error_class": null
+    }
+  ]
+}

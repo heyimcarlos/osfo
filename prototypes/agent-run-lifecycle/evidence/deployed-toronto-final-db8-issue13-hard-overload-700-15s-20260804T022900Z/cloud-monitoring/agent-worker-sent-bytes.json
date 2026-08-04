@@ -1,0 +1,179 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "kind": "google"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "revision_name": "osfo-agent-run-worker-toronto-00006-w5v",
+          "configuration_name": "osfo-agent-run-worker-toronto",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:28:00.001Z",
+            "endTime": "2026-08-04T02:29:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:27:00.001Z",
+            "endTime": "2026-08-04T02:28:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:26:00.001Z",
+            "endTime": "2026-08-04T02:27:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:25:00.001Z",
+            "endTime": "2026-08-04T02:26:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "kind": "internet"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "configuration_name": "osfo-agent-run-worker-toronto",
+          "project_id": "even-affinity-497006-u6",
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "location": "northamerica-northeast2",
+          "revision_name": "osfo-agent-run-worker-toronto-00006-w5v"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:28:00.001Z",
+            "endTime": "2026-08-04T02:29:00Z"
+          },
+          "value": {
+            "int64Value": "3782726"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:27:00.001Z",
+            "endTime": "2026-08-04T02:28:00Z"
+          },
+          "value": {
+            "int64Value": "64085698"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:26:00.001Z",
+            "endTime": "2026-08-04T02:27:00Z"
+          },
+          "value": {
+            "int64Value": "11007262"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:25:00.001Z",
+            "endTime": "2026-08-04T02:26:00Z"
+          },
+          "value": {
+            "int64Value": "8913125"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "kind": "private"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "configuration_name": "osfo-agent-run-worker-toronto",
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "revision_name": "osfo-agent-run-worker-toronto-00006-w5v",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:28:00.001Z",
+            "endTime": "2026-08-04T02:29:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:27:00.001Z",
+            "endTime": "2026-08-04T02:28:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:26:00.001Z",
+            "endTime": "2026-08-04T02:27:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:25:00.001Z",
+            "endTime": "2026-08-04T02:26:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "By"
+}

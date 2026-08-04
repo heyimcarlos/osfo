@@ -1,0 +1,10 @@
+[
+  "evidence/temporal-cloud-failure-matrix-v3",
+  "evidence/temporal-cloud-focused-20-cloudsql",
+  "evidence/temporal-cloud-steady-700-10m-64vcpu-gateway128-20260803T194100Z",
+  "evidence/temporal-cloud-calibration-1400-64vcpu-gateway128-20260803T201600Z",
+  "evidence/temporal-cloud-calibration-2083-64vcpu-gateway128-valid-20260803T210100Z",
+  "evidence/temporal-cloud-calibration-4167-64vcpu-gateway128-valid-20260803T211400Z",
+  "evidence/e2b-focused-20260803T213000Z",
+  "evidence/rig-openai-blocked-20260803T213500Z"
+]

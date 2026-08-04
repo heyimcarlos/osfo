@@ -1,0 +1,191 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "kind": "google"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-agent-run-worker-toronto-00008-94d",
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "configuration_name": "osfo-agent-run-worker-toronto",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:27:00.001Z",
+            "endTime": "2026-08-04T05:28:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "kind": "internet"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "revision_name": "osfo-agent-run-worker-toronto-00008-94d",
+          "configuration_name": "osfo-agent-run-worker-toronto"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:27:00.001Z",
+            "endTime": "2026-08-04T05:28:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "kind": "private"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "revision_name": "osfo-agent-run-worker-toronto-00008-94d",
+          "configuration_name": "osfo-agent-run-worker-toronto",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:27:00.001Z",
+            "endTime": "2026-08-04T05:28:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "kind": "google"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "configuration_name": "osfo-agent-run-worker-toronto",
+          "revision_name": "osfo-agent-run-worker-toronto-00009-92n",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:27:00.001Z",
+            "endTime": "2026-08-04T05:28:00Z"
+          },
+          "value": {
+            "int64Value": "88892"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "kind": "internet"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "configuration_name": "osfo-agent-run-worker-toronto",
+          "revision_name": "osfo-agent-run-worker-toronto-00009-92n"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:27:00.001Z",
+            "endTime": "2026-08-04T05:28:00Z"
+          },
+          "value": {
+            "int64Value": "29294366"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "kind": "private"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "configuration_name": "osfo-agent-run-worker-toronto",
+          "revision_name": "osfo-agent-run-worker-toronto-00009-92n",
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:27:00.001Z",
+            "endTime": "2026-08-04T05:28:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "By"
+}

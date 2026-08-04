@@ -1,0 +1,323 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "2xx",
+          "response_code": "200",
+          "route": ""
+        },
+        "type": "run.googleapis.com/request_latencies"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "configuration_name": "osfo-stream-toronto",
+          "service_name": "osfo-stream-toronto",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "revision_name": "osfo-stream-toronto-00004-p9s"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:28:00.001Z",
+            "endTime": "2026-08-04T02:29:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "2",
+              "mean": 5.3879450000822544,
+              "sumOfSquaredDeviation": 0.2784900414637832,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "2"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:27:00.001Z",
+            "endTime": "2026-08-04T02:28:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "7285",
+              "mean": 967.59879360033165,
+              "sumOfSquaredDeviation": 329392857.87168914,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "281",
+                "3",
+                "5",
+                "6",
+                "5",
+                "5",
+                "7",
+                "3",
+                "2",
+                "2",
+                "2",
+                "3",
+                "3",
+                "4",
+                "2",
+                "5",
+                "1",
+                "0",
+                "2",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "6904",
+                "40"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:26:00.001Z",
+            "endTime": "2026-08-04T02:27:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "4334",
+              "mean": 400.61890342486049,
+              "sumOfSquaredDeviation": 1061886547.8255224,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "2382",
+                "50",
+                "36",
+                "33",
+                "29",
+                "24",
+                "30",
+                "19",
+                "10",
+                "6",
+                "4",
+                "6",
+                "3",
+                "6",
+                "2",
+                "8",
+                "1",
+                "1",
+                "2",
+                "1",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1624",
+                "57"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:25:00.001Z",
+            "endTime": "2026-08-04T02:26:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1160",
+              "mean": 6.5249680931326566,
+              "sumOfSquaredDeviation": 13705.570651769638,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "974",
+                "36",
+                "25",
+                "49",
+                "27",
+                "28",
+                "12",
+                "6",
+                "1",
+                "1",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "route": "",
+          "response_code_class": "2xx",
+          "response_code": "204"
+        },
+        "type": "run.googleapis.com/request_latencies"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-stream-toronto",
+          "revision_name": "osfo-stream-toronto-00004-p9s",
+          "configuration_name": "osfo-stream-toronto",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:28:00.001Z",
+            "endTime": "2026-08-04T02:29:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:27:00.001Z",
+            "endTime": "2026-08-04T02:28:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:26:00.001Z",
+            "endTime": "2026-08-04T02:27:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:25:00.001Z",
+            "endTime": "2026-08-04T02:26:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "ms"
+}

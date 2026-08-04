@@ -1,0 +1,132 @@
+# Mistakes
+
+- 2026-08-02: Do not classify the whole Rig project as an Agent Runtime. Rig is
+  an LLM application library and facade; its `rig-agent` crate provides its
+  classic Agent Runtime. Keep a concrete library's identity separate from the
+  narrower architectural role one of its modules may fill.
+- 2026-08-02: A Temporal container health check cannot assume the frontend is
+  bound to container loopback. Probe the Compose service address that clients
+  actually use, then keep that probe in the one-command startup path.
+- 2026-08-02: Docker tmpfs state disappears across stop and start. Use a
+  provider-owned volume when a local SandboxRef promises resumable workspace
+  acceleration, and still export authoritative bytes before relying on it.
+- 2026-08-02: A synchronous PostgreSQL client cannot be constructed on a Tokio
+  runtime thread because it starts its own runtime. Put blocking database work
+  on `spawn_blocking` or use an async client at that composition boundary.
+- 2026-08-02: IAM database usernames can contain URL-reserved characters.
+  Percent-encode the username before placing it in a PostgreSQL URL, without
+  printing or persisting the principal.
+- 2026-08-02: Quote Cloud Storage recursive URIs in zsh. An unquoted `**`
+  expands locally and aborts before `gcloud` can delete the explicit bucket
+  objects.
+- 2026-08-03: `gcloud sql users create` prints the created IAM principal even
+  when the command input is held in a shell variable. Redirect routine command
+  output when provisioning identity-bound database users so evidence logs do
+  not capture the principal.
+- 2026-08-03: A woken AgentRun is generally claimable, so a load executor cannot
+  assume the worker that opened a ChildJoin, approval, or awaited workflow will
+  also resume it. Dispatch every claim from durable semantic state and yield at
+  wake boundaries. Linear in-process continuation races create duplicate stable
+  IDs and stale claim epochs.
+- 2026-08-03: Prometheus accepts a scrape job with no targets as valid
+  configuration. Syntax validation alone therefore cannot prove telemetry
+  coverage. Require the expected endpoint in a regression test and fail the
+  workload preflight unless every required job is present and healthy.
+- 2026-08-03: The remote benchmark shell inherited a soft `nofile` limit of
+  1,024, which caused PostgreSQL client construction to panic under the full
+  worker fleet. Raise the process limit explicitly and fail before load when it
+  is below the benchmark minimum.
+- 2026-08-03: Do not combine a per-run row lock and sequence allocation into
+  one PostgreSQL statement under `READ COMMITTED`. The statement snapshot is
+  taken before it waits for the lock, so a concurrent commit can make the
+  sequence maximum stale and cause a duplicate `(run_id, sequence)`. Acquire
+  the lock first, then allocate and insert in a second statement whose snapshot
+  includes the preceding commit. Keep a concurrent regression test for this.
+- 2026-08-03: Cloud Run multi-container flags after `--container` are scoped to
+  that container, so global flags belong before the first container. Cloud Run
+  worker-pool deploy also lacks a startup-probe flag in gcloud 569.0.0. Use the
+  WorkerPool YAML resource when a sidecar dependency requires readiness.
+- 2026-08-03: Secret Manager preserves trailing newlines when a generated value
+  is piped from a line-oriented command. Generate bearer tokens without a final
+  newline and pin the non-secret secret version on the Cloud Run revision.
+- 2026-08-03: Debian's `protobuf-compiler` package provides `protoc`, but not
+  the well-known type source files required by `prost-wkt-types`. Install the
+  pinned distribution's `libprotobuf-dev` package in the Temporal Rust build
+  image. Setting `PROTOC_INCLUDE` cannot help a dependency that does not read it.
+- 2026-08-03: A binary-only Rust container build still compiles the package
+  library. Copy every `include_str!` input, including `schema.sql`, into the
+  builder context even when the selected binary never calls that code path.
+## 2026-08-03: Reusing a stale Cloud SQL Auth Proxy checksum
+
+The earlier issue 13 evidence recorded a Cloud SQL Auth Proxy 2.24.1 checksum that does not match the checksum published in the official 2.24.1 release. The release also publishes binaries from `storage.googleapis.com/cloud-sql-connectors`, not GitHub release assets. Resolve and verify the exact release URL and checksum from the pinned release before every evidence run.
+
+## 2026-08-03: Treating a manually started proxy as durable infrastructure
+
+The runner reboot removed the manually launched Cloud SQL Auth Proxy and made a
+calibration fail with a refused connection. Install the pinned proxy as an
+enabled systemd service, bind it to the runner Docker bridge, and verify both a
+host database login and the PostgreSQL exporter target before every run.
+
+## 2026-08-03: Leaking Temporal in-flight accounting on database failure
+
+A transient Cloud SQL IAM login failure occurred after a Temporal workflow had
+completed but before its outcome was committed. An early `?` exited the
+dispatcher without decrementing its in-flight counter, so the run waited for
+the full drain timeout. Use an RAII guard for in-flight accounting and retry the
+idempotent outcome delivery with the same stable delivery ID. Export the retry
+count so a recovered transient remains visible in evidence.
+
+## 2026-08-03: Hashing a console log before its writer exits
+
+The evidence binary hashed `run.log`, then the outer `tee` appended the final
+evidence path after the binary exited. This invalidated an otherwise complete
+bundle. Treat the externally written console log as ancillary and exclude it
+from the internal checksum manifest. Verify both checksum manifests only after
+the outer process has exited.
+
+## 2026-08-03: Including the checksum temporary file in its own manifest
+
+The deployed evidence capture used a dot-prefixed checksum temporary file, but
+its exclusion pattern only matched names without the leading dot. Exclude both
+forms, move the completed manifest atomically, and verify it from the bundle
+root because recorded paths are relative to that directory.
+
+## 2026-08-03: Inferring gateway concurrency from fixed service latency
+
+Increasing Temporal gateway concurrency from 64 to 256 assumed service latency
+would remain stable. The local Docker sandbox lane saturated instead, Temporal
+workflow service p50 rose to about 16 seconds, and end-to-end tail latency did
+not improve. Calibrate concurrency with measured queueing and service time.
+
+## 2026-08-03: Constructing a blocking telemetry client in async main
+
+After rebuilding with reqwest 0.13.4, constructing and dropping its blocking
+client inside Tokio's async main triggered Tokio's blocking-runtime shutdown
+panic. Run blocking Prometheus preflight and evidence capture on a blocking
+thread, and keep a regression test that constructs and drops the client there.
+The preceding Temporal Cloud connection resets were separate startup transients.
+
+## 2026-08-04: Hiding owner-scoped DDL in runtime startup
+
+The least-privileged AgentRun worker could read and write lifecycle rows but did
+not own the table, so an index installation in worker startup caused a deployed
+crash loop. Keep schema migration in an explicit owner-scoped command, then run
+the application with the narrower runtime identity.
+
+## 2026-08-04: Leaving benchmark SSE requests open after terminal delivery
+
+The first deployed load client opened one SSE request per message, observed the
+terminal event, and disconnected, but the server kept each stream logically
+open. Superseded Cloud Run revisions continued draining those requests for the
+one-hour timeout and kept polling Cloud SQL, which contaminated later stages.
+Add an opt-in run-specific terminal cursor for benchmark requests, verify the
+response body closes, and confirm old revision instance counts reach zero before
+the next stage.
+
+## 2026-08-04: Passing a monitoring access token in a process argument
+
+The first deployed-stage helper expanded a short-lived GCP access token in a
+`curl --header` argument. Local process inspection could therefore display it.
+Stream authorization configuration to `curl --config -` instead, never inspect
+secret-bearing command lines, and keep tokens out of captured output and
+evidence bundles.

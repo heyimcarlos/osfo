@@ -1,0 +1,70 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/cpu/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-temporal-cloud-worker-toronto-00002-5sp",
+          "location": "northamerica-northeast2",
+          "worker_pool_name": "osfo-temporal-cloud-worker-toronto",
+          "configuration_name": "osfo-temporal-cloud-worker-toronto"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:36:00.001Z",
+            "endTime": "2026-08-04T02:37:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "2",
+              "mean": 0.0017669969394064657,
+              "sumOfSquaredDeviation": 6.3578837815814894e-10,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "2"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:35:00.001Z",
+            "endTime": "2026-08-04T02:36:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "2",
+              "mean": 0.0016937139378433684,
+              "sumOfSquaredDeviation": 2.8263386690456406e-10,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "2"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

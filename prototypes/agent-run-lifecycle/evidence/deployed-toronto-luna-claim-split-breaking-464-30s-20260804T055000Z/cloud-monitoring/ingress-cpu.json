@@ -1,0 +1,91 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/cpu/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-ingress-toronto",
+          "configuration_name": "osfo-ingress-toronto",
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-ingress-toronto-00006-vr2",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:39:00.001Z",
+            "endTime": "2026-08-04T05:40:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "16",
+              "mean": 0.048407977028801723,
+              "sumOfSquaredDeviation": 0.014285482613870195,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "2",
+                "2",
+                "1",
+                "0",
+                "3",
+                "4",
+                "0",
+                "1",
+                "0",
+                "3"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:38:00.001Z",
+            "endTime": "2026-08-04T05:39:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "15",
+              "mean": 0.054457705311608935,
+              "sumOfSquaredDeviation": 0.017150749157734107,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "2",
+                "2",
+                "0",
+                "1",
+                "1",
+                "1",
+                "2",
+                "4",
+                "0",
+                "1",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

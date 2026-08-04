@@ -1,0 +1,98 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/cpu/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "service_name": "osfo-stream-toronto",
+          "configuration_name": "osfo-stream-toronto",
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-stream-toronto-00005-8t5"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:27:00.001Z",
+            "endTime": "2026-08-04T05:28:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1",
+              "mean": 0.0013860265696391538,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/cpu/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "revision_name": "osfo-stream-toronto-00006-pfz",
+          "configuration_name": "osfo-stream-toronto",
+          "location": "northamerica-northeast2",
+          "service_name": "osfo-stream-toronto",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:27:00.001Z",
+            "endTime": "2026-08-04T05:28:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "2",
+              "mean": 0.061883224558963196,
+              "sumOfSquaredDeviation": 0.00084204173813292042,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

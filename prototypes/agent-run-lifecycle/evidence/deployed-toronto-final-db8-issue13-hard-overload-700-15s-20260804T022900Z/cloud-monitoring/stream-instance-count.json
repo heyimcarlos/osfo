@@ -1,0 +1,121 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "state": "active"
+        },
+        "type": "run.googleapis.com/container/instance_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "revision_name": "osfo-stream-toronto-00004-p9s",
+          "service_name": "osfo-stream-toronto",
+          "configuration_name": "osfo-stream-toronto",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:29:00Z",
+            "endTime": "2026-08-04T02:29:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:28:00Z",
+            "endTime": "2026-08-04T02:28:00Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:27:00Z",
+            "endTime": "2026-08-04T02:27:00Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:26:00Z",
+            "endTime": "2026-08-04T02:26:00Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "state": "idle"
+        },
+        "type": "run.googleapis.com/container/instance_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "configuration_name": "osfo-stream-toronto",
+          "service_name": "osfo-stream-toronto",
+          "revision_name": "osfo-stream-toronto-00004-p9s"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:29:00Z",
+            "endTime": "2026-08-04T02:29:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:28:00Z",
+            "endTime": "2026-08-04T02:28:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:27:00Z",
+            "endTime": "2026-08-04T02:27:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:26:00Z",
+            "endTime": "2026-08-04T02:26:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

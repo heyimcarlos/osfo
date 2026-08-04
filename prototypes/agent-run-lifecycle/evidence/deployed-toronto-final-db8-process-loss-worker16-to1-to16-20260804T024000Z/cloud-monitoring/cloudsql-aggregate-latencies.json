@@ -1,0 +1,127 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/aggregate/latencies"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:10:15.563564Z",
+            "endTime": "2026-08-04T02:37:16.355253Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1773946",
+              "mean": 7993.951359849736,
+              "sumOfSquaredDeviation": 1451035638249280.5,
+              "bucketOptions": {
+                "explicitBuckets": {
+                  "bounds": [
+                    0,
+                    1,
+                    4,
+                    16,
+                    64,
+                    256,
+                    1024,
+                    4096,
+                    16384,
+                    65536,
+                    262144,
+                    1048576,
+                    4194304,
+                    16777216,
+                    67108864,
+                    268435456,
+                    1073741824
+                  ]
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "90395",
+                "527100",
+                "123391",
+                "240415",
+                "412499",
+                "194382",
+                "101552",
+                "20986",
+                "2530",
+                "41673",
+                "19023"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:10:15.563564Z",
+            "endTime": "2026-08-04T02:36:16.341978Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1643115",
+              "mean": 8269.393873222507,
+              "sumOfSquaredDeviation": 1357124523919547,
+              "bucketOptions": {
+                "explicitBuckets": {
+                  "bounds": [
+                    0,
+                    1,
+                    4,
+                    16,
+                    64,
+                    256,
+                    1024,
+                    4096,
+                    16384,
+                    65536,
+                    262144,
+                    1048576,
+                    4194304,
+                    16777216,
+                    67108864,
+                    268435456,
+                    1073741824
+                  ]
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "87089",
+                "490297",
+                "113638",
+                "215783",
+                "377775",
+                "182369",
+                "94195",
+                "20715",
+                "2378",
+                "41203",
+                "17673"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "us"
+}

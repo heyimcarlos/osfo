@@ -1,0 +1,85 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "state": "active"
+        },
+        "type": "run.googleapis.com/container/instance_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "configuration_name": "osfo-ingress-toronto",
+          "service_name": "osfo-ingress-toronto",
+          "revision_name": "osfo-ingress-toronto-00006-vr2"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:40:00Z",
+            "endTime": "2026-08-04T05:40:00Z"
+          },
+          "value": {
+            "int64Value": "15"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:39:00Z",
+            "endTime": "2026-08-04T05:39:00Z"
+          },
+          "value": {
+            "int64Value": "13"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "state": "idle"
+        },
+        "type": "run.googleapis.com/container/instance_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "configuration_name": "osfo-ingress-toronto",
+          "service_name": "osfo-ingress-toronto",
+          "location": "northamerica-northeast2",
+          "revision_name": "osfo-ingress-toronto-00006-vr2"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:40:00Z",
+            "endTime": "2026-08-04T05:40:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:39:00Z",
+            "endTime": "2026-08-04T05:39:00Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

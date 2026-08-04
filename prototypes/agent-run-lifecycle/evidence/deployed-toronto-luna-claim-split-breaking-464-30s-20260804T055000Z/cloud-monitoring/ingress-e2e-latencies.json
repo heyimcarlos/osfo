@@ -1,0 +1,574 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code": "200",
+          "response_code_class": "2xx"
+        },
+        "type": "run.googleapis.com/request_latency/e2e_latencies"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "service_name": "osfo-ingress-toronto",
+          "configuration_name": "osfo-ingress-toronto",
+          "revision_name": "osfo-ingress-toronto-00006-vr2",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:39:00.001Z",
+            "endTime": "2026-08-04T05:40:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "2",
+              "mean": 2349.1096357492229,
+              "sumOfSquaredDeviation": 10776662.045737732,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:38:00.001Z",
+            "endTime": "2026-08-04T05:39:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "73",
+              "mean": 4754.0755282321579,
+              "sumOfSquaredDeviation": 1191435383.5857902,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "2",
+                "1",
+                "2",
+                "1",
+                "1",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1",
+                "1",
+                "4",
+                "4",
+                "0",
+                "0",
+                "0",
+                "2",
+                "1",
+                "0",
+                "1",
+                "0",
+                "1",
+                "1",
+                "0",
+                "1",
+                "0",
+                "0",
+                "0",
+                "2",
+                "0",
+                "0",
+                "0",
+                "2",
+                "3",
+                "7",
+                "0",
+                "7",
+                "4",
+                "0",
+                "1",
+                "1",
+                "0",
+                "0",
+                "1",
+                "1",
+                "12",
+                "8"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "2xx",
+          "response_code": "201"
+        },
+        "type": "run.googleapis.com/request_latency/e2e_latencies"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-ingress-toronto-00006-vr2",
+          "service_name": "osfo-ingress-toronto",
+          "configuration_name": "osfo-ingress-toronto",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:39:00.001Z",
+            "endTime": "2026-08-04T05:40:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "18",
+              "mean": 10703.681571128905,
+              "sumOfSquaredDeviation": 311479.41280083131,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "18"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:38:00.001Z",
+            "endTime": "2026-08-04T05:39:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "12616",
+              "mean": 3545.7280440125724,
+              "sumOfSquaredDeviation": 143828697614.56134,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "9",
+                "10",
+                "8",
+                "8",
+                "16",
+                "7",
+                "7",
+                "2",
+                "7",
+                "8",
+                "15",
+                "5",
+                "5",
+                "16",
+                "15",
+                "11",
+                "11",
+                "13",
+                "16",
+                "59",
+                "50",
+                "74",
+                "35",
+                "34",
+                "40",
+                "50",
+                "65",
+                "64",
+                "296",
+                "1311",
+                "1646",
+                "484",
+                "191",
+                "146",
+                "152",
+                "163",
+                "148",
+                "196",
+                "192",
+                "232",
+                "213",
+                "233",
+                "241",
+                "249",
+                "240",
+                "377",
+                "442",
+                "629",
+                "383",
+                "697",
+                "374",
+                "271",
+                "245",
+                "163",
+                "143",
+                "150",
+                "160",
+                "222",
+                "1367"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "response_code": "429",
+          "response_code_class": "4xx"
+        },
+        "type": "run.googleapis.com/request_latency/e2e_latencies"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "revision_name": "osfo-ingress-toronto-00006-vr2",
+          "location": "northamerica-northeast2",
+          "service_name": "osfo-ingress-toronto",
+          "project_id": "even-affinity-497006-u6",
+          "configuration_name": "osfo-ingress-toronto"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:39:00.001Z",
+            "endTime": "2026-08-04T05:40:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:38:00.001Z",
+            "endTime": "2026-08-04T05:39:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1307",
+              "mean": 10296.202701123178,
+              "sumOfSquaredDeviation": 52974151.805988856,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1111",
+                "196"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "ms"
+}
