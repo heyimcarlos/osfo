@@ -1,0 +1,14 @@
+{
+  "manifest": "pubsub-handoff-v1",
+  "benchmark_id": "effbde2d-edaf-4f16-bb61-a40137f35d62",
+  "lane": "target-smoke-232",
+  "repetition": 1,
+  "ordering": "database_first",
+  "rate_per_second": 232,
+  "end_rate_per_second": 232,
+  "duration_seconds": 60,
+  "count": 13920,
+  "started_at": "2026-08-04T21:38:17Z",
+  "offer_ended_at": "2026-08-04T21:39:17Z",
+  "ended_at": "2026-08-04T21:40:50Z"
+}

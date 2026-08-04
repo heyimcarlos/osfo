@@ -1,0 +1,67 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "cloudsql.googleapis.com/database/disk/write_ops_count"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "region": "northamerica-northeast1",
+          "database_id": "even-affinity-497006-u6:osfo-b2-35-sql"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:46:00.001Z",
+            "endTime": "2026-08-04T21:47:00Z"
+          },
+          "value": {
+            "int64Value": "285"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:45:00.001Z",
+            "endTime": "2026-08-04T21:46:00Z"
+          },
+          "value": {
+            "int64Value": "261"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:44:00.001Z",
+            "endTime": "2026-08-04T21:45:00Z"
+          },
+          "value": {
+            "int64Value": "392"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:43:00.001Z",
+            "endTime": "2026-08-04T21:44:00Z"
+          },
+          "value": {
+            "int64Value": "58041"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:42:00.001Z",
+            "endTime": "2026-08-04T21:43:00Z"
+          },
+          "value": {
+            "int64Value": "83627"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

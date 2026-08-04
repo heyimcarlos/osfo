@@ -1,0 +1,110 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_class": "ack",
+          "delivery_type": "webhook",
+          "response_code": "ack_204"
+        },
+        "type": "pubsub.googleapis.com/subscription/push_request_count"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "subscription_id": "osfo-b2-35-agent-runs"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:45:00Z",
+            "endTime": "2026-08-04T21:46:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:44:00Z",
+            "endTime": "2026-08-04T21:45:00Z"
+          },
+          "value": {
+            "int64Value": "736"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:43:00Z",
+            "endTime": "2026-08-04T21:44:00Z"
+          },
+          "value": {
+            "int64Value": "21129"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:42:00Z",
+            "endTime": "2026-08-04T21:43:00Z"
+          },
+          "value": {
+            "int64Value": "19895"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "delivery_type": "webhook",
+          "response_code": "unreachable_connection_reset",
+          "response_class": "unreachable"
+        },
+        "type": "pubsub.googleapis.com/subscription/push_request_count"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "subscription_id": "osfo-b2-35-agent-runs"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:45:00Z",
+            "endTime": "2026-08-04T21:46:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:44:00Z",
+            "endTime": "2026-08-04T21:45:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:43:00Z",
+            "endTime": "2026-08-04T21:44:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

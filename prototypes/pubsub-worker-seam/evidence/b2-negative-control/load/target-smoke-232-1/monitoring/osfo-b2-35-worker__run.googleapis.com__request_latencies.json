@@ -1,0 +1,199 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "2xx",
+          "route": "",
+          "response_code": "204"
+        },
+        "type": "run.googleapis.com/request_latencies"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-b2-35-worker",
+          "location": "northamerica-northeast1",
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-b2-35-worker-00002-kgs",
+          "configuration_name": "osfo-b2-35-worker"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:39:00.001Z",
+            "endTime": "2026-08-04T21:40:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "6179",
+              "mean": 80.77569866430477,
+              "sumOfSquaredDeviation": 18841383.795556597,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "629",
+                "1165",
+                "470",
+                "182",
+                "304",
+                "253",
+                "173",
+                "98",
+                "58",
+                "38",
+                "19",
+                "11",
+                "9",
+                "14",
+                "11",
+                "8",
+                "24",
+                "408",
+                "1283",
+                "844",
+                "151",
+                "22",
+                "5"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:38:00.001Z",
+            "endTime": "2026-08-04T21:39:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "14701",
+              "mean": 97.34979396638812,
+              "sumOfSquaredDeviation": 48723936.586430132,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "23",
+                "1978",
+                "2140",
+                "803",
+                "333",
+                "188",
+                "152",
+                "83",
+                "55",
+                "39",
+                "31",
+                "43",
+                "48",
+                "20",
+                "22",
+                "41",
+                "24",
+                "79",
+                "1311",
+                "3708",
+                "2416",
+                "878",
+                "186",
+                "46",
+                "41",
+                "13"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "route": "",
+          "response_code": "503",
+          "response_code_class": "5xx"
+        },
+        "type": "run.googleapis.com/request_latencies"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "configuration_name": "osfo-b2-35-worker",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1",
+          "service_name": "osfo-b2-35-worker",
+          "revision_name": "osfo-b2-35-worker-00002-kgs"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:39:00.001Z",
+            "endTime": "2026-08-04T21:40:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:38:00.001Z",
+            "endTime": "2026-08-04T21:39:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "ms"
+}

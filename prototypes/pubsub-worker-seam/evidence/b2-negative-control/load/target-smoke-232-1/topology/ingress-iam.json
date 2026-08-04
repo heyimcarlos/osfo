@@ -1,0 +1,12 @@
+{
+  "bindings": [
+    {
+      "members": [
+        "user:carlos.cruzta@gmail.com"
+      ],
+      "role": "roles/run.invoker"
+    }
+  ],
+  "etag": "BwZYP2FS37w=",
+  "version": 1
+}

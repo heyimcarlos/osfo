@@ -1,0 +1,89 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "route": "",
+          "response_code_class": "2xx",
+          "response_code": "204"
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1",
+          "configuration_name": "osfo-b2-35-worker",
+          "revision_name": "osfo-b2-35-worker-00002-kgs",
+          "service_name": "osfo-b2-35-worker"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:39:00.001Z",
+            "endTime": "2026-08-04T21:40:00Z"
+          },
+          "value": {
+            "int64Value": "6179"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:38:00.001Z",
+            "endTime": "2026-08-04T21:39:00Z"
+          },
+          "value": {
+            "int64Value": "14701"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "5xx",
+          "response_code": "503",
+          "route": ""
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-b2-35-worker",
+          "location": "northamerica-northeast1",
+          "revision_name": "osfo-b2-35-worker-00002-kgs",
+          "project_id": "even-affinity-497006-u6",
+          "configuration_name": "osfo-b2-35-worker"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:39:00.001Z",
+            "endTime": "2026-08-04T21:40:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:38:00.001Z",
+            "endTime": "2026-08-04T21:39:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

@@ -1,0 +1,203 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code": "201",
+          "route": "",
+          "response_code_class": "2xx"
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1",
+          "configuration_name": "osfo-b2-35-ingress",
+          "service_name": "osfo-b2-35-ingress",
+          "revision_name": "osfo-b2-35-ingress-00001-tkv"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:36:00.001Z",
+            "endTime": "2026-08-04T21:37:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "4xx",
+          "response_code": "400",
+          "route": ""
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1",
+          "configuration_name": "osfo-b2-35-ingress",
+          "revision_name": "osfo-b2-35-ingress-00001-tkv",
+          "service_name": "osfo-b2-35-ingress"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:36:00.001Z",
+            "endTime": "2026-08-04T21:37:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "route": "",
+          "response_code": "401",
+          "response_code_class": "4xx"
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "revision_name": "osfo-b2-35-ingress-00001-tkv",
+          "service_name": "osfo-b2-35-ingress",
+          "location": "northamerica-northeast1",
+          "project_id": "even-affinity-497006-u6",
+          "configuration_name": "osfo-b2-35-ingress"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:36:00.001Z",
+            "endTime": "2026-08-04T21:37:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "4xx",
+          "response_code": "403",
+          "route": ""
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-b2-35-ingress",
+          "configuration_name": "osfo-b2-35-ingress",
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-b2-35-ingress-00001-tkv",
+          "location": "northamerica-northeast1"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:36:00.001Z",
+            "endTime": "2026-08-04T21:37:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "5xx",
+          "route": "",
+          "response_code": "503"
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "location": "northamerica-northeast1",
+          "project_id": "even-affinity-497006-u6",
+          "service_name": "osfo-b2-35-ingress",
+          "revision_name": "osfo-b2-35-ingress-00001-tkv",
+          "configuration_name": "osfo-b2-35-ingress"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:36:00.001Z",
+            "endTime": "2026-08-04T21:37:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "response_code": "201",
+          "route": "",
+          "response_code_class": "2xx"
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1",
+          "service_name": "osfo-b2-35-ingress",
+          "configuration_name": "osfo-b2-35-ingress",
+          "revision_name": "osfo-b2-35-ingress-00002-mrv"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:36:00.001Z",
+            "endTime": "2026-08-04T21:37:00Z"
+          },
+          "value": {
+            "int64Value": "230"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

@@ -1,0 +1,44 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_class": "ack",
+          "delivery_type": "webhook",
+          "response_code": "ack_204"
+        },
+        "type": "pubsub.googleapis.com/subscription/push_request_count"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "subscription_id": "osfo-b2-35-agent-runs",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:39:00Z",
+            "endTime": "2026-08-04T21:40:00Z"
+          },
+          "value": {
+            "int64Value": "9873"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:38:00Z",
+            "endTime": "2026-08-04T21:39:00Z"
+          },
+          "value": {
+            "int64Value": "10894"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

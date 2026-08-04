@@ -1,0 +1,12 @@
+{
+  "bindings": [
+    {
+      "members": [
+        "serviceAccount:osfo-b2-35-push-auth@even-affinity-497006-u6.iam.gserviceaccount.com"
+      ],
+      "role": "roles/run.invoker"
+    }
+  ],
+  "etag": "BwZYP2DWJok=",
+  "version": 1
+}

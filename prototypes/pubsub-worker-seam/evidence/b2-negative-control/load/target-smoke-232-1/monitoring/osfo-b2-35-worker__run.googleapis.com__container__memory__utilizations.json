@@ -1,0 +1,76 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/memory/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "revision_name": "osfo-b2-35-worker-00002-kgs",
+          "project_id": "even-affinity-497006-u6",
+          "service_name": "osfo-b2-35-worker",
+          "configuration_name": "osfo-b2-35-worker",
+          "location": "northamerica-northeast1"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:39:00.001Z",
+            "endTime": "2026-08-04T21:40:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "7",
+              "mean": 0.028454916817801341,
+              "sumOfSquaredDeviation": 5.1487898287762483e-05,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "5",
+                "2"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:38:00.001Z",
+            "endTime": "2026-08-04T21:39:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "7",
+              "mean": 0.027147020612444197,
+              "sumOfSquaredDeviation": 4.2972296276794996e-05,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "6",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

@@ -1,0 +1,40 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "cloudsql.googleapis.com/database/disk/write_ops_count"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "region": "northamerica-northeast1",
+          "database_id": "even-affinity-497006-u6:osfo-b2-35-sql"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:39:00.001Z",
+            "endTime": "2026-08-04T21:40:00Z"
+          },
+          "value": {
+            "int64Value": "58731"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:38:00.001Z",
+            "endTime": "2026-08-04T21:39:00Z"
+          },
+          "value": {
+            "int64Value": "143783"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

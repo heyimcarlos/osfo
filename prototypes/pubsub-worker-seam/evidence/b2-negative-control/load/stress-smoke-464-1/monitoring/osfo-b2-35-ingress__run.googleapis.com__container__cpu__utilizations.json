@@ -1,0 +1,239 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/cpu/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "configuration_name": "osfo-b2-35-ingress",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1",
+          "revision_name": "osfo-b2-35-ingress-00002-mrv",
+          "service_name": "osfo-b2-35-ingress"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:46:00.001Z",
+            "endTime": "2026-08-04T21:47:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "7",
+              "mean": 0.00075297773501793654,
+              "sumOfSquaredDeviation": 3.0156816091189573e-08,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "7"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:45:00.001Z",
+            "endTime": "2026-08-04T21:46:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "7",
+              "mean": 0.0009069194490133345,
+              "sumOfSquaredDeviation": 2.0650549860921928e-07,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "7"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:44:00.001Z",
+            "endTime": "2026-08-04T21:45:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "7",
+              "mean": 0.026287042115688792,
+              "sumOfSquaredDeviation": 0.027380841736429132,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "6",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:43:00.001Z",
+            "endTime": "2026-08-04T21:44:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "7",
+              "mean": 0.19601117079459909,
+              "sumOfSquaredDeviation": 0.16061315365265108,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "1",
+                "0",
+                "0",
+                "0",
+                "1",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "2",
+                "0",
+                "0",
+                "1",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:42:00.001Z",
+            "endTime": "2026-08-04T21:43:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "3",
+              "mean": 0.17596155746754685,
+              "sumOfSquaredDeviation": 0.0080179186145702963,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "1",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

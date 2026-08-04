@@ -1,0 +1,132 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code": "201",
+          "route": "",
+          "response_code_class": "2xx"
+        },
+        "type": "run.googleapis.com/request_latencies"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "revision_name": "osfo-b2-35-ingress-00002-mrv",
+          "configuration_name": "osfo-b2-35-ingress",
+          "service_name": "osfo-b2-35-ingress",
+          "location": "northamerica-northeast1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:39:00.001Z",
+            "endTime": "2026-08-04T21:40:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "4078",
+              "mean": 37.371935287452821,
+              "sumOfSquaredDeviation": 299209.29826258391,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "13",
+                "1288",
+                "2073",
+                "324",
+                "114",
+                "79",
+                "45",
+                "36",
+                "32",
+                "26",
+                "16",
+                "8",
+                "4",
+                "5",
+                "7",
+                "7",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:38:00.001Z",
+            "endTime": "2026-08-04T21:39:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "9842",
+              "mean": 37.3928127752519,
+              "sumOfSquaredDeviation": 798381.02724132186,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "39",
+                "3353",
+                "4378",
+                "1098",
+                "391",
+                "207",
+                "124",
+                "60",
+                "54",
+                "31",
+                "15",
+                "11",
+                "9",
+                "15",
+                "28",
+                "16",
+                "12",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "ms"
+}

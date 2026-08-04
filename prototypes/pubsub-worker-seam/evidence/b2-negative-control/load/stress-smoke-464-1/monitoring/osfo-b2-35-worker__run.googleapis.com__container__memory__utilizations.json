@@ -1,0 +1,158 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/memory/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "revision_name": "osfo-b2-35-worker-00002-kgs",
+          "configuration_name": "osfo-b2-35-worker",
+          "location": "northamerica-northeast1",
+          "project_id": "even-affinity-497006-u6",
+          "service_name": "osfo-b2-35-worker"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:46:00.001Z",
+            "endTime": "2026-08-04T21:47:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "7",
+              "mean": 0.034234428366695296,
+              "sumOfSquaredDeviation": 9.5026314675879491e-05,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "1",
+                "5",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:45:00.001Z",
+            "endTime": "2026-08-04T21:46:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "7",
+              "mean": 0.032013007677929473,
+              "sumOfSquaredDeviation": 9.8639991855981152e-05,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "3",
+                "3",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:44:00.001Z",
+            "endTime": "2026-08-04T21:45:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "7",
+              "mean": 0.032325744628906278,
+              "sumOfSquaredDeviation": 8.6744694272055192e-05,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "6",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:43:00.001Z",
+            "endTime": "2026-08-04T21:44:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "8",
+              "mean": 0.032114933221908032,
+              "sumOfSquaredDeviation": 9.0664680721717734e-05,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "7",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T21:42:00.001Z",
+            "endTime": "2026-08-04T21:43:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "8",
+              "mean": 0.028412940460974031,
+              "sumOfSquaredDeviation": 0.00059135128746198016,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "1",
+                "0",
+                "2",
+                "5"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}
