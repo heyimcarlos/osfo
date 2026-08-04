@@ -79,13 +79,157 @@ _Avoid_: Completed output, client disconnect
 **AgentRun**:
 The durable, bounded unit of conversational work created for an accepted
 message. Any compatible worker may execute it; it is not a process, container,
-or dedicated compute resource.
-_Avoid_: Worker, process, Temporal Workflow
+or dedicated compute resource, and it may wait and later continue without
+changing identity. Its lifecycle and ordered typed interaction history are the
+authority for logical recovery. It pins the versioned semantic configuration
+needed to interpret those records throughout its lifetime. It terminates only
+as succeeded, failed, or canceled; interruption describes an incomplete
+interaction rather than a fourth AgentRun terminal state.
+_Avoid_: Worker, process, Temporal Workflow, Agent Runtime state machine
+
+**Proactive AgentRun**:
+An AgentRun admitted from an authorized durable trigger rather than a new user
+message. It creates new conversational work and does not resume or continue the
+AgentRun that originally scheduled the trigger.
+_Avoid_: Detached Workflow, continuation AgentRun, direct ThreadEvent append
+
+**Child AgentRun**:
+An AgentRun admitted by another AgentRun through a fenced, idempotent admission.
+It has its own durable identity and stable parent and root lineage. It is created
+atomically with its typed input and join membership and is independently
+dispatchable within the root run's delegation limits. It receives an immutable,
+versioned input contract and exposes one typed terminal outcome; its parent does
+not consume the child's internal interaction history or execution state. Its
+ModelCalls, ToolCalls, and assistant text are not canonical parent Thread
+conversation; only explicit child lifecycle facts may be promoted.
+_Avoid_: In-process task, continuation AgentRun, WorkflowInstance
+
+**ChildJoin**:
+The Osfo-owned durable condition correlating one parent AgentRun with a stable
+set of Child AgentRuns and their typed terminal outcomes. `AllTerminal` satisfies
+when every child is terminal. `FirstSuccessful` satisfies on the first committed
+success, or with aggregate failure when no child succeeds. A ChildJoin wakes its
+parent exactly once. It may have an Osfo-owned durable deadline that settles the
+join with a typed timeout outcome without discarding already committed child
+outcomes; late outcomes cannot reopen a settled join. Accepting a child's
+terminal outcome atomically advances the join and, when newly satisfied, wakes
+the parent.
+_Avoid_: WorkflowInstance, generic condition expression, child AgentRun
+
+**ModelCall**:
+One identified model operation within an AgentRun. Its typed intent is durable
+before provider dispatch. A provider response becomes authoritative only when
+its normalized semantic outcome is durably committed, so an interrupted call
+may be retried under bounded policy. Raw provider payloads are not recovery
+authority.
+_Avoid_: AgentRun, AssistantOutput, ModelTurn, raw provider request
+
+**ToolCall**:
+One identified logical tool operation within an AgentRun. Its durable intent is
+committed once, bounded execution retries retain the same identity, and exactly
+one terminal semantic outcome is committed. A ToolCall remains within its
+AgentRun only while its lifecycle is bounded by that run; independently durable
+work starts a WorkflowInstance. When its result is required for continuation,
+the ToolCall remains logically open while the same AgentRun waits and completes
+only when the typed workflow outcome is accepted. Execution-attempt details do
+not create duplicate conversational events.
+_Avoid_: Tool execution attempt, tool result, WorkflowInstance
+
+**Agent Runtime**:
+The execution implementation that drives one AgentRunAttempt's model and
+bounded ToolCall loop through typed execution steps under Osfo lifecycle
+authority. It proposes actions from reconstructed state but cannot directly
+commit AgentRun identity, scheduling, recovery, or canonical Thread state.
+_Avoid_: Agent provider, model provider, AgentRun manager, worker
+
+**AgentRunAttempt**:
+One fenced worker execution of an AgentRun, identified by the AgentRun and its
+claim epoch. A new attempt changes execution authority without changing the
+AgentRun identity. Direct takeover after lease expiry creates a new attempt
+without consuming operation retry budget.
+_Avoid_: AgentRun, operation retry, resumed process, sandbox session
+
+**Pending AgentRun**:
+An AgentRun lifecycle state that is immediately eligible for a new claim when
+compatible execution capacity is available. Newly accepted and newly awakened
+AgentRuns enter this state.
+_Avoid_: Waiting AgentRun, Retry-ready AgentRun, running worker
+
+**Running AgentRun**:
+An AgentRun lifecycle state with a current fenced AgentRunAttempt and finite
+lease. Lease expiry permits direct takeover through a new claim epoch.
+_Avoid_: Worker process, sandbox session, operation retry
+
+**Waiting AgentRun**:
+An AgentRun lifecycle state in which the run is non-runnable until one
+referenced durable wake condition is satisfied, after which it becomes a
+Pending AgentRun. Waiting does not create a separate work identity.
+_Avoid_: AgentRunWait, paused worker, sandbox pause, WorkflowInstance
+
+**Retry-ready AgentRun**:
+An AgentRun lifecycle state following a classified retryable failure. It is
+claimable only after its eligible time and backoff requirements are satisfied,
+and it carries the applicable operation retry-budget effect. Claiming it does
+not require an intermediate Pending AgentRun transition.
+_Avoid_: Lease takeover, Waiting AgentRun, new AgentRun
+
+**RuntimeCheckpointRef**:
+An optional durable reference to agent-runtime-defined continuation state. It
+may accelerate compatible continuation but is never the sole authority for
+Osfo recovery.
+_Avoid_: AgentRunCheckpoint, ThreadEvent, SandboxRef
+
+**SandboxRef**:
+An optional durable reference to sandbox-provider-defined execution environment
+state. It may accelerate compatible restoration but never owns AgentRun
+lifecycle or Osfo recovery authority and cannot be the sole reference to an
+authoritative artifact.
+_Avoid_: RuntimeCheckpointRef, AgentRunCheckpoint, paused AgentRun
+
+**ArtifactRef**:
+An immutable durable reference to content required by a committed semantic
+outcome, together with integrity and interpretation metadata. Authoritative
+content produced in a sandbox is exported and verified before its ArtifactRef
+is committed.
+_Avoid_: Sandbox path, SandboxRef, RuntimeCheckpointRef
 
 **WorkflowInstance**:
 Independently durable work that may wait, retry, or outlive the AgentRun that
-started it. It reports typed outcomes to the originating Thread.
+started it. Temporal owns its internal execution lifecycle; Osfo owns its
+correlation to AgentRuns and Threads and accepts its typed outcomes. Its
+invocation mode is Awaited or Detached.
+Osfo durably assigns the WorkflowInstance identity and records the start intent
+before requesting its idempotent creation in Temporal.
+Temporal reports stably identified typed facts through Osfo and never writes
+AgentRun state or canonical ThreadEvents directly. Intermediate progress is
+operational by default and becomes a ThreadEvent only through an explicitly
+user-visible event family.
 _Avoid_: Long-running AgentRun, background thread
+
+**Awaited Workflow**:
+A ToolCall-to-WorkflowInstance invocation mode in which the ToolCall remains
+open and its AgentRun waits. The accepted terminal workflow outcome completes
+the ToolCall and wakes the same AgentRun. Canceling the AgentRun terminalizes
+the ToolCall as canceled and requests cancellation of the WorkflowInstance.
+_Avoid_: WorkflowInstance type, continuation AgentRun, paused worker
+
+**Detached Workflow**:
+A ToolCall-to-WorkflowInstance invocation mode in which durable workflow
+acceptance completes the ToolCall with a WorkflowInstanceRef. The original
+AgentRun does not wait or later resume for its outcome. A later workflow trigger
+may admit a new proactive AgentRun. The workflow remains owned, correlated, and
+observable. Canceling or completing the originating AgentRun does not cancel
+the WorkflowInstance. A later workflow failure never rewrites the completed
+ToolCall; it is a terminal workflow fact and may admit a Proactive AgentRun for
+user notification.
+_Avoid_: Fire-and-forget task, untracked background work, Waiting AgentRun
+
+**Workflow Completion Policy**:
+The declared rule for delivering a Detached Workflow's terminal outcome.
+`RecordOnly` preserves the terminal workflow fact without creating
+conversational work. `AdmitProactiveAgentRun` idempotently admits a new AgentRun
+under normal authorization, admission, fairness, and capacity controls.
+_Avoid_: Implicit notification, direct assistant message, resumed AgentRun
 
 **Channel Endpoint**:
 An external messaging address through which a person reaches a Single-Thread
