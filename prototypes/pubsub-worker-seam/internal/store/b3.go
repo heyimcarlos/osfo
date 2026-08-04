@@ -39,14 +39,15 @@ type B3Result struct {
 }
 
 type B3OutboxRecord struct {
-	Sequence    int64
-	BenchmarkID uuid.UUID
-	Ordinal     int
-	AgentRunID  uuid.UUID
-	DeliveryID  string
-	OrderingKey string
-	Shard       int
-	ReadyAt     time.Time
+	Sequence      int64
+	ShardSequence int64
+	BenchmarkID   uuid.UUID
+	Ordinal       int
+	AgentRunID    uuid.UUID
+	DeliveryID    string
+	OrderingKey   string
+	Shard         int
+	ReadyAt       time.Time
 }
 
 type B3Publication struct {
@@ -86,6 +87,7 @@ type B3Audit struct {
 	OutboxTableBytes         int64            `json:"outbox_table_bytes"`
 	OutboxIndexBytes         int64            `json:"outbox_index_bytes"`
 	OutboxDeadTuples         int64            `json:"outbox_dead_tuples"`
+	RelayGateDeadTuples      int64            `json:"relay_gate_dead_tuples"`
 	Verdict                  string           `json:"verdict"`
 }
 
@@ -171,6 +173,15 @@ func (s *Store) AcceptB3(ctx context.Context, request B3Request) (B3Receipt, err
 	}
 	threadKey := fmt.Sprintf("thread-%04d", request.Ordinal%1024)
 	shard := request.Ordinal % B3RelayShards
+	var lastShardSequence int64
+	if err := tx.QueryRow(ctx, `
+		UPDATE b3_outbox_sequence_gate
+		SET next_sequence = next_sequence + $2
+		WHERE shard = $1
+		RETURNING next_sequence`, shard, len(ids)).Scan(&lastShardSequence); err != nil {
+		return B3Receipt{}, err
+	}
+	firstShardSequence := lastShardSequence - int64(len(ids)) + 1
 	for runOrdinal, id := range ids {
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO agent_runs
@@ -182,10 +193,11 @@ func (s *Store) AcceptB3(ctx context.Context, request B3Request) (B3Receipt, err
 		}
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO b3_outbox
-				(benchmark_id, ordinal, agent_run_id, delivery_id, ordering_key, shard)
-			VALUES ($1, $2, $3, $4, $5, $6)`, request.BenchmarkID, request.Ordinal,
+				(benchmark_id, ordinal, agent_run_id, delivery_id, ordering_key, shard, shard_sequence)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, request.BenchmarkID, request.Ordinal,
 			id, fmt.Sprintf("%s/%d/%d", request.BenchmarkID, request.Ordinal, runOrdinal),
-			fmt.Sprintf("%s/%s", request.BenchmarkID, threadKey), shard); err != nil {
+			fmt.Sprintf("%s/%s", request.BenchmarkID, threadKey), shard,
+			firstShardSequence+int64(runOrdinal)); err != nil {
 			return B3Receipt{}, err
 		}
 	}
@@ -226,10 +238,10 @@ func (s *Store) ReadB3Batch(ctx context.Context, connection *pgxpool.Conn, shard
 		return nil, err
 	}
 	rows, err := connection.Query(ctx, `
-		SELECT sequence, benchmark_id, ordinal, agent_run_id, delivery_id, ordering_key, shard, ready_at
+		SELECT sequence, shard_sequence, benchmark_id, ordinal, agent_run_id, delivery_id, ordering_key, shard, ready_at
 		FROM b3_outbox
-		WHERE shard = $1 AND sequence > $2
-		ORDER BY sequence
+		WHERE shard = $1 AND shard_sequence > $2
+		ORDER BY shard_sequence
 		LIMIT $3`, shard, cursor, limit)
 	if err != nil {
 		return nil, err
@@ -238,7 +250,7 @@ func (s *Store) ReadB3Batch(ctx context.Context, connection *pgxpool.Conn, shard
 	var records []B3OutboxRecord
 	for rows.Next() {
 		var record B3OutboxRecord
-		if err := rows.Scan(&record.Sequence, &record.BenchmarkID, &record.Ordinal, &record.AgentRunID,
+		if err := rows.Scan(&record.Sequence, &record.ShardSequence, &record.BenchmarkID, &record.Ordinal, &record.AgentRunID,
 			&record.DeliveryID, &record.OrderingKey, &record.Shard, &record.ReadyAt); err != nil {
 			return nil, err
 		}
@@ -289,7 +301,7 @@ func (s *Store) B3Backlog(ctx context.Context) (int64, time.Duration, error) {
 		SELECT count(*), min(o.ready_at)
 		FROM b3_outbox o
 		JOIN b3_relay_progress p ON p.shard = o.shard
-		WHERE o.sequence > p.last_sequence`).Scan(&count, &oldest)
+		WHERE o.shard_sequence > p.last_sequence`).Scan(&count, &oldest)
 	if err != nil || oldest == nil {
 		return count, 0, err
 	}
@@ -318,8 +330,11 @@ func (s *Store) AuditB3(ctx context.Context, benchmarkID uuid.UUID, expectedInco
 		return B3Audit{}, err
 	}
 	if err := s.pool.QueryRow(ctx, `
-		SELECT count(*), count(*) FILTER (WHERE o.sequence > p.last_sequence)
-		FROM b3_outbox o JOIN b3_relay_progress p ON p.shard = o.shard
+		SELECT count(*), count(*) FILTER (WHERE NOT EXISTS (
+			SELECT 1 FROM b3_publish_evidence e
+			WHERE e.outbox_sequence = o.sequence AND e.provider_confirmed_at IS NOT NULL
+		))
+		FROM b3_outbox o
 		WHERE o.benchmark_id = $1`, benchmarkID).Scan(&a.OutboxRecords, &a.UnpublishedOutboxRecords); err != nil {
 		return B3Audit{}, err
 	}
@@ -401,10 +416,11 @@ func (s *Store) AuditB3(ctx context.Context, benchmarkID uuid.UUID, expectedInco
 	if err := s.pool.QueryRow(ctx, `
 		SELECT COALESCE(sum(pg_total_relation_size(i.inhrelid)), 0),
 		       COALESCE(sum(pg_indexes_size(i.inhrelid)), 0),
-		       COALESCE((SELECT sum(n_dead_tup)::bigint FROM pg_stat_user_tables WHERE relname LIKE 'b3_outbox%'), 0)
+		       COALESCE((SELECT sum(n_dead_tup)::bigint FROM pg_stat_user_tables WHERE relname LIKE 'b3_outbox%'), 0),
+		       COALESCE((SELECT n_dead_tup::bigint FROM pg_stat_user_tables WHERE relname = 'b3_outbox_sequence_gate'), 0)
 		FROM pg_inherits i JOIN pg_class p ON p.oid = i.inhparent
 		WHERE p.relname = 'b3_outbox'`).Scan(
-		&a.OutboxTableBytes, &a.OutboxIndexBytes, &a.OutboxDeadTuples); err != nil {
+		&a.OutboxTableBytes, &a.OutboxIndexBytes, &a.OutboxDeadTuples, &a.RelayGateDeadTuples); err != nil {
 		return B3Audit{}, err
 	}
 	a.Verdict = "PASS"
@@ -465,7 +481,7 @@ func (s *Store) B3RetentionCandidates(ctx context.Context, replayWindow time.Dur
 		query := `SELECT NOT EXISTS (
 			SELECT 1 FROM ` + (pgx.Identifier{name}).Sanitize() + ` o
 			JOIN b3_relay_progress p ON p.shard = o.shard
-			WHERE o.sequence > p.last_sequence
+			WHERE o.shard_sequence > p.last_sequence
 		)`
 		if err := s.pool.QueryRow(ctx, query).Scan(&fullyPublished); err != nil {
 			return nil, err

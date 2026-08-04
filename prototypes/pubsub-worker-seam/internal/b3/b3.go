@@ -152,7 +152,7 @@ func (r *Relay) RunShardOnce(ctx context.Context, shard int) (int, error) {
 		r.cut()
 		return len(records), ErrInjectedCut
 	}
-	if err := r.Store.AdvanceB3Progress(ctx, connection, shard, records[len(records)-1].Sequence); err != nil {
+	if err := r.Store.AdvanceB3Progress(ctx, connection, shard, records[len(records)-1].ShardSequence); err != nil {
 		return 0, err
 	}
 	return len(records), nil
