@@ -130,3 +130,11 @@ The first deployed-stage helper expanded a short-lived GCP access token in a
 Stream authorization configuration to `curl --config -` instead, never inspect
 secret-bearing command lines, and keep tokens out of captured output and
 evidence bundles.
+
+## 2026-08-04: Using unquoted heredocs for Markdown issue bodies
+
+An issue-creation helper used unquoted heredocs containing Markdown backticks,
+so the shell treated inline code as command substitutions and created empty
+issue bodies. Quote heredoc delimiters for literal Markdown, populate dynamic
+references explicitly, and verify non-empty remote bodies immediately after
+creation.

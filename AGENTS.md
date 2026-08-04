@@ -52,7 +52,3 @@ This is a single-context repo: root `CONTEXT.md` and `docs/adr/`. See
 `docs/agents/domain.md`.
 
 Note mistakes in MISTAKES.md, missing context or tools in DESIRES.md, and env learnings in LEARNINGS.md.
-
-### Other
-
-Osfo v1 is a deliverable for an interview exercise. The instructions are in .take-home/instructions.pdf. We must highlight/document important decisions, and any evidence that might be useful for the presentation of v1. Use the .take-home/CHECKPOINTS.md file to track progress and decisions. This will be used to generate the final report/presentation.
