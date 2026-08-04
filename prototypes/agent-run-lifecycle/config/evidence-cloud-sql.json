@@ -1,0 +1,71 @@
+{
+  "schema_version": 2,
+  "seed": 130013,
+  "question": "Where does the same-region Cloud SQL PostgreSQL 17 AgentRun lifecycle capacity knee appear through the Cloud SQL Auth Proxy with IAM database authentication?",
+  "stages": [
+    {
+      "name": "cloud-warm-up",
+      "workload": "Cloud SQL authoritative reference journey metadata",
+      "arrival_pattern": "uniform",
+      "offered_per_second": 2.0,
+      "duration_seconds": 10,
+      "worker_count": 16,
+      "persistence_profile": "cold logical reconstruction",
+      "report_percentiles": false
+    },
+    {
+      "name": "cloud-steady-2",
+      "workload": "Cloud SQL authoritative reference journey metadata",
+      "arrival_pattern": "uniform",
+      "offered_per_second": 2.0,
+      "duration_seconds": 50,
+      "worker_count": 16,
+      "persistence_profile": "cold logical reconstruction"
+    },
+    {
+      "name": "cloud-steady-4",
+      "workload": "Cloud SQL authoritative reference journey metadata",
+      "arrival_pattern": "uniform",
+      "offered_per_second": 4.0,
+      "duration_seconds": 25,
+      "worker_count": 24,
+      "persistence_profile": "cold logical reconstruction"
+    },
+    {
+      "name": "cloud-probe-6",
+      "workload": "Cloud SQL authoritative reference journey metadata capacity probe",
+      "arrival_pattern": "uniform",
+      "offered_per_second": 6.0,
+      "duration_seconds": 25,
+      "worker_count": 32,
+      "persistence_profile": "cold logical reconstruction"
+    },
+    {
+      "name": "cloud-burst-12",
+      "workload": "Cloud SQL sustained 2x offered burst",
+      "arrival_pattern": "uniform",
+      "offered_per_second": 12.0,
+      "duration_seconds": 20,
+      "worker_count": 32,
+      "persistence_profile": "cold logical reconstruction"
+    },
+    {
+      "name": "cloud-overload-20",
+      "workload": "Cloud SQL bounded queue overload",
+      "arrival_pattern": "uniform",
+      "offered_per_second": 20.0,
+      "duration_seconds": 10,
+      "worker_count": 32,
+      "persistence_profile": "cold logical reconstruction"
+    },
+    {
+      "name": "cloud-recovery-4",
+      "workload": "Cloud SQL return to steady state after overload",
+      "arrival_pattern": "uniform",
+      "offered_per_second": 4.0,
+      "duration_seconds": 25,
+      "worker_count": 24,
+      "persistence_profile": "cold logical reconstruction"
+    }
+  ]
+}

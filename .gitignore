@@ -1,5 +1,9 @@
 /target
+target/
 
 .reference/
+.take-home/
 .worktrees/
 /tmp/
+.env
+node_modules/

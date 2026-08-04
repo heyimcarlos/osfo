@@ -1,0 +1,69 @@
+{
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [
+        {"expr": "sum(rate(osfo_evidence_completed_total[$__rate_interval]))", "legendFormat": "completed/s", "refId": "A"},
+        {"expr": "sum(rate(osfo_evidence_failed_total[$__rate_interval]))", "legendFormat": "failed/s", "refId": "B"},
+        {"expr": "sum(rate(osfo_evidence_shed_or_rejected_total[$__rate_interval]))", "legendFormat": "shed/s", "refId": "C"},
+        {"expr": "sum(rate(osfo_evidence_errors_total[$__rate_interval]))", "legendFormat": "runner errors/s", "refId": "D"}
+      ],
+      "title": "Failure impact at the user seam",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 0},
+      "id": 2,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [
+        {"expr": "osfo_evidence_agent_runs", "legendFormat": "{{state}}", "refId": "A"},
+        {"expr": "osfo_evidence_in_flight", "legendFormat": "in flight", "refId": "B"}
+      ],
+      "title": "Backlog growth and drain",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 9},
+      "id": 3,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [
+        {"expr": "up{job=~\"temporal-.*|osfo-cloud-sql|osfo-evidence-runner\"}", "legendFormat": "{{job}}", "refId": "A"},
+        {"expr": "changes(up{job=~\"temporal-.*|osfo-cloud-sql|osfo-evidence-runner\"}[5m])", "legendFormat": "{{job}} state changes", "refId": "B"}
+      ],
+      "title": "Dependency interruption and restoration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 18},
+      "id": 4,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [
+        {"expr": "sum(osfo_evidence_offered_total)-sum(osfo_evidence_received_total)-sum(osfo_evidence_caller_drop_total)", "legendFormat": "offered gap", "refId": "A"},
+        {"expr": "sum(osfo_evidence_received_total)-sum(osfo_evidence_accepted_total)-sum(osfo_evidence_shed_or_rejected_total)", "legendFormat": "admission gap", "refId": "B"},
+        {"expr": "sum(osfo_evidence_accepted_total)-sum(osfo_evidence_completed_total)-sum(osfo_evidence_failed_total)-sum(osfo_evidence_in_flight)", "legendFormat": "terminal gap", "refId": "C"}
+      ],
+      "title": "Correctness reconciliation during failure, must remain zero",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 42,
+  "tags": ["osfo", "issue-13", "failure", "recovery"],
+  "time": {"from": "now-30m", "to": "now"},
+  "timezone": "utc",
+  "title": "Issue 13 failure and recovery",
+  "uid": "osfo-failure-recovery",
+  "version": 1
+}

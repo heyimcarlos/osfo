@@ -1,0 +1,198 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops", "color": {"mode": "thresholds"}}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "values": false}},
+      "targets": [{"expr": "sum(rate(osfo_evidence_offered_total[$__rate_interval]))", "legendFormat": "offered/s", "refId": "A"}],
+      "title": "Offered AgentRuns/s",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops", "color": {"mode": "thresholds"}}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "values": false}},
+      "targets": [{"expr": "sum(rate(osfo_evidence_accepted_total[$__rate_interval]))", "legendFormat": "accepted/s", "refId": "A"}],
+      "title": "Durably accepted/s",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops", "color": {"mode": "thresholds"}}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "values": false}},
+      "targets": [{"expr": "sum(rate(osfo_evidence_completed_total[$__rate_interval]))", "legendFormat": "completed/s", "refId": "A"}],
+      "title": "Completed journeys/s",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ms", "color": {"mode": "thresholds"}}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "id": 4,
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "values": false}},
+      "targets": [{"expr": "histogram_quantile(0.99, sum by (le) (rate(osfo_evidence_end_to_end_latency_milliseconds_bucket{outcome=\"completed\"}[$__rate_interval])))", "legendFormat": "p99", "refId": "A"}],
+      "title": "Completed journey p99",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 5},
+      "id": 5,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"expr": "sum(rate(osfo_evidence_offered_total[$__rate_interval]))", "legendFormat": "offered/s", "refId": "A"},
+        {"expr": "sum(rate(osfo_evidence_received_total[$__rate_interval]))", "legendFormat": "received/s", "refId": "B"},
+        {"expr": "sum(rate(osfo_evidence_accepted_total[$__rate_interval]))", "legendFormat": "accepted/s", "refId": "C"},
+        {"expr": "sum(rate(osfo_evidence_completed_total[$__rate_interval]))", "legendFormat": "completed/s", "refId": "D"}
+      ],
+      "title": "Traffic at each authority seam",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 5},
+      "id": 6,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"expr": "sum(rate(osfo_evidence_caller_drop_total[$__rate_interval]))", "legendFormat": "caller drop/s", "refId": "A"},
+        {"expr": "sum(rate(osfo_evidence_shed_or_rejected_total[$__rate_interval]))", "legendFormat": "shed or rejected/s", "refId": "B"},
+        {"expr": "sum(rate(osfo_evidence_failed_total[$__rate_interval]))", "legendFormat": "failed/s", "refId": "C"},
+        {"expr": "sum(rate(osfo_evidence_errors_total[$__rate_interval]))", "legendFormat": "runner errors/s", "refId": "D"}
+      ],
+      "title": "Drops, shedding, failures, and errors",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 14},
+      "id": 7,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"expr": "sum(osfo_evidence_offered_total) - sum(osfo_evidence_received_total) - sum(osfo_evidence_caller_drop_total)", "legendFormat": "offered reconciliation gap", "refId": "A"},
+        {"expr": "sum(osfo_evidence_received_total) - sum(osfo_evidence_accepted_total) - sum(osfo_evidence_shed_or_rejected_total)", "legendFormat": "admission reconciliation gap", "refId": "B"},
+        {"expr": "sum(osfo_evidence_accepted_total) - sum(osfo_evidence_completed_total) - sum(osfo_evidence_failed_total) - sum(osfo_evidence_in_flight)", "legendFormat": "terminal reconciliation gap", "refId": "C"}
+      ],
+      "title": "Traffic reconciliation gaps, must remain zero",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 14},
+      "id": 8,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(osfo_evidence_end_to_end_latency_milliseconds_bucket{outcome=\"completed\"}[$__rate_interval])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.90, sum by (le) (rate(osfo_evidence_end_to_end_latency_milliseconds_bucket{outcome=\"completed\"}[$__rate_interval])))", "legendFormat": "p90", "refId": "B"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(osfo_evidence_end_to_end_latency_milliseconds_bucket{outcome=\"completed\"}[$__rate_interval])))", "legendFormat": "p95", "refId": "C"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(osfo_evidence_end_to_end_latency_milliseconds_bucket{outcome=\"completed\"}[$__rate_interval])))", "legendFormat": "p99", "refId": "D"}
+      ],
+      "title": "Completed end-to-end latency distribution",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 8, "x": 0, "y": 23},
+      "id": 9,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"expr": "osfo_evidence_agent_runs", "legendFormat": "{{state}}", "refId": "A"},
+        {"expr": "osfo_evidence_in_flight", "legendFormat": "in flight", "refId": "B"}
+      ],
+      "title": "Authoritative backlog and in-flight work",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 8, "x": 8, "y": 23},
+      "id": 10,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"expr": "osfo_evidence_database_connections", "legendFormat": "runner connections", "refId": "A"},
+        {"expr": "osfo_evidence_database_lock_waiters", "legendFormat": "lock waiters", "refId": "B"},
+        {"expr": "pg_stat_database_numbackends{datname=\"osfo_lifecycle\"}", "legendFormat": "exporter connections", "refId": "C"},
+        {"expr": "rate(pg_stat_database_deadlocks{datname=\"osfo_lifecycle\"}[$__rate_interval])", "legendFormat": "deadlocks/s", "refId": "D"}
+      ],
+      "title": "PostgreSQL saturation and contention",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 8, "x": 16, "y": 23},
+      "id": 11,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"expr": "rate(pg_stat_database_xact_commit{datname=\"osfo_lifecycle\"}[$__rate_interval])", "legendFormat": "commits/s", "refId": "A"},
+        {"expr": "rate(pg_stat_database_tup_inserted{datname=\"osfo_lifecycle\"}[$__rate_interval])", "legendFormat": "rows inserted/s", "refId": "B"},
+        {"expr": "rate(pg_stat_database_tup_updated{datname=\"osfo_lifecycle\"}[$__rate_interval])", "legendFormat": "rows updated/s", "refId": "C"}
+      ],
+      "title": "PostgreSQL write activity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 32},
+      "id": 12,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"expr": "sum by (worker_type) (temporal_worker_task_slots_available)", "legendFormat": "available {{worker_type}} slots", "refId": "A"},
+        {"expr": "sum(rate(temporal_workflow_completed[$__rate_interval]))", "legendFormat": "SDK workflow completions/s", "refId": "B"},
+        {"expr": "sum(rate(workflow_success[$__rate_interval]))", "legendFormat": "service workflow successes/s", "refId": "C"},
+        {"expr": "sum(rate(activity_task_fail[$__rate_interval]))", "legendFormat": "activity failures/s", "refId": "D"}
+      ],
+      "title": "Temporal worker and service activity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 32},
+      "id": 13,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(task_schedule_to_start_latency_bucket[$__rate_interval])))", "legendFormat": "task queue p99", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(temporal_request_latency_milliseconds_bucket[$__rate_interval])))", "legendFormat": "SDK request p99", "refId": "B"}
+      ],
+      "title": "Temporal queue and RPC latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "osfo-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 41},
+      "id": 14,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "up", "legendFormat": "{{job}} {{instance}}", "refId": "A"}],
+      "title": "Telemetry completeness, every required target must stay at 1",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 42,
+  "tags": ["osfo", "issue-13", "confirmation", "sre-evidence"],
+  "templating": {"list": []},
+  "time": {"from": "now-30m", "to": "now"},
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "Issue 13 AgentRun lifecycle confirmation",
+  "uid": "osfo-agent-run-lifecycle",
+  "version": 3
+}

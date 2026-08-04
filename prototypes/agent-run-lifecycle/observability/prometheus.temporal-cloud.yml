@@ -1,0 +1,82 @@
+global:
+  scrape_interval: 1s
+  evaluation_interval: 1s
+
+scrape_configs:
+  - job_name: osfo-evidence-runner
+    static_configs:
+      - targets: [host.docker.internal:9464]
+
+  - job_name: osfo-runner-node
+    static_configs:
+      - targets: [node-exporter:9100]
+
+  - job_name: osfo-cloud-sql
+    static_configs:
+      - targets: [postgres-exporter:9187]
+
+  - job_name: osfo-cloud-sql-monitoring
+    scrape_interval: 30s
+    scrape_timeout: 25s
+    static_configs:
+      - targets: [stackdriver-exporter:9255]
+
+  - job_name: temporal-rust-sdk-worker
+    static_configs:
+      - targets: [host.docker.internal:9465]
+
+  - job_name: temporal-cloud
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    honor_timestamps: true
+    scheme: https
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/temporal-metrics-api-key
+    metrics_path: /v1/metrics
+    params:
+      namespaces: [osfo.qvao9]
+      metrics:
+        - temporal_cloud_v1_service_request_count
+        - temporal_cloud_v1_service_request_throttled_count
+        - temporal_cloud_v1_service_error_count
+        - temporal_cloud_v1_service_pending_requests
+        - temporal_cloud_v1_resource_exhausted_error_count
+        - temporal_cloud_v1_service_latency_p50
+        - temporal_cloud_v1_service_latency_p95
+        - temporal_cloud_v1_service_latency_p99
+        - temporal_cloud_v1_workflow_success_count
+        - temporal_cloud_v1_workflow_failed_count
+        - temporal_cloud_v1_workflow_timeout_count
+        - temporal_cloud_v1_workflow_cancel_count
+        - temporal_cloud_v1_workflow_terminate_count
+        - temporal_cloud_v1_workflow_schedule_to_close_latency_p50
+        - temporal_cloud_v1_workflow_schedule_to_close_latency_p95
+        - temporal_cloud_v1_workflow_schedule_to_close_latency_p99
+        - temporal_cloud_v1_activity_success_count
+        - temporal_cloud_v1_activity_fail_count
+        - temporal_cloud_v1_activity_timeout_count
+        - temporal_cloud_v1_activity_task_fail_count
+        - temporal_cloud_v1_activity_task_timeout_count
+        - temporal_cloud_v1_activity_cancel_count
+        - temporal_cloud_v1_approximate_backlog_count
+        - temporal_cloud_v1_poll_success_count
+        - temporal_cloud_v1_poll_success_sync_count
+        - temporal_cloud_v1_poll_timeout_count
+        - temporal_cloud_v1_no_poller_tasks_count
+        - temporal_cloud_v1_namespace_open_workflows
+        - temporal_cloud_v1_total_action_count
+        - temporal_cloud_v1_billable_action_count
+        - temporal_cloud_v1_total_action_throttled_count
+        - temporal_cloud_v1_operations_count
+        - temporal_cloud_v1_operations_throttled_count
+        - temporal_cloud_v1_operations_limit
+        - temporal_cloud_v1_action_limit
+        - temporal_cloud_v1_service_request_limit
+        - temporal_cloud_v1_poller_limit
+    static_configs:
+      - targets: [metrics.temporal.io]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]

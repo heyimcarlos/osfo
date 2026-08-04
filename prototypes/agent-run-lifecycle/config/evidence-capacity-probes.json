@@ -1,0 +1,52 @@
+{
+  "schema_version": 2,
+  "seed": 130013,
+  "question": "Where does the PostgreSQL AgentRun lifecycle capacity knee appear above the clean 45 journey per second open-arrival envelope?",
+  "stages": [
+    {
+      "name": "probe-60",
+      "workload": "authoritative reference journey metadata capacity probe",
+      "arrival_pattern": "uniform",
+      "offered_per_second": 60.0,
+      "duration_seconds": 10,
+      "worker_count": 80,
+      "persistence_profile": "cold logical reconstruction"
+    },
+    {
+      "name": "probe-90",
+      "workload": "authoritative reference journey metadata capacity probe",
+      "arrival_pattern": "uniform",
+      "offered_per_second": 90.0,
+      "duration_seconds": 10,
+      "worker_count": 80,
+      "persistence_profile": "cold logical reconstruction"
+    },
+    {
+      "name": "probe-120",
+      "workload": "authoritative reference journey metadata capacity probe",
+      "arrival_pattern": "uniform",
+      "offered_per_second": 120.0,
+      "duration_seconds": 10,
+      "worker_count": 80,
+      "persistence_profile": "cold logical reconstruction"
+    },
+    {
+      "name": "overload-180",
+      "workload": "bounded queue overload and shedding probe",
+      "arrival_pattern": "uniform",
+      "offered_per_second": 180.0,
+      "duration_seconds": 10,
+      "worker_count": 80,
+      "persistence_profile": "cold logical reconstruction"
+    },
+    {
+      "name": "post-overload-recovery",
+      "workload": "return to steady state after overload",
+      "arrival_pattern": "uniform",
+      "offered_per_second": 15.0,
+      "duration_seconds": 10,
+      "worker_count": 32,
+      "persistence_profile": "cold logical reconstruction"
+    }
+  ]
+}
