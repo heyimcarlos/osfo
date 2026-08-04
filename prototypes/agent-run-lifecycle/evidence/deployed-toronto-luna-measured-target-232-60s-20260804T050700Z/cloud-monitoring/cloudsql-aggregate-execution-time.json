@@ -1,0 +1,85 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/aggregate/execution_time"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:10:15.563564Z",
+            "endTime": "2026-08-04T04:52:16.352198Z"
+          },
+          "value": {
+            "int64Value": "17098885272"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:10:15.563564Z",
+            "endTime": "2026-08-04T04:51:16.355507Z"
+          },
+          "value": {
+            "int64Value": "16319990021"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "user": "<redacted-principal>",
+          "client_addr": "[local]"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/aggregate/execution_time"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.937465Z",
+            "endTime": "2026-08-04T04:52:16.352236Z"
+          },
+          "value": {
+            "int64Value": "47056"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.937465Z",
+            "endTime": "2026-08-04T04:51:16.355565Z"
+          },
+          "value": {
+            "int64Value": "47056"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "us{CPU}"
+}

@@ -1,0 +1,88 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/memory/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "configuration_name": "osfo-agent-run-worker-toronto",
+          "project_id": "even-affinity-497006-u6",
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "location": "northamerica-northeast2",
+          "revision_name": "osfo-agent-run-worker-toronto-00008-94d"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:27:00.001Z",
+            "endTime": "2026-08-04T05:28:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/memory/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "configuration_name": "osfo-agent-run-worker-toronto",
+          "project_id": "even-affinity-497006-u6",
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "revision_name": "osfo-agent-run-worker-toronto-00009-92n"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:27:00.001Z",
+            "endTime": "2026-08-04T05:28:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "14",
+              "mean": 0.064675604911065429,
+              "sumOfSquaredDeviation": 0.00027794825062029847,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1",
+                "0",
+                "13"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

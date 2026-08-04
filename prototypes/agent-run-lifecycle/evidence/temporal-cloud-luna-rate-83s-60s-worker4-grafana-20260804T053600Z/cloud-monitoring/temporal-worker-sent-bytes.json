@@ -1,0 +1,245 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "kind": "google"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "worker_pool_name": "osfo-temporal-cloud-worker-toronto",
+          "revision_name": "osfo-temporal-cloud-worker-toronto-00002-5sp",
+          "location": "northamerica-northeast2",
+          "configuration_name": "osfo-temporal-cloud-worker-toronto",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:36:00.001Z",
+            "endTime": "2026-08-04T05:37:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:35:00.001Z",
+            "endTime": "2026-08-04T05:36:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "kind": "internet"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "worker_pool_name": "osfo-temporal-cloud-worker-toronto",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-temporal-cloud-worker-toronto-00002-5sp",
+          "configuration_name": "osfo-temporal-cloud-worker-toronto"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:36:00.001Z",
+            "endTime": "2026-08-04T05:37:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:35:00.001Z",
+            "endTime": "2026-08-04T05:36:00Z"
+          },
+          "value": {
+            "int64Value": "7688"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "kind": "private"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "configuration_name": "osfo-temporal-cloud-worker-toronto",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "worker_pool_name": "osfo-temporal-cloud-worker-toronto",
+          "revision_name": "osfo-temporal-cloud-worker-toronto-00002-5sp"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:36:00.001Z",
+            "endTime": "2026-08-04T05:37:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:35:00.001Z",
+            "endTime": "2026-08-04T05:36:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "kind": "google"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "worker_pool_name": "osfo-temporal-cloud-worker-toronto",
+          "configuration_name": "osfo-temporal-cloud-worker-toronto",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast2",
+          "revision_name": "osfo-temporal-cloud-worker-toronto-00003-d8q"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:36:00.001Z",
+            "endTime": "2026-08-04T05:37:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:35:00.001Z",
+            "endTime": "2026-08-04T05:36:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "kind": "internet"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "worker_pool_name": "osfo-temporal-cloud-worker-toronto",
+          "location": "northamerica-northeast2",
+          "configuration_name": "osfo-temporal-cloud-worker-toronto",
+          "revision_name": "osfo-temporal-cloud-worker-toronto-00003-d8q"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:36:00.001Z",
+            "endTime": "2026-08-04T05:37:00Z"
+          },
+          "value": {
+            "int64Value": "48669211"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:35:00.001Z",
+            "endTime": "2026-08-04T05:36:00Z"
+          },
+          "value": {
+            "int64Value": "554870"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "kind": "private"
+        },
+        "type": "run.googleapis.com/container/network/sent_bytes_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-temporal-cloud-worker-toronto-00003-d8q",
+          "configuration_name": "osfo-temporal-cloud-worker-toronto",
+          "worker_pool_name": "osfo-temporal-cloud-worker-toronto",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:36:00.001Z",
+            "endTime": "2026-08-04T05:37:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:35:00.001Z",
+            "endTime": "2026-08-04T05:36:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "By"
+}

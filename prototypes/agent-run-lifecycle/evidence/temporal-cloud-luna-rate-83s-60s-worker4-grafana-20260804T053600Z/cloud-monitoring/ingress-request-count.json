@@ -1,0 +1,89 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "2xx",
+          "response_code": "200",
+          "route": ""
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "configuration_name": "osfo-ingress-toronto",
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-ingress-toronto-00006-vr2",
+          "service_name": "osfo-ingress-toronto",
+          "location": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:36:00.001Z",
+            "endTime": "2026-08-04T05:37:00Z"
+          },
+          "value": {
+            "int64Value": "1430"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:35:00.001Z",
+            "endTime": "2026-08-04T05:36:00Z"
+          },
+          "value": {
+            "int64Value": "1661"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "2xx",
+          "route": "",
+          "response_code": "201"
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-ingress-toronto",
+          "location": "northamerica-northeast2",
+          "revision_name": "osfo-ingress-toronto-00006-vr2",
+          "configuration_name": "osfo-ingress-toronto",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:36:00.001Z",
+            "endTime": "2026-08-04T05:37:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:35:00.001Z",
+            "endTime": "2026-08-04T05:36:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

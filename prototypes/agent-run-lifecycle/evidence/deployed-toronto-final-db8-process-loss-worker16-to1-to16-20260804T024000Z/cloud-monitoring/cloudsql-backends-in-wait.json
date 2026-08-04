@@ -1,0 +1,85 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "backend_type": "client backend",
+          "wait_event_type": "CPU",
+          "wait_event": "CPU"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/backends_in_wait"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "region": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:37:00Z",
+            "endTime": "2026-08-04T02:37:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:36:00Z",
+            "endTime": "2026-08-04T02:36:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "backend_type": "client backend",
+          "wait_event_type": "Client",
+          "wait_event": "ClientRead"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/backends_in_wait"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "region": "northamerica-northeast2",
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:37:00Z",
+            "endTime": "2026-08-04T02:37:00Z"
+          },
+          "value": {
+            "int64Value": "3"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:36:00Z",
+            "endTime": "2026-08-04T02:36:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

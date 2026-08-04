@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "classification": "planning estimate, not an invoice",
+  "region": "northamerica-northeast2",
+  "planning_workload": {
+    "daily_messages": 2000000,
+    "monthly_messages": 60000000,
+    "daily_average_messages_per_second": 23.15,
+    "modeled_peak_messages_per_second": 232
+  },
+  "measured_amplification": {
+    "model_planner_calls_per_message": 1.0,
+    "model_planner_cost_per_message_usd": 0.00017317142857142858,
+    "workflows_per_message": 0.35714285714285715,
+    "temporal_actions_per_workflow": 7.99631086709034,
+    "temporal_actions_per_message": 2.8558253096751214,
+    "agent_runs_per_message": 1.5
+  },
+  "temporal_cloud": {
+    "namespace_capacity_mode": "On-Demand",
+    "namespace_limit_actions_per_second": 500,
+    "target_workflow_rate_per_second": 83,
+    "target_action_demand_per_second": 663.693802,
+    "provisioned_2_tru_limit_actions_per_second": 1000,
+    "provisioned_minimum_actions_per_hour": 360000,
+    "actual_month_to_date_actions_observed_in_console": 554888,
+    "actual_month_to_date_workflow_actions": 69393,
+    "actual_month_to_date_activity_actions": 277225,
+    "actual_month_to_date_update_actions": 138882,
+    "actual_month_to_date_timer_actions": 69388,
+    "openmetrics_peak_billable_actions_per_second": 106.6,
+    "openmetrics_positive_throttle_per_second": 0.267,
+    "openmetrics_max_backlog": 2,
+    "monthly_actions_at_planning_workload": 171349518.5805073,
+    "essentials_tiered_monthly_estimate_usd": 5283.737964512682,
+    "estimate_includes_base_plan_usd": 100,
+    "trial_credits_applied": false
+  },
+  "gcp_fixed_floor": {
+    "cloud_sql_hourly_usd": 0.615441095890411,
+    "agent_run_worker_pool_hourly_usd": 1.0354464,
+    "temporal_worker_pool_hourly_usd": 0.2156256,
+    "two_active_stream_instances_hourly_usd": 0.3213,
+    "fixed_floor_hourly_usd": 2.187813095890411,
+    "fixed_floor_monthly_usd": 1597.10356,
+    "dynamic_ingress_compute_included": false,
+    "free_tier_or_commitment_discounts_applied": false
+  },
+  "planning_estimate": {
+    "model_planner_monthly_usd": 10390.285714285714,
+    "temporal_cloud_monthly_usd": 5283.737964512682,
+    "gcp_fixed_floor_monthly_usd": 1597.10356,
+    "known_lower_bound_monthly_usd": 17271.127238798396,
+    "known_lower_bound_per_1000_messages_usd": 0.2878521206466399,
+    "model_planner_daily_usd": 346.34285714285716,
+    "temporal_actions_daily": 5711650.619350242
+  },
+  "exclusions": [
+    "child AgentRun and final-response model calls",
+    "dynamic Cloud Run ingress billable instance time and requests",
+    "E2B sandbox execution",
+    "GCS artifact operations and storage",
+    "network transfer, logging, monitoring, support, taxes, and credits",
+    "account-specific discounts and the authoritative invoice"
+  ],
+  "sources": [
+    "https://cloud.google.com/run/pricing",
+    "https://cloud.google.com/sql/pricing",
+    "https://docs.temporal.io/cloud/pricing",
+    "https://docs.temporal.io/cloud/actions",
+    "Temporal Cloud signed-in namespace capacity and usage pages",
+    "reasoning-discovery-luna-toronto-confirmed-20260804T035500Z/results.json",
+    "temporal-cloud-luna-metrics-20260804T054500Z/prometheus/queries"
+  ]
+}

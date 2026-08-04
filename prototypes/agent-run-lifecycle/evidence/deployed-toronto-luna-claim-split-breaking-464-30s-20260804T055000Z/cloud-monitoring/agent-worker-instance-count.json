@@ -1,0 +1,85 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "state": "active"
+        },
+        "type": "run.googleapis.com/container/instance_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "revision_name": "osfo-agent-run-worker-toronto-00009-92n",
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "configuration_name": "osfo-agent-run-worker-toronto",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:40:00Z",
+            "endTime": "2026-08-04T05:40:00Z"
+          },
+          "value": {
+            "int64Value": "16"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:39:00Z",
+            "endTime": "2026-08-04T05:39:00Z"
+          },
+          "value": {
+            "int64Value": "16"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "state": "idle"
+        },
+        "type": "run.googleapis.com/container/instance_count"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "revision_name": "osfo-agent-run-worker-toronto-00009-92n",
+          "project_id": "even-affinity-497006-u6",
+          "worker_pool_name": "osfo-agent-run-worker-toronto",
+          "configuration_name": "osfo-agent-run-worker-toronto"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:40:00Z",
+            "endTime": "2026-08-04T05:40:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T05:39:00Z",
+            "endTime": "2026-08-04T05:39:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

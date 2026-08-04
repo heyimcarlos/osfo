@@ -1,0 +1,148 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/aggregate/latencies"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "location": "northamerica-northeast2",
+          "database": "osfo_v1",
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:10:15.563564Z",
+            "endTime": "2026-08-04T06:04:16.339856Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "5714726",
+              "mean": 14965.091079782303,
+              "sumOfSquaredDeviation": 33930949502645320,
+              "bucketOptions": {
+                "explicitBuckets": {
+                  "bounds": [
+                    0,
+                    1,
+                    4,
+                    16,
+                    64,
+                    256,
+                    1024,
+                    4096,
+                    16384,
+                    65536,
+                    262144,
+                    1048576,
+                    4194304,
+                    16777216,
+                    67108864,
+                    268435456,
+                    1073741824
+                  ]
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "220187",
+                "1882104",
+                "346181",
+                "701989",
+                "1297975",
+                "485920",
+                "478869",
+                "115907",
+                "49120",
+                "47435",
+                "61849",
+                "27190"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "client_addr": "[local]",
+          "user": "<redacted-principal>"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/insights/aggregate/latencies"
+      },
+      "resource": {
+        "type": "cloudsql_instance_database",
+        "labels": {
+          "resource_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "database": "osfo_v1",
+          "location": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "CUMULATIVE",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:46:23.937465Z",
+            "endTime": "2026-08-04T06:04:16.339879Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "104",
+              "mean": 4445.0384615384619,
+              "sumOfSquaredDeviation": 4126736681.6538463,
+              "bucketOptions": {
+                "explicitBuckets": {
+                  "bounds": [
+                    0,
+                    1,
+                    4,
+                    16,
+                    64,
+                    256,
+                    1024,
+                    4096,
+                    16384,
+                    65536,
+                    262144,
+                    1048576,
+                    4194304,
+                    16777216,
+                    67108864,
+                    268435456,
+                    1073741824
+                  ]
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "2",
+                "45",
+                "20",
+                "12",
+                "0",
+                "5",
+                "1",
+                "19"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "us"
+}

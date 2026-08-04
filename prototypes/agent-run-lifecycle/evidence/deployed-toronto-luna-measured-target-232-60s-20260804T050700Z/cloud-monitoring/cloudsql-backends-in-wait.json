@@ -1,0 +1,333 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "wait_event": "CPU",
+          "backend_type": "client backend",
+          "wait_event_type": "CPU"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/backends_in_wait"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "region": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:52:00Z",
+            "endTime": "2026-08-04T04:52:00Z"
+          },
+          "value": {
+            "int64Value": "18"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:51:00Z",
+            "endTime": "2026-08-04T04:51:00Z"
+          },
+          "value": {
+            "int64Value": "34"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "wait_event": "CPU",
+          "backend_type": "parallel worker",
+          "wait_event_type": "CPU"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/backends_in_wait"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "region": "northamerica-northeast2",
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:52:00Z",
+            "endTime": "2026-08-04T04:52:00Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "wait_event": "ClientRead",
+          "backend_type": "client backend",
+          "wait_event_type": "Client"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/backends_in_wait"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "region": "northamerica-northeast2",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:52:00Z",
+            "endTime": "2026-08-04T04:52:00Z"
+          },
+          "value": {
+            "int64Value": "43"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:51:00Z",
+            "endTime": "2026-08-04T04:51:00Z"
+          },
+          "value": {
+            "int64Value": "3"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "backend_type": "client backend",
+          "wait_event": "WalSync",
+          "wait_event_type": "IO"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/backends_in_wait"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "region": "northamerica-northeast2",
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:52:00Z",
+            "endTime": "2026-08-04T04:52:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "wait_event": "BufferContent",
+          "wait_event_type": "LWLock",
+          "backend_type": "client backend"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/backends_in_wait"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "region": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:52:00Z",
+            "endTime": "2026-08-04T04:52:00Z"
+          },
+          "value": {
+            "int64Value": "3"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "backend_type": "client backend",
+          "wait_event_type": "LWLock",
+          "wait_event": "LockManager"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/backends_in_wait"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "region": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:52:00Z",
+            "endTime": "2026-08-04T04:52:00Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "wait_event_type": "LWLock",
+          "backend_type": "client backend",
+          "wait_event": "WALWrite"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/backends_in_wait"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "region": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:52:00Z",
+            "endTime": "2026-08-04T04:52:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "backend_type": "client backend",
+          "wait_event": "object",
+          "wait_event_type": "Lock"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/backends_in_wait"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "region": "northamerica-northeast2",
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:52:00Z",
+            "endTime": "2026-08-04T04:52:00Z"
+          },
+          "value": {
+            "int64Value": "45"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "wait_event": "transactionid",
+          "wait_event_type": "Lock",
+          "backend_type": "client backend"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/backends_in_wait"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "region": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:52:00Z",
+            "endTime": "2026-08-04T04:52:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "wait_event": "tuple",
+          "wait_event_type": "Lock",
+          "backend_type": "client backend"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/backends_in_wait"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804",
+          "project_id": "even-affinity-497006-u6",
+          "region": "northamerica-northeast2"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T04:52:00Z",
+            "endTime": "2026-08-04T04:52:00Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

@@ -1,0 +1,58 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "cloudsql.googleapis.com/database/cpu/utilization"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "region": "northamerica-northeast2",
+          "database_id": "even-affinity-497006-u6:osfo-v1-toronto-20260804"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:29:00Z",
+            "endTime": "2026-08-04T02:29:00Z"
+          },
+          "value": {
+            "doubleValue": 0.26505512008341819
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:28:00Z",
+            "endTime": "2026-08-04T02:28:00Z"
+          },
+          "value": {
+            "doubleValue": 0.31230466747612934
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:27:00Z",
+            "endTime": "2026-08-04T02:27:00Z"
+          },
+          "value": {
+            "doubleValue": 0.27964824592731125
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T02:26:00Z",
+            "endTime": "2026-08-04T02:26:00Z"
+          },
+          "value": {
+            "doubleValue": 0.53435227336425772
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

@@ -1,0 +1,131 @@
+{
+  "apiVersion": "run.googleapis.com/v1",
+  "kind": "WorkerPool",
+  "metadata": {
+    "annotations": {
+      "run.googleapis.com/client-name": "gcloud",
+      "run.googleapis.com/client-version": "569.0.0",
+      "run.googleapis.com/manualInstanceCount": "16",
+      "run.googleapis.com/operation-id": "b192ac49-5207-4763-b2f0-21544fce047a",
+      "run.googleapis.com/scalingMode": "manual"
+    },
+    "creationTimestamp": "2026-08-04T00:51:14.578776Z",
+    "generation": 9,
+    "labels": {
+      "cloud.googleapis.com/location": "northamerica-northeast2",
+      "run.googleapis.com/satisfiesPzs": "true"
+    },
+    "name": "osfo-agent-run-worker-toronto",
+    "namespace": "189278282706",
+    "resourceVersion": "AAZYL4dCYhs",
+    "selfLink": "/apis/run.googleapis.com/v1/namespaces/189278282706/workerpools/osfo-agent-run-worker-toronto",
+    "uid": "64bb90d4-1bdf-46c8-b374-2fea62f7120c"
+  },
+  "spec": {
+    "instanceSplits": [
+      {
+        "latestRevision": true,
+        "percent": 100
+      }
+    ],
+    "template": {
+      "metadata": {
+        "annotations": {
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "569.0.0",
+          "run.googleapis.com/container-dependencies": "{\"agent-run-worker\":[\"cloud-sql-proxy\"]}",
+          "run.googleapis.com/execution-environment": "gen2"
+        }
+      },
+      "spec": {
+        "containerConcurrency": 0,
+        "containers": [
+          {
+            "args": [
+              "--auto-iam-authn",
+              "--structured-logs",
+              "--address=0.0.0.0",
+              "--port=5432",
+              "--health-check",
+              "--http-address=0.0.0.0",
+              "--http-port=9090",
+              "even-affinity-497006-u6:northamerica-northeast2:osfo-v1-toronto-20260804"
+            ],
+            "image": "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.22.0@sha256:fa4c7308245407157c5e9c4e16f1c0f1113899d6f29dc8f8be3e30efae86467f",
+            "name": "cloud-sql-proxy",
+            "resources": {
+              "limits": {
+                "cpu": "0.25",
+                "memory": "256Mi"
+              }
+            },
+            "startupProbe": {
+              "failureThreshold": 30,
+              "httpGet": {
+                "path": "/startup",
+                "port": 9090
+              },
+              "initialDelaySeconds": 1,
+              "periodSeconds": 1,
+              "timeoutSeconds": 1
+            }
+          },
+          {
+            "command": [
+              "/usr/local/bin/agent_run_worker"
+            ],
+            "env": [
+              {
+                "name": "OSFO_DATABASE_URL",
+                "value": "postgresql://osfo-runtime%40even-affinity-497006-u6.iam@127.0.0.1:5432/osfo_v1?sslmode=disable"
+              },
+              {
+                "name": "OSFO_AGENT_RUN_WORKER_DATABASE_POOL_SIZE",
+                "value": "8"
+              },
+              {
+                "name": "OSFO_AGENT_RUN_WORKER_ID",
+                "value": "candidate-a-worker"
+              },
+              {
+                "name": "OSFO_AGENT_RUN_EMPTY_POLL_MILLISECONDS",
+                "value": "500"
+              },
+              {
+                "name": "OSFO_AGENT_RUN_WORKER_CONCURRENCY",
+                "value": "16"
+              }
+            ],
+            "image": "northamerica-northeast2-docker.pkg.dev/even-affinity-497006-u6/osfo-prototype/osfo-runtime@sha256:cb798dca182a98e0488408692f009481b109d641f6d0421aed2232bf11fab882",
+            "name": "agent-run-worker",
+            "resources": {
+              "limits": {
+                "cpu": "1",
+                "memory": "512Mi"
+              }
+            }
+          }
+        ],
+        "serviceAccountName": "<redacted-principal>"
+      }
+    }
+  },
+  "status": {
+    "conditions": [
+      {
+        "lastTransitionTime": "2026-08-04T02:36:56.245787Z",
+        "status": "True",
+        "type": "Ready"
+      }
+    ],
+    "instanceSplits": [
+      {
+        "percent": 100,
+        "revisionName": "osfo-agent-run-worker-toronto-00007-bll"
+      }
+    ],
+    "latestCreatedRevisionName": "osfo-agent-run-worker-toronto-00007-bll",
+    "latestReadyRevisionName": "osfo-agent-run-worker-toronto-00007-bll",
+    "observedGeneration": 9
+  }
+}
