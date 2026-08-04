@@ -247,8 +247,8 @@ func (s *Store) ReadB3Batch(ctx context.Context, connection *pgxpool.Conn, shard
 	return records, rows.Err()
 }
 
-func (s *Store) RecordB3Publications(ctx context.Context, owner string, publications []B3Publication) error {
-	tx, err := s.pool.Begin(ctx)
+func (s *Store) RecordB3Publications(ctx context.Context, connection *pgxpool.Conn, owner string, publications []B3Publication) error {
+	tx, err := connection.Begin(ctx)
 	if err != nil {
 		return err
 	}

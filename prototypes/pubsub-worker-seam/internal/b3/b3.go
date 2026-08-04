@@ -142,7 +142,7 @@ func (r *Relay) RunShardOnce(ctx context.Context, shard int) (int, error) {
 			publications[index].Outcome = "ambiguous_after_confirmation"
 		}
 	}
-	if err := r.Store.RecordB3Publications(context.Background(), r.Owner, publications); err != nil {
+	if err := r.Store.RecordB3Publications(context.Background(), connection, r.Owner, publications); err != nil {
 		return 0, err
 	}
 	if publishErr != nil {
