@@ -412,7 +412,8 @@ func (s *Store) AuditB3(ctx context.Context, benchmarkID uuid.UUID, expectedInco
 		a.Verdict = "MISSING"
 	}
 	if a.AcceptedIncoming > a.ExpectedIncoming || a.StrandedAcceptedRuns > 0 ||
-		a.GhostDeliveryAttempts > 0 || a.DuplicateTerminalCommits > 0 {
+		a.GhostDeliveryAttempts > 0 || a.DuplicateTerminalCommits > 0 ||
+		a.UnpublishedOutboxRecords > 0 || a.NonterminalAgentRuns > 0 {
 		a.Verdict = "FAIL"
 	}
 	return a, nil

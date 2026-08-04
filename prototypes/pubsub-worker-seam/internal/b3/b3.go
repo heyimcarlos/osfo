@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/pubsub/v2"
@@ -158,6 +159,37 @@ func (r *Relay) RunShardOnce(ctx context.Context, shard int) (int, error) {
 }
 
 func (r *Relay) RunAllOnce(ctx context.Context) (int, error) {
+	if r.Fault != NoFault {
+		return r.runAllSerial(ctx)
+	}
+	type result struct {
+		count int
+		err   error
+	}
+	results := make(chan result, store.B3RelayShards)
+	var wait sync.WaitGroup
+	for shard := 0; shard < store.B3RelayShards; shard++ {
+		wait.Add(1)
+		go func(shard int) {
+			defer wait.Done()
+			count, err := r.RunShardOnce(ctx, shard)
+			results <- result{count: count, err: err}
+		}(shard)
+	}
+	wait.Wait()
+	close(results)
+	total := 0
+	var failures []error
+	for result := range results {
+		total += result.count
+		if result.err != nil {
+			failures = append(failures, result.err)
+		}
+	}
+	return total, errors.Join(failures...)
+}
+
+func (r *Relay) runAllSerial(ctx context.Context) (int, error) {
 	total := 0
 	for shard := 0; shard < store.B3RelayShards; shard++ {
 		count, err := r.RunShardOnce(ctx, shard)

@@ -127,7 +127,7 @@ func run(ctx context.Context, args []string) error {
 			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"processed": count, "fault": *fault})
 			return err
 		}
-		return drain(ctx, database, relay, 5*time.Minute)
+		return drain(ctx, database, relay, benchmarkID, 5*time.Minute)
 	case "audit":
 		audit, err := database.AuditB3(ctx, benchmarkID, *expected)
 		if err != nil {
@@ -147,14 +147,18 @@ func requestFor(benchmarkID uuid.UUID, ordinal, attempt int, fault string) store
 	}
 }
 
-func drain(ctx context.Context, database *store.Store, relay *b3.Relay, timeout time.Duration) error {
+func drain(ctx context.Context, database *store.Store, relay *b3.Relay, benchmarkID uuid.UUID, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		count, _, err := database.B3Backlog(ctx)
 		if err != nil {
 			return err
 		}
-		if count == 0 {
+		remaining, err := database.Remaining(ctx, benchmarkID)
+		if err != nil {
+			return err
+		}
+		if count == 0 && remaining == 0 {
 			return nil
 		}
 		processed, err := relay.RunAllOnce(ctx)
@@ -190,7 +194,7 @@ func runMatrix(ctx context.Context, database *store.Store, project, topic string
 			if err := admitMany(ctx, database, benchmarkID, repetitions, fault, true); err != nil {
 				return err
 			}
-			if err := drain(ctx, database, relay, 5*time.Minute); err != nil {
+			if err := drain(ctx, database, relay, benchmarkID, 5*time.Minute); err != nil {
 				return err
 			}
 			audit, err := database.AuditB3(ctx, benchmarkID, repetitions)
@@ -219,7 +223,7 @@ func runMatrix(ctx context.Context, database *store.Store, project, topic string
 				return fmt.Errorf("lane %s did not inject the expected cut: %v", lane, injected)
 			}
 			relay.Fault = b3.NoFault
-			if err := drain(ctx, database, relay, 5*time.Minute); err != nil {
+			if err := drain(ctx, database, relay, benchmarkID, 5*time.Minute); err != nil {
 				return err
 			}
 			audit, err := database.AuditB3(ctx, benchmarkID, repetitions)
