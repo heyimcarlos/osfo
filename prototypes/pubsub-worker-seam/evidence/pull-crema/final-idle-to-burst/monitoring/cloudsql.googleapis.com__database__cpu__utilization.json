@@ -1,0 +1,103 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "cloudsql.googleapis.com/database/cpu/utilization"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "region": "northamerica-northeast1",
+          "project_id": "even-affinity-497006-u6",
+          "database_id": "even-affinity-497006-u6:osfo-b0-39-sql"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:27:00Z",
+            "endTime": "2026-08-04T19:27:00Z"
+          },
+          "value": {
+            "doubleValue": 0.026736581132612496
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:26:00Z",
+            "endTime": "2026-08-04T19:26:00Z"
+          },
+          "value": {
+            "doubleValue": 0.025921872250158629
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:25:00Z",
+            "endTime": "2026-08-04T19:25:00Z"
+          },
+          "value": {
+            "doubleValue": 0.028139663675574883
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:24:00Z",
+            "endTime": "2026-08-04T19:24:00Z"
+          },
+          "value": {
+            "doubleValue": 0.053148255376088117
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:23:00Z",
+            "endTime": "2026-08-04T19:23:00Z"
+          },
+          "value": {
+            "doubleValue": 0.05393404242050176
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:22:00Z",
+            "endTime": "2026-08-04T19:22:00Z"
+          },
+          "value": {
+            "doubleValue": 0.028614205581331
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:21:00Z",
+            "endTime": "2026-08-04T19:21:00Z"
+          },
+          "value": {
+            "doubleValue": 0.026353825408184168
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:20:00Z",
+            "endTime": "2026-08-04T19:20:00Z"
+          },
+          "value": {
+            "doubleValue": 0.026141008521553981
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:19:00Z",
+            "endTime": "2026-08-04T19:19:00Z"
+          },
+          "value": {
+            "doubleValue": 0.025684836492289757
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

@@ -1,0 +1,147 @@
+{
+  "apiVersion": "serving.knative.dev/v1",
+  "kind": "Service",
+  "metadata": {
+    "annotations": {
+      "run.googleapis.com/client-name": "gcloud",
+      "run.googleapis.com/client-version": "569.0.0",
+      "run.googleapis.com/ingress": "all",
+      "run.googleapis.com/ingress-status": "all",
+      "run.googleapis.com/maxScale": "4",
+      "run.googleapis.com/minScale": "4",
+      "run.googleapis.com/operation-id": "a4fb60b9-5840-43e9-b9b1-088a4eac8492",
+      "run.googleapis.com/urls": "[\"https://osfo-b0-39-push-189278282706.northamerica-northeast1.run.app\",\"https://osfo-b0-39-push-hzr7upuh7q-nn.a.run.app\"]",
+      "serving.knative.dev/creator": "<redacted-operator>",
+      "serving.knative.dev/lastModifier": "<redacted-operator>"
+    },
+    "creationTimestamp": "2026-08-04T18:29:24.886075Z",
+    "generation": 4,
+    "labels": {
+      "cloud.googleapis.com/location": "northamerica-northeast1",
+      "run.googleapis.com/satisfiesPzs": "true"
+    },
+    "name": "osfo-b0-39-push",
+    "namespace": "189278282706",
+    "resourceVersion": "AAZYPVPU6+Y",
+    "selfLink": "/apis/serving.knative.dev/v1/namespaces/189278282706/services/osfo-b0-39-push",
+    "uid": "70f8b0d9-8817-488b-91c4-f042e580f2fb"
+  },
+  "spec": {
+    "template": {
+      "metadata": {
+        "annotations": {
+          "autoscaling.knative.dev/maxScale": "20",
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "569.0.0",
+          "run.googleapis.com/cloudsql-instances": "even-affinity-497006-u6:northamerica-northeast1:osfo-b0-39-sql",
+          "run.googleapis.com/cpu-throttling": "true",
+          "run.googleapis.com/startup-cpu-boost": "true"
+        },
+        "labels": {
+          "client.knative.dev/nonce": "fktckcorov",
+          "run.googleapis.com/startupProbeType": "Default"
+        }
+      },
+      "spec": {
+        "containerConcurrency": 32,
+        "containers": [
+          {
+            "env": [
+              {
+                "name": "ROLE",
+                "value": "push"
+              },
+              {
+                "name": "DB_POOL_SIZE",
+                "value": "4"
+              },
+              {
+                "name": "WORKER_SLOTS",
+                "value": "32"
+              },
+              {
+                "name": "CLAIM_LEASE_SECONDS",
+                "value": "15"
+              },
+              {
+                "name": "DATABASE_URL",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "latest",
+                    "name": "osfo-b0-39-database-url"
+                  }
+                }
+              },
+              {
+                "name": "RUN_EPOCH",
+                "value": "pristine-1905"
+              }
+            ],
+            "image": "northamerica-northeast1-docker.pkg.dev/even-affinity-497006-u6/osfo-b0-39-repo/worker:latest",
+            "ports": [
+              {
+                "containerPort": 8080,
+                "name": "http1"
+              }
+            ],
+            "resources": {
+              "limits": {
+                "cpu": "1",
+                "memory": "1Gi"
+              }
+            },
+            "startupProbe": {
+              "failureThreshold": 1,
+              "periodSeconds": 240,
+              "tcpSocket": {
+                "port": 8080
+              },
+              "timeoutSeconds": 240
+            }
+          }
+        ],
+        "serviceAccountName": "osfo-b0-39-worker@even-affinity-497006-u6.iam.gserviceaccount.com",
+        "timeoutSeconds": 300
+      }
+    },
+    "traffic": [
+      {
+        "latestRevision": true,
+        "percent": 100
+      }
+    ]
+  },
+  "status": {
+    "address": {
+      "url": "https://osfo-b0-39-push-hzr7upuh7q-nn.a.run.app"
+    },
+    "conditions": [
+      {
+        "lastTransitionTime": "2026-08-04T19:04:42.976230Z",
+        "status": "True",
+        "type": "Ready"
+      },
+      {
+        "lastTransitionTime": "2026-08-04T19:04:37.671142Z",
+        "status": "True",
+        "type": "ConfigurationsReady"
+      },
+      {
+        "lastTransitionTime": "2026-08-04T19:04:42.946590Z",
+        "status": "True",
+        "type": "RoutesReady"
+      }
+    ],
+    "latestCreatedRevisionName": "osfo-b0-39-push-00004-9dg",
+    "latestReadyRevisionName": "osfo-b0-39-push-00004-9dg",
+    "observedGeneration": 4,
+    "traffic": [
+      {
+        "latestRevision": true,
+        "percent": 100,
+        "revisionName": "osfo-b0-39-push-00004-9dg"
+      }
+    ],
+    "url": "https://osfo-b0-39-push-hzr7upuh7q-nn.a.run.app"
+  }
+}

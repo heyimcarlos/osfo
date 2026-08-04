@@ -1,0 +1,102 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "pubsub.googleapis.com/subscription/num_undelivered_messages"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "subscription_id": "osfo-b0-39-pull",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:27:00Z",
+            "endTime": "2026-08-04T19:27:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:26:00Z",
+            "endTime": "2026-08-04T19:26:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:25:00Z",
+            "endTime": "2026-08-04T19:25:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:24:00Z",
+            "endTime": "2026-08-04T19:24:00Z"
+          },
+          "value": {
+            "int64Value": "2586"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:23:00Z",
+            "endTime": "2026-08-04T19:23:00Z"
+          },
+          "value": {
+            "int64Value": "3480"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:22:00Z",
+            "endTime": "2026-08-04T19:22:00Z"
+          },
+          "value": {
+            "int64Value": "1747"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:21:00Z",
+            "endTime": "2026-08-04T19:21:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:20:00Z",
+            "endTime": "2026-08-04T19:20:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:19:00Z",
+            "endTime": "2026-08-04T19:19:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

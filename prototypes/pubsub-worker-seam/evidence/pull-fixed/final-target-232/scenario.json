@@ -1,0 +1,10 @@
+{
+  "benchmark_id": "2b47d481-de84-4961-ae16-af9824955efe",
+  "candidate": "pull-fixed",
+  "lane": "final-target-232",
+  "rate_per_second": 232,
+  "duration_seconds": 60,
+  "count": 13920,
+  "started_at": "2026-08-04T19:07:52Z",
+  "ended_at": "2026-08-04T19:08:55Z"
+}

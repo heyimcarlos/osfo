@@ -1,0 +1,10 @@
+{
+  "benchmark_id": "b111e8d1-64ec-468d-a6bd-d6e7ecce3f72",
+  "candidate": "push-fixed",
+  "lane": "server-time-smoke",
+  "rate_per_second": 23,
+  "duration_seconds": 5,
+  "count": 115,
+  "started_at": "2026-08-04T18:45:41Z",
+  "ended_at": "2026-08-04T18:45:50Z"
+}

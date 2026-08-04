@@ -1,0 +1,117 @@
+{
+  "apiVersion": "run.googleapis.com/v1",
+  "kind": "WorkerPool",
+  "metadata": {
+    "annotations": {
+      "run.googleapis.com/client-name": "gcloud",
+      "run.googleapis.com/client-version": "569.0.0",
+      "run.googleapis.com/manualInstanceCount": "4",
+      "run.googleapis.com/operation-id": "b91cce2e-8f53-4af1-9932-d68d270f647a",
+      "run.googleapis.com/scalingMode": "manual",
+      "serving.knative.dev/creator": "<redacted-operator>",
+      "serving.knative.dev/lastModifier": "<redacted-operator>"
+    },
+    "creationTimestamp": "2026-08-04T18:29:39.304159Z",
+    "generation": 2,
+    "labels": {
+      "cloud.googleapis.com/location": "northamerica-northeast1",
+      "run.googleapis.com/satisfiesPzs": "true"
+    },
+    "name": "osfo-b0-39-pull",
+    "namespace": "189278282706",
+    "resourceVersion": "AAZYPQ9dmbg",
+    "selfLink": "/apis/run.googleapis.com/v1/namespaces/189278282706/workerpools/osfo-b0-39-pull",
+    "uid": "0f95d1b8-b26e-4d7f-974b-ae7d608f0beb"
+  },
+  "spec": {
+    "instanceSplits": [
+      {
+        "latestRevision": true,
+        "percent": 100
+      }
+    ],
+    "template": {
+      "metadata": {
+        "annotations": {
+          "run.googleapis.com/cloudsql-instances": "even-affinity-497006-u6:northamerica-northeast1:osfo-b0-39-sql",
+          "run.googleapis.com/execution-environment": "gen2"
+        },
+        "labels": {
+          "client.knative.dev/nonce": "7bae0051-3641-47c2-bcd8-36ce13382d7c"
+        }
+      },
+      "spec": {
+        "containerConcurrency": 0,
+        "containers": [
+          {
+            "env": [
+              {
+                "name": "ROLE",
+                "value": "pull"
+              },
+              {
+                "name": "DB_POOL_SIZE",
+                "value": "4"
+              },
+              {
+                "name": "WORKER_SLOTS",
+                "value": "32"
+              },
+              {
+                "name": "CLAIM_LEASE_SECONDS",
+                "value": "15"
+              },
+              {
+                "name": "GCP_PROJECT_ID",
+                "value": "even-affinity-497006-u6"
+              },
+              {
+                "name": "PUBSUB_SUBSCRIPTION_ID",
+                "value": "osfo-b0-39-pull"
+              },
+              {
+                "name": "DATABASE_URL",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "latest",
+                    "name": "osfo-b0-39-database-url"
+                  }
+                }
+              },
+              {
+                "name": "WORKER_BUILD",
+                "value": "20260804-1845"
+              }
+            ],
+            "image": "northamerica-northeast1-docker.pkg.dev/even-affinity-497006-u6/osfo-b0-39-repo/worker:latest",
+            "resources": {
+              "limits": {
+                "cpu": "1",
+                "memory": "1Gi"
+              }
+            }
+          }
+        ],
+        "serviceAccountName": "osfo-b0-39-worker@even-affinity-497006-u6.iam.gserviceaccount.com"
+      }
+    }
+  },
+  "status": {
+    "conditions": [
+      {
+        "lastTransitionTime": "2026-08-04T18:45:34.305720Z",
+        "status": "True",
+        "type": "Ready"
+      }
+    ],
+    "instanceSplits": [
+      {
+        "percent": 100,
+        "revisionName": "osfo-b0-39-pull-00002-bkn"
+      }
+    ],
+    "latestCreatedRevisionName": "osfo-b0-39-pull-00002-bkn",
+    "latestReadyRevisionName": "osfo-b0-39-pull-00002-bkn",
+    "observedGeneration": 2
+  }
+}

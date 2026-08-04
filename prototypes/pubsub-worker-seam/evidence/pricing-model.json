@@ -1,0 +1,47 @@
+{
+  "captured_at": "2026-08-04",
+  "currency": "USD",
+  "region": "northamerica-northeast1",
+  "source": "Google Cloud Billing Catalog and public pricing pages",
+  "cloud_run_skus": {
+    "worker_pool_cpu": "F075-AB3F-6176",
+    "worker_pool_memory": "8392-6270-BCE1",
+    "instance_service_cpu": "1B85-2514-DE81",
+    "instance_service_memory": "49ED-6C4F-1DAF",
+    "request_service_cpu": "085C-A237-027A",
+    "request_service_memory": "600C-3782-6708",
+    "requests": "2DA5-55D3-E679"
+  },
+  "rates": {
+    "worker_pool_vcpu_second": 0.000013492,
+    "worker_pool_gib_second": 0.000001482,
+    "instance_service_vcpu_second": 0.0000216,
+    "instance_service_gib_second": 0.0000024,
+    "request_service_active_vcpu_second": 0.0000336,
+    "request_service_active_gib_second": 0.0000035,
+    "cloud_run_request_per_million": 0.4,
+    "pubsub_per_tib": 40
+  },
+  "assumptions": {
+    "month_hours": 730,
+    "runs_per_month": 60000000,
+    "pubsub_billed_operations_per_run": 2,
+    "pubsub_minimum_bytes_per_operation": 1024,
+    "shared_free_tiers_included": false,
+    "cloud_sql_included": false
+  },
+  "results": {
+    "one_worker_pool_instance_month": 39.35,
+    "four_worker_pool_instances_month": 157.41,
+    "one_crema_control_service_month": 63.07,
+    "pubsub_month": 4.47,
+    "push_request_count_month": 24,
+    "push_compute_15ms_concurrency_32_month": 1.04,
+    "push_compute_80ms_concurrency_32_month": 5.56,
+    "push_compute_80ms_concurrency_1_month": 178.08
+  },
+  "links": [
+    "https://cloud.google.com/run/pricing",
+    "https://cloud.google.com/pubsub/pricing"
+  ]
+}

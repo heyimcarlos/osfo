@@ -1,0 +1,11 @@
+{
+  "services": [],
+  "worker_pools": [],
+  "sql": [],
+  "topics": [],
+  "subscriptions": [],
+  "repositories": [],
+  "secrets": [],
+  "service_accounts": [],
+  "parameters": []
+}

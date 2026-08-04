@@ -1,0 +1,161 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/billable_instance_time"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "location": "northamerica-northeast1",
+          "revision_name": "osfo-b0-39-push-00003-v8f",
+          "project_id": "even-affinity-497006-u6",
+          "service_name": "osfo-b0-39-push",
+          "configuration_name": "osfo-b0-39-push"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:10:00.001Z",
+            "endTime": "2026-08-04T19:11:00Z"
+          },
+          "value": {
+            "doubleValue": 0
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/billable_instance_time"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-b0-39-push",
+          "configuration_name": "osfo-b0-39-push",
+          "location": "northamerica-northeast1",
+          "revision_name": "osfo-b0-39-push-00004-9dg",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:16:00.001Z",
+            "endTime": "2026-08-04T19:17:00Z"
+          },
+          "value": {
+            "doubleValue": 0
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:15:00.001Z",
+            "endTime": "2026-08-04T19:16:00Z"
+          },
+          "value": {
+            "doubleValue": 0.38176141999997526
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:14:00.001Z",
+            "endTime": "2026-08-04T19:15:00Z"
+          },
+          "value": {
+            "doubleValue": 196.19561852600009
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:13:00.001Z",
+            "endTime": "2026-08-04T19:14:00Z"
+          },
+          "value": {
+            "doubleValue": 237.78052797400005
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:12:00.001Z",
+            "endTime": "2026-08-04T19:13:00Z"
+          },
+          "value": {
+            "doubleValue": 240.07174673099991
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:11:00.001Z",
+            "endTime": "2026-08-04T19:12:00Z"
+          },
+          "value": {
+            "doubleValue": 240.11085044800006
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:10:00.001Z",
+            "endTime": "2026-08-04T19:11:00Z"
+          },
+          "value": {
+            "doubleValue": 239.89279747900002
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/billable_instance_time"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "configuration_name": "osfo-b0-39-push",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1",
+          "service_name": "osfo-b0-39-push",
+          "revision_name": "osfo-b0-39-push-00005-hm7"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:16:00.001Z",
+            "endTime": "2026-08-04T19:17:00Z"
+          },
+          "value": {
+            "doubleValue": 0
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:15:00.001Z",
+            "endTime": "2026-08-04T19:16:00Z"
+          },
+          "value": {
+            "doubleValue": 0
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:14:00.001Z",
+            "endTime": "2026-08-04T19:15:00Z"
+          },
+          "value": {
+            "doubleValue": 6.788857153
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "s"
+}

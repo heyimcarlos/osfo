@@ -1,0 +1,105 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/billable_instance_time"
+      },
+      "resource": {
+        "type": "cloud_run_worker_pool",
+        "labels": {
+          "revision_name": "osfo-b0-39-pull-00004-rv2",
+          "configuration_name": "osfo-b0-39-pull",
+          "worker_pool_name": "osfo-b0-39-pull",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:26:00.001Z",
+            "endTime": "2026-08-04T19:27:00Z"
+          },
+          "value": {
+            "doubleValue": 13.124987294466138
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:25:00.001Z",
+            "endTime": "2026-08-04T19:26:00Z"
+          },
+          "value": {
+            "doubleValue": 480.19333036617616
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:24:00.001Z",
+            "endTime": "2026-08-04T19:25:00Z"
+          },
+          "value": {
+            "doubleValue": 480.18873114307871
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:23:00.001Z",
+            "endTime": "2026-08-04T19:24:00Z"
+          },
+          "value": {
+            "doubleValue": 285.402284556733
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:22:00.001Z",
+            "endTime": "2026-08-04T19:23:00Z"
+          },
+          "value": {
+            "doubleValue": 127.51324443740505
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:21:00.001Z",
+            "endTime": "2026-08-04T19:22:00Z"
+          },
+          "value": {
+            "doubleValue": 0
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:20:00.001Z",
+            "endTime": "2026-08-04T19:21:00Z"
+          },
+          "value": {
+            "doubleValue": 0
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:19:00.001Z",
+            "endTime": "2026-08-04T19:20:00Z"
+          },
+          "value": {
+            "doubleValue": 0
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:18:00.001Z",
+            "endTime": "2026-08-04T19:19:00Z"
+          },
+          "value": {
+            "doubleValue": 12.991371553516842
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "s"
+}

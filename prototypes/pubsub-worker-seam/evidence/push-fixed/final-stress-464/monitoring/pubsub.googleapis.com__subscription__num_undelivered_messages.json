@@ -1,0 +1,66 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "pubsub.googleapis.com/subscription/num_undelivered_messages"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "subscription_id": "osfo-b0-39-push"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:15:00Z",
+            "endTime": "2026-08-04T19:15:00Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:14:00Z",
+            "endTime": "2026-08-04T19:14:00Z"
+          },
+          "value": {
+            "int64Value": "35"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:13:00Z",
+            "endTime": "2026-08-04T19:13:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:12:00Z",
+            "endTime": "2026-08-04T19:12:00Z"
+          },
+          "value": {
+            "int64Value": "61"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:11:00Z",
+            "endTime": "2026-08-04T19:11:00Z"
+          },
+          "value": {
+            "int64Value": "139"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

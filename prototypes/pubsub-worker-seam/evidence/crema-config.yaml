@@ -1,0 +1,37 @@
+apiVersion: crema/v1
+kind: CremaConfig
+metadata:
+  name: osfo-b0-39
+spec:
+  pollingInterval: 10
+  triggerAuthentications:
+    - metadata:
+        name: adc-trigger-auth
+      spec:
+        podIdentity:
+          provider: gcp
+  scaledObjects:
+    - spec:
+        scaleTargetRef:
+          name: projects/even-affinity-497006-u6/locations/northamerica-northeast1/workerpools/osfo-b0-39-pull
+        minReplicaCount: 0
+        maxReplicaCount: 8
+        triggers:
+          - type: gcp-pubsub
+            metadata:
+              subscriptionName: "osfo-b0-39-pull"
+              value: "32"
+              mode: "SubscriptionSize"
+            authenticationRef:
+              name: adc-trigger-auth
+        advanced:
+          horizontalPodAutoscalerConfig:
+            behavior:
+              scaleDown:
+                stabilizationWindowSeconds: 30
+              scaleUp:
+                stabilizationWindowSeconds: 0
+                policies:
+                  - type: Pods
+                    value: 8
+                    periodSeconds: 10

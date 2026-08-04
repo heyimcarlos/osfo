@@ -1,0 +1,321 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/memory/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "revision_name": "osfo-b0-39-push-00003-v8f",
+          "location": "northamerica-northeast1",
+          "service_name": "osfo-b0-39-push",
+          "project_id": "even-affinity-497006-u6",
+          "configuration_name": "osfo-b0-39-push"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:10:00.001Z",
+            "endTime": "2026-08-04T19:11:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:09:00.001Z",
+            "endTime": "2026-08-04T19:10:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:08:00.001Z",
+            "endTime": "2026-08-04T19:09:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:07:00.001Z",
+            "endTime": "2026-08-04T19:08:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:06:00.001Z",
+            "endTime": "2026-08-04T19:07:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:05:00.001Z",
+            "endTime": "2026-08-04T19:06:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/memory/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "configuration_name": "osfo-b0-39-push",
+          "revision_name": "osfo-b0-39-push-00004-9dg",
+          "service_name": "osfo-b0-39-push",
+          "location": "northamerica-northeast1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:11:00.001Z",
+            "endTime": "2026-08-04T19:12:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "4",
+              "mean": 0.030891418457031243,
+              "sumOfSquaredDeviation": 3.4837285056710243e-08,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "4"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:10:00.001Z",
+            "endTime": "2026-08-04T19:11:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "4",
+              "mean": 0.03089141845703125,
+              "sumOfSquaredDeviation": 3.483728505670982e-08,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "4"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:09:00.001Z",
+            "endTime": "2026-08-04T19:10:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "4",
+              "mean": 0.030850410461425781,
+              "sumOfSquaredDeviation": 7.9202436609192849e-08,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "4"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:08:00.001Z",
+            "endTime": "2026-08-04T19:09:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "4",
+              "mean": 0.030752182006835938,
+              "sumOfSquaredDeviation": 4.3495674617588269e-08,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "4"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:07:00.001Z",
+            "endTime": "2026-08-04T19:08:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "4",
+              "mean": 0.030747413635253906,
+              "sumOfSquaredDeviation": 3.9504811866208474e-08,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "4"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:06:00.001Z",
+            "endTime": "2026-08-04T19:07:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "4",
+              "mean": 0.030726432800292969,
+              "sumOfSquaredDeviation": 8.69731593411411e-08,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "4"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:05:00.001Z",
+            "endTime": "2026-08-04T19:06:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "4",
+              "mean": 0.029478073120117188,
+              "sumOfSquaredDeviation": 2.0192543161101643e-05,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "1",
+                "3"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

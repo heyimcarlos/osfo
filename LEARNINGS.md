@@ -18,3 +18,9 @@
   pinned container, so the remote bind-mounted key can remain narrowly readable
   by making that UID the owner with mode 0400. The local source key remains mode
   0600.
+- 2026-08-04: Cloud SQL creates Enterprise Plus by default in this environment.
+  A custom CPU and memory tier requires an explicit `--edition=enterprise`.
+- 2026-08-04: The documented CREMA image needs an explicit Google Java 25
+  `--base-image` during source-free `gcloud run deploy`; without it, the build
+  omits `/app/entrypoint.sh`. A 1 GiB instance is also required for stable
+  startup.

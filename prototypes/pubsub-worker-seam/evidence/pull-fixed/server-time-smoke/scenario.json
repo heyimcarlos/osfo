@@ -1,0 +1,10 @@
+{
+  "benchmark_id": "5e38c587-0f99-478e-8dbf-d59bfbbf47fa",
+  "candidate": "pull-fixed",
+  "lane": "server-time-smoke",
+  "rate_per_second": 23,
+  "duration_seconds": 5,
+  "count": 115,
+  "started_at": "2026-08-04T18:45:55Z",
+  "ended_at": "2026-08-04T18:46:02Z"
+}

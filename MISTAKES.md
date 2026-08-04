@@ -138,3 +138,10 @@ so the shell treated inline code as command substitutions and created empty
 issue bodies. Quote heredoc delimiters for literal Markdown, populate dynamic
 references explicitly, and verify non-empty remote bodies immediately after
 creation.
+
+## 2026-08-04: Reusing Pub/Sub ordering keys across benchmark lanes
+
+A failed ordered publish pauses that ordering key. Reusing the key in a later
+lane made an otherwise isolated run inherit the earlier publisher failure.
+Namespace every ordering key with the immutable benchmark ID and call
+`ResumePublish` before retrying a failed ordered publish.

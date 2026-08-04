@@ -1,0 +1,303 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "delivery_type": "pull"
+        },
+        "type": "pubsub.googleapis.com/subscription/ack_latencies"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "subscription_id": "osfo-b0-39-pull",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:18:00.001Z",
+            "endTime": "2026-08-04T19:19:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:17:00.001Z",
+            "endTime": "2026-08-04T19:18:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:16:00.001Z",
+            "endTime": "2026-08-04T19:17:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:15:00.001Z",
+            "endTime": "2026-08-04T19:16:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:14:00.001Z",
+            "endTime": "2026-08-04T19:15:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "872",
+              "mean": 167.79522245842332,
+              "sumOfSquaredDeviation": 16852853.842512652,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "2",
+                "17",
+                "27",
+                "33",
+                "35",
+                "82",
+                "69",
+                "156",
+                "156",
+                "39",
+                "28",
+                "54",
+                "63",
+                "17",
+                "21",
+                "20",
+                "32",
+                "21"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:13:00.001Z",
+            "endTime": "2026-08-04T19:14:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1444",
+              "mean": 191.79474060749664,
+              "sumOfSquaredDeviation": 1105058463.5036433,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1",
+                "0",
+                "1",
+                "31",
+                "54",
+                "71",
+                "115",
+                "149",
+                "170",
+                "215",
+                "246",
+                "81",
+                "60",
+                "31",
+                "68",
+                "45",
+                "35",
+                "36",
+                "16",
+                "15",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "4"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:12:00.001Z",
+            "endTime": "2026-08-04T19:13:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "2068",
+              "mean": 162.70122616971688,
+              "sumOfSquaredDeviation": 654365440.02977479,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "2",
+                "0",
+                "5",
+                "1",
+                "6",
+                "39",
+                "67",
+                "99",
+                "145",
+                "201",
+                "266",
+                "276",
+                "339",
+                "170",
+                "71",
+                "70",
+                "61",
+                "69",
+                "97",
+                "76",
+                "5",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "3"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "ms"
+}

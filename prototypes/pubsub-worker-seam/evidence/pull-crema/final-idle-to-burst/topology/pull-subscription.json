@@ -1,0 +1,12 @@
+{
+  "ackDeadlineSeconds": 10,
+  "enableMessageOrdering": true,
+  "expirationPolicy": {
+    "ttl": "2678400s"
+  },
+  "messageRetentionDuration": "604800s",
+  "name": "projects/even-affinity-497006-u6/subscriptions/osfo-b0-39-pull",
+  "pushConfig": {},
+  "state": "ACTIVE",
+  "topic": "projects/even-affinity-497006-u6/topics/osfo-b0-39-pull"
+}

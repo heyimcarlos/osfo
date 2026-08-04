@@ -1,0 +1,246 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "delivery_type": "webhook",
+          "response_code": "ack_204"
+        },
+        "type": "pubsub.googleapis.com/subscription/push_request_latencies"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "subscription_id": "osfo-b0-39-push"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:37:00.001Z",
+            "endTime": "2026-08-04T19:38:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:36:00.001Z",
+            "endTime": "2026-08-04T19:37:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1358",
+              "mean": 110867.70153256226,
+              "sumOfSquaredDeviation": 66947268786409.219,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "341",
+                "637",
+                "53",
+                "28",
+                "33",
+                "45",
+                "40",
+                "44",
+                "37",
+                "23",
+                "18",
+                "6",
+                "0",
+                "4",
+                "2",
+                "3",
+                "5",
+                "13",
+                "0",
+                "13",
+                "13"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:35:00.001Z",
+            "endTime": "2026-08-04T19:36:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "2250",
+              "mean": 135952.51769385912,
+              "sumOfSquaredDeviation": 153122861217503.97,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1",
+                "0",
+                "502",
+                "905",
+                "86",
+                "46",
+                "84",
+                "96",
+                "91",
+                "118",
+                "80",
+                "68",
+                "45",
+                "12",
+                "0",
+                "2",
+                "5",
+                "7",
+                "11",
+                "27",
+                "1",
+                "24",
+                "39"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "us"
+}

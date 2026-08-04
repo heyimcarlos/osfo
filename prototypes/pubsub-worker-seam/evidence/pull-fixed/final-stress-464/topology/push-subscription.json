@@ -1,0 +1,17 @@
+{
+  "ackDeadlineSeconds": 10,
+  "enableMessageOrdering": true,
+  "expirationPolicy": {
+    "ttl": "2678400s"
+  },
+  "messageRetentionDuration": "604800s",
+  "name": "projects/even-affinity-497006-u6/subscriptions/osfo-b0-39-push",
+  "pushConfig": {
+    "oidcToken": {
+      "serviceAccountEmail": "osfo-b0-39-push-auth@even-affinity-497006-u6.iam.gserviceaccount.com"
+    },
+    "pushEndpoint": "https://osfo-b0-39-push-hzr7upuh7q-nn.a.run.app/v1/pubsub/push"
+  },
+  "state": "ACTIVE",
+  "topic": "projects/even-affinity-497006-u6/topics/osfo-b0-39-push"
+}

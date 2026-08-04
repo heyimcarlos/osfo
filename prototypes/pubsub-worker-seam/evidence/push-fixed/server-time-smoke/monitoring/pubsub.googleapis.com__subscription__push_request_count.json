@@ -1,0 +1,110 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code": "ack_204",
+          "response_class": "ack",
+          "delivery_type": "webhook"
+        },
+        "type": "pubsub.googleapis.com/subscription/push_request_count"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "subscription_id": "osfo-b0-39-push",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T18:49:00Z",
+            "endTime": "2026-08-04T18:50:00Z"
+          },
+          "value": {
+            "int64Value": "15993"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T18:48:00Z",
+            "endTime": "2026-08-04T18:49:00Z"
+          },
+          "value": {
+            "int64Value": "6939"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T18:47:00Z",
+            "endTime": "2026-08-04T18:48:00Z"
+          },
+          "value": {
+            "int64Value": "4568"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T18:46:00Z",
+            "endTime": "2026-08-04T18:47:00Z"
+          },
+          "value": {
+            "int64Value": "9095"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T18:45:00Z",
+            "endTime": "2026-08-04T18:46:00Z"
+          },
+          "value": {
+            "int64Value": "347"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "delivery_type": "webhook",
+          "response_class": "unreachable",
+          "response_code": "unreachable_5xx_error_429"
+        },
+        "type": "pubsub.googleapis.com/subscription/push_request_count"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "subscription_id": "osfo-b0-39-push"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T18:49:00Z",
+            "endTime": "2026-08-04T18:50:00Z"
+          },
+          "value": {
+            "int64Value": "211"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T18:48:00Z",
+            "endTime": "2026-08-04T18:49:00Z"
+          },
+          "value": {
+            "int64Value": "4"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

@@ -1,0 +1,75 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "pubsub.googleapis.com/subscription/num_undelivered_messages"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "subscription_id": "osfo-b0-39-push",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:40:00Z",
+            "endTime": "2026-08-04T19:40:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:39:00Z",
+            "endTime": "2026-08-04T19:39:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:38:00Z",
+            "endTime": "2026-08-04T19:38:00Z"
+          },
+          "value": {
+            "int64Value": "27"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:37:00Z",
+            "endTime": "2026-08-04T19:37:00Z"
+          },
+          "value": {
+            "int64Value": "128"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:36:00Z",
+            "endTime": "2026-08-04T19:36:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:35:00Z",
+            "endTime": "2026-08-04T19:35:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

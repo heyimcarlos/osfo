@@ -1,0 +1,87 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code": "success"
+        },
+        "type": "pubsub.googleapis.com/subscription/streaming_pull_message_operation_count"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "subscription_id": "osfo-b0-39-pull",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:12:00Z",
+            "endTime": "2026-08-04T19:13:00Z"
+          },
+          "value": {
+            "int64Value": "933"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:11:00Z",
+            "endTime": "2026-08-04T19:12:00Z"
+          },
+          "value": {
+            "int64Value": "16632"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:10:00Z",
+            "endTime": "2026-08-04T19:11:00Z"
+          },
+          "value": {
+            "int64Value": "10620"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:09:00Z",
+            "endTime": "2026-08-04T19:10:00Z"
+          },
+          "value": {
+            "int64Value": "1991"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:08:00Z",
+            "endTime": "2026-08-04T19:09:00Z"
+          },
+          "value": {
+            "int64Value": "9847"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:07:00Z",
+            "endTime": "2026-08-04T19:08:00Z"
+          },
+          "value": {
+            "int64Value": "2351"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-04T19:06:00Z",
+            "endTime": "2026-08-04T19:07:00Z"
+          },
+          "value": {
+            "int64Value": "2214"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}
