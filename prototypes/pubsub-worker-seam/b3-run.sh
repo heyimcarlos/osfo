@@ -4,16 +4,31 @@ set -euo pipefail
 prototype_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 experiment=${B3_EXPERIMENT:-transactional-outbox}
 sequence_stripes=${B3_SEQUENCE_STRIPES:-4}
+worker_concurrency=${B3_WORKER_CONCURRENCY:-32}
+worker_slots=${B3_WORKER_SLOTS:-$worker_concurrency}
+worker_db_pool=${B3_WORKER_DB_POOL:-4}
+ack_deadline=${B3_ACK_DEADLINE:-10}
 case "$sequence_stripes" in
   4|16|64) ;;
   *) echo "B3_SEQUENCE_STRIPES must be 4, 16, or 64" >&2; exit 2 ;;
 esac
+for setting in worker_concurrency worker_slots worker_db_pool ack_deadline; do
+  value=${!setting}
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "$setting must be a positive integer" >&2
+    exit 2
+  fi
+done
 if [[ "$experiment" == "transactional-outbox" ]]; then
   state_file="$prototype_dir/.b3-run.env"
   default_prefix=osfo-b3-38
 else
   state_file="$prototype_dir/.b3-$experiment.env"
-  default_prefix="osfo-b3-38-${experiment/stripes-/s}"
+  case "$experiment" in
+    stripes-*) default_prefix="osfo-b3-38-${experiment/stripes-/s}" ;;
+    flow-control-*) default_prefix="osfo-b3-38-${experiment/flow-control-/fc}" ;;
+    *) default_prefix="osfo-b3-38-$experiment" ;;
+  esac
 fi
 evidence_root="$prototype_dir/evidence/b3-$experiment"
 
@@ -148,15 +163,15 @@ provision() {
   gcloud pubsub topics describe "$topic_id" >/dev/null 2>&1 || gcloud pubsub topics create "$topic_id"
   gcloud run deploy "$worker_service" --image="$image_uri" --region="$region" --project="$project_id" \
     --service-account="$worker_service_account" --no-allow-unauthenticated --cpu=1 --memory=1Gi \
-    --concurrency=32 --min=0 --max=8 --cpu-throttling --timeout=600 \
+    --concurrency="$worker_concurrency" --min=0 --max=8 --cpu-throttling --timeout=600 \
     --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="ROLE=push,DB_POOL_SIZE=4,WORKER_SLOTS=32,CLAIM_LEASE_SECONDS=15"
+    --set-env-vars="ROLE=push,DB_POOL_SIZE=$worker_db_pool,WORKER_SLOTS=$worker_slots,CLAIM_LEASE_SECONDS=15"
   gcloud run services add-iam-policy-binding "$worker_service" --region="$region" \
     --member="serviceAccount:$push_auth_service_account" --role=roles/run.invoker --condition=None --quiet >/dev/null
   worker_url=$(gcloud run services describe "$worker_service" --region="$region" --format='value(status.url)')
   if ! gcloud pubsub subscriptions describe "$subscription_id" >/dev/null 2>&1; then
-    gcloud pubsub subscriptions create "$subscription_id" --topic="$topic_id" --ack-deadline=10 \
+    gcloud pubsub subscriptions create "$subscription_id" --topic="$topic_id" --ack-deadline="$ack_deadline" \
       --message-retention-duration=7d --min-retry-delay=10s --max-retry-delay=600s \
       --enable-message-ordering --push-endpoint="$worker_url/v1/pubsub/push" \
       --push-auth-service-account="$push_auth_service_account" \
@@ -185,10 +200,10 @@ deploy_images() {
   gcloud builds submit "$prototype_dir" --tag="$image_uri" --project="$project_id"
   gcloud run deploy "$worker_service" --image="$image_uri" --region="$region" --project="$project_id" \
     --service-account="$worker_service_account" --no-allow-unauthenticated --cpu=1 --memory=1Gi \
-    --concurrency=32 --min=0 --max=8 --cpu-throttling --timeout=600 \
+    --concurrency="$worker_concurrency" --min=0 --max=8 --cpu-throttling --timeout=600 \
     --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="ROLE=push,DB_POOL_SIZE=4,WORKER_SLOTS=32,CLAIM_LEASE_SECONDS=15"
+    --set-env-vars="ROLE=push,DB_POOL_SIZE=$worker_db_pool,WORKER_SLOTS=$worker_slots,CLAIM_LEASE_SECONDS=15"
   gcloud run deploy "$ingress_service" --image="$image_uri" --command=/b3-ingress \
     --region="$region" --project="$project_id" --service-account="$ingress_service_account" \
     --no-allow-unauthenticated --cpu=1 --memory=1Gi --concurrency=80 --min=0 --max=8 \
@@ -212,7 +227,7 @@ reset_subscription() {
   gcloud pubsub subscriptions delete "$subscription_id" --quiet >/dev/null 2>&1 || true
   local worker_url
   worker_url=$(gcloud run services describe "$worker_service" --region="$region" --format='value(status.url)')
-  gcloud pubsub subscriptions create "$subscription_id" --topic="$topic_id" --ack-deadline=10 \
+  gcloud pubsub subscriptions create "$subscription_id" --topic="$topic_id" --ack-deadline="$ack_deadline" \
     --message-retention-duration=7d --min-retry-delay=10s --max-retry-delay=600s \
     --enable-message-ordering --push-endpoint="$worker_url/v1/pubsub/push" \
     --push-auth-service-account="$push_auth_service_account" \
@@ -369,7 +384,9 @@ load_lane() {
     --arg offer_ended_at "$offer_ended_at" --arg ended_at "$ended_at" \
     --argjson rate "$rate" --argjson end_rate "$end_rate" --argjson duration "$duration" \
     --argjson count "$count" --argjson repetition "$repetition" --argjson sequence_stripes "$sequence_stripes" \
-    '{manifest:"pubsub-handoff-v1",benchmark_id:$benchmark_id,lane:$lane,repetition:$repetition,handoff:"transactional-outbox",sequence_stripes:$sequence_stripes,relay_owners:4,rate_per_second:$rate,end_rate_per_second:$end_rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at}' \
+    --argjson worker_concurrency "$worker_concurrency" --argjson worker_slots "$worker_slots" \
+    --argjson worker_db_pool "$worker_db_pool" --argjson ack_deadline "$ack_deadline" \
+    '{manifest:"pubsub-handoff-v1",benchmark_id:$benchmark_id,lane:$lane,repetition:$repetition,handoff:"transactional-outbox",sequence_stripes:$sequence_stripes,relay_owners:4,worker_concurrency:$worker_concurrency,worker_slots:$worker_slots,worker_db_pool:$worker_db_pool,ack_deadline_seconds:$ack_deadline,rate_per_second:$rate,end_rate_per_second:$end_rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at}' \
     >"$destination/scenario.json"
   capture_logs "$destination/runtime-logs.json" "$started_at"
   collect_monitoring "$destination" "$started_at" "$ended_at"
