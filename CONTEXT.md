@@ -139,6 +139,18 @@ cursor H. It is derived from canonical ThreadEvents and can bootstrap or replace
 client-derived state. It is not canonical history and does not replace or
 rewrite ThreadEvents.
 
+**Context Projection**:
+A versioned, rebuildable Thread-scoped derivation of canonical ThreadEvent
+history used to assemble bounded context for future Agent Runtime input. It is
+not AgentRun recovery authority and never replaces canonical history.
+_Avoid_: RuntimeCheckpointRef, canonical summary, memory record
+
+**ContextProjectionRef**:
+An immutable reference selected during AgentRun context preparation and
+recorded before Agent Runtime evaluation. It identifies the exact Context
+Projection generation used as that evaluation's historical base.
+_Avoid_: RuntimeCheckpointRef, admission-time snapshot, mutable context pointer
+
 **AgentEvent**:
 An event emitted while an AgentRun executes. An AgentEvent becomes a
 ThreadEvent only when it represents a durable conversational fact.
@@ -170,14 +182,9 @@ or dedicated compute resource, and it may wait and later continue without
 changing identity. Its lifecycle and ordered typed interaction history are the
 authority for logical recovery. It pins the versioned semantic configuration
 needed to interpret those records throughout its lifetime. It terminates only
-as succeeded, failed, canceled, or terminated; interruption describes an
-incomplete interaction rather than an AgentRun terminal state.
+as succeeded, failed, or canceled; interruption describes an incomplete
+interaction rather than an AgentRun terminal state.
 _Avoid_: Worker, process, Temporal Workflow, Agent Runtime state machine
-
-**AgentRunCancellationRequested**:
-A ThreadEvent recording that durable cancellation won for a non-terminal
-AgentRun. It blocks normal completion, ordinary output, and new child work while
-bounded cleanup finishes before the AgentRun becomes canceled.
 
 **AgentRunSucceeded**:
 The terminal ThreadEvent stating that one AgentRun completed successfully.
@@ -185,10 +192,6 @@ The terminal ThreadEvent stating that one AgentRun completed successfully.
 **AgentRunFailed**:
 The terminal ThreadEvent stating that one AgentRun failed with a normalized,
 client-safe cause.
-
-**AgentRunCanceled**:
-The terminal ThreadEvent stating that one AgentRun was canceled, together with
-its cleanup disposition and whether external work may continue.
 
 **Proactive AgentRun**:
 An AgentRun admitted from an authorized durable trigger rather than a new user
@@ -283,30 +286,33 @@ lease. Lease expiry permits direct takeover through a new claim epoch.
 _Avoid_: Worker process, sandbox session, operation retry
 
 **AgentRunCancellationRequested**:
-A ThreadEvent recording that cancellation won for an AgentRun with active work.
-The AgentRun remains Running while normal completion and new child admission are
-closed and bounded cancellation cleanup proceeds.
+A ThreadEvent recording that durable cancellation won for a non-terminal
+AgentRun. If active work exists, the AgentRun remains Running while normal
+completion, ordinary output, and new child work are closed and bounded cleanup
+proceeds.
 
 **AgentRunCanceled**:
-The terminal ThreadEvent recording that Osfo finished authoritative cancellation
-of an AgentRun. External work that could not be confirmed stopped remains
-separately accountable.
-
-**Terminated AgentRun**:
-An AgentRun terminal state entered when its cancellation cleanup deadline expires
-and Osfo forcibly removes remaining execution authority. It does not assert that
-external work stopped or was undone.
-_Avoid_: Canceled AgentRun, Failed AgentRun
-
-**AgentRunTerminated**:
-The terminal ThreadEvent recording that an AgentRun reached its cancellation
-cleanup deadline and Osfo forcibly removed its remaining execution authority.
+The terminal ThreadEvent stating that one AgentRun was canceled, together with
+its completed or deadline-exceeded cleanup disposition and whether external work
+may continue.
 
 **Waiting AgentRun**:
 An AgentRun lifecycle state in which the run is non-runnable until one
 referenced durable wake condition is satisfied, after which it becomes a
 Pending AgentRun. Waiting does not create a separate work identity.
 _Avoid_: AgentRunWait, paused worker, sandbox pause, WorkflowInstance
+
+**Declared Wait**:
+A client-visible durable suspension of one Waiting AgentRun, identified by one
+WaitId and correlated with one typed wake subject. It resolves once as
+satisfied, timed out, or canceled without becoming a separate work identity.
+_Avoid_: Waiting AgentRun, retry delay, Approval Request, WorkflowInstance
+
+**User-visible Progress**:
+An explicitly promoted bounded update to one open ToolCall, WorkflowInstance,
+or Child AgentRun. It is a conversational fact, not operational telemetry or a
+separate work identity.
+_Avoid_: Runtime log, retry status, metric, progress entity
 
 **Retry-ready AgentRun**:
 An AgentRun lifecycle state following a classified retryable failure. It is
@@ -334,6 +340,67 @@ outcome, together with integrity and interpretation metadata. Authoritative
 content produced in a sandbox is exported and verified before its ArtifactRef
 is committed.
 _Avoid_: Sandbox path, SandboxRef, RuntimeCheckpointRef
+
+**Operation Gate**:
+The effective authorization outcome for one exact committed Action:
+`deny`, `require approval`, or `permit`, ordered from strictest to weakest. The
+Agent Application sets the governing policy; the Agent Runtime may require a
+stricter outcome from instruction evidence but can never weaken policy. An
+instruction such as "do not confirm" is not authority.
+
+**Approval**:
+An authorized decision bound to one exact committed Action that passed an
+Operation Gate requiring approval. A material change creates a new Action
+and requires a new approval; the Agent Application determines who may approve.
+Approval satisfies human consent but does not replace the current authorization
+check required before a new external call.
+_Avoid_: Authorization policy, reusable consent, approval of mutable intent
+
+**Approval Request**:
+A finite-lived durable request for an authorized actor to approve or deny one
+exact committed Action. It has its own stable identity and a deterministic,
+versioned client-safe presentation of every material field and consequence. It
+moves once from pending to approved, denied, expired, or canceled; the first
+valid terminal transition wins.
+_Avoid_: Mutable prompt, reusable consent, authorization policy
+
+**Action**:
+The semantic classification of one exact, durably committed effectful ToolCall.
+Its versioned tool definition owns that classification. It reuses the ToolCall
+identity, has a stable idempotency key, may require Approval, and terminates as
+applied, not applied, or unresolved. A read-only ToolCall is not an Action, and
+the Agent Runtime cannot weaken either classification.
+_Avoid_: ExternalEffectObligation, separate effect identity, mutable intent
+
+**Action Success Boundary**:
+The stable, versioned claim that defines exactly what `applied` proves for an
+Action definition and which affirmative evidence satisfies it. Evidence of
+non-application is also affirmative; missing evidence yields `unresolved`. Its
+client-safe description states both what success proves and what it does not.
+_Avoid_: Provider success message, delivery assumption, absence of an error
+
+**Action Presentation**:
+The immutable, client-safe title, description, and material fields of one
+committed Action. Its versioned Action definition owns the presentation; it is
+bound to the Action's internal digest and uses bounded safe values or typed
+references for large or sensitive content.
+_Avoid_: Mutable summary, raw Action payload, approval hash
+
+**Client Content**:
+Client-safe content represented as bounded inline text or an immutable stored
+content reference carrying a stable ContentId, media type, byte length, and
+SHA-256 digest. Referenced bytes are retrieved under Thread authorization.
+_Avoid_: Provider file ID, expiring download URL, raw storage location
+
+**ContentId**:
+The stable server-issued identity of one immutable stored Client Content byte
+sequence. It is not a content-addressed ID or a bearer credential.
+_Avoid_: File ID, blob URL, SHA-256 digest
+
+**Action Attempt**:
+One private durably recorded attempt to execute an Action. It is recorded
+before any external call; an unknown outcome blocks blind retry.
+_Avoid_: Action, network connection
 
 **WorkflowInstance**:
 Independently durable work that may wait, retry, or outlive the AgentRun that
@@ -412,6 +479,16 @@ _Avoid_: Web Adapter, OpenAI-Compatible Adapter, Messaging Adapter
 Immutable evidence that Osfo durably accepted one idempotent Native Thread
 Transport operation. Identical retries return the same receipt without creating
 another canonical transition.
+
+**ActionReceipt**:
+Immutable terminal, client-safe evidence of the final knowledge state of one
+Action, keyed by its ToolCall identity. It distinguishes confirmed application,
+confirmed non-application, and unresolved uncertainty; it never treats
+acceptance as proof that an external effect occurred. It names the Action
+definition and Action Success Boundary with stable versions and may carry closed
+client-safe evidence references. Read-only ToolCalls do not produce
+ActionReceipts.
+_Avoid_: Acceptance Receipt, mutable status, provider response
 
 **OpenAI-Compatible Adapter**:
 A reusable Adapter implementation that exposes selected Osfo behavior through
