@@ -468,7 +468,7 @@ That sequence can establish a solid foundation. The current evidence cannot just
 ## Local evidence map
 
 - [`CONTEXT.md`](../../CONTEXT.md)
-- [`ADR-0001: retain Cloud SQL direct dispatch`](../adr/0001-retain-cloud-sql-direct-dispatch.md)
+- [`ADR-0001: use a transactional outbox with Pub/Sub primary delivery`](../adr/0001-use-transactional-outbox-pubsub-delivery.md)
 - [`dispatch-topology` prototype](../../prototypes/dispatch-topology/README.md)
 - [`AgentRun lifecycle` prototype](../../prototypes/agent-run-lifecycle/README.md)
 - [`production-shaped lifecycle research`](production-shaped-lifecycle-prototype-stack.md)

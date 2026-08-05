@@ -1,0 +1,145 @@
+# ADR 0001: Use a transactional outbox with Pub/Sub primary delivery
+
+Date: 2026-08-05
+
+Status: Accepted architecture, production qualification remains evidence-gated
+
+Supersedes: ADR 0001, Retain Cloud SQL direct AgentRun dispatch
+
+## Context
+
+Osfo must durably accept AgentRuns without making PostgreSQL the runnable-work
+scheduler. PostgreSQL remains authoritative for AgentRun lifecycle and
+canonical Thread state. Pub/Sub owns runnable-work buffering, delivery, flow
+control, and redelivery.
+
+This split creates an atomicity boundary. PostgreSQL cannot commit AgentRun
+authority and publish to Pub/Sub in one transaction. Two candidates used the
+same authenticated Pub/Sub push worker seam:
+
+- B2 directly wrote PostgreSQL and published to Pub/Sub in either order or
+  concurrently.
+- B3 atomically committed AgentRuns and append-oriented outbox records, then an
+  isolated relay published the outbox records.
+
+The production workload target is 232 incoming messages/s. The current
+Reference Workload Trace produces 1.5 AgentRuns per incoming message, or 348
+AgentRuns/s before retries. The 464 incoming-message/s lane characterizes safe
+overload and recovery rather than promising that all offered work is accepted.
+
+## Decision
+
+Select B3. One PostgreSQL admission transaction commits the acceptance receipt,
+canonical input facts, AgentRuns, durable capacity reservations, and one outbox
+record per AgentRun. An isolated relay publishes minimal delivery identities to
+Pub/Sub. Authenticated Pub/Sub push workers claim AgentRuns by ID, execute only
+under a finite lease and monotonic claim epoch, commit authoritative outcomes
+under that fence, then acknowledge delivery.
+
+```text
+authenticated command
+  -> PostgreSQL acceptance transaction
+       -> receipt, ThreadEvent, AgentRun, budget reservation, outbox
+  -> isolated confirmed-publication relay
+  -> Pub/Sub topic and authenticated push subscription
+  -> point-addressed PostgreSQL claim with lease and epoch
+  -> AgentRun execution and fenced terminal transaction
+       -> outcome and durable-budget release
+  -> Pub/Sub acknowledgement
+```
+
+The message envelope contains `AgentRunId`, a stable delivery identity, and
+minimal routing metadata. Authoritative input and lifecycle state remain in
+PostgreSQL. Workers never scan PostgreSQL for runnable work.
+
+The outbox is append-oriented. Relay progress is monotonic and advances only
+after publication confirmation. A crash after broker confirmation but before
+progress may republish an identity, which is safe. Retention removes a sealed
+partition only after every relay cursor and replay-safety window has passed it.
+
+Pub/Sub ordering keys do not replace PostgreSQL Thread ordering. The admission
+transaction allocates each Thread sequence in commit order. A worker may claim
+only when the predecessor is terminal. Duplicate or out-of-order deliveries
+retry without changing authority.
+
+Global and per-Principal non-terminal limits remain admission invariants.
+Principal starvation resistance remains a separate scheduler acceptance gate.
+Pub/Sub does not prove that gate by itself, so the selected architecture is not
+production-qualified until a Principal-first publication or execution selector
+passes the noisy-Principal challenge lane without scanning AgentRuns.
+
+## Rejected alternative
+
+B2 is prohibited. Every direct dual-write ordering has an unavoidable failure
+window:
+
+- database-first can strand accepted AgentRuns with no broker obligation;
+- publish-first can create and acknowledge ghost work before authority exists;
+- concurrent publication can produce either failure;
+- caller retry cannot be the durable repair mechanism because the caller may
+  disconnect or stop retrying.
+
+Adding a reconciliation record or pending-row scanner would no longer be B2.
+It would recreate B3 or introduce a new durable publisher topology.
+
+## Evidence
+
+The B2 negative control ran 162 corrected lanes, 16,200 primary faulted
+requests, and 8,100 retries. It found 5,712 provably stranded AgentRuns, 4,722
+ghost delivery attempts, and 8,100 irreconcilable no-retry outcomes. It produced
+zero duplicate terminal commits, which confirms that fencing limits damage but
+cannot repair the missing atomic handoff.
+
+The selected B3 control accepted 139,200 incoming messages over ten minutes and
+completed all 208,800 AgentRuns. It recorded zero unknown outcomes, unpublished
+obligations, stranded runs, ghost authority, unfinished semantic attempts,
+duplicate terminal commits, or budget reconciliation mismatches. Worker loss,
+four hard admission boundaries, and two post-confirmation relay boundaries
+recovered without manual repair.
+
+The bounded 464/s stress control accepted 15,148 messages, returned 12,692
+typed overload responses, and completed all 22,703 authoritative AgentRuns. It
+preserved 252.5 Good Root Outcomes/s, above the 232/s production target, and
+drained to zero nonterminal work and zero durable-budget mismatch.
+
+The retained-corpus target exposed a publish-to-claim p99 of 1,467.8 ms against
+the one-second topology threshold. This is tracked separately and prevents a
+claim of full retained-corpus production qualification. It does not reopen the
+atomic handoff choice.
+
+The checksummed comparison, exact call flows, reconciliation pointers,
+resource manifests, cost boundary, and teardown proof are in
+[`HANDOFF-DECISION.md`](../../prototypes/pubsub-worker-seam/HANDOFF-DECISION.md)
+and the offline
+[`handoff-dashboard.html`](../../prototypes/pubsub-worker-seam/handoff-dashboard.html).
+
+## Cost boundary
+
+No complete B2/B3 lifecycle-cost comparison was measured, so this ADR makes no
+total-cost claim. At the 60-million incoming-message and 90-million AgentRun
+monthly model, the dated list-price lower bound for B3's incremental handoff is
+about USD 107.34: USD 63.07 for one continuously available 1-vCPU, 1-GiB relay,
+USD 6.71 for minimum-size Pub/Sub publication and delivery volume, USD 36.00
+for 90 million push requests, and about USD 1.56 for 15 ms synthetic worker
+compute at concurrency 32.
+
+That lower bound excludes ingress, Cloud SQL, Temporal Cloud, outbox storage,
+WAL, backups, retention, logging, monitoring, networking, retry amplification,
+and real execution. Those omissions are explicit and must be priced by the GCP
+deployment contract before production approval.
+
+## Consequences
+
+- Durable acceptance no longer depends on two independent writes succeeding.
+- PostgreSQL remains lifecycle authority but no longer performs broad runnable
+  discovery.
+- Pub/Sub redelivery is expected. Point claims, claim epochs, and terminal
+  fences make duplicates harmless.
+- The relay and outbox add observable operational state, WAL, retention,
+  maintenance, and cost. They are not treated as free.
+- A long-lived authenticated push subscription and min-zero workers remain the
+  default. Warm worker floors were rejected because they added idle cost
+  without improving measured latency.
+- Full production approval still requires the retained-corpus tail control,
+  Principal starvation-resistance evidence, production Temporal integration,
+  and complete deployment cost and recovery evidence.

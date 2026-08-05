@@ -7,6 +7,7 @@ evidence/*
 !evidence/SEALED-SHA256SUMS
 !evidence/crema-config.yaml
 !evidence/decision.json
+!evidence/handoff-decision.json
 !evidence/pricing-model.json
 !evidence/teardown-inventory.json
 !evidence/teardown-verification.json

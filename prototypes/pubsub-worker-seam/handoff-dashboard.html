@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Osfo Pub/Sub handoff decision</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --panel:#121a2d; --line:#2a3857; --text:#eef3ff; --muted:#9cafcf; --good:#59d39b; --bad:#ff7b86; --warn:#ffd166; --blue:#71a7ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:linear-gradient(145deg,#080d1a,#101a31); color:var(--text); font:15px/1.5 ui-sans-serif,system-ui,sans-serif; }
+    main { width:min(1180px,calc(100% - 32px)); margin:32px auto 56px; }
+    h1,h2 { margin:0 0 12px; line-height:1.15; }
+    h1 { font-size:clamp(30px,5vw,54px); letter-spacing:-.04em; max-width:780px; }
+    h2 { font-size:20px; }
+    p { margin:0 0 12px; color:var(--muted); }
+    .eyebrow { color:var(--blue); font-weight:700; letter-spacing:.12em; text-transform:uppercase; }
+    .hero,.panel { background:rgba(18,26,45,.92); border:1px solid var(--line); border-radius:18px; box-shadow:0 24px 70px rgba(0,0,0,.25); }
+    .hero { padding:32px; margin-bottom:18px; }
+    .verdict { display:inline-flex; gap:8px; align-items:center; margin-top:10px; padding:9px 13px; border-radius:999px; background:rgba(89,211,155,.12); border:1px solid rgba(89,211,155,.35); color:var(--good); font-weight:800; }
+    .grid { display:grid; grid-template-columns:repeat(12,1fr); gap:18px; }
+    .panel { padding:22px; grid-column:span 6; }
+    .wide { grid-column:1/-1; }
+    .metric-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:18px; }
+    .metric { padding:14px; background:#0c1427; border:1px solid var(--line); border-radius:12px; }
+    .metric strong { display:block; font-size:24px; letter-spacing:-.03em; }
+    .metric span { color:var(--muted); font-size:12px; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th,td { padding:11px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:var(--muted); font-weight:650; }
+    .good { color:var(--good); font-weight:750; }
+    .bad { color:var(--bad); font-weight:750; }
+    .warn { color:var(--warn); font-weight:750; }
+    .flow { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:16px; }
+    .node { padding:10px 12px; border:1px solid var(--line); background:#0c1427; border-radius:10px; }
+    .arrow { color:var(--blue); font-weight:800; }
+    .bar { height:9px; border-radius:999px; background:#0c1427; overflow:hidden; margin:8px 0 4px; }
+    .bar > i { display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--blue),var(--good)); }
+    .foot { margin-top:18px; font-size:12px; color:var(--muted); }
+    a { color:var(--blue); }
+    @media (max-width:800px) { .panel { grid-column:1/-1; } .metric-grid { grid-template-columns:1fr; } .hero { padding:24px; } }
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Architecture decision</div>
+    <h1>Transactional outbox wins the Pub/Sub handoff</h1>
+    <p>B2 fails durable acceptance. B3 atomically joins AgentRun authority to a publishable obligation, then tolerates duplicate publication and delivery through point claims and fencing.</p>
+    <div class="verdict">SELECT B3 · REJECT B2</div>
+    <div class="flow" aria-label="selected call flow">
+      <span class="node">admit</span><span class="arrow">→</span>
+      <span class="node">AgentRun + outbox commit</span><span class="arrow">→</span>
+      <span class="node">confirmed relay</span><span class="arrow">→</span>
+      <span class="node">Pub/Sub push</span><span class="arrow">→</span>
+      <span class="node">fenced point claim</span><span class="arrow">→</span>
+      <span class="node">terminal commit</span><span class="arrow">→</span>
+      <span class="node">ack</span>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>B2 negative control</h2>
+      <p>Every direct dual-write ordering opens a loss or ghost window. Fast normal operation cannot repair the invariant.</p>
+      <div class="metric-grid">
+        <div class="metric"><strong class="bad">5,712</strong><span>stranded AgentRuns</span></div>
+        <div class="metric"><strong class="bad">4,722</strong><span>ghost attempts</span></div>
+        <div class="metric"><strong class="bad">8,100</strong><span>irreconcilable no-retry outcomes</span></div>
+      </div>
+      <div class="foot">162 corrected lanes, 16,200 primary faulted requests, 8,100 retries.</div>
+    </section>
+
+    <section class="panel">
+      <h2>B3 target control</h2>
+      <p>The selected candidate preserved exact authority and terminal reconciliation at the production target.</p>
+      <div class="metric-grid">
+        <div class="metric"><strong class="good">139,200</strong><span>accepted messages</span></div>
+        <div class="metric"><strong class="good">208,800</strong><span>terminal AgentRuns</span></div>
+        <div class="metric"><strong class="good">0</strong><span>loss, ghosts, unknowns, duplicate terminals</span></div>
+      </div>
+      <div class="foot">Ten minutes at 232 incoming messages/s. Retained-corpus publish-to-claim p99 remains a follow-up.</div>
+    </section>
+
+    <section class="panel wide">
+      <h2>Decision table</h2>
+      <table>
+        <thead><tr><th>Gate</th><th>B2 direct dual-write</th><th>B3 transactional outbox</th><th>Verdict</th></tr></thead>
+        <tbody>
+          <tr><td>Durable acceptance</td><td class="bad">FAIL</td><td class="good">PASS in exercised cuts</td><td>B2 prohibited</td></tr>
+          <tr><td>Target correctness</td><td>Short normal-path pass only</td><td class="good">139,200 accepted, 208,800 terminal</td><td>B3</td></tr>
+          <tr><td>Bounded overload</td><td class="warn">MISSING</td><td class="good">12,692 typed rejections, 252.5 GRO/s</td><td>B3</td></tr>
+          <tr><td>Automatic recovery</td><td class="bad">FAIL for missing publish obligation</td><td class="good">Worker and relay cuts converge</td><td>B3</td></tr>
+          <tr><td>Retained-corpus p99</td><td class="warn">MISSING</td><td class="warn">1,467.8 ms, follow-up</td><td>Deployment gate</td></tr>
+          <tr><td>Principal fairness</td><td class="warn">MISSING</td><td class="warn">MISSING</td><td>New proof required</td></tr>
+          <tr><td>Complete cost</td><td class="warn">MISSING</td><td class="warn">MISSING</td><td>No total-cost claim</td></tr>
+          <tr><td>Teardown</td><td class="good">Zero residue</td><td class="good">Zero residue</td><td>PASS</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Bounded stress</h2>
+      <p>At 464 incoming messages/s, B3 rejects before acceptance and preserves target Goodput.</p>
+      <div class="bar"><i style="width:54.4%"></i></div>
+      <p><span class="good">15,148 accepted</span> · 12,692 typed rejections · zero unknowns · 22,703 terminal AgentRuns</p>
+      <p>252.5 Good Root Outcomes/s, above the 232/s target.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Monthly handoff lower bound</h2>
+      <table>
+        <tbody>
+          <tr><td>Always-available relay</td><td>$63.07</td></tr>
+          <tr><td>Pub/Sub volume</td><td>$6.71</td></tr>
+          <tr><td>90M push requests</td><td>$36.00</td></tr>
+          <tr><td>Synthetic worker compute</td><td>$1.56</td></tr>
+          <tr><td><strong>Measured lower bound</strong></td><td><strong>$107.34</strong></td></tr>
+        </tbody>
+      </table>
+      <div class="foot">Excludes Cloud SQL, Temporal, ingress, outbox storage and WAL, retention, backups, logging, monitoring, networking, retries, and real execution.</div>
+    </section>
+
+    <section class="panel wide">
+      <h2>Evidence and qualification boundary</h2>
+      <p>Raw B2 identities and checksums are preserved at commit <a href="https://github.com/heyimcarlos/osfo/commit/bf53d85">bf53d85</a>. Corrected B3 cut evidence is preserved at <a href="https://github.com/heyimcarlos/osfo/commit/d0a41cb">d0a41cb</a>. Runtime, fencing, ModelCall, and durable-budget evidence is preserved at <a href="https://github.com/heyimcarlos/osfo/commit/4c5e9b6">4c5e9b6</a> and <a href="https://github.com/heyimcarlos/osfo/commit/65f1319">65f1319</a>.</p>
+      <p>Before production approval: control the retained-corpus p99 tail, prove Principal-first starvation resistance, run the selected handoff through the real Temporal and Native Thread Transport path, and complete final deployment cost and recovery evidence.</p>
+    </section>
+  </div>
+  <p class="foot">Osfo Pub/Sub handoff decision · 2026-08-05 · See HANDOFF-SHA256SUMS for artifact integrity.</p>
+</main>
+</body>
+</html>

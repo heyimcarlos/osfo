@@ -1,0 +1,4 @@
+83997c405e2c6302239bb7ea813207d10449231a2e517128142e2dc17bf56aff  HANDOFF-DECISION.md
+f3f77023ed7a8527c25f78034ab18f3b22cd989991b754745c018948433b8667  handoff-dashboard.html
+771f104399a6ac1cbd799e1428e48561caaf4c9000e25513a79f3de83f33ce91  evidence/handoff-decision.json
+e08c2a8f79e9720417fdb121fc361e98987c713d6a956c0151123847eb87bdfa  ../../docs/adr/0001-use-transactional-outbox-pubsub-delivery.md

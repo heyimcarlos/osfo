@@ -165,8 +165,8 @@ fixed acceptance invariant.
   Pub/Sub confirmations. A provider-generated fault campaign remains missing.
 - The prototype uses synthetic 15 ms work. It does not claim a full model,
   Temporal, tool, workflow, sandbox, artifact, or streaming result.
-- ADR 0001 still records direct Cloud SQL scheduling. This ticket does not edit
-  that ADR; the later topology-selection ticket owns its replacement.
+- ADR 0001 was later replaced by the transactional-outbox and Pub/Sub
+  primary-delivery decision. This report remains the negative-control evidence.
 
 ## Decision
 
