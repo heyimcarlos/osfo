@@ -26,11 +26,77 @@ The initial Reference Agent Application built with Osfo. Oz v1 is a
 Single-Thread Agent.
 _Avoid_: Osfo, TryAgent
 
+**Production Workload Envelope**:
+The topology-neutral demand model that relates incoming messages to derived
+Osfo work, traffic shape, sustained capacity, and stress characterization.
+Each workload unit remains distinct and internal amplification comes from a
+versioned reference trace rather than becoming a product SLO.
+_Avoid_: Benchmark target, AgentRun throughput target, DAU target
+
+**Reference Workload Trace**:
+A versioned, reproducible incoming-message trace whose observed work mix and
+amplification represent production-shaped Oz behavior.
+_Avoid_: Synthetic benchmark, worst-case workload
+
+**Challenge Lane**:
+A focused workload that stresses one amplification, fairness, recovery, or
+delivery dimension independently of the Reference Workload Trace.
+_Avoid_: Production traffic forecast, simultaneous worst case
+
+**Production Acceptance Corpus**:
+The retained-data shape at which every production SLO and correctness gate
+must pass.
+_Avoid_: Clean database, empty benchmark corpus
+
+**Growth Corpus**:
+A mandatory deeper-history or wider-identity retained-data shape used to test
+correctness and scaling behavior without inventing v1 latency or cost SLOs.
+_Avoid_: Production acceptance corpus, capacity promise
+
+**Good Root Outcome**:
+The authoritative root outcome for one accepted incoming message that passes
+its Reference Workload Trace journey's versioned acceptance assertions before
+that journey's Evaluation Deadline.
+_Avoid_: Useful Completion, successful AgentRun, terminal response
+
+**Good Root Outcome Ratio**:
+Good Root Outcomes divided by accepted incoming messages whose evaluation
+windows have closed. System failures and deadline misses remain in the
+denominator; overload rejections remain in the admission SLI.
+_Avoid_: Success rate over completed work, admission success rate
+
+**Goodput**:
+The number of Good Root Outcomes produced per second.
+_Avoid_: AgentRun throughput, terminal response rate
+
+**Goodput Knee**:
+The first offered-demand region where additional demand no longer increases
+Goodput acceptably or first violates an outcome, latency, backlog, correctness,
+recovery, or bounded-resource gate.
+_Avoid_: First rejection, peak AgentRun throughput, benchmark maximum
+
+**Recovery Reserve**:
+The measured processing capacity above current accepted demand that drains
+recovery backlog within its deadline. It is proven through goodput and backlog
+slope rather than inferred from provisioned resources or autoscaling limits.
+_Avoid_: Spare instance count, autoscaling maximum, nominal headroom
+
+**First Meaningful ThreadEvent**:
+The first durable client-visible ThreadEvent after message acceptance that
+provides output, progress, an approval request, a declared wait, or a terminal
+outcome.
+_Avoid_: Heartbeat, non-durable model token, transport notification
+
 **Single-Thread Agent**:
 An agent reached through one canonical ordered conversation, independent of the
 devices used to participate in it. The term describes conversational identity,
 not compute concurrency.
 _Avoid_: Single-threaded process, one worker per agent
+
+**Principal**:
+The authenticated actor whose work shares admission limits and scheduler
+fairness policy. Oz v1 maps one authenticated user to one Principal.
+_Avoid_: Thread, device, parent AgentRun, tenant hierarchy
 
 **Thread**:
 The canonical ordered conversational scope of a Single-Thread Agent. Every
