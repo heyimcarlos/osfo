@@ -23,7 +23,8 @@ _Avoid_: Reference Product Composition, Osfo core, throwaway sample
 
 **Oz**:
 The initial Reference Agent Application built with Osfo. Oz v1 is a
-Single-Thread Agent.
+Single-Thread Agent. Oz is a long-lived, deployable Agent Application, not a
+disposable demo or test harness.
 _Avoid_: Osfo, TryAgent
 
 **Production Workload Envelope**:
@@ -98,16 +99,30 @@ The authenticated actor whose work shares admission limits and scheduler
 fairness policy. Oz v1 maps one authenticated user to one Principal.
 _Avoid_: Thread, device, parent AgentRun, tenant hierarchy
 
+**Authentication Session**:
+Independently revocable authentication state through which a client acts as one
+Principal. It does not own Thread identity, cursor progress, or device identity.
+
 **Thread**:
-The canonical ordered conversational scope of a Single-Thread Agent. Every
-device observes and resumes the same Thread order; accounts and devices do not
-define competing conversation sequences.
+The canonical ordered conversational scope of a Single-Thread Agent, owned by
+exactly one Principal. Every authorized client observes and resumes the same
+Thread order; accounts and devices do not define competing conversation
+sequences.
 _Avoid_: Account timeline, device thread
 
 **ThreadEvent**:
 An immutable, per-Thread sequenced record of a conversational fact required for
 durable replay, reconstruction, or explanation.
 _Avoid_: Runtime log, provider event
+
+**UserMessage**:
+One immutable client-submitted input accepted into a Thread. Its identity is
+distinct from the ThreadEvent that records it, the AgentRun it creates, and its
+Acceptance Receipt.
+
+**UserMessageAppended**:
+A ThreadEvent recording that one UserMessage was durably added to a Thread and
+correlated with its resulting AgentRun.
 
 **ThreadPosition**:
 The stable, monotonically increasing order of a committed ThreadEvent within
@@ -117,6 +132,12 @@ _Avoid_: Timestamp order, provider sequence
 **ThreadCursor**:
 An opaque resume token representing the last ThreadPosition a client applied.
 _Avoid_: Provider cursor, pagination token
+
+**Thread Snapshot**:
+A versioned, complete, self-consistent client projection of one Thread through
+cursor H. It is derived from canonical ThreadEvents and can bootstrap or replace
+client-derived state. It is not canonical history and does not replace or
+rewrite ThreadEvents.
 
 **AgentEvent**:
 An event emitted while an AgentRun executes. An AgentEvent becomes a
@@ -149,9 +170,25 @@ or dedicated compute resource, and it may wait and later continue without
 changing identity. Its lifecycle and ordered typed interaction history are the
 authority for logical recovery. It pins the versioned semantic configuration
 needed to interpret those records throughout its lifetime. It terminates only
-as succeeded, failed, or canceled; interruption describes an incomplete
-interaction rather than a fourth AgentRun terminal state.
+as succeeded, failed, canceled, or terminated; interruption describes an
+incomplete interaction rather than an AgentRun terminal state.
 _Avoid_: Worker, process, Temporal Workflow, Agent Runtime state machine
+
+**AgentRunCancellationRequested**:
+A ThreadEvent recording that durable cancellation won for a non-terminal
+AgentRun. It blocks normal completion, ordinary output, and new child work while
+bounded cleanup finishes before the AgentRun becomes canceled.
+
+**AgentRunSucceeded**:
+The terminal ThreadEvent stating that one AgentRun completed successfully.
+
+**AgentRunFailed**:
+The terminal ThreadEvent stating that one AgentRun failed with a normalized,
+client-safe cause.
+
+**AgentRunCanceled**:
+The terminal ThreadEvent stating that one AgentRun was canceled, together with
+its cleanup disposition and whether external work may continue.
 
 **Proactive AgentRun**:
 An AgentRun admitted from an authorized durable trigger rather than a new user
@@ -183,12 +220,24 @@ the parent.
 _Avoid_: WorkflowInstance, generic condition expression, child AgentRun
 
 **ModelCall**:
-One identified model operation within an AgentRun. Its typed intent is durable
-before provider dispatch. A provider response becomes authoritative only when
-its normalized semantic outcome is durably committed, so an interrupted call
-may be retried under bounded policy. Raw provider payloads are not recovery
-authority.
-_Avoid_: AgentRun, AssistantOutput, ModelTurn, raw provider request
+One identified logical model operation within an AgentRun. Its typed intent is
+durable before dispatch, it may have multiple ModelCallAttempts, and it has
+exactly one final normalized semantic outcome. Raw provider payloads are not
+recovery authority.
+_Avoid_: ModelCallAttempt, AgentRun, AssistantOutput, provider request
+
+**ModelCallAttempt**:
+One recorded, accountable logical provider request for a ModelCall. It may
+reconnect or resume the same provider operation, but issuing another logical
+request requires another attempt; each attempt records its binding, outcome,
+and Reported, Estimated, or Unknown usage.
+_Avoid_: ModelCall, TCP connection, hidden SDK retry
+
+**ModelCallExecutor**:
+The Osfo-owned execution interface that accepts one committed ModelCallAttempt
+and emits normalized observations without owning ModelCall retry or lifecycle
+policy. Concrete Model Adapters implement this interface.
+_Avoid_: Agent Runtime, model provider, uncommitted ModelCall
 
 **ToolCall**:
 One identified logical tool operation within an AgentRun. Its durable intent is
@@ -202,11 +251,18 @@ not create duplicate conversational events.
 _Avoid_: Tool execution attempt, tool result, WorkflowInstance
 
 **Agent Runtime**:
-The execution implementation that drives one AgentRunAttempt's model and
-bounded ToolCall loop through typed execution steps under Osfo lifecycle
-authority. It proposes actions from reconstructed state but cannot directly
-commit AgentRun identity, scheduling, recovery, or canonical Thread state.
+The authority-free decision module that examines a derived view of recorded
+AgentRun state and proposes one typed next step. It never invokes models,
+executes tools, or directly commits AgentRun lifecycle or canonical Thread
+state.
 _Avoid_: Agent provider, model provider, AgentRun manager, worker
+
+**ExecutionProfileRef**:
+An immutable versioned reference pinned by an AgentRun to the Agent
+Application's runtime behavior, model policy, prompt rules, tool schemas, and
+initial execution limits. Osfo owns the manifest schema and interpretation;
+the Agent Application owns each concrete profile.
+_Avoid_: RuntimeCheckpointRef, mutable configuration, credential reference
 
 **AgentRunAttempt**:
 One fenced worker execution of an AgentRun, identified by the AgentRun and its
@@ -225,6 +281,26 @@ _Avoid_: Waiting AgentRun, Retry-ready AgentRun, running worker
 An AgentRun lifecycle state with a current fenced AgentRunAttempt and finite
 lease. Lease expiry permits direct takeover through a new claim epoch.
 _Avoid_: Worker process, sandbox session, operation retry
+
+**AgentRunCancellationRequested**:
+A ThreadEvent recording that cancellation won for an AgentRun with active work.
+The AgentRun remains Running while normal completion and new child admission are
+closed and bounded cancellation cleanup proceeds.
+
+**AgentRunCanceled**:
+The terminal ThreadEvent recording that Osfo finished authoritative cancellation
+of an AgentRun. External work that could not be confirmed stopped remains
+separately accountable.
+
+**Terminated AgentRun**:
+An AgentRun terminal state entered when its cancellation cleanup deadline expires
+and Osfo forcibly removes remaining execution authority. It does not assert that
+external work stopped or was undone.
+_Avoid_: Canceled AgentRun, Failed AgentRun
+
+**AgentRunTerminated**:
+The terminal ThreadEvent recording that an AgentRun reached its cancellation
+cleanup deadline and Osfo forcibly removed its remaining execution authority.
 
 **Waiting AgentRun**:
 An AgentRun lifecycle state in which the run is non-runnable until one
@@ -331,6 +407,11 @@ canonical ThreadEvents across live delivery and durable resume. It is the
 default transport for Osfo-owned clients, not an Adapter for an external
 protocol.
 _Avoid_: Web Adapter, OpenAI-Compatible Adapter, Messaging Adapter
+
+**Acceptance Receipt**:
+Immutable evidence that Osfo durably accepted one idempotent Native Thread
+Transport operation. Identical retries return the same receipt without creating
+another canonical transition.
 
 **OpenAI-Compatible Adapter**:
 A reusable Adapter implementation that exposes selected Osfo behavior through

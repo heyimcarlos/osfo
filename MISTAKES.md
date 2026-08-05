@@ -177,3 +177,37 @@ prefix. Appending `push-auth` exceeded GCP's 30-character service-account ID
 limit after Cloud SQL and three accounts had already been created. Keep the
 evidence name descriptive, derive a separately bounded cloud prefix, and
 validate provider naming limits before provisioning the first resource.
+
+## 2026-08-05: Reusing zsh's read-only status parameter
+
+A monitoring loop assigned a build result to `status`, which zsh reserves as a
+read-only special parameter. Use a task-specific name such as
+`task_build_status` for shell state captured from external commands.
+
+## 2026-08-05: Assuming zsh supports Bash TCP redirections
+
+A one-off database audit waited on `/dev/tcp`, which Bash supports but zsh does
+not. Select `/bin/bash` explicitly for commands that use Bash TCP readiness
+checks, or use a portable socket probe.
+
+## 2026-08-05: Aggregating sibling fact tables through their parent
+
+A diagnostic query joined admissions and AgentRuns only through their shared
+benchmark before counting distinct rows. That formed the admissions by runs
+Cartesian product and had to be canceled. Aggregate each fact table separately,
+then join the small per-benchmark results or use correlated scalar counts.
+
+## 2026-08-05: Masking a failed qualification lane in a Bash conditional
+
+A controller called the multi-lane workflow inside `if`, which disabled the
+expected `errexit` behavior inside nested functions. A failed lane check was
+then followed by an assignment or success message, so the workflow returned
+zero. Propagate every lane status explicitly, stop before subsequent commands,
+and replay a known failing sealed lane to verify controller state and exit code.
+
+## 2026-08-05: Reusing zsh's special path array
+
+An evidence inventory used `path` as a loop variable. In zsh, `path` is tied to
+`PATH`, so the first iteration hid commands such as `rg`, `wc`, and `du`. Use a
+task-specific loop name such as `evidence_item`, especially for lowercase zsh
+special parameters.
