@@ -1,0 +1,12 @@
+{
+  "manifest_owned_cloud_residue": 0,
+  "inventory": {
+    "services": [],
+    "sql": [],
+    "topics": [],
+    "subscriptions": [],
+    "repositories": [],
+    "secrets": [],
+    "service_accounts": []
+  }
+}

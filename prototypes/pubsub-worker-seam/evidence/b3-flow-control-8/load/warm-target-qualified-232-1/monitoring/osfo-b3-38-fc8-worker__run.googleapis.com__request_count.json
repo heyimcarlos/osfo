@@ -1,0 +1,47 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "2xx",
+          "route": "",
+          "response_code": "204"
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1",
+          "configuration_name": "osfo-b3-38-fc8-worker",
+          "service_name": "osfo-b3-38-fc8-worker",
+          "revision_name": "osfo-b3-38-fc8-worker-00001-mpg"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T03:49:00.001Z",
+            "endTime": "2026-08-05T03:50:00Z"
+          },
+          "value": {
+            "int64Value": "5795"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T03:48:00.001Z",
+            "endTime": "2026-08-05T03:49:00Z"
+          },
+          "value": {
+            "int64Value": "15085"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

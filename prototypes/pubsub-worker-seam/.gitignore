@@ -61,6 +61,8 @@ evidence/b3-transactional-outbox/load/*
 !evidence/b3-transactional-outbox/load/stress-smoke-464-1/**
 !evidence/b3-stripe-study/
 !evidence/b3-stripe-study/**
+!evidence/b3-flow-control-8/
+!evidence/b3-flow-control-8/**
 !evidence/push-fixed/
 evidence/push-fixed/*
 !evidence/push-fixed/server-time-smoke/
