@@ -38,7 +38,7 @@ func Admit(ctx context.Context, database *store.Store, request store.B3Request, 
 		return store.B3Result{CallerOutcome: "unknown", ErrorClass: request.Fault}, ErrInjectedCut
 	}
 	receipt, err := database.AcceptB3(ctx, request, sequenceStripes, budgetStripes)
-	if errors.Is(err, store.ErrB3InFlightBudgetExhausted) {
+	if errors.Is(err, store.ErrB3InFlightBudgetExhausted) || errors.Is(err, store.ErrB3PrincipalBudgetExhausted) {
 		_ = database.FinishB3Attempt(context.Background(), request, "rejected", "overloaded", false, true)
 		return overloadedResult(), nil
 	}
@@ -61,7 +61,7 @@ func AdmitAuthorityOnly(ctx context.Context, database *store.Store, request stor
 			fmt.Errorf("fault %q requires attempt evidence", request.Fault)
 	}
 	receipt, err := database.AcceptB3(ctx, request, sequenceStripes, budgetStripes)
-	if errors.Is(err, store.ErrB3InFlightBudgetExhausted) {
+	if errors.Is(err, store.ErrB3InFlightBudgetExhausted) || errors.Is(err, store.ErrB3PrincipalBudgetExhausted) {
 		return overloadedResult(), nil
 	}
 	if err != nil {
@@ -140,6 +140,47 @@ type Relay struct {
 	SequenceStripes int
 	Fault           string
 	HardCrash       bool
+	FairDispatch    bool
+}
+
+func (r *Relay) RunFairOnce(ctx context.Context) (int, error) {
+	if r.Fault == BeforeRelayRead {
+		r.cut()
+		return 0, ErrInjectedCut
+	}
+	connection, owned, err := r.Store.TryOwnB3FairSelector(ctx)
+	if err != nil || !owned {
+		return 0, err
+	}
+	defer r.Store.ReleaseB3FairSelector(context.Background(), connection)
+	records, err := r.Store.ReadOrSelectB3FairBatch(ctx, connection, r.BatchSize)
+	if err != nil || len(records) == 0 {
+		return 0, err
+	}
+	if r.Fault == BeforePublish {
+		r.cut()
+		return 0, ErrInjectedCut
+	}
+	publications, publishErr := r.Publisher.PublishBatch(ctx, records)
+	if r.Fault == AmbiguousAfterConfirmation && publishErr == nil {
+		for index := range publications {
+			publications[index].Outcome = "ambiguous_after_confirmation"
+		}
+	}
+	if err := r.Store.RecordB3Publications(context.Background(), connection, r.Owner, publications); err != nil {
+		return 0, err
+	}
+	if publishErr != nil {
+		return 0, publishErr
+	}
+	if r.Fault == AmbiguousAfterConfirmation || r.Fault == AfterConfirmationBeforeSave {
+		r.cut()
+		return len(records), ErrInjectedCut
+	}
+	if err := r.Store.ConfirmB3FairPublications(context.Background(), connection, publications); err != nil {
+		return 0, err
+	}
+	return len(records), nil
 }
 
 func (r *Relay) RunShardOnce(ctx context.Context, shard int) (int, error) {
@@ -226,6 +267,17 @@ func (r *Relay) runAllSerial(ctx context.Context) (int, error) {
 }
 
 func (r *Relay) Run(ctx context.Context, idleDelay time.Duration) error {
+	if r.FairDispatch {
+		for {
+			count, err := r.RunFairOnce(ctx)
+			if err != nil {
+				return err
+			}
+			if count == 0 && !waitForRelayPoll(ctx, idleDelay) {
+				return ctx.Err()
+			}
+		}
+	}
 	if r.Fault == NoFault {
 		return r.runIndependentShards(ctx, idleDelay)
 	}

@@ -20,6 +20,8 @@ import (
 
 type sample struct {
 	Ordinal       int       `json:"ordinal"`
+	Principal     string    `json:"principal_key,omitempty"`
+	Thread        string    `json:"thread_key,omitempty"`
 	ScheduledAt   time.Time `json:"scheduled_at"`
 	OfferedAt     time.Time `json:"offered_at"`
 	CompletedAt   time.Time `json:"completed_at"`
@@ -49,6 +51,10 @@ func run(ctx context.Context) error {
 	accessToken := flags.String("access-token", os.Getenv("GCP_IDENTITY_TOKEN"), "Cloud Run identity token")
 	maxInFlight := flags.Int("max-in-flight", 4096, "bounded local request concurrency")
 	requestTimeout := flags.Duration("request-timeout", 60*time.Second, "per-request timeout")
+	principal := flags.String("principal", "", "optional Principal identity for the fairness lane")
+	threadPrefix := flags.String("thread-prefix", "thread", "Thread identity prefix for the fairness lane")
+	threadCount := flags.Int("thread-count", 1, "number of Threads used by the Principal")
+	ordinalOffset := flags.Int("ordinal-offset", 0, "ordinal offset for concurrent Principal streams")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -56,7 +62,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("valid --benchmark is required: %w", err)
 	}
-	if *url == "" || *rate <= 0 || *duration <= 0 || *maxInFlight <= 0 {
+	if *url == "" || *rate <= 0 || *duration <= 0 || *maxInFlight <= 0 || *threadCount <= 0 {
 		return fmt.Errorf("--url, positive --rate, --duration, and --max-in-flight are required")
 	}
 	if *endRate <= 0 {
@@ -86,19 +92,24 @@ func run(ctx context.Context) error {
 		encodeDone <- nil
 	}()
 	started := time.Now()
-	for ordinal := 0; ordinal < *count; ordinal++ {
-		targetOffset := scheduledOffset(ordinal, *count, *duration, *rate, *endRate)
+	for streamOrdinal := 0; streamOrdinal < *count; streamOrdinal++ {
+		targetOffset := scheduledOffset(streamOrdinal, *count, *duration, *rate, *endRate)
 		scheduledAt := started.Add(targetOffset)
 		if delay := time.Until(scheduledAt); delay > 0 {
 			time.Sleep(delay)
 		}
 		semaphore <- struct{}{}
 		wait.Add(1)
-		go func(ordinal int, scheduledAt time.Time) {
+		go func(streamOrdinal int, scheduledAt time.Time) {
 			defer wait.Done()
 			defer func() { <-semaphore }()
-			samples <- offer(ctx, client, *url, *accessToken, benchmarkID, ordinal, scheduledAt)
-		}(ordinal, scheduledAt)
+			ordinal := *ordinalOffset + streamOrdinal
+			thread := ""
+			if *principal != "" {
+				thread = fmt.Sprintf("%s-%04d", *threadPrefix, streamOrdinal%*threadCount)
+			}
+			samples <- offer(ctx, client, *url, *accessToken, benchmarkID, ordinal, scheduledAt, *principal, thread)
+		}(streamOrdinal, scheduledAt)
 	}
 	wait.Wait()
 	close(samples)
@@ -123,19 +134,19 @@ func scheduledOffset(ordinal, count int, duration time.Duration, startRate, endR
 	return time.Duration(seconds * float64(time.Second))
 }
 
-func offer(ctx context.Context, client *http.Client, url, accessToken string, benchmarkID uuid.UUID, ordinal int, scheduledAt time.Time) sample {
+func offer(ctx context.Context, client *http.Client, url, accessToken string, benchmarkID uuid.UUID, ordinal int, scheduledAt time.Time, principal, thread string) sample {
 	offeredAt := time.Now().UTC()
 	identity := fmt.Sprintf("%s/%d", benchmarkID, ordinal)
 	requestBody := store.B3Request{
 		BenchmarkID: benchmarkID, Ordinal: ordinal, Attempt: 1,
 		Idempotency: "b3/" + identity, RequestHash: "sha256:b3/" + identity,
-		Fault: "none",
+		Fault: "none", Principal: principal, Thread: thread,
 	}
 	body, _ := json.Marshal(requestBody)
 	const attempts = 3
 	var last sample
 	for attempt := 1; attempt <= attempts; attempt++ {
-		last = offerOnce(ctx, client, url, accessToken, body, ordinal, scheduledAt, offeredAt, attempt)
+		last = offerOnce(ctx, client, url, accessToken, body, ordinal, scheduledAt, offeredAt, principal, thread, attempt)
 		if last.Status < http.StatusInternalServerError && last.Status != 0 {
 			return last
 		}
@@ -159,6 +170,7 @@ func offerOnce(
 	body []byte,
 	ordinal int,
 	scheduledAt, offeredAt time.Time,
+	principal, thread string,
 	attempt int,
 ) sample {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"/v1/admissions", bytes.NewReader(body))
@@ -188,7 +200,8 @@ func offerOnce(
 		result.ErrorClass = "empty_caller_outcome"
 	}
 	return sample{
-		Ordinal: ordinal, ScheduledAt: scheduledAt.UTC(), OfferedAt: offeredAt,
+		Ordinal: ordinal, Principal: principal, Thread: thread,
+		ScheduledAt: scheduledAt.UTC(), OfferedAt: offeredAt,
 		CompletedAt: completedAt, Status: response.StatusCode,
 		LatencyMS:     float64(completedAt.Sub(offeredAt).Microseconds()) / 1000,
 		CallerOutcome: result.CallerOutcome, ErrorClass: result.ErrorClass,

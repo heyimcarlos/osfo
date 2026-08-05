@@ -20,6 +20,9 @@ type Run struct {
 	ID                  uuid.UUID
 	BenchmarkID         uuid.UUID
 	Ordinal             int
+	Principal           string
+	Thread              string
+	FairDispatch        bool
 	ExecutionProfileRef string
 	Workload            time.Duration
 	ClaimEpoch          int64
@@ -152,16 +155,18 @@ func (s *Store) TryClaim(ctx context.Context, runID, benchmarkID uuid.UUID, owne
 	var leaseExpiresAt *time.Time
 	var ordinal, threadSequence, workloadMS int
 	var threadKey, executionProfileRef string
+	var principalKey *string
+	var fairDispatch bool
 	var claimEpoch int64
 	var crashOnce, crashInjected bool
 	err = tx.QueryRow(ctx, `
-		SELECT state, lease_expires_at, ordinal, thread_key, thread_sequence,
-		       workload_ms, execution_profile_ref, claim_epoch, crash_once, crash_injected
+		SELECT state, lease_expires_at, ordinal, principal_key, thread_key, thread_sequence,
+		       workload_ms, execution_profile_ref, fair_dispatch, claim_epoch, crash_once, crash_injected
 		FROM agent_runs
 		WHERE id = $1 AND benchmark_id = $2
 		FOR UPDATE`, runID, benchmarkID).Scan(
-		&state, &leaseExpiresAt, &ordinal, &threadKey, &threadSequence,
-		&workloadMS, &executionProfileRef, &claimEpoch, &crashOnce, &crashInjected,
+		&state, &leaseExpiresAt, &ordinal, &principalKey, &threadKey, &threadSequence,
+		&workloadMS, &executionProfileRef, &fairDispatch, &claimEpoch, &crashOnce, &crashInjected,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ClaimResult{Action: delivery.Acknowledge}, tx.Commit(ctx)
@@ -221,8 +226,13 @@ func (s *Store) TryClaim(ctx context.Context, runID, benchmarkID uuid.UUID, owne
 	if err := tx.Commit(ctx); err != nil {
 		return ClaimResult{}, err
 	}
+	principal := ""
+	if principalKey != nil {
+		principal = *principalKey
+	}
 	return ClaimResult{Action: delivery.Claim, Run: &Run{
 		ID: runID, BenchmarkID: benchmarkID, Ordinal: ordinal,
+		Principal: principal, Thread: threadKey, FairDispatch: fairDispatch,
 		ExecutionProfileRef: executionProfileRef,
 		Workload:            time.Duration(workloadMS) * time.Millisecond,
 		ClaimEpoch:          claimEpoch, CrashInjected: crashNow,
@@ -288,11 +298,16 @@ func (s *Store) CompleteModelCallAndRun(
 	}
 	defer tx.Rollback(ctx)
 	var budgetStripe *int16
+	var principalBudgetStripe *int16
+	var principalKey *string
+	var threadKey string
+	var fairDispatch bool
 	err = tx.QueryRow(ctx, `
-		SELECT budget_stripe
+		SELECT budget_stripe, principal_budget_stripe, principal_key, thread_key, fair_dispatch
 		FROM agent_runs
 		WHERE id = $1 AND benchmark_id = $2 AND state = 'running' AND claim_epoch = $3
-		FOR UPDATE`, run.ID, run.BenchmarkID, run.ClaimEpoch).Scan(&budgetStripe)
+		FOR UPDATE`, run.ID, run.BenchmarkID, run.ClaimEpoch).Scan(
+		&budgetStripe, &principalBudgetStripe, &principalKey, &threadKey, &fairDispatch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, tx.Commit(ctx)
 	}
@@ -342,6 +357,57 @@ func (s *Store) CompleteModelCallAndRun(
 	}
 	if command.RowsAffected() != 1 {
 		return false, fmt.Errorf("AgentRun claim is no longer active")
+	}
+	if fairDispatch {
+		if principalKey == nil || *principalKey == "" {
+			return false, fmt.Errorf("fair AgentRun is missing Principal identity")
+		}
+		command, err = tx.Exec(ctx, `
+			UPDATE b3_fair_dispatch_budget
+			SET in_use = in_use - 1, updated_at = clock_timestamp()
+			WHERE singleton AND in_use > 0`)
+		if err != nil {
+			return false, err
+		}
+		if command.RowsAffected() != 1 {
+			return false, fmt.Errorf("fair dispatch permit is missing")
+		}
+		command, err = tx.Exec(ctx, `
+			UPDATE b3_fair_threads
+			SET in_flight = false
+			WHERE benchmark_id = $1 AND principal_key = $2 AND thread_key = $3 AND in_flight`,
+			run.BenchmarkID, *principalKey, threadKey)
+		if err != nil {
+			return false, err
+		}
+		if command.RowsAffected() != 1 {
+			return false, fmt.Errorf("fair Thread permit is missing")
+		}
+		if principalBudgetStripe == nil {
+			return false, fmt.Errorf("fair AgentRun is missing Principal budget stripe")
+		}
+		command, err = tx.Exec(ctx, `
+			UPDATE b3_fair_principal_budget
+			SET in_use = in_use - 1, updated_at = clock_timestamp()
+			WHERE benchmark_id = $1 AND principal_key = $2 AND budget_stripe = $3
+			  AND in_use > 0`, run.BenchmarkID, *principalKey, *principalBudgetStripe)
+		if err != nil {
+			return false, err
+		}
+		if command.RowsAffected() != 1 {
+			return false, fmt.Errorf("fair Principal obligation is missing")
+		}
+		command, err = tx.Exec(ctx, `
+			UPDATE b3_outbox
+			SET fair_permit_released_at = clock_timestamp()
+			WHERE agent_run_id = $1 AND fair_selected_at IS NOT NULL
+			  AND fair_permit_released_at IS NULL`, run.ID)
+		if err != nil {
+			return false, err
+		}
+		if command.RowsAffected() != 1 {
+			return false, fmt.Errorf("fair outbox permit is missing")
+		}
 	}
 	if budgetStripe != nil {
 		command, err = tx.Exec(ctx, `

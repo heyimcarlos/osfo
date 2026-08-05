@@ -62,11 +62,11 @@ transaction allocates each Thread sequence in commit order. A worker may claim
 only when the predecessor is terminal. Duplicate or out-of-order deliveries
 retry without changing authority.
 
-Global and per-Principal non-terminal limits remain admission invariants.
-Principal starvation resistance remains a separate scheduler acceptance gate.
-Pub/Sub does not prove that gate by itself, so the selected architecture is not
-production-qualified until a Principal-first publication or execution selector
-passes the noisy-Principal challenge lane without scanning AgentRuns.
+Global and per-Principal non-terminal limits remain admission invariants. A
+bounded Principal-first publication window selects one eligible Thread head at
+a time by durable Principal and Thread virtual passes. Selection reads indexed
+scheduler metadata and outbox Thread heads, never scans AgentRuns for runnable
+work. Pub/Sub remains the primary delivery buffer after selection.
 
 ## Rejected alternative
 
@@ -107,11 +107,23 @@ the one-second topology threshold. This is tracked separately and prevents a
 claim of full retained-corpus production qualification. It does not reopen the
 atomic handoff choice.
 
+The Principal-first challenge offered one noisy Principal at 230 incoming
+messages/s across 128 Threads while a quiet Principal remained continuously
+eligible on one Thread. All 30 quiet inputs were accepted, its maximum queued
+age was 1,005.435 ms, and it continued advancing while noisy backlog age reached
+133,044.089 ms. The 32-permit window was fully used. All 6,868 accepted
+AgentRuns completed with zero global or Principal budget mismatch and zero
+duplicate terminal commits. Relay loss before publish, relay loss after broker
+confirmation, and worker loss all recovered with zero leaked permits.
+
 The checksummed comparison, exact call flows, reconciliation pointers,
 resource manifests, cost boundary, and teardown proof are in
 [`HANDOFF-DECISION.md`](../../prototypes/pubsub-worker-seam/HANDOFF-DECISION.md)
 and the offline
 [`handoff-dashboard.html`](../../prototypes/pubsub-worker-seam/handoff-dashboard.html).
+The fairness call flow, rejected shapes, compact evidence, and production
+contract are in
+[`PRINCIPAL-FAIRNESS-STUDY.md`](../../prototypes/pubsub-worker-seam/PRINCIPAL-FAIRNESS-STUDY.md).
 
 ## Cost boundary
 
@@ -141,5 +153,5 @@ deployment contract before production approval.
   default. Warm worker floors were rejected because they added idle cost
   without improving measured latency.
 - Full production approval still requires the retained-corpus tail control,
-  Principal starvation-resistance evidence, production Temporal integration,
-  and complete deployment cost and recovery evidence.
+  production Temporal integration, and complete deployment cost and recovery
+  evidence under the final manifest.
