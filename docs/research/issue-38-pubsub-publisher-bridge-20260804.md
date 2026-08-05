@@ -1,7 +1,7 @@
 # Pub/Sub does not publish a PostgreSQL commit
 
-Date: 2026-08-04  
-Status: research note for Wayfinder #38, no decision change  
+Date: 2026-08-04
+Status: research note for Wayfinder #38, no decision change
 Scope: the durable Cloud SQL PostgreSQL to Pub/Sub handoff, the selected Pub/Sub push worker seam, and capacity at the Osfo target.
 
 ## Executive conclusion
