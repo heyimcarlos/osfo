@@ -23,7 +23,8 @@ _Avoid_: Reference Product Composition, Osfo core, throwaway sample
 
 **Oz**:
 The initial Reference Agent Application built with Osfo. Oz v1 is a
-Single-Thread Agent.
+Single-Thread Agent. Oz is a long-lived, deployable Agent Application, not a
+disposable demo or test harness.
 _Avoid_: Osfo, TryAgent
 
 **Single-Thread Agent**:
