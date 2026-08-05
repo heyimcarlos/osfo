@@ -28,7 +28,7 @@ const (
 
 var ErrInjectedCut = errors.New("injected boundary cut")
 
-func Admit(ctx context.Context, database *store.Store, request store.B3Request, sequenceStripes int) (store.B3Result, error) {
+func Admit(ctx context.Context, database *store.Store, request store.B3Request, sequenceStripes, budgetStripes int) (store.B3Result, error) {
 	if err := database.BeginB3Attempt(ctx, request); err != nil {
 		return store.B3Result{}, err
 	}
@@ -37,7 +37,11 @@ func Admit(ctx context.Context, database *store.Store, request store.B3Request, 
 		cut(request)
 		return store.B3Result{CallerOutcome: "unknown", ErrorClass: request.Fault}, ErrInjectedCut
 	}
-	receipt, err := database.AcceptB3(ctx, request, sequenceStripes)
+	receipt, err := database.AcceptB3(ctx, request, sequenceStripes, budgetStripes)
+	if errors.Is(err, store.ErrB3InFlightBudgetExhausted) {
+		_ = database.FinishB3Attempt(context.Background(), request, "rejected", "overloaded", false, true)
+		return overloadedResult(), nil
+	}
 	if err != nil {
 		_ = database.FinishB3Attempt(context.Background(), request, "unknown", err.Error(), false, true)
 		return store.B3Result{CallerOutcome: "unknown", ErrorClass: err.Error()}, err
@@ -51,16 +55,23 @@ func Admit(ctx context.Context, database *store.Store, request store.B3Request, 
 	return store.B3Result{Receipt: &receipt, CallerOutcome: "accepted"}, nil
 }
 
-func AdmitAuthorityOnly(ctx context.Context, database *store.Store, request store.B3Request, sequenceStripes int) (store.B3Result, error) {
+func AdmitAuthorityOnly(ctx context.Context, database *store.Store, request store.B3Request, sequenceStripes, budgetStripes int) (store.B3Result, error) {
 	if request.Fault != "" && request.Fault != NoFault {
 		return store.B3Result{CallerOutcome: "unknown", ErrorClass: "fault_requires_attempt_evidence"},
 			fmt.Errorf("fault %q requires attempt evidence", request.Fault)
 	}
-	receipt, err := database.AcceptB3(ctx, request, sequenceStripes)
+	receipt, err := database.AcceptB3(ctx, request, sequenceStripes, budgetStripes)
+	if errors.Is(err, store.ErrB3InFlightBudgetExhausted) {
+		return overloadedResult(), nil
+	}
 	if err != nil {
 		return store.B3Result{CallerOutcome: "unknown", ErrorClass: err.Error()}, err
 	}
 	return store.B3Result{Receipt: &receipt, CallerOutcome: "accepted"}, nil
+}
+
+func overloadedResult() store.B3Result {
+	return store.B3Result{CallerOutcome: "rejected", ErrorClass: "overloaded", RetryAfterMS: 250}
 }
 
 func cut(request store.B3Request) {
@@ -215,20 +226,60 @@ func (r *Relay) runAllSerial(ctx context.Context) (int, error) {
 }
 
 func (r *Relay) Run(ctx context.Context, idleDelay time.Duration) error {
+	if r.Fault == NoFault {
+		return r.runIndependentShards(ctx, idleDelay)
+	}
 	for {
 		count, err := r.RunAllOnce(ctx)
 		if err != nil && !errors.Is(err, ErrInjectedCut) {
 			return err
 		}
-		if count == 0 {
-			timer := time.NewTimer(idleDelay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return ctx.Err()
-			case <-timer.C:
-			}
+		if count == 0 && !waitForRelayPoll(ctx, idleDelay) {
+			return ctx.Err()
 		}
+	}
+}
+
+func (r *Relay) runIndependentShards(ctx context.Context, idleDelay time.Duration) error {
+	shardContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make(chan error, store.B3RelayShards)
+	var wait sync.WaitGroup
+	for shard := 0; shard < store.B3RelayShards; shard++ {
+		wait.Add(1)
+		go func(shard int) {
+			defer wait.Done()
+			results <- r.runShard(shardContext, shard, idleDelay)
+		}(shard)
+	}
+
+	err := <-results
+	cancel()
+	wait.Wait()
+	return err
+}
+
+func (r *Relay) runShard(ctx context.Context, shard int, idleDelay time.Duration) error {
+	for {
+		count, err := r.RunShardOnce(ctx, shard)
+		if err != nil {
+			return err
+		}
+		if count == 0 && !waitForRelayPoll(ctx, idleDelay) {
+			return ctx.Err()
+		}
+	}
+}
+
+func waitForRelayPoll(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

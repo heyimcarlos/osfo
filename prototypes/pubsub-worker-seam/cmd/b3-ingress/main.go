@@ -38,7 +38,15 @@ func run(logger *slog.Logger) error {
 	if err := b3.ValidateSequenceStripes(sequenceStripes); err != nil {
 		return err
 	}
-	admissionSlotCount, err := positiveInt(os.Getenv("ADMISSION_SLOTS"), 64)
+	budgetCapacity, err := positiveInt(os.Getenv("B3_INFLIGHT_AGENT_RUNS"), 1024)
+	if err != nil {
+		return err
+	}
+	budgetStripes, err := positiveInt(os.Getenv("B3_INFLIGHT_BUDGET_STRIPES"), store.B3DefaultBudgetStripes)
+	if err != nil {
+		return err
+	}
+	admissionSlotCount, err := nonNegativeInt(os.Getenv("ADMISSION_SLOTS"), 0)
 	if err != nil {
 		return err
 	}
@@ -46,12 +54,18 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	admissionSlots := make(chan struct{}, admissionSlotCount)
+	var admissionSlots chan struct{}
+	if admissionSlotCount > 0 {
+		admissionSlots = make(chan struct{}, admissionSlotCount)
+	}
 	database, err := store.Open(ctx, required("DATABASE_URL"), "b3-ingress/"+os.Getenv("HOSTNAME"), int32(poolSize))
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+	if err := database.ConfigureB3InFlightBudget(ctx, budgetCapacity, budgetStripes); err != nil {
+		return fmt.Errorf("configure in-flight AgentRun budget: %w", err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("POST /v1/admissions", func(w http.ResponseWriter, request *http.Request) {
@@ -65,27 +79,30 @@ func run(logger *slog.Logger) error {
 			http.Error(w, "idempotency_key and request_hash are required", http.StatusBadRequest)
 			return
 		}
-		if tryAcquire(admissionSlots) {
-			defer func() { <-admissionSlots }()
-		} else {
-			writeOverloaded(w)
-			return
+		if admissionSlots != nil {
+			if tryAcquire(admissionSlots) {
+				defer func() { <-admissionSlots }()
+			} else {
+				writeOverloaded(w)
+				return
+			}
 		}
 		result, err := admitWithRetry(request.Context(), func(ctx context.Context) (store.B3Result, error) {
 			if !captureAttemptEvidence {
-				return b3.AdmitAuthorityOnly(ctx, database, admission, sequenceStripes)
+				return b3.AdmitAuthorityOnly(ctx, database, admission, sequenceStripes, budgetStripes)
 			}
-			return b3.Admit(ctx, database, admission, sequenceStripes)
+			return b3.Admit(ctx, database, admission, sequenceStripes, budgetStripes)
 		}, func(attempt int, err error) {
 			logger.Warn("admission retry", "attempt", attempt, "error", err)
 		})
 		w.Header().Set("content-type", "application/json")
-		if err != nil {
+		status := admissionHTTPStatus(result, err)
+		if status == http.StatusServiceUnavailable {
 			logger.Error("admission failed", "error", err)
-			w.WriteHeader(http.StatusServiceUnavailable)
-		} else {
-			w.WriteHeader(http.StatusCreated)
+		} else if status == http.StatusTooManyRequests {
+			w.Header().Set("retry-after", "1")
 		}
+		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(result)
 	})
 	server := &http.Server{Addr: ":" + value("PORT", "8080"), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
@@ -100,6 +117,16 @@ func run(logger *slog.Logger) error {
 		return nil
 	}
 	return err
+}
+
+func admissionHTTPStatus(result store.B3Result, err error) int {
+	if err != nil {
+		return http.StatusServiceUnavailable
+	}
+	if result.CallerOutcome == "rejected" && result.ErrorClass == "overloaded" {
+		return http.StatusTooManyRequests
+	}
+	return http.StatusCreated
 }
 
 func admitWithRetry(
@@ -138,8 +165,9 @@ func tryAcquire(slots chan struct{}) bool {
 
 func writeOverloaded(w http.ResponseWriter) {
 	w.Header().Set("content-type", "application/json")
+	w.Header().Set("retry-after", "1")
 	w.WriteHeader(http.StatusTooManyRequests)
-	_ = json.NewEncoder(w).Encode(store.B3Result{CallerOutcome: "rejected", ErrorClass: "overloaded"})
+	_ = json.NewEncoder(w).Encode(store.B3Result{CallerOutcome: "rejected", ErrorClass: "overloaded", RetryAfterMS: 250})
 }
 
 func required(name string) string {
@@ -164,6 +192,17 @@ func positiveInt(text string, fallback int) (int, error) {
 	parsed, err := strconv.Atoi(text)
 	if err != nil || parsed <= 0 {
 		return 0, fmt.Errorf("expected positive integer, got %q", text)
+	}
+	return parsed, nil
+}
+
+func nonNegativeInt(text string, fallback int) (int, error) {
+	if text == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(text)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("expected non-negative integer, got %q", text)
 	}
 	return parsed, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,7 +16,11 @@ const (
 	B3RelayShards            = 4
 	B3DefaultSequenceStripes = 4
 	B3MaxSequenceStripes     = 64
+	B3DefaultBudgetStripes   = 16
+	B3ExecutionProfileRef    = "benchmark/standard-runtime-v1"
 )
+
+var ErrB3InFlightBudgetExhausted = errors.New("AgentRun in-flight budget exhausted")
 
 type B3Request struct {
 	BenchmarkID uuid.UUID `json:"benchmark_id"`
@@ -40,6 +45,7 @@ type B3Result struct {
 	Receipt       *B3Receipt `json:"receipt,omitempty"`
 	CallerOutcome string     `json:"caller_outcome"`
 	ErrorClass    string     `json:"error_class,omitempty"`
+	RetryAfterMS  int        `json:"retry_after_ms,omitempty"`
 }
 
 type B3OutboxRecord struct {
@@ -64,36 +70,48 @@ type B3Publication struct {
 }
 
 type B3Audit struct {
-	BenchmarkID              uuid.UUID        `json:"benchmark_id"`
-	Candidate                string           `json:"candidate"`
-	Lane                     string           `json:"lane"`
-	ExpectedIncoming         int64            `json:"expected_incoming"`
-	ExpectedAgentRuns        int64            `json:"expected_agent_runs"`
-	AcceptedIncoming         int64            `json:"accepted_incoming"`
-	AuthoritativeAgentRuns   int64            `json:"authoritative_agent_runs"`
-	SucceededAgentRuns       int64            `json:"succeeded_agent_runs"`
-	NonterminalAgentRuns     int64            `json:"nonterminal_agent_runs"`
-	OutboxRecords            int64            `json:"outbox_records"`
-	UnpublishedOutboxRecords int64            `json:"unpublished_outbox_records"`
-	StrandedAcceptedRuns     int64            `json:"stranded_accepted_runs"`
-	GhostDeliveryAttempts    int64            `json:"ghost_delivery_attempts"`
-	DuplicatePublications    int64            `json:"duplicate_publications"`
-	DuplicateTerminalCommits int64            `json:"duplicate_terminal_commits"`
-	UnknownCallerOutcomes    int64            `json:"unknown_caller_outcomes"`
-	PublishAttempts          int64            `json:"publish_attempts"`
-	ConfirmedPublications    int64            `json:"confirmed_publications"`
-	DeliveryAttempts         int64            `json:"delivery_attempts"`
-	DeliveryAttemptOutcomes  map[string]int64 `json:"delivery_attempt_outcomes"`
-	RelayProgress            map[int]int64    `json:"relay_progress"`
-	CallerToReceiptMS        map[string]any   `json:"caller_to_receipt_ms"`
-	ReadyToPublishMS         map[string]any   `json:"outbox_ready_to_publish_confirmation_ms"`
-	PublishToClaimMS         map[string]any   `json:"publish_to_point_claim_ms"`
-	ClaimToTerminalMS        map[string]any   `json:"claim_to_terminal_ms"`
-	OutboxTableBytes         int64            `json:"outbox_table_bytes"`
-	OutboxIndexBytes         int64            `json:"outbox_index_bytes"`
-	OutboxDeadTuples         int64            `json:"outbox_dead_tuples"`
-	RelayGateDeadTuples      int64            `json:"relay_gate_dead_tuples"`
-	Verdict                  string           `json:"verdict"`
+	BenchmarkID                 uuid.UUID        `json:"benchmark_id"`
+	Candidate                   string           `json:"candidate"`
+	Lane                        string           `json:"lane"`
+	ExpectedIncoming            int64            `json:"expected_incoming"`
+	ExpectedAgentRuns           int64            `json:"expected_agent_runs"`
+	AcceptedIncoming            int64            `json:"accepted_incoming"`
+	AuthoritativeAgentRuns      int64            `json:"authoritative_agent_runs"`
+	SucceededAgentRuns          int64            `json:"succeeded_agent_runs"`
+	NonterminalAgentRuns        int64            `json:"nonterminal_agent_runs"`
+	OutboxRecords               int64            `json:"outbox_records"`
+	UnpublishedOutboxRecords    int64            `json:"unpublished_outbox_records"`
+	StrandedAcceptedRuns        int64            `json:"stranded_accepted_runs"`
+	GhostDeliveryAttempts       int64            `json:"ghost_delivery_attempts"`
+	DuplicatePublications       int64            `json:"duplicate_publications"`
+	DuplicateTerminalCommits    int64            `json:"duplicate_terminal_commits"`
+	GoodRootOutcomes            int64            `json:"good_root_outcomes"`
+	GoodRootOutcomeRatio        float64          `json:"good_root_outcome_ratio"`
+	DistinctExecutionProfiles   int64            `json:"distinct_execution_profiles"`
+	AgentRunAttempts            int64            `json:"agent_run_attempts"`
+	UnfinishedAgentRunAttempts  int64            `json:"unfinished_agent_run_attempts"`
+	ModelCalls                  int64            `json:"model_calls"`
+	ModelCallAttempts           int64            `json:"model_call_attempts"`
+	UnfinishedModelCallAttempts int64            `json:"unfinished_model_call_attempts"`
+	InFlightBudgetCapacity      int64            `json:"inflight_agent_run_budget_capacity"`
+	InFlightBudgetUsed          int64            `json:"inflight_agent_run_budget_used"`
+	InFlightBudgetObligations   int64            `json:"inflight_agent_run_budget_obligations"`
+	InFlightBudgetMismatch      int64            `json:"inflight_agent_run_budget_mismatch"`
+	UnknownCallerOutcomes       int64            `json:"unknown_caller_outcomes"`
+	PublishAttempts             int64            `json:"publish_attempts"`
+	ConfirmedPublications       int64            `json:"confirmed_publications"`
+	DeliveryAttempts            int64            `json:"delivery_attempts"`
+	DeliveryAttemptOutcomes     map[string]int64 `json:"delivery_attempt_outcomes"`
+	RelayProgress               map[int]int64    `json:"relay_progress"`
+	CallerToReceiptMS           map[string]any   `json:"caller_to_receipt_ms"`
+	ReadyToPublishMS            map[string]any   `json:"outbox_ready_to_publish_confirmation_ms"`
+	PublishToClaimMS            map[string]any   `json:"publish_to_point_claim_ms"`
+	ClaimToTerminalMS           map[string]any   `json:"claim_to_terminal_ms"`
+	OutboxTableBytes            int64            `json:"outbox_table_bytes"`
+	OutboxIndexBytes            int64            `json:"outbox_index_bytes"`
+	OutboxDeadTuples            int64            `json:"outbox_dead_tuples"`
+	RelayGateDeadTuples         int64            `json:"relay_gate_dead_tuples"`
+	Verdict                     string           `json:"verdict"`
 }
 
 func B3AgentRunIDs(benchmarkID uuid.UUID, ordinal int) []uuid.UUID {
@@ -109,6 +127,51 @@ func B3AgentRunIDs(benchmarkID uuid.UUID, ordinal int) []uuid.UUID {
 	return ids
 }
 
+func B3BudgetStripe(idempotencyKey string, stripes int) int {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(idempotencyKey))
+	return int(hash.Sum32() % uint32(stripes))
+}
+
+func (s *Store) ConfigureB3InFlightBudget(ctx context.Context, totalCapacity, stripes int) error {
+	if totalCapacity <= 0 {
+		return fmt.Errorf("in-flight AgentRun capacity must be positive")
+	}
+	if stripes <= 0 || stripes > B3MaxSequenceStripes || totalCapacity < stripes {
+		return fmt.Errorf("in-flight budget stripes must be between 1 and %d and no greater than capacity", B3MaxSequenceStripes)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(380039, 1)`); err != nil {
+		return err
+	}
+	base := totalCapacity / stripes
+	remainder := totalCapacity % stripes
+	for stripe := 0; stripe < B3MaxSequenceStripes; stripe++ {
+		capacity := 0
+		if stripe < stripes {
+			capacity = base
+			if stripe < remainder {
+				capacity++
+			}
+		}
+		command, err := tx.Exec(ctx, `
+			UPDATE b3_inflight_budget
+			SET capacity = $2, updated_at = clock_timestamp()
+			WHERE budget_stripe = $1`, stripe, capacity)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() != 1 {
+			return fmt.Errorf("missing in-flight budget stripe %d", stripe)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Store) PrepareB3(ctx context.Context, id uuid.UUID, candidate, lane string, expectedIncoming int) error {
 	expectedRuns := expectedIncoming + expectedIncoming/2
 	_, err := s.pool.Exec(ctx, `
@@ -116,6 +179,20 @@ func (s *Store) PrepareB3(ctx context.Context, id uuid.UUID, candidate, lane str
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (id) DO NOTHING`, id, candidate, lane, expectedRuns)
 	return err
+}
+
+func (s *Store) InjectB3WorkerCrash(ctx context.Context, benchmarkID, agentRunID uuid.UUID) error {
+	command, err := s.pool.Exec(ctx, `
+		UPDATE agent_runs
+		SET crash_once = true
+		WHERE id = $1 AND benchmark_id = $2 AND state = 'pending'`, agentRunID, benchmarkID)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return fmt.Errorf("pending AgentRun %s was not found", agentRunID)
+	}
+	return nil
 }
 
 func (s *Store) BeginB3Attempt(ctx context.Context, request B3Request) error {
@@ -139,7 +216,7 @@ func (s *Store) FinishB3Attempt(ctx context.Context, request B3Request, outcome,
 	return err
 }
 
-func (s *Store) AcceptB3(ctx context.Context, request B3Request, sequenceStripes int) (B3Receipt, error) {
+func (s *Store) AcceptB3(ctx context.Context, request B3Request, sequenceStripes, budgetStripes int) (B3Receipt, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return B3Receipt{}, err
@@ -166,6 +243,7 @@ func (s *Store) AcceptB3(ctx context.Context, request B3Request, sequenceStripes
 	}
 
 	ids := B3AgentRunIDs(request.BenchmarkID, request.Ordinal)
+	budgetStripe := B3BudgetStripe(request.Idempotency, budgetStripes)
 	var acceptedAt time.Time
 	err = tx.QueryRow(ctx, `
 		INSERT INTO b3_admissions
@@ -179,15 +257,6 @@ func (s *Store) AcceptB3(ctx context.Context, request B3Request, sequenceStripes
 	threadKey := fmt.Sprintf("thread-%04d", request.Ordinal%1024)
 	sequenceStripe := request.Ordinal % sequenceStripes
 	shard := sequenceStripe % B3RelayShards
-	var lastStripeSequence int64
-	if err := tx.QueryRow(ctx, `
-		UPDATE b3_outbox_sequence_gate
-		SET next_sequence = next_sequence + $2
-		WHERE sequence_stripe = $1
-		RETURNING next_sequence`, sequenceStripe, len(ids)).Scan(&lastStripeSequence); err != nil {
-		return B3Receipt{}, err
-	}
-	firstStripeSequence := lastStripeSequence - int64(len(ids)) + 1
 	var firstThreadSequence int
 	if err := tx.QueryRow(ctx, `
 		SELECT COALESCE(MAX(thread_sequence), -1) + 1
@@ -198,12 +267,24 @@ func (s *Store) AcceptB3(ctx context.Context, request B3Request, sequenceStripes
 	for runOrdinal, id := range ids {
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO agent_runs
-				(id, benchmark_id, ordinal, thread_key, thread_sequence, workload_ms)
-			VALUES ($1, $2, $3, $4, $5, 15)`,
+				(id, benchmark_id, ordinal, thread_key, thread_sequence, workload_ms,
+				 execution_profile_ref, budget_stripe)
+			VALUES ($1, $2, $3, $4, $5, 15, $6, $7)`,
 			id, request.BenchmarkID, request.Ordinal*2+runOrdinal,
-			threadKey, firstThreadSequence+runOrdinal); err != nil {
+			threadKey, firstThreadSequence+runOrdinal, B3ExecutionProfileRef, budgetStripe); err != nil {
 			return B3Receipt{}, err
 		}
+	}
+	var lastStripeSequence int64
+	if err := tx.QueryRow(ctx, `
+		UPDATE b3_outbox_sequence_gate
+		SET next_sequence = next_sequence + $2
+		WHERE sequence_stripe = $1
+		RETURNING next_sequence`, sequenceStripe, len(ids)).Scan(&lastStripeSequence); err != nil {
+		return B3Receipt{}, err
+	}
+	firstStripeSequence := lastStripeSequence - int64(len(ids)) + 1
+	for runOrdinal, id := range ids {
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO b3_outbox
 				(benchmark_id, ordinal, agent_run_id, delivery_id, ordering_key, shard, sequence_stripe, stripe_sequence)
@@ -213,6 +294,18 @@ func (s *Store) AcceptB3(ctx context.Context, request B3Request, sequenceStripes
 			firstStripeSequence+int64(runOrdinal)); err != nil {
 			return B3Receipt{}, err
 		}
+	}
+	var reserved int
+	err = tx.QueryRow(ctx, `
+		UPDATE b3_inflight_budget
+		SET in_use = in_use + $2, updated_at = clock_timestamp()
+		WHERE budget_stripe = $1 AND in_use + $2 <= capacity
+		RETURNING in_use`, budgetStripe, len(ids)).Scan(&reserved)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return B3Receipt{}, ErrB3InFlightBudgetExhausted
+	}
+	if err != nil {
+		return B3Receipt{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return B3Receipt{}, err
@@ -370,6 +463,58 @@ func (s *Store) AuditB3(ctx context.Context, benchmarkID uuid.UUID, expectedInco
 		return B3Audit{}, err
 	}
 	if err := s.pool.QueryRow(ctx, `
+		SELECT count(DISTINCT execution_profile_ref)
+		FROM agent_runs WHERE benchmark_id = $1`, benchmarkID).Scan(&a.DistinctExecutionProfiles); err != nil {
+		return B3Audit{}, err
+	}
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM b3_admissions a
+		WHERE a.benchmark_id = $1 AND NOT EXISTS (
+			SELECT 1
+			FROM unnest(a.agent_run_ids) AS ids(run_id)
+			JOIN agent_runs r ON r.id = ids.run_id
+			WHERE r.state <> 'succeeded'
+		)`, benchmarkID).Scan(&a.GoodRootOutcomes); err != nil {
+		return B3Audit{}, err
+	}
+	if a.AcceptedIncoming > 0 {
+		a.GoodRootOutcomeRatio = float64(a.GoodRootOutcomes) / float64(a.AcceptedIncoming)
+	}
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*), count(*) FILTER (WHERE completed_at IS NULL)
+		FROM agent_run_attempts WHERE benchmark_id = $1`, benchmarkID).Scan(
+		&a.AgentRunAttempts, &a.UnfinishedAgentRunAttempts); err != nil {
+		return B3Audit{}, err
+	}
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*),
+		       (SELECT count(*) FROM model_call_attempts a
+		        JOIN agent_runs r ON r.id = a.agent_run_id
+		        WHERE r.benchmark_id = $1),
+		       (SELECT count(*) FROM model_call_attempts a
+		        JOIN agent_runs r ON r.id = a.agent_run_id
+		        WHERE r.benchmark_id = $1 AND a.completed_at IS NULL)
+		FROM model_calls c
+		JOIN agent_runs r ON r.id = c.agent_run_id
+		WHERE r.benchmark_id = $1`, benchmarkID).Scan(
+		&a.ModelCalls, &a.ModelCallAttempts, &a.UnfinishedModelCallAttempts); err != nil {
+		return B3Audit{}, err
+	}
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(sum(capacity), 0), COALESCE(sum(in_use), 0),
+		       (SELECT count(*) FROM agent_runs
+		        WHERE budget_stripe IS NOT NULL AND state NOT IN ('succeeded', 'canceled'))
+		FROM b3_inflight_budget`).Scan(
+		&a.InFlightBudgetCapacity, &a.InFlightBudgetUsed, &a.InFlightBudgetObligations); err != nil {
+		return B3Audit{}, err
+	}
+	if a.InFlightBudgetUsed >= a.InFlightBudgetObligations {
+		a.InFlightBudgetMismatch = a.InFlightBudgetUsed - a.InFlightBudgetObligations
+	} else {
+		a.InFlightBudgetMismatch = a.InFlightBudgetObligations - a.InFlightBudgetUsed
+	}
+	if err := s.pool.QueryRow(ctx, `
 		SELECT count(*), count(*) FILTER (WHERE NOT EXISTS (
 			SELECT 1 FROM b3_publish_evidence e
 			WHERE e.outbox_sequence = o.sequence AND e.provider_confirmed_at IS NOT NULL
@@ -469,7 +614,12 @@ func (s *Store) AuditB3(ctx context.Context, benchmarkID uuid.UUID, expectedInco
 	}
 	if a.AcceptedIncoming > a.ExpectedIncoming || a.StrandedAcceptedRuns > 0 ||
 		a.GhostDeliveryAttempts > 0 || a.DuplicateTerminalCommits > 0 ||
-		a.UnpublishedOutboxRecords > 0 || a.NonterminalAgentRuns > 0 {
+		a.UnpublishedOutboxRecords > 0 || a.NonterminalAgentRuns > 0 ||
+		a.GoodRootOutcomes != a.AcceptedIncoming ||
+		(a.AcceptedIncoming > 0 && a.DistinctExecutionProfiles != 1) ||
+		a.ModelCalls != a.AuthoritativeAgentRuns ||
+		a.UnfinishedAgentRunAttempts > 0 || a.UnfinishedModelCallAttempts > 0 ||
+		a.InFlightBudgetMismatch > 0 {
 		a.Verdict = "FAIL"
 	}
 	return a, nil

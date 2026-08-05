@@ -3,14 +3,16 @@ set -euo pipefail
 
 prototype_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 experiment=${B3_EXPERIMENT:-transactional-outbox}
-manifest_version=${B3_MANIFEST_VERSION:-pubsub-handoff-v1}
+manifest_version=${B3_MANIFEST_VERSION:-pubsub-handoff-v2}
 sequence_stripes=${B3_SEQUENCE_STRIPES:-4}
+inflight_agent_runs=${B3_INFLIGHT_AGENT_RUNS:-1024}
+inflight_budget_stripes=${B3_INFLIGHT_BUDGET_STRIPES:-16}
 worker_concurrency=${B3_WORKER_CONCURRENCY:-32}
 worker_slots=${B3_WORKER_SLOTS:-$worker_concurrency}
 worker_db_pool=${B3_WORKER_DB_POOL:-4}
 worker_min_instances=${B3_WORKER_MIN_INSTANCES:-0}
 enable_ordering=${B3_ENABLE_ORDERING:-1}
-ingress_admission_slots=${B3_INGRESS_ADMISSION_SLOTS:-64}
+ingress_admission_slots=${B3_INGRESS_ADMISSION_SLOTS:-0}
 ingress_concurrency=${B3_INGRESS_CONCURRENCY:-80}
 ingress_min_instances=${B3_INGRESS_MIN_INSTANCES:-0}
 capture_attempt_evidence=${B3_CAPTURE_ATTEMPT_EVIDENCE:-1}
@@ -20,14 +22,24 @@ case "$sequence_stripes" in
   4|16|64) ;;
   *) echo "B3_SEQUENCE_STRIPES must be 4, 16, or 64" >&2; exit 2 ;;
 esac
-for setting in worker_concurrency worker_slots worker_db_pool ingress_admission_slots ingress_concurrency ack_deadline; do
+for setting in inflight_agent_runs inflight_budget_stripes worker_concurrency worker_slots worker_db_pool ingress_concurrency ack_deadline; do
   value=${!setting}
   if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
     echo "$setting must be a positive integer" >&2
     exit 2
   fi
 done
-if (( ingress_admission_slots >= ingress_concurrency )); then
+if (( inflight_budget_stripes > 64 || inflight_budget_stripes > inflight_agent_runs )); then
+  echo "B3_INFLIGHT_BUDGET_STRIPES must be at most 64 and no greater than B3_INFLIGHT_AGENT_RUNS" >&2
+  exit 2
+fi
+export B3_INFLIGHT_AGENT_RUNS="$inflight_agent_runs"
+export B3_INFLIGHT_BUDGET_STRIPES="$inflight_budget_stripes"
+if [[ ! "$ingress_admission_slots" =~ ^[0-9]+$ ]]; then
+  echo "B3_INGRESS_ADMISSION_SLOTS must be a non-negative integer" >&2
+  exit 2
+fi
+if (( ingress_admission_slots > 0 && ingress_admission_slots >= ingress_concurrency )); then
   echo "B3_INGRESS_ADMISSION_SLOTS must be lower than B3_INGRESS_CONCURRENCY" >&2
   exit 2
 fi
@@ -64,6 +76,7 @@ else
     qualification-buffer-80) default_prefix="osfo-b3-38-qb80" ;;
     qualification-ingress-min2) default_prefix="osfo-b3-38-qim2" ;;
     qualification-authority-only) default_prefix="osfo-b3-38-qao" ;;
+    qualification-runtime-budget) default_prefix="osfo-b3-38-qrb" ;;
     *) default_prefix="osfo-b3-38-$experiment" ;;
   esac
 fi
@@ -205,6 +218,9 @@ provision() {
     printf 'sql_connection_name=%q\n' "$sql_connection_name"
   } >"$state_file"
 
+  start_proxy
+  (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness migrate)
+
   gcloud builds submit "$prototype_dir" --tag="$image_uri" --project="$project_id"
 
   gcloud pubsub topics describe "$topic_id" >/dev/null 2>&1 || gcloud pubsub topics create "$topic_id"
@@ -227,14 +243,12 @@ provision() {
     --min="$ingress_min_instances" --max=8 \
     --cpu-throttling --timeout=60 --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes,ADMISSION_SLOTS=$ingress_admission_slots,CAPTURE_ATTEMPT_EVIDENCE=$capture_attempt_evidence"
+    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes,B3_INFLIGHT_AGENT_RUNS=$inflight_agent_runs,B3_INFLIGHT_BUDGET_STRIPES=$inflight_budget_stripes,ADMISSION_SLOTS=$ingress_admission_slots,CAPTURE_ATTEMPT_EVIDENCE=$capture_attempt_evidence"
   ingress_url=$(gcloud run services describe "$ingress_service" --region="$region" --format='value(status.url)')
   active_account=$(gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -n 1)
   gcloud run services add-iam-policy-binding "$ingress_service" --region="$region" \
     --member="user:$active_account" --role=roles/run.invoker --condition=None --quiet >/dev/null
 
-  start_proxy
-  (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness migrate)
   capture_inventory "$evidence_root/provisioned-inventory.json"
   capture_frozen_topology "$evidence_root/frozen-topology"
 }
@@ -254,7 +268,7 @@ deploy_images() {
     --min="$ingress_min_instances" --max=8 \
     --cpu-throttling --timeout=60 --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes,ADMISSION_SLOTS=$ingress_admission_slots,CAPTURE_ATTEMPT_EVIDENCE=$capture_attempt_evidence"
+    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes,B3_INFLIGHT_AGENT_RUNS=$inflight_agent_runs,B3_INFLIGHT_BUDGET_STRIPES=$inflight_budget_stripes,ADMISSION_SLOTS=$ingress_admission_slots,CAPTURE_ATTEMPT_EVIDENCE=$capture_attempt_evidence"
   deploy_relay
 }
 
@@ -386,6 +400,55 @@ hard_crash_smoke() {
   seal_directory "$destination"
 }
 
+worker_crash_smoke() {
+  load_state
+  reset_subscription
+  start_proxy
+  local destination="$evidence_root/worker-process-loss"
+  if [[ -e "$destination" ]]; then
+    echo "Refusing to overwrite existing worker process-loss evidence: $destination" >&2
+    return 1
+  fi
+  mkdir -p "$destination"
+  local benchmark_id
+  benchmark_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness prepare \
+    --benchmark="$benchmark_id" --lane="worker-process-loss/after-claim" --expected-incoming=1)
+  (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness admit \
+    --benchmark="$benchmark_id" --ordinal=0 --attempt=1 --fault=none) >"$destination/admission.json"
+  local agent_run_id
+  agent_run_id=$(jq -er '.receipt.agent_run_ids[0]' "$destination/admission.json")
+  (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness inject-worker-crash \
+    --benchmark="$benchmark_id" --agent-run="$agent_run_id")
+  local started_at
+  started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) \
+    GCP_PROJECT_ID="$project_id" PUBSUB_TOPIC_ID="$topic_id" \
+    go run ./cmd/b3-harness drain --benchmark="$benchmark_id")
+  local ended_at
+  ended_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness audit \
+    --benchmark="$benchmark_id" --expected-incoming=1) >"$destination/audit.json"
+  jq -e '
+    .verdict == "PASS" and
+    .accepted_incoming == 1 and
+    .authoritative_agent_runs == 1 and
+    .succeeded_agent_runs == 1 and
+    .agent_run_attempts >= 2 and
+    .unfinished_agent_run_attempts == 0 and
+    .model_calls == 1 and
+    .model_call_attempts == 1 and
+    .inflight_agent_run_budget_used == 0 and
+    .inflight_agent_run_budget_mismatch == 0
+  ' "$destination/audit.json" >/dev/null
+  jq -n --arg benchmark_id "$benchmark_id" --arg agent_run_id "$agent_run_id" \
+    --arg started_at "$started_at" --arg ended_at "$ended_at" \
+    '{lane:"worker-process-loss-after-claim",benchmark_id:$benchmark_id,agent_run_id:$agent_run_id,started_at:$started_at,ended_at:$ended_at}' \
+    >"$destination/scenario.json"
+  capture_logs "$destination/runtime-logs.json" "$started_at"
+  seal_directory "$destination"
+}
+
 authentication_smoke() {
   load_state
   local destination="$evidence_root/authentication-smoke"
@@ -475,12 +538,13 @@ load_lane() {
     --argjson count "$count" --argjson repetition "$repetition" --argjson sequence_stripes "$sequence_stripes" \
     --argjson worker_concurrency "$worker_concurrency" --argjson worker_slots "$worker_slots" \
     --argjson worker_db_pool "$worker_db_pool" --argjson worker_min_instances "$worker_min_instances" \
+    --argjson inflight_agent_runs "$inflight_agent_runs" --argjson inflight_budget_stripes "$inflight_budget_stripes" \
     --argjson enable_ordering "$enable_ordering" --argjson ingress_admission_slots "$ingress_admission_slots" \
     --argjson ingress_concurrency "$ingress_concurrency" --argjson ingress_min_instances "$ingress_min_instances" \
     --argjson capture_attempt_evidence "$capture_attempt_evidence" \
     --argjson ack_deadline "$ack_deadline" \
     --argjson subscription_reset_before_lane "$reset_subscription_before_lane" \
-    '{manifest:$manifest,benchmark_id:$benchmark_id,lane:$lane,repetition:$repetition,handoff:"transactional-outbox",sequence_stripes:$sequence_stripes,relay_owners:4,ingress_admission_slots:$ingress_admission_slots,ingress_concurrency:$ingress_concurrency,ingress_min_instances:$ingress_min_instances,capture_attempt_evidence:($capture_attempt_evidence == 1),worker_concurrency:$worker_concurrency,worker_slots:$worker_slots,worker_db_pool:$worker_db_pool,worker_min_instances:$worker_min_instances,subscription_ordering_enabled:($enable_ordering == 1),ack_deadline_seconds:$ack_deadline,subscription_reset_before_lane:($subscription_reset_before_lane == 1),rate_per_second:$rate,end_rate_per_second:$end_rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at}' \
+    '{manifest:$manifest,benchmark_id:$benchmark_id,lane:$lane,repetition:$repetition,handoff:"transactional-outbox",sequence_stripes:$sequence_stripes,relay_owners:4,inflight_agent_run_capacity:$inflight_agent_runs,inflight_budget_stripes:$inflight_budget_stripes,ingress_admission_slots:$ingress_admission_slots,ingress_concurrency:$ingress_concurrency,ingress_min_instances:$ingress_min_instances,capture_attempt_evidence:($capture_attempt_evidence == 1),worker_concurrency:$worker_concurrency,worker_slots:$worker_slots,worker_db_pool:$worker_db_pool,worker_min_instances:$worker_min_instances,subscription_ordering_enabled:($enable_ordering == 1),ack_deadline_seconds:$ack_deadline,subscription_reset_before_lane:($subscription_reset_before_lane == 1),rate_per_second:$rate,end_rate_per_second:$end_rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at}' \
     >"$destination/scenario.json"
   capture_logs "$destination/runtime-logs.json" "$started_at"
   collect_monitoring "$destination" "$started_at" "$ended_at"
@@ -523,10 +587,21 @@ check_qualification_lane() {
     .ghost_delivery_attempts == 0 and
     .duplicate_terminal_commits == 0 and
     .unknown_caller_outcomes == 0 and
-    ($mode == "diagnostic" or (
-      (.publish_to_point_claim_ms.p95 // 1e99) <= 250 and
-      (.publish_to_point_claim_ms.p99 // 1e99) <= $p99_limit
-    ))
+    .good_root_outcomes == .accepted_incoming and
+    .good_root_outcome_ratio == 1 and
+    .distinct_execution_profiles == 1 and
+    .model_calls == .authoritative_agent_runs and
+    .model_call_attempts >= .model_calls and
+    .unfinished_agent_run_attempts == 0 and
+    .unfinished_model_call_attempts == 0 and
+    .inflight_agent_run_budget_used == 0 and
+    .inflight_agent_run_budget_mismatch == 0 and
+    ($mode == "diagnostic" or
+      ($mode == "target" and
+        (.publish_to_point_claim_ms.p95 // 1e99) <= 250 and
+        (.publish_to_point_claim_ms.p99 // 1e99) <= $p99_limit) or
+      ($mode == "stress" and
+        (.publish_to_point_claim_ms.p99 // 1e99) <= $p99_limit))
   ' "$destination/audit.json" >/dev/null; then
     echo "$destination failed the $mode audit gate" >&2
     return 1
@@ -538,11 +613,17 @@ check_qualification_lane() {
       jq -c 'select(.caller_outcome != "accepted")' | wc -l)
   else
     invalid_samples=$(gzip -cd "$destination/caller-samples.jsonl.gz" |
-      jq -c 'select((.caller_outcome == "accepted" or (.caller_outcome == "rejected" and .error_class == "overloaded")) | not)' |
+      jq -c 'select((.caller_outcome == "accepted" or (.caller_outcome == "rejected" and .error_class == "overloaded" and .retry_after_ms > 0)) | not)' |
       wc -l)
   fi
   if [[ "$invalid_samples" != "0" ]]; then
     echo "$destination has $invalid_samples invalid caller outcomes" >&2
+    return 1
+  fi
+  if [[ "$mode" == "stress" ]] && ! jq -e --slurpfile scenario "$destination/scenario.json" '
+    (.accepted_incoming / $scenario[0].duration_seconds) >= 232
+  ' "$destination/audit.json" >/dev/null; then
+    echo "$destination did not preserve 232 incoming messages/s of accepted Goodput" >&2
     return 1
   fi
   if [[ "$mode" == "target" ]]; then
@@ -649,6 +730,41 @@ run_controller() {
         controller_exit=$?
       fi
       ;;
+    target-runtime-budget-study)
+      if run_target_control_study runtime-budget; then
+        controller_exit=0
+      else
+        controller_exit=$?
+      fi
+      ;;
+    target-runtime-budget-nolocal-study)
+      if run_target_control_study runtime-budget-nolocal; then
+        controller_exit=0
+      else
+        controller_exit=$?
+      fi
+      ;;
+    target-runtime-budget-s64-study)
+      if run_target_control_study runtime-budget-s64; then
+        controller_exit=0
+      else
+        controller_exit=$?
+      fi
+      ;;
+    target-runtime-budget-s64-independent-study)
+      if run_target_control_study runtime-budget-s64-independent; then
+        controller_exit=0
+      else
+        controller_exit=$?
+      fi
+      ;;
+    target-runtime-budget-s64-terminal-study)
+      if run_target_control_study runtime-budget-s64-terminal; then
+        controller_exit=0
+      else
+        controller_exit=$?
+      fi
+      ;;
     *)
       echo "Unknown controller workflow: $workflow" >&2
       controller_exit=2
@@ -670,6 +786,7 @@ start_controller() {
     --working-directory="$prototype_dir" --setenv="PATH=$PATH" \
     --setenv="B3_EXPERIMENT=$experiment" --setenv="B3_MANIFEST_VERSION=$manifest_version" \
     --setenv="B3_SEQUENCE_STRIPES=$sequence_stripes" --setenv="B3_WORKER_CONCURRENCY=$worker_concurrency" \
+    --setenv="B3_INFLIGHT_AGENT_RUNS=$inflight_agent_runs" --setenv="B3_INFLIGHT_BUDGET_STRIPES=$inflight_budget_stripes" \
     --setenv="B3_WORKER_SLOTS=$worker_slots" --setenv="B3_WORKER_DB_POOL=$worker_db_pool" \
     --setenv="B3_WORKER_MIN_INSTANCES=$worker_min_instances" --setenv="B3_ENABLE_ORDERING=$enable_ordering" \
     --setenv="B3_INGRESS_ADMISSION_SLOTS=$ingress_admission_slots" \
@@ -872,7 +989,7 @@ run_decision_evidence() {
 }
 
 usage() {
-  echo "Usage: ./b3-run.sh provision|deploy|relay|auth-smoke|hard-crash-smoke|cut-matrix|load <lane> <rate> <seconds> [repetition] [end-rate]|finalize <directory> <benchmark> <expected> <rate> <seconds> <lane>|load-manifest|remaining-manifest|controller <workflow>|start-controller <workflow>|scale-zero|inventory|seal|teardown|decision"
+  echo "Usage: ./b3-run.sh provision|deploy|relay|auth-smoke|hard-crash-smoke|worker-crash-smoke|cut-matrix|load <lane> <rate> <seconds> [repetition] [end-rate]|finalize <directory> <benchmark> <expected> <rate> <seconds> <lane>|load-manifest|remaining-manifest|controller <workflow>|start-controller <workflow>|scale-zero|inventory|seal|teardown|decision"
 }
 
 command=${1:-}
@@ -882,6 +999,7 @@ case "$command" in
   relay) deploy_relay ;;
   auth-smoke) authentication_smoke ;;
   hard-crash-smoke) hard_crash_smoke ;;
+  worker-crash-smoke) worker_crash_smoke ;;
   cut-matrix) run_cut_matrix ;;
   load) load_state; shift; load_lane "$@" ;;
   finalize) load_state; shift; finalize_interrupted_lane "$@" ;;

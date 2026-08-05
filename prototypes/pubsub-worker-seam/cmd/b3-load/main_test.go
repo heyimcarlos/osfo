@@ -38,12 +38,12 @@ func TestOfferDoesNotRetryTypedOverload(t *testing.T) {
 		requests.Add(1)
 		w.Header().Set("content-type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = json.NewEncoder(w).Encode(store.B3Result{CallerOutcome: "rejected", ErrorClass: "overloaded"})
+		_ = json.NewEncoder(w).Encode(store.B3Result{CallerOutcome: "rejected", ErrorClass: "overloaded", RetryAfterMS: 250})
 	}))
 	defer server.Close()
 
 	result := offer(context.Background(), server.Client(), server.URL, "", uuid.New(), 1, time.Now())
-	if result.CallerOutcome != "rejected" || result.HTTPAttempts != 1 || requests.Load() != 1 {
+	if result.CallerOutcome != "rejected" || result.RetryAfterMS != 250 || result.HTTPAttempts != 1 || requests.Load() != 1 {
 		t.Fatalf("result = %#v, requests = %d", result, requests.Load())
 	}
 }

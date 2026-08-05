@@ -52,12 +52,25 @@ func TestWriteOverloadedReturnsTypedRejection(t *testing.T) {
 	if response.Header().Get("content-type") != "application/json" {
 		t.Fatalf("content-type = %q", response.Header().Get("content-type"))
 	}
+	if response.Header().Get("retry-after") != "1" {
+		t.Fatalf("retry-after = %q", response.Header().Get("retry-after"))
+	}
 	var result store.B3Result
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
-	if result.CallerOutcome != "rejected" || result.ErrorClass != "overloaded" {
+	if result.CallerOutcome != "rejected" || result.ErrorClass != "overloaded" || result.RetryAfterMS != 250 {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestAdmissionHTTPStatusMapsDurableBudgetRejection(t *testing.T) {
+	result := store.B3Result{CallerOutcome: "rejected", ErrorClass: "overloaded", RetryAfterMS: 250}
+	if got := admissionHTTPStatus(result, nil); got != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", got, http.StatusTooManyRequests)
+	}
+	if got := admissionHTTPStatus(store.B3Result{}, errors.New("database unavailable")); got != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", got, http.StatusServiceUnavailable)
 	}
 }
 
@@ -79,5 +92,15 @@ func TestBinaryFlag(t *testing.T) {
 	}
 	if _, err := binaryFlag("true", false); err == nil {
 		t.Fatal("binaryFlag accepted a non-binary value")
+	}
+}
+
+func TestNonNegativeIntAllowsDisabledAdmissionGuard(t *testing.T) {
+	got, err := nonNegativeInt("0", 64)
+	if err != nil || got != 0 {
+		t.Fatalf("nonNegativeInt(0) = %d, %v", got, err)
+	}
+	if _, err := nonNegativeInt("-1", 0); err == nil {
+		t.Fatal("nonNegativeInt accepted a negative value")
 	}
 }

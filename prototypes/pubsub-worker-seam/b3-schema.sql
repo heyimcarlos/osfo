@@ -12,6 +12,16 @@ CREATE TABLE b3_admissions (
     CHECK (agent_run_ids[1] = root_agent_run_id)
 );
 
+CREATE TABLE b3_inflight_budget (
+    budget_stripe smallint PRIMARY KEY CHECK (budget_stripe BETWEEN 0 AND 63),
+    capacity integer NOT NULL CHECK (capacity >= 0),
+    in_use integer NOT NULL DEFAULT 0 CHECK (in_use >= 0 AND in_use <= capacity),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+) WITH (fillfactor = 50);
+
+INSERT INTO b3_inflight_budget (budget_stripe, capacity)
+SELECT generate_series(0, 63), 0;
+
 CREATE SEQUENCE b3_outbox_sequence;
 
 CREATE TABLE b3_outbox_sequence_gate (
@@ -92,6 +102,7 @@ CREATE TABLE b3_publish_evidence (
 );
 
 CREATE INDEX b3_outbox_stripe_sequence ON b3_outbox (sequence_stripe, stripe_sequence);
+CREATE INDEX b3_outbox_sequence_lookup ON b3_outbox (sequence);
 CREATE INDEX b3_outbox_benchmark ON b3_outbox (benchmark_id, agent_run_id);
 CREATE INDEX b3_attempts_benchmark ON b3_attempt_evidence (benchmark_id, ordinal, attempt);
 CREATE INDEX b3_publications_benchmark ON b3_publish_evidence (benchmark_id, agent_run_id);

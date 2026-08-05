@@ -27,6 +27,7 @@ type sample struct {
 	LatencyMS     float64   `json:"latency_ms"`
 	CallerOutcome string    `json:"caller_outcome"`
 	ErrorClass    string    `json:"error_class,omitempty"`
+	RetryAfterMS  int       `json:"retry_after_ms,omitempty"`
 	HTTPAttempts  int       `json:"http_attempts"`
 }
 
@@ -191,6 +192,7 @@ func offerOnce(
 		CompletedAt: completedAt, Status: response.StatusCode,
 		LatencyMS:     float64(completedAt.Sub(offeredAt).Microseconds()) / 1000,
 		CallerOutcome: result.CallerOutcome, ErrorClass: result.ErrorClass,
+		RetryAfterMS: result.RetryAfterMS,
 		HTTPAttempts: attempt,
 	}
 }
