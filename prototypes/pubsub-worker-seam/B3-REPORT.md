@@ -169,12 +169,10 @@ must still run before the topology-selection ticket can resolve.
 ## Evidence pointers
 
 - Corrected source: commit `1fb90f5`
-- Cut matrix: `evidence/b3-transactional-outbox/cut-matrix/`
-- Hard cuts: `evidence/b3-transactional-outbox/hard-process-cuts/`
-- Short lanes: `evidence/b3-transactional-outbox/load/`
-- Final database stats: `evidence/b3-transactional-outbox/database-final-stats.json`
-- Retention plan: `evidence/b3-transactional-outbox/retention-plan.json`
+- Raw cut, load, topology, monitoring, database, retention, cost, and teardown
+  evidence: archived in commit
+  [`d0a41cb`](https://github.com/heyimcarlos/osfo/commit/d0a41cb10b01963afebd30695598021b3c55fa9b)
 
-The earlier unsafe-sequence evidence remains preserved locally under
-`evidence/b3-transactional-outbox-unsafe-sequence/` and is intentionally not
-promoted as corrected candidate evidence.
+The raw bundle was removed from the current branch after archival because its
+large generated logs made local source-control tooling unstable. The earlier
+unsafe-sequence run was never promoted as corrected candidate evidence.

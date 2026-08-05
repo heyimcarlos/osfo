@@ -1,8 +1,0 @@
-{
-  "manifest": "pubsub-handoff-v1",
-  "lane": "deterministic-cut-matrix",
-  "started_at": "2026-08-04T21:16:16Z",
-  "ended_at": "2026-08-04T21:21:17Z",
-  "repetitions_per_cut": 100,
-  "seeds": 3
-}

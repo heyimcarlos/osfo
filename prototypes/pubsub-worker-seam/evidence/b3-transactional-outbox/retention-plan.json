@@ -1,1 +1,0 @@
-{"drop_candidates":[],"method":"drop whole daily partition only after replay window and relay high-water proof","replay_window":"168h0m0s"}
