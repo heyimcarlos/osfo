@@ -25,7 +25,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("command required: migrate, prepare, admit, inject-worker-crash, relay-once, drain, backlog, audit, retention-plan, or matrix")
+		return fmt.Errorf("command required: migrate, prepare, admit, inject-worker-crash, relay-once, drain, backlog, fair-snapshot, audit, retention-plan, or matrix")
 	}
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -54,6 +54,10 @@ func run(ctx context.Context, args []string) error {
 	sequenceStripes := flags.Int("sequence-stripes", store.B3DefaultSequenceStripes, "commit-order sequence stripes")
 	budgetCapacity := flags.Int("inflight-agent-runs", budgetCapacityDefault, "global durable in-flight AgentRun capacity")
 	budgetStripes := flags.Int("budget-stripes", budgetStripesDefault, "durable in-flight budget stripes")
+	fairWindow := flags.Int("fair-window", 0, "Principal-first dispatch permit capacity")
+	fairPrincipalCapacity := flags.Int("fair-principal-capacity", 4096, "per-Principal durable-obligation capacity")
+	principal := flags.String("principal", "", "Principal fairness identity")
+	thread := flags.String("thread", "", "ordered thread identity")
 	repetitions := flags.Int("repetitions", 100, "fault repetitions")
 	seeds := flags.Int("seeds", 3, "independently named seeds")
 	replayWindow := flags.Duration("replay-window", 7*24*time.Hour, "outbox replay safety window")
@@ -83,8 +87,15 @@ func run(ctx context.Context, args []string) error {
 		}
 		return nil
 	}
-	if err := database.ConfigureB3InFlightBudget(ctx, *budgetCapacity, *budgetStripes); err != nil {
-		return err
+	if command == "admit" || command == "matrix" {
+		if err := database.ConfigureB3InFlightBudget(ctx, *budgetCapacity, *budgetStripes); err != nil {
+			return err
+		}
+		if *fairWindow > 0 {
+			if err := database.ConfigureB3FairDispatch(ctx, *fairWindow, *fairPrincipalCapacity); err != nil {
+				return err
+			}
+		}
 	}
 	if command == "retention-plan" {
 		candidates, err := database.B3RetentionCandidates(ctx, *replayWindow)
@@ -128,6 +139,8 @@ func run(ctx context.Context, args []string) error {
 			request.RequestHash = *requestHash
 		}
 		request.HardCrash = *hardCrash
+		request.Principal = *principal
+		request.Thread = *thread
 		result, err := b3.Admit(ctx, database, request, *sequenceStripes, *budgetStripes)
 		_ = json.NewEncoder(os.Stdout).Encode(result)
 		return err
@@ -146,9 +159,14 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		defer publisher.Close()
-		relay := &b3.Relay{Store: database, Publisher: publisher, Owner: "b3-harness", BatchSize: *batchSize, SequenceStripes: *sequenceStripes, Fault: *fault, HardCrash: *hardCrash}
+		relay := &b3.Relay{Store: database, Publisher: publisher, Owner: "b3-harness", BatchSize: *batchSize, SequenceStripes: *sequenceStripes, Fault: *fault, HardCrash: *hardCrash, FairDispatch: *fairWindow > 0}
 		if command == "relay-once" {
-			count, err := relay.RunAllOnce(ctx)
+			var count int
+			if relay.FairDispatch {
+				count, err = relay.RunFairOnce(ctx)
+			} else {
+				count, err = relay.RunAllOnce(ctx)
+			}
 			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"processed": count, "fault": *fault})
 			return err
 		}
@@ -159,6 +177,12 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(audit)
+	case "fair-snapshot":
+		snapshot, err := database.B3FairSnapshot(ctx, benchmarkID)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(snapshot)
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
@@ -198,7 +222,12 @@ func drain(ctx context.Context, database *store.Store, relay *b3.Relay, benchmar
 		if count == 0 && remaining == 0 {
 			return nil
 		}
-		processed, err := relay.RunAllOnce(ctx)
+		var processed int
+		if relay.FairDispatch {
+			processed, err = relay.RunFairOnce(ctx)
+		} else {
+			processed, err = relay.RunAllOnce(ctx)
+		}
 		if err != nil {
 			return err
 		}

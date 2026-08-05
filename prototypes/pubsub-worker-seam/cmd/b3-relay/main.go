@@ -42,17 +42,34 @@ func run(logger *slog.Logger) error {
 	if err := b3.ValidateSequenceStripes(sequenceStripes); err != nil {
 		return err
 	}
+	fairDispatchWindow, err := nonNegativeInt(os.Getenv("B3_FAIR_DISPATCH_WINDOW"), 0)
+	if err != nil {
+		return err
+	}
+	fairPrincipalCapacity, err := positiveInt(os.Getenv("B3_FAIR_PRINCIPAL_CAPACITY"), 4096)
+	if err != nil {
+		return err
+	}
 	database, err := store.Open(ctx, required("DATABASE_URL"), "b3-relay/"+os.Getenv("HOSTNAME"), int32(poolSize))
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+	if fairDispatchWindow > 0 {
+		if err := database.ConfigureB3FairDispatch(ctx, fairDispatchWindow, fairPrincipalCapacity); err != nil {
+			return fmt.Errorf("configure fair dispatch window: %w", err)
+		}
+	}
 	publisher, err := b3.NewPublisher(ctx, required("GCP_PROJECT_ID"), required("PUBSUB_TOPIC_ID"))
 	if err != nil {
 		return err
 	}
 	defer publisher.Close()
-	relay := &b3.Relay{Store: database, Publisher: publisher, Owner: value("HOSTNAME", "b3-relay"), BatchSize: batchSize, SequenceStripes: sequenceStripes, Fault: b3.NoFault}
+	relay := &b3.Relay{
+		Store: database, Publisher: publisher, Owner: value("HOSTNAME", "b3-relay"),
+		BatchSize: batchSize, SequenceStripes: sequenceStripes, Fault: b3.NoFault,
+		FairDispatch: fairDispatchWindow > 0,
+	}
 	go func() {
 		for ctx.Err() == nil {
 			if err := relay.Run(ctx, 25*time.Millisecond); err != nil && ctx.Err() == nil {
@@ -108,6 +125,17 @@ func positiveInt(text string, fallback int) (int, error) {
 	parsed, err := strconv.Atoi(text)
 	if err != nil || parsed <= 0 {
 		return 0, fmt.Errorf("expected positive integer, got %q", text)
+	}
+	return parsed, nil
+}
+
+func nonNegativeInt(text string, fallback int) (int, error) {
+	if text == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(text)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("expected non-negative integer, got %q", text)
 	}
 	return parsed, nil
 }

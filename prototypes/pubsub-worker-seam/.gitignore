@@ -3,6 +3,9 @@
 .b3-run.env
 .b3-*.env
 evidence/*
+!evidence/b3-fairness-window-v2/
+evidence/b3-fairness-window-v2/*
+!evidence/b3-fairness-window-v2/decision.json
 !evidence/.gitkeep
 !evidence/SEALED-SHA256SUMS
 !evidence/crema-config.yaml

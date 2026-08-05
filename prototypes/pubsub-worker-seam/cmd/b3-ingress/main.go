@@ -46,6 +46,14 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	fairDispatchWindow, err := nonNegativeInt(os.Getenv("B3_FAIR_DISPATCH_WINDOW"), 0)
+	if err != nil {
+		return err
+	}
+	fairPrincipalCapacity, err := positiveInt(os.Getenv("B3_FAIR_PRINCIPAL_CAPACITY"), 4096)
+	if err != nil {
+		return err
+	}
 	admissionSlotCount, err := nonNegativeInt(os.Getenv("ADMISSION_SLOTS"), 0)
 	if err != nil {
 		return err
@@ -65,6 +73,11 @@ func run(logger *slog.Logger) error {
 	defer database.Close()
 	if err := database.ConfigureB3InFlightBudget(ctx, budgetCapacity, budgetStripes); err != nil {
 		return fmt.Errorf("configure in-flight AgentRun budget: %w", err)
+	}
+	if fairDispatchWindow > 0 {
+		if err := database.ConfigureB3FairDispatch(ctx, fairDispatchWindow, fairPrincipalCapacity); err != nil {
+			return fmt.Errorf("configure fair dispatch window: %w", err)
+		}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })

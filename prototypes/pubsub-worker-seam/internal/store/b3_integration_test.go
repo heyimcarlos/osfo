@@ -95,6 +95,89 @@ func TestB3DurableBudgetReservationAndTerminalRelease(t *testing.T) {
 	if completedDeliveries != len(receipt.AgentRunIDs) {
 		t.Fatalf("completed deliveries = %d, want %d", completedDeliveries, len(receipt.AgentRunIDs))
 	}
+	exercisePrincipalFirstDispatch(t, ctx, database, budgetStripes)
+}
+
+func exercisePrincipalFirstDispatch(t *testing.T, ctx context.Context, database *Store, budgetStripes int) {
+	t.Helper()
+	if err := database.ConfigureB3InFlightBudget(ctx, 64, budgetStripes); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ConfigureB3FairDispatch(ctx, 2, 32); err != nil {
+		t.Fatal(err)
+	}
+	benchmarkID := uuid.New()
+	if err := database.PrepareB3(ctx, benchmarkID, "b3-integration", "principal-first", 3); err != nil {
+		t.Fatal(err)
+	}
+	requests := []B3Request{
+		fairIntegrationRequest(benchmarkID, 0, "noisy", "noisy-thread-a"),
+		fairIntegrationRequest(benchmarkID, 2, "noisy", "noisy-thread-b"),
+		fairIntegrationRequest(benchmarkID, 1, "quiet", "quiet-thread"),
+	}
+	for _, request := range requests {
+		if _, err := database.AcceptB3(ctx, request, B3DefaultSequenceStripes, budgetStripes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for round := 0; round < 2; round++ {
+		connection, owned, err := database.TryOwnB3FairSelector(ctx)
+		if err != nil || !owned {
+			t.Fatalf("own selector = %t, %v", owned, err)
+		}
+		records, err := database.ReadOrSelectB3FairBatch(ctx, connection, 8)
+		if err != nil {
+			database.ReleaseB3FairSelector(ctx, connection)
+			t.Fatal(err)
+		}
+		if len(records) != 2 {
+			database.ReleaseB3FairSelector(ctx, connection)
+			t.Fatalf("round %d selected %d records, want 2", round, len(records))
+		}
+		confirmedAt := time.Now().UTC()
+		publications := make([]B3Publication, 0, len(records))
+		for _, record := range records {
+			publications = append(publications, B3Publication{Record: record, ConfirmedAt: &confirmedAt})
+		}
+		if err := database.ConfirmB3FairPublications(ctx, connection, publications); err != nil {
+			database.ReleaseB3FairSelector(ctx, connection)
+			t.Fatal(err)
+		}
+		database.ReleaseB3FairSelector(ctx, connection)
+		selectedPrincipals := map[string]bool{}
+		for _, record := range records {
+			selectedPrincipals[record.Principal] = true
+			claim, err := database.TryClaim(ctx, record.AgentRunID, benchmarkID, "fair-integration-worker", time.Now().UTC(), 10*time.Second)
+			if err != nil || claim.Run == nil {
+				t.Fatalf("fair claim = %#v, %v", claim, err)
+			}
+			attempt, err := database.CommitModelCallAttempt(ctx, *claim.Run, "produce_assistant_response")
+			if err != nil {
+				t.Fatal(err)
+			}
+			committed, err := database.CompleteModelCallAndRun(ctx, *claim.Run, attempt, "assistant_response_completed", nil)
+			if err != nil || !committed {
+				t.Fatalf("fair complete = %t, %v", committed, err)
+			}
+		}
+		if !selectedPrincipals["noisy"] || !selectedPrincipals["quiet"] {
+			t.Fatalf("round %d selected Principals = %v, want noisy and quiet", round, selectedPrincipals)
+		}
+	}
+	snapshot, err := database.B3FairSnapshot(ctx, benchmarkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.PermitsInUse != 0 || snapshot.QueuedPrincipals != 0 {
+		t.Fatalf("final fair snapshot = %#v", snapshot)
+	}
+}
+
+func fairIntegrationRequest(benchmarkID uuid.UUID, ordinal int, principal, thread string) B3Request {
+	request := integrationRequest(benchmarkID, ordinal)
+	request.Principal = principal
+	request.Thread = thread
+	return request
 }
 
 func integrationRequest(benchmarkID uuid.UUID, ordinal int) B3Request {

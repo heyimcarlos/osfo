@@ -7,9 +7,8 @@ and point-addressed PostgreSQL claims. Reject direct PostgreSQL plus Pub/Sub
 dual-write under every ordering.
 
 This selects the atomic handoff. It does not claim that every production
-deployment gate is complete. Retained-corpus p99, Principal starvation
-resistance, integrated Temporal execution, and full lifecycle cost remain
-explicit qualification work.
+deployment gate is complete. Retained-corpus p99, integrated Temporal
+execution, and full lifecycle cost remain explicit qualification work.
 
 ## Decision table
 
@@ -23,7 +22,7 @@ explicit qualification work.
 | Target handoff latency | 283.5 ms p95 in short lane | 215.3 ms p95, 1,467.8 ms p99 in retained-corpus lane | p99 follow-up required |
 | Automatic recovery | `FAIL` for unobserved database-first gaps | `PASS` for exercised worker and relay cuts | B3 |
 | Per-Thread order | same fenced worker side | commit-order sequence plus predecessor gate | B3 contract |
-| Principal starvation resistance | `MISSING` | `MISSING` | production gate, no selection claim |
+| Principal starvation resistance | `MISSING` | `PASS` with bounded Principal-first publication window | B3 selector |
 | Integrated Temporal execution | `MISSING` in candidate harness | `MISSING` in candidate harness | consume lifecycle evidence, rerun in production slice |
 | Complete monthly cost | `MISSING` | `MISSING` | no total-cost claim |
 | Teardown | zero owned residue | zero owned residue | pass |
@@ -176,7 +175,6 @@ admission and all authority invariants with stronger evidence. Production
 approval still requires:
 
 - the retained-corpus Pub/Sub push-to-claim p99 cause and selected control;
-- a Principal-first starvation-resistance challenge lane;
 - the selected handoff integrated with real Temporal execution and the Native
   Thread Transport reference journey;
 - the full target, stress, outage, recovery, retained-corpus, and cost contract

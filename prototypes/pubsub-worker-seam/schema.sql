@@ -14,11 +14,14 @@ CREATE TABLE agent_runs (
     id uuid PRIMARY KEY,
     benchmark_id uuid NOT NULL REFERENCES benchmarks(id),
     ordinal integer NOT NULL,
+    principal_key text,
     thread_key text NOT NULL,
     thread_sequence integer NOT NULL,
     workload_ms integer NOT NULL,
     execution_profile_ref text NOT NULL DEFAULT 'benchmark/deterministic-v1',
     budget_stripe smallint,
+    principal_budget_stripe smallint,
+    fair_dispatch boolean NOT NULL DEFAULT false,
     state agent_run_state NOT NULL DEFAULT 'pending',
     claim_epoch bigint NOT NULL DEFAULT 0,
     lease_owner text,
@@ -32,6 +35,7 @@ CREATE TABLE agent_runs (
     UNIQUE (benchmark_id, ordinal),
     UNIQUE (benchmark_id, thread_key, thread_sequence),
     CHECK (budget_stripe IS NULL OR budget_stripe BETWEEN 0 AND 63),
+    CHECK (principal_budget_stripe IS NULL OR principal_budget_stripe BETWEEN 0 AND 15),
     CHECK ((state = 'running') = (lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)),
     CHECK ((state IN ('succeeded', 'canceled')) = (completed_at IS NOT NULL))
 );
@@ -94,6 +98,8 @@ CREATE TABLE delivery_attempts (
 );
 
 CREATE INDEX agent_runs_benchmark_state ON agent_runs (benchmark_id, state);
+CREATE INDEX agent_runs_principal_state ON agent_runs (benchmark_id, principal_key, state)
+WHERE principal_key IS NOT NULL;
 CREATE INDEX agent_runs_thread_order ON agent_runs (benchmark_id, thread_key, thread_sequence);
 CREATE INDEX agent_run_attempts_benchmark ON agent_run_attempts (benchmark_id, started_at);
 CREATE INDEX model_calls_agent_run ON model_calls (agent_run_id, call_ordinal);

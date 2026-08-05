@@ -11,6 +11,9 @@ worker_concurrency=${B3_WORKER_CONCURRENCY:-32}
 worker_slots=${B3_WORKER_SLOTS:-$worker_concurrency}
 worker_db_pool=${B3_WORKER_DB_POOL:-4}
 worker_min_instances=${B3_WORKER_MIN_INSTANCES:-0}
+worker_max_instances=${B3_WORKER_MAX_INSTANCES:-8}
+fair_dispatch_window=${B3_FAIR_DISPATCH_WINDOW:-0}
+fair_principal_capacity=${B3_FAIR_PRINCIPAL_CAPACITY:-4096}
 enable_ordering=${B3_ENABLE_ORDERING:-1}
 ingress_admission_slots=${B3_INGRESS_ADMISSION_SLOTS:-0}
 ingress_concurrency=${B3_INGRESS_CONCURRENCY:-80}
@@ -47,6 +50,18 @@ if [[ ! "$worker_min_instances" =~ ^[0-9]+$ ]] || (( worker_min_instances > 8 ))
   echo "B3_WORKER_MIN_INSTANCES must be an integer from 0 through 8" >&2
   exit 2
 fi
+if [[ ! "$worker_max_instances" =~ ^[1-9][0-9]*$ ]] || (( worker_max_instances > 8 || worker_min_instances > worker_max_instances )); then
+  echo "B3_WORKER_MAX_INSTANCES must be from 1 through 8 and at least B3_WORKER_MIN_INSTANCES" >&2
+  exit 2
+fi
+if [[ ! "$fair_dispatch_window" =~ ^[0-9]+$ ]]; then
+  echo "B3_FAIR_DISPATCH_WINDOW must be a non-negative integer" >&2
+  exit 2
+fi
+if [[ ! "$fair_principal_capacity" =~ ^[1-9][0-9]*$ ]]; then
+  echo "B3_FAIR_PRINCIPAL_CAPACITY must be a positive integer" >&2
+  exit 2
+fi
 if [[ ! "$ingress_min_instances" =~ ^[0-9]+$ ]] || (( ingress_min_instances > 8 )); then
   echo "B3_INGRESS_MIN_INSTANCES must be an integer from 0 through 8" >&2
   exit 2
@@ -77,6 +92,8 @@ else
     qualification-ingress-min2) default_prefix="osfo-b3-38-qim2" ;;
     qualification-authority-only) default_prefix="osfo-b3-38-qao" ;;
     qualification-runtime-budget) default_prefix="osfo-b3-38-qrb" ;;
+    fairness-window) default_prefix="osfo-b3-50-fair" ;;
+    fairness-window-v2) default_prefix="osfo-b3-50-fair2" ;;
     *) default_prefix="osfo-b3-38-$experiment" ;;
   esac
 fi
@@ -226,7 +243,7 @@ provision() {
   gcloud pubsub topics describe "$topic_id" >/dev/null 2>&1 || gcloud pubsub topics create "$topic_id"
   gcloud run deploy "$worker_service" --image="$image_uri" --region="$region" --project="$project_id" \
     --service-account="$worker_service_account" --no-allow-unauthenticated --cpu=1 --memory=1Gi \
-    --concurrency="$worker_concurrency" --min="$worker_min_instances" --max=8 --cpu-throttling --timeout=600 \
+    --concurrency="$worker_concurrency" --min="$worker_min_instances" --max="$worker_max_instances" --cpu-throttling --timeout=600 \
     --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
     --set-env-vars="ROLE=push,DB_POOL_SIZE=$worker_db_pool,WORKER_SLOTS=$worker_slots,CLAIM_LEASE_SECONDS=15"
@@ -243,7 +260,7 @@ provision() {
     --min="$ingress_min_instances" --max=8 \
     --cpu-throttling --timeout=60 --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes,B3_INFLIGHT_AGENT_RUNS=$inflight_agent_runs,B3_INFLIGHT_BUDGET_STRIPES=$inflight_budget_stripes,ADMISSION_SLOTS=$ingress_admission_slots,CAPTURE_ATTEMPT_EVIDENCE=$capture_attempt_evidence"
+    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes,B3_INFLIGHT_AGENT_RUNS=$inflight_agent_runs,B3_INFLIGHT_BUDGET_STRIPES=$inflight_budget_stripes,B3_FAIR_DISPATCH_WINDOW=$fair_dispatch_window,B3_FAIR_PRINCIPAL_CAPACITY=$fair_principal_capacity,ADMISSION_SLOTS=$ingress_admission_slots,CAPTURE_ATTEMPT_EVIDENCE=$capture_attempt_evidence"
   ingress_url=$(gcloud run services describe "$ingress_service" --region="$region" --format='value(status.url)')
   active_account=$(gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -n 1)
   gcloud run services add-iam-policy-binding "$ingress_service" --region="$region" \
@@ -258,7 +275,7 @@ deploy_images() {
   gcloud builds submit "$prototype_dir" --tag="$image_uri" --project="$project_id"
   gcloud run deploy "$worker_service" --image="$image_uri" --region="$region" --project="$project_id" \
     --service-account="$worker_service_account" --no-allow-unauthenticated --cpu=1 --memory=1Gi \
-    --concurrency="$worker_concurrency" --min="$worker_min_instances" --max=8 --cpu-throttling --timeout=600 \
+    --concurrency="$worker_concurrency" --min="$worker_min_instances" --max="$worker_max_instances" --cpu-throttling --timeout=600 \
     --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
     --set-env-vars="ROLE=push,DB_POOL_SIZE=$worker_db_pool,WORKER_SLOTS=$worker_slots,CLAIM_LEASE_SECONDS=15"
@@ -268,7 +285,7 @@ deploy_images() {
     --min="$ingress_min_instances" --max=8 \
     --cpu-throttling --timeout=60 --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes,B3_INFLIGHT_AGENT_RUNS=$inflight_agent_runs,B3_INFLIGHT_BUDGET_STRIPES=$inflight_budget_stripes,ADMISSION_SLOTS=$ingress_admission_slots,CAPTURE_ATTEMPT_EVIDENCE=$capture_attempt_evidence"
+    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes,B3_INFLIGHT_AGENT_RUNS=$inflight_agent_runs,B3_INFLIGHT_BUDGET_STRIPES=$inflight_budget_stripes,B3_FAIR_DISPATCH_WINDOW=$fair_dispatch_window,B3_FAIR_PRINCIPAL_CAPACITY=$fair_principal_capacity,ADMISSION_SLOTS=$ingress_admission_slots,CAPTURE_ATTEMPT_EVIDENCE=$capture_attempt_evidence"
   deploy_relay
 }
 
@@ -279,7 +296,7 @@ deploy_relay() {
     --no-allow-unauthenticated --cpu=1 --memory=512Mi --concurrency=80 --min=1 --max=2 \
     --no-cpu-throttling --timeout=300 --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="GCP_PROJECT_ID=$project_id,PUBSUB_TOPIC_ID=$topic_id,DB_POOL_SIZE=4,RELAY_BATCH_SIZE=128,B3_SEQUENCE_STRIPES=$sequence_stripes"
+    --set-env-vars="GCP_PROJECT_ID=$project_id,PUBSUB_TOPIC_ID=$topic_id,DB_POOL_SIZE=4,RELAY_BATCH_SIZE=128,B3_SEQUENCE_STRIPES=$sequence_stripes,B3_FAIR_DISPATCH_WINDOW=$fair_dispatch_window,B3_FAIR_PRINCIPAL_CAPACITY=$fair_principal_capacity"
 }
 
 reset_subscription() {
@@ -412,10 +429,18 @@ worker_crash_smoke() {
   mkdir -p "$destination"
   local benchmark_id
   benchmark_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  local fair_args=()
+  local identity_args=()
+  if (( fair_dispatch_window > 0 )); then
+    fair_args=(--fair-window="$fair_dispatch_window" --fair-principal-capacity="$fair_principal_capacity")
+    identity_args=(--principal=worker-loss --thread=worker-loss-thread)
+  fi
   (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness prepare \
-    --benchmark="$benchmark_id" --lane="worker-process-loss/after-claim" --expected-incoming=1)
+    --benchmark="$benchmark_id" --lane="worker-process-loss/after-claim" --expected-incoming=1 \
+    "${fair_args[@]}")
   (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness admit \
-    --benchmark="$benchmark_id" --ordinal=0 --attempt=1 --fault=none) >"$destination/admission.json"
+    --benchmark="$benchmark_id" --ordinal=0 --attempt=1 --fault=none \
+    "${fair_args[@]}" "${identity_args[@]}") >"$destination/admission.json"
   local agent_run_id
   agent_run_id=$(jq -er '.receipt.agent_run_ids[0]' "$destination/admission.json")
   (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness inject-worker-crash \
@@ -424,7 +449,7 @@ worker_crash_smoke() {
   started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) \
     GCP_PROJECT_ID="$project_id" PUBSUB_TOPIC_ID="$topic_id" \
-    go run ./cmd/b3-harness drain --benchmark="$benchmark_id")
+    go run ./cmd/b3-harness drain --benchmark="$benchmark_id" "${fair_args[@]}")
   local ended_at
   ended_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness audit \
@@ -439,13 +464,116 @@ worker_crash_smoke() {
     .model_calls == 1 and
     .model_call_attempts == 1 and
     .inflight_agent_run_budget_used == 0 and
-    .inflight_agent_run_budget_mismatch == 0
+    .inflight_agent_run_budget_mismatch == 0 and
+    .principal_budget_mismatch == 0
   ' "$destination/audit.json" >/dev/null
+  if (( fair_dispatch_window > 0 )); then
+    (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness fair-snapshot \
+      --benchmark="$benchmark_id") >"$destination/final-fairness-snapshot.json"
+    jq -e '.permits_in_use == 0 and .queued_principals == 0' \
+      "$destination/final-fairness-snapshot.json" >/dev/null
+  fi
   jq -n --arg benchmark_id "$benchmark_id" --arg agent_run_id "$agent_run_id" \
     --arg started_at "$started_at" --arg ended_at "$ended_at" \
     '{lane:"worker-process-loss-after-claim",benchmark_id:$benchmark_id,agent_run_id:$agent_run_id,started_at:$started_at,ended_at:$ended_at}' \
     >"$destination/scenario.json"
   capture_logs "$destination/runtime-logs.json" "$started_at"
+  seal_directory "$destination"
+}
+
+fair_relay_crash_smoke() {
+  load_state
+  if (( fair_dispatch_window <= 0 )); then
+    echo "B3_FAIR_DISPATCH_WINDOW must be positive for the fair relay crash smoke" >&2
+    return 2
+  fi
+  reset_subscription
+  start_proxy
+  local destination="$evidence_root/fair-relay-process-loss"
+  if [[ -e "$destination" ]]; then
+    echo "Refusing to overwrite existing fair relay process-loss evidence: $destination" >&2
+    return 1
+  fi
+  mkdir -p "$destination"
+  local harness_bin
+  harness_bin=$(mktemp /tmp/osfo-b3-harness-fair-loss.XXXXXX)
+  (cd "$prototype_dir" && go build -o "$harness_bin" ./cmd/b3-harness)
+  local started_at
+  started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  local fault benchmark_id exit_code drained
+  for fault in before_publish after_confirmation_before_progress; do
+    gcloud run services delete "$relay_service" --region="$region" --quiet >/dev/null 2>&1 || true
+    # Cloud Run may let a deleted always-on instance finish background work.
+    # Wait for that instance to stop before admitting the crash probe.
+    sleep 15
+    benchmark_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+    (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) "$harness_bin" prepare \
+      --benchmark="$benchmark_id" --lane="fair-relay-process-loss/$fault" --expected-incoming=1 \
+      --fair-window="$fair_dispatch_window" --fair-principal-capacity="$fair_principal_capacity")
+    (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) "$harness_bin" admit \
+      --benchmark="$benchmark_id" --ordinal=0 --attempt=1 --fault=none \
+      --principal="recovery-$fault" --thread="recovery-$fault-thread" \
+      --fair-window="$fair_dispatch_window" --fair-principal-capacity="$fair_principal_capacity") \
+      >"$destination/$fault-admission.json"
+
+    set +e
+    (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) \
+      GCP_PROJECT_ID="$project_id" PUBSUB_TOPIC_ID="$topic_id" \
+      "$harness_bin" relay-once --benchmark="$benchmark_id" --fault="$fault" --hard-crash \
+      --fair-window="$fair_dispatch_window" --fair-principal-capacity="$fair_principal_capacity") \
+      >"$destination/$fault-relay.stdout" 2>"$destination/$fault-relay.stderr"
+    exit_code=$?
+    set -e
+    printf '%s\n' "$exit_code" >"$destination/$fault-relay.exit-code"
+    if [[ "$exit_code" != "86" ]]; then
+      echo "Fair relay fault $fault exited $exit_code instead of 86" >&2
+      return 1
+    fi
+    (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) "$harness_bin" fair-snapshot \
+      --benchmark="$benchmark_id") >"$destination/$fault-after-crash.json"
+
+    deploy_relay
+    drained=0
+    for _ in {1..120}; do
+      (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) "$harness_bin" audit \
+        --benchmark="$benchmark_id" --expected-incoming=1) >"$destination/$fault-audit.pending.json"
+      if jq -e '.verdict == "PASS" and .nonterminal_agent_runs == 0' \
+        "$destination/$fault-audit.pending.json" >/dev/null; then
+        drained=1
+        break
+      fi
+      sleep 2
+    done
+    if [[ "$drained" != "1" ]]; then
+      echo "Fair relay recovery did not drain for $fault" >&2
+      return 1
+    fi
+    mv "$destination/$fault-audit.pending.json" "$destination/$fault-audit.json"
+    (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) "$harness_bin" fair-snapshot \
+      --benchmark="$benchmark_id") >"$destination/$fault-final.json"
+  done
+  rm -f "$harness_bin"
+
+  local ended_at
+  ended_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  capture_frozen_topology "$destination/topology"
+  jq -n --arg manifest "$manifest_version" --arg started_at "$started_at" --arg ended_at "$ended_at" \
+    --argjson dispatch_window "$fair_dispatch_window" \
+    '{manifest:$manifest,lane:"fair-relay-process-loss",faults:["before_publish","after_confirmation_before_progress"],dispatch_window:$dispatch_window,started_at:$started_at,ended_at:$ended_at}' \
+    >"$destination/scenario.json"
+  jq -n \
+    --slurpfile before_crash "$destination/before_publish-after-crash.json" \
+    --slurpfile before_audit "$destination/before_publish-audit.json" \
+    --slurpfile before_final "$destination/before_publish-final.json" \
+    --slurpfile after_crash "$destination/after_confirmation_before_progress-after-crash.json" \
+    --slurpfile after_audit "$destination/after_confirmation_before_progress-audit.json" \
+    --slurpfile after_final "$destination/after_confirmation_before_progress-final.json" \
+    '{before_publish:{after_crash:$before_crash[0],audit:$before_audit[0],final:$before_final[0]},after_confirmation:{after_crash:$after_crash[0],audit:$after_audit[0],final:$after_final[0]},pass:($before_crash[0].permits_in_use == 1 and $before_audit[0].verdict == "PASS" and $before_final[0].permits_in_use == 0 and $after_audit[0].verdict == "PASS" and $after_final[0].permits_in_use == 0)}' \
+    >"$destination/gate.json"
+  jq -e '.pass' "$destination/gate.json" >/dev/null
+  capture_logs "$destination/runtime-logs.json" "$started_at"
+  gzip -9 "$destination/runtime-logs.json"
   seal_directory "$destination"
 }
 
@@ -549,6 +677,181 @@ load_lane() {
   capture_logs "$destination/runtime-logs.json" "$started_at"
   collect_monitoring "$destination" "$started_at" "$ended_at"
   gzip -9 "$destination/caller-samples.jsonl" "$destination/runtime-logs.json"
+  seal_directory "$destination"
+}
+
+fairness_lane() {
+  load_state
+  if (( fair_dispatch_window <= 0 )); then
+    echo "B3_FAIR_DISPATCH_WINDOW must be positive for the fairness lane" >&2
+    return 2
+  fi
+  local destination="$evidence_root/fairness/noisy-principal"
+  if [[ -e "$destination" ]]; then
+    echo "Refusing to overwrite existing fairness evidence: $destination" >&2
+    return 1
+  fi
+  mkdir -p "$destination"
+  reset_subscription
+  start_proxy
+  if ! gcloud run services describe "$relay_service" --region="$region" >/dev/null 2>&1; then
+    deploy_relay
+  fi
+
+  local noisy_rate=230 noisy_duration=75 quiet_rate=0.5 quiet_duration=60 quiet_delay=15
+  local noisy_count=$((noisy_rate * noisy_duration))
+  local quiet_count=30
+  local expected=$((noisy_count + quiet_count))
+  local benchmark_id
+  benchmark_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness prepare \
+    --benchmark="$benchmark_id" --lane="principal-first/noisy-principal" --expected-incoming="$expected" \
+    --fair-window="$fair_dispatch_window" --fair-principal-capacity="$fair_principal_capacity")
+
+  capture_frozen_topology "$destination/topology"
+  local ingress_url identity_token
+  ingress_url=$(gcloud run services describe "$ingress_service" --region="$region" --format='value(status.url)')
+  identity_token=$(gcloud auth print-identity-token)
+  local harness_bin load_bin
+  harness_bin=$(mktemp /tmp/osfo-b3-harness-50.XXXXXX)
+  load_bin=$(mktemp /tmp/osfo-b3-load-50.XXXXXX)
+  (cd "$prototype_dir" && go build -o "$harness_bin" ./cmd/b3-harness && go build -o "$load_bin" ./cmd/b3-load)
+
+  local started_at offer_ended_at ended_at snapshot_pid noisy_pid quiet_pid
+  started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  (
+    for _ in {1..120}; do
+      DATABASE_URL=$(local_database_url) "$harness_bin" fair-snapshot \
+        --benchmark="$benchmark_id" >>"$destination/fairness-snapshots.jsonl" 2>>"$destination/snapshot-errors.log" || true
+      sleep 1
+    done
+  ) &
+  snapshot_pid=$!
+
+  GCP_IDENTITY_TOKEN="$identity_token" "$load_bin" \
+    --url="$ingress_url" --benchmark="$benchmark_id" --rate="$noisy_rate" \
+    --duration="${noisy_duration}s" --count="$noisy_count" --principal=noisy \
+    --thread-prefix=noisy-thread --thread-count=128 \
+    >"$destination/noisy-caller-samples.jsonl" 2>"$destination/noisy-load.log" &
+  noisy_pid=$!
+  sleep "$quiet_delay"
+  GCP_IDENTITY_TOKEN="$identity_token" "$load_bin" \
+    --url="$ingress_url" --benchmark="$benchmark_id" --rate="$quiet_rate" \
+    --duration="${quiet_duration}s" --count="$quiet_count" --principal=quiet \
+    --thread-prefix=quiet-thread --thread-count=1 --ordinal-offset=1000000 \
+    >"$destination/quiet-caller-samples.jsonl" 2>"$destination/quiet-load.log" &
+  quiet_pid=$!
+  wait "$noisy_pid"
+  wait "$quiet_pid"
+  offer_ended_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  local drained=0
+  for _ in {1..180}; do
+    DATABASE_URL=$(local_database_url) "$harness_bin" audit \
+      --benchmark="$benchmark_id" --expected-incoming="$expected" >"$destination/audit.pending.json"
+    if jq -e '.nonterminal_agent_runs == 0' "$destination/audit.pending.json" >/dev/null; then
+      drained=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$drained" != "1" ]]; then
+    echo "Fairness lane did not drain within six minutes" >&2
+    return 1
+  fi
+  mv "$destination/audit.pending.json" "$destination/audit.json"
+  DATABASE_URL=$(local_database_url) "$harness_bin" fair-snapshot \
+    --benchmark="$benchmark_id" >"$destination/final-fairness-snapshot.json"
+  kill "$snapshot_pid" 2>/dev/null || true
+  wait "$snapshot_pid" 2>/dev/null || true
+  rm -f "$harness_bin" "$load_bin"
+  ended_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  summarize_caller_samples "$destination/noisy-caller-samples.jsonl" "$destination/noisy-caller-summary.json"
+  summarize_caller_samples "$destination/quiet-caller-samples.jsonl" "$destination/quiet-caller-summary.json"
+  jq -s '
+    {
+      sample_count: length,
+      peak_permits_in_use: ([.[].permits_in_use] | max // 0),
+      peak_queued_principals: ([.[].queued_principals] | max // 0),
+      quiet_max_oldest_queued_ms: ([.[] | (.principals // [])[] | select(.principal_key == "quiet") | .oldest_queued_ms] | max // 0),
+      noisy_max_oldest_queued_ms: ([.[] | (.principals // [])[] | select(.principal_key == "noisy") | .oldest_queued_ms] | max // 0),
+      quiet_progress_samples: ([.[] | (.principals // [])[] | select(.principal_key == "quiet" and .succeeded > 0)] | length),
+      final: .[-1]
+    }
+  ' "$destination/fairness-snapshots.jsonl" >"$destination/fairness-summary.json"
+  jq -n --arg manifest "$manifest_version" --arg benchmark_id "$benchmark_id" \
+    --arg started_at "$started_at" --arg offer_ended_at "$offer_ended_at" --arg ended_at "$ended_at" \
+    --argjson noisy_rate "$noisy_rate" --argjson noisy_duration "$noisy_duration" \
+    --argjson quiet_rate "$quiet_rate" --argjson quiet_duration "$quiet_duration" \
+    --argjson quiet_delay "$quiet_delay" --argjson dispatch_window "$fair_dispatch_window" \
+    --argjson principal_capacity "$fair_principal_capacity" --argjson global_capacity "$inflight_agent_runs" \
+    --argjson worker_slots "$worker_slots" --argjson worker_max_instances "$worker_max_instances" \
+    '{manifest:$manifest,benchmark_id:$benchmark_id,lane:"principal-first/noisy-principal",started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at,noisy:{rate_per_second:$noisy_rate,duration_seconds:$noisy_duration,threads:128},quiet:{rate_per_second:$quiet_rate,duration_seconds:$quiet_duration,start_delay_seconds:$quiet_delay,threads:1},dispatch_window:$dispatch_window,per_principal_obligation_capacity:$principal_capacity,global_obligation_capacity:$global_capacity,worker_slots:$worker_slots,worker_max_instances:$worker_max_instances}' \
+    >"$destination/scenario.json"
+
+  local quiet_invalid noisy_invalid
+  quiet_invalid=$(jq -c 'select(.caller_outcome != "accepted")' "$destination/quiet-caller-samples.jsonl" | wc -l)
+  noisy_invalid=$(jq -c 'select((.caller_outcome == "accepted" or (.caller_outcome == "rejected" and .error_class == "overloaded" and .retry_after_ms > 0)) | not)' "$destination/noisy-caller-samples.jsonl" | wc -l)
+  jq -n --argjson quiet_invalid "$quiet_invalid" --argjson noisy_invalid "$noisy_invalid" \
+    --slurpfile audit "$destination/audit.json" --slurpfile summary "$destination/fairness-summary.json" \
+    --slurpfile final "$destination/final-fairness-snapshot.json" \
+    '{quiet_invalid_outcomes:$quiet_invalid,noisy_invalid_outcomes:$noisy_invalid,audit:$audit[0],fairness:$summary[0],final:$final[0],pass:($quiet_invalid == 0 and $noisy_invalid == 0 and $audit[0].verdict == "PASS" and $summary[0].peak_permits_in_use == $summary[0].final.permit_capacity and $summary[0].quiet_max_oldest_queued_ms < 5000 and $final[0].permits_in_use == 0 and $final[0].queued_principals == 0)}' \
+    >"$destination/gate.json"
+  jq -e '.pass' "$destination/gate.json" >/dev/null
+
+  capture_logs "$destination/runtime-logs.json" "$started_at"
+  collect_monitoring "$destination" "$started_at" "$ended_at"
+  gzip -9 "$destination/noisy-caller-samples.jsonl" "$destination/quiet-caller-samples.jsonl" "$destination/runtime-logs.json"
+  seal_directory "$destination"
+}
+
+finalize_fairness_lane() {
+  load_state
+  local destination="$evidence_root/fairness/noisy-principal"
+  for required_file in audit.json final-fairness-snapshot.json fairness-snapshots.jsonl noisy-caller-samples.jsonl quiet-caller-samples.jsonl; do
+    if [[ ! -s "$destination/$required_file" ]]; then
+      echo "Missing fairness evidence file: $destination/$required_file" >&2
+      return 1
+    fi
+  done
+  summarize_caller_samples "$destination/noisy-caller-samples.jsonl" "$destination/noisy-caller-summary.json"
+  summarize_caller_samples "$destination/quiet-caller-samples.jsonl" "$destination/quiet-caller-summary.json"
+  jq -s '
+    {
+      sample_count: length,
+      peak_permits_in_use: ([.[].permits_in_use] | max // 0),
+      peak_queued_principals: ([.[].queued_principals] | max // 0),
+      quiet_max_oldest_queued_ms: ([.[] | (.principals // [])[] | select(.principal_key == "quiet") | .oldest_queued_ms] | max // 0),
+      noisy_max_oldest_queued_ms: ([.[] | (.principals // [])[] | select(.principal_key == "noisy") | .oldest_queued_ms] | max // 0),
+      quiet_progress_samples: ([.[] | (.principals // [])[] | select(.principal_key == "quiet" and .succeeded > 0)] | length),
+      final: .[-1]
+    }
+  ' "$destination/fairness-snapshots.jsonl" >"$destination/fairness-summary.json"
+  local benchmark_id started_at offer_ended_at ended_at
+  benchmark_id=$(jq -er '.benchmark_id' "$destination/audit.json")
+  started_at=$(jq -sr 'map(.offered_at) | min' "$destination/noisy-caller-samples.jsonl")
+  offer_ended_at=$(jq -sr 'map(.completed_at) | max' "$destination/noisy-caller-samples.jsonl" "$destination/quiet-caller-samples.jsonl")
+  ended_at=$(jq -er '.captured_at' "$destination/final-fairness-snapshot.json")
+  jq -n --arg manifest "$manifest_version" --arg benchmark_id "$benchmark_id" \
+    --arg started_at "$started_at" --arg offer_ended_at "$offer_ended_at" --arg ended_at "$ended_at" \
+    --argjson dispatch_window "$fair_dispatch_window" --argjson principal_capacity "$fair_principal_capacity" \
+    --argjson global_capacity "$inflight_agent_runs" --argjson worker_slots "$worker_slots" \
+    --argjson worker_max_instances "$worker_max_instances" \
+    '{manifest:$manifest,benchmark_id:$benchmark_id,lane:"principal-first/noisy-principal",started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at,noisy:{rate_per_second:230,duration_seconds:75,threads:128},quiet:{rate_per_second:0.5,duration_seconds:60,start_delay_seconds:15,threads:1},dispatch_window:$dispatch_window,per_principal_obligation_capacity:$principal_capacity,global_obligation_capacity:$global_capacity,worker_slots:$worker_slots,worker_max_instances:$worker_max_instances,finalized_after_reporting_null_fix:true}' \
+    >"$destination/scenario.json"
+  local quiet_invalid noisy_invalid
+  quiet_invalid=$(jq -c 'select(.caller_outcome != "accepted")' "$destination/quiet-caller-samples.jsonl" | wc -l)
+  noisy_invalid=$(jq -c 'select((.caller_outcome == "accepted" or (.caller_outcome == "rejected" and .error_class == "overloaded" and .retry_after_ms > 0)) | not)' "$destination/noisy-caller-samples.jsonl" | wc -l)
+  jq -n --argjson quiet_invalid "$quiet_invalid" --argjson noisy_invalid "$noisy_invalid" \
+    --slurpfile audit "$destination/audit.json" --slurpfile summary "$destination/fairness-summary.json" \
+    --slurpfile final "$destination/final-fairness-snapshot.json" \
+    '{quiet_invalid_outcomes:$quiet_invalid,noisy_invalid_outcomes:$noisy_invalid,audit:$audit[0],fairness:$summary[0],final:$final[0],pass:($quiet_invalid == 0 and $noisy_invalid == 0 and $audit[0].verdict == "PASS" and $audit[0].principal_budget_mismatch == 0 and $summary[0].peak_permits_in_use == $summary[0].final.permit_capacity and $summary[0].quiet_max_oldest_queued_ms < 5000 and $final[0].permits_in_use == 0 and $final[0].queued_principals == 0)}' \
+    >"$destination/gate.json"
+  jq -e '.pass' "$destination/gate.json" >/dev/null
+  capture_logs "$destination/runtime-logs.json" "$started_at"
+  collect_monitoring "$destination" "$started_at" "$ended_at"
+  gzip -9 "$destination/noisy-caller-samples.jsonl" "$destination/quiet-caller-samples.jsonl" "$destination/runtime-logs.json"
   seal_directory "$destination"
 }
 
@@ -989,7 +1292,7 @@ run_decision_evidence() {
 }
 
 usage() {
-  echo "Usage: ./b3-run.sh provision|deploy|relay|auth-smoke|hard-crash-smoke|worker-crash-smoke|cut-matrix|load <lane> <rate> <seconds> [repetition] [end-rate]|finalize <directory> <benchmark> <expected> <rate> <seconds> <lane>|load-manifest|remaining-manifest|controller <workflow>|start-controller <workflow>|scale-zero|inventory|seal|teardown|decision"
+  echo "Usage: ./b3-run.sh provision|deploy|relay|auth-smoke|hard-crash-smoke|worker-crash-smoke|fair-relay-crash-smoke|cut-matrix|load <lane> <rate> <seconds> [repetition] [end-rate]|fairness|fairness-finalize|finalize <directory> <benchmark> <expected> <rate> <seconds> <lane>|load-manifest|remaining-manifest|controller <workflow>|start-controller <workflow>|scale-zero|inventory|seal|teardown|decision"
 }
 
 command=${1:-}
@@ -1000,8 +1303,11 @@ case "$command" in
   auth-smoke) authentication_smoke ;;
   hard-crash-smoke) hard_crash_smoke ;;
   worker-crash-smoke) worker_crash_smoke ;;
+  fair-relay-crash-smoke) fair_relay_crash_smoke ;;
   cut-matrix) run_cut_matrix ;;
   load) load_state; shift; load_lane "$@" ;;
+  fairness) fairness_lane ;;
+  fairness-finalize) finalize_fairness_lane ;;
   finalize) load_state; shift; finalize_interrupted_lane "$@" ;;
   load-manifest) load_state; load_manifest ;;
   remaining-manifest) load_state; load_remaining_manifest ;;
