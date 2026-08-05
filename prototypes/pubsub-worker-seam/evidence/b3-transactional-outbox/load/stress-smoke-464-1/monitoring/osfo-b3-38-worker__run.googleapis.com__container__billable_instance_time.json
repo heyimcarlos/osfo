@@ -1,0 +1,69 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/billable_instance_time"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "revision_name": "osfo-b3-38-worker-00001-f9b",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1",
+          "service_name": "osfo-b3-38-worker",
+          "configuration_name": "osfo-b3-38-worker"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:24:00.001Z",
+            "endTime": "2026-08-05T00:25:00Z"
+          },
+          "value": {
+            "doubleValue": 13.800000000000011
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00.001Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "doubleValue": 26.399999999999977
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00.001Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "doubleValue": 121.60000000000002
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00.001Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "doubleValue": 72.7
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:20:00.001Z",
+            "endTime": "2026-08-05T00:21:00Z"
+          },
+          "value": {
+            "doubleValue": 0
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "s"
+}

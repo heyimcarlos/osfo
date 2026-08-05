@@ -1,0 +1,67 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "cloudsql.googleapis.com/database/memory/utilization"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database_id": "even-affinity-497006-u6:osfo-b3-38-sql",
+          "region": "northamerica-northeast1"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:25:00Z",
+            "endTime": "2026-08-05T00:25:00Z"
+          },
+          "value": {
+            "doubleValue": 0.42807175626384636
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:24:00Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "doubleValue": 0.42922323979885652
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "doubleValue": 0.42870808185617376
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "doubleValue": 0.42799879509846889
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00Z",
+            "endTime": "2026-08-05T00:21:00Z"
+          },
+          "value": {
+            "doubleValue": 0.41663769934684125
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

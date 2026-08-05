@@ -1,0 +1,45 @@
+{
+  "ticket": 38,
+  "candidate": "transactional-outbox-pubsub",
+  "source_commit": "1fb90f5",
+  "proposed_verdict": "continue-candidate-but-do-not-close",
+  "corrected_cut_matrix": {
+    "lanes": 24,
+    "incoming_messages": 2400,
+    "agent_runs": 3600,
+    "terminal_agent_runs": 3600,
+    "duplicate_publications": 150,
+    "unpublished_outbox_records": 0,
+    "stranded_agent_runs": 0,
+    "ghost_delivery_attempts": 0,
+    "duplicate_terminal_commits": 0
+  },
+  "short_target": {
+    "incoming_messages": 13920,
+    "agent_runs": 20880,
+    "terminal_agent_runs": 20880,
+    "caller_receipt_p95_ms": 15.75725,
+    "outbox_ready_to_confirmation_p95_ms": 95.754,
+    "publish_to_claim_p95_ms": 147.06205,
+    "verdict": "latency-fail"
+  },
+  "short_stress": {
+    "offered_messages": 27840,
+    "authoritative_messages": 27573,
+    "authoritative_agent_runs": 41363,
+    "nonterminal_agent_runs_at_audit": 9964,
+    "untyped_429_responses": 267,
+    "caller_receipt_p95_ms": 1789.8056,
+    "publish_to_claim_p95_ms": 1676.1374,
+    "verdict": "capacity-overload-latency-drain-fail"
+  },
+  "gates": {
+    "correctness": "MISSING",
+    "sustained_capacity": "MISSING",
+    "latency": "FAIL",
+    "backlog_recovery": "MISSING",
+    "cost": "MISSING",
+    "evidence": "MISSING"
+  },
+  "human_review_required": true
+}

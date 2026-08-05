@@ -1,0 +1,341 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "2xx",
+          "response_code": "201",
+          "route": ""
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-b3-38-ingress-00001-5rf",
+          "configuration_name": "osfo-b3-38-ingress",
+          "location": "northamerica-northeast1",
+          "service_name": "osfo-b3-38-ingress"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:24:00.001Z",
+            "endTime": "2026-08-05T00:25:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00.001Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00.001Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "int64Value": "253"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00.001Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "int64Value": "22831"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:20:00.001Z",
+            "endTime": "2026-08-05T00:21:00Z"
+          },
+          "value": {
+            "int64Value": "2701"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "route": "",
+          "response_code": "400",
+          "response_code_class": "4xx"
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "configuration_name": "osfo-b3-38-ingress",
+          "revision_name": "osfo-b3-38-ingress-00001-5rf",
+          "location": "northamerica-northeast1",
+          "service_name": "osfo-b3-38-ingress",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:24:00.001Z",
+            "endTime": "2026-08-05T00:25:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00.001Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00.001Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00.001Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:20:00.001Z",
+            "endTime": "2026-08-05T00:21:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "route": "",
+          "response_code_class": "4xx",
+          "response_code": "401"
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1",
+          "service_name": "osfo-b3-38-ingress",
+          "revision_name": "osfo-b3-38-ingress-00001-5rf",
+          "configuration_name": "osfo-b3-38-ingress"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:24:00.001Z",
+            "endTime": "2026-08-05T00:25:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00.001Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00.001Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00.001Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:20:00.001Z",
+            "endTime": "2026-08-05T00:21:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "response_code": "403",
+          "response_code_class": "4xx",
+          "route": ""
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "revision_name": "osfo-b3-38-ingress-00001-5rf",
+          "project_id": "even-affinity-497006-u6",
+          "configuration_name": "osfo-b3-38-ingress",
+          "service_name": "osfo-b3-38-ingress",
+          "location": "northamerica-northeast1"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:24:00.001Z",
+            "endTime": "2026-08-05T00:25:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00.001Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00.001Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00.001Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:20:00.001Z",
+            "endTime": "2026-08-05T00:21:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "4xx",
+          "response_code": "429",
+          "route": ""
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-b3-38-ingress",
+          "configuration_name": "osfo-b3-38-ingress",
+          "revision_name": "osfo-b3-38-ingress-00001-5rf",
+          "location": "northamerica-northeast1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:24:00.001Z",
+            "endTime": "2026-08-05T00:25:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00.001Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00.001Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00.001Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "int64Value": "267"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

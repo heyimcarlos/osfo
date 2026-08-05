@@ -1,0 +1,115 @@
+{
+    "relations": [
+        {
+            "relname": "b3_admissions",
+            "n_dead_tup": 0,
+            "n_live_tup": 45279,
+            "index_bytes": 7168000,
+            "total_bytes": 17539072,
+            "vacuum_count": 0,
+            "analyze_count": 0,
+            "autovacuum_count": 6,
+            "autoanalyze_count": 7
+        },
+        {
+            "relname": "b3_attempt_evidence",
+            "n_dead_tup": 0,
+            "n_live_tup": 46483,
+            "index_bytes": 7618560,
+            "total_bytes": 15015936,
+            "vacuum_count": 0,
+            "analyze_count": 0,
+            "autovacuum_count": 6,
+            "autoanalyze_count": 8
+        },
+        {
+            "relname": "b3_outbox",
+            "n_dead_tup": 0,
+            "n_live_tup": 0,
+            "index_bytes": 0,
+            "total_bytes": 0,
+            "vacuum_count": 0,
+            "analyze_count": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+        },
+        {
+            "relname": "b3_outbox_20260805",
+            "n_dead_tup": 0,
+            "n_live_tup": 67919,
+            "index_bytes": 8757248,
+            "total_bytes": 22601728,
+            "vacuum_count": 0,
+            "analyze_count": 0,
+            "autovacuum_count": 7,
+            "autoanalyze_count": 7
+        },
+        {
+            "relname": "b3_outbox_20260806",
+            "n_dead_tup": 0,
+            "n_live_tup": 0,
+            "index_bytes": 24576,
+            "total_bytes": 32768,
+            "vacuum_count": 0,
+            "analyze_count": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+        },
+        {
+            "relname": "b3_outbox_sequence_gate",
+            "n_dead_tup": 0,
+            "n_live_tup": 4,
+            "index_bytes": 16384,
+            "total_bytes": 458752,
+            "vacuum_count": 0,
+            "analyze_count": 0,
+            "autovacuum_count": 6,
+            "autoanalyze_count": 8
+        },
+        {
+            "relname": "b3_publish_evidence",
+            "n_dead_tup": 0,
+            "n_live_tup": 68071,
+            "index_bytes": 7585792,
+            "total_bytes": 20643840,
+            "vacuum_count": 0,
+            "analyze_count": 0,
+            "autovacuum_count": 6,
+            "autoanalyze_count": 7
+        },
+        {
+            "relname": "b3_relay_progress",
+            "n_dead_tup": 0,
+            "n_live_tup": 4,
+            "index_bytes": 16384,
+            "total_bytes": 90112,
+            "vacuum_count": 0,
+            "analyze_count": 0,
+            "autovacuum_count": 6,
+            "autoanalyze_count": 8
+        }
+    ],
+    "captured_at": "2026-08-05T00:29:14.805062+00:00",
+    "relay_progress": [
+        {
+            "shard": 0,
+            "advanced_at": "2026-08-05T00:21:56.342971+00:00",
+            "last_sequence": 11319
+        },
+        {
+            "shard": 1,
+            "advanced_at": "2026-08-05T00:21:56.361695+00:00",
+            "last_sequence": 22652
+        },
+        {
+            "shard": 2,
+            "advanced_at": "2026-08-05T00:21:56.284029+00:00",
+            "last_sequence": 11320
+        },
+        {
+            "shard": 3,
+            "advanced_at": "2026-08-05T00:21:56.343886+00:00",
+            "last_sequence": 22628
+        }
+    ]
+}

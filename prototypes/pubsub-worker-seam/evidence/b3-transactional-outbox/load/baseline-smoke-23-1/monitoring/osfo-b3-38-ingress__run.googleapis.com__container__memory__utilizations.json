@@ -1,0 +1,48 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/memory/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "configuration_name": "osfo-b3-38-ingress",
+          "location": "northamerica-northeast1",
+          "revision_name": "osfo-b3-38-ingress-00001-5rf",
+          "project_id": "even-affinity-497006-u6",
+          "service_name": "osfo-b3-38-ingress"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:14:00.001Z",
+            "endTime": "2026-08-05T00:15:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1",
+              "mean": 0.022045135498046875,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

@@ -1,0 +1,183 @@
+{
+  "bindings": [
+    {
+      "members": [
+        "serviceAccount:tryagent-provisioning-worker@even-affinity-497006-u6.iam.gserviceaccount.com"
+      ],
+      "role": "projects/even-affinity-497006-u6/roles/tryagentRuntimeSecretPublisher"
+    },
+    {
+      "members": [
+        "serviceAccount:service-189278282706@gcp-sa-artifactregistry.iam.gserviceaccount.com"
+      ],
+      "role": "roles/artifactregistry.serviceAgent"
+    },
+    {
+      "members": [
+        "serviceAccount:189278282706-compute@developer.gserviceaccount.com"
+      ],
+      "role": "roles/artifactregistry.writer"
+    },
+    {
+      "members": [
+        "serviceAccount:189278282706@cloudbuild.gserviceaccount.com"
+      ],
+      "role": "roles/cloudbuild.builds.builder"
+    },
+    {
+      "members": [
+        "serviceAccount:service-189278282706@gcp-sa-cloudbuild.iam.gserviceaccount.com"
+      ],
+      "role": "roles/cloudbuild.serviceAgent"
+    },
+    {
+      "members": [
+        "deleted:serviceAccount:osfo-b0-39-worker@even-affinity-497006-u6.iam.gserviceaccount.com?uid=109555032150627459070",
+        "deleted:serviceAccount:osfo-b2-35-ingress@even-affinity-497006-u6.iam.gserviceaccount.com?uid=112978134252412965601",
+        "deleted:serviceAccount:osfo-b2-35-worker@even-affinity-497006-u6.iam.gserviceaccount.com?uid=117342848436064256898",
+        "deleted:serviceAccount:osfo-b3-38-ingress@even-affinity-497006-u6.iam.gserviceaccount.com?uid=115034424383218495275",
+        "deleted:serviceAccount:osfo-b3-38-relay@even-affinity-497006-u6.iam.gserviceaccount.com?uid=115829608933372847802",
+        "deleted:serviceAccount:osfo-b3-38-worker@even-affinity-497006-u6.iam.gserviceaccount.com?uid=101369181740904928031",
+        "serviceAccount:osfo-b3-38-ingress@even-affinity-497006-u6.iam.gserviceaccount.com",
+        "serviceAccount:osfo-b3-38-relay@even-affinity-497006-u6.iam.gserviceaccount.com",
+        "serviceAccount:osfo-b3-38-worker@even-affinity-497006-u6.iam.gserviceaccount.com",
+        "serviceAccount:osfo-issue13-runner@even-affinity-497006-u6.iam.gserviceaccount.com",
+        "serviceAccount:osfo-runtime@even-affinity-497006-u6.iam.gserviceaccount.com",
+        "serviceAccount:osfo13@even-affinity-497006-u6.iam.gserviceaccount.com"
+      ],
+      "role": "roles/cloudsql.client"
+    },
+    {
+      "members": [
+        "serviceAccount:osfo-issue13-runner@even-affinity-497006-u6.iam.gserviceaccount.com",
+        "serviceAccount:osfo-runtime@even-affinity-497006-u6.iam.gserviceaccount.com",
+        "serviceAccount:osfo13@even-affinity-497006-u6.iam.gserviceaccount.com"
+      ],
+      "role": "roles/cloudsql.instanceUser"
+    },
+    {
+      "members": [
+        "serviceAccount:189278282706@cloudservices.gserviceaccount.com"
+      ],
+      "role": "roles/compute.instanceGroupManagerServiceAgent"
+    },
+    {
+      "members": [
+        "serviceAccount:service-189278282706@compute-system.iam.gserviceaccount.com"
+      ],
+      "role": "roles/compute.serviceAgent"
+    },
+    {
+      "members": [
+        "serviceAccount:service-189278282706@container-analysis.iam.gserviceaccount.com"
+      ],
+      "role": "roles/containeranalysis.ServiceAgent"
+    },
+    {
+      "members": [
+        "serviceAccount:service-189278282706@containerregistry.iam.gserviceaccount.com"
+      ],
+      "role": "roles/containerregistry.ServiceAgent"
+    },
+    {
+      "members": [
+        "serviceAccount:189278282706-compute@developer.gserviceaccount.com"
+      ],
+      "role": "roles/editor"
+    },
+    {
+      "members": [
+        "deleted:serviceAccount:osfo-b0-39-crema@even-affinity-497006-u6.iam.gserviceaccount.com?uid=113411349792761957707",
+        "serviceAccount:189278282706-compute@developer.gserviceaccount.com"
+      ],
+      "role": "roles/iam.serviceAccountUser"
+    },
+    {
+      "members": [
+        "serviceAccount:189278282706-compute@developer.gserviceaccount.com"
+      ],
+      "role": "roles/logging.logWriter"
+    },
+    {
+      "members": [
+        "deleted:serviceAccount:osfo-b0-39-crema@even-affinity-497006-u6.iam.gserviceaccount.com?uid=113411349792761957707"
+      ],
+      "role": "roles/monitoring.metricWriter"
+    },
+    {
+      "members": [
+        "deleted:serviceAccount:osfo-b0-39-crema@even-affinity-497006-u6.iam.gserviceaccount.com?uid=113411349792761957707",
+        "serviceAccount:osfo13@even-affinity-497006-u6.iam.gserviceaccount.com"
+      ],
+      "role": "roles/monitoring.viewer"
+    },
+    {
+      "members": [
+        "user:carlos.cruzta@gmail.com"
+      ],
+      "role": "roles/owner"
+    },
+    {
+      "members": [
+        "deleted:serviceAccount:osfo-b0-39-crema@even-affinity-497006-u6.iam.gserviceaccount.com?uid=113411349792761957707"
+      ],
+      "role": "roles/parametermanager.parameterViewer"
+    },
+    {
+      "members": [
+        "deleted:serviceAccount:osfo-b2-35-ingress@even-affinity-497006-u6.iam.gserviceaccount.com?uid=112978134252412965601",
+        "deleted:serviceAccount:osfo-b3-38-relay@even-affinity-497006-u6.iam.gserviceaccount.com?uid=115829608933372847802",
+        "serviceAccount:osfo-b3-38-relay@even-affinity-497006-u6.iam.gserviceaccount.com"
+      ],
+      "role": "roles/pubsub.publisher"
+    },
+    {
+      "members": [
+        "serviceAccount:service-189278282706@gcp-sa-pubsub.iam.gserviceaccount.com"
+      ],
+      "role": "roles/pubsub.serviceAgent"
+    },
+    {
+      "members": [
+        "deleted:serviceAccount:osfo-b0-39-worker@even-affinity-497006-u6.iam.gserviceaccount.com?uid=109555032150627459070",
+        "deleted:serviceAccount:osfo-b2-35-worker@even-affinity-497006-u6.iam.gserviceaccount.com?uid=117342848436064256898",
+        "deleted:serviceAccount:osfo-b3-38-worker@even-affinity-497006-u6.iam.gserviceaccount.com?uid=101369181740904928031",
+        "serviceAccount:osfo-b3-38-worker@even-affinity-497006-u6.iam.gserviceaccount.com"
+      ],
+      "role": "roles/pubsub.subscriber"
+    },
+    {
+      "members": [
+        "serviceAccount:189278282706-compute@developer.gserviceaccount.com"
+      ],
+      "role": "roles/run.admin"
+    },
+    {
+      "members": [
+        "serviceAccount:189278282706-compute@developer.gserviceaccount.com"
+      ],
+      "role": "roles/run.builder"
+    },
+    {
+      "members": [
+        "deleted:serviceAccount:osfo-b0-39-crema@even-affinity-497006-u6.iam.gserviceaccount.com?uid=113411349792761957707"
+      ],
+      "role": "roles/run.developer"
+    },
+    {
+      "members": [
+        "serviceAccount:service-189278282706@serverless-robot-prod.iam.gserviceaccount.com"
+      ],
+      "role": "roles/run.serviceAgent"
+    },
+    {
+      "members": [
+        "serviceAccount:tryagent-api@even-affinity-497006-u6.iam.gserviceaccount.com",
+        "serviceAccount:tryagent-webhook-worker@even-affinity-497006-u6.iam.gserviceaccount.com"
+      ],
+      "role": "roles/secretmanager.secretAccessor"
+    }
+  ],
+  "etag": "BwZYQYlws8g=",
+  "version": 1
+}

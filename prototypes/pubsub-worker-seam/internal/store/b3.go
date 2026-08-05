@@ -416,7 +416,7 @@ func (s *Store) AuditB3(ctx context.Context, benchmarkID uuid.UUID, expectedInco
 	if err := s.pool.QueryRow(ctx, `
 		SELECT COALESCE(sum(pg_total_relation_size(i.inhrelid)), 0),
 		       COALESCE(sum(pg_indexes_size(i.inhrelid)), 0),
-		       COALESCE((SELECT sum(n_dead_tup)::bigint FROM pg_stat_user_tables WHERE relname LIKE 'b3_outbox%'), 0),
+		       COALESCE((SELECT sum(n_dead_tup)::bigint FROM pg_stat_user_tables WHERE relname ~ '^b3_outbox_[0-9]{8}$'), 0),
 		       COALESCE((SELECT n_dead_tup::bigint FROM pg_stat_user_tables WHERE relname = 'b3_outbox_sequence_gate'), 0)
 		FROM pg_inherits i JOIN pg_class p ON p.oid = i.inhparent
 		WHERE p.relname = 'b3_outbox'`).Scan(
@@ -475,7 +475,7 @@ func (s *Store) B3RetentionCandidates(ctx context.Context, replayWindow time.Dur
 		return nil, err
 	}
 	rows.Close()
-	var safe []string
+	safe := make([]string, 0)
 	for _, name := range oldPartitions {
 		var fullyPublished bool
 		query := `SELECT NOT EXISTS (

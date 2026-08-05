@@ -1,0 +1,169 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/memory/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "revision_name": "osfo-b3-38-relay-00001-krv",
+          "configuration_name": "osfo-b3-38-relay",
+          "service_name": "osfo-b3-38-relay",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:24:00.001Z",
+            "endTime": "2026-08-05T00:25:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1",
+              "mean": 0.0718456195903883,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00.001Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1",
+              "mean": 0.071524901916285549,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00.001Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1",
+              "mean": 0.071569673513503143,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00.001Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1",
+              "mean": 0.072109438619134533,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:20:00.001Z",
+            "endTime": "2026-08-05T00:21:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1",
+              "mean": 0.071938873873827636,
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

@@ -38,6 +38,7 @@ evidence/b3-transactional-outbox/*
 !evidence/b3-transactional-outbox/decision.json
 !evidence/b3-transactional-outbox/pricing-model.json
 !evidence/b3-transactional-outbox/retention-plan.json
+!evidence/b3-transactional-outbox/database-final-stats.json
 !evidence/b3-transactional-outbox/SEALED-SHA256SUMS
 !evidence/b3-transactional-outbox/provisioned-inventory.json
 !evidence/b3-transactional-outbox/final-inventory.json

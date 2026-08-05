@@ -1,0 +1,33 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/billable_instance_time"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-b3-38-worker",
+          "configuration_name": "osfo-b3-38-worker",
+          "revision_name": "osfo-b3-38-worker-00001-f9b",
+          "location": "northamerica-northeast1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:14:00.001Z",
+            "endTime": "2026-08-05T00:15:00Z"
+          },
+          "value": {
+            "doubleValue": 4.599999999999997
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "s"
+}

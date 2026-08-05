@@ -1,0 +1,236 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code": "204",
+          "route": "",
+          "response_code_class": "2xx"
+        },
+        "type": "run.googleapis.com/request_latencies"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "configuration_name": "osfo-b3-38-worker",
+          "service_name": "osfo-b3-38-worker",
+          "location": "northamerica-northeast1",
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-b3-38-worker-00001-f9b"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:18:00.001Z",
+            "endTime": "2026-08-05T00:19:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:17:00.001Z",
+            "endTime": "2026-08-05T00:18:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "14612",
+              "mean": 33.620341701306891,
+              "sumOfSquaredDeviation": 1842291.826667771,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "42",
+                "1395",
+                "2562",
+                "3098",
+                "2962",
+                "1987",
+                "1084",
+                "526",
+                "324",
+                "281",
+                "149",
+                "87",
+                "35",
+                "14",
+                "12",
+                "16",
+                "0",
+                "0",
+                "0",
+                "4",
+                "10",
+                "1",
+                "1",
+                "1",
+                "21"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:16:00.001Z",
+            "endTime": "2026-08-05T00:17:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "6268",
+              "mean": 42.721708405752061,
+              "sumOfSquaredDeviation": 3031984.9551054793,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "2",
+                "296",
+                "729",
+                "758",
+                "784",
+                "748",
+                "679",
+                "561",
+                "370",
+                "383",
+                "255",
+                "167",
+                "131",
+                "126",
+                "147",
+                "66",
+                "18",
+                "16",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "24",
+                "2",
+                "6"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "4xx",
+          "response_code": "403",
+          "route": ""
+        },
+        "type": "run.googleapis.com/request_latencies"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "configuration_name": "osfo-b3-38-worker",
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-b3-38-worker-00001-f9b",
+          "location": "northamerica-northeast1",
+          "service_name": "osfo-b3-38-worker"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:18:00.001Z",
+            "endTime": "2026-08-05T00:19:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:17:00.001Z",
+            "endTime": "2026-08-05T00:18:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:16:00.001Z",
+            "endTime": "2026-08-05T00:17:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "ms"
+}

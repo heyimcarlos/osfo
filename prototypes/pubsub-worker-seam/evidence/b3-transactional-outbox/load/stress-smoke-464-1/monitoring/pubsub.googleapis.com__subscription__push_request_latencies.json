@@ -1,0 +1,1013 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "delivery_type": "webhook",
+          "response_code": "ack_204"
+        },
+        "type": "pubsub.googleapis.com/subscription/push_request_latencies"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "subscription_id": "osfo-b3-38-agent-runs"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00.001Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "5",
+              "mean": 67036.133333342383,
+              "sumOfSquaredDeviation": 26282482.855471071,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "2",
+                "3"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00.001Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "3157",
+              "mean": 95954.013443104108,
+              "sumOfSquaredDeviation": 4394978311472.957,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "588",
+                "944",
+                "499",
+                "392",
+                "367",
+                "235",
+                "97",
+                "20",
+                "9",
+                "5",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00.001Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "21756",
+              "mean": 122954.18497770122,
+              "sumOfSquaredDeviation": 109118364567550.53,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1235",
+                "2914",
+                "2497",
+                "3253",
+                "5886",
+                "4630",
+                "873",
+                "236",
+                "36",
+                "47",
+                "60",
+                "3",
+                "0",
+                "1",
+                "1",
+                "27",
+                "54",
+                "0",
+                "3"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:20:00.001Z",
+            "endTime": "2026-08-05T00:21:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "6468",
+              "mean": 134941.39027073438,
+              "sumOfSquaredDeviation": 51129041354698.875,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "98",
+                "450",
+                "591",
+                "1011",
+                "2199",
+                "1655",
+                "281",
+                "78",
+                "20",
+                "13",
+                "20",
+                "1",
+                "0",
+                "0",
+                "0",
+                "15",
+                "34",
+                "0",
+                "2"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "delivery_type": "webhook",
+          "response_code": "unavailable"
+        },
+        "type": "pubsub.googleapis.com/subscription/push_request_latencies"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "subscription_id": "osfo-b3-38-agent-runs",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00.001Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00.001Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00.001Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "4",
+              "mean": 6361207,
+              "sumOfSquaredDeviation": 21757081177814,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1",
+                "1",
+                "1",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "delivery_type": "webhook",
+          "response_code": "unreachable_5xx_error_503"
+        },
+        "type": "pubsub.googleapis.com/subscription/push_request_latencies"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "subscription_id": "osfo-b3-38-agent-runs"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00.001Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "63",
+              "mean": 302472.24317355885,
+              "sumOfSquaredDeviation": 28671581694.90546,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "63"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00.001Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "536",
+              "mean": 313359.41559420375,
+              "sumOfSquaredDeviation": 457402044056.17108,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "484",
+                "47",
+                "3",
+                "2"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00.001Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "862",
+              "mean": 321950.646344073,
+              "sumOfSquaredDeviation": 1004646393529.5204,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "713",
+                "131",
+                "17",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "delivery_type": "webhook",
+          "response_code": "unreachable_cant_contact_dns"
+        },
+        "type": "pubsub.googleapis.com/subscription/push_request_latencies"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "subscription_id": "osfo-b3-38-agent-runs"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00.001Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00.001Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00.001Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "1",
+              "mean": 14723,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 122,
+                  "growthFactor": 1.2,
+                  "scale": 1
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "us"
+}

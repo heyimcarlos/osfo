@@ -92,6 +92,8 @@ CREATE INDEX b3_outbox_shard_sequence ON b3_outbox (shard, shard_sequence);
 CREATE INDEX b3_outbox_benchmark ON b3_outbox (benchmark_id, agent_run_id);
 CREATE INDEX b3_attempts_benchmark ON b3_attempt_evidence (benchmark_id, ordinal, attempt);
 CREATE INDEX b3_publications_benchmark ON b3_publish_evidence (benchmark_id, agent_run_id);
+CREATE INDEX b3_publications_outbox_sequence ON b3_publish_evidence (outbox_sequence)
+WHERE provider_confirmed_at IS NOT NULL;
 
 -- Candidate logic reads only b3_outbox and b3_relay_progress. The admissions,
 -- AgentRun, attempt, publication, and delivery tables are audit evidence only.

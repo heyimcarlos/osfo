@@ -1,0 +1,139 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "state": "active"
+        },
+        "type": "run.googleapis.com/container/instance_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-b3-38-worker",
+          "revision_name": "osfo-b3-38-worker-00001-f9b",
+          "project_id": "even-affinity-497006-u6",
+          "configuration_name": "osfo-b3-38-worker",
+          "location": "northamerica-northeast1"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:25:00Z",
+            "endTime": "2026-08-05T00:25:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:24:00Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "int64Value": "4"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "int64Value": "6"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00Z",
+            "endTime": "2026-08-05T00:21:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "state": "idle"
+        },
+        "type": "run.googleapis.com/container/instance_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-b3-38-worker-00001-f9b",
+          "configuration_name": "osfo-b3-38-worker",
+          "service_name": "osfo-b3-38-worker",
+          "location": "northamerica-northeast1"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:25:00Z",
+            "endTime": "2026-08-05T00:25:00Z"
+          },
+          "value": {
+            "int64Value": "5"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:24:00Z",
+            "endTime": "2026-08-05T00:24:00Z"
+          },
+          "value": {
+            "int64Value": "4"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:23:00Z",
+            "endTime": "2026-08-05T00:23:00Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:22:00Z",
+            "endTime": "2026-08-05T00:22:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:21:00Z",
+            "endTime": "2026-08-05T00:21:00Z"
+          },
+          "value": {
+            "int64Value": "4"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

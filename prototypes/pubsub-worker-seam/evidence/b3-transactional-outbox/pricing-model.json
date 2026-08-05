@@ -1,0 +1,49 @@
+{
+  "captured_at": "2026-08-04",
+  "currency": "USD",
+  "classification": "partial list-price lower bound; frozen cost gate remains MISSING",
+  "source": "Issue 39 Montréal Google Cloud Billing Catalog capture",
+  "rates": {
+    "request_service_active_vcpu_second": 0.0000336,
+    "request_service_active_gib_second": 0.0000035,
+    "instance_service_vcpu_second": 0.0000216,
+    "instance_service_gib_second": 0.0000024,
+    "cloud_run_request_per_million": 0.4,
+    "pubsub_per_tib": 40
+  },
+  "target_smoke_measured_units": {
+    "incoming_messages": 13920,
+    "agent_runs": 20880,
+    "ingress_billable_instance_seconds": 59.7,
+    "worker_billable_instance_seconds": 78.2,
+    "relay_billable_instance_seconds": 180.08852939676453,
+    "relay_vcpu": 1,
+    "relay_gib": 0.5,
+    "pubsub_minimum_billed_operations_per_agent_run": 2,
+    "pubsub_minimum_bytes_per_operation": 1024
+  },
+  "target_smoke_list_price_usd": {
+    "ingress_compute": 0.00221487,
+    "worker_compute": 0.00290122,
+    "relay_compute": 0.004106018470246231,
+    "ingress_requests": 0.005568,
+    "worker_requests": 0.008352,
+    "pubsub_publish_and_delivery": 0.0015556812286376953,
+    "measured_handoff_total": 0.024697789698883928,
+    "per_1000_incoming_messages": 0.001774266501356604,
+    "per_1000_agent_runs": 0.001182844334237736
+  },
+  "monthly_lower_bound_usd": {
+    "relay_min_one_idle_floor": 59.9184,
+    "100000_dau_60000000_messages_90000000_agent_runs": 148.67603460619696,
+    "1000000_dau_600000000_messages_900000000_agent_runs": 947.4947460619697
+  },
+  "omissions_that_make_the_gate_missing": [
+    "Cloud SQL CPU, memory, storage, I/O, WAL, backup, and connection cost",
+    "Temporal Cloud and the production-shaped work graph",
+    "logging and monitoring ingestion and retention",
+    "networking and backup traffic",
+    "retry, outage, stress, and idle amplification beyond one relay floor",
+    "full root-response completion cost"
+  ]
+}

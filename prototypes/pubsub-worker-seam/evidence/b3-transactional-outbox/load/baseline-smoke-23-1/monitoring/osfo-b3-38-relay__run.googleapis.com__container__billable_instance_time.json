@@ -1,0 +1,42 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/billable_instance_time"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-b3-38-relay-00001-krv",
+          "location": "northamerica-northeast1",
+          "configuration_name": "osfo-b3-38-relay",
+          "service_name": "osfo-b3-38-relay"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:15:00.001Z",
+            "endTime": "2026-08-05T00:16:00Z"
+          },
+          "value": {
+            "doubleValue": 60.043077310383126
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:14:00.001Z",
+            "endTime": "2026-08-05T00:15:00Z"
+          },
+          "value": {
+            "doubleValue": 60.242041691868081
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "s"
+}

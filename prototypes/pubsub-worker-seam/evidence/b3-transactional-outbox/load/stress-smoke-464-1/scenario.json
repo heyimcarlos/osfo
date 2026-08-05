@@ -1,0 +1,15 @@
+{
+  "manifest": "pubsub-handoff-v1",
+  "benchmark_id": "3f8e76a0-4cbe-46c0-8224-8a438ec4c691",
+  "lane": "stress-smoke-464",
+  "repetition": 1,
+  "handoff": "transactional-outbox",
+  "rate_per_second": 464,
+  "end_rate_per_second": 464,
+  "duration_seconds": 60,
+  "count": 27840,
+  "started_at": "2026-08-05T00:20:47.790964169Z",
+  "offer_ended_at": "2026-08-05T00:21:56.309185913Z",
+  "ended_at": "2026-08-05T00:25:51Z",
+  "audit_recovered_after_controller_interrupt": true
+}

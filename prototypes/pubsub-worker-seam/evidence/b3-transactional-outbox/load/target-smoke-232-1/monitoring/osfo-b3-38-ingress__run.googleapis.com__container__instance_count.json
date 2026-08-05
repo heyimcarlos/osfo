@@ -1,0 +1,103 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "state": "active"
+        },
+        "type": "run.googleapis.com/container/instance_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "revision_name": "osfo-b3-38-ingress-00001-5rf",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1",
+          "service_name": "osfo-b3-38-ingress",
+          "configuration_name": "osfo-b3-38-ingress"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:19:00Z",
+            "endTime": "2026-08-05T00:19:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:18:00Z",
+            "endTime": "2026-08-05T00:18:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:17:00Z",
+            "endTime": "2026-08-05T00:17:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "state": "idle"
+        },
+        "type": "run.googleapis.com/container/instance_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-b3-38-ingress",
+          "configuration_name": "osfo-b3-38-ingress",
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-b3-38-ingress-00001-5rf",
+          "location": "northamerica-northeast1"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:19:00Z",
+            "endTime": "2026-08-05T00:19:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:18:00Z",
+            "endTime": "2026-08-05T00:18:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T00:17:00Z",
+            "endTime": "2026-08-05T00:17:00Z"
+          },
+          "value": {
+            "int64Value": "1"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

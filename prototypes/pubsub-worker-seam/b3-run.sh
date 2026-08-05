@@ -507,14 +507,17 @@ seal_root() {
         authentication-smoke \
         hard-process-cuts \
         cut-matrix \
-        load/restored-warm-smoke-23-1 \
+        load/baseline-smoke-23-1 \
         load/target-smoke-232-1 \
         load/stress-smoke-464-1 \
         -type f -print0
       printf '%s\0' \
+        database-final-stats.json \
         decision.json \
+        final-inventory.json \
         pricing-model.json \
         provisioned-inventory.json \
+        retention-plan.json \
         teardown-inventory.json \
         teardown-verification.json
     } | sort -z | xargs -0 sha256sum
