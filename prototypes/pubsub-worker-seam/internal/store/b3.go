@@ -188,13 +188,20 @@ func (s *Store) AcceptB3(ctx context.Context, request B3Request, sequenceStripes
 		return B3Receipt{}, err
 	}
 	firstStripeSequence := lastStripeSequence - int64(len(ids)) + 1
+	var firstThreadSequence int
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(MAX(thread_sequence), -1) + 1
+		FROM agent_runs
+		WHERE benchmark_id = $1 AND thread_key = $2`, request.BenchmarkID, threadKey).Scan(&firstThreadSequence); err != nil {
+		return B3Receipt{}, err
+	}
 	for runOrdinal, id := range ids {
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO agent_runs
 				(id, benchmark_id, ordinal, thread_key, thread_sequence, workload_ms)
 			VALUES ($1, $2, $3, $4, $5, 15)`,
 			id, request.BenchmarkID, request.Ordinal*2+runOrdinal,
-			threadKey, request.Ordinal/1024*2+runOrdinal); err != nil {
+			threadKey, firstThreadSequence+runOrdinal); err != nil {
 			return B3Receipt{}, err
 		}
 		if _, err = tx.Exec(ctx, `

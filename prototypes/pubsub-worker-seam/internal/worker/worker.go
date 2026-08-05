@@ -44,7 +44,11 @@ const (
 func (h Handler) Handle(ctx context.Context, envelope Envelope, messageID string, brokerAttempt int) Result {
 	h.Slots <- struct{}{}
 	defer func() { <-h.Slots }()
-	claim, err := h.Store.TryClaim(ctx, envelope.AgentRunID, envelope.BenchmarkID, h.Owner+"/"+messageID, envelope.PublishedAt, h.Lease)
+	claim, err := claimWithRetry(ctx, func(ctx context.Context) (store.ClaimResult, error) {
+		return h.Store.TryClaim(ctx, envelope.AgentRunID, envelope.BenchmarkID, h.Owner+"/"+messageID, envelope.PublishedAt, h.Lease)
+	}, func(attempt int, err error) {
+		h.Logger.Warn("claim retry", "run_id", envelope.AgentRunID, "attempt", attempt, "error", err)
+	})
 	if err != nil {
 		h.Logger.Error("claim failed", "run_id", envelope.AgentRunID, "error", err)
 		h.Store.RecordAttempt(ctx, envelope.BenchmarkID, envelope.AgentRunID, h.Protocol, messageID, brokerAttempt, "claim_error")
@@ -84,6 +88,31 @@ func (h Handler) Handle(ctx context.Context, envelope Envelope, messageID string
 	}
 	h.Store.RecordAttempt(ctx, envelope.BenchmarkID, envelope.AgentRunID, h.Protocol, messageID, brokerAttempt, "completed")
 	return Ack
+}
+
+func claimWithRetry(
+	ctx context.Context,
+	claim func(context.Context) (store.ClaimResult, error),
+	onRetry func(int, error),
+) (store.ClaimResult, error) {
+	const attempts = 3
+	var result store.ClaimResult
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		result, err = claim(ctx)
+		if err == nil || ctx.Err() != nil || attempt == attempts {
+			return result, err
+		}
+		onRetry(attempt, err)
+		timer := time.NewTimer(time.Duration(attempt*50) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return result, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return result, err
 }
 
 type PushEnvelope struct {

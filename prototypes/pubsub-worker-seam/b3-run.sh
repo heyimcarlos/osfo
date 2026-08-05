@@ -3,26 +3,53 @@ set -euo pipefail
 
 prototype_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 experiment=${B3_EXPERIMENT:-transactional-outbox}
+manifest_version=${B3_MANIFEST_VERSION:-pubsub-handoff-v1}
 sequence_stripes=${B3_SEQUENCE_STRIPES:-4}
 worker_concurrency=${B3_WORKER_CONCURRENCY:-32}
 worker_slots=${B3_WORKER_SLOTS:-$worker_concurrency}
 worker_db_pool=${B3_WORKER_DB_POOL:-4}
+worker_min_instances=${B3_WORKER_MIN_INSTANCES:-0}
+enable_ordering=${B3_ENABLE_ORDERING:-1}
+ingress_admission_slots=${B3_INGRESS_ADMISSION_SLOTS:-64}
+ingress_concurrency=${B3_INGRESS_CONCURRENCY:-80}
+ingress_min_instances=${B3_INGRESS_MIN_INSTANCES:-0}
+capture_attempt_evidence=${B3_CAPTURE_ATTEMPT_EVIDENCE:-1}
 ack_deadline=${B3_ACK_DEADLINE:-10}
 reset_subscription_before_lane=${B3_RESET_SUBSCRIPTION:-1}
 case "$sequence_stripes" in
   4|16|64) ;;
   *) echo "B3_SEQUENCE_STRIPES must be 4, 16, or 64" >&2; exit 2 ;;
 esac
-for setting in worker_concurrency worker_slots worker_db_pool ack_deadline; do
+for setting in worker_concurrency worker_slots worker_db_pool ingress_admission_slots ingress_concurrency ack_deadline; do
   value=${!setting}
   if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
     echo "$setting must be a positive integer" >&2
     exit 2
   fi
 done
+if (( ingress_admission_slots >= ingress_concurrency )); then
+  echo "B3_INGRESS_ADMISSION_SLOTS must be lower than B3_INGRESS_CONCURRENCY" >&2
+  exit 2
+fi
+if [[ ! "$worker_min_instances" =~ ^[0-9]+$ ]] || (( worker_min_instances > 8 )); then
+  echo "B3_WORKER_MIN_INSTANCES must be an integer from 0 through 8" >&2
+  exit 2
+fi
+if [[ ! "$ingress_min_instances" =~ ^[0-9]+$ ]] || (( ingress_min_instances > 8 )); then
+  echo "B3_INGRESS_MIN_INSTANCES must be an integer from 0 through 8" >&2
+  exit 2
+fi
 case "$reset_subscription_before_lane" in
   0|1) ;;
   *) echo "B3_RESET_SUBSCRIPTION must be 0 or 1" >&2; exit 2 ;;
+esac
+case "$enable_ordering" in
+  0|1) ;;
+  *) echo "B3_ENABLE_ORDERING must be 0 or 1" >&2; exit 2 ;;
+esac
+case "$capture_attempt_evidence" in
+  0|1) ;;
+  *) echo "B3_CAPTURE_ATTEMPT_EVIDENCE must be 0 or 1" >&2; exit 2 ;;
 esac
 if [[ "$experiment" == "transactional-outbox" ]]; then
   state_file="$prototype_dir/.b3-run.env"
@@ -32,6 +59,11 @@ else
   case "$experiment" in
     stripes-*) default_prefix="osfo-b3-38-${experiment/stripes-/s}" ;;
     flow-control-*) default_prefix="osfo-b3-38-${experiment/flow-control-/fc}" ;;
+    warm-workers-*) default_prefix="osfo-b3-38-${experiment/warm-workers-/ww}" ;;
+    qualification-push) default_prefix="osfo-b3-38-qp" ;;
+    qualification-buffer-80) default_prefix="osfo-b3-38-qb80" ;;
+    qualification-ingress-min2) default_prefix="osfo-b3-38-qim2" ;;
+    qualification-authority-only) default_prefix="osfo-b3-38-qao" ;;
     *) default_prefix="osfo-b3-38-$experiment" ;;
   esac
 fi
@@ -106,8 +138,18 @@ ensure_service_account() {
 bind_project_role() {
   local member=$1
   local role=$2
-  gcloud projects add-iam-policy-binding "$project_id" \
-    --member="serviceAccount:$member" --role="$role" --condition=None --quiet >/dev/null
+  local attempt
+  for attempt in {1..12}; do
+    if gcloud projects add-iam-policy-binding "$project_id" \
+      --member="serviceAccount:$member" --role="$role" --condition=None --quiet >/dev/null; then
+      return
+    fi
+    if [[ "$attempt" == "12" ]]; then
+      return 1
+    fi
+    echo "IAM binding for $member is not visible yet, retrying" >&2
+    sleep 2
+  done
 }
 
 provision() {
@@ -168,7 +210,7 @@ provision() {
   gcloud pubsub topics describe "$topic_id" >/dev/null 2>&1 || gcloud pubsub topics create "$topic_id"
   gcloud run deploy "$worker_service" --image="$image_uri" --region="$region" --project="$project_id" \
     --service-account="$worker_service_account" --no-allow-unauthenticated --cpu=1 --memory=1Gi \
-    --concurrency="$worker_concurrency" --min=0 --max=8 --cpu-throttling --timeout=600 \
+    --concurrency="$worker_concurrency" --min="$worker_min_instances" --max=8 --cpu-throttling --timeout=600 \
     --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
     --set-env-vars="ROLE=push,DB_POOL_SIZE=$worker_db_pool,WORKER_SLOTS=$worker_slots,CLAIM_LEASE_SECONDS=15"
@@ -176,19 +218,16 @@ provision() {
     --member="serviceAccount:$push_auth_service_account" --role=roles/run.invoker --condition=None --quiet >/dev/null
   worker_url=$(gcloud run services describe "$worker_service" --region="$region" --format='value(status.url)')
   if ! gcloud pubsub subscriptions describe "$subscription_id" >/dev/null 2>&1; then
-    gcloud pubsub subscriptions create "$subscription_id" --topic="$topic_id" --ack-deadline="$ack_deadline" \
-      --message-retention-duration=7d --min-retry-delay=10s --max-retry-delay=600s \
-      --enable-message-ordering --push-endpoint="$worker_url/v1/pubsub/push" \
-      --push-auth-service-account="$push_auth_service_account" \
-      --push-auth-token-audience="$worker_url"
+    create_subscription "$worker_url"
   fi
 
   gcloud run deploy "$ingress_service" --image="$image_uri" --command=/b3-ingress \
     --region="$region" --project="$project_id" --service-account="$ingress_service_account" \
-    --no-allow-unauthenticated --cpu=1 --memory=1Gi --concurrency=80 --min=0 --max=8 \
+    --no-allow-unauthenticated --cpu=1 --memory=1Gi --concurrency="$ingress_concurrency" \
+    --min="$ingress_min_instances" --max=8 \
     --cpu-throttling --timeout=60 --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes"
+    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes,ADMISSION_SLOTS=$ingress_admission_slots,CAPTURE_ATTEMPT_EVIDENCE=$capture_attempt_evidence"
   ingress_url=$(gcloud run services describe "$ingress_service" --region="$region" --format='value(status.url)')
   active_account=$(gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -n 1)
   gcloud run services add-iam-policy-binding "$ingress_service" --region="$region" \
@@ -205,16 +244,17 @@ deploy_images() {
   gcloud builds submit "$prototype_dir" --tag="$image_uri" --project="$project_id"
   gcloud run deploy "$worker_service" --image="$image_uri" --region="$region" --project="$project_id" \
     --service-account="$worker_service_account" --no-allow-unauthenticated --cpu=1 --memory=1Gi \
-    --concurrency="$worker_concurrency" --min=0 --max=8 --cpu-throttling --timeout=600 \
+    --concurrency="$worker_concurrency" --min="$worker_min_instances" --max=8 --cpu-throttling --timeout=600 \
     --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
     --set-env-vars="ROLE=push,DB_POOL_SIZE=$worker_db_pool,WORKER_SLOTS=$worker_slots,CLAIM_LEASE_SECONDS=15"
   gcloud run deploy "$ingress_service" --image="$image_uri" --command=/b3-ingress \
     --region="$region" --project="$project_id" --service-account="$ingress_service_account" \
-    --no-allow-unauthenticated --cpu=1 --memory=1Gi --concurrency=80 --min=0 --max=8 \
+    --no-allow-unauthenticated --cpu=1 --memory=1Gi --concurrency="$ingress_concurrency" \
+    --min="$ingress_min_instances" --max=8 \
     --cpu-throttling --timeout=60 --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes"
+    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes,ADMISSION_SLOTS=$ingress_admission_slots,CAPTURE_ATTEMPT_EVIDENCE=$capture_attempt_evidence"
   deploy_relay
 }
 
@@ -232,11 +272,20 @@ reset_subscription() {
   gcloud pubsub subscriptions delete "$subscription_id" --quiet >/dev/null 2>&1 || true
   local worker_url
   worker_url=$(gcloud run services describe "$worker_service" --region="$region" --format='value(status.url)')
+  create_subscription "$worker_url" >/dev/null
+}
+
+create_subscription() {
+  local worker_url=$1
+  local ordering_args=()
+  if [[ "$enable_ordering" == "1" ]]; then
+    ordering_args+=(--enable-message-ordering)
+  fi
   gcloud pubsub subscriptions create "$subscription_id" --topic="$topic_id" --ack-deadline="$ack_deadline" \
     --message-retention-duration=7d --min-retry-delay=10s --max-retry-delay=600s \
-    --enable-message-ordering --push-endpoint="$worker_url/v1/pubsub/push" \
+    "${ordering_args[@]}" --push-endpoint="$worker_url/v1/pubsub/push" \
     --push-auth-service-account="$push_auth_service_account" \
-    --push-auth-token-audience="$worker_url" >/dev/null
+    --push-auth-token-audience="$worker_url"
 }
 
 capture_frozen_topology() {
@@ -255,6 +304,14 @@ capture_frozen_topology() {
   gcloud run services get-iam-policy "$worker_service" --region="$region" --format=json >"$destination/worker-iam.json"
   gcloud run services get-iam-policy "$ingress_service" --region="$region" --format=json >"$destination/ingress-iam.json"
   git -C "$prototype_dir" rev-parse HEAD >"$destination/source-commit.txt"
+  git -C "$prototype_dir" status --short --untracked-files=all -- . \
+    ':(exclude)evidence' ':(exclude).b3-*.env' >"$destination/source-status.txt"
+  (
+    cd "$prototype_dir"
+    find . -type f \
+      \( -name '*.go' -o -name '*.sql' -o -name '*.sh' -o -name 'Dockerfile' -o -name 'go.mod' -o -name 'go.sum' \) \
+      ! -path './evidence/*' -print0 | sort -z | xargs -0 sha256sum
+  ) >"$destination/source-tree-sha256.txt"
   date -u +%Y-%m-%dT%H:%M:%SZ >"$destination/captured-at.txt"
 }
 
@@ -273,8 +330,8 @@ run_cut_matrix() {
       >"$destination/audits.jsonl" 2>"$destination/controller.log")
   local ended_at
   ended_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  jq -n --arg started_at "$started_at" --arg ended_at "$ended_at" \
-    '{manifest:"pubsub-handoff-v1",lane:"deterministic-cut-matrix",started_at:$started_at,ended_at:$ended_at,repetitions_per_cut:100,seeds:3}' \
+  jq -n --arg manifest "$manifest_version" --arg started_at "$started_at" --arg ended_at "$ended_at" \
+    '{manifest:$manifest,lane:"deterministic-cut-matrix",started_at:$started_at,ended_at:$ended_at,repetitions_per_cut:100,seeds:3}' \
     >"$destination/scenario.json"
   capture_logs "$destination/runtime-logs.json" "$started_at"
   seal_directory "$destination"
@@ -348,6 +405,26 @@ authentication_smoke() {
   seal_directory "$destination"
 }
 
+summarize_caller_samples() {
+  local source=$1
+  local destination=$2
+  jq -s '
+    ([.[].latency_ms] | sort) as $latencies |
+    {
+      count: length,
+      outcomes: (group_by(.caller_outcome) | map({outcome: .[0].caller_outcome, count: length})),
+      latency_ms: {
+        count: ($latencies | length),
+        p50: $latencies[((($latencies | length) - 1) * 0.50 | floor)],
+        p90: $latencies[((($latencies | length) - 1) * 0.90 | floor)],
+        p95: $latencies[((($latencies | length) - 1) * 0.95 | floor)],
+        p99: $latencies[((($latencies | length) - 1) * 0.99 | floor)],
+        max: ($latencies | max)
+      }
+    }
+  ' "$source" >"$destination"
+}
+
 load_lane() {
   load_state
   local lane=$1
@@ -360,6 +437,10 @@ load_lane() {
   local count
   count=$(python3 -c 'import sys; print(int((float(sys.argv[1])+float(sys.argv[2]))/2*float(sys.argv[3])))' "$rate" "$end_rate" "$duration")
   local destination="$evidence_root/load/$lane-$repetition"
+  if [[ -e "$destination" ]]; then
+    echo "Refusing to overwrite existing lane evidence: $destination" >&2
+    return 1
+  fi
   mkdir -p "$destination"
   if ! gcloud run services describe "$relay_service" --region="$region" >/dev/null 2>&1; then
     deploy_relay
@@ -380,6 +461,7 @@ load_lane() {
     --url="$ingress_url" --benchmark="$benchmark_id" --rate="$rate" --end-rate="$end_rate" \
     --duration="${duration}s" --count="$count" \
     >"$destination/caller-samples.jsonl" 2>"$destination/load-client.log")
+  summarize_caller_samples "$destination/caller-samples.jsonl" "$destination/caller-summary.json"
   local offer_ended_at
   offer_ended_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   sleep 60
@@ -387,14 +469,18 @@ load_lane() {
     --benchmark="$benchmark_id" --expected-incoming="$count") >"$destination/audit.json"
   local ended_at
   ended_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  jq -n --arg benchmark_id "$benchmark_id" --arg lane "$lane" --arg started_at "$started_at" \
+  jq -n --arg manifest "$manifest_version" --arg benchmark_id "$benchmark_id" --arg lane "$lane" --arg started_at "$started_at" \
     --arg offer_ended_at "$offer_ended_at" --arg ended_at "$ended_at" \
     --argjson rate "$rate" --argjson end_rate "$end_rate" --argjson duration "$duration" \
     --argjson count "$count" --argjson repetition "$repetition" --argjson sequence_stripes "$sequence_stripes" \
     --argjson worker_concurrency "$worker_concurrency" --argjson worker_slots "$worker_slots" \
-    --argjson worker_db_pool "$worker_db_pool" --argjson ack_deadline "$ack_deadline" \
+    --argjson worker_db_pool "$worker_db_pool" --argjson worker_min_instances "$worker_min_instances" \
+    --argjson enable_ordering "$enable_ordering" --argjson ingress_admission_slots "$ingress_admission_slots" \
+    --argjson ingress_concurrency "$ingress_concurrency" --argjson ingress_min_instances "$ingress_min_instances" \
+    --argjson capture_attempt_evidence "$capture_attempt_evidence" \
+    --argjson ack_deadline "$ack_deadline" \
     --argjson subscription_reset_before_lane "$reset_subscription_before_lane" \
-    '{manifest:"pubsub-handoff-v1",benchmark_id:$benchmark_id,lane:$lane,repetition:$repetition,handoff:"transactional-outbox",sequence_stripes:$sequence_stripes,relay_owners:4,worker_concurrency:$worker_concurrency,worker_slots:$worker_slots,worker_db_pool:$worker_db_pool,ack_deadline_seconds:$ack_deadline,subscription_reset_before_lane:($subscription_reset_before_lane == 1),rate_per_second:$rate,end_rate_per_second:$end_rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at}' \
+    '{manifest:$manifest,benchmark_id:$benchmark_id,lane:$lane,repetition:$repetition,handoff:"transactional-outbox",sequence_stripes:$sequence_stripes,relay_owners:4,ingress_admission_slots:$ingress_admission_slots,ingress_concurrency:$ingress_concurrency,ingress_min_instances:$ingress_min_instances,capture_attempt_evidence:($capture_attempt_evidence == 1),worker_concurrency:$worker_concurrency,worker_slots:$worker_slots,worker_db_pool:$worker_db_pool,worker_min_instances:$worker_min_instances,subscription_ordering_enabled:($enable_ordering == 1),ack_deadline_seconds:$ack_deadline,subscription_reset_before_lane:($subscription_reset_before_lane == 1),rate_per_second:$rate,end_rate_per_second:$end_rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at}' \
     >"$destination/scenario.json"
   capture_logs "$destination/runtime-logs.json" "$started_at"
   collect_monitoring "$destination" "$started_at" "$ended_at"
@@ -403,14 +489,214 @@ load_lane() {
 }
 
 load_manifest() {
-  load_lane baseline-23 23 600 1
+	local configured_reset=$reset_subscription_before_lane
+	reset_subscription_before_lane=1
+	load_lane manifest-warmup-23 23 10 1
+	reset_subscription_before_lane=0
+	load_lane baseline-23 23 600 1
   for repetition in 1 2 3; do
     load_lane target-232 232 1800 "$repetition"
   done
   for repetition in 1 2 3; do
     load_lane stress-464 464 900 "$repetition"
+	done
+	load_lane linear-ramp 23 900 1 464
+	reset_subscription_before_lane=$configured_reset
+}
+
+check_qualification_lane() {
+  local destination=$1
+  local mode=$2
+  local p99_limit=1000
+  if [[ "$mode" == "stress" ]]; then
+    p99_limit=2000
+  fi
+  if ! jq -e --arg mode "$mode" --argjson p99_limit "$p99_limit" '
+    .accepted_incoming > 0 and
+    ($mode != "target" or .accepted_incoming == .expected_incoming) and
+    .authoritative_agent_runs == .succeeded_agent_runs and
+    .authoritative_agent_runs == .outbox_records and
+    .confirmed_publications >= .outbox_records and
+    .nonterminal_agent_runs == 0 and
+    .unpublished_outbox_records == 0 and
+    .stranded_accepted_runs == 0 and
+    .ghost_delivery_attempts == 0 and
+    .duplicate_terminal_commits == 0 and
+    .unknown_caller_outcomes == 0 and
+    ($mode == "diagnostic" or (
+      (.publish_to_point_claim_ms.p95 // 1e99) <= 250 and
+      (.publish_to_point_claim_ms.p99 // 1e99) <= $p99_limit
+    ))
+  ' "$destination/audit.json" >/dev/null; then
+    echo "$destination failed the $mode audit gate" >&2
+    return 1
+  fi
+
+  local invalid_samples
+  if [[ "$mode" == "target" ]]; then
+    invalid_samples=$(gzip -cd "$destination/caller-samples.jsonl.gz" |
+      jq -c 'select(.caller_outcome != "accepted")' | wc -l)
+  else
+    invalid_samples=$(gzip -cd "$destination/caller-samples.jsonl.gz" |
+      jq -c 'select((.caller_outcome == "accepted" or (.caller_outcome == "rejected" and .error_class == "overloaded")) | not)' |
+      wc -l)
+  fi
+  if [[ "$invalid_samples" != "0" ]]; then
+    echo "$destination has $invalid_samples invalid caller outcomes" >&2
+    return 1
+  fi
+  if [[ "$mode" == "target" ]]; then
+    if [[ -f "$destination/caller-summary.json" ]]; then
+      if ! jq -e '.latency_ms.p95 <= 250 and .latency_ms.p99 <= 500' \
+        "$destination/caller-summary.json" >/dev/null; then
+        echo "$destination failed the target caller latency gate" >&2
+        return 1
+      fi
+    elif ! jq -e '.caller_to_receipt_ms.p95 <= 250 and .caller_to_receipt_ms.p99 <= 500' \
+      "$destination/audit.json" >/dev/null; then
+      echo "$destination failed the target receipt latency gate" >&2
+      return 1
+    fi
+  fi
+}
+
+run_or_resume_checked_lane() {
+  local lane=$1
+  local rate=$2
+  local duration=$3
+  local repetition=$4
+  local mode=$5
+  local end_rate=${6:-$rate}
+  local destination="$evidence_root/load/$lane-$repetition"
+  if [[ -f "$destination/SHA256SUMS" ]]; then
+    (cd "$destination" && sha256sum --check SHA256SUMS >/dev/null)
+    check_qualification_lane "$destination" "$mode" || return $?
+    echo "Reusing sealed passing lane: $destination"
+    return
+  fi
+  if [[ -e "$destination" ]]; then
+    echo "Unsealed lane requires explicit recovery before resume: $destination" >&2
+    return 1
+  fi
+  load_lane "$lane" "$rate" "$duration" "$repetition" "$end_rate" || return $?
+  check_qualification_lane "$destination" "$mode"
+}
+
+run_target_control_study() {
+  local lane_prefix=$1
+  local configured_reset=$reset_subscription_before_lane
+  reset_subscription_before_lane=1
+  run_or_resume_checked_lane "$lane_prefix-warmup-23" 23 10 1 diagnostic || {
+    local status=$?
+    reset_subscription_before_lane=$configured_reset
+    return "$status"
+  }
+  reset_subscription_before_lane=0
+  run_or_resume_checked_lane "$lane_prefix-prelude-232" 232 60 1 stress || {
+    local status=$?
+    reset_subscription_before_lane=$configured_reset
+    return "$status"
+  }
+  run_or_resume_checked_lane "$lane_prefix-target-232" 232 600 1 target || {
+    local status=$?
+    reset_subscription_before_lane=$configured_reset
+    return "$status"
+  }
+  reset_subscription_before_lane=$configured_reset
+}
+
+write_controller_status() {
+  local workflow=$1
+  local controller_state=$2
+  local exit_code=$3
+  local destination="$evidence_root/controller-status.json"
+  local status_tmp
+  status_tmp=$(mktemp)
+  jq -n --arg workflow "$workflow" --arg state "$controller_state" \
+    --arg experiment "$experiment" --arg manifest "$manifest_version" \
+    --arg updated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson pid "$$" --argjson exit_code "$exit_code" \
+    '{workflow:$workflow,state:$state,experiment:$experiment,manifest:$manifest,pid:$pid,exit_code:$exit_code,updated_at:$updated_at}' \
+    >"$status_tmp"
+  mkdir -p "$evidence_root"
+  mv "$status_tmp" "$destination"
+}
+
+run_controller() {
+  local workflow=$1
+  write_controller_status "$workflow" running 0
+  trap 'write_controller_status "$workflow" interrupted 130; exit 130' INT TERM HUP
+  local controller_exit=0
+  case "$workflow" in
+    target-buffer-study)
+      if run_target_control_study buffer; then
+        controller_exit=0
+      else
+        controller_exit=$?
+      fi
+      ;;
+    target-ingress-min-study)
+      if run_target_control_study ingress-min; then
+        controller_exit=0
+      else
+        controller_exit=$?
+      fi
+      ;;
+    target-authority-study)
+      if run_target_control_study authority; then
+        controller_exit=0
+      else
+        controller_exit=$?
+      fi
+      ;;
+    *)
+      echo "Unknown controller workflow: $workflow" >&2
+      controller_exit=2
+      ;;
+  esac
+  if [[ "$controller_exit" == "0" ]]; then
+    write_controller_status "$workflow" completed 0
+  else
+    write_controller_status "$workflow" failed "$controller_exit"
+  fi
+  return "$controller_exit"
+}
+
+start_controller() {
+  load_state
+  local workflow=$1
+  local unit_name="$prefix-${workflow//[^a-zA-Z0-9]/-}"
+  systemd-run --user --unit="$unit_name" --collect \
+    --working-directory="$prototype_dir" --setenv="PATH=$PATH" \
+    --setenv="B3_EXPERIMENT=$experiment" --setenv="B3_MANIFEST_VERSION=$manifest_version" \
+    --setenv="B3_SEQUENCE_STRIPES=$sequence_stripes" --setenv="B3_WORKER_CONCURRENCY=$worker_concurrency" \
+    --setenv="B3_WORKER_SLOTS=$worker_slots" --setenv="B3_WORKER_DB_POOL=$worker_db_pool" \
+    --setenv="B3_WORKER_MIN_INSTANCES=$worker_min_instances" --setenv="B3_ENABLE_ORDERING=$enable_ordering" \
+    --setenv="B3_INGRESS_ADMISSION_SLOTS=$ingress_admission_slots" \
+    --setenv="B3_INGRESS_CONCURRENCY=$ingress_concurrency" \
+    --setenv="B3_INGRESS_MIN_INSTANCES=$ingress_min_instances" --setenv="B3_ACK_DEADLINE=$ack_deadline" \
+    --setenv="B3_CAPTURE_ATTEMPT_EVIDENCE=$capture_attempt_evidence" \
+    /usr/bin/bash "$prototype_dir/b3-run.sh" controller "$workflow"
+  echo "$unit_name"
+}
+
+load_remaining_manifest() {
+  reset_subscription_before_lane=0
+  local repetition destination
+  load_lane sustained-warmup-232 232 60 1
+  check_qualification_lane "$evidence_root/load/sustained-warmup-232-1" stress
+  for repetition in 1 2 3; do
+    load_lane target-232 232 1800 "$repetition"
+    destination="$evidence_root/load/target-232-$repetition"
+    check_qualification_lane "$destination" target
+  done
+  for repetition in 1 2 3; do
+    load_lane stress-464 464 900 "$repetition"
+    destination="$evidence_root/load/stress-464-$repetition"
+    check_qualification_lane "$destination" stress
   done
   load_lane linear-ramp 23 900 1 464
+  check_qualification_lane "$evidence_root/load/linear-ramp-1" stress
 }
 
 finalize_interrupted_lane() {
@@ -428,10 +714,10 @@ finalize_interrupted_lane() {
   (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness audit \
     --benchmark="$benchmark_id" --expected-incoming="$expected") >"$destination/audit.json"
   ended_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  jq -n --arg benchmark_id "$benchmark_id" --arg lane "$lane" --arg started_at "$started_at" \
+  jq -n --arg manifest "$manifest_version" --arg benchmark_id "$benchmark_id" --arg lane "$lane" --arg started_at "$started_at" \
     --arg offer_ended_at "$offer_ended_at" --arg ended_at "$ended_at" \
     --argjson rate "$rate" --argjson duration "$duration" --argjson count "$expected" \
-    '{manifest:"pubsub-handoff-v1",benchmark_id:$benchmark_id,lane:$lane,repetition:1,handoff:"transactional-outbox",rate_per_second:$rate,end_rate_per_second:$rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at,audit_recovered_after_controller_interrupt:true}' \
+    '{manifest:$manifest,benchmark_id:$benchmark_id,lane:$lane,repetition:1,handoff:"transactional-outbox",rate_per_second:$rate,end_rate_per_second:$rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at,audit_recovered_after_controller_interrupt:true}' \
     >"$destination/scenario.json"
   capture_logs "$destination/runtime-logs.json" "$started_at"
   collect_monitoring "$destination" "$started_at" "$ended_at"
@@ -450,7 +736,7 @@ scale_from_zero() {
 capture_logs() {
   local destination=$1
   local started_at=$2
-  gcloud logging read "timestamp>=\"$started_at\" AND (resource.labels.service_name=\"$worker_service\" OR resource.labels.service_name=\"$ingress_service\" OR resource.labels.service_name=\"$relay_service\")" \
+  gcloud logging read "timestamp>=\"$started_at\" AND (resource.labels.service_name=\"$worker_service\" OR resource.labels.service_name=\"$ingress_service\" OR resource.labels.service_name=\"$relay_service\") AND (logName!=\"projects/$project_id/logs/run.googleapis.com%2Frequests\" OR httpRequest.status>=400)" \
     --format=json --limit=100000 >"$destination"
 }
 
@@ -586,7 +872,7 @@ run_decision_evidence() {
 }
 
 usage() {
-  echo "Usage: ./b3-run.sh provision|deploy|relay|auth-smoke|hard-crash-smoke|cut-matrix|load <lane> <rate> <seconds> [repetition] [end-rate]|finalize <directory> <benchmark> <expected> <rate> <seconds> <lane>|load-manifest|scale-zero|inventory|seal|teardown|decision"
+  echo "Usage: ./b3-run.sh provision|deploy|relay|auth-smoke|hard-crash-smoke|cut-matrix|load <lane> <rate> <seconds> [repetition] [end-rate]|finalize <directory> <benchmark> <expected> <rate> <seconds> <lane>|load-manifest|remaining-manifest|controller <workflow>|start-controller <workflow>|scale-zero|inventory|seal|teardown|decision"
 }
 
 command=${1:-}
@@ -600,6 +886,9 @@ case "$command" in
   load) load_state; shift; load_lane "$@" ;;
   finalize) load_state; shift; finalize_interrupted_lane "$@" ;;
   load-manifest) load_state; load_manifest ;;
+  remaining-manifest) load_state; load_remaining_manifest ;;
+  controller) load_state; shift; run_controller "$@" ;;
+  start-controller) shift; start_controller "$@" ;;
   scale-zero) load_state; scale_from_zero ;;
   inventory) capture_inventory "$evidence_root/final-inventory.json" ;;
   seal) seal_root ;;

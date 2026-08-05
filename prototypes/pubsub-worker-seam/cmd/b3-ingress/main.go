@@ -38,6 +38,15 @@ func run(logger *slog.Logger) error {
 	if err := b3.ValidateSequenceStripes(sequenceStripes); err != nil {
 		return err
 	}
+	admissionSlotCount, err := positiveInt(os.Getenv("ADMISSION_SLOTS"), 64)
+	if err != nil {
+		return err
+	}
+	captureAttemptEvidence, err := binaryFlag(os.Getenv("CAPTURE_ATTEMPT_EVIDENCE"), true)
+	if err != nil {
+		return err
+	}
+	admissionSlots := make(chan struct{}, admissionSlotCount)
 	database, err := store.Open(ctx, required("DATABASE_URL"), "b3-ingress/"+os.Getenv("HOSTNAME"), int32(poolSize))
 	if err != nil {
 		return err
@@ -56,9 +65,23 @@ func run(logger *slog.Logger) error {
 			http.Error(w, "idempotency_key and request_hash are required", http.StatusBadRequest)
 			return
 		}
-		result, err := b3.Admit(request.Context(), database, admission, sequenceStripes)
+		if tryAcquire(admissionSlots) {
+			defer func() { <-admissionSlots }()
+		} else {
+			writeOverloaded(w)
+			return
+		}
+		result, err := admitWithRetry(request.Context(), func(ctx context.Context) (store.B3Result, error) {
+			if !captureAttemptEvidence {
+				return b3.AdmitAuthorityOnly(ctx, database, admission, sequenceStripes)
+			}
+			return b3.Admit(ctx, database, admission, sequenceStripes)
+		}, func(attempt int, err error) {
+			logger.Warn("admission retry", "attempt", attempt, "error", err)
+		})
 		w.Header().Set("content-type", "application/json")
 		if err != nil {
+			logger.Error("admission failed", "error", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
 		} else {
 			w.WriteHeader(http.StatusCreated)
@@ -77,6 +100,46 @@ func run(logger *slog.Logger) error {
 		return nil
 	}
 	return err
+}
+
+func admitWithRetry(
+	ctx context.Context,
+	admit func(context.Context) (store.B3Result, error),
+	onRetry func(int, error),
+) (store.B3Result, error) {
+	const attempts = 3
+	var result store.B3Result
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		result, err = admit(ctx)
+		if err == nil || ctx.Err() != nil || attempt == attempts {
+			return result, err
+		}
+		onRetry(attempt, err)
+		timer := time.NewTimer(time.Duration(attempt*50) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return result, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return result, err
+}
+
+func tryAcquire(slots chan struct{}) bool {
+	select {
+	case slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func writeOverloaded(w http.ResponseWriter) {
+	w.Header().Set("content-type", "application/json")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_ = json.NewEncoder(w).Encode(store.B3Result{CallerOutcome: "rejected", ErrorClass: "overloaded"})
 }
 
 func required(name string) string {
@@ -103,4 +166,18 @@ func positiveInt(text string, fallback int) (int, error) {
 		return 0, fmt.Errorf("expected positive integer, got %q", text)
 	}
 	return parsed, nil
+}
+
+func binaryFlag(text string, fallback bool) (bool, error) {
+	if text == "" {
+		return fallback, nil
+	}
+	switch text {
+	case "0":
+		return false, nil
+	case "1":
+		return true, nil
+	default:
+		return false, fmt.Errorf("expected 0 or 1, got %q", text)
+	}
 }

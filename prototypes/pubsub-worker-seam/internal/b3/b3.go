@@ -51,6 +51,18 @@ func Admit(ctx context.Context, database *store.Store, request store.B3Request, 
 	return store.B3Result{Receipt: &receipt, CallerOutcome: "accepted"}, nil
 }
 
+func AdmitAuthorityOnly(ctx context.Context, database *store.Store, request store.B3Request, sequenceStripes int) (store.B3Result, error) {
+	if request.Fault != "" && request.Fault != NoFault {
+		return store.B3Result{CallerOutcome: "unknown", ErrorClass: "fault_requires_attempt_evidence"},
+			fmt.Errorf("fault %q requires attempt evidence", request.Fault)
+	}
+	receipt, err := database.AcceptB3(ctx, request, sequenceStripes)
+	if err != nil {
+		return store.B3Result{CallerOutcome: "unknown", ErrorClass: err.Error()}, err
+	}
+	return store.B3Result{Receipt: &receipt, CallerOutcome: "accepted"}, nil
+}
+
 func cut(request store.B3Request) {
 	if request.HardCrash {
 		os.Exit(86)

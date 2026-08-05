@@ -27,6 +27,7 @@ type sample struct {
 	LatencyMS     float64   `json:"latency_ms"`
 	CallerOutcome string    `json:"caller_outcome"`
 	ErrorClass    string    `json:"error_class,omitempty"`
+	HTTPAttempts  int       `json:"http_attempts"`
 }
 
 func main() {
@@ -130,42 +131,77 @@ func offer(ctx context.Context, client *http.Client, url, accessToken string, be
 		Fault: "none",
 	}
 	body, _ := json.Marshal(requestBody)
+	const attempts = 3
+	var last sample
+	for attempt := 1; attempt <= attempts; attempt++ {
+		last = offerOnce(ctx, client, url, accessToken, body, ordinal, scheduledAt, offeredAt, attempt)
+		if last.Status < http.StatusInternalServerError && last.Status != 0 {
+			return last
+		}
+		if attempt < attempts {
+			timer := time.NewTimer(time.Duration(attempt*50) * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return last
+			case <-timer.C:
+			}
+		}
+	}
+	return last
+}
+
+func offerOnce(
+	ctx context.Context,
+	client *http.Client,
+	url, accessToken string,
+	body []byte,
+	ordinal int,
+	scheduledAt, offeredAt time.Time,
+	attempt int,
+) sample {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"/v1/admissions", bytes.NewReader(body))
 	if err != nil {
-		return failedSample(ordinal, scheduledAt, offeredAt, 0, "request_build", err)
+		return failedSample(ordinal, scheduledAt, offeredAt, 0, attempt, "request_build", err)
 	}
 	request.Header.Set("content-type", "application/json")
 	if accessToken != "" {
 		request.Header.Set("authorization", "Bearer "+accessToken)
 	}
 	response, err := client.Do(request)
-	completedAt := time.Now().UTC()
 	if err != nil {
-		return failedSample(ordinal, scheduledAt, offeredAt, 0, "transport", err)
+		return failedSample(ordinal, scheduledAt, offeredAt, 0, attempt, "transport", err)
 	}
 	defer response.Body.Close()
 	responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 	if readErr != nil {
-		return failedSample(ordinal, scheduledAt, offeredAt, response.StatusCode, "response_read", readErr)
+		return failedSample(ordinal, scheduledAt, offeredAt, response.StatusCode, attempt, "response_read", readErr)
 	}
+	completedAt := time.Now().UTC()
 	var result store.B3Result
 	if err := json.Unmarshal(responseBody, &result); err != nil {
-		return failedSample(ordinal, scheduledAt, offeredAt, response.StatusCode, "response_decode", err)
+		return failedSample(ordinal, scheduledAt, offeredAt, response.StatusCode, attempt, "response_decode", err)
+	}
+	if result.CallerOutcome == "" {
+		result.CallerOutcome = "unknown"
+		result.ErrorClass = "empty_caller_outcome"
 	}
 	return sample{
 		Ordinal: ordinal, ScheduledAt: scheduledAt.UTC(), OfferedAt: offeredAt,
 		CompletedAt: completedAt, Status: response.StatusCode,
 		LatencyMS:     float64(completedAt.Sub(offeredAt).Microseconds()) / 1000,
 		CallerOutcome: result.CallerOutcome, ErrorClass: result.ErrorClass,
+		HTTPAttempts: attempt,
 	}
 }
 
-func failedSample(ordinal int, scheduledAt, offeredAt time.Time, status int, class string, err error) sample {
+func failedSample(ordinal int, scheduledAt, offeredAt time.Time, status, attempt int, class string, err error) sample {
 	completedAt := time.Now().UTC()
 	return sample{
 		Ordinal: ordinal, ScheduledAt: scheduledAt.UTC(), OfferedAt: offeredAt,
 		CompletedAt: completedAt, Status: status,
 		LatencyMS:     float64(completedAt.Sub(offeredAt).Microseconds()) / 1000,
 		CallerOutcome: "unknown", ErrorClass: class + ": " + err.Error(),
+		HTTPAttempts: attempt,
 	}
 }
