@@ -1,0 +1,6 @@
+.gcloudignore
+.git
+.gitignore
+.run.env
+.b2-run.env
+evidence/**

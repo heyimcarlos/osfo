@@ -17,12 +17,29 @@ type Store struct {
 }
 
 type Run struct {
-	ID            uuid.UUID
-	BenchmarkID   uuid.UUID
-	Ordinal       int
-	Workload      time.Duration
-	ClaimEpoch    int64
-	CrashInjected bool
+	ID                  uuid.UUID
+	BenchmarkID         uuid.UUID
+	Ordinal             int
+	ExecutionProfileRef string
+	Workload            time.Duration
+	ClaimEpoch          int64
+	CrashInjected       bool
+}
+
+type CommittedModelCallAttempt struct {
+	ID             uuid.UUID
+	ModelCallID    uuid.UUID
+	AgentRunID     uuid.UUID
+	ClaimEpoch     int64
+	BindingRef     string
+	IdempotencyKey string
+}
+
+type DeliveryAttemptEvidence struct {
+	Protocol      string
+	MessageID     string
+	BrokerAttempt int
+	Outcome       string
 }
 
 type ClaimResult struct {
@@ -134,17 +151,17 @@ func (s *Store) TryClaim(ctx context.Context, runID, benchmarkID uuid.UUID, owne
 	var state delivery.State
 	var leaseExpiresAt *time.Time
 	var ordinal, threadSequence, workloadMS int
-	var threadKey string
+	var threadKey, executionProfileRef string
 	var claimEpoch int64
 	var crashOnce, crashInjected bool
 	err = tx.QueryRow(ctx, `
 		SELECT state, lease_expires_at, ordinal, thread_key, thread_sequence,
-		       workload_ms, claim_epoch, crash_once, crash_injected
+		       workload_ms, execution_profile_ref, claim_epoch, crash_once, crash_injected
 		FROM agent_runs
 		WHERE id = $1 AND benchmark_id = $2
 		FOR UPDATE`, runID, benchmarkID).Scan(
 		&state, &leaseExpiresAt, &ordinal, &threadKey, &threadSequence,
-		&workloadMS, &claimEpoch, &crashOnce, &crashInjected,
+		&workloadMS, &executionProfileRef, &claimEpoch, &crashOnce, &crashInjected,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ClaimResult{Action: delivery.Acknowledge}, tx.Commit(ctx)
@@ -171,6 +188,19 @@ func (s *Store) TryClaim(ctx context.Context, runID, benchmarkID uuid.UUID, owne
 	}
 	claimEpoch++
 	crashNow := crashOnce && !crashInjected
+	if _, err := tx.Exec(ctx, `
+		UPDATE model_call_attempts
+		SET dispatch_evidence = 'not_dispatched', outcome = 'superseded_after_lease',
+		    usage_status = 'unknown', completed_at = clock_timestamp()
+		WHERE agent_run_id = $1 AND completed_at IS NULL`, runID); err != nil {
+		return ClaimResult{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE agent_run_attempts
+		SET completed_at = clock_timestamp(), outcome = 'lease_expired'
+		WHERE agent_run_id = $1 AND completed_at IS NULL`, runID); err != nil {
+		return ClaimResult{}, err
+	}
 	_, err = tx.Exec(ctx, `
 		UPDATE agent_runs
 		SET state = 'running', claim_epoch = $2, lease_owner = $3,
@@ -182,14 +212,163 @@ func (s *Store) TryClaim(ctx context.Context, runID, benchmarkID uuid.UUID, owne
 	if err != nil {
 		return ClaimResult{}, err
 	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO agent_run_attempts
+			(agent_run_id, claim_epoch, benchmark_id, lease_owner)
+		VALUES ($1, $2, $3, $4)`, runID, claimEpoch, benchmarkID, owner); err != nil {
+		return ClaimResult{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return ClaimResult{}, err
 	}
 	return ClaimResult{Action: delivery.Claim, Run: &Run{
 		ID: runID, BenchmarkID: benchmarkID, Ordinal: ordinal,
-		Workload:   time.Duration(workloadMS) * time.Millisecond,
-		ClaimEpoch: claimEpoch, CrashInjected: crashNow,
+		ExecutionProfileRef: executionProfileRef,
+		Workload:            time.Duration(workloadMS) * time.Millisecond,
+		ClaimEpoch:          claimEpoch, CrashInjected: crashNow,
 	}}, nil
+}
+
+func (s *Store) CommitModelCallAttempt(ctx context.Context, run Run, normalizedIntent string) (CommittedModelCallAttempt, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return CommittedModelCallAttempt{}, err
+	}
+	defer tx.Rollback(ctx)
+	var active bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM agent_runs
+			WHERE id = $1 AND benchmark_id = $2 AND state = 'running' AND claim_epoch = $3
+		)`, run.ID, run.BenchmarkID, run.ClaimEpoch).Scan(&active); err != nil {
+		return CommittedModelCallAttempt{}, err
+	}
+	if !active {
+		return CommittedModelCallAttempt{}, fmt.Errorf("AgentRun claim is no longer active")
+	}
+	modelCallID := uuid.NewSHA1(run.ID, []byte("model-call/0"))
+	attemptID := uuid.NewSHA1(run.ID, []byte(fmt.Sprintf("model-call/0/attempt/%d", run.ClaimEpoch)))
+	idempotencyKey := fmt.Sprintf("model-call/%s/%d", modelCallID, run.ClaimEpoch)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO model_calls (id, agent_run_id, call_ordinal, normalized_intent)
+		VALUES ($1, $2, 0, $3)
+		ON CONFLICT (id) DO NOTHING`, modelCallID, run.ID, normalizedIntent); err != nil {
+		return CommittedModelCallAttempt{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO model_call_attempts
+			(id, model_call_id, agent_run_id, claim_epoch, attempt_ordinal, binding_ref,
+			 adapter_compatibility_identity, idempotency_key)
+		VALUES ($1, $2, $3, $4, $5, 'benchmark/deterministic-binding-v1',
+		        'deterministic-go/v1', $6)
+		ON CONFLICT (id) DO NOTHING`, attemptID, modelCallID, run.ID, run.ClaimEpoch,
+		int(run.ClaimEpoch), idempotencyKey); err != nil {
+		return CommittedModelCallAttempt{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return CommittedModelCallAttempt{}, err
+	}
+	return CommittedModelCallAttempt{
+		ID: attemptID, ModelCallID: modelCallID, AgentRunID: run.ID,
+		ClaimEpoch: run.ClaimEpoch, BindingRef: "benchmark/deterministic-binding-v1",
+		IdempotencyKey: idempotencyKey,
+	}, nil
+}
+
+func (s *Store) CompleteModelCallAndRun(
+	ctx context.Context,
+	run Run,
+	attempt CommittedModelCallAttempt,
+	normalizedOutcome string,
+	deliveryAttempt *DeliveryAttemptEvidence,
+) (bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	var budgetStripe *int16
+	err = tx.QueryRow(ctx, `
+		SELECT budget_stripe
+		FROM agent_runs
+		WHERE id = $1 AND benchmark_id = $2 AND state = 'running' AND claim_epoch = $3
+		FOR UPDATE`, run.ID, run.BenchmarkID, run.ClaimEpoch).Scan(&budgetStripe)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, tx.Commit(ctx)
+	}
+	if err != nil {
+		return false, err
+	}
+	command, err := tx.Exec(ctx, `
+		UPDATE model_call_attempts
+		SET dispatch_evidence = 'terminal_observed', outcome = 'succeeded',
+		    usage_status = 'unknown', completed_at = clock_timestamp()
+		WHERE id = $1 AND agent_run_id = $2 AND claim_epoch = $3 AND completed_at IS NULL`,
+		attempt.ID, run.ID, run.ClaimEpoch)
+	if err != nil {
+		return false, err
+	}
+	if command.RowsAffected() != 1 {
+		return false, fmt.Errorf("committed ModelCallAttempt is missing or already terminal")
+	}
+	command, err = tx.Exec(ctx, `
+		UPDATE model_calls
+		SET logical_status = 'succeeded', final_outcome = $2, completed_at = clock_timestamp()
+		WHERE id = $1 AND logical_status = 'pending'`, attempt.ModelCallID, normalizedOutcome)
+	if err != nil {
+		return false, err
+	}
+	if command.RowsAffected() != 1 {
+		return false, fmt.Errorf("logical ModelCall is missing or already terminal")
+	}
+	command, err = tx.Exec(ctx, `
+		UPDATE agent_run_attempts
+		SET completed_at = clock_timestamp(), outcome = 'succeeded'
+		WHERE agent_run_id = $1 AND claim_epoch = $2 AND completed_at IS NULL`, run.ID, run.ClaimEpoch)
+	if err != nil {
+		return false, err
+	}
+	if command.RowsAffected() != 1 {
+		return false, fmt.Errorf("AgentRunAttempt is missing or already terminal")
+	}
+	command, err = tx.Exec(ctx, `
+		UPDATE agent_runs
+		SET state = 'succeeded', completed_at = clock_timestamp(), terminal_commits = terminal_commits + 1,
+		    lease_owner = NULL, lease_expires_at = NULL
+		WHERE id = $1 AND benchmark_id = $2 AND state = 'running' AND claim_epoch = $3`,
+		run.ID, run.BenchmarkID, run.ClaimEpoch)
+	if err != nil {
+		return false, err
+	}
+	if command.RowsAffected() != 1 {
+		return false, fmt.Errorf("AgentRun claim is no longer active")
+	}
+	if budgetStripe != nil {
+		command, err = tx.Exec(ctx, `
+			UPDATE b3_inflight_budget
+			SET in_use = in_use - 1, updated_at = clock_timestamp()
+			WHERE budget_stripe = $1 AND in_use > 0`, *budgetStripe)
+		if err != nil {
+			return false, err
+		}
+		if command.RowsAffected() != 1 {
+			return false, fmt.Errorf("durable AgentRun budget obligation is missing")
+		}
+	}
+	if deliveryAttempt != nil {
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO delivery_attempts
+				(benchmark_id, agent_run_id, protocol, message_id, broker_attempt, outcome)
+			VALUES ($1, $2, $3, $4, $5, $6)`, run.BenchmarkID, run.ID,
+			deliveryAttempt.Protocol, deliveryAttempt.MessageID,
+			deliveryAttempt.BrokerAttempt, deliveryAttempt.Outcome); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Store) Complete(ctx context.Context, run Run) (bool, error) {

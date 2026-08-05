@@ -24,3 +24,7 @@
   `--base-image` during source-free `gcloud run deploy`; without it, the build
   omits `/app/entrypoint.sh`. A 1 GiB instance is also required for stable
   startup.
+- 2026-08-04: Pub/Sub push retry backoff can persist after seeking a
+  subscription past its concluded synthetic backlog. Recreating the isolated
+  subscription from the same frozen topic, OIDC, retention, ordering, and retry
+  configuration restored a clean lane.

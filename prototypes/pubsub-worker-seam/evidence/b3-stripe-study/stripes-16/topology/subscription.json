@@ -1,0 +1,22 @@
+{
+  "ackDeadlineSeconds": 10,
+  "enableMessageOrdering": true,
+  "expirationPolicy": {
+    "ttl": "2678400s"
+  },
+  "messageRetentionDuration": "604800s",
+  "name": "projects/even-affinity-497006-u6/subscriptions/osfo-b3-38-s16-agent-runs",
+  "pushConfig": {
+    "oidcToken": {
+      "audience": "https://osfo-b3-38-s16-worker-hzr7upuh7q-nn.a.run.app",
+      "serviceAccountEmail": "osfo-b3-38-s16-push-auth@even-affinity-497006-u6.iam.gserviceaccount.com"
+    },
+    "pushEndpoint": "https://osfo-b3-38-s16-worker-hzr7upuh7q-nn.a.run.app/v1/pubsub/push"
+  },
+  "retryPolicy": {
+    "maximumBackoff": "600s",
+    "minimumBackoff": "10s"
+  },
+  "state": "ACTIVE",
+  "topic": "projects/even-affinity-497006-u6/topics/osfo-b3-38-s16-agent-runs"
+}

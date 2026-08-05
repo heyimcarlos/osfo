@@ -14,6 +14,7 @@ import (
 
 	"cloud.google.com/go/pubsub/v2"
 	"github.com/google/uuid"
+	"github.com/heyimcarlos/osfo/prototypes/pubsub-worker-seam/internal/agentruntime"
 	"github.com/heyimcarlos/osfo/prototypes/pubsub-worker-seam/internal/delivery"
 	"github.com/heyimcarlos/osfo/prototypes/pubsub-worker-seam/internal/store"
 )
@@ -44,7 +45,11 @@ const (
 func (h Handler) Handle(ctx context.Context, envelope Envelope, messageID string, brokerAttempt int) Result {
 	h.Slots <- struct{}{}
 	defer func() { <-h.Slots }()
-	claim, err := h.Store.TryClaim(ctx, envelope.AgentRunID, envelope.BenchmarkID, h.Owner+"/"+messageID, envelope.PublishedAt, h.Lease)
+	claim, err := claimWithRetry(ctx, func(ctx context.Context) (store.ClaimResult, error) {
+		return h.Store.TryClaim(ctx, envelope.AgentRunID, envelope.BenchmarkID, h.Owner+"/"+messageID, envelope.PublishedAt, h.Lease)
+	}, func(attempt int, err error) {
+		h.Logger.Warn("claim retry", "run_id", envelope.AgentRunID, "attempt", attempt, "error", err)
+	})
 	if err != nil {
 		h.Logger.Error("claim failed", "run_id", envelope.AgentRunID, "error", err)
 		h.Store.RecordAttempt(ctx, envelope.BenchmarkID, envelope.AgentRunID, h.Protocol, messageID, brokerAttempt, "claim_error")
@@ -69,6 +74,18 @@ func (h Handler) Handle(ctx context.Context, envelope Envelope, messageID string
 		h.Logger.Warn("injecting process exit", "run_id", envelope.AgentRunID)
 		os.Exit(86)
 	}
+	runtime := agentruntime.Standard{}
+	proposal, err := runtime.ProposeNextStep(agentruntime.CurrentState{})
+	if err != nil || proposal.Kind != agentruntime.ProposeModelCall {
+		h.Store.RecordAttempt(ctx, envelope.BenchmarkID, envelope.AgentRunID, h.Protocol, messageID, brokerAttempt, "runtime_proposal_rejected")
+		return Nack
+	}
+	modelAttempt, err := h.Store.CommitModelCallAttempt(ctx, *claim.Run, proposal.NormalizedIntent)
+	if err != nil {
+		h.Logger.Error("model intent commit failed", "run_id", envelope.AgentRunID, "error", err)
+		h.Store.RecordAttempt(ctx, envelope.BenchmarkID, envelope.AgentRunID, h.Protocol, messageID, brokerAttempt, "model_intent_commit_failed")
+		return Nack
+	}
 	timer := time.NewTimer(claim.Run.Workload)
 	defer timer.Stop()
 	select {
@@ -77,13 +94,46 @@ func (h Handler) Handle(ctx context.Context, envelope Envelope, messageID string
 		return Nack
 	case <-timer.C:
 	}
-	committed, err := h.Store.Complete(ctx, *claim.Run)
+	proposal, err = runtime.ProposeNextStep(agentruntime.CurrentState{ModelCallCommitted: true, ModelCallSucceeded: true})
+	if err != nil || proposal.Kind != agentruntime.ProposeAgentRunSuccess {
+		h.Store.RecordAttempt(ctx, envelope.BenchmarkID, envelope.AgentRunID, h.Protocol, messageID, brokerAttempt, "runtime_terminal_proposal_rejected")
+		return Nack
+	}
+	committed, err := h.Store.CompleteModelCallAndRun(ctx, *claim.Run, modelAttempt, proposal.NormalizedOutcome,
+		&store.DeliveryAttemptEvidence{
+			Protocol: h.Protocol, MessageID: messageID,
+			BrokerAttempt: brokerAttempt, Outcome: "completed",
+		})
 	if err != nil || !committed {
 		h.Store.RecordAttempt(ctx, envelope.BenchmarkID, envelope.AgentRunID, h.Protocol, messageID, brokerAttempt, "completion_rejected")
 		return Nack
 	}
-	h.Store.RecordAttempt(ctx, envelope.BenchmarkID, envelope.AgentRunID, h.Protocol, messageID, brokerAttempt, "completed")
 	return Ack
+}
+
+func claimWithRetry(
+	ctx context.Context,
+	claim func(context.Context) (store.ClaimResult, error),
+	onRetry func(int, error),
+) (store.ClaimResult, error) {
+	const attempts = 3
+	var result store.ClaimResult
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		result, err = claim(ctx)
+		if err == nil || ctx.Err() != nil || attempt == attempts {
+			return result, err
+		}
+		onRetry(attempt, err)
+		timer := time.NewTimer(time.Duration(attempt*50) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return result, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return result, err
 }
 
 type PushEnvelope struct {

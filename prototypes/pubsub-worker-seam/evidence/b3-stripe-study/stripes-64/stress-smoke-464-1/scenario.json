@@ -1,0 +1,16 @@
+{
+  "manifest": "pubsub-handoff-v1",
+  "benchmark_id": "312c74d5-ec58-489f-a9c3-2742a3f803e7",
+  "lane": "stress-smoke-464",
+  "repetition": 1,
+  "handoff": "transactional-outbox",
+  "sequence_stripes": 64,
+  "relay_owners": 4,
+  "rate_per_second": 464,
+  "end_rate_per_second": 464,
+  "duration_seconds": 60,
+  "count": 27840,
+  "started_at": "2026-08-05T02:21:27Z",
+  "offer_ended_at": "2026-08-05T02:22:27Z",
+  "ended_at": "2026-08-05T02:23:28Z"
+}

@@ -1,0 +1,21 @@
+{
+  "manifest": "pubsub-handoff-v1",
+  "benchmark_id": "166eef2a-9405-4ec3-86d2-6fc4e8f9d7de",
+  "lane": "warm-target-qualified-232",
+  "repetition": 1,
+  "handoff": "transactional-outbox",
+  "sequence_stripes": 4,
+  "relay_owners": 4,
+  "worker_concurrency": 8,
+  "worker_slots": 8,
+  "worker_db_pool": 4,
+  "ack_deadline_seconds": 10,
+  "subscription_reset_before_lane": false,
+  "rate_per_second": 232,
+  "end_rate_per_second": 232,
+  "duration_seconds": 60,
+  "count": 13920,
+  "started_at": "2026-08-05T03:48:16Z",
+  "offer_ended_at": "2026-08-05T03:49:16Z",
+  "ended_at": "2026-08-05T03:50:17Z"
+}

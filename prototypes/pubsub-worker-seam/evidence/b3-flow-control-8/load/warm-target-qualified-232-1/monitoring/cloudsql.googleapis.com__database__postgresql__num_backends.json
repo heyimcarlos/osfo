@@ -1,0 +1,157 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "database": "benchmark"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/num_backends"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "region": "northamerica-northeast1",
+          "database_id": "even-affinity-497006-u6:osfo-b3-38-fc8-sql",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T03:50:00Z",
+            "endTime": "2026-08-05T03:50:00Z"
+          },
+          "value": {
+            "int64Value": "48"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T03:49:00Z",
+            "endTime": "2026-08-05T03:49:00Z"
+          },
+          "value": {
+            "int64Value": "48"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "database": "cloudsqladmin"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/num_backends"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "region": "northamerica-northeast1",
+          "project_id": "even-affinity-497006-u6",
+          "database_id": "even-affinity-497006-u6:osfo-b3-38-fc8-sql"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T03:50:00Z",
+            "endTime": "2026-08-05T03:50:00Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T03:49:00Z",
+            "endTime": "2026-08-05T03:49:00Z"
+          },
+          "value": {
+            "int64Value": "2"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "database": "postgres"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/num_backends"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database_id": "even-affinity-497006-u6:osfo-b3-38-fc8-sql",
+          "region": "northamerica-northeast1"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T03:50:00Z",
+            "endTime": "2026-08-05T03:50:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T03:49:00Z",
+            "endTime": "2026-08-05T03:49:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "database": "template1"
+        },
+        "type": "cloudsql.googleapis.com/database/postgresql/num_backends"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "database_id": "even-affinity-497006-u6:osfo-b3-38-fc8-sql",
+          "region": "northamerica-northeast1"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T03:50:00Z",
+            "endTime": "2026-08-05T03:50:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T03:49:00Z",
+            "endTime": "2026-08-05T03:49:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

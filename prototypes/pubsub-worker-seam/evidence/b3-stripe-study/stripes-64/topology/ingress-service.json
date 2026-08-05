@@ -1,0 +1,136 @@
+{
+  "apiVersion": "serving.knative.dev/v1",
+  "kind": "Service",
+  "metadata": {
+    "annotations": {
+      "run.googleapis.com/client-name": "gcloud",
+      "run.googleapis.com/client-version": "569.0.0",
+      "run.googleapis.com/ingress": "all",
+      "run.googleapis.com/ingress-status": "all",
+      "run.googleapis.com/maxScale": "8",
+      "run.googleapis.com/operation-id": "90f5ecab-492c-4d06-abce-ea9b61d082a4",
+      "run.googleapis.com/urls": "[\"https://osfo-b3-38-s64-ingress-189278282706.northamerica-northeast1.run.app\",\"https://osfo-b3-38-s64-ingress-hzr7upuh7q-nn.a.run.app\"]",
+      "serving.knative.dev/creator": "carlos.cruzta@gmail.com",
+      "serving.knative.dev/lastModifier": "carlos.cruzta@gmail.com"
+    },
+    "creationTimestamp": "2026-08-05T02:16:58.468525Z",
+    "generation": 1,
+    "labels": {
+      "cloud.googleapis.com/location": "northamerica-northeast1",
+      "run.googleapis.com/satisfiesPzs": "true"
+    },
+    "name": "osfo-b3-38-s64-ingress",
+    "namespace": "189278282706",
+    "resourceVersion": "AAZYQ136aN8",
+    "selfLink": "/apis/serving.knative.dev/v1/namespaces/189278282706/services/osfo-b3-38-s64-ingress",
+    "uid": "425170b0-c835-4b5a-b3b5-94db93f9e910"
+  },
+  "spec": {
+    "template": {
+      "metadata": {
+        "annotations": {
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "569.0.0",
+          "run.googleapis.com/cloudsql-instances": "even-affinity-497006-u6:northamerica-northeast1:osfo-b3-38-s64-sql",
+          "run.googleapis.com/cpu-throttling": "true",
+          "run.googleapis.com/startup-cpu-boost": "true"
+        },
+        "labels": {
+          "client.knative.dev/nonce": "xkuscylgjd",
+          "run.googleapis.com/startupProbeType": "Default"
+        }
+      },
+      "spec": {
+        "containerConcurrency": 80,
+        "containers": [
+          {
+            "command": [
+              "/b3-ingress"
+            ],
+            "env": [
+              {
+                "name": "DB_POOL_SIZE",
+                "value": "8"
+              },
+              {
+                "name": "B3_SEQUENCE_STRIPES",
+                "value": "64"
+              },
+              {
+                "name": "DATABASE_URL",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "latest",
+                    "name": "osfo-b3-38-s64-database-url"
+                  }
+                }
+              }
+            ],
+            "image": "northamerica-northeast1-docker.pkg.dev/even-affinity-497006-u6/osfo-b3-38-s64-repo/prototype:latest",
+            "ports": [
+              {
+                "containerPort": 8080,
+                "name": "http1"
+              }
+            ],
+            "resources": {
+              "limits": {
+                "cpu": "1",
+                "memory": "1Gi"
+              }
+            },
+            "startupProbe": {
+              "failureThreshold": 1,
+              "periodSeconds": 240,
+              "tcpSocket": {
+                "port": 8080
+              },
+              "timeoutSeconds": 240
+            }
+          }
+        ],
+        "serviceAccountName": "osfo-b3-38-s64-ingress@even-affinity-497006-u6.iam.gserviceaccount.com",
+        "timeoutSeconds": 60
+      }
+    },
+    "traffic": [
+      {
+        "latestRevision": true,
+        "percent": 100
+      }
+    ]
+  },
+  "status": {
+    "address": {
+      "url": "https://osfo-b3-38-s64-ingress-hzr7upuh7q-nn.a.run.app"
+    },
+    "conditions": [
+      {
+        "lastTransitionTime": "2026-08-05T02:17:03.008991Z",
+        "status": "True",
+        "type": "Ready"
+      },
+      {
+        "lastTransitionTime": "2026-08-05T02:16:59.349588Z",
+        "status": "True",
+        "type": "ConfigurationsReady"
+      },
+      {
+        "lastTransitionTime": "2026-08-05T02:17:02.970593Z",
+        "status": "True",
+        "type": "RoutesReady"
+      }
+    ],
+    "latestCreatedRevisionName": "osfo-b3-38-s64-ingress-00001-5kg",
+    "latestReadyRevisionName": "osfo-b3-38-s64-ingress-00001-5kg",
+    "observedGeneration": 1,
+    "traffic": [
+      {
+        "latestRevision": true,
+        "percent": 100,
+        "revisionName": "osfo-b3-38-s64-ingress-00001-5kg"
+      }
+    ],
+    "url": "https://osfo-b3-38-s64-ingress-hzr7upuh7q-nn.a.run.app"
+  }
+}

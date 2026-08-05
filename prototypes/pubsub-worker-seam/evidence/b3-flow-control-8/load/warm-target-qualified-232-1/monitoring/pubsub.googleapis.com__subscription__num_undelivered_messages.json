@@ -1,0 +1,30 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "pubsub.googleapis.com/subscription/num_undelivered_messages"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "subscription_id": "osfo-b3-38-fc8-agent-runs"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T03:50:00Z",
+            "endTime": "2026-08-05T03:50:00Z"
+          },
+          "value": {
+            "int64Value": "55"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

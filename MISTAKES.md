@@ -145,3 +145,35 @@ A failed ordered publish pauses that ordering key. Reusing the key in a later
 lane made an otherwise isolated run inherit the earlier publisher failure.
 Namespace every ordering key with the immutable benchmark ID and call
 `ResumePublish` before retrying a failed ordered publish.
+
+## 2026-08-04: Ignoring unexpected transaction failures in a fault matrix
+
+The first concurrent dual-write matrix used serializable transactions and
+ignored the returned errors because every injected request was expected to end
+unknown. Unrelated serialization failures then looked like boundary-cut
+outcomes. Use the weakest isolation that preserves the point-idempotency
+contract, assert the expected outcome of every primary and retry attempt, and
+retain the bad matrix as contaminated evidence.
+
+## 2026-08-04: Reusing a push subscription after failure injection
+
+Seeking a Pub/Sub subscription past concluded synthetic messages did not reset
+its accumulated push backoff. A later clean lane inherited delayed delivery and
+looked capacity-limited. Recreate the manifest-owned subscription from the
+frozen configuration between independent lanes and retain the inherited-state
+run as contaminated evidence.
+
+## 2026-08-04: Joining delivery evidence through an array for every row
+
+The first stress audit joined every delivery attempt to every admission through
+`agent_run_id = ANY(agent_run_ids)`, which became effectively quadratic over
+accumulated prototype history. Scope admissions to the benchmark, unnest the
+small identity array once, and join the resulting relation by AgentRun ID.
+
+## 2026-08-04: Deriving service-account IDs from an unbounded experiment name
+
+The first B3 stripe-study provision used the full experiment name as its cloud
+prefix. Appending `push-auth` exceeded GCP's 30-character service-account ID
+limit after Cloud SQL and three accounts had already been created. Keep the
+evidence name descriptive, derive a separately bounded cloud prefix, and
+validate provider naming limits before provisioning the first resource.

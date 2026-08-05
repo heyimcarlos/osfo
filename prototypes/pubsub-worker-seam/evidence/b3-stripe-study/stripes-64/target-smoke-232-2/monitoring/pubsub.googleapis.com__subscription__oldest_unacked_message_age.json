@@ -1,0 +1,39 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "pubsub.googleapis.com/subscription/oldest_unacked_message_age"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "subscription_id": "osfo-b3-38-s64-agent-runs",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T02:29:00Z",
+            "endTime": "2026-08-05T02:29:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-05T02:28:00Z",
+            "endTime": "2026-08-05T02:28:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "s"
+}
