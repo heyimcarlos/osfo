@@ -54,11 +54,19 @@ export B3_WORKER_SLOTS=8
 
 ./b3-run.sh provision
 ./b3-run.sh relay
-./b3-run.sh load target-smoke-232 232 60 1
-./b3-run.sh load stress-smoke-464 464 60 1
+./b3-run.sh load iam-warmup-23 23 10 1
+
+export B3_RESET_SUBSCRIPTION=0
+./b3-run.sh load warm-target-smoke-232 232 60 1
+./b3-run.sh load warm-stress-smoke-464 464 60 1
 ./b3-run.sh seal
 ./b3-run.sh teardown
 ```
 
 Evidence lands under `evidence/b3-flow-control-8/`. Teardown is mandatory even
 when a lane fails.
+
+The warm-up creates and authenticates a fresh subscription. Target and stress
+reuse that drained subscription so Pub/Sub push slow start is not mislabeled as
+steady-state target latency. Every scenario records whether its subscription
+was reset immediately before the lane.

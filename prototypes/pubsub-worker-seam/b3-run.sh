@@ -8,6 +8,7 @@ worker_concurrency=${B3_WORKER_CONCURRENCY:-32}
 worker_slots=${B3_WORKER_SLOTS:-$worker_concurrency}
 worker_db_pool=${B3_WORKER_DB_POOL:-4}
 ack_deadline=${B3_ACK_DEADLINE:-10}
+reset_subscription_before_lane=${B3_RESET_SUBSCRIPTION:-1}
 case "$sequence_stripes" in
   4|16|64) ;;
   *) echo "B3_SEQUENCE_STRIPES must be 4, 16, or 64" >&2; exit 2 ;;
@@ -19,6 +20,10 @@ for setting in worker_concurrency worker_slots worker_db_pool ack_deadline; do
     exit 2
   fi
 done
+case "$reset_subscription_before_lane" in
+  0|1) ;;
+  *) echo "B3_RESET_SUBSCRIPTION must be 0 or 1" >&2; exit 2 ;;
+esac
 if [[ "$experiment" == "transactional-outbox" ]]; then
   state_file="$prototype_dir/.b3-run.env"
   default_prefix=osfo-b3-38
@@ -255,7 +260,9 @@ capture_frozen_topology() {
 
 run_cut_matrix() {
   load_state
-  reset_subscription
+  if [[ "$reset_subscription_before_lane" == "1" ]]; then
+    reset_subscription
+  fi
   start_proxy
   local destination="$evidence_root/cut-matrix"
   mkdir -p "$destination"
@@ -386,7 +393,8 @@ load_lane() {
     --argjson count "$count" --argjson repetition "$repetition" --argjson sequence_stripes "$sequence_stripes" \
     --argjson worker_concurrency "$worker_concurrency" --argjson worker_slots "$worker_slots" \
     --argjson worker_db_pool "$worker_db_pool" --argjson ack_deadline "$ack_deadline" \
-    '{manifest:"pubsub-handoff-v1",benchmark_id:$benchmark_id,lane:$lane,repetition:$repetition,handoff:"transactional-outbox",sequence_stripes:$sequence_stripes,relay_owners:4,worker_concurrency:$worker_concurrency,worker_slots:$worker_slots,worker_db_pool:$worker_db_pool,ack_deadline_seconds:$ack_deadline,rate_per_second:$rate,end_rate_per_second:$end_rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at}' \
+    --argjson subscription_reset_before_lane "$reset_subscription_before_lane" \
+    '{manifest:"pubsub-handoff-v1",benchmark_id:$benchmark_id,lane:$lane,repetition:$repetition,handoff:"transactional-outbox",sequence_stripes:$sequence_stripes,relay_owners:4,worker_concurrency:$worker_concurrency,worker_slots:$worker_slots,worker_db_pool:$worker_db_pool,ack_deadline_seconds:$ack_deadline,subscription_reset_before_lane:($subscription_reset_before_lane == 1),rate_per_second:$rate,end_rate_per_second:$end_rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at}' \
     >"$destination/scenario.json"
   capture_logs "$destination/runtime-logs.json" "$started_at"
   collect_monitoring "$destination" "$started_at" "$ended_at"
