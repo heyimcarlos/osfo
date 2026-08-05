@@ -1,0 +1,31 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "cloudsql.googleapis.com/database/cpu/utilization"
+      },
+      "resource": {
+        "type": "cloudsql_database",
+        "labels": {
+          "region": "northamerica-northeast1",
+          "project_id": "even-affinity-497006-u6",
+          "database_id": "even-affinity-497006-u6:osfo-b3-38-s64-sql"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-05T02:28:00Z",
+            "endTime": "2026-08-05T02:28:00Z"
+          },
+          "value": {
+            "doubleValue": 0.35484852232320135
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

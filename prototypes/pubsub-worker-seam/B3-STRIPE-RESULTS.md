@@ -1,5 +1,11 @@
 # B3 sequencing-stripe results
 
+The curated raw evidence supporting this report is retained under
+`evidence/b3-stripe-study/`. Each stripe directory includes checksums,
+authoritative audits, scenarios, client summaries, selected Cloud SQL and
+Pub/Sub metrics, instance counts, topology captures, source commit, and teardown
+verification.
+
 ## Four-stripe reference
 
 The archived corrected B3 smoke used four commit-order gates and four relay
