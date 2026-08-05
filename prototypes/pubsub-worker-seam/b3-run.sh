@@ -260,9 +260,7 @@ capture_frozen_topology() {
 
 run_cut_matrix() {
   load_state
-  if [[ "$reset_subscription_before_lane" == "1" ]]; then
-    reset_subscription
-  fi
+  reset_subscription
   start_proxy
   local destination="$evidence_root/cut-matrix"
   mkdir -p "$destination"
@@ -366,7 +364,9 @@ load_lane() {
   if ! gcloud run services describe "$relay_service" --region="$region" >/dev/null 2>&1; then
     deploy_relay
   fi
-  reset_subscription
+  if [[ "$reset_subscription_before_lane" == "1" ]]; then
+    reset_subscription
+  fi
   start_proxy
   (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness prepare \
     --benchmark="$benchmark_id" --lane="$lane-$repetition" --expected-incoming="$count")
