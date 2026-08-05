@@ -169,3 +169,11 @@ The first stress audit joined every delivery attempt to every admission through
 `agent_run_id = ANY(agent_run_ids)`, which became effectively quadratic over
 accumulated prototype history. Scope admissions to the benchmark, unnest the
 small identity array once, and join the resulting relation by AgentRun ID.
+
+## 2026-08-04: Deriving service-account IDs from an unbounded experiment name
+
+The first B3 stripe-study provision used the full experiment name as its cloud
+prefix. Appending `push-auth` exceeded GCP's 30-character service-account ID
+limit after Cloud SQL and three accounts had already been created. Keep the
+evidence name descriptive, derive a separately bounded cloud prefix, and
+validate provider naming limits before provisioning the first resource.

@@ -13,7 +13,7 @@ if [[ "$experiment" == "transactional-outbox" ]]; then
   default_prefix=osfo-b3-38
 else
   state_file="$prototype_dir/.b3-$experiment.env"
-  default_prefix="osfo-b3-38-$experiment"
+  default_prefix="osfo-b3-38-${experiment/stripes-/s}"
 fi
 evidence_root="$prototype_dir/evidence/b3-$experiment"
 
