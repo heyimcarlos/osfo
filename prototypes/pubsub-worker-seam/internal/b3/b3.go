@@ -28,7 +28,7 @@ const (
 
 var ErrInjectedCut = errors.New("injected boundary cut")
 
-func Admit(ctx context.Context, database *store.Store, request store.B3Request) (store.B3Result, error) {
+func Admit(ctx context.Context, database *store.Store, request store.B3Request, sequenceStripes int) (store.B3Result, error) {
 	if err := database.BeginB3Attempt(ctx, request); err != nil {
 		return store.B3Result{}, err
 	}
@@ -37,7 +37,7 @@ func Admit(ctx context.Context, database *store.Store, request store.B3Request) 
 		cut(request)
 		return store.B3Result{CallerOutcome: "unknown", ErrorClass: request.Fault}, ErrInjectedCut
 	}
-	receipt, err := database.AcceptB3(ctx, request)
+	receipt, err := database.AcceptB3(ctx, request, sequenceStripes)
 	if err != nil {
 		_ = database.FinishB3Attempt(context.Background(), request, "unknown", err.Error(), false, true)
 		return store.B3Result{CallerOutcome: "unknown", ErrorClass: err.Error()}, err
@@ -110,12 +110,13 @@ func (p *Publisher) PublishBatch(ctx context.Context, records []store.B3OutboxRe
 }
 
 type Relay struct {
-	Store     *store.Store
-	Publisher *Publisher
-	Owner     string
-	BatchSize int
-	Fault     string
-	HardCrash bool
+	Store           *store.Store
+	Publisher       *Publisher
+	Owner           string
+	BatchSize       int
+	SequenceStripes int
+	Fault           string
+	HardCrash       bool
 }
 
 func (r *Relay) RunShardOnce(ctx context.Context, shard int) (int, error) {
@@ -128,7 +129,7 @@ func (r *Relay) RunShardOnce(ctx context.Context, shard int) (int, error) {
 		return 0, err
 	}
 	defer r.Store.ReleaseB3Shard(context.Background(), connection, shard)
-	records, err := r.Store.ReadB3Batch(ctx, connection, shard, r.BatchSize)
+	records, err := r.Store.ReadB3Batch(ctx, connection, shard, r.SequenceStripes, r.BatchSize)
 	if err != nil || len(records) == 0 {
 		return 0, err
 	}
@@ -152,7 +153,7 @@ func (r *Relay) RunShardOnce(ctx context.Context, shard int) (int, error) {
 		r.cut()
 		return len(records), ErrInjectedCut
 	}
-	if err := r.Store.AdvanceB3Progress(ctx, connection, shard, records[len(records)-1].ShardSequence); err != nil {
+	if err := r.Store.AdvanceB3Progress(ctx, connection, records); err != nil {
 		return 0, err
 	}
 	return len(records), nil
@@ -233,5 +234,14 @@ func ValidateFault(value string) error {
 		return nil
 	default:
 		return fmt.Errorf("unsupported fault %q", value)
+	}
+}
+
+func ValidateSequenceStripes(value int) error {
+	switch value {
+	case 4, 16, 64:
+		return nil
+	default:
+		return fmt.Errorf("sequence stripes must be 4, 16, or 64, got %d", value)
 	}
 }

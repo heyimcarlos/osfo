@@ -31,6 +31,13 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	sequenceStripes, err := positiveInt(os.Getenv("B3_SEQUENCE_STRIPES"), store.B3DefaultSequenceStripes)
+	if err != nil {
+		return err
+	}
+	if err := b3.ValidateSequenceStripes(sequenceStripes); err != nil {
+		return err
+	}
 	database, err := store.Open(ctx, required("DATABASE_URL"), "b3-ingress/"+os.Getenv("HOSTNAME"), int32(poolSize))
 	if err != nil {
 		return err
@@ -49,7 +56,7 @@ func run(logger *slog.Logger) error {
 			http.Error(w, "idempotency_key and request_hash are required", http.StatusBadRequest)
 			return
 		}
-		result, err := b3.Admit(request.Context(), database, admission)
+		result, err := b3.Admit(request.Context(), database, admission, sequenceStripes)
 		w.Header().Set("content-type", "application/json")
 		if err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)

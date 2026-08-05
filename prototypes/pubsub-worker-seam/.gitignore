@@ -1,6 +1,7 @@
 .run.env
 .b2-run.env
 .b3-run.env
+.b3-*.env
 evidence/*
 !evidence/.gitkeep
 !evidence/SEALED-SHA256SUMS

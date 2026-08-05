@@ -15,26 +15,29 @@ CREATE TABLE b3_admissions (
 CREATE SEQUENCE b3_outbox_sequence;
 
 CREATE TABLE b3_outbox_sequence_gate (
-    shard smallint PRIMARY KEY CHECK (shard BETWEEN 0 AND 3),
+    sequence_stripe smallint PRIMARY KEY CHECK (sequence_stripe BETWEEN 0 AND 63),
     next_sequence bigint NOT NULL DEFAULT 0
 ) WITH (fillfactor = 50);
 
-INSERT INTO b3_outbox_sequence_gate (shard)
-SELECT generate_series(0, 3);
+INSERT INTO b3_outbox_sequence_gate (sequence_stripe)
+SELECT generate_series(0, 63);
 
 CREATE TABLE b3_outbox (
     retention_bucket date NOT NULL DEFAULT current_date,
     sequence bigint NOT NULL DEFAULT nextval('b3_outbox_sequence'),
-    shard_sequence bigint NOT NULL,
+    stripe_sequence bigint NOT NULL,
     benchmark_id uuid NOT NULL REFERENCES benchmarks(id),
     ordinal integer NOT NULL,
     agent_run_id uuid NOT NULL,
     delivery_id text NOT NULL,
     ordering_key text NOT NULL,
     shard smallint NOT NULL,
+    sequence_stripe smallint NOT NULL,
     ready_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (retention_bucket, sequence),
-    CHECK (shard BETWEEN 0 AND 3)
+    CHECK (shard BETWEEN 0 AND 3),
+    CHECK (sequence_stripe BETWEEN 0 AND 63),
+    CHECK (shard = sequence_stripe % 4)
 ) PARTITION BY RANGE (retention_bucket);
 
 DO $migration$
@@ -53,13 +56,13 @@ END
 $migration$;
 
 CREATE TABLE b3_relay_progress (
-    shard smallint PRIMARY KEY CHECK (shard BETWEEN 0 AND 3),
+    sequence_stripe smallint PRIMARY KEY CHECK (sequence_stripe BETWEEN 0 AND 63),
     last_sequence bigint NOT NULL DEFAULT 0,
     advanced_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 
-INSERT INTO b3_relay_progress (shard)
-SELECT generate_series(0, 3);
+INSERT INTO b3_relay_progress (sequence_stripe)
+SELECT generate_series(0, 63);
 
 CREATE TABLE b3_attempt_evidence (
     id bigserial PRIMARY KEY,
@@ -88,7 +91,7 @@ CREATE TABLE b3_publish_evidence (
     observed_outcome text NOT NULL
 );
 
-CREATE INDEX b3_outbox_shard_sequence ON b3_outbox (shard, shard_sequence);
+CREATE INDEX b3_outbox_stripe_sequence ON b3_outbox (sequence_stripe, stripe_sequence);
 CREATE INDEX b3_outbox_benchmark ON b3_outbox (benchmark_id, agent_run_id);
 CREATE INDEX b3_attempts_benchmark ON b3_attempt_evidence (benchmark_id, ordinal, attempt);
 CREATE INDEX b3_publications_benchmark ON b3_publish_evidence (benchmark_id, agent_run_id);

@@ -11,7 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const B3RelayShards = 4
+const (
+	B3RelayShards            = 4
+	B3DefaultSequenceStripes = 4
+	B3MaxSequenceStripes     = 64
+)
 
 type B3Request struct {
 	BenchmarkID uuid.UUID `json:"benchmark_id"`
@@ -39,15 +43,16 @@ type B3Result struct {
 }
 
 type B3OutboxRecord struct {
-	Sequence      int64
-	ShardSequence int64
-	BenchmarkID   uuid.UUID
-	Ordinal       int
-	AgentRunID    uuid.UUID
-	DeliveryID    string
-	OrderingKey   string
-	Shard         int
-	ReadyAt       time.Time
+	Sequence       int64
+	StripeSequence int64
+	BenchmarkID    uuid.UUID
+	Ordinal        int
+	AgentRunID     uuid.UUID
+	DeliveryID     string
+	OrderingKey    string
+	Shard          int
+	SequenceStripe int
+	ReadyAt        time.Time
 }
 
 type B3Publication struct {
@@ -134,7 +139,7 @@ func (s *Store) FinishB3Attempt(ctx context.Context, request B3Request, outcome,
 	return err
 }
 
-func (s *Store) AcceptB3(ctx context.Context, request B3Request) (B3Receipt, error) {
+func (s *Store) AcceptB3(ctx context.Context, request B3Request, sequenceStripes int) (B3Receipt, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return B3Receipt{}, err
@@ -172,16 +177,17 @@ func (s *Store) AcceptB3(ctx context.Context, request B3Request) (B3Receipt, err
 		return B3Receipt{}, err
 	}
 	threadKey := fmt.Sprintf("thread-%04d", request.Ordinal%1024)
-	shard := request.Ordinal % B3RelayShards
-	var lastShardSequence int64
+	sequenceStripe := request.Ordinal % sequenceStripes
+	shard := sequenceStripe % B3RelayShards
+	var lastStripeSequence int64
 	if err := tx.QueryRow(ctx, `
 		UPDATE b3_outbox_sequence_gate
 		SET next_sequence = next_sequence + $2
-		WHERE shard = $1
-		RETURNING next_sequence`, shard, len(ids)).Scan(&lastShardSequence); err != nil {
+		WHERE sequence_stripe = $1
+		RETURNING next_sequence`, sequenceStripe, len(ids)).Scan(&lastStripeSequence); err != nil {
 		return B3Receipt{}, err
 	}
-	firstShardSequence := lastShardSequence - int64(len(ids)) + 1
+	firstStripeSequence := lastStripeSequence - int64(len(ids)) + 1
 	for runOrdinal, id := range ids {
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO agent_runs
@@ -193,11 +199,11 @@ func (s *Store) AcceptB3(ctx context.Context, request B3Request) (B3Receipt, err
 		}
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO b3_outbox
-				(benchmark_id, ordinal, agent_run_id, delivery_id, ordering_key, shard, shard_sequence)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`, request.BenchmarkID, request.Ordinal,
+				(benchmark_id, ordinal, agent_run_id, delivery_id, ordering_key, shard, sequence_stripe, stripe_sequence)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, request.BenchmarkID, request.Ordinal,
 			id, fmt.Sprintf("%s/%d/%d", request.BenchmarkID, request.Ordinal, runOrdinal),
-			fmt.Sprintf("%s/%s", request.BenchmarkID, threadKey), shard,
-			firstShardSequence+int64(runOrdinal)); err != nil {
+			fmt.Sprintf("%s/%s", request.BenchmarkID, threadKey), shard, sequenceStripe,
+			firstStripeSequence+int64(runOrdinal)); err != nil {
 			return B3Receipt{}, err
 		}
 	}
@@ -232,17 +238,31 @@ func (s *Store) ReleaseB3Shard(ctx context.Context, connection *pgxpool.Conn, sh
 	connection.Release()
 }
 
-func (s *Store) ReadB3Batch(ctx context.Context, connection *pgxpool.Conn, shard, limit int) ([]B3OutboxRecord, error) {
-	var cursor int64
-	if err := connection.QueryRow(ctx, `SELECT last_sequence FROM b3_relay_progress WHERE shard = $1`, shard).Scan(&cursor); err != nil {
-		return nil, err
-	}
+func (s *Store) ReadB3Batch(ctx context.Context, connection *pgxpool.Conn, shard, sequenceStripes, limit int) ([]B3OutboxRecord, error) {
+	stripesPerOwner := sequenceStripes / B3RelayShards
+	quotaPerStripe := (limit + stripesPerOwner - 1) / stripesPerOwner
 	rows, err := connection.Query(ctx, `
-		SELECT sequence, shard_sequence, benchmark_id, ordinal, agent_run_id, delivery_id, ordering_key, shard, ready_at
-		FROM b3_outbox
-		WHERE shard = $1 AND shard_sequence > $2
-		ORDER BY shard_sequence
-		LIMIT $3`, shard, cursor, limit)
+		WITH active_stripes AS (
+			SELECT generate_series($1::integer, $2::integer - 1, $3::integer)::smallint AS sequence_stripe
+		), pending AS (
+			SELECT o.sequence, o.stripe_sequence, o.benchmark_id, o.ordinal, o.agent_run_id,
+			       o.delivery_id, o.ordering_key, o.shard, o.sequence_stripe, o.ready_at
+			FROM active_stripes s
+			JOIN b3_relay_progress p USING (sequence_stripe)
+			CROSS JOIN LATERAL (
+				SELECT o.*
+				FROM b3_outbox o
+				WHERE o.sequence_stripe = s.sequence_stripe
+				  AND o.stripe_sequence > p.last_sequence
+				ORDER BY o.stripe_sequence
+				LIMIT $4
+			) o
+		)
+		SELECT sequence, stripe_sequence, benchmark_id, ordinal, agent_run_id,
+		       delivery_id, ordering_key, shard, sequence_stripe, ready_at
+		FROM pending
+		ORDER BY stripe_sequence, sequence_stripe
+		LIMIT $5`, shard, sequenceStripes, B3RelayShards, quotaPerStripe, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -250,8 +270,8 @@ func (s *Store) ReadB3Batch(ctx context.Context, connection *pgxpool.Conn, shard
 	var records []B3OutboxRecord
 	for rows.Next() {
 		var record B3OutboxRecord
-		if err := rows.Scan(&record.Sequence, &record.ShardSequence, &record.BenchmarkID, &record.Ordinal, &record.AgentRunID,
-			&record.DeliveryID, &record.OrderingKey, &record.Shard, &record.ReadyAt); err != nil {
+		if err := rows.Scan(&record.Sequence, &record.StripeSequence, &record.BenchmarkID, &record.Ordinal, &record.AgentRunID,
+			&record.DeliveryID, &record.OrderingKey, &record.Shard, &record.SequenceStripe, &record.ReadyAt); err != nil {
 			return nil, err
 		}
 		records = append(records, record)
@@ -280,18 +300,31 @@ func (s *Store) RecordB3Publications(ctx context.Context, connection *pgxpool.Co
 	return tx.Commit(ctx)
 }
 
-func (s *Store) AdvanceB3Progress(ctx context.Context, connection *pgxpool.Conn, shard int, sequence int64) error {
-	command, err := connection.Exec(ctx, `
-		UPDATE b3_relay_progress
-		SET last_sequence = $2, advanced_at = clock_timestamp()
-		WHERE shard = $1 AND last_sequence < $2`, shard, sequence)
+func (s *Store) AdvanceB3Progress(ctx context.Context, connection *pgxpool.Conn, records []B3OutboxRecord) error {
+	highWater := make(map[int]int64)
+	for _, record := range records {
+		if record.StripeSequence > highWater[record.SequenceStripe] {
+			highWater[record.SequenceStripe] = record.StripeSequence
+		}
+	}
+	tx, err := connection.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if command.RowsAffected() > 1 {
-		return fmt.Errorf("advanced more than one relay cursor")
+	defer tx.Rollback(ctx)
+	for sequenceStripe, sequence := range highWater {
+		command, err := tx.Exec(ctx, `
+			UPDATE b3_relay_progress
+			SET last_sequence = $2, advanced_at = clock_timestamp()
+			WHERE sequence_stripe = $1 AND last_sequence < $2`, sequenceStripe, sequence)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() > 1 {
+			return fmt.Errorf("advanced more than one relay cursor")
+		}
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (s *Store) B3Backlog(ctx context.Context) (int64, time.Duration, error) {
@@ -300,8 +333,8 @@ func (s *Store) B3Backlog(ctx context.Context) (int64, time.Duration, error) {
 	err := s.pool.QueryRow(ctx, `
 		SELECT count(*), min(o.ready_at)
 		FROM b3_outbox o
-		JOIN b3_relay_progress p ON p.shard = o.shard
-		WHERE o.shard_sequence > p.last_sequence`).Scan(&count, &oldest)
+		JOIN b3_relay_progress p USING (sequence_stripe)
+		WHERE o.stripe_sequence > p.last_sequence`).Scan(&count, &oldest)
 	if err != nil || oldest == nil {
 		return count, 0, err
 	}
@@ -383,7 +416,7 @@ func (s *Store) AuditB3(ctx context.Context, benchmarkID uuid.UUID, expectedInco
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM b3_attempt_evidence WHERE benchmark_id = $1 AND caller_outcome IN ('in_flight', 'unknown')`, benchmarkID).Scan(&a.UnknownCallerOutcomes); err != nil {
 		return B3Audit{}, err
 	}
-	rows, err = s.pool.Query(ctx, `SELECT shard, last_sequence FROM b3_relay_progress ORDER BY shard`)
+	rows, err = s.pool.Query(ctx, `SELECT sequence_stripe, last_sequence FROM b3_relay_progress ORDER BY sequence_stripe`)
 	if err != nil {
 		return B3Audit{}, err
 	}
@@ -480,8 +513,8 @@ func (s *Store) B3RetentionCandidates(ctx context.Context, replayWindow time.Dur
 		var fullyPublished bool
 		query := `SELECT NOT EXISTS (
 			SELECT 1 FROM ` + (pgx.Identifier{name}).Sanitize() + ` o
-			JOIN b3_relay_progress p ON p.shard = o.shard
-			WHERE o.shard_sequence > p.last_sequence
+			JOIN b3_relay_progress p USING (sequence_stripe)
+			WHERE o.stripe_sequence > p.last_sequence
 		)`
 		if err := s.pool.QueryRow(ctx, query).Scan(&fullyPublished); err != nil {
 			return nil, err

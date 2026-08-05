@@ -35,6 +35,13 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	sequenceStripes, err := positiveInt(os.Getenv("B3_SEQUENCE_STRIPES"), store.B3DefaultSequenceStripes)
+	if err != nil {
+		return err
+	}
+	if err := b3.ValidateSequenceStripes(sequenceStripes); err != nil {
+		return err
+	}
 	database, err := store.Open(ctx, required("DATABASE_URL"), "b3-relay/"+os.Getenv("HOSTNAME"), int32(poolSize))
 	if err != nil {
 		return err
@@ -45,7 +52,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	defer publisher.Close()
-	relay := &b3.Relay{Store: database, Publisher: publisher, Owner: value("HOSTNAME", "b3-relay"), BatchSize: batchSize, Fault: b3.NoFault}
+	relay := &b3.Relay{Store: database, Publisher: publisher, Owner: value("HOSTNAME", "b3-relay"), BatchSize: batchSize, SequenceStripes: sequenceStripes, Fault: b3.NoFault}
 	go func() {
 		for ctx.Err() == nil {
 			if err := relay.Run(ctx, 25*time.Millisecond); err != nil && ctx.Err() == nil {

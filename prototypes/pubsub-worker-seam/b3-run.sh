@@ -2,12 +2,24 @@
 set -euo pipefail
 
 prototype_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-state_file="$prototype_dir/.b3-run.env"
-evidence_root="$prototype_dir/evidence/b3-transactional-outbox"
+experiment=${B3_EXPERIMENT:-transactional-outbox}
+sequence_stripes=${B3_SEQUENCE_STRIPES:-4}
+case "$sequence_stripes" in
+  4|16|64) ;;
+  *) echo "B3_SEQUENCE_STRIPES must be 4, 16, or 64" >&2; exit 2 ;;
+esac
+if [[ "$experiment" == "transactional-outbox" ]]; then
+  state_file="$prototype_dir/.b3-run.env"
+  default_prefix=osfo-b3-38
+else
+  state_file="$prototype_dir/.b3-$experiment.env"
+  default_prefix="osfo-b3-38-$experiment"
+fi
+evidence_root="$prototype_dir/evidence/b3-$experiment"
 
 project_id=${GCP_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}
 region=${GCP_REGION:-northamerica-northeast1}
-prefix=${RESOURCE_PREFIX:-osfo-b3-38}
+prefix=${RESOURCE_PREFIX:-$default_prefix}
 sql_instance="$prefix-sql"
 artifact_repository="$prefix-repo"
 image_uri="$region-docker.pkg.dev/$project_id/$artifact_repository/prototype:latest"
@@ -156,7 +168,7 @@ provision() {
     --no-allow-unauthenticated --cpu=1 --memory=1Gi --concurrency=80 --min=0 --max=8 \
     --cpu-throttling --timeout=60 --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="DB_POOL_SIZE=8"
+    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes"
   ingress_url=$(gcloud run services describe "$ingress_service" --region="$region" --format='value(status.url)')
   active_account=$(gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -n 1)
   gcloud run services add-iam-policy-binding "$ingress_service" --region="$region" \
@@ -182,7 +194,7 @@ deploy_images() {
     --no-allow-unauthenticated --cpu=1 --memory=1Gi --concurrency=80 --min=0 --max=8 \
     --cpu-throttling --timeout=60 --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="DB_POOL_SIZE=8"
+    --set-env-vars="DB_POOL_SIZE=8,B3_SEQUENCE_STRIPES=$sequence_stripes"
   deploy_relay
 }
 
@@ -193,7 +205,7 @@ deploy_relay() {
     --no-allow-unauthenticated --cpu=1 --memory=512Mi --concurrency=80 --min=1 --max=2 \
     --no-cpu-throttling --timeout=300 --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="GCP_PROJECT_ID=$project_id,PUBSUB_TOPIC_ID=$topic_id,DB_POOL_SIZE=4,RELAY_BATCH_SIZE=128"
+    --set-env-vars="GCP_PROJECT_ID=$project_id,PUBSUB_TOPIC_ID=$topic_id,DB_POOL_SIZE=4,RELAY_BATCH_SIZE=128,B3_SEQUENCE_STRIPES=$sequence_stripes"
 }
 
 reset_subscription() {
@@ -356,8 +368,8 @@ load_lane() {
   jq -n --arg benchmark_id "$benchmark_id" --arg lane "$lane" --arg started_at "$started_at" \
     --arg offer_ended_at "$offer_ended_at" --arg ended_at "$ended_at" \
     --argjson rate "$rate" --argjson end_rate "$end_rate" --argjson duration "$duration" \
-    --argjson count "$count" --argjson repetition "$repetition" \
-    '{manifest:"pubsub-handoff-v1",benchmark_id:$benchmark_id,lane:$lane,repetition:$repetition,handoff:"transactional-outbox",rate_per_second:$rate,end_rate_per_second:$end_rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at}' \
+    --argjson count "$count" --argjson repetition "$repetition" --argjson sequence_stripes "$sequence_stripes" \
+    '{manifest:"pubsub-handoff-v1",benchmark_id:$benchmark_id,lane:$lane,repetition:$repetition,handoff:"transactional-outbox",sequence_stripes:$sequence_stripes,relay_owners:4,rate_per_second:$rate,end_rate_per_second:$end_rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at}' \
     >"$destination/scenario.json"
   capture_logs "$destination/runtime-logs.json" "$started_at"
   collect_monitoring "$destination" "$started_at" "$ended_at"
@@ -502,25 +514,10 @@ seal_root() {
   checksum_file=$(mktemp)
   (
     cd "$evidence_root"
-    {
-      find \
-        authentication-smoke \
-        hard-process-cuts \
-        cut-matrix \
-        load/baseline-smoke-23-1 \
-        load/target-smoke-232-1 \
-        load/stress-smoke-464-1 \
-        -type f -print0
-      printf '%s\0' \
-        database-final-stats.json \
-        decision.json \
-        final-inventory.json \
-        pricing-model.json \
-        provisioned-inventory.json \
-        retention-plan.json \
-        teardown-inventory.json \
-        teardown-verification.json
-    } | sort -z | xargs -0 sha256sum
+    find . -type f \
+      ! -name SEALED-SHA256SUMS \
+      ! -name cloud-sql-proxy.log \
+      -print0 | sort -z | xargs -0 sha256sum
   ) >"$checksum_file"
   mv "$checksum_file" "$evidence_root/SEALED-SHA256SUMS"
   (cd "$evidence_root" && sha256sum --check SEALED-SHA256SUMS >/dev/null)

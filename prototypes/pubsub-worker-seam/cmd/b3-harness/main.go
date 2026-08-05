@@ -41,10 +41,14 @@ func run(ctx context.Context, args []string) error {
 	requestHash := flags.String("request-hash", "", "stable request hash")
 	hardCrash := flags.Bool("hard-crash", false, "terminate at the injected boundary")
 	batchSize := flags.Int("batch-size", 128, "bounded relay batch size")
+	sequenceStripes := flags.Int("sequence-stripes", store.B3DefaultSequenceStripes, "commit-order sequence stripes")
 	repetitions := flags.Int("repetitions", 100, "fault repetitions")
 	seeds := flags.Int("seeds", 3, "independently named seeds")
 	replayWindow := flags.Duration("replay-window", 7*24*time.Hour, "outbox replay safety window")
 	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	if err := b3.ValidateSequenceStripes(*sequenceStripes); err != nil {
 		return err
 	}
 	if *dsn == "" {
@@ -88,7 +92,7 @@ func run(ctx context.Context, args []string) error {
 		if *project == "" || *topic == "" {
 			return fmt.Errorf("--project and --topic are required")
 		}
-		return runMatrix(ctx, database, *project, *topic, *repetitions, *seeds, *batchSize)
+		return runMatrix(ctx, database, *project, *topic, *repetitions, *seeds, *batchSize, *sequenceStripes)
 	}
 	benchmarkID, err := uuid.Parse(*benchmarkText)
 	if err != nil {
@@ -109,7 +113,7 @@ func run(ctx context.Context, args []string) error {
 			request.RequestHash = *requestHash
 		}
 		request.HardCrash = *hardCrash
-		result, err := b3.Admit(ctx, database, request)
+		result, err := b3.Admit(ctx, database, request, *sequenceStripes)
 		_ = json.NewEncoder(os.Stdout).Encode(result)
 		return err
 	case "relay-once", "drain":
@@ -121,7 +125,7 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		defer publisher.Close()
-		relay := &b3.Relay{Store: database, Publisher: publisher, Owner: "b3-harness", BatchSize: *batchSize, Fault: *fault, HardCrash: *hardCrash}
+		relay := &b3.Relay{Store: database, Publisher: publisher, Owner: "b3-harness", BatchSize: *batchSize, SequenceStripes: *sequenceStripes, Fault: *fault, HardCrash: *hardCrash}
 		if command == "relay-once" {
 			count, err := relay.RunAllOnce(ctx)
 			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"processed": count, "fault": *fault})
@@ -172,7 +176,7 @@ func drain(ctx context.Context, database *store.Store, relay *b3.Relay, benchmar
 	return fmt.Errorf("outbox did not drain before %s", timeout)
 }
 
-func runMatrix(ctx context.Context, database *store.Store, project, topic string, repetitions, seeds, batchSize int) error {
+func runMatrix(ctx context.Context, database *store.Store, project, topic string, repetitions, seeds, batchSize, sequenceStripes int) error {
 	if repetitions < 100 || seeds < 3 {
 		return fmt.Errorf("frozen manifest requires at least 100 repetitions and three seeds")
 	}
@@ -181,7 +185,7 @@ func runMatrix(ctx context.Context, database *store.Store, project, topic string
 		return err
 	}
 	defer publisher.Close()
-	relay := &b3.Relay{Store: database, Publisher: publisher, Owner: "b3-matrix", BatchSize: batchSize}
+	relay := &b3.Relay{Store: database, Publisher: publisher, Owner: "b3-matrix", BatchSize: batchSize, SequenceStripes: sequenceStripes}
 	encoder := json.NewEncoder(os.Stdout)
 	admissionFaults := []string{b3.BeforeAdmissionCommit, b3.AfterAdmissionCommit, b3.CommitUncertainSucceeded, b3.CommitUncertainFailed}
 	for seed := 1; seed <= seeds; seed++ {
@@ -191,7 +195,7 @@ func runMatrix(ctx context.Context, database *store.Store, project, topic string
 			if err := database.PrepareB3(ctx, benchmarkID, "b3-transactional-outbox", lane, repetitions); err != nil {
 				return err
 			}
-			if err := admitMany(ctx, database, benchmarkID, repetitions, fault, true); err != nil {
+			if err := admitMany(ctx, database, benchmarkID, repetitions, fault, true, sequenceStripes); err != nil {
 				return err
 			}
 			if err := drain(ctx, database, relay, benchmarkID, 5*time.Minute); err != nil {
@@ -214,7 +218,7 @@ func runMatrix(ctx context.Context, database *store.Store, project, topic string
 			if err := database.PrepareB3(ctx, benchmarkID, "b3-transactional-outbox", lane, repetitions); err != nil {
 				return err
 			}
-			if err := admitMany(ctx, database, benchmarkID, repetitions, b3.NoFault, false); err != nil {
+			if err := admitMany(ctx, database, benchmarkID, repetitions, b3.NoFault, false, sequenceStripes); err != nil {
 				return err
 			}
 			relay.Fault = fault
@@ -238,7 +242,7 @@ func runMatrix(ctx context.Context, database *store.Store, project, topic string
 	return nil
 }
 
-func admitMany(ctx context.Context, database *store.Store, benchmarkID uuid.UUID, count int, fault string, retryUnknown bool) error {
+func admitMany(ctx context.Context, database *store.Store, benchmarkID uuid.UUID, count int, fault string, retryUnknown bool, sequenceStripes int) error {
 	semaphore := make(chan struct{}, 32)
 	errorsFound := make(chan error, count)
 	var wait sync.WaitGroup
@@ -249,14 +253,14 @@ func admitMany(ctx context.Context, database *store.Store, benchmarkID uuid.UUID
 			defer wait.Done()
 			defer func() { <-semaphore }()
 			request := requestFor(benchmarkID, ordinal, 1, fault)
-			_, err := b3.Admit(ctx, database, request)
+			_, err := b3.Admit(ctx, database, request, sequenceStripes)
 			if err != nil && !errors.Is(err, b3.ErrInjectedCut) {
 				errorsFound <- err
 				return
 			}
 			if retryUnknown {
 				retry := requestFor(benchmarkID, ordinal, 2, b3.NoFault)
-				if _, err := b3.Admit(ctx, database, retry); err != nil {
+				if _, err := b3.Admit(ctx, database, retry, sequenceStripes); err != nil {
 					errorsFound <- err
 				}
 			}
