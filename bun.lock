@@ -57,6 +57,7 @@
       "dependencies": {
         "@effect/atom-react": "catalog:",
         "@osfo/api": "workspace:*",
+        "@osfo/session": "workspace:*",
         "@osfo/ui": "workspace:*",
         "effect": "catalog:",
         "lucide-react": "catalog:",
@@ -79,6 +80,7 @@
       "name": "@osfo/api",
       "version": "0.0.0",
       "dependencies": {
+        "@osfo/session": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {

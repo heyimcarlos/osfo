@@ -2,6 +2,9 @@ import {
   AcceptanceReceipt,
   IdempotencyConflict,
   MessageAdmission,
+  SnapshotUnavailable,
+  ThreadTraversal,
+  TraversalUnavailable,
   type MessageAdmissionError,
   type SubmitMessageCommand,
 } from "../src/index";
@@ -41,13 +44,21 @@ const makeHarness = (
   ) => Effect.Effect<AcceptanceReceipt, MessageAdmissionError>,
 ) => {
   const admission = MessageAdmission.of({ accept });
+  const traversal = ThreadTraversal.of({
+    snapshot: () => Effect.fail(new SnapshotUnavailable()),
+    history: () => Effect.fail(new TraversalUnavailable()),
+    stream: () => Effect.fail(new TraversalUnavailable()),
+  });
   const web = HttpRouter.toWebHandler(
     OsfoApiLive.pipe(
       Layer.provide(Layer.succeed(MessageAdmission)(admission)),
+      Layer.provide(Layer.succeed(ThreadTraversal)(traversal)),
       Layer.provideMerge(HttpServer.layerServices),
     ),
   );
-  const context = Context.make(MessageAdmission, admission);
+  const context = Context.make(MessageAdmission, admission).pipe(
+    Context.add(ThreadTraversal, traversal),
+  );
   const handler = (request: Request) => web.handler(request, context);
   const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
     HttpClient.make((request, _url, signal) =>

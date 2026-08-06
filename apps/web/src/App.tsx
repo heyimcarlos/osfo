@@ -1,7 +1,8 @@
-import { useAtom, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ThreadChat } from "./chat/atoms";
 import { SubmissionError } from "./chat/submission-error";
 import { ThreadComposer } from "./chat/thread-composer";
@@ -15,10 +16,16 @@ export interface AppProps {
 
 export function App({ chat, threadId }: AppProps) {
   const messages = useAtomValue(chat.messages);
+  const resume = useAtomSet(chat.resume);
   const [submission, submit] = useAtom(chat.submit, { mode: "promiseExit" });
   const [content, setContent] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState<string>();
   const isSubmitting = AsyncResult.isWaiting(submission);
+
+  useEffect(() => {
+    resume(undefined);
+    return () => resume(Atom.Interrupt);
+  }, [resume]);
 
   const send = async () => {
     const message = content.trim();

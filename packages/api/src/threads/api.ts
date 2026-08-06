@@ -1,8 +1,10 @@
+import { ThreadEventEnvelopeSchema, ThreadSnapshotSchema } from "@osfo/session";
 import { Context, Schema } from "effect";
 import {
   HttpApiEndpoint,
   HttpApiGroup,
   HttpApiMiddleware,
+  HttpApiSchema,
   HttpApiSecurity,
   OpenApi,
 } from "effect/unstable/httpapi";
@@ -75,6 +77,71 @@ export class AdmissionUnavailable extends Schema.TaggedErrorClass<AdmissionUnava
   { httpApiStatus: 503 },
 ) {}
 
+export class InvalidCursor extends Schema.TaggedErrorClass<InvalidCursor>()(
+  "InvalidCursor",
+  {},
+  { httpApiStatus: 400 },
+) {}
+
+export class CursorOutsideRetention extends Schema.TaggedErrorClass<CursorOutsideRetention>()(
+  "CursorOutsideRetention",
+  {},
+  { httpApiStatus: 410 },
+) {}
+
+export class SnapshotUnavailable extends Schema.TaggedErrorClass<SnapshotUnavailable>()(
+  "SnapshotUnavailable",
+  {},
+  { httpApiStatus: 503 },
+) {}
+
+export class TraversalUnavailable extends Schema.TaggedErrorClass<TraversalUnavailable>()(
+  "TraversalUnavailable",
+  {},
+  { httpApiStatus: 503 },
+) {}
+
+const NonNegativePosition = Schema.String.check(Schema.isPattern(/^\d+$/u));
+const PositivePageLimit = Schema.NumberFromString.pipe(
+  Schema.check(Schema.isInt()),
+  Schema.check(Schema.isBetween({ minimum: 1, maximum: 1_000 })),
+);
+
+export const ThreadHistoryPageSchema = Schema.Struct({
+  threadId: Uuid,
+  afterPosition: NonNegativePosition,
+  throughPosition: NonNegativePosition,
+  events: Schema.Array(ThreadEventEnvelopeSchema),
+  nextAfterPosition: NonNegativePosition,
+  hasMore: Schema.Boolean,
+});
+
+export type ThreadHistoryPage = typeof ThreadHistoryPageSchema.Type;
+
+export const ThreadStreamEventSchema = Schema.Union([
+  Schema.Struct({
+    event: Schema.Literal("thread_event"),
+    data: Schema.fromJsonString(ThreadEventEnvelopeSchema),
+  }),
+  Schema.Struct({
+    event: Schema.Literal("caught_up"),
+    data: Schema.fromJsonString(
+      Schema.Struct({
+        throughPosition: NonNegativePosition,
+        throughCursor: Schema.NonEmptyString,
+      }),
+    ),
+  }),
+]);
+
+export type ThreadStreamEvent = typeof ThreadStreamEventSchema.Type;
+
+const StreamSuccess = HttpApiSchema.StreamSse({
+  contentType: "text/event-stream; charset=utf-8",
+  events: ThreadStreamEventSchema,
+  error: TraversalUnavailable,
+});
+
 export class AuthenticationToken extends Context.Service<AuthenticationToken, string>()(
   "@osfo/api/AuthenticationToken",
 ) {}
@@ -102,11 +169,38 @@ export const ThreadsApi = HttpApiGroup.make("threads")
       error: [ThreadNotFound, IdempotencyConflict, CapacityRejected, AdmissionUnavailable],
     }),
   )
+  .add(
+    HttpApiEndpoint.get("getSnapshot", "/v1/threads/:threadId/snapshot", {
+      params: { threadId: Uuid },
+      success: ThreadSnapshotSchema,
+      error: [AuthenticationRejected, ThreadNotFound, SnapshotUnavailable],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("getEvents", "/v1/threads/:threadId/events", {
+      params: { threadId: Uuid },
+      query: {
+        after: Schema.optionalKey(Schema.NonEmptyString),
+        afterPosition: Schema.optionalKey(NonNegativePosition),
+        throughPosition: Schema.optionalKey(NonNegativePosition),
+        limit: Schema.optionalKey(PositivePageLimit),
+      },
+      success: [ThreadHistoryPageSchema, StreamSuccess],
+      error: [
+        ThreadNotFound,
+        AuthenticationRejected,
+        InvalidCursor,
+        CursorOutsideRetention,
+        TraversalUnavailable,
+        MalformedRequest,
+      ],
+    }),
+  )
   .middleware(Authentication)
   .middleware(RequestValidation)
   .annotateMerge(
     OpenApi.annotations({
       title: "Threads",
-      description: "Submit input to an Osfo Thread.",
+      description: "Submit input to and resume an Osfo Thread.",
     }),
   );

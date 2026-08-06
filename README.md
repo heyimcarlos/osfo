@@ -63,16 +63,20 @@ Build them first with `bun run build`.
 
 The ingress process requires `OSFO_DATABASE_URL`,
 `OSFO_EXECUTION_PROFILE_REF`, `OSFO_GLOBAL_NON_TERMINAL_LIMIT`, and
-`OSFO_PRINCIPAL_NON_TERMINAL_LIMIT`. Set
-`OSFO_INGRESS_PORT` to override its default port, 3000.
+`OSFO_PRINCIPAL_NON_TERMINAL_LIMIT`. Snapshot size, replay retention, stream
+polling, and cursor signing have bounded local defaults. Production deployments
+set `OSFO_CURSOR_SECRET` explicitly. Set `OSFO_INGRESS_PORT` to override its
+default port, 3000.
 
 ## Browser reference and UI
 
 Run `bun run dev` after seeding the reference authority to open the browser
-Thread client and its ingress process together. The client submits through the
-typed `@osfo/api` Effect client and displays the immutable Acceptance Receipt
-only after PostgreSQL accepts the message. The development server proxies `/v1`
-to ingress on port 3000, so browser HTTP remains same-origin.
+Thread client and its ingress process together. Each tab stores one complete
+projection and ThreadCursor record in its own session storage. It bootstraps
+from a bounded snapshot, applies authenticated replay and live SSE events
+crash-consistently, and renders messages only from canonical Thread authority.
+The development server proxies `/v1` to ingress on port 3000, so browser HTTP
+remains same-origin.
 
 The reference seed is explicit and idempotent. It creates only the local
 Principal, authentication session, Thread, and capacity rows named by the
@@ -80,7 +84,8 @@ Principal, authentication session, Thread, and capacity rows named by the
 
 Reusable chat presentation lives in `@osfo/ui` as shadcn `MessageScroller`,
 `Message`, `Bubble`, `Marker`, and composer primitives. The app owns Thread
-configuration, Effect atoms, receipt presentation, and submission behavior.
+configuration, Effect atoms, canonical source presentation, and submission
+behavior.
 Run `bun run dev:web` when ingress is already running.
 
 Run the shadcn CLI from `apps/web` so monorepo aliases route

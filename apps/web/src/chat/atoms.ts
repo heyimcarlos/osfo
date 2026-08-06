@@ -1,10 +1,27 @@
-import { submitThreadMessage } from "@osfo/api/client";
-import * as Effect from "effect/Effect";
+import {
+  AuthenticationRejected,
+  CursorOutsideRetention,
+  InvalidCursor,
+  SnapshotUnavailable,
+  ThreadNotFound,
+  TraversalUnavailable,
+} from "@osfo/api";
+import { getThreadSnapshot, streamThreadEvents, submitThreadMessage } from "@osfo/api/client";
+import { InvalidThreadProjection, type ThreadSnapshot } from "@osfo/session";
+import { Effect, Schema, Stream } from "effect";
 import * as Atom from "effect/unstable/reactivity/Atom";
+import {
+  makeThreadProjectionStore,
+  ProjectionStoreUnavailable,
+  type ThreadProjectionStore,
+} from "./projection-store";
+import { synchronizeThreadOnce, type ThreadResumeTransport } from "./resume-thread";
 
 export interface ThreadChatOptions {
   readonly authenticationToken: string;
   readonly baseUrl: string;
+  readonly projectionStore?: ThreadProjectionStore;
+  readonly resumeTransport?: ThreadResumeTransport;
   readonly threadId: string;
   readonly submitMessage?: typeof submitThreadMessage;
 }
@@ -14,41 +31,108 @@ export interface SubmitThreadChatMessage {
   readonly idempotencyKey: string;
 }
 
-const makeAcceptedThreadMessage = (
-  submission: SubmitThreadChatMessage,
-  receipt: Effect.Success<ReturnType<typeof submitThreadMessage>>,
-) => ({
-  content: submission.content,
-  receipt,
+export interface CanonicalThreadMessage {
+  readonly agentRunId: string;
+  readonly content: string;
+  readonly eventId: string;
+  readonly occurredAt: string;
+  readonly threadPosition: string;
+  readonly userMessageId: string;
+}
+
+const messagesFromSnapshot = (snapshot: ThreadSnapshot): ReadonlyArray<CanonicalThreadMessage> =>
+  snapshot.timeline.map((item) => ({
+    agentRunId: item.agentRunId,
+    content: item.content.map((block) => block.text).join(""),
+    eventId: item.source.firstEventId,
+    occurredAt: item.source.firstOccurredAt,
+    threadPosition: item.source.firstPosition,
+    userMessageId: item.userMessageId,
+  }));
+
+const isSnapshotError = Schema.is(
+  Schema.Union([AuthenticationRejected, ThreadNotFound, SnapshotUnavailable]),
+);
+const isTraversalError = Schema.is(
+  Schema.Union([
+    AuthenticationRejected,
+    ThreadNotFound,
+    InvalidCursor,
+    CursorOutsideRetention,
+    TraversalUnavailable,
+  ]),
+);
+
+const makeApiResumeTransport = (options: ThreadChatOptions): ThreadResumeTransport => ({
+  snapshot: () =>
+    getThreadSnapshot({
+      authenticationToken: options.authenticationToken,
+      baseUrl: options.baseUrl,
+      threadId: options.threadId,
+    }).pipe(
+      Effect.mapError((error) => (isSnapshotError(error) ? error : new SnapshotUnavailable())),
+    ),
+  stream: (after) =>
+    streamThreadEvents({
+      after,
+      authenticationToken: options.authenticationToken,
+      baseUrl: options.baseUrl,
+      threadId: options.threadId,
+    }).pipe(
+      Effect.map(
+        Stream.mapError((error) =>
+          error instanceof TraversalUnavailable ? error : new TraversalUnavailable(),
+        ),
+      ),
+      Effect.mapError((error) => (isTraversalError(error) ? error : new TraversalUnavailable())),
+    ),
 });
 
-export type AcceptedThreadMessage = ReturnType<typeof makeAcceptedThreadMessage>;
+const browserProjectionStore = (threadId: string) =>
+  Effect.try({
+    try: () => makeThreadProjectionStore({ storage: globalThis.sessionStorage, threadId }),
+    catch: (cause) => new ProjectionStoreUnavailable({ cause }),
+  });
 
 export const makeThreadChat = (options: ThreadChatOptions) => {
-  const messages = Atom.make<ReadonlyArray<AcceptedThreadMessage>>([]);
+  const messages = Atom.make<ReadonlyArray<CanonicalThreadMessage>>([]);
   const submitMessage = options.submitMessage ?? submitThreadMessage;
 
   const submit = Atom.fn<SubmitThreadChatMessage>()(
-    Effect.fn("ThreadChat.submit")(function* (submission, context) {
-      const receipt = yield* submitMessage({
+    Effect.fn("ThreadChat.submit")(function* (submission) {
+      return yield* submitMessage({
         authenticationToken: options.authenticationToken,
         baseUrl: options.baseUrl,
         idempotencyKey: submission.idempotencyKey,
         message: { content: submission.content },
         threadId: options.threadId,
       });
-      const accepted = makeAcceptedThreadMessage(submission, receipt);
-      const currentMessages = context(messages);
-      if (
-        !currentMessages.some((message) => message.receipt.userMessageId === receipt.userMessageId)
-      ) {
-        context.set(messages, [...currentMessages, accepted]);
-      }
-      return accepted;
     }),
   );
 
-  return { messages, submit };
+  const resume = Atom.fn<void>()(
+    Effect.fn("ThreadChat.resume")(function* (_input, context) {
+      const store = options.projectionStore ?? (yield* browserProjectionStore(options.threadId));
+      const transport = options.resumeTransport ?? makeApiResumeTransport(options);
+      const synchronize = synchronizeThreadOnce({
+        store,
+        transport,
+        onProjection: (snapshot) => context.registry.set(messages, messagesFromSnapshot(snapshot)),
+      }).pipe(
+        Effect.andThen(Effect.sleep(250)),
+        Effect.catchIf(
+          () => true,
+          (error) =>
+            error instanceof InvalidThreadProjection && error.reason === "authorityConflict"
+              ? Effect.fail(error)
+              : Effect.sleep(250),
+        ),
+      );
+      yield* Effect.forever(synchronize);
+    }),
+  );
+
+  return { messages, resume, submit };
 };
 
 export type ThreadChat = ReturnType<typeof makeThreadChat>;

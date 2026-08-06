@@ -1,6 +1,6 @@
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import { OsfoApiLive } from "@osfo/api/server";
-import { makeMessageAdmissionLayer } from "@osfo/db";
+import { makeMessageAdmissionLayer, makeThreadTraversalLayer } from "@osfo/db";
 import { Config, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { createServer } from "node:http";
@@ -19,6 +19,21 @@ const IngressConfig = Config.all({
   ),
   globalNonTerminalLimit: Config.schema(PositiveInteger, "OSFO_GLOBAL_NON_TERMINAL_LIMIT"),
   principalNonTerminalLimit: Config.schema(PositiveInteger, "OSFO_PRINCIPAL_NON_TERMINAL_LIMIT"),
+  cursorSecret: Config.nonEmptyString("OSFO_CURSOR_SECRET").pipe(
+    Config.withDefault("local-reference-cursor-secret-change-in-production"),
+  ),
+  replayEventLimit: Config.schema(PositiveInteger, "OSFO_REPLAY_EVENT_LIMIT").pipe(
+    Config.withDefault(1_000),
+  ),
+  replayGuaranteedForMs: Config.schema(PositiveInteger, "OSFO_REPLAY_GUARANTEED_FOR_MS").pipe(
+    Config.withDefault(30_000),
+  ),
+  snapshotTimelineLimit: Config.schema(PositiveInteger, "OSFO_SNAPSHOT_TIMELINE_LIMIT").pipe(
+    Config.withDefault(100),
+  ),
+  streamPollIntervalMs: Config.schema(PositiveInteger, "OSFO_STREAM_POLL_INTERVAL_MS").pipe(
+    Config.withDefault(100),
+  ),
 });
 
 const announceReady = HttpServer.HttpServer.use((server) => {
@@ -33,12 +48,22 @@ const ServerLive = Layer.unwrap(
     Effect.map((config) => {
       const RunningApi = HttpRouter.serve(OsfoApiLive).pipe(
         Layer.provide(
-          makeMessageAdmissionLayer({
-            databaseUrl: config.databaseUrl,
-            executionProfileRef: config.executionProfileRef,
-            globalNonTerminalLimit: config.globalNonTerminalLimit,
-            principalNonTerminalLimit: config.principalNonTerminalLimit,
-          }),
+          Layer.merge(
+            makeMessageAdmissionLayer({
+              databaseUrl: config.databaseUrl,
+              executionProfileRef: config.executionProfileRef,
+              globalNonTerminalLimit: config.globalNonTerminalLimit,
+              principalNonTerminalLimit: config.principalNonTerminalLimit,
+            }),
+            makeThreadTraversalLayer({
+              cursorSecret: config.cursorSecret,
+              databaseUrl: config.databaseUrl,
+              pollIntervalMs: config.streamPollIntervalMs,
+              replayEventLimit: config.replayEventLimit,
+              replayGuaranteedForMs: config.replayGuaranteedForMs,
+              snapshotTimelineLimit: config.snapshotTimelineLimit,
+            }),
+          ),
         ),
       );
 

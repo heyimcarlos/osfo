@@ -1,18 +1,33 @@
 export { OsfoApi } from "./api.js";
 export {
   MessageAdmission,
+  ThreadTraversal,
   type MessageAdmissionError,
   type SubmitMessageCommand,
+  type ThreadAccess,
+  type ThreadHistoryRequest,
+  type ThreadSnapshotError,
+  type ThreadStreamRequest,
+  type ThreadTraversalError,
+  type ThreadTraversalService,
 } from "./services.js";
 export {
   AcceptanceReceipt,
   AdmissionUnavailable,
   AuthenticationRejected,
   CapacityRejected,
+  CursorOutsideRetention,
   IdempotencyConflict,
+  InvalidCursor,
   MalformedRequest,
+  SnapshotUnavailable,
   SubmitMessagePayload,
+  ThreadHistoryPageSchema,
   ThreadNotFound,
+  ThreadStreamEventSchema,
   ThreadsApi,
+  TraversalUnavailable,
   Uuid,
+  type ThreadHistoryPage,
+  type ThreadStreamEvent,
 } from "./threads/api.js";

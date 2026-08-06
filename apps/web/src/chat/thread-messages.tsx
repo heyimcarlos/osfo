@@ -11,17 +11,17 @@ import {
 } from "@osfo/ui/components/message-scroller";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { LoaderCircleIcon } from "lucide-react";
-import type { AcceptedThreadMessage, ThreadChatSubmission } from "./atoms";
+import type { CanonicalThreadMessage, ThreadChatSubmission } from "./atoms";
 
 export function ThreadMessages({
   messages,
   submission,
 }: {
-  readonly messages: ReadonlyArray<AcceptedThreadMessage>;
+  readonly messages: ReadonlyArray<CanonicalThreadMessage>;
   readonly submission: ThreadChatSubmission;
 }) {
   const isSubmitting = AsyncResult.isWaiting(submission);
-  const lastMessageId = messages.at(-1)?.receipt.userMessageId;
+  const lastMessageId = messages.at(-1)?.userMessageId;
 
   return (
     <MessageScrollerProvider autoScroll defaultScrollPosition="end">
@@ -30,10 +30,10 @@ export function ThreadMessages({
           <MessageScrollerContent className="gap-6 px-4 py-6 sm:px-7">
             {messages.length === 0 && !isSubmitting ? <EmptyThread /> : null}
             {messages.map((message) => (
-              <AcceptedMessage
-                key={message.receipt.userMessageId}
+              <CanonicalMessage
+                key={message.userMessageId}
                 message={message}
-                scrollAnchor={message.receipt.userMessageId === lastMessageId}
+                scrollAnchor={message.userMessageId === lastMessageId}
               />
             ))}
             {isSubmitting ? <AdmissionPending /> : null}
@@ -45,17 +45,15 @@ export function ThreadMessages({
   );
 }
 
-function AcceptedMessage({
+function CanonicalMessage({
   message,
   scrollAnchor,
 }: {
-  readonly message: AcceptedThreadMessage;
+  readonly message: CanonicalThreadMessage;
   readonly scrollAnchor: boolean;
 }) {
-  const { receipt } = message;
-
   return (
-    <MessageScrollerItem messageId={receipt.userMessageId} scrollAnchor={scrollAnchor}>
+    <MessageScrollerItem messageId={message.userMessageId} scrollAnchor={scrollAnchor}>
       <Message align="end">
         <MessageContent>
           <Bubble align="end" className="max-w-[min(34rem,86vw)]">
@@ -66,13 +64,13 @@ function AcceptedMessage({
           <MessageFooter className="items-end">
             <details className="group max-w-full text-right">
               <summary className="cursor-pointer list-none rounded-md px-2 py-1 text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/40 [&::-webkit-details-marker]:hidden">
-                Accepted at position {receipt.threadPosition}
+                Canonical at position {message.threadPosition}
               </summary>
               <dl className="mt-2 grid gap-1 rounded-lg border bg-background p-3 text-left font-mono text-[11px] leading-5 shadow-sm">
-                <ReceiptField label="Receipt" value={receipt.receiptId} />
-                <ReceiptField label="Message" value={receipt.userMessageId} />
-                <ReceiptField label="AgentRun" value={receipt.agentRunId} />
-                <ReceiptField label="Accepted" value={receipt.acceptedAt} />
+                <CanonicalField label="Event" value={message.eventId} />
+                <CanonicalField label="Message" value={message.userMessageId} />
+                <CanonicalField label="AgentRun" value={message.agentRunId} />
+                <CanonicalField label="Committed" value={message.occurredAt} />
               </dl>
             </details>
           </MessageFooter>
@@ -82,7 +80,7 @@ function AcceptedMessage({
   );
 }
 
-function ReceiptField({ label, value }: { readonly label: string; readonly value: string }) {
+function CanonicalField({ label, value }: { readonly label: string; readonly value: string }) {
   return (
     <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-2">
       <dt className="text-muted-foreground">{label}</dt>

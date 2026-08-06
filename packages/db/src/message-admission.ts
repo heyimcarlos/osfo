@@ -179,7 +179,10 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
 
             const [position] = yield* tx
               .update(threads)
-              .set({ nextPosition: sql`${threads.nextPosition} + 1` })
+              .set({
+                nextPosition: sql`${threads.nextPosition} + 1`,
+                stateRevision: sql`${threads.stateRevision} + 1`,
+              })
               .where(eq(threads.threadId, command.threadId))
               .returning({ threadPosition: sql<bigint>`${threads.nextPosition} - 1` });
             if (position === undefined) {
@@ -208,6 +211,7 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
               userMessageId,
               agentRunId,
               occurredAt: acceptedAt,
+              content: command.message.content,
             });
 
             yield* tx.insert(userMessages).values({

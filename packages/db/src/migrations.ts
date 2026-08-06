@@ -45,10 +45,12 @@ export const verifyDatabaseMigrations = (config: DatabaseConfig) =>
 
     const baseline = rows[0];
     const admission = rows[1];
+    const traversal = rows[2];
     if (
-      rows.length !== 2 ||
+      rows.length !== 3 ||
       baseline?.name !== "20260805120000_empty_baseline" ||
-      admission?.name !== "20260806124719_durable_message_admission"
+      admission?.name !== "20260806124719_durable_message_admission" ||
+      traversal?.name !== "20260806162306_aberrant_sir_ram"
     ) {
       return yield* new MigrationVerificationError({
         appliedMigrationNames: rows.map((row) => row.name),

@@ -48,6 +48,22 @@ describe("Osfo ingress composition", () => {
 
       const reconciled = yield* readMessageAuthorityCounts(databaseUrl);
       expect(reconciled).toEqual({ receipts: "1", messages: "1", runs: "1", outbox: "1" });
+
+      const snapshotResponse = yield* client.execute(
+        HttpClientRequest.get(`${ingress.origin}/v1/threads/${threadId}/snapshot`).pipe(
+          HttpClientRequest.bearerToken(authenticationToken),
+        ),
+      );
+      expect(snapshotResponse.status).toBe(200);
+      expect(yield* snapshotResponse.json).toMatchObject({
+        throughPosition: "1",
+        timeline: [
+          {
+            type: "userMessage",
+            content: [{ type: "text", text: "Hello through HTTP" }],
+          },
+        ],
+      });
     }).pipe(Effect.provide(FetchHttpClient.layer)),
   );
 });
