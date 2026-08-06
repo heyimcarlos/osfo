@@ -62,7 +62,7 @@ const ServerLive = Layer.unwrap(
 
       return Layer.effectDiscard(announceReady).pipe(
         Layer.provideMerge(runningRoutes),
-        Layer.provide(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: config.port })),
+        Layer.provide(NodeHttpServer.layer(createServer, { host: "0.0.0.0", port: config.port })),
       );
     }),
   ),
