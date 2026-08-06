@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "d95b11f7-e507-4ce4-98e9-e5c5ae6b872b",
+  "id": "94f972ef-f337-4ca4-9537-2c60caaec08f",
   "prevIds": ["a7fc7565-be01-4451-b9ac-ea85376fb63f"],
   "ddl": [
     {
@@ -73,36 +73,6 @@
     {
       "isRlsEnabled": false,
       "name": "principals",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
-      "name": "relay_dispatch_capacity",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
-      "name": "relay_principals",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
-      "name": "relay_publication_attempts",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
-      "name": "relay_publication_tasks",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
-      "name": "relay_threads",
       "entityType": "tables",
       "schema": "public"
     },
@@ -697,19 +667,6 @@
       "table": "model_call_attempts"
     },
     {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "assistant_output_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "model_call_attempts"
-    },
-    {
       "type": "integer",
       "typeSchema": null,
       "notNull": true,
@@ -744,45 +701,6 @@
       "generated": null,
       "identity": null,
       "name": "state",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "model_call_attempts"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'unknown'",
-      "generated": null,
-      "identity": null,
-      "name": "usage_type",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "model_call_attempts"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "input_units",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "model_call_attempts"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "output_units",
       "entityType": "columns",
       "schema": "public",
       "table": "model_call_attempts"
@@ -944,6 +862,19 @@
       "table": "model_calls"
     },
     {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "assistant_output_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": true,
@@ -1100,14 +1031,53 @@
       "table": "outbox_obligations"
     },
     {
-      "type": "jsonb",
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'pending'",
+      "generated": null,
+      "identity": null,
+      "name": "publication_state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "publication_epoch",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "type": "text",
       "typeSchema": null,
       "notNull": false,
       "dimensions": 0,
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "publication_evidence",
+      "name": "publication_owner",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "publication_lease_expires_at",
       "entityType": "columns",
       "schema": "public",
       "table": "outbox_obligations"
@@ -1163,266 +1133,6 @@
       "entityType": "columns",
       "schema": "public",
       "table": "principals"
-    },
-    {
-      "type": "boolean",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "true",
-      "generated": null,
-      "identity": null,
-      "name": "singleton",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_dispatch_capacity"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "0",
-      "generated": null,
-      "identity": null,
-      "name": "active_count",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_dispatch_capacity"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "principal_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_principals"
-    },
-    {
-      "type": "bigint",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "0",
-      "generated": null,
-      "identity": null,
-      "name": "virtual_pass",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_principals"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "outbox_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_publication_attempts"
-    },
-    {
-      "type": "bigint",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "publication_epoch",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_publication_attempts"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "publication_owner",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_publication_attempts"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "state",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_publication_attempts"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "provider_message_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_publication_attempts"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "started_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_publication_attempts"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "finished_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_publication_attempts"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "outbox_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_publication_tasks"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'pending'",
-      "generated": null,
-      "identity": null,
-      "name": "publication_state",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_publication_tasks"
-    },
-    {
-      "type": "bigint",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "0",
-      "generated": null,
-      "identity": null,
-      "name": "publication_epoch",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_publication_tasks"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "publication_owner",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_publication_tasks"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "publication_lease_expires_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_publication_tasks"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "created_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_publication_tasks"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "thread_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_threads"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "principal_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_threads"
-    },
-    {
-      "type": "bigint",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "0",
-      "generated": null,
-      "identity": null,
-      "name": "virtual_pass",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "relay_threads"
     },
     {
       "type": "uuid",
@@ -1758,62 +1468,6 @@
       "nameExplicit": true,
       "columns": [
         {
-          "value": "created_at",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "outbox_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": "\"published_at\" IS NULL",
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "outbox_obligations_unpublished_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "outbox_obligations"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "virtual_pass",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "principal_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "relay_principals_selection_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "relay_principals"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
           "value": "publication_state",
           "isExpression": false,
           "asc": true,
@@ -1843,49 +1497,14 @@
         }
       ],
       "isUnique": false,
-      "where": null,
+      "where": "\"published_at\" IS NULL",
       "with": "",
       "method": "btree",
       "concurrently": false,
-      "name": "relay_publication_tasks_claim_idx",
+      "name": "outbox_obligations_publication_idx",
       "entityType": "indexes",
       "schema": "public",
-      "table": "relay_publication_tasks"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
-          "value": "principal_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "virtual_pass",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "thread_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "relay_threads_selection_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "relay_threads"
+      "table": "outbox_obligations"
     },
     {
       "nameExplicit": false,
@@ -2032,16 +1651,16 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["assistant_output_id", "agent_run_id"],
+      "columns": ["model_call_attempt_id"],
       "schemaTo": "public",
-      "tableTo": "assistant_outputs",
-      "columnsTo": ["assistant_output_id", "agent_run_id"],
+      "tableTo": "model_call_attempts",
+      "columnsTo": ["model_call_attempt_id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
-      "name": "model_call_attempts_1wm6kLGoWOdz_fkey",
+      "name": "model_call_fragments_xcpfh5gecjmq_fkey",
       "entityType": "fks",
       "schema": "public",
-      "table": "model_call_attempts"
+      "table": "model_call_fragments"
     },
     {
       "nameExplicit": false,
@@ -2058,18 +1677,13 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["model_call_attempt_id", "model_call_id", "assistant_output_id", "agent_run_id"],
+      "columns": ["model_call_id", "assistant_output_id", "agent_run_id"],
       "schemaTo": "public",
-      "tableTo": "model_call_attempts",
-      "columnsTo": [
-        "model_call_attempt_id",
-        "model_call_id",
-        "assistant_output_id",
-        "agent_run_id"
-      ],
+      "tableTo": "model_calls",
+      "columnsTo": ["model_call_id", "assistant_output_id", "agent_run_id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
-      "name": "model_call_fragments_cyXpceGKC2cG_fkey",
+      "name": "model_call_fragments_OjHiAJFBD5BY_fkey",
       "entityType": "fks",
       "schema": "public",
       "table": "model_call_fragments"
@@ -2089,6 +1703,19 @@
     },
     {
       "nameExplicit": false,
+      "columns": ["assistant_output_id"],
+      "schemaTo": "public",
+      "tableTo": "assistant_outputs",
+      "columnsTo": ["assistant_output_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "model_calls_4nEoMtAnEyXF_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "nameExplicit": false,
       "columns": ["agent_run_id", "thread_id", "principal_id"],
       "schemaTo": "public",
       "tableTo": "agent_runs",
@@ -2099,71 +1726,6 @@
       "entityType": "fks",
       "schema": "public",
       "table": "outbox_obligations"
-    },
-    {
-      "nameExplicit": false,
-      "columns": ["principal_id"],
-      "schemaTo": "public",
-      "tableTo": "principals",
-      "columnsTo": ["principal_id"],
-      "onUpdate": "NO ACTION",
-      "onDelete": "NO ACTION",
-      "name": "relay_principals_principal_id_principals_principal_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "relay_principals"
-    },
-    {
-      "nameExplicit": false,
-      "columns": ["outbox_id"],
-      "schemaTo": "public",
-      "tableTo": "outbox_obligations",
-      "columnsTo": ["outbox_id"],
-      "onUpdate": "NO ACTION",
-      "onDelete": "NO ACTION",
-      "name": "relay_publication_attempts_uhoIdiDE8hP9_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "relay_publication_attempts"
-    },
-    {
-      "nameExplicit": false,
-      "columns": ["outbox_id"],
-      "schemaTo": "public",
-      "tableTo": "outbox_obligations",
-      "columnsTo": ["outbox_id"],
-      "onUpdate": "NO ACTION",
-      "onDelete": "NO ACTION",
-      "name": "relay_publication_tasks_Muo6sGTuNsgz_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "relay_publication_tasks"
-    },
-    {
-      "nameExplicit": false,
-      "columns": ["thread_id", "principal_id"],
-      "schemaTo": "public",
-      "tableTo": "threads",
-      "columnsTo": ["thread_id", "principal_id"],
-      "onUpdate": "NO ACTION",
-      "onDelete": "NO ACTION",
-      "name": "relay_threads_NpEhHz2Z964X_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "relay_threads"
-    },
-    {
-      "nameExplicit": false,
-      "columns": ["principal_id"],
-      "schemaTo": "public",
-      "tableTo": "relay_principals",
-      "columnsTo": ["principal_id"],
-      "onUpdate": "NO ACTION",
-      "onDelete": "NO ACTION",
-      "name": "relay_threads_principal_id_relay_principals_principal_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "relay_threads"
     },
     {
       "nameExplicit": false,
@@ -2270,20 +1832,12 @@
       "table": "user_messages"
     },
     {
-      "columns": ["model_call_attempt_id", "fragment_index"],
+      "columns": ["model_call_id", "fragment_index"],
       "nameExplicit": false,
       "name": "model_call_fragments_pkey",
       "entityType": "pks",
       "schema": "public",
       "table": "model_call_fragments"
-    },
-    {
-      "columns": ["outbox_id", "publication_epoch"],
-      "nameExplicit": false,
-      "name": "relay_publication_attempts_pkey",
-      "entityType": "pks",
-      "schema": "public",
-      "table": "relay_publication_attempts"
     },
     {
       "columns": ["thread_id", "position"],
@@ -2382,38 +1936,6 @@
       "entityType": "pks"
     },
     {
-      "columns": ["singleton"],
-      "nameExplicit": false,
-      "name": "relay_dispatch_capacity_pkey",
-      "schema": "public",
-      "table": "relay_dispatch_capacity",
-      "entityType": "pks"
-    },
-    {
-      "columns": ["principal_id"],
-      "nameExplicit": false,
-      "name": "relay_principals_pkey",
-      "schema": "public",
-      "table": "relay_principals",
-      "entityType": "pks"
-    },
-    {
-      "columns": ["outbox_id"],
-      "nameExplicit": false,
-      "name": "relay_publication_tasks_pkey",
-      "schema": "public",
-      "table": "relay_publication_tasks",
-      "entityType": "pks"
-    },
-    {
-      "columns": ["thread_id"],
-      "nameExplicit": false,
-      "name": "relay_threads_pkey",
-      "schema": "public",
-      "table": "relay_threads",
-      "entityType": "pks"
-    },
-    {
       "columns": ["thread_id"],
       "nameExplicit": false,
       "name": "threads_pkey",
@@ -2458,24 +1980,6 @@
     },
     {
       "nameExplicit": true,
-      "columns": ["assistant_output_id", "agent_run_id"],
-      "nullsNotDistinct": false,
-      "name": "assistant_outputs_output_run_unique",
-      "entityType": "uniques",
-      "schema": "public",
-      "table": "assistant_outputs"
-    },
-    {
-      "nameExplicit": true,
-      "columns": ["model_call_attempt_id", "model_call_id", "assistant_output_id", "agent_run_id"],
-      "nullsNotDistinct": false,
-      "name": "model_call_attempts_attempt_authority_unique",
-      "entityType": "uniques",
-      "schema": "public",
-      "table": "model_call_attempts"
-    },
-    {
-      "nameExplicit": true,
       "columns": ["model_call_id", "attempt_number"],
       "nullsNotDistinct": false,
       "name": "model_call_attempts_call_number_unique",
@@ -2488,6 +1992,15 @@
       "columns": ["model_call_id", "agent_run_id"],
       "nullsNotDistinct": false,
       "name": "model_calls_call_run_unique",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "nameExplicit": true,
+      "columns": ["model_call_id", "assistant_output_id", "agent_run_id"],
+      "nullsNotDistinct": false,
+      "name": "model_calls_call_output_run_unique",
       "entityType": "uniques",
       "schema": "public",
       "table": "model_calls"
@@ -2548,20 +2061,20 @@
     },
     {
       "nameExplicit": false,
+      "columns": ["agent_run_id"],
+      "nullsNotDistinct": false,
+      "name": "assistant_outputs_agent_run_id_key",
+      "schema": "public",
+      "table": "assistant_outputs",
+      "entityType": "uniques"
+    },
+    {
+      "nameExplicit": false,
       "columns": ["token_sha256"],
       "nullsNotDistinct": false,
       "name": "authentication_sessions_token_sha256_key",
       "schema": "public",
       "table": "authentication_sessions",
-      "entityType": "uniques"
-    },
-    {
-      "nameExplicit": false,
-      "columns": ["assistant_output_id"],
-      "nullsNotDistinct": false,
-      "name": "model_call_attempts_assistant_output_id_key",
-      "schema": "public",
-      "table": "model_call_attempts",
       "entityType": "uniques"
     },
     {
@@ -2578,6 +2091,15 @@
       "columns": ["agent_run_id"],
       "nullsNotDistinct": false,
       "name": "model_calls_agent_run_id_key",
+      "schema": "public",
+      "table": "model_calls",
+      "entityType": "uniques"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["assistant_output_id"],
+      "nullsNotDistinct": false,
+      "name": "model_calls_assistant_output_id_key",
       "schema": "public",
       "table": "model_calls",
       "entityType": "uniques"
@@ -2727,13 +2249,6 @@
       "table": "model_call_attempts"
     },
     {
-      "value": "(\n        (\"usage_type\" = 'unknown'\n          AND \"input_units\" IS NULL\n          AND \"output_units\" IS NULL)\n        OR (\"usage_type\" IN ('reported', 'estimated')\n          AND \"input_units\" >= 0\n          AND \"output_units\" >= 0)\n      )",
-      "name": "model_call_attempts_usage_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "model_call_attempts"
-    },
-    {
       "value": "(\n        (\"state\" = 'started' AND \"finished_at\" IS NULL)\n        OR (\"state\" <> 'started' AND \"finished_at\" IS NOT NULL)\n      )",
       "name": "model_call_attempts_finished_check",
       "entityType": "checks",
@@ -2797,95 +2312,25 @@
       "table": "outbox_obligations"
     },
     {
-      "value": "(\n        (\"publication_evidence\" IS NULL AND \"published_at\" IS NULL)\n        OR (\"publication_evidence\" IS NOT NULL AND \"published_at\" IS NOT NULL)\n      )",
-      "name": "outbox_obligations_publication_check",
+      "value": "\"publication_state\" IN ('pending', 'publishing', 'published')",
+      "name": "outbox_obligations_publication_state_check",
       "entityType": "checks",
       "schema": "public",
       "table": "outbox_obligations"
-    },
-    {
-      "value": "\"publication_evidence\" IS NULL\n        OR \"publication_evidence\" = CASE \"publication_evidence\" ->> 'type'\n          WHEN 'pubsub' THEN jsonb_build_object(\n            'type', 'pubsub',\n            'providerMessageId', \"publication_evidence\" ->> 'providerMessageId'\n          )\n          WHEN 'legacyUnavailable' THEN jsonb_build_object('type', 'legacyUnavailable')\n          ELSE NULL\n        END",
-      "name": "outbox_obligations_publication_evidence_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "outbox_obligations"
-    },
-    {
-      "value": "\"singleton\"",
-      "name": "relay_dispatch_capacity_singleton_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "relay_dispatch_capacity"
-    },
-    {
-      "value": "\"active_count\" >= 0",
-      "name": "relay_dispatch_capacity_active_count_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "relay_dispatch_capacity"
-    },
-    {
-      "value": "\"virtual_pass\" >= 0",
-      "name": "relay_principals_virtual_pass_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "relay_principals"
-    },
-    {
-      "value": "\"publication_epoch\" > 0",
-      "name": "relay_publication_attempts_epoch_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "relay_publication_attempts"
-    },
-    {
-      "value": "length(\"publication_owner\") BETWEEN 1 AND 255",
-      "name": "relay_publication_attempts_owner_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "relay_publication_attempts"
-    },
-    {
-      "value": "\"state\" IN ('started', 'expired', 'confirmed')",
-      "name": "relay_publication_attempts_state_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "relay_publication_attempts"
-    },
-    {
-      "value": "(\n        (\"state\" = 'started'\n          AND \"provider_message_id\" IS NULL\n          AND \"finished_at\" IS NULL)\n        OR (\"state\" = 'expired'\n          AND \"provider_message_id\" IS NULL\n          AND \"finished_at\" IS NOT NULL)\n        OR (\"state\" = 'confirmed'\n          AND length(\"provider_message_id\") BETWEEN 1 AND 255\n          AND \"finished_at\" IS NOT NULL)\n      )",
-      "name": "relay_publication_attempts_outcome_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "relay_publication_attempts"
-    },
-    {
-      "value": "\"publication_state\" IN ('pending', 'publishing')",
-      "name": "relay_publication_tasks_state_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "relay_publication_tasks"
     },
     {
       "value": "\"publication_epoch\" >= 0",
-      "name": "relay_publication_tasks_epoch_check",
+      "name": "outbox_obligations_publication_epoch_check",
       "entityType": "checks",
       "schema": "public",
-      "table": "relay_publication_tasks"
+      "table": "outbox_obligations"
     },
     {
-      "value": "(\n        (\"publication_state\" = 'pending'\n          AND \"publication_owner\" IS NULL\n          AND \"publication_lease_expires_at\" IS NULL)\n        OR (\"publication_state\" = 'publishing'\n          AND \"publication_epoch\" > 0\n          AND \"publication_owner\" IS NOT NULL\n          AND \"publication_lease_expires_at\" IS NOT NULL)\n      )",
-      "name": "relay_publication_tasks_claim_check",
+      "value": "(\n        (\"publication_state\" = 'pending'\n          AND \"publication_owner\" IS NULL\n          AND \"publication_lease_expires_at\" IS NULL\n          AND \"published_at\" IS NULL)\n        OR (\"publication_state\" = 'publishing'\n          AND \"publication_epoch\" > 0\n          AND \"publication_owner\" IS NOT NULL\n          AND \"publication_lease_expires_at\" IS NOT NULL\n          AND \"published_at\" IS NULL)\n        OR (\"publication_state\" = 'published'\n          AND \"publication_owner\" IS NULL\n          AND \"publication_lease_expires_at\" IS NULL\n          AND \"published_at\" IS NOT NULL)\n      )",
+      "name": "outbox_obligations_publication_claim_check",
       "entityType": "checks",
       "schema": "public",
-      "table": "relay_publication_tasks"
-    },
-    {
-      "value": "\"virtual_pass\" >= 0",
-      "name": "relay_threads_virtual_pass_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "relay_threads"
+      "table": "outbox_obligations"
     },
     {
       "value": "\"position\" > 0",

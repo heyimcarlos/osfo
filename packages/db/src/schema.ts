@@ -572,7 +572,7 @@ export const modelCallAttempts = pgTable(
     modelCallAttemptId: uuid("model_call_attempt_id").primaryKey(),
     modelCallId: uuid("model_call_id").notNull(),
     agentRunId: uuid("agent_run_id").notNull(),
-    assistantOutputId: uuid("assistant_output_id").notNull().unique(),
+    assistantOutputId: uuid("assistant_output_id").notNull(),
     attemptNumber: integer("attempt_number").notNull(),
     claimEpoch: bigint("claim_epoch", { mode: "bigint" }).notNull(),
     state: text("state").notNull(),
