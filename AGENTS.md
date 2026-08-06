@@ -4,10 +4,20 @@ Stable contracts live here. Product truth lives in `CONTEXT.md`, durable decisio
 
 ## Verification and evidence
 
-<add verification and evidence requirements here>
-
-example: 
+- Tests use Vitest through package scripts. Run the narrowest relevant package
+  test while iterating, and never use `bun test`.
+- Merge-ready gates are `bun install --frozen-lockfile`, `bun run build`,
+  `bun run format:check`, `bun run lint`, `bun run typecheck`, and
+  `bun run test`.
+- Changes to migrations, PostgreSQL configuration, or database access also run
+  `bun run db:verify` against the digest-pinned real PostgreSQL service.
+  In-memory substitutes do not certify PostgreSQL behavior.
 - Run `bun run format` before a PR and include only files owned by the branch.
+- User-visible web changes require the relevant `@osfo/web` test, a production
+  build, and inspection in the browser development instance. Record the exact
+  commands and observable evidence in the issue or PR.
+- Report required gates as PASS, FAIL, or MISSING. Never present an omitted or
+  skipped gate as passing evidence.
 
 ## Collaboration Notes
 
@@ -17,7 +27,7 @@ example:
 
 ## Reference Repositories
 
-Repos in `.reference` (rig, codex, …) are available for patterns. Clone a given Git URL into `.reference` and pull latest before using it.
+Repos in `.reference` (effect, executor, AnswerOverflow, flue, ...) are available for patterns. Clone a given Git URL into `.reference` and pull latest before using it.
 
 ## Engineering boundaries
 
@@ -32,9 +42,22 @@ Repos in `.reference` (rig, codex, …) are available for patterns. Clone a give
 
 ## Package Ownership
 
-<add package ownership requirements here>
-
-- `crates/`
+- `apps/web`: browser Reference Agent Application composition root and
+  app-specific routes, state, and presentation. It consumes shared UI only
+  through `@osfo/ui` exports.
+- `apps/native-thread-transport`: Native Thread Transport process composition
+  root, including Node runtime wiring and transport-specific configuration.
+- `apps/agent-run-worker`: AgentRun worker process composition root, including
+  Node runtime wiring and worker-specific configuration.
+- `packages/ui`: shared React DOM, Tailwind CSS, and shadcn/ui components,
+  styles, hooks, and UI utilities. Every consumable path has an explicit
+  package export. These artifacts are not native-mobile components.
+- `migrations/`: ordered, versioned PostgreSQL schema migrations. Migrations do
+  not contain product behavior.
+- `scripts/`: repository operations and migration verification. Scripts may
+  compose packages, but do not become an application or domain module.
+- Root workspace files own exact dependency catalogs, Bun and Turbo behavior,
+  TypeScript project references, and the local PostgreSQL development profile.
 
 ## Agent skills
 
