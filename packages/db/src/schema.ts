@@ -58,6 +58,7 @@ export const threads = pgTable(
       .notNull()
       .references(() => principals.principalId),
     nextPosition: bigint("next_position", { mode: "bigint" }).notNull().default(1n),
+    stateRevision: integer("state_revision").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
       .notNull()
       .default(transactionTimestamp),
@@ -65,6 +66,7 @@ export const threads = pgTable(
   (table) => [
     unique("threads_thread_id_principal_id_unique").on(table.threadId, table.principalId),
     check("threads_next_position_check", sql`${table.nextPosition} > 0`),
+    check("threads_state_revision_check", sql`${table.stateRevision} >= 0`),
   ],
 );
 
@@ -174,6 +176,7 @@ export const threadEvents = pgTable(
       .$type<{
         readonly userMessageId: string;
         readonly agentRunId: string;
+        readonly content: ReadonlyArray<{ readonly type: "text"; readonly text: string }>;
       }>()
       .notNull(),
     occurredAt: timestamp("occurred_at", { withTimezone: true, mode: "string" }).notNull(),
@@ -206,7 +209,8 @@ export const threadEvents = pgTable(
       "thread_events_payload_shape_check",
       sql`${table.payload} = jsonb_build_object(
         'userMessageId', ${table.payload} ->> 'userMessageId',
-        'agentRunId', ${table.payload} ->> 'agentRunId'
+        'agentRunId', ${table.payload} ->> 'agentRunId',
+        'content', ${table.payload} -> 'content'
       )`,
     ),
     check(
@@ -216,6 +220,16 @@ export const threadEvents = pgTable(
     check(
       "thread_events_payload_run_check",
       sql`(${table.payload} ->> 'agentRunId')::uuid = ${table.agentRunId}`,
+    ),
+    check(
+      "thread_events_payload_content_check",
+      sql`jsonb_typeof(${table.payload} -> 'content') = 'array'
+        AND jsonb_array_length(${table.payload} -> 'content') = 1
+        AND (${table.payload} -> 'content' -> 0) = jsonb_build_object(
+          'type', 'text',
+          'text', ${table.payload} -> 'content' -> 0 ->> 'text'
+        )
+        AND length(${table.payload} -> 'content' -> 0 ->> 'text') BETWEEN 1 AND 16384`,
     ),
   ],
 );

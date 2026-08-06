@@ -163,6 +163,7 @@ describe("PostgreSQL Thread message admission", () => {
           readonly event_type: string;
           readonly event_payload: {
             readonly agentRunId: string;
+            readonly content: ReadonlyArray<{ readonly type: "text"; readonly text: string }>;
             readonly userMessageId: string;
           };
           readonly run_state: string;
@@ -203,6 +204,7 @@ describe("PostgreSQL Thread message admission", () => {
       event_type: "UserMessageAppended",
       event_payload: {
         agentRunId: receipt.agentRunId,
+        content: [{ type: "text", text: "Hello, Oz" }],
         userMessageId: receipt.userMessageId,
       },
       run_state: "pending",

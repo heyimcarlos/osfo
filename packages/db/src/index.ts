@@ -10,3 +10,9 @@ export {
   verifyDatabaseMigrations,
   type DatabaseConfig,
 } from "./migrations.js";
+export {
+  InvalidThreadResumeDatabaseConfig,
+  makeThreadResumeLayer,
+  ThreadResumeDatabaseConfigSchema,
+  type ThreadResumeDatabaseConfig,
+} from "./thread-resume.js";

@@ -1,4 +1,4 @@
-import { Data, Effect, Layer, Schema } from "effect";
+import { Data, Effect, Layer, Schema, Stream } from "effect";
 import {
   FetchHttpClient,
   HttpClient,
@@ -10,6 +10,8 @@ import { OsfoApi } from "./api.js";
 import { Authentication, type SubmitMessagePayload } from "./threads/api.js";
 
 export class CommitUnknown extends Data.TaggedError("CommitUnknown") {}
+
+export class UnexpectedThreadResponse extends Data.TaggedError("UnexpectedThreadResponse") {}
 
 export interface ApiClientOptions {
   readonly baseUrl: string;
@@ -55,4 +57,34 @@ export const submitThreadMessage = Effect.fn("OsfoApiClient.submitThreadMessage"
     return yield* new CommitUnknown();
   }
   return receipt;
+});
+
+export interface GetThreadSnapshot extends ApiClientOptions {
+  readonly threadId: string;
+}
+
+export const getThreadSnapshot = Effect.fn("OsfoApiClient.getThreadSnapshot")(function* (
+  command: GetThreadSnapshot,
+) {
+  const client = yield* makeApiClient(command);
+  const snapshot = yield* client.threads.getSnapshot({ params: { threadId: command.threadId } });
+  if (snapshot.threadId !== command.threadId) return yield* new UnexpectedThreadResponse();
+  return snapshot;
+});
+
+export interface StreamThreadEvents extends ApiClientOptions {
+  readonly after: string;
+  readonly threadId: string;
+}
+
+export const streamThreadEvents = Effect.fn("OsfoApiClient.streamThreadEvents")(function* (
+  command: StreamThreadEvents,
+) {
+  const client = yield* makeApiClient(command);
+  const response = yield* client.threads.getEvents({
+    params: { threadId: command.threadId },
+    query: { after: command.after },
+  });
+  if (!Stream.isStream(response)) return yield* new UnexpectedThreadResponse();
+  return response;
 });

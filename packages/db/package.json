@@ -27,7 +27,7 @@
     "db:migrate": "drizzle-kit migrate --config=drizzle.config.ts",
     "db:studio": "drizzle-kit studio --config=drizzle.config.ts",
     "test": "vitest run --exclude '**/*.postgres.test.ts' --exclude '**/.typescript/**' --exclude '**/dist/**'",
-    "test:postgres": "vitest run test/message-admission.postgres.test.ts",
+    "test:postgres": "vitest run --no-file-parallelism test/*.postgres.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

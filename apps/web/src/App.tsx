@@ -1,4 +1,4 @@
-import { useAtom, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomMount, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { useState } from "react";
@@ -15,6 +15,7 @@ export interface AppProps {
 
 export function App({ chat, threadId }: AppProps) {
   const messages = useAtomValue(chat.messages);
+  useAtomMount(chat.resume);
   const [submission, submit] = useAtom(chat.submit, { mode: "promiseExit" });
   const [content, setContent] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState<string>();

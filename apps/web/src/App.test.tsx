@@ -42,19 +42,33 @@ describe("browser reference client", () => {
     expect(html).toContain('data-slot="message-composer"');
   });
 
-  it("renders the immutable receipt next to an accepted message", () => {
+  it("renders an accepted message from its canonical projection source", () => {
     const chat = makeTestChat();
     const html = renderToStaticMarkup(
       <RegistryProvider
-        initialValues={[[chat.messages, [{ content: "Hello through React", receipt }]]]}
+        initialValues={[
+          [
+            chat.messages,
+            [
+              {
+                agentRunId: receipt.agentRunId,
+                content: "Hello through React",
+                eventId: "34dc8a78-a94d-4050-8c5b-e3bf21077c40",
+                occurredAt: receipt.acceptedAt,
+                threadPosition: receipt.threadPosition,
+                userMessageId: receipt.userMessageId,
+              },
+            ],
+          ],
+        ]}
       >
         <App chat={chat} threadId={threadId} />
       </RegistryProvider>,
     );
 
     expect(html).toContain("Hello through React");
-    expect(html).toContain("Accepted at position 1");
-    expect(html).toContain(receipt.receiptId);
+    expect(html).toContain("Canonical at position 1");
+    expect(html).toContain("34dc8a78-a94d-4050-8c5b-e3bf21077c40");
     expect(html).toContain(receipt.agentRunId);
   });
 

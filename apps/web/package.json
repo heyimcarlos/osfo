@@ -12,6 +12,7 @@
   "dependencies": {
     "@effect/atom-react": "catalog:",
     "@osfo/api": "workspace:*",
+    "@osfo/session": "workspace:*",
     "@osfo/ui": "workspace:*",
     "effect": "catalog:",
     "lucide-react": "catalog:",

@@ -1,7 +1,8 @@
 import { Effect, Layer, Redacted } from "effect";
+import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder, HttpApiMiddleware } from "effect/unstable/httpapi";
 import { OsfoApi } from "./api.js";
-import { MessageAdmission } from "./services.js";
+import { MessageAdmission, ThreadResume } from "./services.js";
 import {
   Authentication,
   AuthenticationRejected,
@@ -27,20 +28,77 @@ export const RequestValidationLive = HttpApiMiddleware.layerSchemaErrorTransform
 );
 
 export const ThreadsHandlers = HttpApiBuilder.group(OsfoApi, "threads", (handlers) =>
-  handlers.handle(
-    "submitMessage",
-    Effect.fn("OsfoApi.threads.submitMessage")(function* ({ params, payload }) {
-      const authenticationToken = yield* AuthenticationToken;
-      const admission = yield* MessageAdmission;
-      return yield* admission.accept({
-        ...payload,
-        authenticationToken,
-        threadId: params.threadId,
-      });
-    }),
-  ),
+  handlers
+    .handle(
+      "submitMessage",
+      Effect.fn("OsfoApi.threads.submitMessage")(function* ({ params, payload }) {
+        const authenticationToken = yield* AuthenticationToken;
+        const admission = yield* MessageAdmission;
+        return yield* admission.accept({
+          ...payload,
+          authenticationToken,
+          threadId: params.threadId,
+        });
+      }),
+    )
+    .handle(
+      "getSnapshot",
+      Effect.fn("OsfoApi.threads.getSnapshot")(function* ({ params }) {
+        const authenticationToken = yield* AuthenticationToken;
+        const resume = yield* ThreadResume;
+        return yield* resume.snapshot({
+          authenticationToken,
+          threadId: params.threadId,
+        });
+      }),
+    )
+    .handle(
+      "getEvents",
+      Effect.fn("OsfoApi.threads.getEvents")(function* ({ params, query }) {
+        const authenticationToken = yield* AuthenticationToken;
+        const resume = yield* ThreadResume;
+        if (query.after !== undefined) {
+          return yield* resume.stream({
+            after: query.after,
+            authenticationToken,
+            threadId: params.threadId,
+          });
+        }
+        return yield* resume.history({
+          afterPosition: query.afterPosition ?? "0",
+          authenticationToken,
+          limit: query.limit ?? 100,
+          threadId: params.threadId,
+          ...(query.throughPosition === undefined
+            ? {}
+            : { throughPosition: query.throughPosition }),
+        });
+      }),
+    ),
 ).pipe(Layer.provide([AuthenticationLive, RequestValidationLive]));
 
-export const OsfoApiLive = HttpApiBuilder.layer(OsfoApi, {
+const ApiRoutes = HttpApiBuilder.layer(OsfoApi, {
   openapiPath: "/openapi.json",
 }).pipe(Layer.provide(ThreadsHandlers));
+
+const hardenResponse = (response: HttpServerResponse.HttpServerResponse) => {
+  const noStore = HttpServerResponse.setHeaders(response, {
+    "cache-control": "private, no-store",
+    "x-content-type-options": "nosniff",
+  });
+  return response.headers["content-type"]?.startsWith("text/event-stream") === true
+    ? HttpServerResponse.setHeaders(noStore, {
+        "cache-control": "private, no-store, no-transform",
+        "x-accel-buffering": "no",
+      })
+    : noStore;
+};
+
+const HardenResponses = HttpRouter.middleware(
+  (httpEffect) => Effect.map(httpEffect, hardenResponse),
+  {
+    global: true,
+  },
+);
+
+export const OsfoApiLive = Layer.merge(ApiRoutes, HardenResponses);
