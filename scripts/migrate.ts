@@ -3,10 +3,6 @@ import * as Effect from "effect/Effect";
 import { migrate } from "./migrations";
 
 migrate.pipe(
-  Effect.tap((applied) =>
-    Effect.logInfo(applied.length === 0 ? "Migrations are current" : "Migrations applied", {
-      applied,
-    }),
-  ),
+  Effect.tap(() => Effect.logInfo("Database migrations complete")),
   NodeRuntime.runMain,
 );

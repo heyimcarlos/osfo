@@ -1,17 +1,34 @@
-import { execFile } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-
-const execFileAsync = promisify(execFile);
-const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
+import { startTransportProcess } from "./transport-process";
 
 describe("Native Thread Transport process role", () => {
-  it("starts under Node and exits successfully", async () => {
-    const { stdout } = await execFileAsync(process.execPath, ["--import", "tsx", "src/main.ts"], {
-      cwd: packageDirectory,
+  it("serves the closed browser command boundary under Node", async () => {
+    const transport = await startTransportProcess({
+      databaseUrl: "postgres://postgres:postgres@127.0.0.1:1/unavailable",
     });
 
-    expect(stdout).toContain("Native Thread Transport process role is ready");
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${transport.port}/v1/threads/6ef239bd-3f04-4c77-8976-1171e75ea0ab/messages`,
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer browser-session",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ protocolVersion: 2 }),
+        },
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        protocolVersion: 1,
+        type: "malformed_request",
+        title: "Malformed request",
+        retryable: false,
+      });
+    } finally {
+      await transport.stop();
+    }
   });
 });

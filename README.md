@@ -15,9 +15,13 @@ bun run test
 bun run db:verify
 ```
 
-`db:verify` starts the digest-pinned local PostgreSQL service, applies the
-versioned empty baseline, verifies it, then removes the disposable database
-volume.
+`db:verify` starts the digest-pinned local PostgreSQL service, applies and
+verifies every versioned migration, runs the real PostgreSQL admission and HTTP
+composition tests, then removes the disposable database volume.
+
+`packages/db` owns the Drizzle schema, migrations, PostgreSQL connection layers,
+and persistence adapters. Transport packages depend only on Effect-native domain
+interfaces and contain no database access.
 
 The runnable process-role scaffolds are:
 
@@ -27,6 +31,11 @@ bun run start:agent-run-worker
 ```
 
 Build them first with `bun run build`.
+
+The Native Thread Transport requires `OSFO_DATABASE_URL`,
+`OSFO_EXECUTION_PROFILE_REF`, `OSFO_GLOBAL_NON_TERMINAL_LIMIT`, and
+`OSFO_PRINCIPAL_NON_TERMINAL_LIMIT`. Set
+`OSFO_NATIVE_THREAD_TRANSPORT_PORT` to override its default port, 3000.
 
 ## Browser reference and UI
 

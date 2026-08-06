@@ -3,5 +3,5 @@
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": ["migrations/**/*.ts", "scripts/**/*.ts"]
+  "include": ["scripts/**/*.ts"]
 }

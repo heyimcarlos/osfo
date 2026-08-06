@@ -52,8 +52,17 @@ Repos in `.reference` (effect, executor, AnswerOverflow, flue, ...) are availabl
 - `packages/ui`: shared React DOM, Tailwind CSS, and shadcn/ui components,
   styles, hooks, and UI utilities. Every consumable path has an explicit
   package export. These artifacts are not native-mobile components.
-- `migrations/`: ordered, versioned PostgreSQL schema migrations. Migrations do
-  not contain product behavior.
+- `packages/session`: closed, versioned canonical ThreadEvent schemas and
+  constructors shared by transport, persistence, and future client folds. It
+  contains no process wiring or PostgreSQL access.
+- `packages/native-thread-transport`: reusable closed HTTP command contracts,
+  browser-compatible client behavior, and the Effect-native admission interface.
+  It contains no Node process construction, database access, or Agent Application
+  configuration.
+- `packages/db`: Drizzle schema and migrations, PostgreSQL connection ownership,
+  database adapters, and database integration test support. It exposes domain
+  interfaces rather than raw database clients. Migrations do not contain product
+  behavior.
 - `scripts/`: repository operations and migration verification. Scripts may
   compose packages, but do not become an application or domain module.
 - Root workspace files own exact dependency catalogs, Bun and Turbo behavior,

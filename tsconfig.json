@@ -29,6 +29,9 @@
     { "path": "./apps/agent-run-worker" },
     { "path": "./apps/web" },
     { "path": "./apps/native-thread-transport" },
+    { "path": "./packages/db" },
+    { "path": "./packages/native-thread-transport" },
+    { "path": "./packages/session" },
     { "path": "./packages/ui" }
   ]
 }

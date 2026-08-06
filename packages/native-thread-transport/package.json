@@ -1,24 +1,25 @@
 {
-  "name": "@osfo/native-thread-transport-app",
+  "name": "@osfo/native-thread-transport",
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
-    "dev": "node --conditions=development --import tsx src/main.ts",
-    "start": "node dist/main.js",
     "test": "vitest run --exclude '**/*.postgres.test.ts' --exclude '**/.typescript/**' --exclude '**/dist/**'",
-    "test:postgres": "vitest run test/message-command.postgres.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@osfo/db": "workspace:*",
-    "@osfo/native-thread-transport": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
