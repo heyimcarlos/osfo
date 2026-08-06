@@ -51,7 +51,12 @@ const publisherLayer = (config: GooglePubSubPublisherConfig) =>
         const request = yield* HttpClientRequest.post(publishUrl).pipe(
           HttpClientRequest.bearerToken(token.access_token),
           HttpClientRequest.bodyJson({
-            messages: [{ data: encodeRunnableDeliveryData(delivery) }],
+            messages: [
+              {
+                data: encodeRunnableDeliveryData(delivery),
+                attributes: { executionProfileRef: delivery.executionProfileRef },
+              },
+            ],
           }),
           Effect.mapError((cause) => new RunnableDeliveryPublisherUnavailable({ cause })),
         );

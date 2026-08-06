@@ -110,6 +110,18 @@ export const relayThreads = pgTable(
   ],
 );
 
+export const relayDispatchCapacity = pgTable(
+  "relay_dispatch_capacity",
+  {
+    singleton: boolean("singleton").primaryKey().default(true),
+    activeCount: integer("active_count").notNull().default(0),
+  },
+  (table) => [
+    check("relay_dispatch_capacity_singleton_check", sql`${table.singleton}`),
+    check("relay_dispatch_capacity_active_count_check", sql`${table.activeCount} >= 0`),
+  ],
+);
+
 export const admissionGlobalCapacity = pgTable(
   "admission_global_capacity",
   {
@@ -431,7 +443,6 @@ export const assistantOutputs = pgTable(
     assistantOutputId: uuid("assistant_output_id").primaryKey(),
     agentRunId: uuid("agent_run_id")
       .notNull()
-      .unique()
       .references(() => agentRuns.agentRunId),
     state: text("state").notNull(),
     interruptionCause: text("interruption_cause"),
@@ -439,6 +450,7 @@ export const assistantOutputs = pgTable(
     terminatedAt: timestamp("terminated_at", { withTimezone: true, mode: "string" }),
   },
   (table) => [
+    unique("assistant_outputs_output_run_unique").on(table.assistantOutputId, table.agentRunId),
     check(
       "assistant_outputs_state_check",
       sql`${table.state} IN ('open', 'completed', 'interrupted')`,
@@ -468,10 +480,6 @@ export const modelCalls = pgTable(
       .notNull()
       .unique()
       .references(() => agentRuns.agentRunId),
-    assistantOutputId: uuid("assistant_output_id")
-      .notNull()
-      .unique()
-      .references(() => assistantOutputs.assistantOutputId),
     modelBinding: text("model_binding").notNull(),
     prompt: text("prompt").notNull(),
     state: text("state").notNull(),
@@ -481,11 +489,6 @@ export const modelCalls = pgTable(
   },
   (table) => [
     unique("model_calls_call_run_unique").on(table.modelCallId, table.agentRunId),
-    unique("model_calls_call_output_run_unique").on(
-      table.modelCallId,
-      table.assistantOutputId,
-      table.agentRunId,
-    ),
     check("model_calls_binding_check", sql`length(${table.modelBinding}) BETWEEN 1 AND 255`),
     check("model_calls_prompt_check", sql`length(${table.prompt}) BETWEEN 1 AND 16384`),
     check("model_calls_state_check", sql`${table.state} IN ('pending', 'succeeded', 'failed')`),
@@ -512,6 +515,7 @@ export const modelCallAttempts = pgTable(
     modelCallAttemptId: uuid("model_call_attempt_id").primaryKey(),
     modelCallId: uuid("model_call_id").notNull(),
     agentRunId: uuid("agent_run_id").notNull(),
+    assistantOutputId: uuid("assistant_output_id").notNull().unique(),
     attemptNumber: integer("attempt_number").notNull(),
     claimEpoch: bigint("claim_epoch", { mode: "bigint" }).notNull(),
     state: text("state").notNull(),
@@ -526,6 +530,16 @@ export const modelCallAttempts = pgTable(
       columns: [table.modelCallId, table.agentRunId],
       foreignColumns: [modelCalls.modelCallId, modelCalls.agentRunId],
     }),
+    foreignKey({
+      columns: [table.assistantOutputId, table.agentRunId],
+      foreignColumns: [assistantOutputs.assistantOutputId, assistantOutputs.agentRunId],
+    }),
+    unique("model_call_attempts_attempt_authority_unique").on(
+      table.modelCallAttemptId,
+      table.modelCallId,
+      table.assistantOutputId,
+      table.agentRunId,
+    ),
     unique("model_call_attempts_call_number_unique").on(table.modelCallId, table.attemptNumber),
     check("model_call_attempts_number_check", sql`${table.attemptNumber} > 0`),
     check("model_call_attempts_epoch_check", sql`${table.claimEpoch} > 0`),
@@ -559,9 +573,7 @@ export const modelCallFragments = pgTable(
   {
     modelCallId: uuid("model_call_id").notNull(),
     fragmentIndex: integer("fragment_index").notNull(),
-    modelCallAttemptId: uuid("model_call_attempt_id")
-      .notNull()
-      .references(() => modelCallAttempts.modelCallAttemptId),
+    modelCallAttemptId: uuid("model_call_attempt_id").notNull(),
     assistantOutputId: uuid("assistant_output_id").notNull(),
     agentRunId: uuid("agent_run_id").notNull(),
     text: text("text").notNull(),
@@ -572,10 +584,20 @@ export const modelCallFragments = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
   },
   (table) => [
-    primaryKey({ columns: [table.modelCallId, table.fragmentIndex] }),
+    primaryKey({ columns: [table.modelCallAttemptId, table.fragmentIndex] }),
     foreignKey({
-      columns: [table.modelCallId, table.assistantOutputId, table.agentRunId],
-      foreignColumns: [modelCalls.modelCallId, modelCalls.assistantOutputId, modelCalls.agentRunId],
+      columns: [
+        table.modelCallAttemptId,
+        table.modelCallId,
+        table.assistantOutputId,
+        table.agentRunId,
+      ],
+      foreignColumns: [
+        modelCallAttempts.modelCallAttemptId,
+        modelCallAttempts.modelCallId,
+        modelCallAttempts.assistantOutputId,
+        modelCallAttempts.agentRunId,
+      ],
     }),
     check("model_call_fragments_index_check", sql`${table.fragmentIndex} >= 0`),
     check("model_call_fragments_text_check", sql`length(${table.text}) BETWEEN 1 AND 16384`),
@@ -645,6 +667,7 @@ export const databaseSchema = {
   outboxObligations,
   principals,
   relayPrincipals,
+  relayDispatchCapacity,
   relayThreads,
   threadEvents,
   threads,

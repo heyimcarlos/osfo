@@ -34,6 +34,7 @@ describe("Google Pub/Sub runnable delivery publisher", () => {
           version: 1,
           deliveryId: "b1dfd21a-7526-4e52-a732-8e01debd1d52",
           agentRunId: "96ae49eb-b1ab-41cb-a468-b68893ec82c3",
+          executionProfileRef: "oz.deterministic.v1",
         }),
       ).pipe(
         Effect.provide(
@@ -49,6 +50,18 @@ describe("Google Pub/Sub runnable delivery publisher", () => {
         "https://pubsub.googleapis.com/v1/projects/osfo-test/topics/agent-runs:publish",
       ]);
       expect(observed[1]?.headers.authorization).toBe("Bearer metadata-access-token");
+      const publishRequest = observed[1];
+      expect(publishRequest).toBeDefined();
+      const publishBody = yield* HttpClientRequest.toWeb(publishRequest!).pipe(
+        Effect.flatMap((request) => Effect.promise(() => request.json())),
+      );
+      expect(publishBody).toMatchObject({
+        messages: [
+          {
+            attributes: { executionProfileRef: "oz.deterministic.v1" },
+          },
+        ],
+      });
     }),
   );
 });

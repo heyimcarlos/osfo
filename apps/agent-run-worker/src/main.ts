@@ -38,6 +38,7 @@ const ServerLive = Layer.unwrap(
     Effect.map((config) => {
       const repositoryLayer = makeAgentRunRepositoryLayer({ databaseUrl: config.databaseUrl });
       const workerLayer = makeAgentRunWorkerLayer({
+        executionProfileRef: config.executionProfileRef,
         workerId: config.workerId,
         leaseDurationMs: config.leaseDurationMs,
       }).pipe(

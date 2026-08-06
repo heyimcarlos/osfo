@@ -65,14 +65,16 @@ const publisherLayer = Layer.succeed(RunnableDeliveryPublisher)(
 );
 
 const workerLayer = makeAgentRunWorkerLayer({
+  executionProfileRef: "oz.deterministic.v1",
   workerId: "replacement-worker",
   leaseDurationMs: 30_000,
 }).pipe(Layer.provide(repositoryLayer), Layer.provide(runtimeLayer), Layer.provide(executorLayer));
 
-const relayLayer = makeOutboxRelayLayer({ relayId: "relay-a", leaseDurationMs: 100 }).pipe(
-  Layer.provide(repositoryLayer),
-  Layer.provide(publisherLayer),
-);
+const relayLayer = makeOutboxRelayLayer({
+  relayId: "relay-a",
+  leaseDurationMs: 100,
+  publicationWindowSize: 32,
+}).pipe(Layer.provide(repositoryLayer), Layer.provide(publisherLayer));
 
 const runtime = ManagedRuntime.make(
   Layer.mergeAll(
@@ -131,6 +133,7 @@ const seedAuthority = () =>
         authentication_sessions,
         threads,
         principals,
+        relay_dispatch_capacity,
         admission_global_capacity
         CASCADE`;
       yield* sql`INSERT INTO principals (principal_id) VALUES (${principalId}::uuid)`;
@@ -145,6 +148,8 @@ const seedAuthority = () =>
       yield* sql`INSERT INTO threads (thread_id, principal_id)
         VALUES (${threadId}::uuid, ${principalId}::uuid)`;
       yield* sql`INSERT INTO admission_global_capacity (singleton, reserved_count)
+        VALUES (true, 0)`;
+      yield* sql`INSERT INTO relay_dispatch_capacity (singleton, active_count)
         VALUES (true, 0)`;
       yield* sql`INSERT INTO admission_principal_capacity (principal_id, reserved_count)
         VALUES (${principalId}::uuid, 0)`;
@@ -293,7 +298,10 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
           readonly terminalEvents: string;
           readonly modelCalls: string;
           readonly modelCallAttempts: string;
+          readonly assistantOutputs: string;
+          readonly modelCallFragments: string;
           readonly publicationEvidence: unknown;
+          readonly relayActiveCount: number;
           readonly startedAttempts: string;
           readonly usageTypes: ReadonlyArray<string>;
         }>`SELECT
@@ -309,8 +317,14 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             WHERE agent_run_id = ${receipt.agentRunId}::uuid)::text AS "modelCalls",
           (SELECT count(*) FROM model_call_attempts
             WHERE agent_run_id = ${receipt.agentRunId}::uuid)::text AS "modelCallAttempts",
+          (SELECT count(*) FROM assistant_outputs
+            WHERE agent_run_id = ${receipt.agentRunId}::uuid)::text AS "assistantOutputs",
+          (SELECT count(*) FROM model_call_fragments
+            WHERE agent_run_id = ${receipt.agentRunId}::uuid)::text AS "modelCallFragments",
           (SELECT publication_evidence FROM outbox_obligations
             WHERE agent_run_id = ${receipt.agentRunId}::uuid) AS "publicationEvidence",
+          (SELECT active_count FROM relay_dispatch_capacity
+            WHERE singleton = true) AS "relayActiveCount",
           (SELECT count(*) FROM model_call_attempts
             WHERE agent_run_id = ${receipt.agentRunId}::uuid
               AND state = 'started')::text AS "startedAttempts",
@@ -343,16 +357,21 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       terminalEvents: "1",
       modelCalls: "1",
       modelCallAttempts: "2",
+      assistantOutputs: "2",
+      modelCallFragments: "3",
       publicationEvidence: { type: "pubsub", providerMessageId: "pubsub-message-2" },
+      relayActiveCount: 0,
       startedAttempts: "0",
       usageTypes: ["unknown", "unknown"],
     });
     expect(authority.events).toEqual([
       { eventType: "UserMessageAppended", position: "1" },
       { eventType: "AssistantOutputAppended", position: "2" },
-      { eventType: "AssistantOutputAppended", position: "3" },
-      { eventType: "AssistantOutputCompleted", position: "4" },
-      { eventType: "AgentRunSucceeded", position: "5" },
+      { eventType: "AssistantOutputInterrupted", position: "3" },
+      { eventType: "AssistantOutputAppended", position: "4" },
+      { eventType: "AssistantOutputAppended", position: "5" },
+      { eventType: "AssistantOutputCompleted", position: "6" },
+      { eventType: "AgentRunSucceeded", position: "7" },
     ]);
 
     const snapshot = await run(
@@ -360,6 +379,12 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     );
     expect(snapshot.timeline).toEqual([
       expect.objectContaining({ type: "userMessage", agentRunId: receipt.agentRunId }),
+      expect.objectContaining({
+        type: "assistantOutput",
+        agentRunId: receipt.agentRunId,
+        content: [{ type: "text", text: "Echo: " }],
+        status: { type: "interrupted", cause: "modelCallFailed" },
+      }),
       expect.objectContaining({
         type: "assistantOutput",
         agentRunId: receipt.agentRunId,
@@ -371,6 +396,6 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       }),
     ]);
     expect(snapshot.activeState).toEqual([]);
-    expect(snapshot.throughPosition).toBe("5");
+    expect(snapshot.throughPosition).toBe("7");
   });
 });

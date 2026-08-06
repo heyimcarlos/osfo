@@ -144,14 +144,30 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
+              yield* sql`SELECT pg_advisory_xact_lock(2026080601)`;
+              const capacities = yield* sql<{ readonly activeCount: number }>`SELECT
+                    active_count AS "activeCount"
+                  FROM relay_dispatch_capacity
+                  WHERE singleton = true
+                  FOR UPDATE`;
+              const capacity = capacities[0];
+              if (capacity === undefined) {
+                return yield* new AgentRunRepositoryUnavailable({
+                  cause: "Relay dispatch capacity is not initialized",
+                });
+              }
+              const hasAvailableSlot = capacity.activeCount < request.publicationWindowSize;
               const claims = yield* sql<{
                 readonly agentRunId: string;
+                readonly executionProfileRef: string;
                 readonly outboxId: string;
                 readonly principalId: string;
+                readonly previousState: "pending" | "publishing";
                 readonly publicationEpoch: string;
                 readonly threadId: string;
               }>`WITH candidate AS (
-                    SELECT obligation.outbox_id
+                    SELECT obligation.outbox_id,
+                           obligation.publication_state AS previous_state
                     FROM outbox_obligations obligation
                     JOIN relay_principals principal
                       ON principal.principal_id = obligation.principal_id
@@ -160,7 +176,10 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                      AND thread.principal_id = obligation.principal_id
                     WHERE obligation.published_at IS NULL
                       AND (
-                        obligation.publication_state = 'pending'
+                        (
+                          obligation.publication_state = 'pending'
+                          AND ${hasAvailableSlot}
+                        )
                         OR (
                           obligation.publication_state = 'publishing'
                           AND obligation.publication_lease_expires_at <= clock_timestamp()
@@ -195,8 +214,12 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   RETURNING
                     obligation.outbox_id::text AS "outboxId",
                     obligation.agent_run_id::text AS "agentRunId",
+                    (SELECT execution_profile_ref
+                      FROM agent_runs
+                      WHERE agent_run_id = obligation.agent_run_id) AS "executionProfileRef",
                     obligation.principal_id::text AS "principalId",
                     obligation.thread_id::text AS "threadId",
+                    candidate.previous_state AS "previousState",
                     obligation.publication_epoch::text AS "publicationEpoch"`;
               const claim = claims[0];
               if (claim === undefined) return { type: "none" as const };
@@ -206,6 +229,11 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               yield* sql`UPDATE relay_threads
                 SET virtual_pass = virtual_pass + 1
                 WHERE thread_id = ${claim.threadId}::uuid`;
+              if (claim.previousState === "pending") {
+                yield* sql`UPDATE relay_dispatch_capacity
+                  SET active_count = active_count + 1
+                  WHERE singleton = true`;
+              }
               return {
                 type: "claimed" as const,
                 outboxId: claim.outboxId,
@@ -215,6 +243,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   version: 1 as const,
                   deliveryId: claim.outboxId,
                   agentRunId: claim.agentRunId,
+                  executionProfileRef: claim.executionProfileRef,
                 },
               };
             }),
@@ -244,6 +273,9 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     AND publication_lease_expires_at > clock_timestamp()
                   RETURNING outbox_id::text AS "outboxId"`;
               if (confirmed[0] === undefined) return yield* new AgentRunFenceRejected();
+              yield* sql`UPDATE relay_dispatch_capacity
+                SET active_count = active_count - 1
+                WHERE singleton = true AND active_count > 0`;
             }),
           ),
         );
@@ -270,6 +302,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                       WHERE obligation.outbox_id = ${delivery.deliveryId}::uuid
                         AND obligation.agent_run_id = run.agent_run_id
                     )
+                    AND run.execution_profile_ref = ${delivery.executionProfileRef}
                     AND (
                       run.state = 'pending'
                       OR (run.state = 'running' AND run.lease_expires_at <= clock_timestamp())
@@ -398,7 +431,6 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               const authority = yield* requireFence(fence);
               const existing = yield* sql<PreparedModelCall>`SELECT
                     model_call_id::text AS "modelCallId",
-                    assistant_output_id::text AS "assistantOutputId",
                     model_binding AS "modelBinding",
                     prompt
                   FROM model_calls
@@ -418,28 +450,17 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                 return yield* new AgentRunFenceRejected();
               }
               const modelCallId = randomUUID();
-              const assistantOutputId = randomUUID();
               const timestamps = yield* sql<{ readonly createdAt: string }>`SELECT
                   transaction_timestamp()::text AS "createdAt"`;
               const timestamp = timestamps[0];
               if (timestamp === undefined) {
                 return yield* new AgentRunRepositoryUnavailable({ cause: "Timestamp unavailable" });
               }
-              yield* sql`INSERT INTO assistant_outputs
-                  (assistant_output_id, agent_run_id, state, created_at)
-                  VALUES (
-                    ${assistantOutputId}::uuid,
-                    ${authority.agentRunId}::uuid,
-                    'open',
-                    ${timestamp.createdAt}::timestamptz
-                  )`;
               yield* sql`INSERT INTO model_calls (
-                    model_call_id, agent_run_id, assistant_output_id,
-                    model_binding, prompt, state, created_at
+                    model_call_id, agent_run_id, model_binding, prompt, state, created_at
                   ) VALUES (
                     ${modelCallId}::uuid,
                     ${authority.agentRunId}::uuid,
-                    ${assistantOutputId}::uuid,
                     ${decision.modelBinding},
                     ${decision.prompt},
                     'pending',
@@ -447,7 +468,6 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   )`;
               return {
                 modelCallId,
-                assistantOutputId,
                 modelBinding: decision.modelBinding,
                 prompt: decision.prompt,
               };
@@ -462,12 +482,34 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              yield* requireFence(fence);
+              const authority = yield* requireFence(fence);
+              const abandoned = yield* sql<{ readonly assistantOutputId: string }>`SELECT
+                    assistant_output_id::text AS "assistantOutputId"
+                  FROM model_call_attempts
+                  WHERE model_call_id = ${modelCall.modelCallId}::uuid
+                    AND state = 'started'
+                    AND claim_epoch < ${fence.claimEpoch}::bigint
+                  FOR UPDATE`;
               yield* sql`UPDATE model_call_attempts
                   SET state = 'failed', finished_at = transaction_timestamp()
                   WHERE model_call_id = ${modelCall.modelCallId}::uuid
                     AND state = 'started'
                     AND claim_epoch < ${fence.claimEpoch}::bigint`;
+              for (const previous of abandoned) {
+                yield* sql`UPDATE assistant_outputs
+                    SET state = 'interrupted',
+                        interruption_cause = 'modelCallFailed',
+                        terminated_at = transaction_timestamp()
+                    WHERE assistant_output_id = ${previous.assistantOutputId}::uuid
+                      AND state = 'open'`;
+                yield* appendThreadEvent(authority, (base) =>
+                  makeAssistantOutputInterrupted({
+                    ...base,
+                    assistantOutputId: previous.assistantOutputId,
+                    cause: "modelCallFailed",
+                  }),
+                );
+              }
               const numbers = yield* sql<{ readonly attemptNumber: number }>`SELECT
                     (coalesce(max(attempt_number), 0) + 1)::integer AS "attemptNumber"
                   FROM model_call_attempts
@@ -477,14 +519,24 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                 return yield* new AgentRunRepositoryUnavailable({ cause: "Attempt unavailable" });
               }
               const modelCallAttemptId = randomUUID();
+              const assistantOutputId = randomUUID();
+              yield* sql`INSERT INTO assistant_outputs
+                  (assistant_output_id, agent_run_id, state, created_at)
+                  VALUES (
+                    ${assistantOutputId}::uuid,
+                    ${authority.agentRunId}::uuid,
+                    'open',
+                    transaction_timestamp()
+                  )`;
               yield* sql`INSERT INTO model_call_attempts (
                     model_call_attempt_id, model_call_id, agent_run_id,
-                    attempt_number, claim_epoch, state, started_at
+                    assistant_output_id, attempt_number, claim_epoch, state, started_at
                   )
                   SELECT
                     ${modelCallAttemptId}::uuid,
                     model_call_id,
                     agent_run_id,
+                    ${assistantOutputId}::uuid,
                     ${attemptNumber},
                     ${fence.claimEpoch}::bigint,
                     'started',
@@ -495,6 +547,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     AND state = 'pending'`;
               return {
                 ...modelCall,
+                assistantOutputId,
                 modelCallAttemptId,
                 attemptNumber,
                 usage: { type: "unknown" as const },
@@ -513,7 +566,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               const authority = yield* requireFence(fence);
               const existing = yield* sql<{ readonly text: string }>`SELECT text
                   FROM model_call_fragments
-                  WHERE model_call_id = ${attempt.modelCallId}::uuid
+                  WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
                     AND fragment_index = ${observation.fragmentIndex}`;
               if (existing[0]?.text === observation.text) return;
               if (existing[0] !== undefined) {
@@ -639,10 +692,16 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     AND EXISTS (
                       SELECT 1
                       FROM model_calls call
+                      JOIN model_call_attempts attempt USING (model_call_id, agent_run_id)
                       JOIN assistant_outputs output USING (assistant_output_id, agent_run_id)
                       WHERE call.agent_run_id = run.agent_run_id
                         AND call.state = ${expectedCallState}
                         AND output.state = ${expectedOutputState}
+                    )
+                    AND NOT EXISTS (
+                      SELECT 1 FROM assistant_outputs output
+                      WHERE output.agent_run_id = run.agent_run_id
+                        AND output.state = 'open'
                     )
                   RETURNING run.agent_run_id::text AS "agentRunId"`;
               if (terminal[0] === undefined) return yield* new AgentRunFenceRejected();

@@ -20,6 +20,7 @@ export const RunnableAgentRunDeliverySchema = Schema.Struct({
   version: Schema.Literal(1),
   deliveryId: Identity,
   agentRunId: Identity,
+  executionProfileRef: NonEmptyText,
 });
 
 export type RunnableAgentRunDelivery = typeof RunnableAgentRunDeliverySchema.Type;
@@ -78,7 +79,6 @@ export type AgentRunFence = typeof AgentRunFenceSchema.Type;
 
 export const PreparedModelCallSchema = Schema.Struct({
   modelCallId: Identity,
-  assistantOutputId: Identity,
   modelBinding: NonEmptyText,
   prompt: NonEmptyText,
 });
@@ -87,6 +87,7 @@ export type PreparedModelCall = typeof PreparedModelCallSchema.Type;
 
 export const ModelCallAttemptSchema = Schema.Struct({
   ...PreparedModelCallSchema.fields,
+  assistantOutputId: Identity,
   modelCallAttemptId: Identity,
   attemptNumber: PositiveInteger,
   usage: Schema.Struct({ type: Schema.Literal("unknown") }),
@@ -149,6 +150,7 @@ export interface AgentRunRepositoryService {
   readonly claimPublication: (request: {
     readonly relayId: string;
     readonly leaseDurationMs: number;
+    readonly publicationWindowSize: number;
   }) => Effect.Effect<PublicationClaim, AgentRunRepositoryError>;
   readonly confirmPublication: (
     claim: Extract<PublicationClaim, { readonly type: "claimed" }>,
@@ -233,6 +235,7 @@ export class AgentRunWorker extends Context.Service<
 >()("@osfo/agent-run/AgentRunWorker") {}
 
 export const AgentRunWorkerConfigSchema = Schema.Struct({
+  executionProfileRef: NonEmptyText,
   workerId: NonEmptyText,
   leaseDurationMs: PositiveInteger,
 });
@@ -278,6 +281,9 @@ export const makeAgentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
       const handle = Effect.fn("AgentRunWorker.handle")(function* (
         delivery: RunnableAgentRunDelivery,
       ) {
+        if (delivery.executionProfileRef !== config.executionProfileRef) {
+          return { type: "retry" as const };
+        }
         const handled = Effect.gen(function* () {
           const claim = yield* repository.claimAgentRun(delivery, config);
           switch (claim.type) {
@@ -338,6 +344,7 @@ export class OutboxRelay extends Context.Service<
 export const OutboxRelayConfigSchema = Schema.Struct({
   relayId: NonEmptyText,
   leaseDurationMs: PositiveInteger,
+  publicationWindowSize: PositiveInteger,
 });
 
 export type OutboxRelayConfig = typeof OutboxRelayConfigSchema.Type;

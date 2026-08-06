@@ -15,6 +15,9 @@ const RelayConfig = Config.all({
     Config.withDefault(30_000),
   ),
   projectId: Config.nonEmptyString("OSFO_PUBSUB_PROJECT_ID"),
+  publicationWindowSize: Config.schema(PositiveInteger, "OSFO_RELAY_PUBLICATION_WINDOW_SIZE").pipe(
+    Config.withDefault(32),
+  ),
   relayId: Config.nonEmptyString("OSFO_RELAY_ID"),
   topicId: Config.nonEmptyString("OSFO_PUBSUB_TOPIC_ID"),
 });
@@ -30,6 +33,7 @@ const RelayLive = Layer.unwrap(
       return makeOutboxRelayLayer({
         relayId: config.relayId,
         leaseDurationMs: config.leaseDurationMs,
+        publicationWindowSize: config.publicationWindowSize,
       }).pipe(Layer.provide(repository), Layer.provide(publisher));
     }),
   ),

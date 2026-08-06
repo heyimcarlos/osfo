@@ -13,6 +13,7 @@ const delivery = {
   version: 1,
   deliveryId: "b1dfd21a-7526-4e52-a732-8e01debd1d52",
   agentRunId: "96ae49eb-b1ab-41cb-a468-b68893ec82c3",
+  executionProfileRef: "oz.deterministic.v1",
 } as const;
 
 const pushBody = {

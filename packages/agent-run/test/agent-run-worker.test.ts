@@ -14,6 +14,7 @@ const delivery = {
   version: 1,
   deliveryId: "b1dfd21a-7526-4e52-a732-8e01debd1d52",
   agentRunId: "96ae49eb-b1ab-41cb-a468-b68893ec82c3",
+  executionProfileRef: "oz.deterministic.v1",
 } as const;
 
 const fence = {
@@ -24,13 +25,13 @@ const fence = {
 
 const prepared = {
   modelCallId: "1d27079d-635d-47e2-ab68-588fff581e3e",
-  assistantOutputId: "86290831-b9ca-414a-abf1-4055b5347133",
   modelBinding: "oz.deterministic.echo.v1",
   prompt: "Hello, Oz",
 } as const;
 
 const attempt = {
   ...prepared,
+  assistantOutputId: "86290831-b9ca-414a-abf1-4055b5347133",
   modelCallAttemptId: "866688f2-5f9f-44b7-83d1-3c4ef6fd301b",
   attemptNumber: 1,
   usage: { type: "unknown" },
@@ -117,7 +118,11 @@ describe("AgentRun worker", () => {
             { fragmentIndex: 1, text: "Hello, Oz" },
           ),
       });
-      const layer = makeAgentRunWorkerLayer({ workerId: "worker-a", leaseDurationMs: 30_000 }).pipe(
+      const layer = makeAgentRunWorkerLayer({
+        executionProfileRef: "oz.deterministic.v1",
+        workerId: "worker-a",
+        leaseDurationMs: 30_000,
+      }).pipe(
         Layer.provide(Layer.succeed(AgentRunRepository)(repository.service)),
         Layer.provide(Layer.succeed(ModelCallExecutor)(executor)),
         Layer.provide(
@@ -153,7 +158,11 @@ describe("AgentRun worker", () => {
       ...repository.service,
       claimAgentRun: () => Effect.succeed({ type: "busy" as const }),
     } satisfies AgentRunRepositoryService;
-    const layer = makeAgentRunWorkerLayer({ workerId: "worker-b", leaseDurationMs: 30_000 }).pipe(
+    const layer = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v1",
+      workerId: "worker-b",
+      leaseDurationMs: 30_000,
+    }).pipe(
       Layer.provide(Layer.succeed(AgentRunRepository)(busy)),
       Layer.provide(
         Layer.succeed(ModelCallExecutor)(ModelCallExecutor.of({ execute: () => Stream.empty })),
@@ -172,12 +181,42 @@ describe("AgentRun worker", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("rejects an incompatible execution profile before claiming the AgentRun", () => {
+    const repository = makeRepository();
+    const layer = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v2",
+      workerId: "worker-b",
+      leaseDurationMs: 30_000,
+    }).pipe(
+      Layer.provide(Layer.succeed(AgentRunRepository)(repository.service)),
+      Layer.provide(
+        Layer.succeed(ModelCallExecutor)(ModelCallExecutor.of({ execute: () => Stream.empty })),
+      ),
+      Layer.provide(
+        makeDeterministicAgentRuntimeLayer({
+          executionProfileRef: "oz.deterministic.v2",
+          modelBinding: "oz.deterministic.echo.v1",
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const disposition = yield* AgentRunWorker.use((worker) => worker.handle(delivery));
+      expect(disposition).toEqual({ type: "retry" });
+      expect(repository.calls).toEqual([]);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("interrupts partial output before committing a failed AgentRun", () => {
     const repository = makeRepository();
     const executor = ModelCallExecutor.of({
       execute: () => Stream.fail(new ModelCallExecutionError({ cause: "provider unavailable" })),
     });
-    const layer = makeAgentRunWorkerLayer({ workerId: "worker-a", leaseDurationMs: 30_000 }).pipe(
+    const layer = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v1",
+      workerId: "worker-a",
+      leaseDurationMs: 30_000,
+    }).pipe(
       Layer.provide(Layer.succeed(AgentRunRepository)(repository.service)),
       Layer.provide(Layer.succeed(ModelCallExecutor)(executor)),
       Layer.provide(
