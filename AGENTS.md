@@ -4,11 +4,10 @@ Stable contracts live here. Product truth lives in `CONTEXT.md`, durable decisio
 
 ## Verification and evidence
 
-- Tests use Vitest through package scripts. Run the narrowest relevant package
-  test while iterating, and never use `bun test`.
-- Merge-ready gates are `bun install --frozen-lockfile`, `bun run build`,
-  `bun run format:check`, `bun run lint`, `bun run typecheck`, and
-  `bun run test`.
+- Tests use Effect Vitest. Run scoped tests with `vitest run ...` or the
+  package script. Never use `bun test`.
+- Use the narrowest meaningful verification while iterating. Merge-ready gates
+  are `bun run format:check`, `lint`, `typecheck`, and `test`.
 - Changes to migrations, PostgreSQL configuration, or database access also run
   `bun run db:verify` against the digest-pinned real PostgreSQL service.
   In-memory substitutes do not certify PostgreSQL behavior.
@@ -42,13 +41,6 @@ Repos in `.reference` (effect, executor, AnswerOverflow, flue, ...) are availabl
 
 ## Package Ownership
 
-- `apps/web`: browser Reference Agent Application composition root and
-  app-specific routes, state, and presentation. It consumes shared UI only
-  through `@osfo/ui` exports.
-- `apps/api`: Osfo HTTP process composition root, including Node runtime wiring
-  and API configuration.
-- `apps/agent-run-worker`: AgentRun worker process composition root, including
-  Node runtime wiring and worker-specific configuration.
 - `packages/ui`: shared React DOM, Tailwind CSS, and shadcn/ui components,
   styles, hooks, and UI utilities. Every consumable path has an explicit
   package export. These artifacts are not native-mobile components.
@@ -62,10 +54,7 @@ Repos in `.reference` (effect, executor, AnswerOverflow, flue, ...) are availabl
   database adapters, and database integration test support. It exposes domain
   interfaces rather than raw database clients. Migrations do not contain product
   behavior.
-- `scripts/`: repository operations and migration verification. Scripts may
-  compose packages, but do not become an application or domain module.
-- Root workspace files own exact dependency catalogs, Bun and Turbo behavior,
-  TypeScript project references, and the local PostgreSQL development profile.
+- `apps/{web, api, agent-run-worker}`: product composition roots.
 
 ## Agent skills
 
@@ -82,4 +71,5 @@ Use the five canonical labels unchanged. See `docs/agents/triage-labels.md`.
 This is a single-context repo: root `CONTEXT.md` and `docs/adr/`. See
 `docs/agents/domain.md`.
 
-Note mistakes in MISTAKES.md, missing context or tools in DESIRES.md, and env learnings in LEARNINGS.md.
+Record mistakes in `MISTAKES.md`, missing capabilities in `DESIRES.md`, and
+environment discoveries in `LEARNINGS.md`.
