@@ -15,6 +15,8 @@ export class ProjectionStoreUnavailable extends Data.TaggedError("ProjectionStor
   readonly cause: unknown;
 }> {}
 
+const ThreadSnapshotFromJson = Schema.fromJsonString(ThreadSnapshotSchema);
+
 export interface ThreadProjectionStoreOptions {
   readonly storage: Storage;
   readonly threadId: string;
@@ -45,11 +47,7 @@ export const makeThreadProjectionStore = ({ storage, threadId }: ThreadProjectio
       catch: (cause) => new ProjectionStoreUnavailable({ cause }),
     });
     if (encoded === null) return undefined;
-    const decoded = yield* Effect.try({
-      try: () => JSON.parse(encoded) as unknown,
-      catch: (cause) => new ProjectionStoreCorrupt({ cause }),
-    });
-    const snapshot = yield* Schema.decodeUnknownEffect(ThreadSnapshotSchema)(decoded).pipe(
+    const snapshot = yield* Schema.decodeUnknownEffect(ThreadSnapshotFromJson)(encoded).pipe(
       Effect.mapError((cause) => new ProjectionStoreCorrupt({ cause })),
     );
     if (snapshot.threadId !== threadId) return yield* new ProjectionStoreCorrupt({});
@@ -58,9 +56,9 @@ export const makeThreadProjectionStore = ({ storage, threadId }: ThreadProjectio
 
   const replace = Effect.fn("ThreadProjectionStore.replace")(function* (snapshot: ThreadSnapshot) {
     if (snapshot.threadId !== threadId) return yield* new ProjectionStoreCorrupt({});
-    const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(ThreadSnapshotSchema))(
-      snapshot,
-    ).pipe(Effect.mapError((cause) => new ProjectionStoreCorrupt({ cause })));
+    const encoded = yield* Schema.encodeEffect(ThreadSnapshotFromJson)(snapshot).pipe(
+      Effect.mapError((cause) => new ProjectionStoreCorrupt({ cause })),
+    );
     yield* Effect.try({
       try: () => storage.setItem(key, encoded),
       catch: (cause) => new ProjectionStoreUnavailable({ cause }),

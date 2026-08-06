@@ -40,14 +40,6 @@ export class InvalidThreadResumeDatabaseConfig extends Data.TaggedError(
   "InvalidThreadResumeDatabaseConfig",
 )<{ readonly cause: unknown }> {}
 
-interface CursorPayload {
-  readonly eventId: string | null;
-  readonly issuedAtMs: number;
-  readonly position: string;
-  readonly threadId: string;
-  readonly version: 1;
-}
-
 const CursorPayloadSchema = Schema.Struct({
   eventId: Schema.NullOr(Schema.String.check(Schema.isUUID())),
   issuedAtMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -55,6 +47,10 @@ const CursorPayloadSchema = Schema.Struct({
   threadId: Schema.String.check(Schema.isUUID()),
   version: Schema.Literal(1),
 });
+
+type CursorPayload = typeof CursorPayloadSchema.Type;
+
+const CursorPayloadFromJson = Schema.fromJsonString(CursorPayloadSchema);
 
 interface EventRow {
   readonly eventId: string;
@@ -82,21 +78,23 @@ const encodeCursor = (secret: string, payload: CursorPayload) => {
   return `${encoded}.${signature}`;
 };
 
-const decodeCursor = (secret: string, value: string) =>
-  Effect.gen(function* () {
-    const [encoded, signature, unexpected] = value.split(".");
-    if (encoded === undefined || signature === undefined || unexpected !== undefined) {
-      return yield* new InvalidCursor();
-    }
-    const expected = createHmac("sha256", secret).update(encoded).digest();
-    const received = Buffer.from(signature, "base64url");
-    if (received.length !== expected.length || !timingSafeEqual(received, expected)) {
-      return yield* new InvalidCursor();
-    }
-    return yield* Schema.decodeUnknownEffect(CursorPayloadSchema)(
-      JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")),
-    ).pipe(Effect.mapError(() => new InvalidCursor()));
-  }).pipe(Effect.catchDefect(() => Effect.fail(new InvalidCursor())));
+const decodeCursor = Effect.fn("DatabaseThreadResume.decodeCursor")(function* (
+  secret: string,
+  value: string,
+) {
+  const [encoded, signature, unexpected] = value.split(".");
+  if (encoded === undefined || signature === undefined || unexpected !== undefined) {
+    return yield* new InvalidCursor();
+  }
+  const expected = createHmac("sha256", secret).update(encoded).digest();
+  const received = Buffer.from(signature, "base64url");
+  if (received.length !== expected.length || !timingSafeEqual(received, expected)) {
+    return yield* new InvalidCursor();
+  }
+  return yield* Schema.decodeUnknownEffect(CursorPayloadFromJson)(
+    Buffer.from(encoded, "base64url").toString("utf8"),
+  ).pipe(Effect.mapError(() => new InvalidCursor()));
+});
 
 const threadResumeLayer = (config: ThreadResumeDatabaseConfig) => {
   const postgresLayer = PgClient.layer({

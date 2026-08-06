@@ -81,10 +81,24 @@ const ApiRoutes = HttpApiBuilder.layer(OsfoApi, {
   openapiPath: "/openapi.json",
 }).pipe(Layer.provide(ThreadsHandlers));
 
-const NoStoreResponses = HttpRouter.middleware(
-  (httpEffect) =>
-    Effect.map(httpEffect, HttpServerResponse.setHeader("cache-control", "private, no-store")),
-  { global: true },
+const hardenResponse = (response: HttpServerResponse.HttpServerResponse) => {
+  const noStore = HttpServerResponse.setHeaders(response, {
+    "cache-control": "private, no-store",
+    "x-content-type-options": "nosniff",
+  });
+  return response.headers["content-type"]?.startsWith("text/event-stream") === true
+    ? HttpServerResponse.setHeaders(noStore, {
+        "cache-control": "private, no-store, no-transform",
+        "x-accel-buffering": "no",
+      })
+    : noStore;
+};
+
+const HardenResponses = HttpRouter.middleware(
+  (httpEffect) => Effect.map(httpEffect, hardenResponse),
+  {
+    global: true,
+  },
 );
 
-export const OsfoApiLive = Layer.merge(ApiRoutes, NoStoreResponses);
+export const OsfoApiLive = Layer.merge(ApiRoutes, HardenResponses);

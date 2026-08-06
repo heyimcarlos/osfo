@@ -204,7 +204,9 @@ describe("Thread resume API", () => {
 
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
-      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("cache-control")).toBe("private, no-store, no-transform");
+      expect(response.headers.get("x-accel-buffering")).toBe("no");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
       const frames = (await response.text()).trim().split("\n\n");
       expect(frames.map((frame) => frame.split("\n")[0])).toEqual([
         "event: thread_event",

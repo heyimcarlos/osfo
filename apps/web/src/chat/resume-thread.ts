@@ -36,62 +36,53 @@ export type SynchronizeThreadError =
 const notify = (options: SynchronizeThreadOptions, snapshot: ThreadSnapshot) =>
   Effect.sync(() => options.onProjection?.(snapshot));
 
-const replaceFromAuthority = (
+const replaceFromAuthority = Effect.fn("ThreadResume.replaceFromAuthority")(function* (
   options: SynchronizeThreadOptions,
-): Effect.Effect<
-  ThreadSnapshot,
-  ProjectionStoreCorrupt | ProjectionStoreUnavailable | ThreadSnapshotError
-> =>
-  Effect.gen(function* () {
-    const snapshot = yield* options.transport.snapshot();
-    yield* options.store.replace(snapshot);
-    yield* notify(options, snapshot);
-    return snapshot;
-  });
+) {
+  const snapshot = yield* options.transport.snapshot();
+  yield* options.store.replace(snapshot);
+  yield* notify(options, snapshot);
+  return snapshot;
+});
 
-const openRetainedStream = (
+const openRetainedStream = Effect.fn("ThreadResume.openRetainedStream")(function* (
   options: SynchronizeThreadOptions,
   snapshot: ThreadSnapshot,
-): Effect.Effect<
-  Stream.Stream<ThreadStreamEvent, ThreadResumeUnavailable>,
-  ProjectionStoreCorrupt | ProjectionStoreUnavailable | ThreadSnapshotError | ThreadResumeError
-> =>
-  Effect.gen(function* () {
-    return yield* options.transport
-      .stream(snapshot.throughCursor)
-      .pipe(
-        Effect.catchTag("CursorOutsideRetention", () =>
-          replaceFromAuthority(options).pipe(
-            Effect.flatMap((replacement) => options.transport.stream(replacement.throughCursor)),
-          ),
+) {
+  return yield* options.transport
+    .stream(snapshot.throughCursor)
+    .pipe(
+      Effect.catchTag("CursorOutsideRetention", () =>
+        replaceFromAuthority(options).pipe(
+          Effect.flatMap((replacement) => options.transport.stream(replacement.throughCursor)),
         ),
-      );
-  });
-
-export const synchronizeThreadOnce = (
-  options: SynchronizeThreadOptions,
-): Effect.Effect<void, SynchronizeThreadError> =>
-  Effect.gen(function* () {
-    const persisted = yield* options.store
-      .load()
-      .pipe(Effect.catchTag("ProjectionStoreCorrupt", () => Effect.succeed(undefined)));
-    const initial = persisted ?? (yield* replaceFromAuthority(options));
-    if (persisted !== undefined) yield* notify(options, persisted);
-    const events = yield* openRetainedStream(options, initial);
-
-    yield* events.pipe(
-      Stream.runForEach((message) =>
-        message.event === "caught_up"
-          ? Effect.void
-          : options.store.apply(message.data).pipe(
-              Effect.tap((snapshot) => notify(options, snapshot)),
-              Effect.asVoid,
-            ),
-      ),
-      Effect.catchIf(
-        (error): error is InvalidThreadProjection =>
-          error instanceof InvalidThreadProjection && error.reason === "gap",
-        () => replaceFromAuthority(options).pipe(Effect.asVoid),
       ),
     );
-  });
+});
+
+export const synchronizeThreadOnce = Effect.fn("ThreadResume.synchronizeThreadOnce")(function* (
+  options: SynchronizeThreadOptions,
+): Effect.fn.Return<void, SynchronizeThreadError> {
+  const persisted = yield* options.store
+    .load()
+    .pipe(Effect.catchTag("ProjectionStoreCorrupt", () => Effect.succeed(undefined)));
+  const initial = persisted ?? (yield* replaceFromAuthority(options));
+  if (persisted !== undefined) yield* notify(options, persisted);
+  const events = yield* openRetainedStream(options, initial);
+
+  yield* events.pipe(
+    Stream.runForEach((message) =>
+      message.event === "caught_up"
+        ? Effect.void
+        : options.store.apply(message.data).pipe(
+            Effect.tap((snapshot) => notify(options, snapshot)),
+            Effect.asVoid,
+          ),
+    ),
+    Effect.catchIf(
+      (error): error is InvalidThreadProjection =>
+        error instanceof InvalidThreadProjection && error.reason === "gap",
+      () => replaceFromAuthority(options).pipe(Effect.asVoid),
+    ),
+  );
+});
