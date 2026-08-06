@@ -21,6 +21,7 @@ Local development keeps database setup explicit:
 bun run db:up
 cp .env.example .env
 bun run db:migrate
+bun run db:seed:reference
 bun run dev
 ```
 
@@ -67,8 +68,21 @@ The ingress process requires `OSFO_DATABASE_URL`,
 
 ## Browser reference and UI
 
-Run `bun run dev:web` to open the minimal browser reference client. It
-consumes the `@osfo/ui` button and stylesheet through public package exports.
+Run `bun run dev` after seeding the reference authority to open the browser
+Thread client and its ingress process together. The client submits through the
+typed `@osfo/api` Effect client and displays the immutable Acceptance Receipt
+only after PostgreSQL accepts the message. The development server proxies `/v1`
+to ingress on port 3000, so browser HTTP remains same-origin.
+
+The reference seed is explicit and idempotent. It creates only the local
+Principal, authentication session, Thread, and capacity rows named by the
+`VITE_OSFO_*` values in `.env`. It does not start PostgreSQL or run migrations.
+
+Reusable chat presentation lives in `@osfo/ui` as shadcn `MessageScroller`,
+`Message`, `Bubble`, `Marker`, and composer primitives. The app owns Thread
+configuration, Effect atoms, receipt presentation, and submission behavior.
+Run `bun run dev:web` when ingress is already running.
+
 Run the shadcn CLI from `apps/web` so monorepo aliases route
 generated components, hooks, styles, and UI utilities into `packages/ui`:
 

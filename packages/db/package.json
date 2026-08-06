@@ -13,6 +13,11 @@
       "types": "./dist/testing.d.ts",
       "development": "./src/testing.ts",
       "default": "./dist/testing.js"
+    },
+    "./reference-client": {
+      "types": "./dist/reference-client.d.ts",
+      "development": "./src/reference-client.ts",
+      "default": "./dist/reference-client.js"
     }
   },
   "scripts": {

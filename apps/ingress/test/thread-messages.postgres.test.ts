@@ -1,4 +1,5 @@
 import { prepareMessageAdmissionFixture, readMessageAuthorityCounts } from "@osfo/db/testing";
+import { seedReferenceClientAuthority } from "@osfo/db/reference-client";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
@@ -9,16 +10,15 @@ if (databaseUrl === undefined) {
   throw new Error("OSFO_TEST_DATABASE_URL is required for PostgreSQL integration tests");
 }
 
-const principalId = "b3ef0861-2df7-4d2a-a195-fbc5ed75bc81";
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
 const authenticationToken = "browser-composition-session";
 
 describe("Osfo ingress composition", () => {
   it.live("accepts one authenticated Thread message durably", () =>
     Effect.gen(function* () {
-      yield* prepareMessageAdmissionFixture(databaseUrl, {
-        principals: [{ principalId, authenticationToken, threadIds: [threadId] }],
-      });
+      yield* prepareMessageAdmissionFixture(databaseUrl, { principals: [] });
+      yield* seedReferenceClientAuthority({ authenticationToken, databaseUrl, threadId });
+      yield* seedReferenceClientAuthority({ authenticationToken, databaseUrl, threadId });
 
       const ingress = yield* startCompiledIngress({
         databaseUrl,

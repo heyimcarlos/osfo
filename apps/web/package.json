@@ -10,11 +10,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@effect/atom-react": "catalog:",
+    "@osfo/api": "workspace:*",
     "@osfo/ui": "workspace:*",
+    "effect": "catalog:",
+    "lucide-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:"
   },
   "devDependencies": {
+    "@effect/vitest": "catalog:",
     "@tailwindcss/vite": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
