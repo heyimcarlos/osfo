@@ -93,7 +93,14 @@ CREATE TABLE delivery_attempts (
     protocol text NOT NULL,
     message_id text NOT NULL,
     broker_attempt integer NOT NULL,
+    published_at timestamptz,
     received_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    slot_acquired_at timestamptz,
+    database_acquire_started_at timestamptz,
+    database_acquired_at timestamptz,
+    claim_completed_at timestamptz,
+    terminal_started_at timestamptz,
+    terminal_evidence_at timestamptz,
     outcome text NOT NULL
 );
 

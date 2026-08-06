@@ -14,6 +14,8 @@ worker_min_instances=${B3_WORKER_MIN_INSTANCES:-0}
 worker_max_instances=${B3_WORKER_MAX_INSTANCES:-8}
 fair_dispatch_window=${B3_FAIR_DISPATCH_WINDOW:-0}
 fair_principal_capacity=${B3_FAIR_PRINCIPAL_CAPACITY:-4096}
+relay_publisher_workers=${B3_RELAY_PUBLISHER_WORKERS:-4}
+relay_publication_lease_seconds=${B3_RELAY_PUBLICATION_LEASE_SECONDS:-30}
 enable_ordering=${B3_ENABLE_ORDERING:-1}
 ingress_admission_slots=${B3_INGRESS_ADMISSION_SLOTS:-0}
 ingress_concurrency=${B3_INGRESS_CONCURRENCY:-80}
@@ -21,11 +23,13 @@ ingress_min_instances=${B3_INGRESS_MIN_INSTANCES:-0}
 capture_attempt_evidence=${B3_CAPTURE_ATTEMPT_EVIDENCE:-1}
 ack_deadline=${B3_ACK_DEADLINE:-10}
 reset_subscription_before_lane=${B3_RESET_SUBSCRIPTION:-1}
+load_principal_count=${B3_LOAD_PRINCIPAL_COUNT:-0}
+load_threads_per_principal=${B3_LOAD_THREADS_PER_PRINCIPAL:-1}
 case "$sequence_stripes" in
   4|16|64) ;;
   *) echo "B3_SEQUENCE_STRIPES must be 4, 16, or 64" >&2; exit 2 ;;
 esac
-for setting in inflight_agent_runs inflight_budget_stripes worker_concurrency worker_slots worker_db_pool ingress_concurrency ack_deadline; do
+for setting in inflight_agent_runs inflight_budget_stripes worker_concurrency worker_slots worker_db_pool ingress_concurrency ack_deadline relay_publisher_workers relay_publication_lease_seconds; do
   value=${!setting}
   if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
     echo "$setting must be a positive integer" >&2
@@ -46,12 +50,12 @@ if (( ingress_admission_slots > 0 && ingress_admission_slots >= ingress_concurre
   echo "B3_INGRESS_ADMISSION_SLOTS must be lower than B3_INGRESS_CONCURRENCY" >&2
   exit 2
 fi
-if [[ ! "$worker_min_instances" =~ ^[0-9]+$ ]] || (( worker_min_instances > 8 )); then
-  echo "B3_WORKER_MIN_INSTANCES must be an integer from 0 through 8" >&2
+if [[ ! "$worker_min_instances" =~ ^[0-9]+$ ]] || (( worker_min_instances > 16 )); then
+  echo "B3_WORKER_MIN_INSTANCES must be an integer from 0 through 16" >&2
   exit 2
 fi
-if [[ ! "$worker_max_instances" =~ ^[1-9][0-9]*$ ]] || (( worker_max_instances > 8 || worker_min_instances > worker_max_instances )); then
-  echo "B3_WORKER_MAX_INSTANCES must be from 1 through 8 and at least B3_WORKER_MIN_INSTANCES" >&2
+if [[ ! "$worker_max_instances" =~ ^[1-9][0-9]*$ ]] || (( worker_max_instances > 16 || worker_min_instances > worker_max_instances )); then
+  echo "B3_WORKER_MAX_INSTANCES must be from 1 through 16 and at least B3_WORKER_MIN_INSTANCES" >&2
   exit 2
 fi
 if [[ ! "$fair_dispatch_window" =~ ^[0-9]+$ ]]; then
@@ -78,6 +82,10 @@ case "$capture_attempt_evidence" in
   0|1) ;;
   *) echo "B3_CAPTURE_ATTEMPT_EVIDENCE must be 0 or 1" >&2; exit 2 ;;
 esac
+if [[ ! "$load_principal_count" =~ ^[0-9]+$ ]] || [[ ! "$load_threads_per_principal" =~ ^[1-9][0-9]*$ ]]; then
+  echo "B3_LOAD_PRINCIPAL_COUNT must be non-negative and B3_LOAD_THREADS_PER_PRINCIPAL must be positive" >&2
+  exit 2
+fi
 if [[ "$experiment" == "transactional-outbox" ]]; then
   state_file="$prototype_dir/.b3-run.env"
   default_prefix=osfo-b3-38
@@ -296,7 +304,7 @@ deploy_relay() {
     --no-allow-unauthenticated --cpu=1 --memory=512Mi --concurrency=80 --min=1 --max=2 \
     --no-cpu-throttling --timeout=300 --add-cloudsql-instances="$sql_connection_name" \
     --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="GCP_PROJECT_ID=$project_id,PUBSUB_TOPIC_ID=$topic_id,DB_POOL_SIZE=4,RELAY_BATCH_SIZE=128,B3_SEQUENCE_STRIPES=$sequence_stripes,B3_FAIR_DISPATCH_WINDOW=$fair_dispatch_window,B3_FAIR_PRINCIPAL_CAPACITY=$fair_principal_capacity"
+    --set-env-vars="GCP_PROJECT_ID=$project_id,PUBSUB_TOPIC_ID=$topic_id,DB_POOL_SIZE=8,RELAY_BATCH_SIZE=128,RELAY_PUBLISHER_WORKERS=$relay_publisher_workers,RELAY_PUBLICATION_LEASE_SECONDS=$relay_publication_lease_seconds,B3_SEQUENCE_STRIPES=$sequence_stripes,B3_FAIR_DISPATCH_WINDOW=$fair_dispatch_window,B3_FAIR_PRINCIPAL_CAPACITY=$fair_principal_capacity"
 }
 
 reset_subscription() {
@@ -642,15 +650,21 @@ load_lane() {
   start_proxy
   (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness prepare \
     --benchmark="$benchmark_id" --lane="$lane-$repetition" --expected-incoming="$count")
+  (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness diagnostics \
+    --benchmark="$benchmark_id") >"$destination/database-before.json"
   capture_frozen_topology "$destination/topology"
   ingress_url=$(gcloud run services describe "$ingress_service" --region="$region" --format='value(status.url)')
   local identity_token
   identity_token=$(gcloud auth print-identity-token)
   local started_at
   started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  local identity_args=()
+  if (( load_principal_count > 0 )); then
+    identity_args=(--principal-count="$load_principal_count" --thread-count="$load_threads_per_principal")
+  fi
   (cd "$prototype_dir" && GCP_IDENTITY_TOKEN="$identity_token" go run ./cmd/b3-load \
     --url="$ingress_url" --benchmark="$benchmark_id" --rate="$rate" --end-rate="$end_rate" \
-    --duration="${duration}s" --count="$count" \
+    --duration="${duration}s" --count="$count" "${identity_args[@]}" \
     >"$destination/caller-samples.jsonl" 2>"$destination/load-client.log")
   summarize_caller_samples "$destination/caller-samples.jsonl" "$destination/caller-summary.json"
   local offer_ended_at
@@ -658,6 +672,16 @@ load_lane() {
   sleep 60
   (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness audit \
     --benchmark="$benchmark_id" --expected-incoming="$count") >"$destination/audit.json"
+  if (( fair_dispatch_window > 0 )); then
+    (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness fair-snapshot \
+      --benchmark="$benchmark_id") >"$destination/final-fairness-snapshot.json"
+  fi
+  (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness diagnostics \
+    --benchmark="$benchmark_id") >"$destination/database-after.json"
+  (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness tail-samples \
+    --benchmark="$benchmark_id") >"$destination/tail-samples.jsonl"
+  (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness publication-samples \
+    --benchmark="$benchmark_id") >"$destination/publication-samples.jsonl"
   local ended_at
   ended_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   jq -n --arg manifest "$manifest_version" --arg benchmark_id "$benchmark_id" --arg lane "$lane" --arg started_at "$started_at" \
@@ -670,13 +694,22 @@ load_lane() {
     --argjson enable_ordering "$enable_ordering" --argjson ingress_admission_slots "$ingress_admission_slots" \
     --argjson ingress_concurrency "$ingress_concurrency" --argjson ingress_min_instances "$ingress_min_instances" \
     --argjson capture_attempt_evidence "$capture_attempt_evidence" \
+    --argjson fair_dispatch_window "$fair_dispatch_window" \
+    --argjson relay_publisher_workers "$relay_publisher_workers" \
+    --argjson relay_publication_lease_seconds "$relay_publication_lease_seconds" \
+    --argjson fair_principal_capacity "$fair_principal_capacity" \
+    --argjson principal_count "$load_principal_count" \
+    --argjson threads_per_principal "$load_threads_per_principal" \
     --argjson ack_deadline "$ack_deadline" \
     --argjson subscription_reset_before_lane "$reset_subscription_before_lane" \
-    '{manifest:$manifest,benchmark_id:$benchmark_id,lane:$lane,repetition:$repetition,handoff:"transactional-outbox",sequence_stripes:$sequence_stripes,relay_owners:4,inflight_agent_run_capacity:$inflight_agent_runs,inflight_budget_stripes:$inflight_budget_stripes,ingress_admission_slots:$ingress_admission_slots,ingress_concurrency:$ingress_concurrency,ingress_min_instances:$ingress_min_instances,capture_attempt_evidence:($capture_attempt_evidence == 1),worker_concurrency:$worker_concurrency,worker_slots:$worker_slots,worker_db_pool:$worker_db_pool,worker_min_instances:$worker_min_instances,subscription_ordering_enabled:($enable_ordering == 1),ack_deadline_seconds:$ack_deadline,subscription_reset_before_lane:($subscription_reset_before_lane == 1),rate_per_second:$rate,end_rate_per_second:$end_rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at}' \
+    '{manifest:$manifest,benchmark_id:$benchmark_id,lane:$lane,repetition:$repetition,handoff:"transactional-outbox",sequence_stripes:$sequence_stripes,relay_selector_owners:1,relay_publisher_workers:$relay_publisher_workers,relay_publication_lease_seconds:$relay_publication_lease_seconds,inflight_agent_run_capacity:$inflight_agent_runs,inflight_budget_stripes:$inflight_budget_stripes,ingress_admission_slots:$ingress_admission_slots,ingress_concurrency:$ingress_concurrency,ingress_min_instances:$ingress_min_instances,capture_attempt_evidence:($capture_attempt_evidence == 1),fair_dispatch_window:$fair_dispatch_window,fair_principal_capacity:$fair_principal_capacity,principal_count:$principal_count,threads_per_principal:$threads_per_principal,worker_concurrency:$worker_concurrency,worker_slots:$worker_slots,worker_db_pool:$worker_db_pool,worker_min_instances:$worker_min_instances,subscription_ordering_enabled:($enable_ordering == 1),ack_deadline_seconds:$ack_deadline,subscription_reset_before_lane:($subscription_reset_before_lane == 1),rate_per_second:$rate,end_rate_per_second:$end_rate,duration_seconds:$duration,count:$count,started_at:$started_at,offer_ended_at:$offer_ended_at,ended_at:$ended_at}' \
     >"$destination/scenario.json"
   capture_logs "$destination/runtime-logs.json" "$started_at"
+  capture_database_logs "$destination/database-logs.json" "$started_at" "$ended_at"
   collect_monitoring "$destination" "$started_at" "$ended_at"
-  gzip -9 "$destination/caller-samples.jsonl" "$destination/runtime-logs.json"
+  gzip -9 "$destination/caller-samples.jsonl" "$destination/runtime-logs.json" \
+    "$destination/publication-samples.jsonl" \
+    "$destination/database-logs.json" "$destination/tail-samples.jsonl"
   seal_directory "$destination"
 }
 
@@ -923,6 +956,12 @@ check_qualification_lane() {
     echo "$destination has $invalid_samples invalid caller outcomes" >&2
     return 1
   fi
+  if (( fair_dispatch_window > 0 )) && ! jq -e \
+    '.permits_in_use == 0 and .queued_principals == 0' \
+    "$destination/final-fairness-snapshot.json" >/dev/null; then
+    echo "$destination did not release every fair-dispatch permit" >&2
+    return 1
+  fi
   if [[ "$mode" == "stress" ]] && ! jq -e --slurpfile scenario "$destination/scenario.json" '
     (.accepted_incoming / $scenario[0].duration_seconds) >= 232
   ' "$destination/audit.json" >/dev/null; then
@@ -1157,6 +1196,15 @@ capture_logs() {
   local destination=$1
   local started_at=$2
   gcloud logging read "timestamp>=\"$started_at\" AND (resource.labels.service_name=\"$worker_service\" OR resource.labels.service_name=\"$ingress_service\" OR resource.labels.service_name=\"$relay_service\") AND (logName!=\"projects/$project_id/logs/run.googleapis.com%2Frequests\" OR httpRequest.status>=400)" \
+    --format=json --limit=100000 >"$destination"
+}
+
+capture_database_logs() {
+  local destination=$1
+  local started_at=$2
+  local ended_at=$3
+  gcloud logging read \
+    "timestamp>=\"$started_at\" AND timestamp<=\"$ended_at\" AND resource.type=\"cloudsql_database\" AND resource.labels.database_id=\"$project_id:$sql_instance\"" \
     --format=json --limit=100000 >"$destination"
 }
 

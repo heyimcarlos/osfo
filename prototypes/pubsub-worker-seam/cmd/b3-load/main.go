@@ -52,8 +52,9 @@ func run(ctx context.Context) error {
 	maxInFlight := flags.Int("max-in-flight", 4096, "bounded local request concurrency")
 	requestTimeout := flags.Duration("request-timeout", 60*time.Second, "per-request timeout")
 	principal := flags.String("principal", "", "optional Principal identity for the fairness lane")
+	principalCount := flags.Int("principal-count", 0, "number of generated Principals for a production-shaped lane")
 	threadPrefix := flags.String("thread-prefix", "thread", "Thread identity prefix for the fairness lane")
-	threadCount := flags.Int("thread-count", 1, "number of Threads used by the Principal")
+	threadCount := flags.Int("thread-count", 1, "number of Threads used by each Principal")
 	ordinalOffset := flags.Int("ordinal-offset", 0, "ordinal offset for concurrent Principal streams")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
@@ -64,6 +65,9 @@ func run(ctx context.Context) error {
 	}
 	if *url == "" || *rate <= 0 || *duration <= 0 || *maxInFlight <= 0 || *threadCount <= 0 {
 		return fmt.Errorf("--url, positive --rate, --duration, and --max-in-flight are required")
+	}
+	if *principalCount < 0 || *principal != "" && *principalCount > 0 {
+		return fmt.Errorf("--principal-count must be non-negative and cannot be combined with --principal")
 	}
 	if *endRate <= 0 {
 		*endRate = *rate
@@ -104,11 +108,8 @@ func run(ctx context.Context) error {
 			defer wait.Done()
 			defer func() { <-semaphore }()
 			ordinal := *ordinalOffset + streamOrdinal
-			thread := ""
-			if *principal != "" {
-				thread = fmt.Sprintf("%s-%04d", *threadPrefix, streamOrdinal%*threadCount)
-			}
-			samples <- offer(ctx, client, *url, *accessToken, benchmarkID, ordinal, scheduledAt, *principal, thread)
+			principalIdentity, thread := loadIdentity(streamOrdinal, *principal, *principalCount, *threadPrefix, *threadCount)
+			samples <- offer(ctx, client, *url, *accessToken, benchmarkID, ordinal, scheduledAt, principalIdentity, thread)
 		}(streamOrdinal, scheduledAt)
 	}
 	wait.Wait()
@@ -118,6 +119,20 @@ func run(ctx context.Context) error {
 	}
 	fmt.Fprintf(os.Stderr, "offered=%d encoded=%d elapsed=%s\n", *count, encoded.Load(), time.Since(started))
 	return nil
+}
+
+func loadIdentity(streamOrdinal int, fixedPrincipal string, principalCount int, threadPrefix string, threadsPerPrincipal int) (string, string) {
+	if fixedPrincipal != "" {
+		return fixedPrincipal, fmt.Sprintf("%s-%04d", threadPrefix, streamOrdinal%threadsPerPrincipal)
+	}
+	if principalCount <= 0 {
+		return "", ""
+	}
+	principalOrdinal := streamOrdinal % principalCount
+	threadOrdinal := (streamOrdinal / principalCount) % threadsPerPrincipal
+	principal := fmt.Sprintf("principal-%06d", principalOrdinal)
+	thread := fmt.Sprintf("%s-%06d-%04d", threadPrefix, principalOrdinal, threadOrdinal)
+	return principal, thread
 }
 
 func scheduledOffset(ordinal, count int, duration time.Duration, startRate, endRate float64) time.Duration {

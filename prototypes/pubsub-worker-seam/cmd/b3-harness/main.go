@@ -25,7 +25,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("command required: migrate, prepare, admit, inject-worker-crash, relay-once, drain, backlog, fair-snapshot, audit, retention-plan, or matrix")
+		return fmt.Errorf("command required: migrate, prepare, admit, inject-worker-crash, relay-once, drain, backlog, fair-snapshot, audit, diagnostics, tail-samples, publication-samples, retention-plan, or matrix")
 	}
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -51,6 +51,7 @@ func run(ctx context.Context, args []string) error {
 	requestHash := flags.String("request-hash", "", "stable request hash")
 	hardCrash := flags.Bool("hard-crash", false, "terminate at the injected boundary")
 	batchSize := flags.Int("batch-size", 128, "bounded relay batch size")
+	publicationLease := flags.Duration("publication-lease", 30*time.Second, "durable fair-publication claim lease")
 	sequenceStripes := flags.Int("sequence-stripes", store.B3DefaultSequenceStripes, "commit-order sequence stripes")
 	budgetCapacity := flags.Int("inflight-agent-runs", budgetCapacityDefault, "global durable in-flight AgentRun capacity")
 	budgetStripes := flags.Int("budget-stripes", budgetStripesDefault, "durable in-flight budget stripes")
@@ -159,7 +160,7 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		defer publisher.Close()
-		relay := &b3.Relay{Store: database, Publisher: publisher, Owner: "b3-harness", BatchSize: *batchSize, SequenceStripes: *sequenceStripes, Fault: *fault, HardCrash: *hardCrash, FairDispatch: *fairWindow > 0}
+		relay := &b3.Relay{Store: database, Publisher: publisher, Owner: "b3-harness", BatchSize: *batchSize, SequenceStripes: *sequenceStripes, Fault: *fault, HardCrash: *hardCrash, FairDispatch: *fairWindow > 0, PublicationLease: *publicationLease}
 		if command == "relay-once" {
 			var count int
 			if relay.FairDispatch {
@@ -177,6 +178,16 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(audit)
+	case "diagnostics":
+		snapshot, err := database.B3DiagnosticSnapshot(ctx, benchmarkID)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(snapshot)
+	case "tail-samples":
+		return database.WriteB3TailSamples(ctx, benchmarkID, os.Stdout)
+	case "publication-samples":
+		return database.WriteB3PublicationSamples(ctx, benchmarkID, os.Stdout)
 	case "fair-snapshot":
 		snapshot, err := database.B3FairSnapshot(ctx, benchmarkID)
 		if err != nil {

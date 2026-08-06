@@ -47,3 +47,14 @@ func TestOfferDoesNotRetryTypedOverload(t *testing.T) {
 		t.Fatalf("result = %#v, requests = %d", result, requests.Load())
 	}
 }
+
+func TestLoadIdentityGeneratesStablePrincipalThreads(t *testing.T) {
+	principal, thread := loadIdentity(100003, "", 100000, "thread", 1)
+	if principal != "principal-000003" || thread != "thread-000003-0000" {
+		t.Fatalf("identity = %q/%q", principal, thread)
+	}
+	principal, thread = loadIdentity(3, "noisy", 0, "noisy-thread", 128)
+	if principal != "noisy" || thread != "noisy-thread-0003" {
+		t.Fatalf("fixed identity = %q/%q", principal, thread)
+	}
+}

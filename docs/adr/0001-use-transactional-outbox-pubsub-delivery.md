@@ -103,9 +103,12 @@ preserved 252.5 Good Root Outcomes/s, above the 232/s production target, and
 drained to zero nonterminal work and zero durable-budget mismatch.
 
 The retained-corpus target exposed a publish-to-claim p99 of 1,467.8 ms against
-the one-second topology threshold. This is tracked separately and prevents a
-claim of full retained-corpus production qualification. It does not reopen the
-atomic handoff choice.
+the historical one-second topology threshold. An identical fresh-database
+control reproduced a 1,493.1 ms p99, of which 1,359.2 ms was Pub/Sub
+publish-to-push arrival. Point and predecessor plans were sub-millisecond on a
+71 MB database. Retained corpus depth is therefore not the primary cause, and
+publish-to-claim remains an evidence-only characterization under the production
+workload contract.
 
 The Principal-first challenge offered one noisy Principal at 230 incoming
 messages/s across 128 Threads while a quiet Principal remained continuously
@@ -116,6 +119,37 @@ AgentRuns completed with zero global or Principal budget mismatch and zero
 duplicate terminal commits. Relay loss before publish, relay loss after broker
 confirmation, and worker loss all recovered with zero leaked permits.
 
+The first integrated 232 incoming-message/s qualification exposed a separate
+capacity failure. The 32-permit fair window requires a mean selected-to-terminal
+lifetime below 91.95 ms to carry the trace's 348 AgentRuns/s. The measured mean
+was 125.8 ms before terminal pipelining and 98.0 ms after it. The final
+60-second control accepted 6,374 of 13,920 commands, while every one of its
+8,282 accepted AgentRuns completed with zero correctness or budget mismatch.
+Production qualification is `FAIL`; the required 30-minute and 60-million
+retained-message lanes remain `MISSING` because the prerequisite target gate
+failed.
+
+A Ticket 47 corrective continuation separated Principal-first selection from
+publication ownership. The selector now creates durable publication tasks in
+one bounded transaction and releases its advisory lock before Pub/Sub calls.
+Bounded publisher workers claim tasks with finite leases and monotonic epochs.
+Provider confirmation records evidence, confirms the outbox record, and
+releases the dispatch permit while the per-Thread gate and durable obligations
+remain authoritative until wait or terminal.
+
+Recovery passed loss before publish and loss after provider confirmation. Both
+advanced to publication epoch 2, drained automatically, and ended with zero
+active publication tasks, leaked permits, or authority mismatch. The
+post-confirmation loss produced one expected duplicate publication and one
+terminal commit.
+
+Integrated capacity still failed. Corrected 60-second target controls varied
+the dispatch window, worker concurrency, worker ceiling, and warm floor. The
+best accepted 8,833 of 13,920 offered commands and completed all 12,595 derived
+AgentRuns exactly. A max-16 worker ceiling and a 12-worker warm floor did not
+close the gap. The short target gate remains `FAIL`, so longer target and
+Production Acceptance Corpus lanes remain `MISSING`.
+
 The checksummed comparison, exact call flows, reconciliation pointers,
 resource manifests, cost boundary, and teardown proof are in
 [`HANDOFF-DECISION.md`](../../prototypes/pubsub-worker-seam/HANDOFF-DECISION.md)
@@ -124,6 +158,9 @@ and the offline
 The fairness call flow, rejected shapes, compact evidence, and production
 contract are in
 [`PRINCIPAL-FAIRNESS-STUDY.md`](../../prototypes/pubsub-worker-seam/PRINCIPAL-FAIRNESS-STUDY.md).
+The retained-tail attribution, integrated target controls, and fail-closed
+qualification are in
+[`B3-RETAINED-TAIL-QUALIFICATION.md`](../../prototypes/pubsub-worker-seam/B3-RETAINED-TAIL-QUALIFICATION.md).
 
 ## Cost boundary
 
@@ -152,6 +189,13 @@ deployment contract before production approval.
 - A long-lived authenticated push subscription and min-zero workers remain the
   default. Warm worker floors were rejected because they added idle cost
   without improving measured latency.
-- Full production approval still requires the retained-corpus tail control,
-  production Temporal integration, and complete deployment cost and recovery
-  evidence under the final manifest.
+- Retained history is not the cause of the observed Pub/Sub delivery tail, but
+  the integrated authenticated push path does not meet target throughput.
+- Dispatch permits are publication flow control and release on durable provider
+  confirmation. They are not held until AgentRun terminal completion.
+- Durable publication tasks with owner, lease, and epoch recovery replace the
+  selector-wide publication lock.
+- Full production approval remains blocked. A delivery and worker activation
+  contract must meet the short target gate before longer target,
+  retained-corpus, Temporal, cost, and recovery evidence can qualify a final
+  manifest.

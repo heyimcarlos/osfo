@@ -103,6 +103,7 @@ func (p *Publisher) Close() error {
 func (p *Publisher) PublishBatch(ctx context.Context, records []store.B3OutboxRecord) ([]store.B3Publication, error) {
 	results := make([]*pubsub.PublishResult, 0, len(records))
 	publications := make([]store.B3Publication, 0, len(records))
+	var publishErrors []error
 	for _, record := range records {
 		envelope := worker.Envelope{
 			AgentRunID: record.AgentRunID, BenchmarkID: record.BenchmarkID,
@@ -122,28 +123,31 @@ func (p *Publisher) PublishBatch(ctx context.Context, records []store.B3OutboxRe
 		messageID, err := result.Get(ctx)
 		if err != nil {
 			publications[index].Outcome = "provider_error"
-			return publications, err
+			publishErrors = append(publishErrors, fmt.Errorf("publish record %d: %w", index, err))
+			continue
 		}
 		confirmedAt := time.Now().UTC()
 		publications[index].MessageID = messageID
 		publications[index].ConfirmedAt = &confirmedAt
 		publications[index].Outcome = "confirmed"
 	}
-	return publications, nil
+	return publications, errors.Join(publishErrors...)
 }
 
 type Relay struct {
-	Store           *store.Store
-	Publisher       *Publisher
-	Owner           string
-	BatchSize       int
-	SequenceStripes int
-	Fault           string
-	HardCrash       bool
-	FairDispatch    bool
+	Store            *store.Store
+	Publisher        *Publisher
+	Owner            string
+	BatchSize        int
+	SequenceStripes  int
+	Fault            string
+	HardCrash        bool
+	FairDispatch     bool
+	PublisherWorkers int
+	PublicationLease time.Duration
 }
 
-func (r *Relay) RunFairOnce(ctx context.Context) (int, error) {
+func (r *Relay) RunFairSelectionOnce(ctx context.Context) (int, error) {
 	if r.Fault == BeforeRelayRead {
 		r.cut()
 		return 0, ErrInjectedCut
@@ -152,8 +156,17 @@ func (r *Relay) RunFairOnce(ctx context.Context) (int, error) {
 	if err != nil || !owned {
 		return 0, err
 	}
-	defer r.Store.ReleaseB3FairSelector(context.Background(), connection)
-	records, err := r.Store.ReadOrSelectB3FairBatch(ctx, connection, r.BatchSize)
+	records, err := r.Store.SelectB3FairBatch(ctx, connection, r.BatchSize)
+	r.Store.ReleaseB3FairSelector(context.Background(), connection)
+	return len(records), err
+}
+
+func (r *Relay) RunFairPublicationOnce(ctx context.Context) (int, error) {
+	lease := r.PublicationLease
+	if lease <= 0 {
+		lease = 30 * time.Second
+	}
+	records, err := r.Store.ClaimB3FairPublicationBatch(ctx, r.Owner, r.BatchSize, lease)
 	if err != nil || len(records) == 0 {
 		return 0, err
 	}
@@ -167,20 +180,37 @@ func (r *Relay) RunFairOnce(ctx context.Context) (int, error) {
 			publications[index].Outcome = "ambiguous_after_confirmation"
 		}
 	}
-	if err := r.Store.RecordB3Publications(context.Background(), connection, r.Owner, publications); err != nil {
-		return 0, err
-	}
 	if publishErr != nil {
+		if err := r.Store.RecordAndConfirmB3FairPublications(context.Background(), r.Owner, publications); err != nil {
+			return 0, err
+		}
 		return 0, publishErr
 	}
 	if r.Fault == AmbiguousAfterConfirmation || r.Fault == AfterConfirmationBeforeSave {
+		if err := r.Store.RecordB3FairPublications(context.Background(), r.Owner, publications); err != nil {
+			return 0, err
+		}
 		r.cut()
 		return len(records), ErrInjectedCut
 	}
-	if err := r.Store.ConfirmB3FairPublications(context.Background(), connection, publications); err != nil {
+	if err := r.Store.RecordAndConfirmB3FairPublications(
+		context.Background(), r.Owner, publications,
+	); err != nil {
 		return 0, err
 	}
 	return len(records), nil
+}
+
+func (r *Relay) RunFairOnce(ctx context.Context) (int, error) {
+	selected, err := r.RunFairSelectionOnce(ctx)
+	if err != nil {
+		return 0, err
+	}
+	published, err := r.RunFairPublicationOnce(ctx)
+	if published > selected {
+		selected = published
+	}
+	return selected, err
 }
 
 func (r *Relay) RunShardOnce(ctx context.Context, shard int) (int, error) {
@@ -268,6 +298,9 @@ func (r *Relay) runAllSerial(ctx context.Context) (int, error) {
 
 func (r *Relay) Run(ctx context.Context, idleDelay time.Duration) error {
 	if r.FairDispatch {
+		if r.Fault == NoFault {
+			return r.runFairConcurrent(ctx, idleDelay)
+		}
 		for {
 			count, err := r.RunFairOnce(ctx)
 			if err != nil {
@@ -290,6 +323,53 @@ func (r *Relay) Run(ctx context.Context, idleDelay time.Duration) error {
 			return ctx.Err()
 		}
 	}
+}
+
+func (r *Relay) runFairConcurrent(ctx context.Context, idleDelay time.Duration) error {
+	workers := r.PublisherWorkers
+	if workers <= 0 {
+		workers = 4
+	}
+	fairContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan error, workers+1)
+	var wait sync.WaitGroup
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		for {
+			count, err := r.RunFairSelectionOnce(fairContext)
+			if err != nil {
+				results <- err
+				return
+			}
+			if count == 0 && !waitForRelayPoll(fairContext, idleDelay) {
+				results <- fairContext.Err()
+				return
+			}
+		}
+	}()
+	for workerIndex := 0; workerIndex < workers; workerIndex++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for {
+				count, err := r.RunFairPublicationOnce(fairContext)
+				if err != nil {
+					results <- err
+					return
+				}
+				if count == 0 && !waitForRelayPoll(fairContext, idleDelay) {
+					results <- fairContext.Err()
+					return
+				}
+			}
+		}()
+	}
+	err := <-results
+	cancel()
+	wait.Wait()
+	return err
 }
 
 func (r *Relay) runIndependentShards(ctx context.Context, idleDelay time.Duration) error {

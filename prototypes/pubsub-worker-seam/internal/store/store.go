@@ -39,10 +39,23 @@ type CommittedModelCallAttempt struct {
 }
 
 type DeliveryAttemptEvidence struct {
-	Protocol      string
-	MessageID     string
-	BrokerAttempt int
-	Outcome       string
+	Protocol                 string
+	MessageID                string
+	BrokerAttempt            int
+	PublishedAt              time.Time
+	ReceivedAt               time.Time
+	SlotAcquiredAt           time.Time
+	DatabaseAcquireStartedAt time.Time
+	DatabaseAcquiredAt       time.Time
+	ClaimCompletedAt         time.Time
+	TerminalStartedAt        time.Time
+	Outcome                  string
+}
+
+type ClaimTiming struct {
+	DatabaseAcquireStartedAt time.Time
+	DatabaseAcquiredAt       time.Time
+	ClaimCompletedAt         time.Time
 }
 
 type ClaimResult struct {
@@ -145,7 +158,26 @@ func (s *Store) MarkOffer(ctx context.Context, benchmarkID uuid.UUID, start bool
 }
 
 func (s *Store) TryClaim(ctx context.Context, runID, benchmarkID uuid.UUID, owner string, publishedAt time.Time, lease time.Duration) (ClaimResult, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	result, _, err := s.TryClaimTimed(ctx, runID, benchmarkID, owner, publishedAt, lease)
+	return result, err
+}
+
+func (s *Store) TryClaimTimed(ctx context.Context, runID, benchmarkID uuid.UUID, owner string, publishedAt time.Time, lease time.Duration) (ClaimResult, ClaimTiming, error) {
+	timing := ClaimTiming{DatabaseAcquireStartedAt: time.Now().UTC()}
+	connection, err := s.pool.Acquire(ctx)
+	timing.DatabaseAcquiredAt = time.Now().UTC()
+	if err != nil {
+		timing.ClaimCompletedAt = timing.DatabaseAcquiredAt
+		return ClaimResult{}, timing, err
+	}
+	defer connection.Release()
+	result, err := s.tryClaim(ctx, connection, runID, benchmarkID, owner, publishedAt, lease)
+	timing.ClaimCompletedAt = time.Now().UTC()
+	return result, timing, err
+}
+
+func (s *Store) tryClaim(ctx context.Context, connection *pgxpool.Conn, runID, benchmarkID uuid.UUID, owner string, publishedAt time.Time, lease time.Duration) (ClaimResult, error) {
+	tx, err := connection.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return ClaimResult{}, err
 	}
@@ -314,122 +346,99 @@ func (s *Store) CompleteModelCallAndRun(
 	if err != nil {
 		return false, err
 	}
-	command, err := tx.Exec(ctx, `
+	if fairDispatch {
+		if principalKey == nil || *principalKey == "" {
+			return false, fmt.Errorf("fair AgentRun is missing Principal identity")
+		}
+		if principalBudgetStripe == nil {
+			return false, fmt.Errorf("fair AgentRun is missing Principal budget stripe")
+		}
+	}
+	type terminalCommand struct {
+		name    string
+		missing string
+	}
+	batch := &pgx.Batch{}
+	commands := make([]terminalCommand, 0, 10)
+	queue := func(name, missing, query string, arguments ...any) {
+		batch.Queue(query, arguments...)
+		commands = append(commands, terminalCommand{name: name, missing: missing})
+	}
+	queue("ModelCallAttempt", "committed ModelCallAttempt is missing or already terminal", `
 		UPDATE model_call_attempts
 		SET dispatch_evidence = 'terminal_observed', outcome = 'succeeded',
 		    usage_status = 'unknown', completed_at = clock_timestamp()
 		WHERE id = $1 AND agent_run_id = $2 AND claim_epoch = $3 AND completed_at IS NULL`,
 		attempt.ID, run.ID, run.ClaimEpoch)
-	if err != nil {
-		return false, err
-	}
-	if command.RowsAffected() != 1 {
-		return false, fmt.Errorf("committed ModelCallAttempt is missing or already terminal")
-	}
-	command, err = tx.Exec(ctx, `
+	queue("ModelCall", "logical ModelCall is missing or already terminal", `
 		UPDATE model_calls
 		SET logical_status = 'succeeded', final_outcome = $2, completed_at = clock_timestamp()
 		WHERE id = $1 AND logical_status = 'pending'`, attempt.ModelCallID, normalizedOutcome)
-	if err != nil {
-		return false, err
-	}
-	if command.RowsAffected() != 1 {
-		return false, fmt.Errorf("logical ModelCall is missing or already terminal")
-	}
-	command, err = tx.Exec(ctx, `
+	queue("AgentRunAttempt", "AgentRunAttempt is missing or already terminal", `
 		UPDATE agent_run_attempts
 		SET completed_at = clock_timestamp(), outcome = 'succeeded'
 		WHERE agent_run_id = $1 AND claim_epoch = $2 AND completed_at IS NULL`, run.ID, run.ClaimEpoch)
-	if err != nil {
-		return false, err
-	}
-	if command.RowsAffected() != 1 {
-		return false, fmt.Errorf("AgentRunAttempt is missing or already terminal")
-	}
-	command, err = tx.Exec(ctx, `
+	queue("AgentRun", "AgentRun claim is no longer active", `
 		UPDATE agent_runs
 		SET state = 'succeeded', completed_at = clock_timestamp(), terminal_commits = terminal_commits + 1,
 		    lease_owner = NULL, lease_expires_at = NULL
 		WHERE id = $1 AND benchmark_id = $2 AND state = 'running' AND claim_epoch = $3`,
 		run.ID, run.BenchmarkID, run.ClaimEpoch)
-	if err != nil {
-		return false, err
-	}
-	if command.RowsAffected() != 1 {
-		return false, fmt.Errorf("AgentRun claim is no longer active")
-	}
 	if fairDispatch {
-		if principalKey == nil || *principalKey == "" {
-			return false, fmt.Errorf("fair AgentRun is missing Principal identity")
-		}
-		command, err = tx.Exec(ctx, `
-			UPDATE b3_fair_dispatch_budget
-			SET in_use = in_use - 1, updated_at = clock_timestamp()
-			WHERE singleton AND in_use > 0`)
-		if err != nil {
-			return false, err
-		}
-		if command.RowsAffected() != 1 {
-			return false, fmt.Errorf("fair dispatch permit is missing")
-		}
-		command, err = tx.Exec(ctx, `
+		queue("fair Thread permit", "fair Thread permit is missing", `
 			UPDATE b3_fair_threads
 			SET in_flight = false
 			WHERE benchmark_id = $1 AND principal_key = $2 AND thread_key = $3 AND in_flight`,
 			run.BenchmarkID, *principalKey, threadKey)
-		if err != nil {
-			return false, err
-		}
-		if command.RowsAffected() != 1 {
-			return false, fmt.Errorf("fair Thread permit is missing")
-		}
-		if principalBudgetStripe == nil {
-			return false, fmt.Errorf("fair AgentRun is missing Principal budget stripe")
-		}
-		command, err = tx.Exec(ctx, `
+		queue("fair Principal obligation", "fair Principal obligation is missing", `
 			UPDATE b3_fair_principal_budget
 			SET in_use = in_use - 1, updated_at = clock_timestamp()
 			WHERE benchmark_id = $1 AND principal_key = $2 AND budget_stripe = $3
 			  AND in_use > 0`, run.BenchmarkID, *principalKey, *principalBudgetStripe)
-		if err != nil {
-			return false, err
-		}
-		if command.RowsAffected() != 1 {
-			return false, fmt.Errorf("fair Principal obligation is missing")
-		}
-		command, err = tx.Exec(ctx, `
-			UPDATE b3_outbox
-			SET fair_permit_released_at = clock_timestamp()
-			WHERE agent_run_id = $1 AND fair_selected_at IS NOT NULL
-			  AND fair_permit_released_at IS NULL`, run.ID)
-		if err != nil {
-			return false, err
-		}
-		if command.RowsAffected() != 1 {
-			return false, fmt.Errorf("fair outbox permit is missing")
-		}
 	}
 	if budgetStripe != nil {
-		command, err = tx.Exec(ctx, `
+		queue("durable AgentRun budget obligation", "durable AgentRun budget obligation is missing", `
 			UPDATE b3_inflight_budget
 			SET in_use = in_use - 1, updated_at = clock_timestamp()
 			WHERE budget_stripe = $1 AND in_use > 0`, *budgetStripe)
-		if err != nil {
-			return false, err
-		}
-		if command.RowsAffected() != 1 {
-			return false, fmt.Errorf("durable AgentRun budget obligation is missing")
-		}
 	}
 	if deliveryAttempt != nil {
-		if _, err = tx.Exec(ctx, `
+		queue("delivery attempt evidence", "delivery attempt evidence was not recorded", `
 			INSERT INTO delivery_attempts
-				(benchmark_id, agent_run_id, protocol, message_id, broker_attempt, outcome)
-			VALUES ($1, $2, $3, $4, $5, $6)`, run.BenchmarkID, run.ID,
+				(benchmark_id, agent_run_id, protocol, message_id, broker_attempt,
+				 published_at, received_at, slot_acquired_at, database_acquire_started_at,
+				 database_acquired_at, claim_completed_at, terminal_started_at,
+				 terminal_evidence_at, outcome)
+			VALUES ($1, $2, $3, $4, $5,
+			        CASE WHEN $6::timestamptz > '1970-01-01'::timestamptz THEN $6 END,
+			        CASE WHEN $7::timestamptz > '1970-01-01'::timestamptz THEN $7 ELSE clock_timestamp() END,
+			        CASE WHEN $8::timestamptz > '1970-01-01'::timestamptz THEN $8 END,
+			        CASE WHEN $9::timestamptz > '1970-01-01'::timestamptz THEN $9 END,
+			        CASE WHEN $10::timestamptz > '1970-01-01'::timestamptz THEN $10 END,
+			        CASE WHEN $11::timestamptz > '1970-01-01'::timestamptz THEN $11 END,
+			        CASE WHEN $12::timestamptz > '1970-01-01'::timestamptz THEN $12 END,
+			        clock_timestamp(), $13)`, run.BenchmarkID, run.ID,
 			deliveryAttempt.Protocol, deliveryAttempt.MessageID,
-			deliveryAttempt.BrokerAttempt, deliveryAttempt.Outcome); err != nil {
-			return false, err
+			deliveryAttempt.BrokerAttempt, deliveryAttempt.PublishedAt,
+			deliveryAttempt.ReceivedAt, deliveryAttempt.SlotAcquiredAt,
+			deliveryAttempt.DatabaseAcquireStartedAt, deliveryAttempt.DatabaseAcquiredAt,
+			deliveryAttempt.ClaimCompletedAt, deliveryAttempt.TerminalStartedAt,
+			deliveryAttempt.Outcome)
+	}
+	results := tx.SendBatch(ctx, batch)
+	for _, queued := range commands {
+		command, commandErr := results.Exec()
+		if commandErr != nil {
+			_ = results.Close()
+			return false, fmt.Errorf("%s terminal update: %w", queued.name, commandErr)
 		}
+		if command.RowsAffected() != 1 {
+			_ = results.Close()
+			return false, fmt.Errorf("%s", queued.missing)
+		}
+	}
+	if err := results.Close(); err != nil {
+		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
@@ -447,9 +456,30 @@ func (s *Store) Complete(ctx context.Context, run Run) (bool, error) {
 }
 
 func (s *Store) RecordAttempt(ctx context.Context, benchmarkID, runID uuid.UUID, protocol, messageID string, brokerAttempt int, outcome string) {
+	s.RecordAttemptEvidence(ctx, benchmarkID, runID, DeliveryAttemptEvidence{
+		Protocol: protocol, MessageID: messageID, BrokerAttempt: brokerAttempt, Outcome: outcome,
+	})
+}
+
+func (s *Store) RecordAttemptEvidence(ctx context.Context, benchmarkID, runID uuid.UUID, attempt DeliveryAttemptEvidence) {
 	_, _ = s.pool.Exec(ctx, `
-		INSERT INTO delivery_attempts (benchmark_id, agent_run_id, protocol, message_id, broker_attempt, outcome)
-		VALUES ($1, $2, $3, $4, $5, $6)`, benchmarkID, runID, protocol, messageID, brokerAttempt, outcome)
+		INSERT INTO delivery_attempts
+			(benchmark_id, agent_run_id, protocol, message_id, broker_attempt,
+			 published_at, received_at, slot_acquired_at, database_acquire_started_at,
+			 database_acquired_at, claim_completed_at, terminal_started_at,
+			 terminal_evidence_at, outcome)
+		VALUES ($1, $2, $3, $4, $5,
+		        CASE WHEN $6::timestamptz > '1970-01-01'::timestamptz THEN $6 END,
+		        CASE WHEN $7::timestamptz > '1970-01-01'::timestamptz THEN $7 ELSE clock_timestamp() END,
+		        CASE WHEN $8::timestamptz > '1970-01-01'::timestamptz THEN $8 END,
+		        CASE WHEN $9::timestamptz > '1970-01-01'::timestamptz THEN $9 END,
+		        CASE WHEN $10::timestamptz > '1970-01-01'::timestamptz THEN $10 END,
+		        CASE WHEN $11::timestamptz > '1970-01-01'::timestamptz THEN $11 END,
+		        CASE WHEN $12::timestamptz > '1970-01-01'::timestamptz THEN $12 END,
+		        clock_timestamp(), $13)`, benchmarkID, runID, attempt.Protocol, attempt.MessageID,
+		attempt.BrokerAttempt, attempt.PublishedAt, attempt.ReceivedAt, attempt.SlotAcquiredAt,
+		attempt.DatabaseAcquireStartedAt, attempt.DatabaseAcquiredAt, attempt.ClaimCompletedAt,
+		attempt.TerminalStartedAt, attempt.Outcome)
 }
 
 func (s *Store) Remaining(ctx context.Context, benchmarkID uuid.UUID) (int64, error) {
