@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"testing"
@@ -56,7 +57,10 @@ func TestB3DurableBudgetReservationAndTerminalRelease(t *testing.T) {
 		t.Fatalf("capacity error = %v, want %v", err, ErrB3InFlightBudgetExhausted)
 	}
 	for index, runID := range receipt.AgentRunIDs {
-		claim, err := database.TryClaim(ctx, runID, benchmarkID, "integration-worker", time.Now().UTC(), 10*time.Second)
+		publishedAt := time.Now().UTC().Add(-20 * time.Millisecond)
+		receivedAt := publishedAt.Add(5 * time.Millisecond)
+		slotAcquiredAt := receivedAt.Add(time.Millisecond)
+		claim, timing, err := database.TryClaimTimed(ctx, runID, benchmarkID, "integration-worker", publishedAt, 10*time.Second)
 		if err != nil || claim.Run == nil {
 			t.Fatalf("claim %d = %#v, %v", index, claim, err)
 		}
@@ -67,7 +71,12 @@ func TestB3DurableBudgetReservationAndTerminalRelease(t *testing.T) {
 		committed, err := database.CompleteModelCallAndRun(ctx, *claim.Run, attempt, "assistant_response_completed",
 			&DeliveryAttemptEvidence{
 				Protocol: "integration", MessageID: runID.String(),
-				BrokerAttempt: 1, Outcome: "completed",
+				BrokerAttempt: 1, PublishedAt: publishedAt, ReceivedAt: receivedAt,
+				SlotAcquiredAt:           slotAcquiredAt,
+				DatabaseAcquireStartedAt: timing.DatabaseAcquireStartedAt,
+				DatabaseAcquiredAt:       timing.DatabaseAcquiredAt,
+				ClaimCompletedAt:         timing.ClaimCompletedAt,
+				TerminalStartedAt:        time.Now().UTC(), Outcome: "completed",
 			})
 		if err != nil || !committed {
 			t.Fatalf("complete %d = %t, %v", index, committed, err)
@@ -95,6 +104,22 @@ func TestB3DurableBudgetReservationAndTerminalRelease(t *testing.T) {
 	if completedDeliveries != len(receipt.AgentRunIDs) {
 		t.Fatalf("completed deliveries = %d, want %d", completedDeliveries, len(receipt.AgentRunIDs))
 	}
+	var segmentedDeliveries int
+	if err := database.pool.QueryRow(ctx, `
+		SELECT count(*) FROM delivery_attempts
+		WHERE benchmark_id = $1 AND outcome = 'completed'
+		  AND published_at IS NOT NULL AND received_at IS NOT NULL
+		  AND slot_acquired_at IS NOT NULL
+		  AND database_acquire_started_at IS NOT NULL
+		  AND database_acquired_at IS NOT NULL
+		  AND claim_completed_at IS NOT NULL
+		  AND terminal_started_at IS NOT NULL
+		  AND terminal_evidence_at IS NOT NULL`, benchmarkID).Scan(&segmentedDeliveries); err != nil {
+		t.Fatal(err)
+	}
+	if segmentedDeliveries != len(receipt.AgentRunIDs) {
+		t.Fatalf("segmented deliveries = %d, want %d", segmentedDeliveries, len(receipt.AgentRunIDs))
+	}
 	exercisePrincipalFirstDispatch(t, ctx, database, budgetStripes)
 }
 
@@ -120,30 +145,85 @@ func exercisePrincipalFirstDispatch(t *testing.T, ctx context.Context, database 
 			t.Fatal(err)
 		}
 	}
+	var principalBudgetRows int
+	if err := database.pool.QueryRow(ctx, `
+		SELECT count(*) FROM b3_fair_principal_budget WHERE benchmark_id = $1`, benchmarkID).Scan(&principalBudgetRows); err != nil {
+		t.Fatal(err)
+	}
+	if principalBudgetRows > len(requests) {
+		t.Fatalf("eager Principal budget rows = %d, want at most %d", principalBudgetRows, len(requests))
+	}
 	for round := 0; round < 2; round++ {
 		connection, owned, err := database.TryOwnB3FairSelector(ctx)
 		if err != nil || !owned {
 			t.Fatalf("own selector = %t, %v", owned, err)
 		}
-		records, err := database.ReadOrSelectB3FairBatch(ctx, connection, 8)
+		selected, err := database.SelectB3FairBatch(ctx, connection, 8)
+		database.ReleaseB3FairSelector(ctx, connection)
 		if err != nil {
-			database.ReleaseB3FairSelector(ctx, connection)
 			t.Fatal(err)
 		}
-		if len(records) != 2 {
-			database.ReleaseB3FairSelector(ctx, connection)
-			t.Fatalf("round %d selected %d records, want 2", round, len(records))
+		if len(selected) != 2 {
+			t.Fatalf("round %d selected %d records, want 2", round, len(selected))
+		}
+		publicationOwner := fmt.Sprintf("fair-integration-relay/%d", round)
+		records, err := database.ClaimB3FairPublicationBatch(ctx, publicationOwner, 8, 10*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) != len(selected) {
+			t.Fatalf("round %d claimed %d publication tasks, want %d", round, len(records), len(selected))
+		}
+		snapshot, err := database.B3FairSnapshot(ctx, benchmarkID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.PermitsInUse != 2 {
+			t.Fatalf("round %d active permits = %d, want 2", round, snapshot.PermitsInUse)
 		}
 		confirmedAt := time.Now().UTC()
 		publications := make([]B3Publication, 0, len(records))
 		for _, record := range records {
-			publications = append(publications, B3Publication{Record: record, ConfirmedAt: &confirmedAt})
+			publications = append(publications, B3Publication{
+				Record: record, RequestedAt: confirmedAt, ConfirmedAt: &confirmedAt,
+				MessageID: "integration-message", Outcome: "confirmed",
+			})
 		}
-		if err := database.ConfirmB3FairPublications(ctx, connection, publications); err != nil {
-			database.ReleaseB3FairSelector(ctx, connection)
+		var publicationErr error
+		if round == 0 {
+			publicationErr = database.RecordB3FairPublications(ctx, publicationOwner, publications)
+		} else {
+			publicationErr = database.RecordAndConfirmB3FairPublications(
+				ctx, publicationOwner, publications,
+			)
+		}
+		if publicationErr != nil {
+			t.Fatal(publicationErr)
+		}
+		var publicationEvidence int
+		if err := database.pool.QueryRow(ctx, `
+			SELECT count(*) FROM b3_publish_evidence WHERE benchmark_id = $1`, benchmarkID).Scan(&publicationEvidence); err != nil {
 			t.Fatal(err)
 		}
-		database.ReleaseB3FairSelector(ctx, connection)
+		if publicationEvidence != (round+1)*len(records) {
+			t.Fatalf("round %d publication evidence = %d, want %d", round, publicationEvidence, (round+1)*len(records))
+		}
+		if round == 0 {
+			if err := database.ConfirmB3FairPublications(ctx, publications); err != nil {
+				t.Fatal(err)
+			}
+		}
+		publishedSnapshot, err := database.B3FairSnapshot(ctx, benchmarkID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var publishedThreads int64
+		for _, principal := range publishedSnapshot.Principals {
+			publishedThreads += principal.InFlight
+		}
+		if publishedSnapshot.PermitsInUse != 0 || publishedThreads != 2 {
+			t.Fatalf("round %d post-publication snapshot = %#v", round, publishedSnapshot)
+		}
 		selectedPrincipals := map[string]bool{}
 		for _, record := range records {
 			selectedPrincipals[record.Principal] = true
@@ -171,6 +251,69 @@ func exercisePrincipalFirstDispatch(t *testing.T, ctx context.Context, database 
 	if snapshot.PermitsInUse != 0 || snapshot.QueuedPrincipals != 0 {
 		t.Fatalf("final fair snapshot = %#v", snapshot)
 	}
+	partialBenchmarkID := uuid.New()
+	if err := database.PrepareB3(ctx, partialBenchmarkID, "b3-integration", "partial-fair-batch", 1); err != nil {
+		t.Fatal(err)
+	}
+	request := fairIntegrationRequest(partialBenchmarkID, 0, "partial", "partial-thread")
+	receipt, err := database.AcceptB3(ctx, request, B3DefaultSequenceStripes, budgetStripes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, owned, err := database.TryOwnB3FairSelector(ctx)
+	if err != nil || !owned {
+		t.Fatalf("own partial selector = %t, %v", owned, err)
+	}
+	records, err := database.SelectB3FairBatch(ctx, connection, 8)
+	database.ReleaseB3FairSelector(ctx, connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != len(receipt.AgentRunIDs) {
+		t.Fatalf("partial batch selected %d records, want %d", len(records), len(receipt.AgentRunIDs))
+	}
+	firstClaims, err := database.ClaimB3FairPublicationBatch(ctx, "expired-owner", 8, time.Millisecond)
+	if err != nil || len(firstClaims) != len(records) {
+		t.Fatalf("first publication claims = %d, %v", len(firstClaims), err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	secondClaims, err := database.ClaimB3FairPublicationBatch(ctx, "recovery-owner", 8, time.Second)
+	if err != nil || len(secondClaims) != len(records) {
+		t.Fatalf("recovered publication claims = %d, %v", len(secondClaims), err)
+	}
+	for index := range secondClaims {
+		if secondClaims[index].PublicationEpoch != firstClaims[index].PublicationEpoch+1 {
+			t.Fatalf("recovered epoch = %d, want %d", secondClaims[index].PublicationEpoch, firstClaims[index].PublicationEpoch+1)
+		}
+	}
+	confirmedAt := time.Now().UTC()
+	stalePublications := integrationPublications(firstClaims, confirmedAt)
+	if err := database.ConfirmB3FairPublications(ctx, stalePublications); err != nil {
+		t.Fatal(err)
+	}
+	var activeRecoveryTasks int
+	if err := database.pool.QueryRow(ctx, `
+		SELECT count(*) FROM b3_fair_publication_tasks
+		WHERE benchmark_id = $1 AND owner = 'recovery-owner'`, partialBenchmarkID).Scan(&activeRecoveryTasks); err != nil {
+		t.Fatal(err)
+	}
+	if activeRecoveryTasks != len(records) {
+		t.Fatalf("stale confirmation left %d recovery tasks, want %d", activeRecoveryTasks, len(records))
+	}
+	if err := database.ConfirmB3FairPublications(ctx, integrationPublications(secondClaims, confirmedAt)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func integrationPublications(records []B3OutboxRecord, confirmedAt time.Time) []B3Publication {
+	publications := make([]B3Publication, 0, len(records))
+	for _, record := range records {
+		publications = append(publications, B3Publication{
+			Record: record, RequestedAt: confirmedAt, ConfirmedAt: &confirmedAt,
+			MessageID: "integration-message", Outcome: "confirmed",
+		})
+	}
+	return publications
 }
 
 func fairIntegrationRequest(benchmarkID uuid.UUID, ordinal int, principal, thread string) B3Request {

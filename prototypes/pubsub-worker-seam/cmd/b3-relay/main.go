@@ -35,6 +35,14 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	publisherWorkers, err := positiveInt(os.Getenv("RELAY_PUBLISHER_WORKERS"), 4)
+	if err != nil {
+		return err
+	}
+	publicationLeaseSeconds, err := positiveInt(os.Getenv("RELAY_PUBLICATION_LEASE_SECONDS"), 30)
+	if err != nil {
+		return err
+	}
 	sequenceStripes, err := positiveInt(os.Getenv("B3_SEQUENCE_STRIPES"), store.B3DefaultSequenceStripes)
 	if err != nil {
 		return err
@@ -68,7 +76,9 @@ func run(logger *slog.Logger) error {
 	relay := &b3.Relay{
 		Store: database, Publisher: publisher, Owner: value("HOSTNAME", "b3-relay"),
 		BatchSize: batchSize, SequenceStripes: sequenceStripes, Fault: b3.NoFault,
-		FairDispatch: fairDispatchWindow > 0,
+		FairDispatch:     fairDispatchWindow > 0,
+		PublisherWorkers: publisherWorkers,
+		PublicationLease: time.Duration(publicationLeaseSeconds) * time.Second,
 	}
 	go func() {
 		for ctx.Err() == nil {
