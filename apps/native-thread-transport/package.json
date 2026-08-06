@@ -1,0 +1,23 @@
+{
+  "name": "@osfo/native-thread-transport",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "node --import tsx src/main.ts",
+    "start": "node dist/main.js",
+    "test": "vitest run --exclude '**/.typescript/**' --exclude '**/dist/**'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
