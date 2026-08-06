@@ -8,7 +8,7 @@ import {
 import { CommitUnknown, makeApiClient, submitThreadMessage } from "../src/client";
 import { OsfoApiLive } from "../src/server";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Context, Effect, Layer, Schema } from "effect";
 import {
   HttpClient,
   HttpClientError,
@@ -20,6 +20,9 @@ import {
 
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
 const idempotencyKey = "51b93c36-6a91-45d2-b25e-aaf249dc5208";
+const OpenApiDocument = Schema.Struct({
+  paths: Schema.Record(Schema.String, Schema.Unknown),
+});
 
 const receipt = new AcceptanceReceipt({
   protocolVersion: 1,
@@ -37,13 +40,15 @@ const makeHarness = (
     command: SubmitMessageCommand,
   ) => Effect.Effect<AcceptanceReceipt, MessageAdmissionError>,
 ) => {
-  const admission = Layer.succeed(MessageAdmission)(MessageAdmission.of({ accept }));
+  const admission = MessageAdmission.of({ accept });
   const web = HttpRouter.toWebHandler(
-    OsfoApiLive.pipe(Layer.provide(admission), Layer.provideMerge(HttpServer.layerServices)),
+    OsfoApiLive.pipe(
+      Layer.provide(Layer.succeed(MessageAdmission)(admission)),
+      Layer.provideMerge(HttpServer.layerServices),
+    ),
   );
-  // All handler services are provided above, but the conditional helper type retains a required
-  // context parameter. The built web handler only needs the Request at this test boundary.
-  const handler = web.handler as (request: Request) => Promise<Response>;
+  const context = Context.make(MessageAdmission, admission);
+  const handler = (request: Request) => web.handler(request, context);
   const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
     HttpClient.make((request, _url, signal) =>
       Effect.gen(function* () {
@@ -223,7 +228,9 @@ describe("Osfo Threads API", () => {
     const harness = makeHarness(() => Effect.succeed(receipt));
     try {
       const response = await harness.request(new Request("http://osfo.test/openapi.json"));
-      const document = (await response.json()) as { readonly paths: Record<string, unknown> };
+      const document = await Effect.runPromise(
+        Schema.decodeUnknownEffect(OpenApiDocument)(await response.json()),
+      );
 
       expect(response.status).toBe(200);
       expect(document.paths).toHaveProperty("/v1/threads/{threadId}/messages");

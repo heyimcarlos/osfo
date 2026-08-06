@@ -7,7 +7,7 @@ import {
 } from "effect/unstable/http";
 import { HttpApiClient, HttpApiMiddleware } from "effect/unstable/httpapi";
 import { OsfoApi } from "./api.js";
-import { Authentication } from "./threads/api.js";
+import { Authentication, type SubmitMessagePayload } from "./threads/api.js";
 
 export class CommitUnknown extends Data.TaggedError("CommitUnknown") {}
 
@@ -28,10 +28,9 @@ export const makeApiClient = (options: ApiClientOptions) =>
     Effect.provide(options.httpClientLayer ?? FetchHttpClient.layer),
   );
 
-export interface SubmitThreadMessage extends ApiClientOptions {
+export interface SubmitThreadMessage
+  extends ApiClientOptions, Pick<SubmitMessagePayload, "idempotencyKey" | "message"> {
   readonly threadId: string;
-  readonly idempotencyKey: string;
-  readonly message: { readonly content: string };
 }
 
 const isAmbiguousClientFailure = (error: unknown) =>
