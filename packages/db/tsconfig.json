@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "noEmit": false,
+    "outDir": ".typescript",
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["drizzle.config.ts", "src/**/*.ts", "test/**/*.ts"]
+}

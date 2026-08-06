@@ -488,17 +488,18 @@ Thread. Sharing or moving a Thread across Adapters requires an explicit binding
 decision.
 _Avoid_: Provider conversation, automatic account merge
 
-**Native Thread Transport**:
-Osfo's direct client boundary for adding input to a Thread and observing its
+**Osfo API**:
+Osfo's direct HTTP interface for adding input to a Thread and observing its
 canonical ThreadEvents across live delivery and durable resume. It is the
-default transport for Osfo-owned clients, not an Adapter for an external
+default interface for Osfo-owned clients, not an Adapter for an external
 protocol.
-_Avoid_: Web Adapter, OpenAI-Compatible Adapter, Messaging Adapter
+_Avoid_: Native Thread Transport, Web Adapter, OpenAI-Compatible Adapter,
+Messaging Adapter
 
 **Acceptance Receipt**:
-Immutable evidence that Osfo durably accepted one idempotent Native Thread
-Transport operation. Identical retries return the same receipt without creating
-another canonical transition.
+Immutable evidence that Osfo durably accepted one idempotent API operation.
+Identical retries return the same receipt without creating another canonical
+transition.
 
 **ActionReceipt**:
 Immutable terminal, client-safe evidence of the final knowledge state of one

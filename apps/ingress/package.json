@@ -1,0 +1,27 @@
+{
+  "name": "@osfo/ingress",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "node --conditions=development --import tsx src/main.ts",
+    "start": "node dist/main.js",
+    "test": "vitest run --passWithNoTests --exclude '**/*.postgres.test.ts' --exclude '**/.typescript/**' --exclude '**/dist/**'",
+    "test:postgres": "vitest run test/thread-messages.postgres.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "@osfo/api": "workspace:*",
+    "@osfo/db": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

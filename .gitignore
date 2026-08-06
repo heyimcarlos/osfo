@@ -7,3 +7,8 @@ target/
 /tmp/
 .env
 node_modules/
+dist/
+.turbo/
+coverage/
+.typescript/
+*.tsbuildinfo

@@ -4,10 +4,19 @@ Stable contracts live here. Product truth lives in `CONTEXT.md`, durable decisio
 
 ## Verification and evidence
 
-<add verification and evidence requirements here>
-
-example: 
+- Tests use Effect Vitest. Run scoped tests with `vitest run ...` or the
+  package script. Never use `bun test`.
+- Use the narrowest meaningful verification while iterating. Merge-ready gates
+  are `bun run format:check`, `lint`, `typecheck`, and `test`.
+- Changes to migrations, PostgreSQL configuration, or database access also run
+  `bun run db:verify` against the digest-pinned real PostgreSQL service.
+  In-memory substitutes do not certify PostgreSQL behavior.
 - Run `bun run format` before a PR and include only files owned by the branch.
+- User-visible web changes require the relevant `@osfo/web` test, a production
+  build, and inspection in the browser development instance. Record the exact
+  commands and observable evidence in the issue or PR.
+- Report required gates as PASS, FAIL, or MISSING. Never present an omitted or
+  skipped gate as passing evidence.
 
 ## Collaboration Notes
 
@@ -17,7 +26,7 @@ example:
 
 ## Reference Repositories
 
-Repos in `.reference` (rig, codex, …) are available for patterns. Clone a given Git URL into `.reference` and pull latest before using it.
+Repos in `.reference` (effect, executor, AnswerOverflow, flue, ...) are available for patterns. Clone a given Git URL into `.reference` and pull latest before using it.
 
 ## Engineering boundaries
 
@@ -32,9 +41,20 @@ Repos in `.reference` (rig, codex, …) are available for patterns. Clone a give
 
 ## Package Ownership
 
-<add package ownership requirements here>
-
-- `crates/`
+- `packages/ui`: shared React DOM, Tailwind CSS, and shadcn/ui components,
+  styles, hooks, and UI utilities. Every consumable path has an explicit
+  package export. These artifacts are not native-mobile components.
+- `packages/session`: closed, versioned canonical ThreadEvent schemas and
+  constructors shared by transport, persistence, and future client folds. It
+  contains no process wiring or PostgreSQL access.
+- `packages/api`: schema-first HTTP endpoint groups, generated client behavior,
+  handlers, and Effect-native domain interfaces. It contains no Node process
+  construction, database access, or Agent Application configuration.
+- `packages/db`: Drizzle schema and migrations, PostgreSQL connection ownership,
+  database adapters, and database integration test support. It exposes domain
+  interfaces rather than raw database clients. Migrations do not contain product
+  behavior.
+- `apps/{web, ingress, agent-run-worker}`: product composition roots.
 
 ## Agent skills
 
@@ -51,4 +71,5 @@ Use the five canonical labels unchanged. See `docs/agents/triage-labels.md`.
 This is a single-context repo: root `CONTEXT.md` and `docs/adr/`. See
 `docs/agents/domain.md`.
 
-Note mistakes in MISTAKES.md, missing context or tools in DESIRES.md, and env learnings in LEARNINGS.md.
+Record mistakes in `MISTAKES.md`, missing capabilities in `DESIRES.md`, and
+environment discoveries in `LEARNINGS.md`.

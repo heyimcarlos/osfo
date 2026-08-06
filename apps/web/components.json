@@ -1,0 +1,21 @@
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "base-nova",
+  "rsc": false,
+  "tsx": true,
+  "tailwind": {
+    "config": "",
+    "css": "../../packages/ui/src/styles/globals.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "iconLibrary": "lucide",
+  "aliases": {
+    "components": "@osfo/ui/components",
+    "hooks": "@osfo/ui/hooks",
+    "lib": "@osfo/ui/lib",
+    "utils": "@osfo/ui/lib/utils",
+    "ui": "@osfo/ui/components"
+  }
+}

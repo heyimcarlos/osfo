@@ -1,0 +1,33 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true,
+      "passThroughEnv": [
+        "OSFO_DATABASE_URL",
+        "OSFO_EXECUTION_PROFILE_REF",
+        "OSFO_GLOBAL_NON_TERMINAL_LIMIT",
+        "OSFO_PRINCIPAL_NON_TERMINAL_LIMIT",
+        "VITE_OSFO_AUTHENTICATION_TOKEN",
+        "VITE_OSFO_THREAD_ID"
+      ]
+    },
+    "lint": {
+      "dependsOn": ["^lint"],
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["^test", "build"],
+      "outputs": []
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": []
+    }
+  }
+}
