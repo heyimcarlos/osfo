@@ -33,8 +33,8 @@
         "vitest": "catalog:",
       },
     },
-    "apps/api": {
-      "name": "@osfo/api-app",
+    "apps/ingress": {
+      "name": "@osfo/ingress",
       "version": "0.0.0",
       "dependencies": {
         "@effect/platform-node": "catalog:",
@@ -363,9 +363,9 @@
 
     "@osfo/api": ["@osfo/api@workspace:packages/api"],
 
-    "@osfo/api-app": ["@osfo/api-app@workspace:apps/api"],
-
     "@osfo/db": ["@osfo/db@workspace:packages/db"],
+
+    "@osfo/ingress": ["@osfo/ingress@workspace:apps/ingress"],
 
     "@osfo/session": ["@osfo/session@workspace:packages/session"],
 

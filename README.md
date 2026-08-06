@@ -27,16 +27,16 @@ interface and contains no database access.
 The runnable process-role scaffolds are:
 
 ```sh
-bun run start:api
+bun run start:ingress
 bun run start:agent-run-worker
 ```
 
 Build them first with `bun run build`.
 
-The API process requires `OSFO_DATABASE_URL`,
+The ingress process requires `OSFO_DATABASE_URL`,
 `OSFO_EXECUTION_PROFILE_REF`, `OSFO_GLOBAL_NON_TERMINAL_LIMIT`, and
 `OSFO_PRINCIPAL_NON_TERMINAL_LIMIT`. Set
-`OSFO_API_PORT` to override its default port, 3000.
+`OSFO_INGRESS_PORT` to override its default port, 3000.
 
 ## Browser reference and UI
 

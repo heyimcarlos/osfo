@@ -28,7 +28,7 @@
   "references": [
     { "path": "./apps/agent-run-worker" },
     { "path": "./apps/web" },
-    { "path": "./apps/api" },
+    { "path": "./apps/ingress" },
     { "path": "./packages/db" },
     { "path": "./packages/api" },
     { "path": "./packages/session" },

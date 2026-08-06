@@ -1,5 +1,5 @@
 {
-  "name": "@osfo/api-app",
+  "name": "@osfo/ingress",
   "version": "0.0.0",
   "private": true,
   "type": "module",

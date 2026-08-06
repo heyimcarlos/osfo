@@ -2,7 +2,7 @@ import { prepareMessageAdmissionFixture, readMessageAuthorityCounts } from "@osf
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { startCompiledApi } from "./compiled-api";
+import { startCompiledIngress } from "./compiled-ingress";
 
 const databaseUrl = process.env.OSFO_TEST_DATABASE_URL;
 if (databaseUrl === undefined) {
@@ -13,14 +13,14 @@ const principalId = "b3ef0861-2df7-4d2a-a195-fbc5ed75bc81";
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
 const authenticationToken = "browser-composition-session";
 
-describe("Osfo API composition", () => {
+describe("Osfo ingress composition", () => {
   it.live("accepts one authenticated Thread message durably", () =>
     Effect.gen(function* () {
       yield* prepareMessageAdmissionFixture(databaseUrl, {
         principals: [{ principalId, authenticationToken, threadIds: [threadId] }],
       });
 
-      const api = yield* startCompiledApi({
+      const ingress = yield* startCompiledIngress({
         databaseUrl,
         executionProfileRef: "oz.composition-test.v1",
       });
@@ -28,7 +28,7 @@ describe("Osfo API composition", () => {
       const idempotencyKey = crypto.randomUUID();
       const client = yield* HttpClient.HttpClient;
       const response = yield* client.execute(
-        HttpClientRequest.post(`${api.origin}/v1/threads/${threadId}/messages`).pipe(
+        HttpClientRequest.post(`${ingress.origin}/v1/threads/${threadId}/messages`).pipe(
           HttpClientRequest.bearerToken(authenticationToken),
           HttpClientRequest.bodyJsonUnsafe({
             protocolVersion: 1,

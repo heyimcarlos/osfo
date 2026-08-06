@@ -19,7 +19,7 @@
     "format:check": "oxfmt --check .oxfmtrc.json package.json turbo.json tsconfig.json tsconfig.scripts.json compose.postgres.yaml README.md apps packages scripts",
     "lint": "oxlint --deny-warnings .",
     "start:agent-run-worker": "bun run --cwd apps/agent-run-worker start",
-    "start:api": "bun run --cwd apps/api start",
+    "start:ingress": "bun run --cwd apps/ingress start",
     "test": "turbo run test",
     "typecheck": "tsc --project tsconfig.scripts.json && turbo run typecheck"
   },

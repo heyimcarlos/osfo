@@ -54,7 +54,7 @@ Repos in `.reference` (effect, executor, AnswerOverflow, flue, ...) are availabl
   database adapters, and database integration test support. It exposes domain
   interfaces rather than raw database clients. Migrations do not contain product
   behavior.
-- `apps/{web, api, agent-run-worker}`: product composition roots.
+- `apps/{web, ingress, agent-run-worker}`: product composition roots.
 
 ## Agent skills
 

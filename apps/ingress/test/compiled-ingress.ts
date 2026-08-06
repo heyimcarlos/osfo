@@ -4,16 +4,16 @@ import { Data, Effect, Option, Result, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
-const readyPattern = /^OSFO_READY:(\d+)$/u;
+const readyPattern = /^OSFO_INGRESS_READY:(\d+)$/u;
 
-export interface CompiledApiOptions {
+export interface CompiledIngressOptions {
   readonly databaseUrl: string;
   readonly executionProfileRef?: string;
   readonly globalNonTerminalLimit?: number;
   readonly principalNonTerminalLimit?: number;
 }
 
-export class CompiledApiStartError extends Data.TaggedError("CompiledApiStartError")<{
+export class CompiledIngressStartError extends Data.TaggedError("CompiledIngressStartError")<{
   readonly reason: "platform" | "exit" | "timeout" | "invalid-ready-port";
   readonly output: string;
   readonly exitCode?: number;
@@ -29,7 +29,7 @@ const waitForReady = (handle: ChildProcessSpawner.ChildProcessHandle) => {
   const output: Array<string> = [];
   const capturedOutput = () => output.join("\n");
   const platformError = (cause: unknown) =>
-    new CompiledApiStartError({ reason: "platform", output: capturedOutput(), cause });
+    new CompiledIngressStartError({ reason: "platform", output: capturedOutput(), cause });
 
   return handle.all.pipe(
     Stream.decodeText(),
@@ -45,7 +45,7 @@ const waitForReady = (handle: ChildProcessSpawner.ChildProcessHandle) => {
             Effect.mapError(platformError),
             Effect.flatMap((exitCode) =>
               Effect.fail(
-                new CompiledApiStartError({
+                new CompiledIngressStartError({
                   reason: "exit",
                   output: capturedOutput(),
                   exitCode,
@@ -57,7 +57,7 @@ const waitForReady = (handle: ChildProcessSpawner.ChildProcessHandle) => {
           Number.isSafeInteger(port) && port > 0 && port <= 65_535
             ? Effect.succeed(port)
             : Effect.fail(
-                new CompiledApiStartError({
+                new CompiledIngressStartError({
                   reason: "invalid-ready-port",
                   output: capturedOutput(),
                 }),
@@ -67,17 +67,17 @@ const waitForReady = (handle: ChildProcessSpawner.ChildProcessHandle) => {
     Effect.timeoutOrElse({
       duration: "5 seconds",
       orElse: () =>
-        Effect.fail(new CompiledApiStartError({ reason: "timeout", output: capturedOutput() })),
+        Effect.fail(new CompiledIngressStartError({ reason: "timeout", output: capturedOutput() })),
     }),
   );
 };
 
-export const startCompiledApi = (options: CompiledApiOptions) =>
+export const startCompiledIngress = (options: CompiledIngressOptions) =>
   Effect.gen(function* () {
     const handle = yield* ChildProcess.make(process.execPath, ["dist/main.js"], {
       cwd: packageDirectory,
       env: {
-        OSFO_API_PORT: "0",
+        OSFO_INGRESS_PORT: "0",
         OSFO_DATABASE_URL: options.databaseUrl,
         OSFO_EXECUTION_PROFILE_REF: options.executionProfileRef ?? "oz.process-test.v1",
         OSFO_GLOBAL_NON_TERMINAL_LIMIT: String(options.globalNonTerminalLimit ?? 8),
@@ -88,7 +88,7 @@ export const startCompiledApi = (options: CompiledApiOptions) =>
       forceKillAfter: "3 seconds",
     }).pipe(
       Effect.mapError(
-        (cause) => new CompiledApiStartError({ reason: "platform", output: "", cause }),
+        (cause) => new CompiledIngressStartError({ reason: "platform", output: "", cause }),
       ),
     );
     const port = yield* waitForReady(handle);

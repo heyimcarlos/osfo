@@ -21,7 +21,7 @@ cleanup() {
 
 trap cleanup EXIT
 
-bun run build --filter=@osfo/api-app
+bun run build --filter=@osfo/ingress
 
 OSFO_POSTGRES_PORT="$verify_port" \
   docker compose --project-name "$project_name" -f "$compose_file" up -d --wait
@@ -30,4 +30,4 @@ OSFO_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_li
 OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
   bun run --cwd packages/db test:postgres
 OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
-  bun run --cwd apps/api test:postgres
+  bun run --cwd apps/ingress test:postgres
