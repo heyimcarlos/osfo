@@ -1,5 +1,5 @@
 {
-  "name": "@osfo/native-thread-transport",
+  "name": "@osfo/api",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,6 +8,16 @@
       "types": "./dist/index.d.ts",
       "development": "./src/index.ts",
       "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "development": "./src/client.ts",
+      "default": "./dist/client.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "development": "./src/server.ts",
+      "default": "./dist/server.js"
     }
   },
   "scripts": {

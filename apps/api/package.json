@@ -1,5 +1,5 @@
 {
-  "name": "@osfo/native-thread-transport-app",
+  "name": "@osfo/api-app",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -7,13 +7,14 @@
     "build": "tsc --project tsconfig.build.json",
     "dev": "node --conditions=development --import tsx src/main.ts",
     "start": "node dist/main.js",
-    "test": "vitest run --exclude '**/*.postgres.test.ts' --exclude '**/.typescript/**' --exclude '**/dist/**'",
-    "test:postgres": "vitest run test/message-command.postgres.test.ts",
+    "test": "vitest run --passWithNoTests --exclude '**/*.postgres.test.ts' --exclude '**/.typescript/**' --exclude '**/dist/**'",
+    "test:postgres": "vitest run test/thread-messages.postgres.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "@osfo/api": "workspace:*",
     "@osfo/db": "workspace:*",
-    "@osfo/native-thread-transport": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

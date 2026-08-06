@@ -33,12 +33,13 @@
         "vitest": "catalog:",
       },
     },
-    "apps/native-thread-transport": {
-      "name": "@osfo/native-thread-transport-app",
+    "apps/api": {
+      "name": "@osfo/api-app",
       "version": "0.0.0",
       "dependencies": {
+        "@effect/platform-node": "catalog:",
+        "@osfo/api": "workspace:*",
         "@osfo/db": "workspace:*",
-        "@osfo/native-thread-transport": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -67,12 +68,24 @@
         "vitest": "catalog:",
       },
     },
+    "packages/api": {
+      "name": "@osfo/api",
+      "version": "0.0.0",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
     "packages/db": {
       "name": "@osfo/db",
       "version": "0.0.0",
       "dependencies": {
         "@effect/sql-pg": "catalog:",
-        "@osfo/native-thread-transport": "workspace:*",
+        "@osfo/api": "workspace:*",
         "@osfo/session": "workspace:*",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
@@ -82,18 +95,6 @@
         "@types/node": "catalog:",
         "@types/pg": "catalog:",
         "drizzle-kit": "catalog:",
-        "typescript": "catalog:",
-        "vitest": "catalog:",
-      },
-    },
-    "packages/native-thread-transport": {
-      "name": "@osfo/native-thread-transport",
-      "version": "0.0.0",
-      "dependencies": {
-        "effect": "catalog:",
-      },
-      "devDependencies": {
-        "@types/node": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:",
       },
@@ -353,11 +354,11 @@
 
     "@osfo/agent-run-worker": ["@osfo/agent-run-worker@workspace:apps/agent-run-worker"],
 
+    "@osfo/api": ["@osfo/api@workspace:packages/api"],
+
+    "@osfo/api-app": ["@osfo/api-app@workspace:apps/api"],
+
     "@osfo/db": ["@osfo/db@workspace:packages/db"],
-
-    "@osfo/native-thread-transport": ["@osfo/native-thread-transport@workspace:packages/native-thread-transport"],
-
-    "@osfo/native-thread-transport-app": ["@osfo/native-thread-transport-app@workspace:apps/native-thread-transport"],
 
     "@osfo/session": ["@osfo/session@workspace:packages/session"],
 

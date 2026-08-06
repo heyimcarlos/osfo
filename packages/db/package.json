@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@effect/sql-pg": "catalog:",
-    "@osfo/native-thread-transport": "workspace:*",
+    "@osfo/api": "workspace:*",
     "@osfo/session": "workspace:*",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",

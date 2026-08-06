@@ -1,5 +1,12 @@
 # Mistakes
 
+- 2026-08-06: Do not hand-roll HTTP JSON decoding with `isRecord`, exact-key
+  checks, regular expressions, and casts. Declare the contract once with Effect
+  Schema, then derive request decoding, response encoding, typed clients, and
+  OpenAPI from the same `HttpApi` value.
+- 2026-08-06: Do not name the entire Osfo HTTP package and process after its
+  first Thread transport slice. Native Thread behavior is an endpoint group in
+  `@osfo/api`; it is not a separate technical tier.
 - 2026-08-05: When updating a GitHub issue body through `jq`, do not place
   escaped newlines inside a `sub` replacement. They can be persisted as literal
   `\\n` text. Re-read the rendered section immediately and replace with actual

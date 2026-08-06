@@ -8,15 +8,15 @@ import {
   IdempotencyConflict,
   MessageAdmission,
   ThreadNotFound,
-  isMessageAdmissionError,
   type SubmitMessageCommand,
-} from "@osfo/native-thread-transport";
+} from "@osfo/api";
 import { makeUserMessageAppended } from "@osfo/session";
 import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import * as PgDrizzle from "drizzle-orm/effect-postgres";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
 import {
   acceptanceReceipts,
   admissionGlobalCapacity,
@@ -38,6 +38,16 @@ export interface MessageAdmissionDatabaseConfig {
 }
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+
+const isMessageAdmissionError = Schema.is(
+  Schema.Union([
+    AdmissionUnavailable,
+    AuthenticationRejected,
+    CapacityRejected,
+    IdempotencyConflict,
+    ThreadNotFound,
+  ]),
+);
 
 const requestFingerprint = (command: SubmitMessageCommand) =>
   sha256(
@@ -78,7 +88,7 @@ export const makeMessageAdmissionLayer = (config: MessageAdmissionDatabaseConfig
   validateConfig(config);
 
   const postgresLayer = PgClient.layer({
-    applicationName: "osfo-native-thread-transport",
+    applicationName: "osfo-api",
     url: Redacted.make(config.databaseUrl),
   });
 

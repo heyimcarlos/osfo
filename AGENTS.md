@@ -45,8 +45,8 @@ Repos in `.reference` (effect, executor, AnswerOverflow, flue, ...) are availabl
 - `apps/web`: browser Reference Agent Application composition root and
   app-specific routes, state, and presentation. It consumes shared UI only
   through `@osfo/ui` exports.
-- `apps/native-thread-transport`: Native Thread Transport process composition
-  root, including Node runtime wiring and transport-specific configuration.
+- `apps/api`: Osfo HTTP process composition root, including Node runtime wiring
+  and API configuration.
 - `apps/agent-run-worker`: AgentRun worker process composition root, including
   Node runtime wiring and worker-specific configuration.
 - `packages/ui`: shared React DOM, Tailwind CSS, and shadcn/ui components,
@@ -55,10 +55,9 @@ Repos in `.reference` (effect, executor, AnswerOverflow, flue, ...) are availabl
 - `packages/session`: closed, versioned canonical ThreadEvent schemas and
   constructors shared by transport, persistence, and future client folds. It
   contains no process wiring or PostgreSQL access.
-- `packages/native-thread-transport`: reusable closed HTTP command contracts,
-  browser-compatible client behavior, and the Effect-native admission interface.
-  It contains no Node process construction, database access, or Agent Application
-  configuration.
+- `packages/api`: schema-first HTTP endpoint groups, generated client behavior,
+  handlers, and Effect-native domain interfaces. It contains no Node process
+  construction, database access, or Agent Application configuration.
 - `packages/db`: Drizzle schema and migrations, PostgreSQL connection ownership,
   database adapters, and database integration test support. It exposes domain
   interfaces rather than raw database clients. Migrations do not contain product

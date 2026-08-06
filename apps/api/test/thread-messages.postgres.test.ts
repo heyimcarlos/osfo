@@ -1,7 +1,7 @@
 import { prepareMessageAdmissionFixture, readMessageAuthorityCounts } from "@osfo/db/testing";
-import * as Effect from "effect/Effect";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
-import { startTransportProcess } from "./transport-process";
+import { startApiProcess } from "./api-process";
 
 const databaseUrl = process.env.OSFO_TEST_DATABASE_URL;
 if (databaseUrl === undefined) {
@@ -12,36 +12,33 @@ const principalId = "b3ef0861-2df7-4d2a-a195-fbc5ed75bc81";
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
 const authenticationToken = "browser-composition-session";
 
-describe("Native Thread Transport composition", () => {
-  it("accepts one authenticated browser-compatible HTTP command durably", async () => {
+describe("Osfo API composition", () => {
+  it("accepts one authenticated Thread message durably", async () => {
     await Effect.runPromise(
       prepareMessageAdmissionFixture(databaseUrl, {
         principals: [{ principalId, authenticationToken, threadIds: [threadId] }],
       }),
     );
 
-    const transport = await startTransportProcess({
+    const api = await startApiProcess({
       databaseUrl,
       executionProfileRef: "oz.composition-test.v1",
     });
 
     try {
       const idempotencyKey = crypto.randomUUID();
-      const response = await fetch(
-        `http://127.0.0.1:${transport.port}/v1/threads/${threadId}/messages`,
-        {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${authenticationToken}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            protocolVersion: 1,
-            idempotencyKey,
-            message: { content: "Hello through HTTP" },
-          }),
+      const response = await fetch(`http://127.0.0.1:${api.port}/v1/threads/${threadId}/messages`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${authenticationToken}`,
+          "content-type": "application/json",
         },
-      );
+        body: JSON.stringify({
+          protocolVersion: 1,
+          idempotencyKey,
+          message: { content: "Hello through HTTP" },
+        }),
+      });
 
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
@@ -54,7 +51,7 @@ describe("Native Thread Transport composition", () => {
       const reconciled = await Effect.runPromise(readMessageAuthorityCounts(databaseUrl));
       expect(reconciled).toEqual({ receipts: "1", messages: "1", runs: "1", outbox: "1" });
     } finally {
-      await transport.stop();
+      await api.stop();
     }
   });
 });

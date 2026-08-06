@@ -6,11 +6,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import {
-  MessageAdmission,
-  handleNativeThreadRequest,
-  submitThreadMessage,
-} from "@osfo/native-thread-transport";
+import { MessageAdmission, type SubmitMessageCommand } from "@osfo/api";
 import { makeMessageAdmissionLayer } from "../src/index";
 
 const databaseUrl = process.env.OSFO_TEST_DATABASE_URL;
@@ -88,30 +84,27 @@ const seedAuthority = () =>
     }),
   );
 
-const messageRequest = (
+const messageCommand = (
   options: {
     readonly content?: string;
     readonly idempotencyKey?: string;
     readonly threadId?: string;
     readonly token?: string;
-    readonly extraBody?: Record<string, unknown>;
   } = {},
 ) =>
-  new Request(`http://localhost/v1/threads/${options.threadId ?? aliceThreadId}/messages`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${options.token ?? aliceToken}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      protocolVersion: 1,
-      idempotencyKey: options.idempotencyKey ?? crypto.randomUUID(),
-      message: { content: options.content ?? "Hello, Oz" },
-      ...options.extraBody,
-    }),
-  });
+  ({
+    protocolVersion: 1,
+    authenticationToken: options.token ?? aliceToken,
+    threadId: options.threadId ?? aliceThreadId,
+    idempotencyKey: options.idempotencyKey ?? crypto.randomUUID(),
+    message: { content: options.content ?? "Hello, Oz" },
+  }) satisfies SubmitMessageCommand;
 
-const submit = (request: Request) => run(handleNativeThreadRequest(request));
+const accept = (command: SubmitMessageCommand) =>
+  run(MessageAdmission.use((admission) => admission.accept(command)));
+
+const reject = (command: SubmitMessageCommand) =>
+  run(Effect.flip(MessageAdmission.use((admission) => admission.accept(command))));
 
 const authorityCounts = () =>
   run(
@@ -141,15 +134,8 @@ afterAll(() => runtime.dispose());
 describe("PostgreSQL Thread message admission", () => {
   it("atomically creates one correlated durable authority graph", async () => {
     const idempotencyKey = crypto.randomUUID();
-    const response = await submit(messageRequest({ idempotencyKey }));
-    const receipt = (await response.json()) as {
-      readonly receiptId: string;
-      readonly userMessageId: string;
-      readonly agentRunId: string;
-      readonly threadPosition: string;
-    };
+    const receipt = await accept(messageCommand({ idempotencyKey }));
 
-    expect(response.status).toBe(200);
     expect(receipt).toMatchObject({
       protocolVersion: 1,
       idempotencyKey,
@@ -228,18 +214,13 @@ describe("PostgreSQL Thread message admission", () => {
 
   it("returns the original receipt after a lost response and under concurrent identical retries", async () => {
     const idempotencyKey = crypto.randomUUID();
-    const first = await submit(messageRequest({ idempotencyKey }));
-    const originalReceipt = await first.json();
+    const originalReceipt = await accept(messageCommand({ idempotencyKey }));
 
     const retries = await Promise.all([
-      submit(messageRequest({ idempotencyKey })),
-      submit(messageRequest({ idempotencyKey })),
+      accept(messageCommand({ idempotencyKey })),
+      accept(messageCommand({ idempotencyKey })),
     ]);
-    expect(retries.map((response) => response.status)).toEqual([200, 200]);
-    expect(await Promise.all(retries.map((response) => response.json()))).toEqual([
-      originalReceipt,
-      originalReceipt,
-    ]);
+    expect(retries).toEqual([originalReceipt, originalReceipt]);
     expect(await authorityCounts()).toEqual({
       receipts: "1",
       messages: "1",
@@ -252,16 +233,10 @@ describe("PostgreSQL Thread message admission", () => {
 
   it("rejects changed content under the same idempotency key without changing authority", async () => {
     const idempotencyKey = crypto.randomUUID();
-    expect((await submit(messageRequest({ idempotencyKey }))).status).toBe(200);
+    await accept(messageCommand({ idempotencyKey }));
 
-    const response = await submit(messageRequest({ idempotencyKey, content: "Changed" }));
-    expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({
-      protocolVersion: 1,
-      type: "idempotency_conflict",
-      title: "Idempotency conflict",
-      retryable: false,
-    });
+    const error = await reject(messageCommand({ idempotencyKey, content: "Changed" }));
+    expect(error).toMatchObject({ _tag: "IdempotencyConflict" });
     expect(await authorityCounts()).toEqual({
       receipts: "1",
       messages: "1",
@@ -274,20 +249,18 @@ describe("PostgreSQL Thread message admission", () => {
 
   it("rejects a changed Thread under the same idempotency key as a conflict", async () => {
     const idempotencyKey = crypto.randomUUID();
-    expect((await submit(messageRequest({ idempotencyKey }))).status).toBe(200);
+    await accept(messageCommand({ idempotencyKey }));
 
-    const response = await submit(messageRequest({ idempotencyKey, threadId: bobThreadId }));
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ type: "idempotency_conflict" });
+    const error = await reject(messageCommand({ idempotencyKey, threadId: bobThreadId }));
+    expect(error).toMatchObject({ _tag: "IdempotencyConflict" });
   });
 
   it("makes an unauthorized Thread indistinguishable from an unknown Thread", async () => {
-    const unauthorized = await submit(messageRequest({ threadId: bobThreadId }));
-    const unknown = await submit(messageRequest({ threadId: unknownThreadId }));
+    const unauthorized = await reject(messageCommand({ threadId: bobThreadId }));
+    const unknown = await reject(messageCommand({ threadId: unknownThreadId }));
 
-    expect(unauthorized.status).toBe(404);
-    expect(unknown.status).toBe(404);
-    expect(await unauthorized.json()).toEqual(await unknown.json());
+    expect(unauthorized).toMatchObject({ _tag: "ThreadNotFound" });
+    expect(unknown).toEqual(unauthorized);
     expect(await authorityCounts()).toEqual({
       receipts: "0",
       messages: "0",
@@ -298,24 +271,30 @@ describe("PostgreSQL Thread message admission", () => {
     });
   });
 
-  it("rejects malformed and over-Principal-capacity commands before creating authority", async () => {
-    const malformed = await submit(messageRequest({ extraBody: { unexpected: true } }));
-    expect(malformed.status).toBe(400);
-    expect((await submit(messageRequest())).status).toBe(200);
+  it("rejects an unknown authentication token without creating authority", async () => {
+    const error = await reject(messageCommand({ token: "unknown-session-token" }));
 
-    const capacity = await submit(
-      messageRequest({
+    expect(error).toMatchObject({ _tag: "AuthenticationRejected" });
+    expect(await authorityCounts()).toEqual({
+      receipts: "0",
+      messages: "0",
+      events: "0",
+      runs: "0",
+      reservations: "0",
+      outbox: "0",
+    });
+  });
+
+  it("rejects over-Principal-capacity commands before creating authority", async () => {
+    await accept(messageCommand());
+
+    const capacity = await reject(
+      messageCommand({
         threadId: aliceSecondThreadId,
         idempotencyKey: crypto.randomUUID(),
       }),
     );
-    expect(capacity.status).toBe(429);
-    expect(await capacity.json()).toEqual({
-      protocolVersion: 1,
-      type: "capacity_rejected",
-      title: "Capacity rejected",
-      retryable: true,
-    });
+    expect(capacity).toMatchObject({ _tag: "CapacityRejected", scope: "principal" });
     expect(await authorityCounts()).toEqual({
       receipts: "1",
       messages: "1",
@@ -327,22 +306,18 @@ describe("PostgreSQL Thread message admission", () => {
   });
 
   it("rejects global capacity after different Principals consume every reservation", async () => {
-    expect((await submit(messageRequest())).status).toBe(200);
-    expect(
-      (
-        await submit(
-          messageRequest({
-            threadId: bobThreadId,
-            token: bobToken,
-          }),
-        )
-      ).status,
-    ).toBe(200);
-
-    const response = await submit(
-      messageRequest({ threadId: aliceSecondThreadId, idempotencyKey: crypto.randomUUID() }),
+    await accept(messageCommand());
+    await accept(
+      messageCommand({
+        threadId: bobThreadId,
+        token: bobToken,
+      }),
     );
-    expect(response.status).toBe(429);
+
+    const error = await reject(
+      messageCommand({ threadId: aliceSecondThreadId, idempotencyKey: crypto.randomUUID() }),
+    );
+    expect(error).toMatchObject({ _tag: "CapacityRejected", scope: "global" });
     expect(await authorityCounts()).toEqual({
       receipts: "2",
       messages: "2",
@@ -354,7 +329,7 @@ describe("PostgreSQL Thread message admission", () => {
   });
 
   it("enforces Principal and Thread correlation across the authority graph", async () => {
-    expect((await submit(messageRequest())).status).toBe(200);
+    await accept(messageCommand());
 
     await expect(
       run(
@@ -378,7 +353,7 @@ describe("PostgreSQL Thread message admission", () => {
   });
 
   it("makes accepted receipts, messages, and Thread events immutable", async () => {
-    expect((await submit(messageRequest())).status).toBe(200);
+    await accept(messageCommand());
 
     for (const mutation of [
       "UPDATE acceptance_receipts SET accepted_at = accepted_at",
@@ -417,14 +392,8 @@ describe("PostgreSQL Thread message admission", () => {
       }),
     );
 
-    const response = await submit(messageRequest());
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({
-      protocolVersion: 1,
-      type: "admission_unavailable",
-      title: "Admission unavailable",
-      retryable: true,
-    });
+    const error = await reject(messageCommand());
+    expect(error).toMatchObject({ _tag: "AdmissionUnavailable" });
     expect(await authorityCounts()).toEqual({
       receipts: "0",
       messages: "0",
@@ -443,39 +412,5 @@ describe("PostgreSQL Thread message admission", () => {
         `);
       }),
     );
-  });
-
-  it("types a lost browser response as unknown commit and reconciles by retry", async () => {
-    const idempotencyKey = crypto.randomUUID();
-    const command = {
-      endpoint: `http://localhost/v1/threads/${aliceThreadId}/messages`,
-      authenticationToken: aliceToken,
-      threadId: aliceThreadId,
-      idempotencyKey,
-      message: { content: "Unknown response" },
-    } as const;
-
-    const unknown = await Effect.runPromise(
-      Effect.flip(
-        submitThreadMessage(command, async (request) => {
-          await submit(request);
-          throw new TypeError("response connection lost");
-        }),
-      ),
-    );
-    expect(unknown._tag).toBe("CommitUnknown");
-
-    const receipt = await Effect.runPromise(
-      submitThreadMessage(command, (request) => submit(request)),
-    );
-    expect(receipt).toMatchObject({ idempotencyKey, threadId: aliceThreadId });
-    expect(await authorityCounts()).toEqual({
-      receipts: "1",
-      messages: "1",
-      events: "1",
-      runs: "1",
-      reservations: "1",
-      outbox: "1",
-    });
   });
 });
