@@ -99,27 +99,27 @@ export const makeThreadChat = (options: ThreadChatOptions) => {
     }),
   );
 
-  const resume = Atom.fn<void>()(
-    Effect.fn("ThreadChat.resume")(function* (_input, context) {
-      const store = options.projectionStore ?? (yield* browserProjectionStore(options.threadId));
-      const transport = options.resumeTransport ?? makeApiResumeTransport(options);
-      const synchronize = synchronizeThreadOnce({
-        store,
-        transport,
-        onProjection: (snapshot) => context.registry.set(messages, messagesFromSnapshot(snapshot)),
-      }).pipe(
-        Effect.andThen(Effect.sleep(250)),
-        Effect.catchIf(
-          () => true,
-          (error) =>
-            error instanceof InvalidThreadProjection && error.reason === "authorityConflict"
-              ? Effect.fail(error)
-              : Effect.sleep(250),
-        ),
-      );
-      yield* Effect.forever(synchronize);
-    }),
-  );
+  const resumeThread = Effect.fn("ThreadChat.resume")(function* (context: Atom.AtomContext) {
+    const store = options.projectionStore ?? (yield* browserProjectionStore(options.threadId));
+    const transport = options.resumeTransport ?? makeApiResumeTransport(options);
+    const synchronize = synchronizeThreadOnce({
+      store,
+      transport,
+      onProjection: (snapshot) => context.set(messages, messagesFromSnapshot(snapshot)),
+    }).pipe(
+      Effect.andThen(Effect.sleep(250)),
+      Effect.catchIf(
+        () => true,
+        (error) =>
+          error instanceof InvalidThreadProjection && error.reason === "authorityConflict"
+            ? Effect.fail(error)
+            : Effect.sleep(250),
+      ),
+    );
+    yield* Effect.forever(synchronize);
+  });
+
+  const resume = Atom.make(resumeThread);
 
   return { messages, resume, submit };
 };

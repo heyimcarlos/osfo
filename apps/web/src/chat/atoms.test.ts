@@ -8,7 +8,7 @@ import { makeThreadChat } from "./atoms";
 import { makeThreadProjectionStore } from "./projection-store";
 import type { ThreadResumeTransport } from "./resume-thread";
 import { applyThreadEvent, makeEmptyThreadSnapshot, makeUserMessageAppended } from "@osfo/session";
-import { Stream } from "effect";
+import { Deferred, Stream } from "effect";
 
 class MemoryStorage implements Storage {
   readonly values = new Map<string, string>();
@@ -99,7 +99,7 @@ describe("Thread chat atoms", () => {
     registry.dispose();
   });
 
-  it("renders an accepted message only after canonical snapshot bootstrap", async () => {
+  it("starts canonical bootstrap on mount and interrupts its stream on unmount", async () => {
     const event = Effect.runSync(
       makeUserMessageAppended({
         eventId: "34dc8a78-a94d-4050-8c5b-e3bf21077c40",
@@ -117,9 +117,17 @@ describe("Thread chat atoms", () => {
         { ...event, cursor: "cursor-position-1" },
       ),
     );
+    const streamStarted = Effect.runSync(Deferred.make<void>());
+    const streamInterrupted = Effect.runSync(Deferred.make<void>());
     const transport: ThreadResumeTransport = {
       snapshot: () => Effect.succeed(snapshot),
-      stream: () => Effect.succeed(Stream.empty),
+      stream: () =>
+        Effect.succeed(
+          Stream.never.pipe(
+            Stream.onStart(Deferred.succeed(streamStarted, undefined)),
+            Stream.ensuring(Deferred.succeed(streamInterrupted, undefined)),
+          ),
+        ),
     };
     const projectionStore = makeThreadProjectionStore({
       storage: new MemoryStorage(),
@@ -137,12 +145,8 @@ describe("Thread chat atoms", () => {
     const unmount = registry.mount(chat.resume);
     const unmountMessages = registry.mount(chat.messages);
 
-    registry.set(chat.resume, undefined);
     expect(AsyncResult.isWaiting(registry.get(chat.resume))).toBe(true);
-    await Effect.runPromise(Effect.yieldNow);
-    await Effect.runPromise(Effect.yieldNow);
-    await Effect.runPromise(Effect.yieldNow);
-    await Effect.runPromise(Effect.sleep(10));
+    await Effect.runPromise(Deferred.await(streamStarted));
 
     expect(Effect.runSync(projectionStore.load())).toEqual(snapshot);
 
@@ -159,6 +163,8 @@ describe("Thread chat atoms", () => {
 
     unmountMessages();
     unmount();
+    await Effect.runPromise(Deferred.await(streamInterrupted));
+
     registry.dispose();
   });
 });
