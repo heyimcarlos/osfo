@@ -6,14 +6,18 @@ import { InvalidMessageAdmissionDatabaseConfig, makeMessageAdmissionLayer } from
 import { databaseSchema } from "../src/schema";
 
 describe("database schema", () => {
-  it("owns the complete durable message admission table set", () => {
+  it("owns the durable message and deterministic AgentRun authority tables", () => {
     expect(Object.values(databaseSchema).map(getTableName).sort()).toEqual([
       "acceptance_receipts",
       "admission_global_capacity",
       "admission_principal_capacity",
       "agent_run_capacity_reservations",
       "agent_runs",
+      "assistant_outputs",
       "authentication_sessions",
+      "model_call_attempts",
+      "model_call_fragments",
+      "model_calls",
       "outbox_obligations",
       "principals",
       "thread_events",

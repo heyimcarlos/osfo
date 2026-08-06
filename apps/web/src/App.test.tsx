@@ -51,6 +51,8 @@ describe("browser reference client", () => {
             chat.messages,
             [
               {
+                type: "userMessage",
+                messageId: receipt.userMessageId,
                 agentRunId: receipt.agentRunId,
                 content: "Hello through React",
                 eventId: "34dc8a78-a94d-4050-8c5b-e3bf21077c40",
@@ -70,6 +72,39 @@ describe("browser reference client", () => {
     expect(html).toContain("Canonical at position 1");
     expect(html).toContain("34dc8a78-a94d-4050-8c5b-e3bf21077c40");
     expect(html).toContain(receipt.agentRunId);
+  });
+
+  it("renders committed assistant output from the canonical projection", () => {
+    const chat = makeTestChat();
+    const assistantOutputId = "86290831-b9ca-414a-abf1-4055b5347133";
+    const html = renderToStaticMarkup(
+      <RegistryProvider
+        initialValues={[
+          [
+            chat.messages,
+            [
+              {
+                type: "assistantOutput",
+                messageId: assistantOutputId,
+                assistantOutputId,
+                agentRunId: receipt.agentRunId,
+                content: "Echo: Hello through React",
+                eventId: "e9a31389-50d8-436a-b7be-7303b9fe42d0",
+                occurredAt: receipt.acceptedAt,
+                threadPosition: "2",
+                status: { type: "completed" },
+              },
+            ],
+          ],
+        ]}
+      >
+        <App chat={chat} threadId={threadId} />
+      </RegistryProvider>,
+    );
+
+    expect(html).toContain("Echo: Hello through React");
+    expect(html).toContain(assistantOutputId);
+    expect(html).toContain("Canonical at position 2");
   });
 
   it("explains the explicit configuration when browser authority is missing", () => {

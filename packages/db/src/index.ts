@@ -1,4 +1,10 @@
 export {
+  AgentRunRepositoryDatabaseConfigSchema,
+  InvalidAgentRunRepositoryDatabaseConfig,
+  makeAgentRunRepositoryLayer,
+  type AgentRunRepositoryDatabaseConfig,
+} from "./agent-run-repository.js";
+export {
   InvalidMessageAdmissionDatabaseConfig,
   makeMessageAdmissionLayer,
   MessageAdmissionDatabaseConfigSchema,

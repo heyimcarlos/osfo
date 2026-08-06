@@ -46,11 +46,13 @@ export const verifyDatabaseMigrations = (config: DatabaseConfig) =>
     const baseline = rows[0];
     const admission = rows[1];
     const resume = rows[2];
+    const agentRun = rows[3];
     if (
-      rows.length !== 3 ||
+      rows.length !== 4 ||
       baseline?.name !== "20260805120000_empty_baseline" ||
       admission?.name !== "20260806124719_durable_message_admission" ||
-      resume?.name !== "20260806162306_aberrant_sir_ram"
+      resume?.name !== "20260806162306_aberrant_sir_ram" ||
+      agentRun?.name !== "20260806183059_fancy_frank_castle"
     ) {
       return yield* new MigrationVerificationError({
         appliedMigrationNames: rows.map((row) => row.name),

@@ -4,6 +4,11 @@ import {
   InvalidThreadProjection,
   InvalidUserMessageAppended,
   applyThreadEvent,
+  makeAgentRunFailed,
+  makeAgentRunSucceeded,
+  makeAssistantOutputAppended,
+  makeAssistantOutputCompleted,
+  makeAssistantOutputInterrupted,
   makeEmptyThreadSnapshot,
   makeUserMessageAppended,
 } from "../src/index";
@@ -73,6 +78,7 @@ describe("UserMessageAppended", () => {
       threadId: eventInput.threadId,
       throughPosition: "1",
       throughCursor: "cursor-position-1",
+      lastEventId: eventInput.eventId,
       stateRevision: 1,
       replayGuaranteedForMs: 30_000,
       timelineLimit: 100,
@@ -106,6 +112,131 @@ describe("UserMessageAppended", () => {
         },
       ],
     });
+  });
+
+  it("folds committed assistant output before the AgentRun terminal outcome", () => {
+    const assistantOutputId = "86290831-b9ca-414a-abf1-4055b5347133";
+    const events = [
+      Effect.runSync(makeUserMessageAppended(eventInput)),
+      Effect.runSync(
+        makeAssistantOutputAppended({
+          ...eventInput,
+          eventId: "e9a31389-50d8-436a-b7be-7303b9fe42d0",
+          threadPosition: "2",
+          assistantOutputId,
+          content: "Echo: ",
+        }),
+      ),
+      Effect.runSync(
+        makeAssistantOutputAppended({
+          ...eventInput,
+          eventId: "f04d3470-bf0c-4b72-90de-0454ac404c9c",
+          threadPosition: "3",
+          assistantOutputId,
+          content: "Hello, Oz",
+        }),
+      ),
+      Effect.runSync(
+        makeAssistantOutputCompleted({
+          ...eventInput,
+          eventId: "a4a60d24-7d2e-4808-b6fc-f192ea7631de",
+          threadPosition: "4",
+          assistantOutputId,
+        }),
+      ),
+      Effect.runSync(
+        makeAgentRunSucceeded({
+          ...eventInput,
+          eventId: "269787db-071e-4478-806f-1d85d00b7337",
+          threadPosition: "5",
+        }),
+      ),
+    ];
+    const result = events.reduce(
+      (snapshot, event, index) =>
+        Effect.runSync(
+          applyThreadEvent(snapshot, { ...event, cursor: `cursor-position-${index + 1}` }),
+        ),
+      Effect.runSync(
+        makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+      ),
+    );
+
+    expect(result.timeline).toEqual([
+      expect.objectContaining({
+        type: "userMessage",
+        userMessageId: eventInput.userMessageId,
+      }),
+      {
+        type: "assistantOutput",
+        assistantOutputId,
+        agentRunId: eventInput.agentRunId,
+        source: {
+          firstEventId: "e9a31389-50d8-436a-b7be-7303b9fe42d0",
+          firstPosition: "2",
+          firstOccurredAt: eventInput.occurredAt,
+          lastEventId: "a4a60d24-7d2e-4808-b6fc-f192ea7631de",
+          lastPosition: "4",
+          lastOccurredAt: eventInput.occurredAt,
+        },
+        content: [
+          { type: "text", text: "Echo: " },
+          { type: "text", text: "Hello, Oz" },
+        ],
+        status: { type: "completed" },
+      },
+    ]);
+    expect(result.activeState).toEqual([]);
+    expect(result.throughPosition).toBe("5");
+    expect(result.lastEventId).toBe("269787db-071e-4478-806f-1d85d00b7337");
+  });
+
+  it("keeps interrupted assistant output distinct from a failed AgentRun", () => {
+    const assistantOutputId = "86290831-b9ca-414a-abf1-4055b5347133";
+    const events = [
+      Effect.runSync(makeUserMessageAppended(eventInput)),
+      Effect.runSync(
+        makeAssistantOutputAppended({
+          ...eventInput,
+          eventId: "e9a31389-50d8-436a-b7be-7303b9fe42d0",
+          threadPosition: "2",
+          assistantOutputId,
+          content: "Partial",
+        }),
+      ),
+      Effect.runSync(
+        makeAssistantOutputInterrupted({
+          ...eventInput,
+          eventId: "f04d3470-bf0c-4b72-90de-0454ac404c9c",
+          threadPosition: "3",
+          assistantOutputId,
+          cause: "modelCallFailed",
+        }),
+      ),
+      Effect.runSync(
+        makeAgentRunFailed({
+          ...eventInput,
+          eventId: "a4a60d24-7d2e-4808-b6fc-f192ea7631de",
+          threadPosition: "4",
+          cause: "modelCallFailed",
+        }),
+      ),
+    ];
+    const result = events.reduce(
+      (snapshot, event, index) =>
+        Effect.runSync(
+          applyThreadEvent(snapshot, { ...event, cursor: `cursor-position-${index + 1}` }),
+        ),
+      Effect.runSync(
+        makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+      ),
+    );
+
+    expect(result.timeline[1]).toMatchObject({
+      type: "assistantOutput",
+      status: { type: "interrupted", cause: "modelCallFailed" },
+    });
+    expect(result.activeState).toEqual([]);
   });
 
   it("ignores an identical duplicate without advancing projection state", () => {

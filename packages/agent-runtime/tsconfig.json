@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "composite": true,
+    "customConditions": ["development"],
+    "declaration": true,
+    "noEmit": false,
+    "outDir": ".typescript",
+    "rootDir": ".",
+    "tsBuildInfoFile": ".typescript/tsconfig.tsbuildinfo"
+  },
+  "include": ["src", "test"]
+}

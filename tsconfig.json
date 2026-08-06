@@ -26,6 +26,8 @@
   },
   "files": [],
   "references": [
+    { "path": "./packages/agent-runtime" },
+    { "path": "./packages/agent-run" },
     { "path": "./apps/agent-run-worker" },
     { "path": "./apps/web" },
     { "path": "./apps/ingress" },

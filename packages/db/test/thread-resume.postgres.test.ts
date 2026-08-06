@@ -65,7 +65,15 @@ const setAgentRunState = (agentRunId: string, state: "running" | "waiting") =>
   Effect.runPromise(
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
-      yield* sql`UPDATE agent_runs SET state = ${state} WHERE agent_run_id = ${agentRunId}::uuid`;
+      yield* sql`UPDATE agent_runs
+        SET state = ${state},
+            claim_epoch = CASE WHEN ${state} = 'running' THEN claim_epoch + 1 ELSE claim_epoch END,
+            claim_owner = CASE WHEN ${state} = 'running' THEN 'thread-resume-test' ELSE NULL END,
+            lease_expires_at = CASE
+              WHEN ${state} = 'running' THEN now() + interval '1 hour'
+              ELSE NULL
+            END
+        WHERE agent_run_id = ${agentRunId}::uuid`;
     }).pipe(Effect.provide(databaseLayer)),
   );
 

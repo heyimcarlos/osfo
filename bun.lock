@@ -24,6 +24,9 @@
       "version": "0.0.0",
       "dependencies": {
         "@effect/platform-node": "catalog:",
+        "@osfo/agent-run": "workspace:*",
+        "@osfo/agent-runtime": "workspace:*",
+        "@osfo/db": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -76,6 +79,32 @@
         "vitest": "catalog:",
       },
     },
+    "packages/agent-run": {
+      "name": "@osfo/agent-run",
+      "version": "0.0.0",
+      "dependencies": {
+        "@osfo/agent-runtime": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
+    "packages/agent-runtime": {
+      "name": "@osfo/agent-runtime",
+      "version": "0.0.0",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
     "packages/api": {
       "name": "@osfo/api",
       "version": "0.0.0",
@@ -95,6 +124,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@effect/sql-pg": "catalog:",
+        "@osfo/agent-run": "workspace:*",
+        "@osfo/agent-runtime": "workspace:*",
         "@osfo/api": "workspace:*",
         "@osfo/session": "workspace:*",
         "drizzle-orm": "catalog:",
@@ -374,7 +405,11 @@
 
     "@open-draft/until": ["@open-draft/until@2.1.0", "", {}, "sha512-U69T3ItWHvLwGg5eJ0n3I62nWuE6ilHlmz7zM0npLBRvPRd7e6NYmg54vvRtP5mZG7kZqZCFVdsTWo7BPtBujg=="],
 
+    "@osfo/agent-run": ["@osfo/agent-run@workspace:packages/agent-run"],
+
     "@osfo/agent-run-worker": ["@osfo/agent-run-worker@workspace:apps/agent-run-worker"],
+
+    "@osfo/agent-runtime": ["@osfo/agent-runtime@workspace:packages/agent-runtime"],
 
     "@osfo/api": ["@osfo/api@workspace:packages/api"],
 

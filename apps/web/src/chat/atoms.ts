@@ -29,24 +29,56 @@ export interface SubmitThreadChatMessage {
   readonly idempotencyKey: string;
 }
 
-export interface CanonicalThreadMessage {
-  readonly agentRunId: string;
-  readonly content: string;
-  readonly eventId: string;
-  readonly occurredAt: string;
-  readonly threadPosition: string;
-  readonly userMessageId: string;
-}
+export type CanonicalThreadMessage =
+  | {
+      readonly type: "userMessage";
+      readonly messageId: string;
+      readonly agentRunId: string;
+      readonly content: string;
+      readonly eventId: string;
+      readonly occurredAt: string;
+      readonly threadPosition: string;
+      readonly userMessageId: string;
+    }
+  | {
+      readonly type: "assistantOutput";
+      readonly messageId: string;
+      readonly agentRunId: string;
+      readonly assistantOutputId: string;
+      readonly content: string;
+      readonly eventId: string;
+      readonly occurredAt: string;
+      readonly threadPosition: string;
+      readonly status:
+        | { readonly type: "streaming" }
+        | { readonly type: "completed" }
+        | { readonly type: "interrupted"; readonly cause: "modelCallFailed" };
+    };
 
 const messagesFromSnapshot = (snapshot: ThreadSnapshot): ReadonlyArray<CanonicalThreadMessage> =>
-  snapshot.timeline.map((item) => ({
-    agentRunId: item.agentRunId,
-    content: item.content.map((block) => block.text).join(""),
-    eventId: item.source.firstEventId,
-    occurredAt: item.source.firstOccurredAt,
-    threadPosition: item.source.firstPosition,
-    userMessageId: item.userMessageId,
-  }));
+  snapshot.timeline.map((item): CanonicalThreadMessage => {
+    const source = {
+      agentRunId: item.agentRunId,
+      content: item.content.map((block) => block.text).join(""),
+      eventId: item.source.firstEventId,
+      occurredAt: item.source.firstOccurredAt,
+      threadPosition: item.source.firstPosition,
+    };
+    return item.type === "userMessage"
+      ? {
+          ...source,
+          type: "userMessage",
+          messageId: item.userMessageId,
+          userMessageId: item.userMessageId,
+        }
+      : {
+          ...source,
+          type: "assistantOutput",
+          messageId: item.assistantOutputId,
+          assistantOutputId: item.assistantOutputId,
+          status: item.status,
+        };
+  });
 
 const makeApiResumeTransport = (options: ThreadChatOptions): ThreadResumeTransport => ({
   snapshot: () =>

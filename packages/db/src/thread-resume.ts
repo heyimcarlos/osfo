@@ -17,8 +17,10 @@ import {
   type ThreadResumeError,
 } from "@osfo/api";
 import {
+  ThreadEventSchema,
   ThreadSnapshotSchema,
-  UserMessageAppendedSchema,
+  applyThreadEvent,
+  makeEmptyThreadSnapshot,
   type ThreadEventEnvelope,
 } from "@osfo/session";
 import { Data, Effect, Layer, Option, Redacted, Schema, Stream } from "effect";
@@ -131,7 +133,7 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig) => {
       });
 
       const toEnvelope = Effect.fn("DatabaseThreadResume.toEnvelope")(function* (row: EventRow) {
-        const event = yield* Schema.decodeUnknownEffect(UserMessageAppendedSchema)({
+        const event = yield* Schema.decodeUnknownEffect(ThreadEventSchema)({
           eventId: row.eventId,
           eventType: row.eventType,
           eventVersion: row.eventVersion,
@@ -198,22 +200,41 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig) => {
             const head = (yield* readHead(request.threadId))[0];
             if (head === undefined) return yield* new ThreadNotFound();
 
-            const rows = yield* sql<EventRow>`SELECT * FROM (
-                SELECT
-                  event_id::text AS "eventId",
-                  event_type AS "eventType",
-                  event_version AS "eventVersion",
-                  occurred_at::text AS "occurredAt",
-                  payload,
-                  thread_id::text AS "threadId",
-                  position::text AS "threadPosition"
+            const rows = yield* sql<EventRow>`WITH timeline_starts AS (
+                SELECT position
                 FROM thread_events
                 WHERE thread_id = ${request.threadId}::uuid
                   AND position <= ${head.position}::bigint
+                  AND event_type = 'UserMessageAppended'
+                UNION ALL
+                SELECT min(position) AS position
+                FROM thread_events
+                WHERE thread_id = ${request.threadId}::uuid
+                  AND position <= ${head.position}::bigint
+                  AND event_type = 'AssistantOutputAppended'
+                GROUP BY payload ->> 'assistantOutputId'
+              ), retained_starts AS (
+                SELECT position
+                FROM timeline_starts
                 ORDER BY position DESC
                 LIMIT ${config.snapshotTimelineLimit}
-              ) suffix
-              ORDER BY "threadPosition"::bigint ASC`;
+              ), boundary AS (
+                SELECT min(position) AS position FROM retained_starts
+              )
+              SELECT
+                event.event_id::text AS "eventId",
+                event.event_type AS "eventType",
+                event.event_version AS "eventVersion",
+                event.occurred_at::text AS "occurredAt",
+                event.payload,
+                event.thread_id::text AS "threadId",
+                event.position::text AS "threadPosition"
+              FROM thread_events event
+              CROSS JOIN boundary
+              WHERE event.thread_id = ${request.threadId}::uuid
+                AND event.position >= boundary.position
+                AND event.position <= ${head.position}::bigint
+              ORDER BY event.position ASC`;
             const events = yield* Effect.forEach(rows, toEnvelope);
             const activeRuns = yield* sql<ActiveRunRow>`SELECT
                 run.agent_run_id::text AS "agentRunId",
@@ -222,7 +243,9 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig) => {
                 event.occurred_at::text AS "occurredAt",
                 run.state
               FROM agent_runs run
-              JOIN thread_events event ON event.agent_run_id = run.agent_run_id
+              JOIN thread_events event
+                ON event.agent_run_id = run.agent_run_id
+                AND event.event_type = 'UserMessageAppended'
               WHERE run.thread_id = ${request.threadId}::uuid
                 AND run.state IN ('pending', 'running', 'waiting')
                 AND event.position <= ${head.position}::bigint
@@ -239,30 +262,30 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig) => {
               version: 1,
             });
 
-            return yield* Schema.decodeUnknownEffect(ThreadSnapshotSchema)({
-              projection: "nativeThread",
-              schemaVersion: 1,
+            const empty = yield* makeEmptyThreadSnapshot({
               threadId: request.threadId,
-              throughPosition: head.position,
-              throughCursor,
-              stateRevision: head.stateRevision,
+              throughCursor: encodeCursor(config.cursorSecret, {
+                eventId: null,
+                issuedAtMs: Date.now(),
+                position: historyBeforePosition,
+                threadId: request.threadId,
+                version: 1,
+              }),
               replayGuaranteedForMs: config.replayGuaranteedForMs,
               timelineLimit: config.snapshotTimelineLimit,
+            }).pipe(Effect.mapError(() => new SnapshotUnavailable()));
+            const base = { ...empty, throughPosition: historyBeforePosition };
+            const folded = yield* Effect.reduce(events, () => base, applyThreadEvent).pipe(
+              Effect.mapError(() => new SnapshotUnavailable()),
+            );
+
+            return yield* Schema.decodeUnknownEffect(ThreadSnapshotSchema)({
+              ...folded,
+              throughPosition: head.position,
+              throughCursor,
+              lastEventId: head.eventId,
+              stateRevision: head.stateRevision,
               historyBeforePosition,
-              timeline: events.map((event) => ({
-                type: "userMessage",
-                userMessageId: event.payload.userMessageId,
-                agentRunId: event.payload.agentRunId,
-                source: {
-                  firstEventId: event.eventId,
-                  firstPosition: event.threadPosition,
-                  firstOccurredAt: event.occurredAt,
-                  lastEventId: event.eventId,
-                  lastPosition: event.threadPosition,
-                  lastOccurredAt: event.occurredAt,
-                },
-                content: event.payload.content,
-              })),
               activeState: activeRuns.map((run) => ({
                 type: "activeAgentRun",
                 agentRunId: run.agentRunId,
