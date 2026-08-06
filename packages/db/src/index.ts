@@ -10,12 +10,7 @@ export {
   MessageAdmissionDatabaseConfigSchema,
   type MessageAdmissionDatabaseConfig,
 } from "./message-admission.js";
-export {
-  migrateDatabase,
-  MigrationVerificationError,
-  verifyDatabaseMigrations,
-  type DatabaseConfig,
-} from "./migrations.js";
+export { migrateDatabase, type DatabaseConfig } from "./migrations.js";
 export {
   InvalidThreadResumeDatabaseConfig,
   makeThreadResumeLayer,
