@@ -21,6 +21,7 @@ cleanup() {
 
 trap cleanup EXIT
 
+bun run db:check
 bun run build --filter=@osfo/ingress
 
 OSFO_POSTGRES_PORT="$verify_port" \

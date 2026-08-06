@@ -15,6 +15,33 @@ bun run test
 bun run db:verify
 ```
 
+Local development keeps database setup explicit:
+
+```sh
+bun run db:up
+cp .env.example .env
+bun run db:migrate
+bun run dev
+```
+
+The example environment points at the pinned PostgreSQL container on
+`127.0.0.1:55432` and includes the non-secret ingress defaults. `bun run
+db:down` removes the local database volume.
+
+The Drizzle schema and migration commands are owned by `@osfo/db` and exposed
+at the workspace root:
+
+```sh
+bun run db:generate -- --name=describe_change
+bun run db:check
+bun run db:migrate
+bun run db:studio
+```
+
+Generate and commit SQL migrations for schema changes. Do not use
+`drizzle-kit push`; checked-in migrations and the real PostgreSQL verification
+gate are the repository authority.
+
 `db:verify` starts the digest-pinned local PostgreSQL service, applies and
 verifies every versioned migration, runs the real PostgreSQL admission and HTTP
 composition tests, then removes the disposable database volume.
