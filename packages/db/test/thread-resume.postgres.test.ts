@@ -4,11 +4,11 @@ import { afterAll, beforeEach, describe, expect, it } from "@effect/vitest";
 import {
   CursorOutsideRetention,
   MessageAdmission,
-  ThreadTraversal,
+  ThreadResume,
   type SubmitMessageCommand,
 } from "@osfo/api";
 import { Effect, Layer, ManagedRuntime, Redacted, Stream } from "effect";
-import { makeMessageAdmissionLayer, makeThreadTraversalLayer } from "../src/index";
+import { makeMessageAdmissionLayer, makeThreadResumeLayer } from "../src/index";
 import { prepareMessageAdmissionFixture } from "../src/testing";
 
 const databaseUrl = process.env.OSFO_TEST_DATABASE_URL;
@@ -18,11 +18,11 @@ if (databaseUrl === undefined) {
 
 const principalId = "b3ef0861-2df7-4d2a-a195-fbc5ed75bc81";
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
-const authenticationToken = "thread-traversal-session";
+const authenticationToken = "thread-resume-session";
 const cursorSecret = "test-only-cursor-secret-with-at-least-32-bytes";
 
 const databaseLayer = PgClient.layer({
-  applicationName: "osfo-thread-traversal-test",
+  applicationName: "osfo-thread-resume-test",
   maxConnections: 12,
   url: Redacted.make(databaseUrl),
 });
@@ -31,11 +31,11 @@ const runtime = ManagedRuntime.make(
   Layer.mergeAll(
     makeMessageAdmissionLayer({
       databaseUrl,
-      executionProfileRef: "oz.thread-traversal-test.v1",
+      executionProfileRef: "oz.thread-resume-test.v1",
       globalNonTerminalLimit: 20,
       principalNonTerminalLimit: 20,
     }),
-    makeThreadTraversalLayer({
+    makeThreadResumeLayer({
       cursorSecret,
       databaseUrl,
       pollIntervalMs: 10,
@@ -47,7 +47,7 @@ const runtime = ManagedRuntime.make(
   ),
 );
 
-const run = <A, E, R extends MessageAdmission | ThreadTraversal>(effect: Effect.Effect<A, E, R>) =>
+const run = <A, E, R extends MessageAdmission | ThreadResume>(effect: Effect.Effect<A, E, R>) =>
   runtime.runPromise(effect);
 
 const command = (content: string): SubmitMessageCommand => ({
@@ -60,6 +60,14 @@ const command = (content: string): SubmitMessageCommand => ({
 
 const accept = (content: string) =>
   run(MessageAdmission.use((admission) => admission.accept(command(content))));
+
+const setAgentRunState = (agentRunId: string, state: "running" | "waiting") =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      yield* sql`UPDATE agent_runs SET state = ${state} WHERE agent_run_id = ${agentRunId}::uuid`;
+    }).pipe(Effect.provide(databaseLayer)),
+  );
 
 const access = { authenticationToken, threadId };
 
@@ -81,13 +89,15 @@ beforeEach(() =>
 );
 afterAll(() => runtime.dispose());
 
-describe("PostgreSQL Thread traversal", () => {
+describe("PostgreSQL Thread resume", () => {
   it("bootstraps a bounded complete projection from one logical read point", async () => {
-    await accept("First");
-    await accept("Second");
+    const first = await accept("First");
+    const second = await accept("Second");
     await accept("Third");
+    await setAgentRunState(first.agentRunId, "running");
+    await setAgentRunState(second.agentRunId, "waiting");
 
-    const snapshot = await run(ThreadTraversal.use((traversal) => traversal.snapshot(access)));
+    const snapshot = await run(ThreadResume.use((resume) => resume.snapshot(access)));
 
     expect(snapshot).toMatchObject({
       threadId,
@@ -97,6 +107,11 @@ describe("PostgreSQL Thread traversal", () => {
     });
     expect(snapshot.timeline.map((item) => item.content[0]?.text)).toEqual(["Second", "Third"]);
     expect(snapshot.activeState).toHaveLength(3);
+    expect(snapshot.activeState.map((item) => item.phase.type)).toEqual([
+      "running",
+      "waiting",
+      "pending",
+    ]);
     expect(snapshot.throughCursor).toEqual(expect.any(String));
   });
 
@@ -105,14 +120,12 @@ describe("PostgreSQL Thread traversal", () => {
     await accept("Second");
 
     const first = await run(
-      ThreadTraversal.use((traversal) =>
-        traversal.history({ ...access, afterPosition: "0", limit: 1 }),
-      ),
+      ThreadResume.use((resume) => resume.history({ ...access, afterPosition: "0", limit: 1 })),
     );
     await accept("Later than the frozen head");
     const second = await run(
-      ThreadTraversal.use((traversal) =>
-        traversal.history({
+      ThreadResume.use((resume) =>
+        resume.history({
           ...access,
           afterPosition: first.nextAfterPosition,
           throughPosition: first.throughPosition,
@@ -130,14 +143,10 @@ describe("PostgreSQL Thread traversal", () => {
   it("replays strictly after the cursor, cuts over, then observes live commits", async () => {
     await accept("Replay");
     const origin = await run(
-      ThreadTraversal.use((traversal) =>
-        traversal.history({ ...access, afterPosition: "0", limit: 1 }),
-      ),
+      ThreadResume.use((resume) => resume.history({ ...access, afterPosition: "0", limit: 1 })),
     );
     const replayStream = await run(
-      ThreadTraversal.use((traversal) =>
-        traversal.stream({ ...access, after: origin.events[0]!.cursor }),
-      ),
+      ThreadResume.use((resume) => resume.stream({ ...access, after: origin.events[0]!.cursor })),
     );
 
     await accept("Live");
@@ -153,18 +162,21 @@ describe("PostgreSQL Thread traversal", () => {
   });
 
   it("honors the replay time guarantee beyond the normal event-count bound", async () => {
-    const origin = (await run(ThreadTraversal.use((traversal) => traversal.snapshot(access))))
-      .throughCursor;
+    const origin = (await run(ThreadResume.use((resume) => resume.snapshot(access)))).throughCursor;
     await accept("First");
     await accept("Second");
     await accept("Third");
+    await accept("Fourth");
+    await accept("Fifth");
 
     const replay = await run(
-      ThreadTraversal.use((traversal) => traversal.stream({ ...access, after: origin })),
+      ThreadResume.use((resume) => resume.stream({ ...access, after: origin })),
     );
-    const delivered = await run(replay.pipe(Stream.take(4), Stream.runCollect));
+    const delivered = await run(replay.pipe(Stream.take(6), Stream.runCollect));
 
     expect(Array.from(delivered).map((message) => message.event)).toEqual([
+      "thread_event",
+      "thread_event",
       "thread_event",
       "thread_event",
       "thread_event",
@@ -173,17 +185,14 @@ describe("PostgreSQL Thread traversal", () => {
   });
 
   it("rejects an expired cursor beyond bounded replay retention", async () => {
-    const origin = (await run(ThreadTraversal.use((traversal) => traversal.snapshot(access))))
-      .throughCursor;
+    const origin = (await run(ThreadResume.use((resume) => resume.snapshot(access)))).throughCursor;
     await accept("First");
     await accept("Second");
     await accept("Third");
 
     const error = await run(
       Effect.flip(
-        ThreadTraversal.use((traversal) =>
-          traversal.stream({ ...access, after: expireCursor(origin) }),
-        ),
+        ThreadResume.use((resume) => resume.stream({ ...access, after: expireCursor(origin) })),
       ),
     );
 

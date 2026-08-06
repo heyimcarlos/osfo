@@ -6,14 +6,15 @@ import {
   InvalidCursor,
   SnapshotUnavailable,
   ThreadNotFound,
-  ThreadTraversal,
-  TraversalUnavailable,
+  ThreadResume,
+  ThreadResumeUnavailable,
+  isThreadResumeError,
+  isThreadSnapshotError,
   type ThreadAccess,
   type ThreadHistoryPage,
   type ThreadHistoryRequest,
-  type ThreadStreamEvent,
   type ThreadStreamRequest,
-  type ThreadTraversalError,
+  type ThreadResumeError,
 } from "@osfo/api";
 import {
   ThreadSnapshotSchema,
@@ -24,7 +25,7 @@ import { Data, Effect, Layer, Option, Redacted, Schema, Stream } from "effect";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 
-export const ThreadTraversalDatabaseConfigSchema = Schema.Struct({
+export const ThreadResumeDatabaseConfigSchema = Schema.Struct({
   databaseUrl: Schema.NonEmptyString,
   cursorSecret: Schema.String.check(Schema.isMinLength(32)),
   pollIntervalMs: PositiveInteger,
@@ -33,10 +34,10 @@ export const ThreadTraversalDatabaseConfigSchema = Schema.Struct({
   snapshotTimelineLimit: PositiveInteger,
 });
 
-export type ThreadTraversalDatabaseConfig = typeof ThreadTraversalDatabaseConfigSchema.Type;
+export type ThreadResumeDatabaseConfig = typeof ThreadResumeDatabaseConfigSchema.Type;
 
-export class InvalidThreadTraversalDatabaseConfig extends Data.TaggedError(
-  "InvalidThreadTraversalDatabaseConfig",
+export class InvalidThreadResumeDatabaseConfig extends Data.TaggedError(
+  "InvalidThreadResumeDatabaseConfig",
 )<{ readonly cause: unknown }> {}
 
 interface CursorPayload {
@@ -70,6 +71,7 @@ interface ActiveRunRow {
   readonly eventId: string;
   readonly occurredAt: string;
   readonly position: string;
+  readonly state: "pending" | "running" | "waiting";
 }
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -96,31 +98,18 @@ const decodeCursor = (secret: string, value: string) =>
     ).pipe(Effect.mapError(() => new InvalidCursor()));
   }).pipe(Effect.catchDefect(() => Effect.fail(new InvalidCursor())));
 
-const isSnapshotError = Schema.is(
-  Schema.Union([AuthenticationRejected, ThreadNotFound, SnapshotUnavailable]),
-);
-const isTraversalError = Schema.is(
-  Schema.Union([
-    AuthenticationRejected,
-    ThreadNotFound,
-    InvalidCursor,
-    CursorOutsideRetention,
-    TraversalUnavailable,
-  ]),
-);
-
-const threadTraversalLayer = (config: ThreadTraversalDatabaseConfig) => {
+const threadResumeLayer = (config: ThreadResumeDatabaseConfig) => {
   const postgresLayer = PgClient.layer({
-    applicationName: "osfo-thread-traversal",
+    applicationName: "osfo-thread-resume",
     url: Redacted.make(config.databaseUrl),
   });
 
   return Layer.effect(
-    ThreadTraversal,
+    ThreadResume,
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
 
-      const authorize = Effect.fn("DatabaseThreadTraversal.authorize")(function* (
+      const authorize = Effect.fn("DatabaseThreadResume.authorize")(function* (
         request: ThreadAccess,
       ) {
         const sessions = yield* sql<{
@@ -143,7 +132,7 @@ const threadTraversalLayer = (config: ThreadTraversalDatabaseConfig) => {
         return session.principalId;
       });
 
-      const toEnvelope = Effect.fn("DatabaseThreadTraversal.toEnvelope")(function* (row: EventRow) {
+      const toEnvelope = Effect.fn("DatabaseThreadResume.toEnvelope")(function* (row: EventRow) {
         const event = yield* Schema.decodeUnknownEffect(UserMessageAppendedSchema)({
           eventId: row.eventId,
           eventType: row.eventType,
@@ -152,7 +141,7 @@ const threadTraversalLayer = (config: ThreadTraversalDatabaseConfig) => {
           threadPosition: row.threadPosition,
           occurredAt: new Date(row.occurredAt).toISOString(),
           payload: row.payload,
-        }).pipe(Effect.mapError(() => new TraversalUnavailable()));
+        }).pipe(Effect.mapError(() => new ThreadResumeUnavailable()));
         return {
           ...event,
           cursor: encodeCursor(config.cursorSecret, {
@@ -201,7 +190,7 @@ const threadTraversalLayer = (config: ThreadTraversalDatabaseConfig) => {
           ORDER BY position ASC
           LIMIT ${limit}`;
 
-      const snapshot = Effect.fn("DatabaseThreadTraversal.snapshot")(function* (
+      const snapshot = Effect.fn("DatabaseThreadResume.snapshot")(function* (
         request: ThreadAccess,
       ) {
         const transaction = sql.withTransaction(
@@ -232,7 +221,8 @@ const threadTraversalLayer = (config: ThreadTraversalDatabaseConfig) => {
                 run.agent_run_id::text AS "agentRunId",
                 event.event_id::text AS "eventId",
                 event.position::text AS position,
-                event.occurred_at::text AS "occurredAt"
+                event.occurred_at::text AS "occurredAt",
+                run.state
               FROM agent_runs run
               JOIN thread_events event ON event.agent_run_id = run.agent_run_id
               WHERE run.thread_id = ${request.threadId}::uuid
@@ -259,6 +249,7 @@ const threadTraversalLayer = (config: ThreadTraversalDatabaseConfig) => {
               throughCursor,
               stateRevision: head.stateRevision,
               replayGuaranteedForMs: config.replayGuaranteedForMs,
+              timelineLimit: config.snapshotTimelineLimit,
               historyBeforePosition,
               timeline: events.map((event) => ({
                 type: "userMessage",
@@ -282,19 +273,20 @@ const threadTraversalLayer = (config: ThreadTraversalDatabaseConfig) => {
                   position: run.position,
                   occurredAt: new Date(run.occurredAt).toISOString(),
                 },
-                phase: { type: "pending" },
-                cancellationRequested: false,
+                phase: { type: run.state },
               })),
             }).pipe(Effect.mapError(() => new SnapshotUnavailable()));
           }),
         );
 
         return yield* transaction.pipe(
-          Effect.mapError((error) => (isSnapshotError(error) ? error : new SnapshotUnavailable())),
+          Effect.mapError((error) =>
+            isThreadSnapshotError(error) ? error : new SnapshotUnavailable(),
+          ),
         );
       });
 
-      const history = Effect.fn("DatabaseThreadTraversal.history")(function* (
+      const history = Effect.fn("DatabaseThreadResume.history")(function* (
         request: ThreadHistoryRequest,
       ) {
         const transaction = sql.withTransaction(
@@ -305,7 +297,7 @@ const threadTraversalLayer = (config: ThreadTraversalDatabaseConfig) => {
             if (head === undefined) return yield* new ThreadNotFound();
             const throughPosition = request.throughPosition ?? head.position;
             if (BigInt(throughPosition) > BigInt(head.position)) {
-              return yield* new TraversalUnavailable();
+              return yield* new ThreadResumeUnavailable();
             }
             const limit = Math.min(request.limit, 1_000);
             const rows = yield* readEvents(
@@ -330,12 +322,12 @@ const threadTraversalLayer = (config: ThreadTraversalDatabaseConfig) => {
           Effect.mapError((error) =>
             error instanceof AuthenticationRejected || error instanceof ThreadNotFound
               ? error
-              : new TraversalUnavailable(),
+              : new ThreadResumeUnavailable(),
           ),
         );
       });
 
-      const stream = Effect.fn("DatabaseThreadTraversal.stream")(function* (
+      const stream = Effect.fn("DatabaseThreadResume.stream")(function* (
         request: ThreadStreamRequest,
       ) {
         const initial = sql.withTransaction(
@@ -370,13 +362,6 @@ const threadTraversalLayer = (config: ThreadTraversalDatabaseConfig) => {
             ) {
               return yield* new CursorOutsideRetention();
             }
-            const rows = yield* readEvents(
-              request.threadId,
-              cursor.position,
-              head.position,
-              withinReplayGuarantee ? Number.MAX_SAFE_INTEGER : config.replayEventLimit,
-            );
-            const replay = yield* Effect.forEach(rows, toEnvelope);
             const throughCursor = encodeCursor(config.cursorSecret, {
               eventId: head.eventId,
               issuedAtMs: Date.now(),
@@ -384,29 +369,47 @@ const threadTraversalLayer = (config: ThreadTraversalDatabaseConfig) => {
               threadId: request.threadId,
               version: 1,
             });
-            return { head, replay, throughCursor };
+            return { cursor, head, throughCursor };
           }),
         );
 
         const cut = yield* initial.pipe(
           Effect.mapError(
-            (error): ThreadTraversalError =>
-              isTraversalError(error) ? error : new TraversalUnavailable(),
+            (error): ThreadResumeError =>
+              isThreadResumeError(error) ? error : new ThreadResumeUnavailable(),
           ),
         );
-        const replayEvents: ReadonlyArray<ThreadStreamEvent> = [
-          ...cut.replay.map((data) => ({ event: "thread_event" as const, data })),
-          {
-            event: "caught_up" as const,
-            data: { throughPosition: cut.head.position, throughCursor: cut.throughCursor },
-          },
-        ];
+        const replay = Stream.paginate(cut.cursor.position, (position) =>
+          Effect.gen(function* () {
+            yield* authorize(request);
+            const rows = yield* readEvents(
+              request.threadId,
+              position,
+              cut.head.position,
+              config.replayEventLimit,
+            );
+            if (rows.length === 0) return [[], Option.none()] as const;
+            const events = yield* Effect.forEach(rows, toEnvelope);
+            const nextPosition = events.at(-1)!.threadPosition;
+            return [
+              events.map((data) => ({ event: "thread_event" as const, data })),
+              BigInt(nextPosition) < BigInt(cut.head.position)
+                ? Option.some(nextPosition)
+                : Option.none(),
+            ] as const;
+          }).pipe(Effect.mapError(() => new ThreadResumeUnavailable())),
+        );
+
+        const caughtUp = Stream.make({
+          event: "caught_up" as const,
+          data: { throughPosition: cut.head.position, throughCursor: cut.throughCursor },
+        });
 
         const live = Stream.paginate(cut.head.position, (position) =>
           Effect.gen(function* () {
             yield* authorize(request);
             const currentHead = (yield* readHead(request.threadId))[0];
-            if (currentHead === undefined) return yield* new TraversalUnavailable();
+            if (currentHead === undefined) return yield* new ThreadResumeUnavailable();
             const rows = yield* readEvents(
               request.threadId,
               position,
@@ -422,21 +425,21 @@ const threadTraversalLayer = (config: ThreadTraversalDatabaseConfig) => {
               events.map((data) => ({ event: "thread_event" as const, data })),
               Option.some(events.at(-1)!.threadPosition),
             ] as const;
-          }).pipe(Effect.mapError(() => new TraversalUnavailable())),
+          }).pipe(Effect.mapError(() => new ThreadResumeUnavailable())),
         );
 
-        return Stream.fromIterable(replayEvents).pipe(Stream.concat(live));
+        return replay.pipe(Stream.concat(caughtUp), Stream.concat(live));
       });
 
-      return ThreadTraversal.of({ history, snapshot, stream });
+      return ThreadResume.of({ history, snapshot, stream });
     }),
   ).pipe(Layer.provide(postgresLayer));
 };
 
-export const makeThreadTraversalLayer = (config: ThreadTraversalDatabaseConfig) =>
+export const makeThreadResumeLayer = (config: ThreadResumeDatabaseConfig) =>
   Layer.unwrap(
-    Schema.decodeUnknownEffect(ThreadTraversalDatabaseConfigSchema)(config).pipe(
-      Effect.mapError((cause) => new InvalidThreadTraversalDatabaseConfig({ cause })),
-      Effect.map(threadTraversalLayer),
+    Schema.decodeUnknownEffect(ThreadResumeDatabaseConfigSchema)(config).pipe(
+      Effect.mapError((cause) => new InvalidThreadResumeDatabaseConfig({ cause })),
+      Effect.map(threadResumeLayer),
     ),
   );

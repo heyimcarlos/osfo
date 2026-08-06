@@ -75,6 +75,7 @@ describe("UserMessageAppended", () => {
       throughCursor: "cursor-position-1",
       stateRevision: 1,
       replayGuaranteedForMs: 30_000,
+      timelineLimit: 100,
       historyBeforePosition: "0",
       timeline: [
         {
@@ -102,7 +103,6 @@ describe("UserMessageAppended", () => {
             occurredAt: eventInput.occurredAt,
           },
           phase: { type: "pending" },
-          cancellationRequested: false,
         },
       ],
     });
@@ -120,7 +120,7 @@ describe("UserMessageAppended", () => {
     );
 
     expect(
-      Effect.runSync(applyThreadEvent(snapshot, { ...event, cursor: "cursor-position-1" })),
+      Effect.runSync(applyThreadEvent(snapshot, { ...event, cursor: "fresh-duplicate-cursor" })),
     ).toBe(snapshot);
   });
 
@@ -168,5 +168,45 @@ describe("UserMessageAppended", () => {
     );
 
     expect(error).toEqual(new InvalidThreadProjection({ reason: "gap" }));
+  });
+
+  it("keeps the live timeline within the snapshot bound", () => {
+    const snapshot = Effect.runSync(
+      makeEmptyThreadSnapshot({
+        threadId: eventInput.threadId,
+        throughCursor: "origin",
+        timelineLimit: 2,
+      }),
+    );
+    const inputs = [
+      eventInput,
+      {
+        ...eventInput,
+        eventId: "0a2415a9-dccd-4dd6-8dd2-29ad6278cd6f",
+        threadPosition: "2",
+        userMessageId: "e64674df-0de1-4cf5-9bbf-27563e5bd27a",
+        agentRunId: "71c5311f-9b88-480e-a6b3-f572c868a9a1",
+      },
+      {
+        ...eventInput,
+        eventId: "1970fe0f-dcb6-43df-aa2c-0ae41a9e1b07",
+        threadPosition: "3",
+        userMessageId: "f09f73bf-420f-414a-8e6a-c5741d43c729",
+        agentRunId: "8348b413-dc22-414f-8486-88a6d9a9bfd5",
+      },
+    ];
+    const result = inputs.reduce(
+      (current, input) =>
+        Effect.runSync(
+          applyThreadEvent(current, {
+            ...Effect.runSync(makeUserMessageAppended(input)),
+            cursor: `cursor-position-${input.threadPosition}`,
+          }),
+        ),
+      snapshot,
+    );
+
+    expect(result.timeline.map((item) => item.source.firstPosition)).toEqual(["2", "3"]);
+    expect(result.historyBeforePosition).toBe("1");
   });
 });

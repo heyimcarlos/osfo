@@ -1,15 +1,17 @@
 export { OsfoApi } from "./api.js";
 export {
   MessageAdmission,
-  ThreadTraversal,
+  ThreadResume,
+  isThreadResumeError,
+  isThreadSnapshotError,
   type MessageAdmissionError,
   type SubmitMessageCommand,
   type ThreadAccess,
   type ThreadHistoryRequest,
   type ThreadSnapshotError,
   type ThreadStreamRequest,
-  type ThreadTraversalError,
-  type ThreadTraversalService,
+  type ThreadResumeError,
+  type ThreadResumeService,
 } from "./services.js";
 export {
   AcceptanceReceipt,
@@ -26,7 +28,7 @@ export {
   ThreadNotFound,
   ThreadStreamEventSchema,
   ThreadsApi,
-  TraversalUnavailable,
+  ThreadResumeUnavailable,
   Uuid,
   type ThreadHistoryPage,
   type ThreadStreamEvent,

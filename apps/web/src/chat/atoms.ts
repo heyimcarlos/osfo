@@ -1,14 +1,12 @@
 import {
-  AuthenticationRejected,
-  CursorOutsideRetention,
-  InvalidCursor,
   SnapshotUnavailable,
-  ThreadNotFound,
-  TraversalUnavailable,
+  ThreadResumeUnavailable,
+  isThreadResumeError,
+  isThreadSnapshotError,
 } from "@osfo/api";
 import { getThreadSnapshot, streamThreadEvents, submitThreadMessage } from "@osfo/api/client";
 import { InvalidThreadProjection, type ThreadSnapshot } from "@osfo/session";
-import { Effect, Schema, Stream } from "effect";
+import { Effect, Stream } from "effect";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import {
   makeThreadProjectionStore,
@@ -50,19 +48,6 @@ const messagesFromSnapshot = (snapshot: ThreadSnapshot): ReadonlyArray<Canonical
     userMessageId: item.userMessageId,
   }));
 
-const isSnapshotError = Schema.is(
-  Schema.Union([AuthenticationRejected, ThreadNotFound, SnapshotUnavailable]),
-);
-const isTraversalError = Schema.is(
-  Schema.Union([
-    AuthenticationRejected,
-    ThreadNotFound,
-    InvalidCursor,
-    CursorOutsideRetention,
-    TraversalUnavailable,
-  ]),
-);
-
 const makeApiResumeTransport = (options: ThreadChatOptions): ThreadResumeTransport => ({
   snapshot: () =>
     getThreadSnapshot({
@@ -70,7 +55,9 @@ const makeApiResumeTransport = (options: ThreadChatOptions): ThreadResumeTranspo
       baseUrl: options.baseUrl,
       threadId: options.threadId,
     }).pipe(
-      Effect.mapError((error) => (isSnapshotError(error) ? error : new SnapshotUnavailable())),
+      Effect.mapError((error) =>
+        isThreadSnapshotError(error) ? error : new SnapshotUnavailable(),
+      ),
     ),
   stream: (after) =>
     streamThreadEvents({
@@ -81,10 +68,12 @@ const makeApiResumeTransport = (options: ThreadChatOptions): ThreadResumeTranspo
     }).pipe(
       Effect.map(
         Stream.mapError((error) =>
-          error instanceof TraversalUnavailable ? error : new TraversalUnavailable(),
+          error instanceof ThreadResumeUnavailable ? error : new ThreadResumeUnavailable(),
         ),
       ),
-      Effect.mapError((error) => (isTraversalError(error) ? error : new TraversalUnavailable())),
+      Effect.mapError((error) =>
+        isThreadResumeError(error) ? error : new ThreadResumeUnavailable(),
+      ),
     ),
 });
 

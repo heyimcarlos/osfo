@@ -1,6 +1,6 @@
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import { OsfoApiLive } from "@osfo/api/server";
-import { makeMessageAdmissionLayer, makeThreadTraversalLayer } from "@osfo/db";
+import { makeMessageAdmissionLayer, makeThreadResumeLayer } from "@osfo/db";
 import { Config, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { createServer } from "node:http";
@@ -55,7 +55,7 @@ const ServerLive = Layer.unwrap(
               globalNonTerminalLimit: config.globalNonTerminalLimit,
               principalNonTerminalLimit: config.principalNonTerminalLimit,
             }),
-            makeThreadTraversalLayer({
+            makeThreadResumeLayer({
               cursorSecret: config.cursorSecret,
               databaseUrl: config.databaseUrl,
               pollIntervalMs: config.streamPollIntervalMs,

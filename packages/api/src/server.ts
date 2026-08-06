@@ -2,7 +2,7 @@ import { Effect, Layer, Redacted } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder, HttpApiMiddleware } from "effect/unstable/httpapi";
 import { OsfoApi } from "./api.js";
-import { MessageAdmission, ThreadTraversal } from "./services.js";
+import { MessageAdmission, ThreadResume } from "./services.js";
 import {
   Authentication,
   AuthenticationRejected,
@@ -45,8 +45,8 @@ export const ThreadsHandlers = HttpApiBuilder.group(OsfoApi, "threads", (handler
       "getSnapshot",
       Effect.fn("OsfoApi.threads.getSnapshot")(function* ({ params }) {
         const authenticationToken = yield* AuthenticationToken;
-        const traversal = yield* ThreadTraversal;
-        return yield* traversal.snapshot({
+        const resume = yield* ThreadResume;
+        return yield* resume.snapshot({
           authenticationToken,
           threadId: params.threadId,
         });
@@ -56,15 +56,15 @@ export const ThreadsHandlers = HttpApiBuilder.group(OsfoApi, "threads", (handler
       "getEvents",
       Effect.fn("OsfoApi.threads.getEvents")(function* ({ params, query }) {
         const authenticationToken = yield* AuthenticationToken;
-        const traversal = yield* ThreadTraversal;
+        const resume = yield* ThreadResume;
         if (query.after !== undefined) {
-          return yield* traversal.stream({
+          return yield* resume.stream({
             after: query.after,
             authenticationToken,
             threadId: params.threadId,
           });
         }
-        return yield* traversal.history({
+        return yield* resume.history({
           afterPosition: query.afterPosition ?? "0",
           authenticationToken,
           limit: query.limit ?? 100,

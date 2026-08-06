@@ -1,8 +1,8 @@
 import {
   AcceptanceReceipt,
   MessageAdmission,
-  ThreadTraversal,
-  type ThreadTraversalService,
+  ThreadResume,
+  type ThreadResumeService,
   type MessageAdmissionError,
   type SubmitMessageCommand,
 } from "../src/index";
@@ -56,7 +56,7 @@ const receipt = new AcceptanceReceipt({
   acceptedAt: event.occurredAt,
 });
 
-const makeHarness = (traversal: ThreadTraversalService) => {
+const makeHarness = (resume: ThreadResumeService) => {
   const admission = MessageAdmission.of({
     accept: (
       _command: SubmitMessageCommand,
@@ -65,13 +65,11 @@ const makeHarness = (traversal: ThreadTraversalService) => {
   const web = HttpRouter.toWebHandler(
     OsfoApiLive.pipe(
       Layer.provide(Layer.succeed(MessageAdmission)(admission)),
-      Layer.provide(Layer.succeed(ThreadTraversal)(traversal)),
+      Layer.provide(Layer.succeed(ThreadResume)(resume)),
       Layer.provideMerge(HttpServer.layerServices),
     ),
   );
-  const context = Context.make(MessageAdmission, admission).pipe(
-    Context.add(ThreadTraversal, traversal),
-  );
+  const context = Context.make(MessageAdmission, admission).pipe(Context.add(ThreadResume, resume));
   const handler = (request: Request) => web.handler(request, context);
   const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
     HttpClient.make((request, _url, signal) =>
@@ -92,7 +90,7 @@ const makeHarness = (traversal: ThreadTraversalService) => {
   return { dispose: web.dispose, handler, httpClientLayer };
 };
 
-const traversal = ThreadTraversal.of({
+const resume = ThreadResume.of({
   snapshot: () => Effect.succeed(snapshot),
   history: ({ afterPosition, throughPosition }) =>
     Effect.succeed({
@@ -122,7 +120,7 @@ const authorized = (url: string, accept: string) =>
 
 describe("Thread resume API", () => {
   it("exposes snapshot and event replay through the generated client contract", async () => {
-    const harness = makeHarness(traversal);
+    const harness = makeHarness(resume);
     try {
       const loaded = await Effect.runPromise(
         getThreadSnapshot({
@@ -156,7 +154,7 @@ describe("Thread resume API", () => {
   });
 
   it("bootstraps from a complete authenticated snapshot", async () => {
-    const harness = makeHarness(traversal);
+    const harness = makeHarness(resume);
     try {
       const response = await harness.handler(
         authorized(`http://osfo.test/v1/threads/${threadId}/snapshot`, "application/json"),
@@ -171,7 +169,7 @@ describe("Thread resume API", () => {
   });
 
   it("traverses one frozen canonical history head", async () => {
-    const harness = makeHarness(traversal);
+    const harness = makeHarness(resume);
     try {
       const response = await harness.handler(
         authorized(
@@ -195,7 +193,7 @@ describe("Thread resume API", () => {
   });
 
   it("replays canonical events before entering live delivery", async () => {
-    const harness = makeHarness(traversal);
+    const harness = makeHarness(resume);
     try {
       const response = await harness.handler(
         authorized(

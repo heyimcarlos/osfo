@@ -1,4 +1,4 @@
-import { CursorOutsideRetention, TraversalUnavailable } from "@osfo/api";
+import { CursorOutsideRetention, ThreadResumeUnavailable } from "@osfo/api";
 import { describe, expect, it } from "@effect/vitest";
 import {
   applyThreadEvent,
@@ -139,7 +139,7 @@ describe("Thread resume coordinator", () => {
       stream: () =>
         Effect.succeed(
           Stream.make({ event: "thread_event" as const, data: event2 }).pipe(
-            Stream.concat(Stream.fail(new TraversalUnavailable())),
+            Stream.concat(Stream.fail(new ThreadResumeUnavailable())),
           ),
         ),
     };
@@ -147,6 +147,25 @@ describe("Thread resume coordinator", () => {
     await expect(
       Effect.runPromise(synchronizeThreadOnce({ store, transport })),
     ).rejects.toBeDefined();
+    expect(Effect.runSync(store.load())).toEqual(through2);
+  });
+
+  it("replaces the preserved projection from authority after a replay gap", async () => {
+    const store = makeThreadProjectionStore({ storage: new MemoryStorage(), threadId });
+    Effect.runSync(store.replace(through1));
+    const gap = { ...event2, threadPosition: "3", cursor: "cursor-position-3" };
+    let snapshotCalls = 0;
+    const transport: ThreadResumeTransport = {
+      snapshot: () => {
+        snapshotCalls += 1;
+        return Effect.succeed(through2);
+      },
+      stream: () => Effect.succeed(Stream.make({ event: "thread_event" as const, data: gap })),
+    };
+
+    await Effect.runPromise(synchronizeThreadOnce({ store, transport }));
+
+    expect(snapshotCalls).toBe(1);
     expect(Effect.runSync(store.load())).toEqual(through2);
   });
 });

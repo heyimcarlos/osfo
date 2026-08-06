@@ -95,8 +95,8 @@ export class SnapshotUnavailable extends Schema.TaggedErrorClass<SnapshotUnavail
   { httpApiStatus: 503 },
 ) {}
 
-export class TraversalUnavailable extends Schema.TaggedErrorClass<TraversalUnavailable>()(
-  "TraversalUnavailable",
+export class ThreadResumeUnavailable extends Schema.TaggedErrorClass<ThreadResumeUnavailable>()(
+  "ThreadResumeUnavailable",
   {},
   { httpApiStatus: 503 },
 ) {}
@@ -139,7 +139,7 @@ export type ThreadStreamEvent = typeof ThreadStreamEventSchema.Type;
 const StreamSuccess = HttpApiSchema.StreamSse({
   contentType: "text/event-stream; charset=utf-8",
   events: ThreadStreamEventSchema,
-  error: TraversalUnavailable,
+  error: ThreadResumeUnavailable,
 });
 
 export class AuthenticationToken extends Context.Service<AuthenticationToken, string>()(
@@ -191,7 +191,7 @@ export const ThreadsApi = HttpApiGroup.make("threads")
         AuthenticationRejected,
         InvalidCursor,
         CursorOutsideRetention,
-        TraversalUnavailable,
+        ThreadResumeUnavailable,
         MalformedRequest,
       ],
     }),

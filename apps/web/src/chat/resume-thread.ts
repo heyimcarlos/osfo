@@ -1,8 +1,8 @@
 import {
-  TraversalUnavailable,
+  ThreadResumeUnavailable,
   type ThreadSnapshotError,
   type ThreadStreamEvent,
-  type ThreadTraversalError,
+  type ThreadResumeError,
 } from "@osfo/api";
 import { InvalidThreadProjection, type ThreadSnapshot } from "@osfo/session";
 import { Effect, Stream } from "effect";
@@ -16,7 +16,7 @@ export interface ThreadResumeTransport {
   readonly snapshot: () => Effect.Effect<ThreadSnapshot, ThreadSnapshotError>;
   readonly stream: (
     cursor: string,
-  ) => Effect.Effect<Stream.Stream<ThreadStreamEvent, TraversalUnavailable>, ThreadTraversalError>;
+  ) => Effect.Effect<Stream.Stream<ThreadStreamEvent, ThreadResumeUnavailable>, ThreadResumeError>;
 }
 
 export interface SynchronizeThreadOptions {
@@ -30,8 +30,8 @@ export type SynchronizeThreadError =
   | ProjectionStoreCorrupt
   | ProjectionStoreUnavailable
   | ThreadSnapshotError
-  | ThreadTraversalError
-  | TraversalUnavailable;
+  | ThreadResumeError
+  | ThreadResumeUnavailable;
 
 const notify = (options: SynchronizeThreadOptions, snapshot: ThreadSnapshot) =>
   Effect.sync(() => options.onProjection?.(snapshot));
@@ -53,8 +53,8 @@ const openRetainedStream = (
   options: SynchronizeThreadOptions,
   snapshot: ThreadSnapshot,
 ): Effect.Effect<
-  Stream.Stream<ThreadStreamEvent, TraversalUnavailable>,
-  ProjectionStoreCorrupt | ProjectionStoreUnavailable | ThreadSnapshotError | ThreadTraversalError
+  Stream.Stream<ThreadStreamEvent, ThreadResumeUnavailable>,
+  ProjectionStoreCorrupt | ProjectionStoreUnavailable | ThreadSnapshotError | ThreadResumeError
 > =>
   Effect.gen(function* () {
     return yield* options.transport

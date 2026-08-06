@@ -109,8 +109,7 @@ export const ActiveAgentRunSchema = Schema.Struct({
   type: Schema.Literal("activeAgentRun"),
   agentRunId: Identity,
   introducedBy: SourcePointSchema,
-  phase: Schema.Struct({ type: Schema.Literal("pending") }),
-  cancellationRequested: Schema.Boolean,
+  phase: Schema.Struct({ type: Schema.Literals(["pending", "running", "waiting"]) }),
 });
 
 const NonNegativePosition = Schema.String.pipe(Schema.check(Schema.isPattern(/^\d+$/u)));
@@ -123,6 +122,7 @@ export const ThreadSnapshotSchema = Schema.Struct({
   throughCursor: ThreadCursor,
   stateRevision: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
   replayGuaranteedForMs: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
+  timelineLimit: Schema.Int.pipe(Schema.check(Schema.isGreaterThan(0))),
   historyBeforePosition: NonNegativePosition,
   timeline: Schema.Array(UserMessageTimelineItemSchema),
   activeState: Schema.Array(ActiveAgentRunSchema),
@@ -142,6 +142,7 @@ export interface EmptyThreadSnapshotInput {
   readonly threadId: string;
   readonly throughCursor: string;
   readonly replayGuaranteedForMs?: number;
+  readonly timelineLimit?: number;
 }
 
 export const makeEmptyThreadSnapshot = (input: EmptyThreadSnapshotInput) =>
@@ -153,6 +154,7 @@ export const makeEmptyThreadSnapshot = (input: EmptyThreadSnapshotInput) =>
     throughCursor: input.throughCursor,
     stateRevision: 0,
     replayGuaranteedForMs: input.replayGuaranteedForMs ?? 30_000,
+    timelineLimit: input.timelineLimit ?? 100,
     historyBeforePosition: "0",
     timeline: [],
     activeState: [],
@@ -166,8 +168,7 @@ const matchesProjectedEvent = (snapshot: ThreadSnapshot, event: ThreadEventEnvel
     item?.source.firstEventId === event.eventId &&
     item.userMessageId === event.payload.userMessageId &&
     item.agentRunId === event.payload.agentRunId &&
-    JSON.stringify(item.content) === JSON.stringify(event.payload.content) &&
-    snapshot.throughCursor === event.cursor
+    JSON.stringify(item.content) === JSON.stringify(event.payload.content)
   );
 };
 
@@ -204,22 +205,24 @@ export const applyThreadEvent = (
     lastPosition: event.threadPosition,
     lastOccurredAt: event.occurredAt,
   } as const;
+  const timeline = [
+    ...snapshot.timeline,
+    {
+      type: "userMessage" as const,
+      userMessageId: event.payload.userMessageId,
+      agentRunId: event.payload.agentRunId,
+      source: sourceRange,
+      content: event.payload.content,
+    },
+  ].slice(-snapshot.timelineLimit);
 
   return Effect.succeed({
     ...snapshot,
     throughPosition: event.threadPosition,
     throughCursor: event.cursor,
     stateRevision: snapshot.stateRevision + 1,
-    timeline: [
-      ...snapshot.timeline,
-      {
-        type: "userMessage",
-        userMessageId: event.payload.userMessageId,
-        agentRunId: event.payload.agentRunId,
-        source: sourceRange,
-        content: event.payload.content,
-      },
-    ],
+    historyBeforePosition: String(BigInt(timeline[0]!.source.firstPosition) - 1n),
+    timeline,
     activeState: [
       ...snapshot.activeState,
       {
@@ -227,7 +230,6 @@ export const applyThreadEvent = (
         agentRunId: event.payload.agentRunId,
         introducedBy: sourcePoint,
         phase: { type: "pending" },
-        cancellationRequested: false,
       },
     ],
   });

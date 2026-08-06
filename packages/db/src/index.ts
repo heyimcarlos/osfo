@@ -11,8 +11,8 @@ export {
   type DatabaseConfig,
 } from "./migrations.js";
 export {
-  InvalidThreadTraversalDatabaseConfig,
-  makeThreadTraversalLayer,
-  ThreadTraversalDatabaseConfigSchema,
-  type ThreadTraversalDatabaseConfig,
-} from "./thread-traversal.js";
+  InvalidThreadResumeDatabaseConfig,
+  makeThreadResumeLayer,
+  ThreadResumeDatabaseConfigSchema,
+  type ThreadResumeDatabaseConfig,
+} from "./thread-resume.js";

@@ -1,19 +1,21 @@
 import type { ThreadSnapshot } from "@osfo/session";
-import { Context, type Effect, type Stream } from "effect";
+import { Context, Schema, type Effect, type Stream } from "effect";
+import {
+  AuthenticationRejected,
+  CursorOutsideRetention,
+  InvalidCursor,
+  SnapshotUnavailable,
+  ThreadNotFound,
+  ThreadResumeUnavailable,
+} from "./threads/api.js";
 import type {
   AcceptanceReceipt,
   AdmissionUnavailable,
-  AuthenticationRejected,
   CapacityRejected,
   IdempotencyConflict,
   SubmitMessagePayload,
   ThreadHistoryPage,
-  ThreadNotFound,
   ThreadStreamEvent,
-  TraversalUnavailable,
-  InvalidCursor,
-  CursorOutsideRetention,
-  SnapshotUnavailable,
 } from "./threads/api.js";
 
 export interface SubmitMessageCommand extends SubmitMessagePayload {
@@ -53,26 +55,40 @@ export interface ThreadStreamRequest extends ThreadAccess {
 }
 
 export type ThreadSnapshotError = AuthenticationRejected | ThreadNotFound | SnapshotUnavailable;
-export type ThreadTraversalError =
+export type ThreadResumeError =
   | AuthenticationRejected
   | ThreadNotFound
   | InvalidCursor
   | CursorOutsideRetention
-  | TraversalUnavailable;
+  | ThreadResumeUnavailable;
 
-export interface ThreadTraversalService {
+export const isThreadSnapshotError = Schema.is(
+  Schema.Union([AuthenticationRejected, ThreadNotFound, SnapshotUnavailable]),
+);
+
+export const isThreadResumeError = Schema.is(
+  Schema.Union([
+    AuthenticationRejected,
+    ThreadNotFound,
+    InvalidCursor,
+    CursorOutsideRetention,
+    ThreadResumeUnavailable,
+  ]),
+);
+
+export interface ThreadResumeService {
   readonly snapshot: (request: ThreadAccess) => Effect.Effect<ThreadSnapshot, ThreadSnapshotError>;
   readonly history: (
     request: ThreadHistoryRequest,
   ) => Effect.Effect<
     ThreadHistoryPage,
-    AuthenticationRejected | ThreadNotFound | TraversalUnavailable
+    AuthenticationRejected | ThreadNotFound | ThreadResumeUnavailable
   >;
   readonly stream: (
     request: ThreadStreamRequest,
-  ) => Effect.Effect<Stream.Stream<ThreadStreamEvent, TraversalUnavailable>, ThreadTraversalError>;
+  ) => Effect.Effect<Stream.Stream<ThreadStreamEvent, ThreadResumeUnavailable>, ThreadResumeError>;
 }
 
-export class ThreadTraversal extends Context.Service<ThreadTraversal, ThreadTraversalService>()(
-  "@osfo/api/ThreadTraversal",
+export class ThreadResume extends Context.Service<ThreadResume, ThreadResumeService>()(
+  "@osfo/api/ThreadResume",
 ) {}
