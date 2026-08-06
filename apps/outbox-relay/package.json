@@ -1,0 +1,26 @@
+{
+  "name": "@osfo/outbox-relay",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "node --conditions=development --import tsx src/main.ts",
+    "start": "node dist/main.js",
+    "test": "vitest run --exclude '**/.typescript/**' --exclude '**/dist/**'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "@osfo/agent-run": "workspace:*",
+    "@osfo/db": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -38,7 +39,7 @@ export type RecordedAgentRunState = typeof RecordedAgentRunStateSchema.Type;
 export const RuntimeDecisionSchema = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("startModelCall"),
-    modelBinding: Schema.Literal("oz.deterministic.echo.v1"),
+    modelBinding: NonEmptyText,
     prompt: NonEmptyText,
   }),
   Schema.Struct({
@@ -55,19 +56,35 @@ export const RuntimeDecisionSchema = Schema.Union([
 
 export type RuntimeDecision = typeof RuntimeDecisionSchema.Type;
 
+export class UnsupportedExecutionProfile extends Data.TaggedError("UnsupportedExecutionProfile")<{
+  readonly executionProfileRef: string;
+}> {}
+
 export class AgentRuntime extends Context.Service<
   AgentRuntime,
   {
-    readonly decide: (state: RecordedAgentRunState) => Effect.Effect<RuntimeDecision>;
+    readonly decide: (
+      state: RecordedAgentRunState,
+    ) => Effect.Effect<RuntimeDecision, UnsupportedExecutionProfile>;
   }
 >()("@osfo/agent-runtime/AgentRuntime") {}
 
-const decideRecordedState = (state: RecordedAgentRunState): RuntimeDecision => {
+export const DeterministicAgentRuntimeConfigSchema = Schema.Struct({
+  executionProfileRef: NonEmptyText,
+  modelBinding: NonEmptyText,
+});
+
+export type DeterministicAgentRuntimeConfig = typeof DeterministicAgentRuntimeConfigSchema.Type;
+
+const decideRecordedState = (
+  state: RecordedAgentRunState,
+  config: DeterministicAgentRuntimeConfig,
+): RuntimeDecision => {
   switch (state.modelCall.type) {
     case "notStarted":
       return {
         type: "startModelCall" as const,
-        modelBinding: "oz.deterministic.echo.v1" as const,
+        modelBinding: config.modelBinding,
         prompt: state.userMessage,
       };
     case "pending":
@@ -83,8 +100,14 @@ const decideRecordedState = (state: RecordedAgentRunState): RuntimeDecision => {
   }
 };
 
-const decide = Effect.fn("DeterministicAgentRuntime.decide")((state: RecordedAgentRunState) =>
-  Effect.succeed(decideRecordedState(state)),
-);
-
-export const makeDeterministicAgentRuntimeLayer = () => Layer.succeed(AgentRuntime)({ decide });
+export const makeDeterministicAgentRuntimeLayer = (config: DeterministicAgentRuntimeConfig) =>
+  Layer.succeed(AgentRuntime)({
+    decide: Effect.fn("DeterministicAgentRuntime.decide")(function* (state) {
+      if (state.executionProfileRef !== config.executionProfileRef) {
+        return yield* new UnsupportedExecutionProfile({
+          executionProfileRef: state.executionProfileRef,
+        });
+      }
+      return decideRecordedState(state, config);
+    }),
+  });

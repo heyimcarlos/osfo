@@ -147,20 +147,41 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               const claims = yield* sql<{
                 readonly agentRunId: string;
                 readonly outboxId: string;
+                readonly principalId: string;
                 readonly publicationEpoch: string;
+                readonly threadId: string;
               }>`WITH candidate AS (
-                    SELECT outbox_id
-                    FROM outbox_obligations
-                    WHERE published_at IS NULL
+                    SELECT obligation.outbox_id
+                    FROM outbox_obligations obligation
+                    JOIN relay_principals principal
+                      ON principal.principal_id = obligation.principal_id
+                    JOIN relay_threads thread
+                      ON thread.thread_id = obligation.thread_id
+                     AND thread.principal_id = obligation.principal_id
+                    WHERE obligation.published_at IS NULL
                       AND (
-                        publication_state = 'pending'
+                        obligation.publication_state = 'pending'
                         OR (
-                          publication_state = 'publishing'
-                          AND publication_lease_expires_at <= clock_timestamp()
+                          obligation.publication_state = 'publishing'
+                          AND obligation.publication_lease_expires_at <= clock_timestamp()
                         )
                       )
-                    ORDER BY created_at, outbox_id
-                    FOR UPDATE SKIP LOCKED
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM outbox_obligations predecessor
+                        WHERE predecessor.thread_id = obligation.thread_id
+                          AND predecessor.published_at IS NULL
+                          AND (predecessor.created_at, predecessor.outbox_id)
+                            < (obligation.created_at, obligation.outbox_id)
+                      )
+                    ORDER BY
+                      principal.virtual_pass,
+                      principal.principal_id,
+                      thread.virtual_pass,
+                      thread.thread_id,
+                      obligation.created_at,
+                      obligation.outbox_id
+                    FOR UPDATE OF obligation SKIP LOCKED
                     LIMIT 1
                   )
                   UPDATE outbox_obligations obligation
@@ -174,9 +195,17 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   RETURNING
                     obligation.outbox_id::text AS "outboxId",
                     obligation.agent_run_id::text AS "agentRunId",
+                    obligation.principal_id::text AS "principalId",
+                    obligation.thread_id::text AS "threadId",
                     obligation.publication_epoch::text AS "publicationEpoch"`;
               const claim = claims[0];
               if (claim === undefined) return { type: "none" as const };
+              yield* sql`UPDATE relay_principals
+                SET virtual_pass = virtual_pass + 1
+                WHERE principal_id = ${claim.principalId}::uuid`;
+              yield* sql`UPDATE relay_threads
+                SET virtual_pass = virtual_pass + 1
+                WHERE thread_id = ${claim.threadId}::uuid`;
               return {
                 type: "claimed" as const,
                 outboxId: claim.outboxId,
@@ -195,7 +224,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
 
       const confirmPublication: AgentRunRepositoryService["confirmPublication"] = Effect.fn(
         "AgentRunRepository.confirmPublication",
-      )(function* (claim) {
+      )(function* (claim, confirmation) {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
@@ -203,6 +232,10 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   SET publication_state = 'published',
                       publication_owner = NULL,
                       publication_lease_expires_at = NULL,
+                      publication_evidence = ${JSON.stringify({
+                        type: "pubsub",
+                        providerMessageId: confirmation.providerMessageId,
+                      })}::jsonb,
                       published_at = transaction_timestamp()
                   WHERE outbox_id = ${claim.outboxId}::uuid
                     AND publication_state = 'publishing'
@@ -460,7 +493,12 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   WHERE model_call_id = ${modelCall.modelCallId}::uuid
                     AND agent_run_id = ${fence.agentRunId}::uuid
                     AND state = 'pending'`;
-              return { ...modelCall, modelCallAttemptId, attemptNumber };
+              return {
+                ...modelCall,
+                modelCallAttemptId,
+                attemptNumber,
+                usage: { type: "unknown" as const },
+              };
             }),
           ),
         );

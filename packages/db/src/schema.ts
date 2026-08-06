@@ -19,6 +19,10 @@ import {
 
 const transactionTimestamp = sql`transaction_timestamp()`;
 
+type PublicationEvidence =
+  | { readonly type: "pubsub"; readonly providerMessageId: string }
+  | { readonly type: "legacyUnavailable" };
+
 export const principals = pgTable("principals", {
   principalId: uuid("principal_id").primaryKey(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
@@ -68,6 +72,41 @@ export const threads = pgTable(
     unique("threads_thread_id_principal_id_unique").on(table.threadId, table.principalId),
     check("threads_next_position_check", sql`${table.nextPosition} > 0`),
     check("threads_state_revision_check", sql`${table.stateRevision} >= 0`),
+  ],
+);
+
+export const relayPrincipals = pgTable(
+  "relay_principals",
+  {
+    principalId: uuid("principal_id")
+      .primaryKey()
+      .references(() => principals.principalId),
+    virtualPass: bigint("virtual_pass", { mode: "bigint" }).notNull().default(0n),
+  },
+  (table) => [
+    check("relay_principals_virtual_pass_check", sql`${table.virtualPass} >= 0`),
+    index("relay_principals_selection_idx").on(table.virtualPass, table.principalId),
+  ],
+);
+
+export const relayThreads = pgTable(
+  "relay_threads",
+  {
+    threadId: uuid("thread_id").primaryKey(),
+    principalId: uuid("principal_id").notNull(),
+    virtualPass: bigint("virtual_pass", { mode: "bigint" }).notNull().default(0n),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.threadId, table.principalId],
+      foreignColumns: [threads.threadId, threads.principalId],
+    }),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [relayPrincipals.principalId],
+    }),
+    check("relay_threads_virtual_pass_check", sql`${table.virtualPass} >= 0`),
+    index("relay_threads_selection_idx").on(table.principalId, table.virtualPass, table.threadId),
   ],
 );
 
@@ -330,6 +369,7 @@ export const outboxObligations = pgTable(
       withTimezone: true,
       mode: "string",
     }),
+    publicationEvidence: jsonb("publication_evidence").$type<PublicationEvidence>(),
     publishedAt: timestamp("published_at", { withTimezone: true, mode: "string" }),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
   },
@@ -351,17 +391,32 @@ export const outboxObligations = pgTable(
         (${table.publicationState} = 'pending'
           AND ${table.publicationOwner} IS NULL
           AND ${table.publicationLeaseExpiresAt} IS NULL
+          AND ${table.publicationEvidence} IS NULL
           AND ${table.publishedAt} IS NULL)
         OR (${table.publicationState} = 'publishing'
           AND ${table.publicationEpoch} > 0
           AND ${table.publicationOwner} IS NOT NULL
           AND ${table.publicationLeaseExpiresAt} IS NOT NULL
+          AND ${table.publicationEvidence} IS NULL
           AND ${table.publishedAt} IS NULL)
         OR (${table.publicationState} = 'published'
           AND ${table.publicationOwner} IS NULL
           AND ${table.publicationLeaseExpiresAt} IS NULL
+          AND ${table.publicationEvidence} IS NOT NULL
           AND ${table.publishedAt} IS NOT NULL)
       )`,
+    ),
+    check(
+      "outbox_obligations_publication_evidence_check",
+      sql`${table.publicationEvidence} IS NULL
+        OR ${table.publicationEvidence} = CASE ${table.publicationEvidence} ->> 'type'
+          WHEN 'pubsub' THEN jsonb_build_object(
+            'type', 'pubsub',
+            'providerMessageId', ${table.publicationEvidence} ->> 'providerMessageId'
+          )
+          WHEN 'legacyUnavailable' THEN jsonb_build_object('type', 'legacyUnavailable')
+          ELSE NULL
+        END`,
     ),
     index("outbox_obligations_created_idx").on(table.createdAt, table.outboxId),
     index("outbox_obligations_publication_idx")
@@ -460,6 +515,9 @@ export const modelCallAttempts = pgTable(
     attemptNumber: integer("attempt_number").notNull(),
     claimEpoch: bigint("claim_epoch", { mode: "bigint" }).notNull(),
     state: text("state").notNull(),
+    usageType: text("usage_type").notNull().default("unknown"),
+    inputUnits: integer("input_units"),
+    outputUnits: integer("output_units"),
     startedAt: timestamp("started_at", { withTimezone: true, mode: "string" }).notNull(),
     finishedAt: timestamp("finished_at", { withTimezone: true, mode: "string" }),
   },
@@ -474,6 +532,17 @@ export const modelCallAttempts = pgTable(
     check(
       "model_call_attempts_state_check",
       sql`${table.state} IN ('started', 'succeeded', 'failed')`,
+    ),
+    check(
+      "model_call_attempts_usage_check",
+      sql`(
+        (${table.usageType} = 'unknown'
+          AND ${table.inputUnits} IS NULL
+          AND ${table.outputUnits} IS NULL)
+        OR (${table.usageType} IN ('reported', 'estimated')
+          AND ${table.inputUnits} >= 0
+          AND ${table.outputUnits} >= 0)
+      )`,
     ),
     check(
       "model_call_attempts_finished_check",
@@ -575,6 +644,8 @@ export const databaseSchema = {
   modelCalls,
   outboxObligations,
   principals,
+  relayPrincipals,
+  relayThreads,
   threadEvents,
   threads,
   userMessages,

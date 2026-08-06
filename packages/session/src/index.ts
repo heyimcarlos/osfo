@@ -278,7 +278,7 @@ const NonNegativePosition = Schema.String.pipe(Schema.check(Schema.isPattern(/^\
 
 export const ThreadSnapshotSchema = Schema.Struct({
   projection: Schema.Literal("nativeThread"),
-  schemaVersion: Schema.Literal(1),
+  schemaVersion: Schema.Literal(2),
   threadId: Identity,
   throughPosition: NonNegativePosition,
   throughCursor: ThreadCursor,
@@ -322,7 +322,7 @@ export interface EmptyThreadSnapshotInput {
 export const makeEmptyThreadSnapshot = (input: EmptyThreadSnapshotInput) =>
   Schema.decodeUnknownEffect(ThreadSnapshotSchema)({
     projection: "nativeThread",
-    schemaVersion: 1,
+    schemaVersion: 2,
     threadId: input.threadId,
     throughPosition: "0",
     throughCursor: input.throughCursor,

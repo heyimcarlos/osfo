@@ -12,9 +12,14 @@ const baseState = {
   userMessage: "Hello, Oz",
 } as const;
 
+const runtimeConfig = {
+  executionProfileRef: "oz.deterministic.v1",
+  modelBinding: "oz.deterministic.echo.v1",
+} as const;
+
 const decide = (state: RecordedAgentRunState) =>
   AgentRuntime.use((runtime) => runtime.decide(state)).pipe(
-    Effect.provide(makeDeterministicAgentRuntimeLayer()),
+    Effect.provide(makeDeterministicAgentRuntimeLayer(runtimeConfig)),
   );
 
 describe("deterministic Agent Runtime", () => {

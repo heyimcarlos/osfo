@@ -33,6 +33,7 @@ const attempt = {
   ...prepared,
   modelCallAttemptId: "866688f2-5f9f-44b7-83d1-3c4ef6fd301b",
   attemptNumber: 1,
+  usage: { type: "unknown" },
 } as const;
 
 const makeRepository = () => {
@@ -119,7 +120,12 @@ describe("AgentRun worker", () => {
       const layer = makeAgentRunWorkerLayer({ workerId: "worker-a", leaseDurationMs: 30_000 }).pipe(
         Layer.provide(Layer.succeed(AgentRunRepository)(repository.service)),
         Layer.provide(Layer.succeed(ModelCallExecutor)(executor)),
-        Layer.provide(makeDeterministicAgentRuntimeLayer()),
+        Layer.provide(
+          makeDeterministicAgentRuntimeLayer({
+            executionProfileRef: "oz.deterministic.v1",
+            modelBinding: "oz.deterministic.echo.v1",
+          }),
+        ),
       );
 
       return Effect.gen(function* () {
@@ -152,7 +158,12 @@ describe("AgentRun worker", () => {
       Layer.provide(
         Layer.succeed(ModelCallExecutor)(ModelCallExecutor.of({ execute: () => Stream.empty })),
       ),
-      Layer.provide(makeDeterministicAgentRuntimeLayer()),
+      Layer.provide(
+        makeDeterministicAgentRuntimeLayer({
+          executionProfileRef: "oz.deterministic.v1",
+          modelBinding: "oz.deterministic.echo.v1",
+        }),
+      ),
     );
 
     return Effect.gen(function* () {
@@ -169,7 +180,12 @@ describe("AgentRun worker", () => {
     const layer = makeAgentRunWorkerLayer({ workerId: "worker-a", leaseDurationMs: 30_000 }).pipe(
       Layer.provide(Layer.succeed(AgentRunRepository)(repository.service)),
       Layer.provide(Layer.succeed(ModelCallExecutor)(executor)),
-      Layer.provide(makeDeterministicAgentRuntimeLayer()),
+      Layer.provide(
+        makeDeterministicAgentRuntimeLayer({
+          executionProfileRef: "oz.deterministic.v1",
+          modelBinding: "oz.deterministic.echo.v1",
+        }),
+      ),
     );
 
     return Effect.gen(function* () {

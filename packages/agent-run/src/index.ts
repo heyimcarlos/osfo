@@ -38,6 +38,19 @@ export class InvalidRunnableDelivery extends Data.TaggedError("InvalidRunnableDe
   readonly cause: unknown;
 }> {}
 
+export class PubSubPushAuthenticationRejected extends Data.TaggedError(
+  "PubSubPushAuthenticationRejected",
+) {}
+
+export class PubSubPushAuthenticator extends Context.Service<
+  PubSubPushAuthenticator,
+  {
+    readonly authenticate: (
+      authorization: string | undefined,
+    ) => Effect.Effect<void, PubSubPushAuthenticationRejected>;
+  }
+>()("@osfo/agent-run/PubSubPushAuthenticator") {}
+
 const RunnableDeliveryFromJson = Schema.fromJsonString(RunnableAgentRunDeliverySchema);
 
 export const decodePubSubPushDelivery = Effect.fn("PubSubPush.decodeDelivery")(function* (
@@ -76,6 +89,7 @@ export const ModelCallAttemptSchema = Schema.Struct({
   ...PreparedModelCallSchema.fields,
   modelCallAttemptId: Identity,
   attemptNumber: PositiveInteger,
+  usage: Schema.Struct({ type: Schema.Literal("unknown") }),
 });
 
 export type ModelCallAttempt = typeof ModelCallAttemptSchema.Type;
@@ -111,6 +125,12 @@ export const PublicationClaimSchema = Schema.Union([
 
 export type PublicationClaim = typeof PublicationClaimSchema.Type;
 
+export const PublicationConfirmationSchema = Schema.Struct({
+  providerMessageId: NonEmptyText,
+});
+
+export type PublicationConfirmation = typeof PublicationConfirmationSchema.Type;
+
 export class AgentRunRepositoryUnavailable extends Data.TaggedError(
   "AgentRunRepositoryUnavailable",
 )<{ readonly cause: unknown }> {}
@@ -132,6 +152,7 @@ export interface AgentRunRepositoryService {
   }) => Effect.Effect<PublicationClaim, AgentRunRepositoryError>;
   readonly confirmPublication: (
     claim: Extract<PublicationClaim, { readonly type: "claimed" }>,
+    confirmation: PublicationConfirmation,
   ) => Effect.Effect<void, AgentRunRepositoryError>;
   readonly claimAgentRun: (
     delivery: RunnableAgentRunDelivery,
@@ -275,6 +296,7 @@ export const makeAgentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
           Effect.catchTags({
             AgentRunFenceRejected: () => Effect.succeed({ type: "retry" as const }),
             AgentRunRepositoryUnavailable: () => Effect.succeed({ type: "retry" as const }),
+            UnsupportedExecutionProfile: () => Effect.succeed({ type: "retry" as const }),
           }),
         );
       });
@@ -292,7 +314,7 @@ export class RunnableDeliveryPublisher extends Context.Service<
   {
     readonly publish: (
       delivery: RunnableAgentRunDelivery,
-    ) => Effect.Effect<void, RunnableDeliveryPublisherUnavailable>;
+    ) => Effect.Effect<PublicationConfirmation, RunnableDeliveryPublisherUnavailable>;
   }
 >()("@osfo/agent-run/RunnableDeliveryPublisher") {}
 
@@ -330,8 +352,8 @@ export const makeOutboxRelayLayer = (config: OutboxRelayConfig) =>
       const relayOnce = Effect.fn("OutboxRelay.relayOnce")(function* () {
         const claim = yield* repository.claimPublication(config);
         if (claim.type === "none") return { type: "idle" as const };
-        yield* publisher.publish(claim.delivery);
-        yield* repository.confirmPublication(claim);
+        const confirmation = yield* publisher.publish(claim.delivery);
+        yield* repository.confirmPublication(claim, confirmation);
         return { type: "published" as const, delivery: claim.delivery };
       });
 

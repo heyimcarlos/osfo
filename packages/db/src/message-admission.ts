@@ -26,6 +26,8 @@ import {
   agentRuns,
   authenticationSessions,
   outboxObligations,
+  relayPrincipals,
+  relayThreads,
   threadEvents,
   threads,
   userMessages,
@@ -257,6 +259,11 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
               version: 1,
               createdAt: acceptedAt,
             });
+            yield* tx.insert(relayPrincipals).values({ principalId }).onConflictDoNothing();
+            yield* tx
+              .insert(relayThreads)
+              .values({ threadId: command.threadId, principalId })
+              .onConflictDoNothing();
 
             const [receipt] = yield* tx
               .insert(acceptanceReceipts)

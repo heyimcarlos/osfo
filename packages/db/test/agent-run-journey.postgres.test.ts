@@ -31,8 +31,12 @@ if (databaseUrl === undefined) {
 const principalId = "b3ef0861-2df7-4d2a-a195-fbc5ed75bc81";
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
 const authenticationToken = "alice-test-session-token";
+const quietPrincipalId = "f3ef0861-2df7-4d2a-a195-fbc5ed75bc82";
+const quietThreadId = "7ef239bd-3f04-4c77-8976-1171e75ea0ac";
+const quietAuthenticationToken = "quiet-test-session-token";
 const published: Array<RunnableAgentRunDelivery> = [];
 let publicationAttempts = 0;
+let failFirstPublication = true;
 
 const databaseLayer = PgClient.layer({
   applicationName: "osfo-agent-run-journey-test",
@@ -41,7 +45,10 @@ const databaseLayer = PgClient.layer({
 });
 
 const repositoryLayer = makeAgentRunRepositoryLayer({ databaseUrl });
-const runtimeLayer = makeDeterministicAgentRuntimeLayer();
+const runtimeLayer = makeDeterministicAgentRuntimeLayer({
+  executionProfileRef: "oz.deterministic.v1",
+  modelBinding: "oz.deterministic.echo.v1",
+});
 const executorLayer = makeDeterministicModelCallExecutorLayer();
 const publisherLayer = Layer.succeed(RunnableDeliveryPublisher)(
   RunnableDeliveryPublisher.of({
@@ -49,9 +56,10 @@ const publisherLayer = Layer.succeed(RunnableDeliveryPublisher)(
       Effect.gen(function* () {
         publicationAttempts += 1;
         published.push(delivery);
-        if (publicationAttempts === 1) {
+        if (failFirstPublication && publicationAttempts === 1) {
           return yield* new RunnableDeliveryPublisherUnavailable({ cause: "confirmation lost" });
         }
+        return { providerMessageId: `pubsub-message-${publicationAttempts}` };
       }),
   }),
 );
@@ -146,12 +154,59 @@ const seedAuthority = () =>
 beforeEach(async () => {
   published.length = 0;
   publicationAttempts = 0;
+  failFirstPublication = true;
   await seedAuthority();
 });
 
 afterAll(() => runtime.dispose());
 
 describe("deterministic PostgreSQL AgentRun journey", () => {
+  it("publishes one eligible Thread head from the lowest Principal virtual pass", async () => {
+    failFirstPublication = false;
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO principals (principal_id) VALUES (${quietPrincipalId}::uuid)`;
+        yield* sql`INSERT INTO authentication_sessions
+          (session_id, principal_id, token_sha256, expires_at)
+          VALUES (
+            ${randomUUID()}::uuid,
+            ${quietPrincipalId}::uuid,
+            ${createHash("sha256").update(quietAuthenticationToken).digest("hex")},
+            now() + interval '1 hour'
+          )`;
+        yield* sql`INSERT INTO threads (thread_id, principal_id)
+          VALUES (${quietThreadId}::uuid, ${quietPrincipalId}::uuid)`;
+        yield* sql`INSERT INTO admission_principal_capacity (principal_id, reserved_count)
+          VALUES (${quietPrincipalId}::uuid, 0)`;
+      }),
+    );
+
+    const accept = (token: string, targetThreadId: string, content: string) =>
+      run(
+        MessageAdmission.use((admission) =>
+          admission.accept({
+            protocolVersion: 1,
+            authenticationToken: token,
+            threadId: targetThreadId,
+            idempotencyKey: randomUUID(),
+            message: { content },
+          }),
+        ),
+      );
+    const noisyFirst = await accept(authenticationToken, threadId, "noisy first");
+    await accept(authenticationToken, threadId, "noisy second");
+    const quiet = await accept(quietAuthenticationToken, quietThreadId, "quiet first");
+
+    await run(OutboxRelay.use((relay) => relay.relayOnce()));
+    await run(OutboxRelay.use((relay) => relay.relayOnce()));
+
+    expect(published.map((delivery) => delivery.agentRunId)).toEqual([
+      noisyFirst.agentRunId,
+      quiet.agentRunId,
+    ]);
+  });
+
   it("reconciles relay loss, worker replacement, and duplicate delivery", async () => {
     const command = {
       protocolVersion: 1,
@@ -238,7 +293,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
           readonly terminalEvents: string;
           readonly modelCalls: string;
           readonly modelCallAttempts: string;
+          readonly publicationEvidence: unknown;
           readonly startedAttempts: string;
+          readonly usageTypes: ReadonlyArray<string>;
         }>`SELECT
           run.state AS "runState",
           run.claim_epoch::text AS "claimEpoch",
@@ -252,9 +309,14 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             WHERE agent_run_id = ${receipt.agentRunId}::uuid)::text AS "modelCalls",
           (SELECT count(*) FROM model_call_attempts
             WHERE agent_run_id = ${receipt.agentRunId}::uuid)::text AS "modelCallAttempts",
+          (SELECT publication_evidence FROM outbox_obligations
+            WHERE agent_run_id = ${receipt.agentRunId}::uuid) AS "publicationEvidence",
           (SELECT count(*) FROM model_call_attempts
             WHERE agent_run_id = ${receipt.agentRunId}::uuid
-              AND state = 'started')::text AS "startedAttempts"
+              AND state = 'started')::text AS "startedAttempts",
+          ARRAY(SELECT usage_type FROM model_call_attempts
+            WHERE agent_run_id = ${receipt.agentRunId}::uuid
+            ORDER BY attempt_number) AS "usageTypes"
         FROM agent_runs run
         JOIN agent_run_capacity_reservations reservation USING (agent_run_id)
         CROSS JOIN admission_global_capacity global_capacity
@@ -281,7 +343,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       terminalEvents: "1",
       modelCalls: "1",
       modelCallAttempts: "2",
+      publicationEvidence: { type: "pubsub", providerMessageId: "pubsub-message-2" },
       startedAttempts: "0",
+      usageTypes: ["unknown", "unknown"],
     });
     expect(authority.events).toEqual([
       { eventType: "UserMessageAppended", position: "1" },

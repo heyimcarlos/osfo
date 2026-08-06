@@ -20,6 +20,8 @@ describe("database schema", () => {
       "model_calls",
       "outbox_obligations",
       "principals",
+      "relay_principals",
+      "relay_threads",
       "thread_events",
       "threads",
       "user_messages",

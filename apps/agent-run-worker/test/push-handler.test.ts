@@ -1,8 +1,13 @@
-import { AgentRunWorker, encodeRunnableDeliveryData } from "@osfo/agent-run";
+import {
+  AgentRunWorker,
+  encodeRunnableDeliveryData,
+  PubSubPushAuthenticationRejected,
+  PubSubPushAuthenticator,
+} from "@osfo/agent-run";
 import { describe, expect, it } from "@effect/vitest";
 import { Context, Effect, Layer } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { makePubSubPushRoutes } from "../src/push-handler.js";
+import { PubSubPushRoutes } from "../src/push-handler.js";
 
 const delivery = {
   version: 1,
@@ -36,13 +41,22 @@ const makeHarness = (outcome: "acknowledge" | "retry") => {
           : ({ type: "retry" } as const);
       }),
   });
+  const authenticator = PubSubPushAuthenticator.of({
+    authenticate: (authorization) =>
+      authorization === "Bearer push-test-token"
+        ? Effect.void
+        : Effect.fail(new PubSubPushAuthenticationRejected()),
+  });
   const web = HttpRouter.toWebHandler(
-    makePubSubPushRoutes({ authorizationToken: "push-test-token" }).pipe(
+    PubSubPushRoutes.pipe(
       Layer.provide(Layer.succeed(AgentRunWorker)(worker)),
+      Layer.provide(Layer.succeed(PubSubPushAuthenticator)(authenticator)),
       Layer.provideMerge(HttpServer.layerServices),
     ),
   );
-  const context = Context.make(AgentRunWorker, worker);
+  const context = Context.make(AgentRunWorker, worker).pipe(
+    Context.add(PubSubPushAuthenticator, authenticator),
+  );
   return {
     deliveries,
     dispose: web.dispose,

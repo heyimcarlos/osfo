@@ -54,6 +54,23 @@
         "vitest": "catalog:",
       },
     },
+    "apps/outbox-relay": {
+      "name": "@osfo/outbox-relay",
+      "version": "0.0.0",
+      "dependencies": {
+        "@effect/platform-node": "catalog:",
+        "@osfo/agent-run": "workspace:*",
+        "@osfo/db": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@types/node": "catalog:",
+        "tsx": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
     "apps/web": {
       "name": "@osfo/web",
       "version": "0.0.0",
@@ -416,6 +433,8 @@
     "@osfo/db": ["@osfo/db@workspace:packages/db"],
 
     "@osfo/ingress": ["@osfo/ingress@workspace:apps/ingress"],
+
+    "@osfo/outbox-relay": ["@osfo/outbox-relay@workspace:apps/outbox-relay"],
 
     "@osfo/session": ["@osfo/session@workspace:packages/session"],
 
