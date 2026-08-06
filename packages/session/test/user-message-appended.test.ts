@@ -239,6 +239,47 @@ describe("UserMessageAppended", () => {
     expect(result.activeState).toEqual([]);
   });
 
+  it("projects an AssistantOutput interrupted before its first fragment", () => {
+    const assistantOutputId = "86290831-b9ca-414a-abf1-4055b5347133";
+    const events = [
+      Effect.runSync(makeUserMessageAppended(eventInput)),
+      Effect.runSync(
+        makeAssistantOutputInterrupted({
+          ...eventInput,
+          eventId: "f04d3470-bf0c-4b72-90de-0454ac404c9c",
+          threadPosition: "2",
+          assistantOutputId,
+          cause: "modelCallFailed",
+        }),
+      ),
+      Effect.runSync(
+        makeAgentRunFailed({
+          ...eventInput,
+          eventId: "a4a60d24-7d2e-4808-b6fc-f192ea7631de",
+          threadPosition: "3",
+          cause: "modelCallFailed",
+        }),
+      ),
+    ];
+    const result = events.reduce(
+      (snapshot, event, index) =>
+        Effect.runSync(
+          applyThreadEvent(snapshot, { ...event, cursor: `cursor-position-${index + 1}` }),
+        ),
+      Effect.runSync(
+        makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+      ),
+    );
+
+    expect(result.timeline[1]).toMatchObject({
+      type: "assistantOutput",
+      assistantOutputId,
+      content: [],
+      status: { type: "interrupted", cause: "modelCallFailed" },
+    });
+    expect(result.activeState).toEqual([]);
+  });
+
   it("ignores an identical duplicate without advancing projection state", () => {
     const event = Effect.runSync(makeUserMessageAppended(eventInput));
     const snapshot = Effect.runSync(

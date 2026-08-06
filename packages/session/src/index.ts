@@ -259,7 +259,7 @@ export const AssistantOutputTimelineItemSchema = Schema.Struct({
   assistantOutputId: Identity,
   agentRunId: Identity,
   source: SourceRangeSchema,
-  content: Schema.Array(TextBlockSchema).pipe(Schema.check(Schema.isMinLength(1))),
+  content: Schema.Array(TextBlockSchema),
   status: Schema.Union([
     Schema.Struct({ type: Schema.Literal("streaming") }),
     Schema.Struct({ type: Schema.Literal("completed") }),
@@ -435,17 +435,35 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
           isAssistantOutputTimelineItem(item) &&
           item.assistantOutputId === event.payload.assistantOutputId,
       );
-      if (existing === undefined || existing.status.type !== "streaming") {
+      if (existing !== undefined && existing.status.type !== "streaming") {
         return yield* failAuthorityConflict();
       }
       const status =
         event.eventType === "AssistantOutputCompleted"
           ? ({ type: "completed" } as const)
           : ({ type: "interrupted", cause: event.payload.cause } as const);
-      timeline = timeline.map((item) =>
-        item === existing
-          ? { ...existing, source: advanceSource(existing.source, event), status }
-          : item,
+      timeline =
+        existing === undefined
+          ? [
+              ...timeline,
+              {
+                type: "assistantOutput" as const,
+                assistantOutputId: event.payload.assistantOutputId,
+                agentRunId: event.payload.agentRunId,
+                source: sourceRange(event),
+                content: [],
+                status,
+              },
+            ]
+          : timeline.map((item) =>
+              item === existing
+                ? { ...existing, source: advanceSource(existing.source, event), status }
+                : item,
+            );
+      activeState = activeState.map((run) =>
+        run.agentRunId === event.payload.agentRunId
+          ? { ...run, phase: { type: "running" as const } }
+          : run,
       );
       break;
     }
