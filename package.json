@@ -44,6 +44,7 @@
   "catalog": {
     "@effect/platform-node": "4.0.0-beta.103",
     "@effect/sql-pg": "4.0.0-beta.103",
+    "@effect/vitest": "4.0.0-beta.103",
     "@tailwindcss/vite": "4.2.2",
     "@types/node": "24.3.1",
     "@types/react": "19.2.14",

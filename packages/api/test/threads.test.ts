@@ -7,15 +7,16 @@ import {
 } from "../src/index";
 import { CommitUnknown, makeApiClient, submitThreadMessage } from "../src/client";
 import { OsfoApiLive } from "../src/server";
+import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import {
   HttpClient,
+  HttpClientError,
   HttpClientRequest,
   HttpClientResponse,
   HttpRouter,
   HttpServer,
 } from "effect/unstable/http";
-import { describe, expect, it } from "vitest";
 
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
 const idempotencyKey = "51b93c36-6a91-45d2-b25e-aaf249dc5208";
@@ -40,6 +41,8 @@ const makeHarness = (
   const web = HttpRouter.toWebHandler(
     OsfoApiLive.pipe(Layer.provide(admission), Layer.provideMerge(HttpServer.layerServices)),
   );
+  // All handler services are provided above, but the conditional helper type retains a required
+  // context parameter. The built web handler only needs the Request at this test boundary.
   const handler = web.handler as (request: Request) => Promise<Response>;
   const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
     HttpClient.make((request, _url, signal) =>
@@ -47,7 +50,14 @@ const makeHarness = (
         const webRequest = yield* HttpClientRequest.toWeb(request, { signal });
         const webResponse = yield* Effect.promise(() => handler(webRequest));
         return HttpClientResponse.fromWeb(request, webResponse);
-      }).pipe(Effect.orDie),
+      }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new HttpClientError.HttpClientError({
+              reason: new HttpClientError.EncodeError({ request, cause }),
+            }),
+        ),
+      ),
     ),
   );
   return {

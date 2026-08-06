@@ -1,7 +1,7 @@
 import { prepareMessageAdmissionFixture, readMessageAuthorityCounts } from "@osfo/db/testing";
+import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { describe, expect, it } from "vitest";
 import { startApiProcess } from "./api-process";
 
 const databaseUrl = process.env.OSFO_TEST_DATABASE_URL;

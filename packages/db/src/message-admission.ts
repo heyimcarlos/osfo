@@ -13,6 +13,7 @@ import {
 import { makeUserMessageAppended } from "@osfo/session";
 import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import * as PgDrizzle from "drizzle-orm/effect-postgres";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
@@ -30,12 +31,22 @@ import {
   userMessages,
 } from "./schema.js";
 
-export interface MessageAdmissionDatabaseConfig {
-  readonly databaseUrl: string;
-  readonly executionProfileRef: string;
-  readonly globalNonTerminalLimit: number;
-  readonly principalNonTerminalLimit: number;
-}
+const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
+
+export const MessageAdmissionDatabaseConfigSchema = Schema.Struct({
+  databaseUrl: Schema.NonEmptyString,
+  executionProfileRef: Schema.NonEmptyString.check(Schema.isMaxLength(255)),
+  globalNonTerminalLimit: PositiveInteger,
+  principalNonTerminalLimit: PositiveInteger,
+});
+
+export type MessageAdmissionDatabaseConfig = typeof MessageAdmissionDatabaseConfigSchema.Type;
+
+export class InvalidMessageAdmissionDatabaseConfig extends Data.TaggedError(
+  "InvalidMessageAdmissionDatabaseConfig",
+)<{
+  readonly cause: unknown;
+}> {}
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -70,23 +81,7 @@ const receiptFromRow = (row: typeof acceptanceReceipts.$inferSelect) =>
     acceptedAt: new Date(row.acceptedAt).toISOString(),
   });
 
-const validateConfig = (config: MessageAdmissionDatabaseConfig) => {
-  if (
-    config.databaseUrl.length === 0 ||
-    config.executionProfileRef.length === 0 ||
-    config.executionProfileRef.length > 255 ||
-    !Number.isSafeInteger(config.globalNonTerminalLimit) ||
-    config.globalNonTerminalLimit <= 0 ||
-    !Number.isSafeInteger(config.principalNonTerminalLimit) ||
-    config.principalNonTerminalLimit <= 0
-  ) {
-    throw new Error("Invalid message admission database configuration");
-  }
-};
-
-export const makeMessageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
-  validateConfig(config);
-
+const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
   const postgresLayer = PgClient.layer({
     applicationName: "osfo-api",
     url: Redacted.make(config.databaseUrl),
@@ -206,7 +201,7 @@ export const makeMessageAdmissionLayer = (config: MessageAdmissionDatabaseConfig
             const agentRunId = randomUUID();
             const eventId = randomUUID();
             const outboxId = randomUUID();
-            const event = makeUserMessageAppended({
+            const event = yield* makeUserMessageAppended({
               eventId,
               threadId: command.threadId,
               threadPosition: String(threadPosition),
@@ -292,3 +287,11 @@ export const makeMessageAdmissionLayer = (config: MessageAdmissionDatabaseConfig
     }),
   ).pipe(Layer.provide(postgresLayer));
 };
+
+export const makeMessageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) =>
+  Layer.unwrap(
+    Schema.decodeUnknownEffect(MessageAdmissionDatabaseConfigSchema)(config).pipe(
+      Effect.mapError((cause) => new InvalidMessageAdmissionDatabaseConfig({ cause })),
+      Effect.map(messageAdmissionLayer),
+    ),
+  );

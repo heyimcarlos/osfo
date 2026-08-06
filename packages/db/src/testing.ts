@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import { sql } from "drizzle-orm";
 import * as PgDrizzle from "drizzle-orm/effect-postgres";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import {
@@ -20,12 +21,9 @@ export interface MessageAdmissionFixture {
   }>;
 }
 
-export interface MessageAuthorityCounts extends Record<string, unknown> {
-  readonly receipts: string;
-  readonly messages: string;
-  readonly runs: string;
-  readonly outbox: string;
-}
+export class MessageAuthorityCountsUnavailable extends Data.TaggedError(
+  "MessageAuthorityCountsUnavailable",
+) {}
 
 const withTestDatabase = <A, E>(
   databaseUrl: string,
@@ -102,8 +100,10 @@ export const readMessageAuthorityCounts = (databaseUrl: string) =>
         .from(admissionGlobalCapacity)
         .limit(1);
       if (counts === undefined) {
-        return yield* Effect.fail(new Error("Database did not return authority counts"));
+        return yield* new MessageAuthorityCountsUnavailable();
       }
       return counts;
     }),
   );
+
+export type MessageAuthorityCounts = Effect.Success<ReturnType<typeof readMessageAuthorityCounts>>;

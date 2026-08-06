@@ -3,6 +3,7 @@ import { PgClient } from "@effect/sql-pg";
 import * as PgDrizzle from "drizzle-orm/effect-postgres";
 import { migrate as migrateDrizzle } from "drizzle-orm/effect-postgres/migrator";
 import { integer, pgSchema, text } from "drizzle-orm/pg-core";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 
@@ -10,6 +11,10 @@ export interface DatabaseConfig {
   readonly databaseUrl: string;
   readonly applicationName: string;
 }
+
+export class MigrationVerificationError extends Data.TaggedError("MigrationVerificationError")<{
+  readonly appliedMigrationNames: ReadonlyArray<string | null>;
+}> {}
 
 const migrationsFolder = fileURLToPath(new URL("../drizzle", import.meta.url));
 const drizzleMigrations = pgSchema("drizzle").table("__drizzle_migrations", {
@@ -45,9 +50,9 @@ export const verifyDatabaseMigrations = (config: DatabaseConfig) =>
       baseline?.name !== "20260805120000_empty_baseline" ||
       admission?.name !== "20260806124719_durable_message_admission"
     ) {
-      return yield* Effect.fail(
-        new Error(`Unexpected migration baseline: ${JSON.stringify(rows)}`),
-      );
+      return yield* new MigrationVerificationError({
+        appliedMigrationNames: rows.map((row) => row.name),
+      });
     }
     return rows;
   }).pipe(Effect.provide(postgresLayer(config)));

@@ -1,5 +1,12 @@
 export {
+  InvalidMessageAdmissionDatabaseConfig,
   makeMessageAdmissionLayer,
+  MessageAdmissionDatabaseConfigSchema,
   type MessageAdmissionDatabaseConfig,
 } from "./message-admission.js";
-export { migrateDatabase, verifyDatabaseMigrations, type DatabaseConfig } from "./migrations.js";
+export {
+  migrateDatabase,
+  MigrationVerificationError,
+  verifyDatabaseMigrations,
+  type DatabaseConfig,
+} from "./migrations.js";

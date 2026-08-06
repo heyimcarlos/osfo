@@ -1,41 +1,42 @@
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import { OsfoApiLive } from "@osfo/api/server";
 import { makeMessageAdmissionLayer } from "@osfo/db";
-import { Layer } from "effect";
+import { Config, Effect, Layer, Schema } from "effect";
 import { HttpRouter } from "effect/unstable/http";
 import { createServer } from "node:http";
 
-const requireEnvironment = (name: string) => {
-  const value = process.env[name];
-  if (value === undefined || value.length === 0) {
-    throw new Error(`${name} is required`);
-  }
-  return value;
-};
+const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 
-const positiveIntegerEnvironment = (name: string) => {
-  const value = Number(requireEnvironment(name));
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-  return value;
-};
-
-const port = Number(process.env.OSFO_API_PORT ?? "3000");
-if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) {
-  throw new Error("OSFO_API_PORT must be a valid TCP port");
-}
-
-const MessageAdmissionLive = makeMessageAdmissionLayer({
-  databaseUrl: requireEnvironment("OSFO_DATABASE_URL"),
-  executionProfileRef: requireEnvironment("OSFO_EXECUTION_PROFILE_REF"),
-  globalNonTerminalLimit: positiveIntegerEnvironment("OSFO_GLOBAL_NON_TERMINAL_LIMIT"),
-  principalNonTerminalLimit: positiveIntegerEnvironment("OSFO_PRINCIPAL_NON_TERMINAL_LIMIT"),
+const ApiConfig = Config.all({
+  port: Config.schema(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65_535 })),
+    "OSFO_API_PORT",
+  ).pipe(Config.withDefault(3_000)),
+  databaseUrl: Config.nonEmptyString("OSFO_DATABASE_URL"),
+  executionProfileRef: Config.schema(
+    Schema.NonEmptyString.check(Schema.isMaxLength(255)),
+    "OSFO_EXECUTION_PROFILE_REF",
+  ),
+  globalNonTerminalLimit: Config.schema(PositiveInteger, "OSFO_GLOBAL_NON_TERMINAL_LIMIT"),
+  principalNonTerminalLimit: Config.schema(PositiveInteger, "OSFO_PRINCIPAL_NON_TERMINAL_LIMIT"),
 });
 
-const ServerLive = HttpRouter.serve(OsfoApiLive).pipe(
-  Layer.provide(MessageAdmissionLive),
-  Layer.provide(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port })),
+const ServerLive = Layer.unwrap(
+  ApiConfig.pipe(
+    Effect.map((config) =>
+      HttpRouter.serve(OsfoApiLive).pipe(
+        Layer.provide(
+          makeMessageAdmissionLayer({
+            databaseUrl: config.databaseUrl,
+            executionProfileRef: config.executionProfileRef,
+            globalNonTerminalLimit: config.globalNonTerminalLimit,
+            principalNonTerminalLimit: config.principalNonTerminalLimit,
+          }),
+        ),
+        Layer.provide(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: config.port })),
+      ),
+    ),
+  ),
 );
 
 NodeRuntime.runMain(Layer.launch(ServerLive));

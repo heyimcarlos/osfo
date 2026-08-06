@@ -1,5 +1,8 @@
+import { describe, expect, it } from "@effect/vitest";
 import { getTableName } from "drizzle-orm";
-import { describe, expect, it } from "vitest";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import { InvalidMessageAdmissionDatabaseConfig, makeMessageAdmissionLayer } from "../src/index";
 import { databaseSchema } from "../src/schema";
 
 describe("database schema", () => {
@@ -18,4 +21,23 @@ describe("database schema", () => {
       "user_messages",
     ]);
   });
+
+  it.effect("rejects invalid database adapter configuration before connecting", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        Effect.scoped(
+          Layer.build(
+            makeMessageAdmissionLayer({
+              databaseUrl: "",
+              executionProfileRef: "test",
+              globalNonTerminalLimit: 1,
+              principalNonTerminalLimit: 1,
+            }),
+          ),
+        ),
+      );
+
+      expect(error).toBeInstanceOf(InvalidMessageAdmissionDatabaseConfig);
+    }),
+  );
 });

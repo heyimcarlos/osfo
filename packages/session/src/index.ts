@@ -1,3 +1,5 @@
+import * as Data from "effect/Data";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -31,23 +33,20 @@ export interface UserMessageAppendedInput {
   readonly agentRunId: string;
 }
 
-const decodeUserMessageAppended = Schema.decodeUnknownSync(UserMessageAppendedSchema);
+export class InvalidUserMessageAppended extends Data.TaggedError("InvalidUserMessageAppended")<{
+  readonly cause: unknown;
+}> {}
 
-export const makeUserMessageAppended = (input: UserMessageAppendedInput): UserMessageAppended => {
-  try {
-    return decodeUserMessageAppended({
-      eventId: input.eventId,
-      eventType: "UserMessageAppended",
-      eventVersion: 1,
-      threadId: input.threadId,
-      threadPosition: input.threadPosition,
-      occurredAt: input.occurredAt,
-      payload: {
-        userMessageId: input.userMessageId,
-        agentRunId: input.agentRunId,
-      },
-    });
-  } catch (cause) {
-    throw new Error("Invalid UserMessageAppended", { cause });
-  }
-};
+export const makeUserMessageAppended = (input: UserMessageAppendedInput) =>
+  Schema.decodeUnknownEffect(UserMessageAppendedSchema)({
+    eventId: input.eventId,
+    eventType: "UserMessageAppended",
+    eventVersion: 1,
+    threadId: input.threadId,
+    threadPosition: input.threadPosition,
+    occurredAt: input.occurredAt,
+    payload: {
+      userMessageId: input.userMessageId,
+      agentRunId: input.agentRunId,
+    },
+  }).pipe(Effect.mapError((cause) => new InvalidUserMessageAppended({ cause })));
