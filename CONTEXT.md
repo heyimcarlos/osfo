@@ -327,18 +327,38 @@ may accelerate compatible continuation but is never the sole authority for
 Osfo recovery.
 _Avoid_: AgentRunCheckpoint, ThreadEvent, SandboxRef
 
+**RunCode**:
+A bounded, Python-first ToolCall that creates one disposable E2B Sandbox,
+stages immutable source and logically named Client Content inputs, executes one
+supervised process tree, exports explicitly selected verified results, and
+destroys the Sandbox. It never hosts the Agent Runtime or durable coordination.
+_Avoid_: Bash terminal, AgentRun workspace, persistent workspace, subagent runtime
+
+**Sandbox**:
+An isolated E2B execution environment owned by exactly one RunCode ToolCall.
+It never owns AgentRun lifecycle, recovery authority, durable waits, ChildJoin
+coordination, or authoritative artifacts.
+_Avoid_: Thread workspace, Principal workspace, worker environment, Agent Runtime
+
+**Sandbox Profile**:
+An immutable, versioned declaration of the sandbox capabilities, resource and
+network policy, exact E2B template build, and SDK compatibility required by an
+Execution Profile. Compatibility is validated exactly rather than negotiated
+while an AgentRun executes.
+_Avoid_: Runtime capability probe, mutable sandbox configuration, provider session
+
 **SandboxRef**:
 An optional durable reference to sandbox-provider-defined execution environment
-state. It may accelerate compatible restoration but never owns AgentRun
-lifecycle or Osfo recovery authority and cannot be the sole reference to an
-authoritative artifact.
+state. It is a possible future restoration accelerator, never AgentRun recovery
+authority or the sole reference to an authoritative artifact. Disposable v1
+RunCode ToolCalls do not create or restore SandboxRefs.
 _Avoid_: RuntimeCheckpointRef, AgentRunCheckpoint, paused AgentRun
 
 **ArtifactRef**:
-An immutable durable reference to content required by a committed semantic
-outcome, together with integrity and interpretation metadata. Authoritative
-content produced in a sandbox is exported and verified before its ArtifactRef
-is committed.
+An immutable durable domain value containing a Client Content reference plus a
+versioned artifact role and interpretation. It has no separate identity; its
+client projection is the contained ClientContentRefV1. Authoritative sandbox
+content is race-safely snapshotted, exported, and verified before commitment.
 _Avoid_: Sandbox path, SandboxRef, RuntimeCheckpointRef
 
 **Operation Gate**:

@@ -1,5 +1,22 @@
 # Mistakes
 
+- 2026-08-05: When updating a GitHub issue body through `jq`, do not place
+  escaped newlines inside a `sub` replacement. They can be persisted as literal
+  `\\n` text. Re-read the rendered section immediately and replace with actual
+  newline characters before considering the tracker update complete.
+- 2026-08-05: Do not introduce a provider-neutral Sandbox Provider interface
+  when E2B is the only concrete provider. Integrate the official E2B SDK through
+  one deep module, test with a mocked E2B client and fault injection, and
+  extract a provider seam only after a second real provider exposes actual
+  variation.
+- 2026-08-05: Do not design a persistent AgentRun-owned sandbox before a real
+  journey requires one. Osfo v1 uses one disposable E2B Sandbox per RunCode
+  ToolCall. Pause, resume, snapshots, SandboxRef restoration, shared workspaces,
+  and cross-run reuse begin only after a concrete later slice proves the need.
+- 2026-08-05: Do not name the sandbox module after its first CSV certification
+  journey. `RunCode` is the bounded product capability. CSV analysis, PDF work,
+  transformations, calculations, visualizations, and generated files reuse its
+  Python-first contract without creating a provider abstraction.
 - 2026-08-02: Do not classify the whole Rig project as an Agent Runtime. Rig is
   an LLM application library and facade; its `rig-agent` crate provides its
   classic Agent Runtime. Keep a concrete library's identity separate from the
