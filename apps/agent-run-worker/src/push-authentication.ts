@@ -45,8 +45,6 @@ const JwtPayloadFromJson = Schema.fromJsonString(
   }),
 );
 
-const rejected = () => new PubSubPushAuthenticationRejected();
-
 const decodeJwtPart = (value: string) => Buffer.from(value, "base64url").toString("utf8");
 
 const authenticationLayer = (config: GooglePubSubPushAuthenticationConfig) =>
@@ -54,41 +52,39 @@ const authenticationLayer = (config: GooglePubSubPushAuthenticationConfig) =>
     PubSubPushAuthenticator,
     Effect.gen(function* () {
       const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
-      const fetchJwks = client
-        .get(config.jwksUrl)
-        .pipe(
-          Effect.flatMap(HttpClientResponse.schemaBodyJson(GoogleJwksSchema)),
-          Effect.mapError(rejected),
-        );
+      const fetchJwks = client.get(config.jwksUrl).pipe(
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(GoogleJwksSchema)),
+        Effect.mapError(() => new PubSubPushAuthenticationRejected()),
+      );
       const cachedJwks = yield* Effect.cachedWithTTL(fetchJwks, "5 minutes");
 
       const authenticate = Effect.fn("PubSubPushAuthenticator.authenticate")(function* (
         authorization: string | undefined,
       ) {
         if (authorization === undefined || !authorization.startsWith("Bearer ")) {
-          return yield* rejected();
+          return yield* new PubSubPushAuthenticationRejected();
         }
         const token = authorization.slice("Bearer ".length);
         const parts = token.split(".");
-        if (parts.length !== 3) return yield* rejected();
+        if (parts.length !== 3) return yield* new PubSubPushAuthenticationRejected();
         const [encodedHeader, encodedPayload, encodedSignature] = parts;
         if (
           encodedHeader === undefined ||
           encodedPayload === undefined ||
           encodedSignature === undefined
         ) {
-          return yield* rejected();
+          return yield* new PubSubPushAuthenticationRejected();
         }
 
         const header = yield* Schema.decodeUnknownEffect(JwtHeaderFromJson)(
           decodeJwtPart(encodedHeader),
-        ).pipe(Effect.mapError(rejected));
+        ).pipe(Effect.mapError(() => new PubSubPushAuthenticationRejected()));
         const payload = yield* Schema.decodeUnknownEffect(JwtPayloadFromJson)(
           decodeJwtPart(encodedPayload),
-        ).pipe(Effect.mapError(rejected));
+        ).pipe(Effect.mapError(() => new PubSubPushAuthenticationRejected()));
         const jwks = yield* cachedJwks;
         const jwk = jwks.keys.find((candidate) => candidate.kid === header.kid);
-        if (jwk === undefined) return yield* rejected();
+        if (jwk === undefined) return yield* new PubSubPushAuthenticationRejected();
 
         const publicKey = yield* Effect.try({
           try: () =>
@@ -103,7 +99,7 @@ const authenticationLayer = (config: GooglePubSubPushAuthenticationConfig) =>
                 use: jwk.use,
               },
             }),
-          catch: rejected,
+          catch: () => new PubSubPushAuthenticationRejected(),
         });
         const signatureValid = verify(
           "RSA-SHA256",
@@ -122,7 +118,7 @@ const authenticationLayer = (config: GooglePubSubPushAuthenticationConfig) =>
           payload.exp <= nowSeconds ||
           payload.iat > nowSeconds + 300
         ) {
-          return yield* rejected();
+          return yield* new PubSubPushAuthenticationRejected();
         }
       });
 

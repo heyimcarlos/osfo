@@ -3,6 +3,7 @@ import { makeDeterministicAgentRuntimeLayer } from "@osfo/agent-runtime";
 import { Effect, Layer, Stream } from "effect";
 import {
   AgentRunRepository,
+  AgentRunRepositoryUnavailable,
   AgentRunWorker,
   ModelCallExecutionError,
   ModelCallExecutor,
@@ -100,6 +101,7 @@ const makeRepository = () => {
       Effect.sync(() => {
         calls.push(`run:${decision.type === "succeed" ? "succeeded" : "failed"}`);
       }),
+    selectPublication: () => Effect.succeed({ type: "none" as const }),
     claimPublication: () => Effect.succeed({ type: "none" as const }),
     confirmPublication: () => Effect.void,
   };
@@ -210,7 +212,12 @@ describe("AgentRun worker", () => {
   it.effect("interrupts partial output before committing a failed AgentRun", () => {
     const repository = makeRepository();
     const executor = ModelCallExecutor.of({
-      execute: () => Stream.fail(new ModelCallExecutionError({ cause: "provider unavailable" })),
+      execute: () =>
+        Stream.make({ fragmentIndex: 0, text: "Partial" }).pipe(
+          Stream.concat(
+            Stream.fail(new ModelCallExecutionError({ cause: "provider unavailable" })),
+          ),
+        ),
     });
     const layer = makeAgentRunWorkerLayer({
       executionProfileRef: "oz.deterministic.v1",
@@ -236,10 +243,46 @@ describe("AgentRun worker", () => {
         "load",
         "intent",
         "attempt",
+        "fragment:0:Partial",
         "output:interrupted",
         "load",
         "run:failed",
       ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("retries without misclassifying a fragment persistence failure", () => {
+    const repository = makeRepository();
+    const unavailable = {
+      ...repository.service,
+      appendModelOutput: () =>
+        Effect.fail(new AgentRunRepositoryUnavailable({ cause: "database unavailable" })),
+    } satisfies AgentRunRepositoryService;
+    const layer = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v1",
+      workerId: "worker-a",
+      leaseDurationMs: 30_000,
+    }).pipe(
+      Layer.provide(Layer.succeed(AgentRunRepository)(unavailable)),
+      Layer.provide(
+        Layer.succeed(ModelCallExecutor)(
+          ModelCallExecutor.of({
+            execute: () => Stream.make({ fragmentIndex: 0, text: "Partial" }),
+          }),
+        ),
+      ),
+      Layer.provide(
+        makeDeterministicAgentRuntimeLayer({
+          executionProfileRef: "oz.deterministic.v1",
+          modelBinding: "oz.deterministic.echo.v1",
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const disposition = yield* AgentRunWorker.use((worker) => worker.handle(delivery));
+      expect(disposition).toEqual({ type: "retry" });
+      expect(repository.calls).toEqual(["claim", "load", "intent", "attempt"]);
     }).pipe(Effect.provide(layer));
   });
 });

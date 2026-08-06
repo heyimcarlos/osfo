@@ -18,6 +18,9 @@ const RelayConfig = Config.all({
   publicationWindowSize: Config.schema(PositiveInteger, "OSFO_RELAY_PUBLICATION_WINDOW_SIZE").pipe(
     Config.withDefault(32),
   ),
+  publisherConcurrency: Config.schema(PositiveInteger, "OSFO_RELAY_PUBLISHER_CONCURRENCY").pipe(
+    Config.withDefault(4),
+  ),
   relayId: Config.nonEmptyString("OSFO_RELAY_ID"),
   topicId: Config.nonEmptyString("OSFO_PUBSUB_TOPIC_ID"),
 });
@@ -44,18 +47,36 @@ const program = RelayConfig.pipe(
     Effect.gen(function* () {
       yield* Effect.logInfo("OSFO_OUTBOX_RELAY_READY");
       const relay = yield* OutboxRelay;
-      yield* Effect.forever(
-        relay.relayOnce().pipe(
+      const selector = Effect.forever(
+        relay.selectOnce().pipe(
           Effect.flatMap((result) =>
             result.type === "idle" ? Effect.sleep(config.idlePollIntervalMs) : Effect.yieldNow,
           ),
           Effect.catch((cause) =>
-            Effect.logError("Outbox relay iteration failed", cause).pipe(
+            Effect.logError("Outbox selector iteration failed", cause).pipe(
               Effect.andThen(Effect.sleep(config.idlePollIntervalMs)),
             ),
           ),
         ),
       );
+      const publishers = Effect.forEach(
+        Array.from({ length: config.publisherConcurrency }),
+        () =>
+          Effect.forever(
+            relay.publishOnce().pipe(
+              Effect.flatMap((result) =>
+                result.type === "idle" ? Effect.sleep(config.idlePollIntervalMs) : Effect.yieldNow,
+              ),
+              Effect.catch((cause) =>
+                Effect.logError("Outbox publisher iteration failed", cause).pipe(
+                  Effect.andThen(Effect.sleep(config.idlePollIntervalMs)),
+                ),
+              ),
+            ),
+          ),
+        { concurrency: "unbounded", discard: true },
+      );
+      yield* Effect.all([selector, publishers], { concurrency: "unbounded", discard: true });
     }),
   ),
   Effect.provide(RelayLive),

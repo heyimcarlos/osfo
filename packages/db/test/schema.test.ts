@@ -22,6 +22,8 @@ describe("database schema", () => {
       "principals",
       "relay_dispatch_capacity",
       "relay_principals",
+      "relay_publication_attempts",
+      "relay_publication_tasks",
       "relay_threads",
       "thread_events",
       "threads",

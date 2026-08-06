@@ -107,6 +107,51 @@ CREATE TABLE "relay_principals" (
 	CONSTRAINT "relay_principals_virtual_pass_check" CHECK ("virtual_pass" >= 0)
 );
 --> statement-breakpoint
+CREATE TABLE "relay_publication_attempts" (
+	"outbox_id" uuid NOT NULL,
+	"publication_epoch" bigint NOT NULL,
+	"publication_owner" text NOT NULL,
+	"state" text NOT NULL,
+	"provider_message_id" text,
+	"started_at" timestamp with time zone NOT NULL,
+	"finished_at" timestamp with time zone,
+	CONSTRAINT "relay_publication_attempts_pkey" PRIMARY KEY("outbox_id","publication_epoch"),
+	CONSTRAINT "relay_publication_attempts_epoch_check" CHECK ("publication_epoch" > 0),
+	CONSTRAINT "relay_publication_attempts_owner_check" CHECK (length("publication_owner") BETWEEN 1 AND 255),
+	CONSTRAINT "relay_publication_attempts_state_check" CHECK ("state" IN ('started', 'expired', 'confirmed')),
+	CONSTRAINT "relay_publication_attempts_outcome_check" CHECK ((
+        ("state" = 'started'
+          AND "provider_message_id" IS NULL
+          AND "finished_at" IS NULL)
+        OR ("state" = 'expired'
+          AND "provider_message_id" IS NULL
+          AND "finished_at" IS NOT NULL)
+        OR ("state" = 'confirmed'
+          AND length("provider_message_id") BETWEEN 1 AND 255
+          AND "finished_at" IS NOT NULL)
+      ))
+);
+--> statement-breakpoint
+CREATE TABLE "relay_publication_tasks" (
+	"outbox_id" uuid PRIMARY KEY,
+	"publication_state" text DEFAULT 'pending' NOT NULL,
+	"publication_epoch" bigint DEFAULT 0 NOT NULL,
+	"publication_owner" text,
+	"publication_lease_expires_at" timestamp with time zone,
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "relay_publication_tasks_state_check" CHECK ("publication_state" IN ('pending', 'publishing')),
+	CONSTRAINT "relay_publication_tasks_epoch_check" CHECK ("publication_epoch" >= 0),
+	CONSTRAINT "relay_publication_tasks_claim_check" CHECK ((
+        ("publication_state" = 'pending'
+          AND "publication_owner" IS NULL
+          AND "publication_lease_expires_at" IS NULL)
+        OR ("publication_state" = 'publishing'
+          AND "publication_epoch" > 0
+          AND "publication_owner" IS NOT NULL
+          AND "publication_lease_expires_at" IS NOT NULL)
+      ))
+);
+--> statement-breakpoint
 CREATE TABLE "relay_threads" (
 	"thread_id" uuid PRIMARY KEY,
 	"principal_id" uuid NOT NULL,
@@ -122,15 +167,12 @@ ALTER TABLE "thread_events" DROP CONSTRAINT "thread_events_payload_message_check
 ALTER TABLE "agent_runs" ADD COLUMN "claim_epoch" bigint DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE "agent_runs" ADD COLUMN "claim_owner" text;--> statement-breakpoint
 ALTER TABLE "agent_runs" ADD COLUMN "lease_expires_at" timestamp with time zone;--> statement-breakpoint
-ALTER TABLE "outbox_obligations" ADD COLUMN "publication_state" text DEFAULT 'pending' NOT NULL;--> statement-breakpoint
-ALTER TABLE "outbox_obligations" ADD COLUMN "publication_epoch" bigint DEFAULT 0 NOT NULL;--> statement-breakpoint
-ALTER TABLE "outbox_obligations" ADD COLUMN "publication_owner" text;--> statement-breakpoint
-ALTER TABLE "outbox_obligations" ADD COLUMN "publication_lease_expires_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "outbox_obligations" ADD COLUMN "publication_evidence" jsonb;--> statement-breakpoint
 ALTER TABLE "outbox_obligations" ADD COLUMN "published_at" timestamp with time zone;--> statement-breakpoint
 CREATE INDEX "agent_runs_expired_claim_idx" ON "agent_runs" ("lease_expires_at") WHERE "state" = 'running';--> statement-breakpoint
-CREATE INDEX "outbox_obligations_publication_idx" ON "outbox_obligations" ("publication_state","publication_lease_expires_at","created_at","outbox_id") WHERE "published_at" IS NULL;--> statement-breakpoint
+CREATE INDEX "outbox_obligations_unpublished_idx" ON "outbox_obligations" ("created_at","outbox_id") WHERE "published_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "relay_principals_selection_idx" ON "relay_principals" ("virtual_pass","principal_id");--> statement-breakpoint
+CREATE INDEX "relay_publication_tasks_claim_idx" ON "relay_publication_tasks" ("publication_state","publication_lease_expires_at","created_at","outbox_id");--> statement-breakpoint
 CREATE INDEX "relay_threads_selection_idx" ON "relay_threads" ("principal_id","virtual_pass","thread_id");--> statement-breakpoint
 ALTER TABLE "assistant_outputs" ADD CONSTRAINT "assistant_outputs_agent_run_id_agent_runs_agent_run_id_fkey" FOREIGN KEY ("agent_run_id") REFERENCES "agent_runs"("agent_run_id");--> statement-breakpoint
 ALTER TABLE "model_call_attempts" ADD CONSTRAINT "model_call_attempts_HI98vM6hhqyP_fkey" FOREIGN KEY ("model_call_id","agent_run_id") REFERENCES "model_calls"("model_call_id","agent_run_id");--> statement-breakpoint
@@ -139,6 +181,8 @@ ALTER TABLE "model_call_fragments" ADD CONSTRAINT "model_call_fragments_6WKF0fMR
 ALTER TABLE "model_call_fragments" ADD CONSTRAINT "model_call_fragments_cyXpceGKC2cG_fkey" FOREIGN KEY ("model_call_attempt_id","model_call_id","assistant_output_id","agent_run_id") REFERENCES "model_call_attempts"("model_call_attempt_id","model_call_id","assistant_output_id","agent_run_id");--> statement-breakpoint
 ALTER TABLE "model_calls" ADD CONSTRAINT "model_calls_agent_run_id_agent_runs_agent_run_id_fkey" FOREIGN KEY ("agent_run_id") REFERENCES "agent_runs"("agent_run_id");--> statement-breakpoint
 ALTER TABLE "relay_principals" ADD CONSTRAINT "relay_principals_principal_id_principals_principal_id_fkey" FOREIGN KEY ("principal_id") REFERENCES "principals"("principal_id");--> statement-breakpoint
+ALTER TABLE "relay_publication_attempts" ADD CONSTRAINT "relay_publication_attempts_uhoIdiDE8hP9_fkey" FOREIGN KEY ("outbox_id") REFERENCES "outbox_obligations"("outbox_id");--> statement-breakpoint
+ALTER TABLE "relay_publication_tasks" ADD CONSTRAINT "relay_publication_tasks_Muo6sGTuNsgz_fkey" FOREIGN KEY ("outbox_id") REFERENCES "outbox_obligations"("outbox_id");--> statement-breakpoint
 ALTER TABLE "relay_threads" ADD CONSTRAINT "relay_threads_NpEhHz2Z964X_fkey" FOREIGN KEY ("thread_id","principal_id") REFERENCES "threads"("thread_id","principal_id");--> statement-breakpoint
 ALTER TABLE "relay_threads" ADD CONSTRAINT "relay_threads_principal_id_relay_principals_principal_id_fkey" FOREIGN KEY ("principal_id") REFERENCES "relay_principals"("principal_id");--> statement-breakpoint
 ALTER TABLE "agent_runs" ADD CONSTRAINT "agent_runs_claim_epoch_check" CHECK ("claim_epoch" >= 0);--> statement-breakpoint
@@ -151,25 +195,9 @@ ALTER TABLE "agent_runs" ADD CONSTRAINT "agent_runs_claim_check" CHECK ((
           AND "claim_owner" IS NULL
           AND "lease_expires_at" IS NULL)
       ));--> statement-breakpoint
-ALTER TABLE "outbox_obligations" ADD CONSTRAINT "outbox_obligations_publication_state_check" CHECK ("publication_state" IN ('pending', 'publishing', 'published'));--> statement-breakpoint
-ALTER TABLE "outbox_obligations" ADD CONSTRAINT "outbox_obligations_publication_epoch_check" CHECK ("publication_epoch" >= 0);--> statement-breakpoint
-ALTER TABLE "outbox_obligations" ADD CONSTRAINT "outbox_obligations_publication_claim_check" CHECK ((
-        ("publication_state" = 'pending'
-          AND "publication_owner" IS NULL
-          AND "publication_lease_expires_at" IS NULL
-          AND "publication_evidence" IS NULL
-          AND "published_at" IS NULL)
-        OR ("publication_state" = 'publishing'
-          AND "publication_epoch" > 0
-          AND "publication_owner" IS NOT NULL
-          AND "publication_lease_expires_at" IS NOT NULL
-          AND "publication_evidence" IS NULL
-          AND "published_at" IS NULL)
-        OR ("publication_state" = 'published'
-          AND "publication_owner" IS NULL
-          AND "publication_lease_expires_at" IS NULL
-          AND "publication_evidence" IS NOT NULL
-          AND "published_at" IS NOT NULL)
+ALTER TABLE "outbox_obligations" ADD CONSTRAINT "outbox_obligations_publication_check" CHECK ((
+        ("publication_evidence" IS NULL AND "published_at" IS NULL)
+        OR ("publication_evidence" IS NOT NULL AND "published_at" IS NOT NULL)
       ));--> statement-breakpoint
 ALTER TABLE "outbox_obligations" ADD CONSTRAINT "outbox_obligations_publication_evidence_check" CHECK ("publication_evidence" IS NULL
         OR "publication_evidence" = CASE "publication_evidence" ->> 'type'

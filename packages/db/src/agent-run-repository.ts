@@ -138,8 +138,8 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return event;
       });
 
-      const claimPublication: AgentRunRepositoryService["claimPublication"] = Effect.fn(
-        "AgentRunRepository.claimPublication",
+      const selectPublication: AgentRunRepositoryService["selectPublication"] = Effect.fn(
+        "AgentRunRepository.selectPublication",
       )(function* (request) {
         return yield* protect(
           sql.withTransaction(
@@ -156,18 +156,15 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   cause: "Relay dispatch capacity is not initialized",
                 });
               }
-              const hasAvailableSlot = capacity.activeCount < request.publicationWindowSize;
-              const claims = yield* sql<{
-                readonly agentRunId: string;
-                readonly executionProfileRef: string;
+              if (capacity.activeCount >= request.publicationWindowSize) {
+                return { type: "none" as const };
+              }
+              const selections = yield* sql<{
                 readonly outboxId: string;
                 readonly principalId: string;
-                readonly previousState: "pending" | "publishing";
-                readonly publicationEpoch: string;
                 readonly threadId: string;
               }>`WITH candidate AS (
-                    SELECT obligation.outbox_id,
-                           obligation.publication_state AS previous_state
+                    SELECT obligation.outbox_id
                     FROM outbox_obligations obligation
                     JOIN relay_principals principal
                       ON principal.principal_id = obligation.principal_id
@@ -175,15 +172,9 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                       ON thread.thread_id = obligation.thread_id
                      AND thread.principal_id = obligation.principal_id
                     WHERE obligation.published_at IS NULL
-                      AND (
-                        (
-                          obligation.publication_state = 'pending'
-                          AND ${hasAvailableSlot}
-                        )
-                        OR (
-                          obligation.publication_state = 'publishing'
-                          AND obligation.publication_lease_expires_at <= clock_timestamp()
-                        )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM relay_publication_tasks task
+                        WHERE task.outbox_id = obligation.outbox_id
                       )
                       AND NOT EXISTS (
                         SELECT 1
@@ -202,38 +193,92 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                       obligation.outbox_id
                     FOR UPDATE OF obligation SKIP LOCKED
                     LIMIT 1
+                  ), selected AS (
+                    INSERT INTO relay_publication_tasks (
+                      outbox_id, publication_state, publication_epoch, created_at
+                    )
+                    SELECT outbox_id, 'pending', 0, transaction_timestamp()
+                    FROM candidate
+                    RETURNING outbox_id
                   )
-                  UPDATE outbox_obligations obligation
-                  SET publication_state = 'publishing',
-                      publication_epoch = obligation.publication_epoch + 1,
-                      publication_owner = ${request.relayId},
-                      publication_lease_expires_at = clock_timestamp()
-                        + ${request.leaseDurationMs} * interval '1 millisecond'
-                  FROM candidate
-                  WHERE obligation.outbox_id = candidate.outbox_id
-                  RETURNING
-                    obligation.outbox_id::text AS "outboxId",
-                    obligation.agent_run_id::text AS "agentRunId",
-                    (SELECT execution_profile_ref
-                      FROM agent_runs
-                      WHERE agent_run_id = obligation.agent_run_id) AS "executionProfileRef",
-                    obligation.principal_id::text AS "principalId",
-                    obligation.thread_id::text AS "threadId",
-                    candidate.previous_state AS "previousState",
-                    obligation.publication_epoch::text AS "publicationEpoch"`;
-              const claim = claims[0];
-              if (claim === undefined) return { type: "none" as const };
+                  SELECT selected.outbox_id::text AS "outboxId",
+                         obligation.principal_id::text AS "principalId",
+                         obligation.thread_id::text AS "threadId"
+                  FROM selected
+                  JOIN outbox_obligations obligation USING (outbox_id)`;
+              const selection = selections[0];
+              if (selection === undefined) return { type: "none" as const };
               yield* sql`UPDATE relay_principals
                 SET virtual_pass = virtual_pass + 1
-                WHERE principal_id = ${claim.principalId}::uuid`;
+                WHERE principal_id = ${selection.principalId}::uuid`;
               yield* sql`UPDATE relay_threads
                 SET virtual_pass = virtual_pass + 1
-                WHERE thread_id = ${claim.threadId}::uuid`;
-              if (claim.previousState === "pending") {
-                yield* sql`UPDATE relay_dispatch_capacity
-                  SET active_count = active_count + 1
-                  WHERE singleton = true`;
-              }
+                WHERE thread_id = ${selection.threadId}::uuid`;
+              yield* sql`UPDATE relay_dispatch_capacity
+                SET active_count = active_count + 1
+                WHERE singleton = true`;
+              return { type: "selected" as const, outboxId: selection.outboxId };
+            }),
+          ),
+        );
+      });
+
+      const claimPublication: AgentRunRepositoryService["claimPublication"] = Effect.fn(
+        "AgentRunRepository.claimPublication",
+      )(function* (request) {
+        return yield* protect(
+          sql.withTransaction(
+            Effect.gen(function* () {
+              const claims = yield* sql<{
+                readonly agentRunId: string;
+                readonly executionProfileRef: string;
+                readonly outboxId: string;
+                readonly publicationEpoch: string;
+              }>`WITH candidate AS (
+                    SELECT task.outbox_id
+                    FROM relay_publication_tasks task
+                    WHERE task.publication_state = 'pending'
+                       OR (
+                         task.publication_state = 'publishing'
+                         AND task.publication_lease_expires_at <= clock_timestamp()
+                       )
+                    ORDER BY task.created_at, task.outbox_id
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                  ), claimed AS (
+                    UPDATE relay_publication_tasks task
+                    SET publication_state = 'publishing',
+                        publication_epoch = task.publication_epoch + 1,
+                        publication_owner = ${request.relayId},
+                        publication_lease_expires_at = clock_timestamp()
+                          + ${request.leaseDurationMs} * interval '1 millisecond'
+                    FROM candidate
+                    WHERE task.outbox_id = candidate.outbox_id
+                    RETURNING task.outbox_id, task.publication_epoch
+                  )
+                  SELECT claimed.outbox_id::text AS "outboxId",
+                         claimed.publication_epoch::text AS "publicationEpoch",
+                         obligation.agent_run_id::text AS "agentRunId",
+                         run.execution_profile_ref AS "executionProfileRef"
+                  FROM claimed
+                  JOIN outbox_obligations obligation USING (outbox_id)
+                  JOIN agent_runs run USING (agent_run_id)`;
+              const claim = claims[0];
+              if (claim === undefined) return { type: "none" as const };
+              yield* sql`UPDATE relay_publication_attempts
+                SET state = 'expired', finished_at = transaction_timestamp()
+                WHERE outbox_id = ${claim.outboxId}::uuid
+                  AND state = 'started'
+                  AND publication_epoch < ${claim.publicationEpoch}::bigint`;
+              yield* sql`INSERT INTO relay_publication_attempts (
+                  outbox_id, publication_epoch, publication_owner, state, started_at
+                ) VALUES (
+                  ${claim.outboxId}::uuid,
+                  ${claim.publicationEpoch}::bigint,
+                  ${request.relayId},
+                  'started',
+                  transaction_timestamp()
+                )`;
               return {
                 type: "claimed" as const,
                 outboxId: claim.outboxId,
@@ -258,21 +303,42 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
           sql.withTransaction(
             Effect.gen(function* () {
               const confirmed = yield* sql<{ readonly outboxId: string }>`UPDATE outbox_obligations
-                  SET publication_state = 'published',
-                      publication_owner = NULL,
-                      publication_lease_expires_at = NULL,
-                      publication_evidence = ${JSON.stringify({
-                        type: "pubsub",
-                        providerMessageId: confirmation.providerMessageId,
-                      })}::jsonb,
+                  SET publication_evidence = ${JSON.stringify({
+                    type: "pubsub",
+                    providerMessageId: confirmation.providerMessageId,
+                  })}::jsonb,
                       published_at = transaction_timestamp()
+                  WHERE outbox_id = ${claim.outboxId}::uuid
+                    AND published_at IS NULL
+                    AND EXISTS (
+                      SELECT 1 FROM relay_publication_tasks task
+                      WHERE task.outbox_id = outbox_obligations.outbox_id
+                        AND task.publication_state = 'publishing'
+                        AND task.publication_owner = ${claim.relayId}
+                        AND task.publication_epoch = ${claim.publicationEpoch}::bigint
+                        AND task.publication_lease_expires_at > clock_timestamp()
+                    )
+                  RETURNING outbox_id::text AS "outboxId"`;
+              if (confirmed[0] === undefined) return yield* new AgentRunFenceRejected();
+              const recorded = yield* sql<{ readonly outboxId: string }>`UPDATE
+                    relay_publication_attempts
+                  SET state = 'confirmed',
+                      provider_message_id = ${confirmation.providerMessageId},
+                      finished_at = transaction_timestamp()
+                  WHERE outbox_id = ${claim.outboxId}::uuid
+                    AND publication_epoch = ${claim.publicationEpoch}::bigint
+                    AND publication_owner = ${claim.relayId}
+                    AND state = 'started'
+                  RETURNING outbox_id::text AS "outboxId"`;
+              if (recorded[0] === undefined) return yield* new AgentRunFenceRejected();
+              const removed = yield* sql<{ readonly outboxId: string }>`DELETE
+                  FROM relay_publication_tasks
                   WHERE outbox_id = ${claim.outboxId}::uuid
                     AND publication_state = 'publishing'
                     AND publication_owner = ${claim.relayId}
                     AND publication_epoch = ${claim.publicationEpoch}::bigint
-                    AND publication_lease_expires_at > clock_timestamp()
                   RETURNING outbox_id::text AS "outboxId"`;
-              if (confirmed[0] === undefined) return yield* new AgentRunFenceRejected();
+              if (removed[0] === undefined) return yield* new AgentRunFenceRejected();
               yield* sql`UPDATE relay_dispatch_capacity
                 SET active_count = active_count - 1
                 WHERE singleton = true AND active_count > 0`;
@@ -733,6 +799,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
       });
 
       return AgentRunRepository.of({
+        selectPublication,
         claimPublication,
         confirmPublication,
         claimAgentRun,

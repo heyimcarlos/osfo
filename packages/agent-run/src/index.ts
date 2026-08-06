@@ -6,7 +6,6 @@ import {
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -126,6 +125,13 @@ export const PublicationClaimSchema = Schema.Union([
 
 export type PublicationClaim = typeof PublicationClaimSchema.Type;
 
+export const PublicationSelectionSchema = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("none") }),
+  Schema.Struct({ type: Schema.Literal("selected"), outboxId: Identity }),
+]);
+
+export type PublicationSelection = typeof PublicationSelectionSchema.Type;
+
 export const PublicationConfirmationSchema = Schema.Struct({
   providerMessageId: NonEmptyText,
 });
@@ -147,10 +153,12 @@ type ModelCallDecision = Extract<
 type TerminalDecision = Extract<RuntimeDecision, { readonly type: "succeed" | "fail" }>;
 
 export interface AgentRunRepositoryService {
+  readonly selectPublication: (request: {
+    readonly publicationWindowSize: number;
+  }) => Effect.Effect<PublicationSelection, AgentRunRepositoryError>;
   readonly claimPublication: (request: {
     readonly relayId: string;
     readonly leaseDurationMs: number;
-    readonly publicationWindowSize: number;
   }) => Effect.Effect<PublicationClaim, AgentRunRepositoryError>;
   readonly confirmPublication: (
     claim: Extract<PublicationClaim, { readonly type: "claimed" }>,
@@ -265,15 +273,18 @@ export const makeAgentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
 
           const modelCall = yield* repository.ensureModelCall(fence, decision);
           const attempt = yield* repository.beginModelCallAttempt(fence, modelCall);
-          const execution = yield* Stream.runCollect(executor.execute(attempt)).pipe(Effect.exit);
-          if (Exit.isFailure(execution)) {
+          const execution = yield* Stream.runForEach(executor.execute(attempt), (observation) =>
+            repository.appendModelOutput(fence, attempt, observation),
+          ).pipe(
+            Effect.as("completed" as const),
+            Effect.catchTag("ModelCallExecutionError", () =>
+              Effect.succeed("interrupted" as const),
+            ),
+          );
+          if (execution === "interrupted") {
             yield* repository.interruptModelCall(fence, attempt, "modelCallFailed");
             continue;
           }
-
-          yield* Effect.forEach(Array.from(execution.value), (observation) =>
-            repository.appendModelOutput(fence, attempt, observation),
-          );
           yield* repository.completeModelCall(fence, attempt);
         }
       });
@@ -324,18 +335,26 @@ export class RunnableDeliveryPublisher extends Context.Service<
   }
 >()("@osfo/agent-run/RunnableDeliveryPublisher") {}
 
-export const OutboxRelayResultSchema = Schema.Union([
+export const OutboxRelaySelectionResultSchema = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("idle") }),
+  Schema.Struct({ type: Schema.Literal("selected"), outboxId: Identity }),
+]);
+
+export type OutboxRelaySelectionResult = typeof OutboxRelaySelectionResultSchema.Type;
+
+export const OutboxRelayPublicationResultSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("idle") }),
   Schema.Struct({ type: Schema.Literal("published"), delivery: RunnableAgentRunDeliverySchema }),
 ]);
 
-export type OutboxRelayResult = typeof OutboxRelayResultSchema.Type;
+export type OutboxRelayPublicationResult = typeof OutboxRelayPublicationResultSchema.Type;
 
 export class OutboxRelay extends Context.Service<
   OutboxRelay,
   {
-    readonly relayOnce: () => Effect.Effect<
-      OutboxRelayResult,
+    readonly selectOnce: () => Effect.Effect<OutboxRelaySelectionResult, AgentRunRepositoryError>;
+    readonly publishOnce: () => Effect.Effect<
+      OutboxRelayPublicationResult,
       AgentRunRepositoryError | RunnableDeliveryPublisherUnavailable
     >;
   }
@@ -356,7 +375,14 @@ export const makeOutboxRelayLayer = (config: OutboxRelayConfig) =>
       const repository = yield* AgentRunRepository;
       const publisher = yield* RunnableDeliveryPublisher;
 
-      const relayOnce = Effect.fn("OutboxRelay.relayOnce")(function* () {
+      const selectOnce = Effect.fn("OutboxRelay.selectOnce")(function* () {
+        const selection = yield* repository.selectPublication(config);
+        return selection.type === "none"
+          ? ({ type: "idle" } as const)
+          : ({ type: "selected", outboxId: selection.outboxId } as const);
+      });
+
+      const publishOnce = Effect.fn("OutboxRelay.publishOnce")(function* () {
         const claim = yield* repository.claimPublication(config);
         if (claim.type === "none") return { type: "idle" as const };
         const confirmation = yield* publisher.publish(claim.delivery);
@@ -364,6 +390,6 @@ export const makeOutboxRelayLayer = (config: OutboxRelayConfig) =>
         return { type: "published" as const, delivery: claim.delivery };
       });
 
-      return OutboxRelay.of({ relayOnce });
+      return OutboxRelay.of({ selectOnce, publishOnce });
     }),
   );

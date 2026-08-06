@@ -123,6 +123,8 @@ const seedAuthority = () =>
         model_call_fragments,
         model_calls,
         assistant_outputs,
+        relay_publication_attempts,
+        relay_publication_tasks,
         outbox_obligations,
         agent_run_capacity_reservations,
         acceptance_receipts,
@@ -203,8 +205,10 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     await accept(authenticationToken, threadId, "noisy second");
     const quiet = await accept(quietAuthenticationToken, quietThreadId, "quiet first");
 
-    await run(OutboxRelay.use((relay) => relay.relayOnce()));
-    await run(OutboxRelay.use((relay) => relay.relayOnce()));
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
 
     expect(published.map((delivery) => delivery.agentRunId)).toEqual([
       noisyFirst.agentRunId,
@@ -222,18 +226,24 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     } satisfies SubmitMessageCommand;
     const receipt = await run(MessageAdmission.use((admission) => admission.accept(command)));
 
-    const lostConfirmation = await run(Effect.exit(OutboxRelay.use((relay) => relay.relayOnce())));
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    const lostConfirmation = await run(
+      Effect.exit(OutboxRelay.use((relay) => relay.publishOnce())),
+    );
     expect(Exit.isFailure(lostConfirmation)).toBe(true);
     await run(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`UPDATE outbox_obligations
+        yield* sql`UPDATE relay_publication_tasks
           SET publication_lease_expires_at = clock_timestamp() - interval '1 millisecond'
-          WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+          WHERE outbox_id = (
+            SELECT outbox_id FROM outbox_obligations
+            WHERE agent_run_id = ${receipt.agentRunId}::uuid
+          )`;
       }),
     );
 
-    const relayed = await run(OutboxRelay.use((relay) => relay.relayOnce()));
+    const relayed = await run(OutboxRelay.use((relay) => relay.publishOnce()));
     expect(relayed).toMatchObject({
       type: "published",
       delivery: { agentRunId: receipt.agentRunId },
@@ -302,6 +312,8 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
           readonly modelCallFragments: string;
           readonly publicationEvidence: unknown;
           readonly relayActiveCount: number;
+          readonly activePublicationTasks: string;
+          readonly publicationAttemptStates: ReadonlyArray<string>;
           readonly startedAttempts: string;
           readonly usageTypes: ReadonlyArray<string>;
         }>`SELECT
@@ -325,6 +337,13 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             WHERE agent_run_id = ${receipt.agentRunId}::uuid) AS "publicationEvidence",
           (SELECT active_count FROM relay_dispatch_capacity
             WHERE singleton = true) AS "relayActiveCount",
+          (SELECT count(*) FROM relay_publication_tasks)::text AS "activePublicationTasks",
+          ARRAY(SELECT state FROM relay_publication_attempts
+            WHERE outbox_id = (
+              SELECT outbox_id FROM outbox_obligations
+              WHERE agent_run_id = ${receipt.agentRunId}::uuid
+            )
+            ORDER BY publication_epoch) AS "publicationAttemptStates",
           (SELECT count(*) FROM model_call_attempts
             WHERE agent_run_id = ${receipt.agentRunId}::uuid
               AND state = 'started')::text AS "startedAttempts",
@@ -361,6 +380,8 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       modelCallFragments: "3",
       publicationEvidence: { type: "pubsub", providerMessageId: "pubsub-message-2" },
       relayActiveCount: 0,
+      activePublicationTasks: "0",
+      publicationAttemptStates: ["expired", "confirmed"],
       startedAttempts: "0",
       usageTypes: ["unknown", "unknown"],
     });

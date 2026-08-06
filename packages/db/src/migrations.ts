@@ -52,7 +52,7 @@ export const verifyDatabaseMigrations = (config: DatabaseConfig) =>
       baseline?.name !== "20260805120000_empty_baseline" ||
       admission?.name !== "20260806124719_durable_message_admission" ||
       resume?.name !== "20260806162306_aberrant_sir_ram" ||
-      agentRun?.name !== "20260806192259_charming_madrox"
+      agentRun?.name !== "20260806194039_nervous_bloodscream"
     ) {
       return yield* new MigrationVerificationError({
         appliedMigrationNames: rows.map((row) => row.name),

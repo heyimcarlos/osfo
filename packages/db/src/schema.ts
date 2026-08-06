@@ -374,13 +374,6 @@ export const outboxObligations = pgTable(
     principalId: uuid("principal_id").notNull(),
     kind: text("kind").notNull(),
     version: smallint("version").notNull(),
-    publicationState: text("publication_state").notNull().default("pending"),
-    publicationEpoch: bigint("publication_epoch", { mode: "bigint" }).notNull().default(0n),
-    publicationOwner: text("publication_owner"),
-    publicationLeaseExpiresAt: timestamp("publication_lease_expires_at", {
-      withTimezone: true,
-      mode: "string",
-    }),
     publicationEvidence: jsonb("publication_evidence").$type<PublicationEvidence>(),
     publishedAt: timestamp("published_at", { withTimezone: true, mode: "string" }),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
@@ -393,29 +386,10 @@ export const outboxObligations = pgTable(
     check("outbox_obligations_kind_check", sql`${table.kind} = 'AgentRunPending'`),
     check("outbox_obligations_version_check", sql`${table.version} = 1`),
     check(
-      "outbox_obligations_publication_state_check",
-      sql`${table.publicationState} IN ('pending', 'publishing', 'published')`,
-    ),
-    check("outbox_obligations_publication_epoch_check", sql`${table.publicationEpoch} >= 0`),
-    check(
-      "outbox_obligations_publication_claim_check",
+      "outbox_obligations_publication_check",
       sql`(
-        (${table.publicationState} = 'pending'
-          AND ${table.publicationOwner} IS NULL
-          AND ${table.publicationLeaseExpiresAt} IS NULL
-          AND ${table.publicationEvidence} IS NULL
-          AND ${table.publishedAt} IS NULL)
-        OR (${table.publicationState} = 'publishing'
-          AND ${table.publicationEpoch} > 0
-          AND ${table.publicationOwner} IS NOT NULL
-          AND ${table.publicationLeaseExpiresAt} IS NOT NULL
-          AND ${table.publicationEvidence} IS NULL
-          AND ${table.publishedAt} IS NULL)
-        OR (${table.publicationState} = 'published'
-          AND ${table.publicationOwner} IS NULL
-          AND ${table.publicationLeaseExpiresAt} IS NULL
-          AND ${table.publicationEvidence} IS NOT NULL
-          AND ${table.publishedAt} IS NOT NULL)
+        (${table.publicationEvidence} IS NULL AND ${table.publishedAt} IS NULL)
+        OR (${table.publicationEvidence} IS NOT NULL AND ${table.publishedAt} IS NOT NULL)
       )`,
     ),
     check(
@@ -431,9 +405,92 @@ export const outboxObligations = pgTable(
         END`,
     ),
     index("outbox_obligations_created_idx").on(table.createdAt, table.outboxId),
-    index("outbox_obligations_publication_idx")
-      .on(table.publicationState, table.publicationLeaseExpiresAt, table.createdAt, table.outboxId)
+    index("outbox_obligations_unpublished_idx")
+      .on(table.createdAt, table.outboxId)
       .where(sql`${table.publishedAt} IS NULL`),
+  ],
+);
+
+export const relayPublicationTasks = pgTable(
+  "relay_publication_tasks",
+  {
+    outboxId: uuid("outbox_id")
+      .primaryKey()
+      .references(() => outboxObligations.outboxId),
+    publicationState: text("publication_state").notNull().default("pending"),
+    publicationEpoch: bigint("publication_epoch", { mode: "bigint" }).notNull().default(0n),
+    publicationOwner: text("publication_owner"),
+    publicationLeaseExpiresAt: timestamp("publication_lease_expires_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+  },
+  (table) => [
+    check(
+      "relay_publication_tasks_state_check",
+      sql`${table.publicationState} IN ('pending', 'publishing')`,
+    ),
+    check("relay_publication_tasks_epoch_check", sql`${table.publicationEpoch} >= 0`),
+    check(
+      "relay_publication_tasks_claim_check",
+      sql`(
+        (${table.publicationState} = 'pending'
+          AND ${table.publicationOwner} IS NULL
+          AND ${table.publicationLeaseExpiresAt} IS NULL)
+        OR (${table.publicationState} = 'publishing'
+          AND ${table.publicationEpoch} > 0
+          AND ${table.publicationOwner} IS NOT NULL
+          AND ${table.publicationLeaseExpiresAt} IS NOT NULL)
+      )`,
+    ),
+    index("relay_publication_tasks_claim_idx").on(
+      table.publicationState,
+      table.publicationLeaseExpiresAt,
+      table.createdAt,
+      table.outboxId,
+    ),
+  ],
+);
+
+export const relayPublicationAttempts = pgTable(
+  "relay_publication_attempts",
+  {
+    outboxId: uuid("outbox_id")
+      .notNull()
+      .references(() => outboxObligations.outboxId),
+    publicationEpoch: bigint("publication_epoch", { mode: "bigint" }).notNull(),
+    publicationOwner: text("publication_owner").notNull(),
+    state: text("state").notNull(),
+    providerMessageId: text("provider_message_id"),
+    startedAt: timestamp("started_at", { withTimezone: true, mode: "string" }).notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true, mode: "string" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.outboxId, table.publicationEpoch] }),
+    check("relay_publication_attempts_epoch_check", sql`${table.publicationEpoch} > 0`),
+    check(
+      "relay_publication_attempts_owner_check",
+      sql`length(${table.publicationOwner}) BETWEEN 1 AND 255`,
+    ),
+    check(
+      "relay_publication_attempts_state_check",
+      sql`${table.state} IN ('started', 'expired', 'confirmed')`,
+    ),
+    check(
+      "relay_publication_attempts_outcome_check",
+      sql`(
+        (${table.state} = 'started'
+          AND ${table.providerMessageId} IS NULL
+          AND ${table.finishedAt} IS NULL)
+        OR (${table.state} = 'expired'
+          AND ${table.providerMessageId} IS NULL
+          AND ${table.finishedAt} IS NOT NULL)
+        OR (${table.state} = 'confirmed'
+          AND length(${table.providerMessageId}) BETWEEN 1 AND 255
+          AND ${table.finishedAt} IS NOT NULL)
+      )`,
+    ),
   ],
 );
 
@@ -668,6 +725,8 @@ export const databaseSchema = {
   principals,
   relayPrincipals,
   relayDispatchCapacity,
+  relayPublicationAttempts,
+  relayPublicationTasks,
   relayThreads,
   threadEvents,
   threads,
