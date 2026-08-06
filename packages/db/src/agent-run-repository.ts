@@ -21,6 +21,7 @@ import { Data, Effect, Layer, Predicate, Redacted, Schema } from "effect";
 
 export const AgentRunRepositoryDatabaseConfigSchema = Schema.Struct({
   databaseUrl: Schema.NonEmptyString,
+  maxConnections: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
 });
 
 export type AgentRunRepositoryDatabaseConfig = typeof AgentRunRepositoryDatabaseConfigSchema.Type;
@@ -56,6 +57,7 @@ type EventBuilder = (input: {
 const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
   const postgresLayer = PgClient.layer({
     applicationName: "osfo-agent-run-repository",
+    maxConnections: config.maxConnections,
     url: Redacted.make(config.databaseUrl),
   });
 
@@ -234,6 +236,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                 readonly executionProfileRef: string;
                 readonly outboxId: string;
                 readonly publicationEpoch: string;
+                readonly threadId: string;
               }>`WITH candidate AS (
                     SELECT task.outbox_id
                     FROM relay_publication_tasks task
@@ -259,6 +262,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   SELECT claimed.outbox_id::text AS "outboxId",
                          claimed.publication_epoch::text AS "publicationEpoch",
                          obligation.agent_run_id::text AS "agentRunId",
+                         obligation.thread_id::text AS "threadId",
                          run.execution_profile_ref AS "executionProfileRef"
                   FROM claimed
                   JOIN outbox_obligations obligation USING (outbox_id)
@@ -288,6 +292,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   version: 1 as const,
                   deliveryId: claim.outboxId,
                   agentRunId: claim.agentRunId,
+                  threadId: claim.threadId,
                   executionProfileRef: claim.executionProfileRef,
                 },
               };
@@ -363,6 +368,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                       lease_expires_at = clock_timestamp()
                         + ${request.leaseDurationMs} * interval '1 millisecond'
                   WHERE run.agent_run_id = ${delivery.agentRunId}::uuid
+                    AND run.thread_id = ${delivery.threadId}::uuid
                     AND EXISTS (
                       SELECT 1 FROM outbox_obligations obligation
                       WHERE obligation.outbox_id = ${delivery.deliveryId}::uuid

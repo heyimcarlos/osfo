@@ -19,50 +19,24 @@ export const RunnableAgentRunDeliverySchema = Schema.Struct({
   version: Schema.Literal(1),
   deliveryId: Identity,
   agentRunId: Identity,
+  threadId: Identity,
   executionProfileRef: NonEmptyText,
 });
 
 export type RunnableAgentRunDelivery = typeof RunnableAgentRunDeliverySchema.Type;
 
-export const PubSubPushEnvelopeSchema = Schema.Struct({
-  message: Schema.Struct({
-    data: Schema.NonEmptyString,
-    messageId: Schema.NonEmptyString,
-  }),
-  subscription: Schema.NonEmptyString,
-});
-
-export type PubSubPushEnvelope = typeof PubSubPushEnvelopeSchema.Type;
-
 export class InvalidRunnableDelivery extends Data.TaggedError("InvalidRunnableDelivery")<{
   readonly cause: unknown;
 }> {}
 
-export class PubSubPushAuthenticationRejected extends Data.TaggedError(
-  "PubSubPushAuthenticationRejected",
-) {}
-
-export class PubSubPushAuthenticator extends Context.Service<
-  PubSubPushAuthenticator,
-  {
-    readonly authenticate: (
-      authorization: string | undefined,
-    ) => Effect.Effect<void, PubSubPushAuthenticationRejected>;
-  }
->()("@osfo/agent-run/PubSubPushAuthenticator") {}
-
 const RunnableDeliveryFromJson = Schema.fromJsonString(RunnableAgentRunDeliverySchema);
 
-export const decodePubSubPushDelivery = Effect.fn("PubSubPush.decodeDelivery")(function* (
-  input: unknown,
+export const decodeRunnableDeliveryData = Effect.fn("RunnableDelivery.decodeData")(function* (
+  data: Uint8Array,
 ) {
-  const envelope = yield* Schema.decodeUnknownEffect(PubSubPushEnvelopeSchema)(input).pipe(
-    Effect.mapError((cause) => new InvalidRunnableDelivery({ cause })),
-  );
-  const json = Buffer.from(envelope.message.data, "base64").toString("utf8");
-  return yield* Schema.decodeUnknownEffect(RunnableDeliveryFromJson)(json).pipe(
-    Effect.mapError((cause) => new InvalidRunnableDelivery({ cause })),
-  );
+  return yield* Schema.decodeUnknownEffect(RunnableDeliveryFromJson)(
+    Buffer.from(data).toString("utf8"),
+  ).pipe(Effect.mapError((cause) => new InvalidRunnableDelivery({ cause })));
 });
 
 export const encodeRunnableDeliveryData = (delivery: RunnableAgentRunDelivery) =>

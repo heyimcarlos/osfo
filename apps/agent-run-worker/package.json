@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
+    "@google-cloud/pubsub": "6.0.0",
     "@osfo/agent-run": "workspace:*",
     "@osfo/agent-runtime": "workspace:*",
     "@osfo/db": "workspace:*",

@@ -34,6 +34,7 @@ describe("Google Pub/Sub runnable delivery publisher", () => {
           version: 1,
           deliveryId: "b1dfd21a-7526-4e52-a732-8e01debd1d52",
           agentRunId: "96ae49eb-b1ab-41cb-a468-b68893ec82c3",
+          threadId: "512e5093-0051-4f82-b452-78d907ead08c",
           executionProfileRef: "oz.deterministic.v1",
         }),
       ).pipe(
@@ -59,6 +60,7 @@ describe("Google Pub/Sub runnable delivery publisher", () => {
         messages: [
           {
             attributes: { executionProfileRef: "oz.deterministic.v1" },
+            orderingKey: "512e5093-0051-4f82-b452-78d907ead08c",
           },
         ],
       });

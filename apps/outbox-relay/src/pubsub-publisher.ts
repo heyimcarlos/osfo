@@ -55,6 +55,7 @@ const publisherLayer = (config: GooglePubSubPublisherConfig) =>
               {
                 data: encodeRunnableDeliveryData(delivery),
                 attributes: { executionProfileRef: delivery.executionProfileRef },
+                orderingKey: delivery.threadId,
               },
             ],
           }),
