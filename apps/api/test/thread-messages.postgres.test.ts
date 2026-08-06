@@ -1,5 +1,6 @@
 import { prepareMessageAdmissionFixture, readMessageAuthorityCounts } from "@osfo/db/testing";
 import { Effect } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { describe, expect, it } from "vitest";
 import { startApiProcess } from "./api-process";
 
@@ -27,21 +28,26 @@ describe("Osfo API composition", () => {
 
     try {
       const idempotencyKey = crypto.randomUUID();
-      const response = await fetch(`http://127.0.0.1:${api.port}/v1/threads/${threadId}/messages`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${authenticationToken}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          protocolVersion: 1,
-          idempotencyKey,
-          message: { content: "Hello through HTTP" },
-        }),
-      });
+      const response = await Effect.runPromise(
+        Effect.gen(function* () {
+          const client = yield* HttpClient.HttpClient;
+          return yield* client.execute(
+            HttpClientRequest.post(
+              `http://127.0.0.1:${api.port}/v1/threads/${threadId}/messages`,
+            ).pipe(
+              HttpClientRequest.bearerToken(authenticationToken),
+              HttpClientRequest.bodyJsonUnsafe({
+                protocolVersion: 1,
+                idempotencyKey,
+                message: { content: "Hello through HTTP" },
+              }),
+            ),
+          );
+        }).pipe(Effect.provide(FetchHttpClient.layer)),
+      );
 
       expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({
+      expect(await Effect.runPromise(response.json)).toMatchObject({
         protocolVersion: 1,
         idempotencyKey,
         threadId,

@@ -1,5 +1,10 @@
 import { Data, Effect, Layer, Schema } from "effect";
-import { FetchHttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+} from "effect/unstable/http";
 import { HttpApiClient, HttpApiMiddleware } from "effect/unstable/httpapi";
 import { OsfoApi } from "./api.js";
 import { Authentication } from "./threads/api.js";
@@ -9,7 +14,7 @@ export class CommitUnknown extends Data.TaggedError("CommitUnknown") {}
 export interface ApiClientOptions {
   readonly baseUrl: string;
   readonly authenticationToken: string;
-  readonly fetch?: typeof globalThis.fetch;
+  readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
 }
 
 const authenticationClient = (token: string) =>
@@ -17,15 +22,10 @@ const authenticationClient = (token: string) =>
     next(HttpClientRequest.bearerToken(request, token)),
   );
 
-const fetchClient = (fetchRequest: typeof globalThis.fetch | undefined) =>
-  fetchRequest === undefined
-    ? FetchHttpClient.layer
-    : FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch)(fetchRequest)));
-
 export const makeApiClient = (options: ApiClientOptions) =>
   HttpApiClient.make(OsfoApi, { baseUrl: options.baseUrl }).pipe(
     Effect.provide(authenticationClient(options.authenticationToken)),
-    Effect.provide(fetchClient(options.fetch)),
+    Effect.provide(options.httpClientLayer ?? FetchHttpClient.layer),
   );
 
 export interface SubmitThreadMessage extends ApiClientOptions {

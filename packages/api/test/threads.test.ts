@@ -8,7 +8,13 @@ import {
 import { CommitUnknown, makeApiClient, submitThreadMessage } from "../src/client";
 import { OsfoApiLive } from "../src/server";
 import { Effect, Layer } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
+import {
+  HttpClient,
+  HttpClientRequest,
+  HttpClientResponse,
+  HttpRouter,
+  HttpServer,
+} from "effect/unstable/http";
 import { describe, expect, it } from "vitest";
 
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
@@ -35,9 +41,18 @@ const makeHarness = (
     OsfoApiLive.pipe(Layer.provide(admission), Layer.provideMerge(HttpServer.layerServices)),
   );
   const handler = web.handler as (request: Request) => Promise<Response>;
+  const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+    HttpClient.make((request, _url, signal) =>
+      Effect.gen(function* () {
+        const webRequest = yield* HttpClientRequest.toWeb(request, { signal });
+        const webResponse = yield* Effect.promise(() => handler(webRequest));
+        return HttpClientResponse.fromWeb(request, webResponse);
+      }).pipe(Effect.orDie),
+    ),
+  );
   return {
-    fetch: ((input: RequestInfo | URL, init?: RequestInit) =>
-      handler(input instanceof Request ? input : new Request(input, init))) as typeof fetch,
+    httpClientLayer,
+    request: handler,
     dispose: web.dispose,
   };
 };
@@ -56,7 +71,7 @@ describe("Osfo Threads API", () => {
           const client = yield* makeApiClient({
             baseUrl: "http://osfo.test",
             authenticationToken: "session-token",
-            fetch: harness.fetch,
+            httpClientLayer: harness.httpClientLayer,
           });
           return yield* client.threads.submitMessage({
             params: { threadId },
@@ -90,19 +105,21 @@ describe("Osfo Threads API", () => {
     });
 
     try {
-      const response = await harness.fetch(`http://osfo.test/v1/threads/${threadId}/messages`, {
-        method: "POST",
-        headers: {
-          authorization: "Bearer session-token",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          protocolVersion: 1,
-          idempotencyKey,
-          message: { content: "Hello" },
-          unexpected: true,
+      const response = await harness.request(
+        new Request(`http://osfo.test/v1/threads/${threadId}/messages`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer session-token",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            protocolVersion: 1,
+            idempotencyKey,
+            message: { content: "Hello" },
+            unexpected: true,
+          }),
         }),
-      });
+      );
 
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({ _tag: "MalformedRequest" });
@@ -122,7 +139,7 @@ describe("Osfo Threads API", () => {
             const client = yield* makeApiClient({
               baseUrl: "http://osfo.test",
               authenticationToken: "session-token",
-              fetch: harness.fetch,
+              httpClientLayer: harness.httpClientLayer,
             });
             return yield* client.threads.submitMessage({
               params: { threadId },
@@ -150,15 +167,17 @@ describe("Osfo Threads API", () => {
     });
 
     try {
-      const response = await harness.fetch(`http://osfo.test/v1/threads/${threadId}/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          protocolVersion: 1,
-          idempotencyKey,
-          message: { content: "Hello" },
+      const response = await harness.request(
+        new Request(`http://osfo.test/v1/threads/${threadId}/messages`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            protocolVersion: 1,
+            idempotencyKey,
+            message: { content: "Hello" },
+          }),
         }),
-      });
+      );
 
       expect(response.status).toBe(401);
       expect(await response.json()).toEqual({ _tag: "AuthenticationRejected" });
@@ -169,6 +188,11 @@ describe("Osfo Threads API", () => {
   });
 
   it("classifies a lost or malformed successful response as unknown commit", async () => {
+    const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+      HttpClient.make((request) =>
+        Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ accepted: true }))),
+      ),
+    );
     const error = await Effect.runPromise(
       Effect.flip(
         submitThreadMessage({
@@ -177,7 +201,7 @@ describe("Osfo Threads API", () => {
           threadId,
           idempotencyKey,
           message: { content: "Hello" },
-          fetch: async () => Response.json({ accepted: true }),
+          httpClientLayer,
         }),
       ),
     );
@@ -188,7 +212,7 @@ describe("Osfo Threads API", () => {
   it("serves OpenAPI from the same composed contract", async () => {
     const harness = makeHarness(() => Effect.succeed(receipt));
     try {
-      const response = await harness.fetch("http://osfo.test/openapi.json");
+      const response = await harness.request(new Request("http://osfo.test/openapi.json"));
       const document = (await response.json()) as { readonly paths: Record<string, unknown> };
 
       expect(response.status).toBe(200);
