@@ -20,12 +20,26 @@ const writeIndex = async (root: string, artifacts: ReadonlyArray<unknown>) => {
   );
   return indexPath;
 };
+const writeWalkthroughIndex = async (walkthrough: string) => {
+  const root = await createPacketRoot();
+  await writeFile(join(root, "walkthrough.md"), walkthrough);
+  return writeIndex(root, [
+    {
+      id: "three-part-walkthrough",
+      kind: "document",
+      artifactStatus: "PASS",
+      evidenceStatus: "PASS",
+      path: "walkthrough.md",
+      sha256: sha256(walkthrough),
+      description: "The three-part walkthrough.",
+    },
+  ]);
+};
 const runVerifier = (...arguments_: ReadonlyArray<string>) =>
   execFileAsync("bun", [verifierPath, ...arguments_]);
 
 describe("OpenPoke demo packet verifier CLI", () => {
   it("rejects the superseded uninspected OpenPoke walkthrough disclaimer", async () => {
-    const root = await createPacketRoot();
     const walkthrough = [
       "# OpenPoke v1 walkthrough",
       "",
@@ -34,18 +48,7 @@ describe("OpenPoke demo packet verifier CLI", () => {
       "Without asserting uninspected repository details, process-local authority fails first.",
       "",
     ].join("\n");
-    await writeFile(join(root, "walkthrough.md"), walkthrough);
-    const indexPath = await writeIndex(root, [
-      {
-        id: "three-part-walkthrough",
-        kind: "document",
-        artifactStatus: "PASS",
-        evidenceStatus: "PASS",
-        path: "walkthrough.md",
-        sha256: sha256(walkthrough),
-        description: "The three-part walkthrough.",
-      },
-    ]);
+    const indexPath = await writeWalkthroughIndex(walkthrough);
 
     await expect(runVerifier(indexPath)).rejects.toMatchObject({
       stderr:
@@ -54,7 +57,6 @@ describe("OpenPoke demo packet verifier CLI", () => {
   });
 
   it("rejects an OpenPoke walkthrough without the inspected source revision", async () => {
-    const root = await createPacketRoot();
     const walkthrough = [
       "# OpenPoke v1 walkthrough",
       "",
@@ -63,18 +65,7 @@ describe("OpenPoke demo packet verifier CLI", () => {
       "The command returns 202 before its detached task finishes.",
       "",
     ].join("\n");
-    await writeFile(join(root, "walkthrough.md"), walkthrough);
-    const indexPath = await writeIndex(root, [
-      {
-        id: "three-part-walkthrough",
-        kind: "document",
-        artifactStatus: "PASS",
-        evidenceStatus: "PASS",
-        path: "walkthrough.md",
-        sha256: sha256(walkthrough),
-        description: "The three-part walkthrough.",
-      },
-    ]);
+    const indexPath = await writeWalkthroughIndex(walkthrough);
 
     await expect(runVerifier(indexPath)).rejects.toMatchObject({
       stderr:
@@ -83,7 +74,6 @@ describe("OpenPoke demo packet verifier CLI", () => {
   });
 
   it("rejects an inspected OpenPoke walkthrough without exact source references", async () => {
-    const root = await createPacketRoot();
     const revision = "5b5f635935a64ab37884c025d70abb0ed731c094";
     const walkthrough = [
       "# OpenPoke v1 walkthrough",
@@ -95,18 +85,7 @@ describe("OpenPoke demo packet verifier CLI", () => {
       "The command returns 202 before its detached task finishes.",
       "",
     ].join("\n");
-    await writeFile(join(root, "walkthrough.md"), walkthrough);
-    const indexPath = await writeIndex(root, [
-      {
-        id: "three-part-walkthrough",
-        kind: "document",
-        artifactStatus: "PASS",
-        evidenceStatus: "PASS",
-        path: "walkthrough.md",
-        sha256: sha256(walkthrough),
-        description: "The three-part walkthrough.",
-      },
-    ]);
+    const indexPath = await writeWalkthroughIndex(walkthrough);
 
     await expect(runVerifier(indexPath)).rejects.toMatchObject({
       stderr:
