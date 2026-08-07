@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ const baselineMigrations = [
 ] as const;
 
 const sourceMigrations = fileURLToPath(new URL("../packages/db/drizzle", import.meta.url));
+const cancellationMigration = "20260807042558_material_crusher_hogan";
 
 const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
   Effect.flatMap((databaseUrl) =>
@@ -22,10 +23,23 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
       const upgradeUrl = new URL(databaseUrl);
       upgradeUrl.pathname = `/${upgradeDatabaseName}`;
       const migrationsFolder = mkdtempSync(join(tmpdir(), "osfo-upgrade-migrations-"));
+      const preCancellationMigrationsFolder = mkdtempSync(
+        join(tmpdir(), "osfo-upgrade-pre-cancellation-"),
+      );
       for (const migration of baselineMigrations) {
         cpSync(join(sourceMigrations, migration), join(migrationsFolder, migration), {
           recursive: true,
         });
+      }
+      for (const migration of readdirSync(sourceMigrations)) {
+        if (migration >= cancellationMigration) continue;
+        cpSync(
+          join(sourceMigrations, migration),
+          join(preCancellationMigrationsFolder, migration),
+          {
+            recursive: true,
+          },
+        );
       }
       const adminLayer = PgClient.layer({
         applicationName: "osfo-upgrade-database-admin",
@@ -98,6 +112,45 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
       }).pipe(Effect.provide(upgradeLayer));
 
       yield* migrateDatabase({
+        applicationName: "osfo-upgrade-pre-cancellation",
+        databaseUrl: upgradeUrl.toString(),
+        migrationsFolder: preCancellationMigrationsFolder,
+      });
+
+      yield* Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`INSERT INTO assistant_outputs (
+          assistant_output_id, agent_run_id, state, interruption_cause, created_at, terminated_at
+        ) VALUES (
+          '36290831-b9ca-414a-abf1-4055b5347133'::uuid,
+          '96ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
+          'interrupted', 'modelCallFailed', transaction_timestamp(), transaction_timestamp()
+        )`;
+        yield* sql`INSERT INTO thread_events (
+            thread_id, position, event_id, principal_id, user_message_id, agent_run_id,
+            event_type, event_version, payload, occurred_at
+          ) VALUES (
+            '6ef239bd-3f04-4c77-8976-1171e75ea0ab'::uuid,
+            1,
+            '8b82a82b-7983-49ca-a054-13b040f9f5da'::uuid,
+            'b3ef0861-2df7-4d2a-a195-fbc5ed75bc81'::uuid,
+            '53146ff7-2205-44b0-8de4-685509112ac9'::uuid,
+            '96ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
+            'AssistantOutputInterrupted',
+            1,
+            jsonb_build_object(
+              'assistantOutputId', '36290831-b9ca-414a-abf1-4055b5347133',
+              'agentRunId', '96ae49eb-b1ab-41cb-a468-b68893ec82c3',
+              'cause', 'modelCallFailed'
+            ),
+            transaction_timestamp()
+          )`;
+        yield* sql`UPDATE threads
+          SET next_position = 2
+          WHERE thread_id = '6ef239bd-3f04-4c77-8976-1171e75ea0ab'::uuid`;
+      }).pipe(Effect.provide(upgradeLayer));
+
+      yield* migrateDatabase({
         applicationName: "osfo-upgrade-current",
         databaseUrl: upgradeUrl.toString(),
       });
@@ -148,10 +201,22 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
             ),
           );
         }
+        const eventRows = yield* sql<{
+          readonly cause: string;
+          readonly eventVersion: number;
+        }>`SELECT payload ->> 'cause' AS cause, event_version AS "eventVersion"
+          FROM thread_events
+          WHERE event_id = '8b82a82b-7983-49ca-a054-13b040f9f5da'::uuid`;
+        if (eventRows[0]?.cause !== "modelCallFailed" || eventRows[0].eventVersion !== 1) {
+          return yield* Effect.die(
+            new Error("Historical V1 model-call interruption was not preserved"),
+          );
+        }
       }).pipe(Effect.provide(upgradeLayer));
 
       yield* Effect.logInfo("AgentRun upgrade-path fixtures passed");
       rmSync(migrationsFolder, { force: true, recursive: true });
+      rmSync(preCancellationMigrationsFolder, { force: true, recursive: true });
     }),
   ),
 );
