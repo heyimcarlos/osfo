@@ -77,6 +77,7 @@ const program = WorkerConfig.pipe(
       ),
     );
     const sourceLayer = makeGoogleStreamingPullSourceLayer({
+      closeTimeoutMs: config.terminationDeadlineMs,
       projectId: config.projectId,
       subscriptionId: config.subscriptionId,
       streamCount: config.streamCount,

@@ -1058,7 +1058,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
 
       const commitCancellation: AgentRunRepositoryService["commitCancellation"] = Effect.fn(
         "AgentRunRepository.commitCancellation",
-      )(function* (fence, cleanup) {
+      )(function* (fence, _cleanup) {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
@@ -1087,10 +1087,6 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     completed_at = transaction_timestamp()
                 WHERE agent_run_id = ${fence.agentRunId}::uuid
                   AND state = 'pending'`;
-              yield* sql`UPDATE model_call_attempts
-                SET state = 'canceled', finished_at = transaction_timestamp()
-                WHERE agent_run_id = ${fence.agentRunId}::uuid
-                  AND state = 'started'`;
               for (const output of openOutputs) {
                 const interrupted = yield* sql`UPDATE assistant_outputs
                   SET state = 'interrupted',
@@ -1114,6 +1110,23 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                 readonly externalWorkMayContinue: boolean;
               }>`WITH cancellation_commit AS MATERIALIZED (
                   SELECT clock_timestamp() AS observed_at
+                ), attempt_cleanup AS MATERIALIZED (
+                  SELECT
+                    coalesce(bool_and(
+                      attempt.state <> 'started'
+                        OR (
+                          attempt.cleanup_disposition IS NOT NULL
+                          AND attempt.external_work_may_continue IS NOT NULL
+                        )
+                    ), true) AS all_recorded,
+                    coalesce(bool_or(
+                      attempt.cleanup_disposition = 'deadlineExceeded'
+                    ), false)
+                      AS deadline_exceeded,
+                    coalesce(bool_or(attempt.external_work_may_continue), false)
+                      AS external_work_may_continue
+                  FROM model_call_attempts attempt
+                  WHERE attempt.agent_run_id = ${fence.agentRunId}::uuid
                 )
                 UPDATE agent_runs
                 SET state = 'canceled',
@@ -1121,14 +1134,17 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     lease_expires_at = NULL,
                     cleanup_disposition = CASE
                       WHEN cleanup_deadline_at <= cancellation_commit.observed_at
+                        OR attempt_cleanup.deadline_exceeded
                         THEN 'deadlineExceeded'
-                      ELSE ${cleanup.cleanupDisposition.type}
+                      ELSE 'completed'
                     END,
                     external_work_may_continue = CASE
-                      WHEN cleanup_deadline_at <= cancellation_commit.observed_at THEN true
-                      ELSE ${cleanup.externalWorkMayContinue}
+                      WHEN cleanup_deadline_at <= cancellation_commit.observed_at
+                        OR attempt_cleanup.deadline_exceeded
+                        THEN true
+                      ELSE attempt_cleanup.external_work_may_continue
                     END
-                FROM cancellation_commit
+                FROM cancellation_commit, attempt_cleanup
                 WHERE agent_run_id = ${fence.agentRunId}::uuid
                   AND state = 'running'
                   AND claim_owner = ${fence.workerId}
@@ -1136,11 +1152,28 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   AND lease_expires_at > cancellation_commit.observed_at
                   AND cancellation_requested_at IS NOT NULL
                   AND cleanup_deadline_at IS NOT NULL
+                  AND (
+                    attempt_cleanup.all_recorded
+                    OR cleanup_deadline_at <= cancellation_commit.observed_at
+                  )
                 RETURNING
-                  cleanup_disposition AS "cleanupDisposition",
-                  external_work_may_continue AS "externalWorkMayContinue"`;
+                  agent_runs.cleanup_disposition AS "cleanupDisposition",
+                  agent_runs.external_work_may_continue AS "externalWorkMayContinue"`;
               const result = terminal[0];
               if (result === undefined) return yield* new AgentRunFenceRejected();
+              if (result.cleanupDisposition === "deadlineExceeded") {
+                yield* sql`UPDATE model_call_attempts
+                  SET cleanup_disposition = 'deadlineExceeded',
+                      external_work_may_continue = true
+                  WHERE agent_run_id = ${fence.agentRunId}::uuid
+                    AND state = 'started'
+                    AND cleanup_disposition IS NULL
+                    AND external_work_may_continue IS NULL`;
+              }
+              yield* sql`UPDATE model_call_attempts
+                SET state = 'canceled', finished_at = transaction_timestamp()
+                WHERE agent_run_id = ${fence.agentRunId}::uuid
+                  AND state = 'started'`;
               yield* appendThreadEvent(authority, (base) =>
                 makeAgentRunCanceled({
                   ...base,

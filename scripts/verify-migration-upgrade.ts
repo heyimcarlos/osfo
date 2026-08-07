@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,14 +7,21 @@ import { PgClient } from "@effect/sql-pg";
 import { migrateDatabase } from "@osfo/db";
 import { Config, Effect, Redacted } from "effect";
 
-const baselineMigrations = [
+const fixedPointMigrations = [
   "20260805120000_empty_baseline",
   "20260806124719_durable_message_admission",
   "20260806162306_aberrant_sir_ram",
+  "20260806183059_fancy_frank_castle",
+  "20260806190826_big_inertia",
+  "20260806195521_brown_captain_midlands",
+  "20260807035039_wild_punisher",
+  "20260807044657_brown_havok",
+  "20260807045646_warm_wolf_cub",
+  "20260807050822_dazzling_mojo",
+  "20260807053832_sticky_guardian",
 ] as const;
 
 const sourceMigrations = fileURLToPath(new URL("../packages/db/drizzle", import.meta.url));
-const cancellationMigration = "20260807042558_material_crusher_hogan";
 
 const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
   Effect.flatMap((databaseUrl) =>
@@ -23,23 +30,10 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
       const upgradeUrl = new URL(databaseUrl);
       upgradeUrl.pathname = `/${upgradeDatabaseName}`;
       const migrationsFolder = mkdtempSync(join(tmpdir(), "osfo-upgrade-migrations-"));
-      const preCancellationMigrationsFolder = mkdtempSync(
-        join(tmpdir(), "osfo-upgrade-pre-cancellation-"),
-      );
-      for (const migration of baselineMigrations) {
+      for (const migration of fixedPointMigrations) {
         cpSync(join(sourceMigrations, migration), join(migrationsFolder, migration), {
           recursive: true,
         });
-      }
-      for (const migration of readdirSync(sourceMigrations)) {
-        if (migration >= cancellationMigration) continue;
-        cpSync(
-          join(sourceMigrations, migration),
-          join(preCancellationMigrationsFolder, migration),
-          {
-            recursive: true,
-          },
-        );
       }
       const adminLayer = PgClient.layer({
         applicationName: "osfo-upgrade-database-admin",
@@ -52,7 +46,7 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
       }).pipe(Effect.provide(adminLayer));
 
       yield* migrateDatabase({
-        applicationName: "osfo-upgrade-baseline",
+        applicationName: "osfo-upgrade-fixed-point",
         databaseUrl: upgradeUrl.toString(),
         migrationsFolder,
       });
@@ -89,7 +83,7 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
             )`;
         yield* sql`INSERT INTO agent_runs (
             agent_run_id, thread_id, principal_id, user_message_id,
-            state, execution_profile_ref, created_at
+            state, execution_profile_ref, claim_epoch, claim_owner, lease_expires_at, created_at
           ) VALUES
             (
               '96ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
@@ -98,6 +92,9 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
               '53146ff7-2205-44b0-8de4-685509112ac9'::uuid,
               'running',
               'oz.upgrade-fixture.v1',
+              1,
+              'upgrade-lost-worker',
+              transaction_timestamp() - interval '1 minute',
               transaction_timestamp()
             ),
             (
@@ -107,18 +104,11 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
               '63146ff7-2205-44b0-8de4-685509112ac9'::uuid,
               'canceled',
               'oz.upgrade-fixture.v1',
+              0,
+              NULL,
+              NULL,
               transaction_timestamp()
             )`;
-      }).pipe(Effect.provide(upgradeLayer));
-
-      yield* migrateDatabase({
-        applicationName: "osfo-upgrade-pre-cancellation",
-        databaseUrl: upgradeUrl.toString(),
-        migrationsFolder: preCancellationMigrationsFolder,
-      });
-
-      yield* Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
         yield* sql`INSERT INTO assistant_outputs (
           assistant_output_id, agent_run_id, state, interruption_cause, created_at, terminated_at
         ) VALUES (
@@ -171,12 +161,14 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
           WHERE agent_run_id = '96ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid`;
         const row = rows[0];
         if (
-          row?.state !== "pending" ||
-          row.claimEpoch !== "0" ||
-          row.claimOwner !== null ||
-          row.leaseExpiresAt !== null
+          row?.state !== "running" ||
+          row.claimEpoch !== "1" ||
+          row.claimOwner !== "upgrade-lost-worker" ||
+          row.leaseExpiresAt === null
         ) {
-          return yield* Effect.die(new Error("Running AgentRun upgrade fixture was not requeued"));
+          return yield* Effect.die(
+            new Error("Fixed-point running AgentRun claim was not preserved"),
+          );
         }
 
         const canceledRows = yield* sql<{
@@ -216,7 +208,6 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
 
       yield* Effect.logInfo("AgentRun upgrade-path fixtures passed");
       rmSync(migrationsFolder, { force: true, recursive: true });
-      rmSync(preCancellationMigrationsFolder, { force: true, recursive: true });
     }),
   ),
 );

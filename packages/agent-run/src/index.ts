@@ -420,22 +420,7 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
         activeExecution: ModelCallExecutionFiber | undefined,
       ) {
         const cancellation = Effect.gen(function* () {
-          const directive = yield* repository.loadCancellation(fence).pipe(
-            Effect.catchTags({
-              AgentRunFenceRejected: (error) =>
-                activeAttempt !== undefined && activeExecution !== undefined
-                  ? cleanupMaintenanceFailure(fence, activeAttempt, activeExecution).pipe(
-                      Effect.andThen(Effect.fail(error)),
-                    )
-                  : Effect.fail(error),
-              AgentRunRepositoryUnavailable: (error) =>
-                activeAttempt !== undefined && activeExecution !== undefined
-                  ? cleanupMaintenanceFailure(fence, activeAttempt, activeExecution).pipe(
-                      Effect.andThen(Effect.fail(error)),
-                    )
-                  : Effect.fail(error),
-            }),
-          );
+          const directive = yield* repository.loadCancellation(fence);
           const otherUnconfirmedAttempt = directive.startedModelCallAttemptIds.some(
             (attemptId) => attemptId !== activeAttempt?.modelCallAttemptId,
           );

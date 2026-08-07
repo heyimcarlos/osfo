@@ -700,6 +700,14 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
           WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
       }),
     );
+    await run(
+      AgentRunRepository.use((repository) =>
+        repository.recordModelCallCleanup(claimed.fence, attempt, {
+          cleanupDisposition: { type: "completed" },
+          externalWorkMayContinue: false,
+        }),
+      ),
+    );
 
     const disposition = await run(
       AgentRunRepository.use((repository) =>
@@ -747,6 +755,94 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     });
     expect(snapshot.activeState).toEqual([]);
     expect(snapshot.throughPosition).toBe("5");
+  });
+
+  it("derives AgentRun cancellation truth from durable attempt cleanup", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "durable cleanup truth" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const claimed = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(delivery, {
+          workerId: "durable-cleanup-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    const attempt = await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const modelCall = yield* repository.ensureModelCall(claimed.fence, {
+            type: "startModelCall",
+            modelBinding: "oz.deterministic.echo.v1",
+            prompt: "durable cleanup truth",
+          });
+          return yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(claimed.fence, modelCall),
+          );
+        }),
+      ),
+    );
+    await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ),
+    );
+    await run(
+      AgentRunRepository.use((repository) =>
+        repository.recordModelCallCleanup(claimed.fence, attempt, {
+          cleanupDisposition: { type: "deadlineExceeded" },
+          externalWorkMayContinue: true,
+        }),
+      ),
+    );
+
+    const disposition = await run(
+      AgentRunRepository.use((repository) =>
+        repository.commitCancellation(claimed.fence, {
+          cleanupDisposition: { type: "completed" },
+          externalWorkMayContinue: false,
+        }),
+      ),
+    );
+    expect(disposition).toEqual({
+      cleanupDisposition: { type: "deadlineExceeded" },
+      externalWorkMayContinue: true,
+    });
+    const event = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{ readonly payload: unknown }>`SELECT payload
+          FROM thread_events
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid
+            AND event_type = 'AgentRunCanceled'`;
+        return rows[0];
+      }),
+    );
+    expect(event).toEqual({
+      payload: {
+        agentRunId: receipt.agentRunId,
+        cleanupDisposition: { type: "deadlineExceeded" },
+        externalWorkMayContinue: true,
+      },
+    });
   });
 
   it("rejects malformed non-null publication evidence", async () => {
@@ -1198,7 +1294,8 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     const delivery = published[0]!;
     const executionStarted = Effect.runSync(Deferred.make<void>());
     const releaseExecution = Effect.runSync(Deferred.make<void>());
-    const leaseRenewed = Effect.runSync(Deferred.make<void>());
+    const postOriginalDeadlineRenewed = Effect.runSync(Deferred.make<void>());
+    let originalDeadlinePassed = false;
     const slowExecutor = Layer.succeed(ModelCallExecutor)(
       ModelCallExecutor.of({
         execute: () =>
@@ -1222,7 +1319,13 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             renewLease: (fence, leaseDurationMs) =>
               repository
                 .renewLease(fence, leaseDurationMs)
-                .pipe(Effect.tap(() => Deferred.succeed(leaseRenewed, undefined))),
+                .pipe(
+                  Effect.tap(() =>
+                    originalDeadlinePassed
+                      ? Deferred.succeed(postOriginalDeadlineRenewed, undefined)
+                      : Effect.void,
+                  ),
+                ),
           }),
         ),
       ),
@@ -1230,15 +1333,17 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     const slowWorker = makeAgentRunWorkerLayer({
       executionProfileRef: "oz.deterministic.v1",
       workerId: "slow-worker",
-      leaseDurationMs: 60,
-      leaseRenewalIntervalMs: 10,
+      leaseDurationMs: 300,
+      leaseRenewalIntervalMs: 50,
       cancellationPollIntervalMs: 5,
     }).pipe(
       Layer.provide(observingRepositoryLayer),
       Layer.provide(runtimeLayer),
       Layer.provide(slowExecutor),
     );
-    const slowRuntime = ManagedRuntime.make(Layer.merge(repositoryLayer, slowWorker));
+    const slowRuntime = ManagedRuntime.make(
+      Layer.mergeAll(databaseLayer, repositoryLayer, slowWorker),
+    );
 
     try {
       const result = await slowRuntime.runPromise(
@@ -1247,11 +1352,32 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             AgentRunWorker.use((worker) => worker.handle(delivery)),
           );
           yield* Deferred.await(executionStarted);
-          yield* Deferred.await(leaseRenewed);
+          const sql = yield* SqlClient.SqlClient;
+          const originalRows = yield* sql<{ readonly leaseExpiresAtEpochMs: number }>`SELECT
+            extract(epoch FROM lease_expires_at) * 1000 AS "leaseExpiresAtEpochMs"
+          FROM agent_runs
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+          const originalLeaseExpiresAt = originalRows[0]!.leaseExpiresAtEpochMs;
+          let observedOriginalDeadline = false;
+          for (let poll = 0; poll < 100; poll += 1) {
+            const rows = yield* sql<{ readonly passed: boolean }>`SELECT
+              extract(epoch FROM clock_timestamp()) * 1000
+                > ${originalLeaseExpiresAt}::float8 AS passed`;
+            if (rows[0]?.passed === true) {
+              observedOriginalDeadline = true;
+              break;
+            }
+            yield* Effect.sleep(10);
+          }
+          if (!observedOriginalDeadline) {
+            return yield* Effect.die("Original AgentRun lease did not pass within test safety");
+          }
+          originalDeadlinePassed = true;
+          yield* Deferred.await(postOriginalDeadlineRenewed).pipe(Effect.timeout("2 seconds"));
           const competingClaim = yield* AgentRunRepository.use((repository) =>
             repository.claimAgentRun(delivery, {
               workerId: "competing-worker",
-              leaseDurationMs: 60,
+              leaseDurationMs: 300,
             }),
           );
           yield* Deferred.succeed(releaseExecution, undefined);
@@ -2016,12 +2142,20 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
           readonly externalWorkMayContinue: boolean;
           readonly reservationState: string;
           readonly startedAttempts: string;
+          readonly attemptCleanupDisposition: string;
+          readonly attemptExternalWorkMayContinue: boolean;
         }>`SELECT
           run.state,
           run.claim_epoch::text AS "claimEpoch",
           run.cleanup_disposition AS "cleanupDisposition",
           run.external_work_may_continue AS "externalWorkMayContinue",
           reservation.state AS "reservationState",
+          (SELECT cleanup_disposition FROM model_call_attempts
+            WHERE model_call_attempt_id = ${abandonedAttempt.modelCallAttemptId}::uuid)
+            AS "attemptCleanupDisposition",
+          (SELECT external_work_may_continue FROM model_call_attempts
+            WHERE model_call_attempt_id = ${abandonedAttempt.modelCallAttemptId}::uuid)
+            AS "attemptExternalWorkMayContinue",
           (SELECT count(*) FROM model_call_attempts
             WHERE agent_run_id = run.agent_run_id AND state = 'started')::text AS "startedAttempts"
         FROM agent_runs run
@@ -2045,6 +2179,8 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       externalWorkMayContinue: true,
       reservationState: "released",
       startedAttempts: "0",
+      attemptCleanupDisposition: "deadlineExceeded",
+      attemptExternalWorkMayContinue: true,
     });
     expect(authority.events).toEqual([
       expect.objectContaining({ eventType: "UserMessageAppended", eventVersion: 1 }),

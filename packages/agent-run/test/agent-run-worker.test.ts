@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { makeDeterministicAgentRuntimeLayer } from "@osfo/agent-runtime";
-import { Deferred, Effect, Fiber, Layer, Stream } from "effect";
+import { Clock, Deferred, Effect, Fiber, Layer, Stream } from "effect";
+import * as TestClock from "effect/testing/TestClock";
 import {
   AgentRunCancellationObserved,
   AgentRunFenceRejected,
@@ -522,6 +523,57 @@ describe("AgentRun worker", () => {
     }),
   );
 
+  it.effect("cleans provider ownership exactly once when cancellation loading fails", () => {
+    const repository = makeRepository();
+    let cancellationCalls = 0;
+    let cleanupWrites = 0;
+    const unavailable = {
+      ...repository.service,
+      appendModelOutput: () => Effect.fail(new AgentRunCancellationObserved()),
+      loadCancellation: () =>
+        Effect.fail(new AgentRunRepositoryUnavailable({ cause: "cancellation unavailable" })),
+      recordModelCallCleanup: () =>
+        Effect.sync(() => {
+          cleanupWrites += 1;
+        }),
+    } satisfies AgentRunRepositoryService;
+    const layer = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v1",
+      workerId: "worker-a",
+      leaseDurationMs: 30_000,
+      leaseRenewalIntervalMs: 10_000,
+      cancellationPollIntervalMs: 5,
+    }).pipe(
+      Layer.provide(Layer.succeed(AgentRunRepository)(unavailable)),
+      Layer.provide(
+        Layer.succeed(ModelCallExecutor)(
+          makeExecutor({
+            execute: () => Stream.make({ fragmentIndex: 0, text: "cancel" }),
+            cancel: () =>
+              Effect.sync(() => {
+                cancellationCalls += 1;
+                return { type: "confirmedStopped" as const };
+              }),
+          }),
+        ),
+      ),
+      Layer.provide(
+        makeDeterministicAgentRuntimeLayer({
+          executionProfileRef: "oz.deterministic.v1",
+          modelBinding: "oz.deterministic.echo.v1",
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      expect(yield* AgentRunWorker.use((worker) => worker.handle(delivery))).toEqual({
+        type: "retry",
+      });
+      expect(cancellationCalls).toBe(1);
+      expect(cleanupWrites).toBe(1);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("does not retry a permanently fenced cleanup write", () => {
     const repository = makeRepository();
     let cleanupWrites = 0;
@@ -566,20 +618,21 @@ describe("AgentRun worker", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.live("returns after cleanup timeout only after the cancellation effect settles", () =>
+  it.effect("returns after cleanup timeout only after the cancellation effect settles", () =>
     Effect.gen(function* () {
       const repository = makeRepository();
       const cleanupStarted = yield* Deferred.make<void>();
       const cleanupFinalizerCompleted = yield* Deferred.make<void>();
       const cleanupStopped = yield* Deferred.make<void>();
       const committed = yield* Deferred.make<void>();
+      const cleanupDeadlineAtEpochMs = (yield* Clock.currentTimeMillis) + 1_000;
       let activeCleanups = 0;
       const cancellation = {
         ...repository.service,
         appendModelOutput: () => Effect.fail(new AgentRunCancellationObserved()),
         loadCancellation: () =>
           Effect.succeed({
-            cleanupDeadlineAtEpochMs: Date.now() + 20,
+            cleanupDeadlineAtEpochMs,
             startedModelCallAttemptIds: [attempt.modelCallAttemptId],
           }),
         commitCancellation: (_fence, cleanup: AgentRunCleanupResult) =>
@@ -629,6 +682,7 @@ describe("AgentRun worker", () => {
         Effect.forkChild,
       );
       yield* Deferred.await(cleanupStarted);
+      yield* TestClock.adjust(1_000);
       yield* Deferred.await(committed);
       const disposition = yield* Fiber.join(running);
 
@@ -835,7 +889,7 @@ describe("AgentRun worker", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.live(
+  it.effect(
     "commits deadline-exceeded when executor cleanup cannot confirm before its deadline",
     () =>
       Effect.gen(function* () {
@@ -844,13 +898,14 @@ describe("AgentRun worker", () => {
         const cleanupStarted = yield* Deferred.make<void>();
         const cleanupSettled = yield* Deferred.make<void>();
         const releaseCleanup = yield* Deferred.make<void>();
+        const cleanupDeadlineAtEpochMs = (yield* Clock.currentTimeMillis) + 1_000;
         let activeCleanups = 0;
         const cancellation = {
           ...repository.service,
           appendModelOutput: () => Effect.fail(new AgentRunCancellationObserved()),
           loadCancellation: () =>
             Effect.succeed({
-              cleanupDeadlineAtEpochMs: Date.now() + 20,
+              cleanupDeadlineAtEpochMs,
               startedModelCallAttemptIds: [attempt.modelCallAttemptId],
             }),
           commitCancellation: (_fence, result: AgentRunCleanupResult) =>
@@ -899,6 +954,7 @@ describe("AgentRun worker", () => {
           Effect.forkChild,
         );
         yield* Deferred.await(cleanupStarted);
+        yield* TestClock.adjust(1_000);
         const cleanup = yield* Deferred.await(committed);
         const disposition = yield* Fiber.join(running);
 
