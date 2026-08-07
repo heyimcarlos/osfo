@@ -959,6 +959,88 @@ describe("AgentRun worker", () => {
     }),
   );
 
+  it.effect("carries executor attempt evidence into cancellation commit", () =>
+    Effect.gen(function* () {
+      const repository = makeRepository();
+      const executionStarted = yield* Deferred.make<void>();
+      const cancellationSignal = yield* Deferred.make<never, ModelCallExecutionError>();
+      let renewalCount = 0;
+      let canceledAttemptEvidence: unknown;
+      const cancellation = {
+        ...repository.service,
+        renewLease: () =>
+          Effect.suspend(() => {
+            renewalCount += 1;
+            return renewalCount === 1
+              ? Effect.void
+              : Deferred.await(executionStarted).pipe(
+                  Effect.andThen(Effect.fail(new AgentRunCancellationObserved())),
+                );
+          }),
+        commitCancellation: (_fence, cleanup, attemptEvidence) =>
+          Effect.sync(() => {
+            canceledAttemptEvidence = attemptEvidence;
+            return cleanup;
+          }),
+      } satisfies AgentRunRepositoryService;
+      const interruption = new ModelCallExecutionError({
+        cause: "canceled after provider identity",
+        dispatchEvidence: { type: "confirmed", providerRequestId: "gen-canceled" },
+        usage: {
+          type: "reported",
+          inputUnits: 4,
+          outputUnits: 5,
+          reasoningUnits: 7,
+        },
+      });
+      const layer = makeAgentRunWorkerLayer({
+        executionProfileRef: "oz.deterministic.v1",
+        workerId: "worker-a",
+        leaseDurationMs: 30_000,
+        leaseRenewalIntervalMs: 10_000,
+        cancellationPollIntervalMs: 1,
+      }).pipe(
+        Layer.provide(Layer.succeed(AgentRunRepository)(cancellation)),
+        Layer.provide(
+          Layer.succeed(ModelCallExecutor)(
+            makeExecutor({
+              execute: () => {
+                Deferred.doneUnsafe(executionStarted, Effect.void);
+                return Stream.fromEffect(Deferred.await(cancellationSignal)).pipe(Stream.drain);
+              },
+              cancel: () =>
+                Deferred.fail(cancellationSignal, interruption).pipe(
+                  Effect.as({ type: "confirmedStopped" as const }),
+                ),
+            }),
+          ),
+        ),
+        Layer.provide(
+          makeDeterministicAgentRuntimeLayer({
+            executionProfileRef: "oz.deterministic.v1",
+            modelBinding: "oz.deterministic.echo.v1",
+          }),
+        ),
+      );
+
+      expect(
+        yield* AgentRunWorker.use((worker) => worker.handle(delivery)).pipe(Effect.provide(layer)),
+      ).toEqual({ type: "acknowledge", outcome: "canceled" });
+      expect(canceledAttemptEvidence).toEqual({
+        attempt,
+        outcome: {
+          dispatchEvidence: { type: "confirmed", providerRequestId: "gen-canceled" },
+          usage: {
+            type: "reported",
+            inputUnits: 4,
+            outputUnits: 5,
+            reasoningUnits: 7,
+          },
+        },
+      });
+    }),
+  );
+
   it.effect("persists the executor's explicit external-work cancellation acknowledgement", () => {
     const repository = makeRepository();
     let cleanup: AgentRunCleanupResult | undefined;

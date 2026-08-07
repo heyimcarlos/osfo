@@ -43,9 +43,7 @@ ALTER TABLE "model_call_attempts" ADD CONSTRAINT "model_call_attempts_usage_chec
         OR ("usage_type" IN ('reported', 'estimated')
           AND "input_units" >= 0
           AND "output_units" >= 0
-          AND ("reasoning_units" IS NULL OR (
-            "reasoning_units" >= 0
-            AND "reasoning_units" <= "output_units")))
+          AND ("reasoning_units" IS NULL OR "reasoning_units" >= 0))
       )) IS TRUE);--> statement-breakpoint
 CREATE FUNCTION complete_model_call_attempt_evidence() RETURNS trigger
 LANGUAGE plpgsql AS $$

@@ -302,7 +302,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             type: "reported",
             inputUnits: 4,
             outputUnits: 5,
-            reasoningUnits: 3,
+            reasoningUnits: 7,
           },
         }),
       ),
@@ -330,7 +330,117 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       fragmentText: exactBoundary,
       inputUnits: 4,
       outputUnits: 5,
-      reasoningUnits: 3,
+      reasoningUnits: 7,
+    });
+  });
+
+  it("persists known provider evidence when cancellation wins before visible output", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "cancel during provider reasoning" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const claimed = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(delivery, {
+          workerId: "reasoning-cancel-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    const attempt = await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const modelCall = yield* repository.ensureModelCall(claimed.fence, {
+            type: "startModelCall",
+            modelBinding: "openrouter.chat-completions.minimax.minimax-m3.v1",
+            prompt: "cancel during provider reasoning",
+          });
+          return yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(claimed.fence, modelCall, 1),
+          );
+        }),
+      ),
+    );
+    await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ),
+    );
+    await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const cleanup = {
+            cleanupDisposition: { type: "completed" as const },
+            externalWorkMayContinue: false,
+          };
+          yield* repository.recordModelCallCleanup(claimed.fence, attempt, cleanup);
+          yield* repository.commitCancellation(claimed.fence, cleanup, {
+            attempt,
+            outcome: {
+              dispatchEvidence: {
+                type: "confirmed",
+                providerRequestId: "gen-canceled-during-reasoning",
+              },
+              usage: {
+                type: "reported",
+                inputUnits: 4,
+                outputUnits: 5,
+                reasoningUnits: 7,
+              },
+            },
+          });
+        }),
+      ),
+    );
+
+    const evidence = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly dispatchState: string;
+          readonly inputUnits: number;
+          readonly outputUnits: number;
+          readonly providerRequestId: string;
+          readonly reasoningUnits: number;
+          readonly state: string;
+          readonly usageType: string;
+        }>`SELECT
+          state,
+          dispatch_state AS "dispatchState",
+          provider_request_id AS "providerRequestId",
+          usage_type AS "usageType",
+          input_units AS "inputUnits",
+          output_units AS "outputUnits",
+          reasoning_units AS "reasoningUnits"
+        FROM model_call_attempts
+        WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid`;
+        return rows[0];
+      }),
+    );
+    expect(evidence).toEqual({
+      state: "canceled",
+      dispatchState: "confirmed",
+      providerRequestId: "gen-canceled-during-reasoning",
+      usageType: "reported",
+      inputUnits: 4,
+      outputUnits: 5,
+      reasoningUnits: 7,
     });
   });
 

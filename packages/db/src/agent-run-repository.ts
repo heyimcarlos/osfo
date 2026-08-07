@@ -1133,10 +1133,14 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
 
       const commitCancellation: AgentRunRepositoryService["commitCancellation"] = Effect.fn(
         "AgentRunRepository.commitCancellation",
-      )(function* (fence, _cleanup) {
+      )(function* (fence, _cleanup, canceledAttemptEvidence) {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
+              const normalizedCanceledAttemptEvidence =
+                canceledAttemptEvidence === undefined
+                  ? undefined
+                  : attemptOutcomeColumns(canceledAttemptEvidence.outcome);
               const authority = yield* lockCapacityBeforeFence(fence);
               if (
                 authority.cancellationRequestedAt === null ||
@@ -1244,6 +1248,28 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     AND state = 'started'
                     AND cleanup_disposition IS NULL
                     AND external_work_may_continue IS NULL`;
+              }
+              if (
+                canceledAttemptEvidence !== undefined &&
+                normalizedCanceledAttemptEvidence !== undefined
+              ) {
+                const recordedEvidence = yield* sql`UPDATE model_call_attempts
+                  SET state = 'canceled',
+                      dispatch_state = ${normalizedCanceledAttemptEvidence.dispatchState},
+                      provider_request_id = ${normalizedCanceledAttemptEvidence.providerRequestId},
+                      usage_type = ${normalizedCanceledAttemptEvidence.usageType},
+                      input_units = ${normalizedCanceledAttemptEvidence.inputUnits},
+                      output_units = ${normalizedCanceledAttemptEvidence.outputUnits},
+                      reasoning_units = ${normalizedCanceledAttemptEvidence.reasoningUnits},
+                      finished_at = transaction_timestamp()
+                  WHERE model_call_attempt_id = ${canceledAttemptEvidence.attempt.modelCallAttemptId}::uuid
+                    AND model_call_id = ${canceledAttemptEvidence.attempt.modelCallId}::uuid
+                    AND assistant_output_id = ${canceledAttemptEvidence.attempt.assistantOutputId}::uuid
+                    AND agent_run_id = ${fence.agentRunId}::uuid
+                    AND claim_epoch = ${fence.claimEpoch}::bigint
+                    AND state = 'started'
+                  RETURNING model_call_attempt_id`;
+                if (recordedEvidence.length !== 1) return yield* new AgentRunFenceRejected();
               }
               yield* sql`UPDATE model_call_attempts
                 SET state = 'canceled',

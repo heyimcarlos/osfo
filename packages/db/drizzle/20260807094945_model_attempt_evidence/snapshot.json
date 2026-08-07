@@ -3222,7 +3222,7 @@
       "table": "model_call_attempts"
     },
     {
-      "value": "((\n        (\"usage_type\" = 'unknown'\n          AND \"input_units\" IS NULL\n          AND \"output_units\" IS NULL\n          AND \"reasoning_units\" IS NULL)\n        OR (\"usage_type\" IN ('reported', 'estimated')\n          AND \"input_units\" >= 0\n          AND \"output_units\" >= 0\n          AND (\"reasoning_units\" IS NULL OR (\n            \"reasoning_units\" >= 0\n            AND \"reasoning_units\" <= \"output_units\")))\n      )) IS TRUE",
+      "value": "((\n        (\"usage_type\" = 'unknown'\n          AND \"input_units\" IS NULL\n          AND \"output_units\" IS NULL\n          AND \"reasoning_units\" IS NULL)\n        OR (\"usage_type\" IN ('reported', 'estimated')\n          AND \"input_units\" >= 0\n          AND \"output_units\" >= 0\n          AND (\"reasoning_units\" IS NULL OR \"reasoning_units\" >= 0))\n      )) IS TRUE",
       "name": "model_call_attempts_usage_check",
       "entityType": "checks",
       "schema": "public",

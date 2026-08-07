@@ -86,11 +86,18 @@ const OpenRouterEventSchema = Schema.Union([ChatCompletionChunkSchema, ProviderE
 const OpenRouterEventFromJson = Schema.fromJsonString(OpenRouterEventSchema);
 type ChatCompletionChunk = typeof ChatCompletionChunkSchema.Type;
 type OpenRouterEvent = typeof OpenRouterEventSchema.Type;
+type ChatCompletionDelta = typeof DeltaSchema.Type;
 
 type StreamEnvelope =
   | { readonly type: "ignored" }
   | { readonly type: "done" }
   | { readonly type: "event"; readonly event: OpenRouterEvent };
+
+interface ValidatedUsage {
+  readonly inputUnits: number;
+  readonly outputUnits: number;
+  readonly reasoningUnits: number;
+}
 
 type ChatCompletionsProtocolPhase =
   | { readonly type: "awaitingChunk" }
@@ -99,7 +106,7 @@ type ChatCompletionsProtocolPhase =
   | {
       readonly type: "awaitingDone";
       readonly providerRequestId: string;
-      readonly usage: typeof UsageSchema.Type;
+      readonly usage: ValidatedUsage;
     }
   | { readonly type: "completed"; readonly providerRequestId: string };
 
@@ -114,6 +121,13 @@ export interface OpenRouterChatCompletionsModelCallExecutorConfig {
   readonly apiKey: string;
   readonly profile: typeof liveOpenRouterExecutionProfile;
 }
+
+const hasUnsupportedDeltaOutput = (delta: ChatCompletionDelta) =>
+  (delta.tool_calls?.length ?? 0) > 0 ||
+  delta.audio != null ||
+  (delta.refusal?.length ?? 0) > 0 ||
+  (delta.reasoning?.length ?? 0) > 0 ||
+  (delta.reasoning_details?.length ?? 0) > 0;
 
 const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig) =>
   Layer.effect(
@@ -214,11 +228,15 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
           const reasoningUnits = usage.completion_tokens_details?.reasoning_tokens;
           if (
             usage.total_tokens !== usage.prompt_tokens + usage.completion_tokens ||
-            (reasoningUnits !== undefined && reasoningUnits > usage.completion_tokens)
+            reasoningUnits === undefined
           ) {
             return Effect.fail(executionError(session, "Provider reported inconsistent usage"));
           }
-          return Effect.succeed(usage);
+          return Effect.succeed({
+            inputUnits: usage.prompt_tokens,
+            outputUnits: usage.completion_tokens,
+            reasoningUnits,
+          } satisfies ValidatedUsage);
         };
 
         const handleChunk = (chunk: ChatCompletionChunk) =>
@@ -234,7 +252,20 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
             const usage = chunk.usage ?? undefined;
 
             if (phase.type === "awaitingUsage") {
-              if (chunk.choices.length !== 0 || usage === undefined) {
+              const [terminalEcho] = chunk.choices;
+              const terminalEchoIsValid =
+                chunk.choices.length === 1 &&
+                terminalEcho !== undefined &&
+                terminalEcho.finish_reason === config.profile.requiredSemantics.finishReason &&
+                (terminalEcho.native_finish_reason === undefined ||
+                  terminalEcho.native_finish_reason === null ||
+                  terminalEcho.native_finish_reason ===
+                    config.profile.requiredSemantics.finishReason) &&
+                (terminalEcho.delta.content === undefined ||
+                  terminalEcho.delta.content === null ||
+                  terminalEcho.delta.content.length === 0) &&
+                !hasUnsupportedDeltaOutput(terminalEcho.delta);
+              if (usage === undefined || (chunk.choices.length !== 0 && !terminalEchoIsValid)) {
                 return yield* executionError(
                   session,
                   "Provider emitted output after terminal finish",
@@ -261,13 +292,7 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
               );
             }
             const content = choice.delta.content;
-            const unsupportedOutput =
-              (choice.delta.tool_calls?.length ?? 0) > 0 ||
-              choice.delta.audio != null ||
-              (choice.delta.refusal?.length ?? 0) > 0 ||
-              (choice.delta.reasoning?.length ?? 0) > 0 ||
-              (choice.delta.reasoning_details?.length ?? 0) > 0;
-            if (unsupportedOutput) {
+            if (hasUnsupportedDeltaOutput(choice.delta)) {
               return yield* executionError(
                 session,
                 "Provider emitted output outside the text-only profile",
@@ -325,15 +350,14 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
             }
             const usage = phase.usage;
             const identity = phase.providerRequestId;
-            const reasoningUnits = usage.completion_tokens_details?.reasoning_tokens;
             phase = { type: "completed", providerRequestId: identity };
             yield* Deferred.succeed(session.outcome, {
               dispatchEvidence: session.dispatchEvidence,
               usage: {
                 type: "reported",
-                inputUnits: usage.prompt_tokens,
-                outputUnits: usage.completion_tokens,
-                ...(reasoningUnits === undefined ? {} : { reasoningUnits }),
+                inputUnits: usage.inputUnits,
+                outputUnits: usage.outputUnits,
+                reasoningUnits: usage.reasoningUnits,
               },
             });
             return flush();

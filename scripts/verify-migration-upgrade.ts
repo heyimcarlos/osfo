@@ -260,6 +260,34 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
             new Error("Expansion migration did not complete base-writer attempt evidence"),
           );
         }
+        yield* sql`UPDATE model_call_attempts
+          SET usage_type = 'reported',
+              input_units = 4,
+              output_units = 5,
+              reasoning_units = 7
+          WHERE model_call_attempt_id = 'ed0496f6-c20f-4c86-bc69-e3138b699f06'::uuid`;
+        const reportedUsageRows = yield* sql<{
+          readonly inputUnits: number;
+          readonly outputUnits: number;
+          readonly reasoningUnits: number;
+          readonly usageType: string;
+        }>`SELECT
+            usage_type AS "usageType",
+            input_units AS "inputUnits",
+            output_units AS "outputUnits",
+            reasoning_units AS "reasoningUnits"
+          FROM model_call_attempts
+          WHERE model_call_attempt_id = 'ed0496f6-c20f-4c86-bc69-e3138b699f06'::uuid`;
+        if (
+          reportedUsageRows[0]?.usageType !== "reported" ||
+          reportedUsageRows[0].inputUnits !== 4 ||
+          reportedUsageRows[0].outputUnits !== 5 ||
+          reportedUsageRows[0].reasoningUnits !== 7
+        ) {
+          return yield* Effect.die(
+            new Error("Expansion migration did not preserve distinct reasoning usage"),
+          );
+        }
         const rows = yield* sql<{
           readonly claimEpoch: string;
           readonly claimOwner: string | null;

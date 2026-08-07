@@ -48,7 +48,7 @@ const terminalUsage = {
   prompt_tokens: 4,
   completion_tokens: 5,
   total_tokens: 9,
-  completion_tokens_details: { reasoning_tokens: 3 },
+  completion_tokens_details: { reasoning_tokens: 7 },
 };
 
 const sse = (...events: ReadonlyArray<unknown>) =>
@@ -123,7 +123,7 @@ describe("OpenRouter Chat Completions ModelCall executor", () => {
           type: "reported",
           inputUnits: 4,
           outputUnits: 5,
-          reasoningUnits: 3,
+          reasoningUnits: 7,
         },
       });
       expect(observedRequest?.url).toBe("https://openrouter.ai/api/v1/chat/completions");
@@ -380,8 +380,75 @@ describe("OpenRouter Chat Completions ModelCall executor", () => {
         type: "reported",
         inputUnits: 4,
         outputUnits: 5,
-        reasoningUnits: 3,
+        reasoningUnits: 7,
       });
+    }),
+  );
+
+  it.effect("accepts OpenRouter's repeated terminal choice on the usage chunk", () =>
+    Effect.gen(function* () {
+      const body = sse(
+        chunk([{ index: 0, delta: { content: "Hello" }, finish_reason: null }]),
+        chunk([
+          {
+            index: 0,
+            delta: { role: "assistant", content: "" },
+            finish_reason: "stop",
+          },
+        ]),
+        chunk(
+          [
+            {
+              index: 0,
+              delta: { role: "assistant", content: "" },
+              finish_reason: "stop",
+            },
+          ],
+          { usage: terminalUsage },
+        ),
+        "data: [DONE]\n",
+      );
+      const [observations, outcome] = yield* ModelCallExecutor.use((executor) =>
+        Effect.gen(function* () {
+          const output = yield* Stream.runCollect(execute(executor));
+          return [output, yield* executor.outcome(attempt)] as const;
+        }),
+      ).pipe(
+        Effect.provide(layer),
+        Effect.provideService(HttpClient.HttpClient, httpWithBody(body)),
+      );
+
+      expect(Array.from(observations)).toEqual([{ fragmentIndex: 0, text: "Hello" }]);
+      expect(outcome.usage).toEqual({
+        type: "reported",
+        inputUnits: 4,
+        outputUnits: 5,
+        reasoningUnits: 7,
+      });
+    }),
+  );
+
+  it.effect("rejects nonempty output on a repeated terminal usage chunk", () =>
+    Effect.gen(function* () {
+      const result = yield* runExit(
+        sse(
+          chunk([{ index: 0, delta: { content: "Hello" }, finish_reason: null }]),
+          chunk([{ index: 0, delta: {}, finish_reason: "stop" }]),
+          chunk(
+            [
+              {
+                index: 0,
+                delta: { role: "assistant", content: "unexpected" },
+                finish_reason: "stop",
+              },
+            ],
+            { usage: terminalUsage },
+          ),
+          "data: [DONE]\n",
+        ),
+      );
+
+      expect(Exit.isFailure(result)).toBe(true);
     }),
   );
 
@@ -391,6 +458,27 @@ describe("OpenRouter Chat Completions ModelCall executor", () => {
         sse(
           chunk([{ index: 0, delta: { content: "Hello" }, finish_reason: null }]),
           chunk([{ index: 0, delta: {}, finish_reason: "stop" }]),
+          "data: [DONE]\n",
+        ),
+      );
+
+      expect(Exit.isFailure(result)).toBe(true);
+    }),
+  );
+
+  it.effect("rejects final usage without reasoning-token evidence", () =>
+    Effect.gen(function* () {
+      const result = yield* runExit(
+        sse(
+          chunk([{ index: 0, delta: { content: "Hello" }, finish_reason: null }]),
+          chunk([{ index: 0, delta: {}, finish_reason: "stop" }], {
+            usage: {
+              prompt_tokens: 4,
+              completion_tokens: 2,
+              total_tokens: 6,
+              completion_tokens_details: null,
+            },
+          }),
           "data: [DONE]\n",
         ),
       );

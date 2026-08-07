@@ -727,9 +727,7 @@ export const modelCallAttempts = pgTable(
         OR (${table.usageType} IN ('reported', 'estimated')
           AND ${table.inputUnits} >= 0
           AND ${table.outputUnits} >= 0
-          AND (${table.reasoningUnits} IS NULL OR (
-            ${table.reasoningUnits} >= 0
-            AND ${table.reasoningUnits} <= ${table.outputUnits})))
+          AND (${table.reasoningUnits} IS NULL OR ${table.reasoningUnits} >= 0))
       )) IS TRUE`,
     ),
     check(

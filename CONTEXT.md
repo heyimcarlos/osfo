@@ -233,7 +233,9 @@ _Avoid_: ModelCallAttempt, AgentRun, AssistantOutput, provider request
 One recorded, accountable logical provider request for a ModelCall. It may
 reconnect or resume the same provider operation, but issuing another logical
 request requires another attempt; each attempt records its binding, outcome,
-and Reported, Estimated, or Unknown usage.
+and Reported, Estimated, or Unknown usage. Reported input, output, and optional
+reasoning units preserve the provider's separate measures; Osfo does not infer
+that reasoning units are a subset of output units.
 _Avoid_: ModelCall, TCP connection, hidden SDK retry
 
 **ModelCallExecutor**:

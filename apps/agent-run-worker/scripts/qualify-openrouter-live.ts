@@ -4,6 +4,10 @@ import { Config, Data, Effect, Layer, Redacted, Stream } from "effect";
 import { HttpClient } from "effect/unstable/http";
 import { liveOpenRouterExecutionProfile } from "../src/execution-profile.js";
 import { makeOpenRouterChatCompletionsModelCallExecutorLayer } from "../src/openrouter-chat-completions-model-call-executor.js";
+import {
+  evaluateOpenRouterLiveQualification,
+  renderOpenRouterLiveQualificationPass,
+} from "../src/openrouter-live-qualification.js";
 
 class OpenRouterLiveQualificationFailed extends Data.TaggedError(
   "OpenRouterLiveQualificationFailed",
@@ -18,9 +22,6 @@ const attempt = {
   prompt: "Think privately, then answer with only the word qualified.",
   usage: { type: "unknown" },
 } as const satisfies ModelCallAttempt;
-
-const requireCheck = (check: string, condition: boolean) =>
-  condition ? Effect.void : Effect.fail(new OpenRouterLiveQualificationFailed({ check }));
 
 const program = Effect.gen(function* () {
   const apiKey = yield* Config.redacted("OPENROUTER_API_KEY");
@@ -43,45 +44,15 @@ const program = Effect.gen(function* () {
     }),
   ).pipe(Effect.provide(executorLayer));
 
-  const providerRequestId =
-    outcome.dispatchEvidence.type === "confirmed"
-      ? outcome.dispatchEvidence.providerRequestId
-      : undefined;
-  const reportedUsage = outcome.usage.type === "reported";
-  const reasoningUsage = reportedUsage ? outcome.usage.reasoningUnits : undefined;
-  const totalUsage = reportedUsage ? outcome.usage.inputUnits + outcome.usage.outputUnits : 0;
-  const nonemptyNormalizedText =
-    observations.length > 0 && observations.every((observation) => observation.text.length > 0);
-
-  yield* requireCheck("oneHttpRequest", requestCount === 1);
-  yield* requireCheck("stableGenerationId", providerRequestId !== undefined);
-  yield* requireCheck("nonemptyNormalizedText", nonemptyNormalizedText);
-  yield* requireCheck("reportedUsage", reportedUsage && totalUsage > 0);
-  yield* requireCheck(
-    "reasoningUsage",
-    reasoningUsage !== undefined &&
-      reasoningUsage > 0 &&
-      outcome.usage.type === "reported" &&
-      reasoningUsage <= outcome.usage.outputUnits,
-  );
-
-  yield* Effect.sync(() =>
-    console.log(
-      `PASS ${JSON.stringify({
-        profileRef: liveOpenRouterExecutionProfile.ref,
-        modelBinding: liveOpenRouterExecutionProfile.modelBinding,
-        model: liveOpenRouterExecutionProfile.model,
-        provider: liveOpenRouterExecutionProfile.provider,
-        oneHttpRequest: true,
-        stableGenerationId: true,
-        terminalStop: true,
-        terminalDone: true,
-        nonemptyNormalizedText: true,
-        reportedUsage: true,
-        reasoningUsage: true,
-      })}`,
-    ),
-  );
+  const evaluation = evaluateOpenRouterLiveQualification({
+    observations,
+    outcome,
+    requestCount,
+  });
+  if (evaluation.type === "fail") {
+    return yield* new OpenRouterLiveQualificationFailed({ check: evaluation.check });
+  }
+  yield* Effect.sync(() => console.log(renderOpenRouterLiveQualificationPass(evaluation.evidence)));
 }).pipe(Effect.provide(NodeHttpClient.layerUndici));
 
 NodeRuntime.runMain(program);

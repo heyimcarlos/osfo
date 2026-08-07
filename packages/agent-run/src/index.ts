@@ -120,6 +120,11 @@ export const ModelCallAttemptOutcomeSchema = Schema.Struct({
 
 export type ModelCallAttemptOutcome = typeof ModelCallAttemptOutcomeSchema.Type;
 
+export interface CanceledModelCallAttemptEvidence {
+  readonly attempt: ModelCallAttempt;
+  readonly outcome: ModelCallAttemptOutcome;
+}
+
 export const AgentRunClaimSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("busy") }),
   Schema.Struct({
@@ -257,6 +262,7 @@ export interface AgentRunRepositoryService {
   readonly commitCancellation: (
     fence: AgentRunFence,
     cleanup: AgentRunCleanupResult,
+    canceledAttemptEvidence?: CanceledModelCallAttemptEvidence,
   ) => Effect.Effect<AgentRunCleanupResult, AgentRunRepositoryError>;
   readonly commitTerminal: (
     fence: AgentRunFence,
@@ -290,6 +296,7 @@ type ModelCallExecutionFiber = Fiber.Fiber<ModelCallExecutionExit>;
 
 interface ModelCallCleanupCache {
   result?: AgentRunCleanupResult;
+  outcome?: ModelCallAttemptOutcome;
 }
 
 export class ModelCallExecutor extends Context.Service<
@@ -461,6 +468,10 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
         ) {
           if (cache.result !== undefined) return cache.result;
           const cleanup = yield* observeExecutorCleanup(attempt, deadlineAtEpochMs, execution);
+          if (execution !== undefined) {
+            const executionExit = yield* Fiber.join(execution);
+            if (Exit.isSuccess(executionExit)) cache.outcome = executionExit.value.outcome;
+          }
           cache.result = cleanup;
           return cleanup;
         },
@@ -521,7 +532,11 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
             };
           }
 
-          return yield* repository.commitCancellation(fence, cleanup);
+          const canceledAttemptEvidence =
+            activeAttempt === undefined || cleanupCache.outcome === undefined
+              ? undefined
+              : { attempt: activeAttempt, outcome: cleanupCache.outcome };
+          return yield* repository.commitCancellation(fence, cleanup, canceledAttemptEvidence);
         });
         return yield* cancellation;
       });
