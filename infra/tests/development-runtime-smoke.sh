@@ -8,10 +8,11 @@ prefix=${OSFO_NAME_PREFIX:-osfo-dev}
 origin=${OSFO_RUNTIME_ORIGIN:-}
 authentication_token=${OSFO_REFERENCE_AUTHENTICATION_TOKEN:-}
 thread_id=${OSFO_REFERENCE_THREAD_ID:-}
+database_url=${OSFO_DATABASE_URL:-}
 evidence_directory=${OSFO_RUNTIME_EVIDENCE_DIRECTORY:-.plans/development-runtime-evidence}
 
 missing=0
-for input in project_id origin authentication_token thread_id; do
+for input in project_id origin authentication_token thread_id database_url; do
   if [[ -z ${!input} ]]; then
     printf 'MISSING: development runtime smoke input %s\n' "$input" >&2
     missing=1
@@ -38,40 +39,18 @@ EOF
 read_reconciliation() {
   local agent_run_id=$1
   local destination=$2
-  local encoded execution_name log_filter
-  if ! gcloud run jobs execute "$prefix-reconciliation" \
-    --project="$project_id" \
-    --region="$region" \
-    --container=reconciliation \
-    --update-env-vars="OSFO_RECONCILIATION_AGENT_RUN_ID=$agent_run_id,OSFO_RECONCILIATION_REQUIRE_PASS=true" \
-    --wait \
-    --format=json >"$work_directory/reconciliation-execution.json"; then
+  local encoded
+  if ! OSFO_DATABASE_URL="$database_url" \
+    OSFO_RECONCILIATION_AGENT_RUN_ID="$agent_run_id" \
+    OSFO_RECONCILIATION_REQUIRE_PASS=true \
+    node --conditions=development --import tsx \
+      scripts/qualification/reconcile-agent-run.ts \
+      >"$work_directory/reconciliation-output.log" 2>&1; then
     return 1
   fi
-
-  execution_name=$(jq -r '.metadata.name // .name // empty' \
-    "$work_directory/reconciliation-execution.json")
-  execution_name=${execution_name##*/}
-  log_filter="resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"$prefix-reconciliation\""
-  if [[ -n "$execution_name" ]]; then
-    log_filter="$log_filter AND labels.\"run.googleapis.com/execution_name\"=\"$execution_name\""
-  fi
-
-  encoded=""
-  for _ in $(seq 1 30); do
-    gcloud logging read "$log_filter" \
-      --project="$project_id" --limit=100 --order=desc --format=json \
-      >"$work_directory/reconciliation-logs.json"
-    encoded=$(jq -r '
-      [.. | strings
-        | select(contains("OSFO_RECONCILIATION_EVIDENCE:"))
-        | capture("OSFO_RECONCILIATION_EVIDENCE:(?<value>[A-Za-z0-9+/=]+)").value][0] // empty
-    ' "$work_directory/reconciliation-logs.json")
-    if [[ -n "$encoded" ]]; then
-      break
-    fi
-    sleep 2
-  done
+  encoded=$(sed -n \
+    's/.*OSFO_RECONCILIATION_EVIDENCE:\([A-Za-z0-9+/=]*\).*/\1/p' \
+    "$work_directory/reconciliation-output.log" | head -1)
   if [[ -z "$encoded" ]]; then
     return 1
   fi

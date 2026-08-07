@@ -8,28 +8,29 @@ import * as Schema from "effect/Schema";
 const Uuid = Schema.String.check(Schema.isUUID());
 const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
 
-class ReferenceClientSeedRequiresLocalDatabase extends Data.TaggedError(
-  "ReferenceClientSeedRequiresLocalDatabase",
-)<{ readonly hostname: string }> {}
+class DemoSeedRequiresApprovedProxy extends Data.TaggedError("DemoSeedRequiresApprovedProxy")<{
+  readonly hostname: string;
+}> {}
 
-const ReferenceClientSeedConfig = Config.all({
-  authenticationToken: Config.nonEmptyString("VITE_OSFO_AUTHENTICATION_TOKEN"),
+const DemoSeedConfig = Config.all({
+  authenticationToken: Config.nonEmptyString("OSFO_REFERENCE_AUTHENTICATION_TOKEN"),
   databaseUrl: Config.schema(Schema.URLFromString, "OSFO_DATABASE_URL"),
-  threadId: Config.schema(Uuid, "VITE_OSFO_THREAD_ID"),
+  threadId: Config.schema(Uuid, "OSFO_REFERENCE_THREAD_ID"),
 });
 
 Effect.gen(function* () {
-  const config = yield* ReferenceClientSeedConfig;
+  const config = yield* DemoSeedConfig;
   if (!loopbackHosts.has(config.databaseUrl.hostname)) {
-    return yield* new ReferenceClientSeedRequiresLocalDatabase({
-      hostname: config.databaseUrl.hostname,
-    });
+    return yield* new DemoSeedRequiresApprovedProxy({ hostname: config.databaseUrl.hostname });
   }
   return yield* seedReferenceClientAuthority({
-    ...config,
+    authenticationToken: config.authenticationToken,
     databaseUrl: config.databaseUrl.toString(),
+    threadId: config.threadId,
   });
 }).pipe(
-  Effect.tap(({ threadId }) => Effect.logInfo("Reference Thread authority is ready", { threadId })),
+  Effect.tap(({ threadId }) =>
+    Effect.logInfo("PASS: explicit demo authority seeded", { threadId }),
+  ),
   NodeRuntime.runMain,
 );

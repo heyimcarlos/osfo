@@ -606,7 +606,7 @@ rg --fixed-strings --quiet 'infra/tests/development-platform-prepare-cleanup.sh'
 jq -e '
   . as $config
   | ($config.runtime_service_accounts | keys) == [
-    "agentrun", "migration", "reconciliation", "relay", "temporal", "transport"
+    "agentrun", "relay", "temporal", "transport"
   ]
   and all($config.runtime_service_accounts | to_entries[];
     .value == "\($config.name_prefix)-\(.key)@\($config.project_id).iam.gserviceaccount.com")

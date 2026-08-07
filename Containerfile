@@ -2,7 +2,10 @@
 FROM oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS build
 WORKDIR /workspace
 COPY package.json bun.lock turbo.json tsconfig.json tsconfig.scripts.json tsconfig.infra.json ./
-COPY apps ./apps
+COPY apps/agent-run-worker ./apps/agent-run-worker
+COPY apps/ingress ./apps/ingress
+COPY apps/outbox-relay ./apps/outbox-relay
+COPY apps/web ./apps/web
 COPY packages ./packages
 RUN bun install --frozen-lockfile
 RUN bun run build

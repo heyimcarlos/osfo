@@ -21,7 +21,7 @@ Local development keeps database setup explicit:
 bun run db:up
 cp .env.example .env
 bun run db:migrate
-bun run db:seed:reference
+bun run db:seed:demo
 bun run dev
 ```
 

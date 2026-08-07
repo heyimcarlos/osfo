@@ -29,6 +29,7 @@ import {
 } from "./schema.js";
 
 export { makeThreadResumeTestLayer, type ThreadResumeTestHooks } from "./thread-resume.js";
+export { migrateTestDatabase, type TestDatabaseMigrationConfig } from "./migrations.js";
 
 export interface MessageAdmissionFixture {
   readonly principals: ReadonlyArray<{

@@ -26,14 +26,19 @@ bun run build --filter=@osfo/ingress --filter=@osfo/agent-run-worker
 
 OSFO_POSTGRES_PORT="$verify_port" \
   docker compose --project-name "$project_name" -f "$compose_file" up -d --wait
+OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
+  vitest run --no-file-parallelism packages/db/test/database-access.postgres.test.ts
 OSFO_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
-  node --conditions=development --import tsx scripts/verify-migrations.ts
+  bun run db:migrate
+OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
+  vitest run --no-file-parallelism \
+    packages/db/test/database-access-after-migration.postgres.test.ts
+OSFO_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
+  node --conditions=development --import tsx scripts/db/check-readiness.ts
 OSFO_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
   node --conditions=development --import tsx scripts/verify-migration-upgrade.ts
 OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
   bun run --cwd packages/db test:postgres
-OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
-  bun run --cwd apps/database-jobs test:postgres
 OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
   bun run --cwd apps/outbox-relay test:postgres
 OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \

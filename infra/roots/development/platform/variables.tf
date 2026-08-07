@@ -6,13 +6,11 @@ variable "runtime_service_accounts" {
   validation {
     condition = toset(keys(var.runtime_service_accounts)) == toset([
       "agentrun",
-      "migration",
-      "reconciliation",
       "relay",
       "temporal",
       "transport",
     ])
-    error_message = "runtime_service_accounts must contain exactly the six reviewed development identities."
+    error_message = "runtime_service_accounts must contain exactly the four reviewed product identities."
   }
 }
 variable "qualification_service_accounts" {

@@ -5,11 +5,16 @@ set -euo pipefail
 project_id=${GCP_DEVELOPMENT_PROJECT_ID:-}
 region=${GCP_REGION:-us-east4}
 prefix=${OSFO_NAME_PREFIX:-osfo-dev}
+database_url=${OSFO_DATABASE_URL:-}
 evidence_directory=${OSFO_RUNTIME_EVIDENCE_DIRECTORY:-.plans/development-runtime-evidence}
 smoke_evidence="$evidence_directory/smoke.json"
 
 if [[ -z "$project_id" ]]; then
   printf 'MISSING: development runtime recovery input project_id\n' >&2
+  exit 2
+fi
+if [[ -z "$database_url" ]]; then
+  printf 'MISSING: OSFO_DATABASE_URL must point at the approved private proxy\n' >&2
   exit 2
 fi
 if [[ ! -f "$smoke_evidence" ]]; then
@@ -26,41 +31,19 @@ reconciliation_index=0
 
 read_reconciliation() {
   local destination=$1
-  local encoded execution_name log_filter
+  local encoded
   reconciliation_index=$((reconciliation_index + 1))
-  if ! gcloud run jobs execute "$prefix-reconciliation" \
-    --project="$project_id" \
-    --region="$region" \
-    --container=reconciliation \
-    --update-env-vars="OSFO_RECONCILIATION_AGENT_RUN_ID=$agent_run_id,OSFO_RECONCILIATION_REQUIRE_PASS=true" \
-    --wait \
-    --format=json >"$work_directory/reconciliation-execution-$reconciliation_index.json"; then
+  if ! OSFO_DATABASE_URL="$database_url" \
+    OSFO_RECONCILIATION_AGENT_RUN_ID="$agent_run_id" \
+    OSFO_RECONCILIATION_REQUIRE_PASS=true \
+    node --conditions=development --import tsx \
+      scripts/qualification/reconcile-agent-run.ts \
+      >"$work_directory/reconciliation-output-$reconciliation_index.log" 2>&1; then
     return 1
   fi
-
-  execution_name=$(jq -r '.metadata.name // .name // empty' \
-    "$work_directory/reconciliation-execution-$reconciliation_index.json")
-  execution_name=${execution_name##*/}
-  log_filter="resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"$prefix-reconciliation\""
-  if [[ -n "$execution_name" ]]; then
-    log_filter="$log_filter AND labels.\"run.googleapis.com/execution_name\"=\"$execution_name\""
-  fi
-
-  encoded=""
-  for _ in $(seq 1 30); do
-    gcloud logging read "$log_filter" \
-      --project="$project_id" --limit=100 --order=desc --format=json \
-      >"$work_directory/reconciliation-logs-$reconciliation_index.json"
-    encoded=$(jq -r '
-      [.. | strings
-        | select(contains("OSFO_RECONCILIATION_EVIDENCE:"))
-        | capture("OSFO_RECONCILIATION_EVIDENCE:(?<value>[A-Za-z0-9+/=]+)").value][0] // empty
-    ' "$work_directory/reconciliation-logs-$reconciliation_index.json")
-    if [[ -n "$encoded" ]]; then
-      break
-    fi
-    sleep 2
-  done
+  encoded=$(sed -n \
+    's/.*OSFO_RECONCILIATION_EVIDENCE:\([A-Za-z0-9+/=]*\).*/\1/p' \
+    "$work_directory/reconciliation-output-$reconciliation_index.log" | head -1)
   if [[ -z "$encoded" ]]; then
     return 1
   fi
