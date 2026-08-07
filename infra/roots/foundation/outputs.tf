@@ -24,8 +24,12 @@ output "terraform_service_accounts" {
 }
 
 output "development_runtime_service_accounts" {
-  description = "Retained development runtime identities consumed by the disposable platform root."
-  value       = { for identity, account in google_service_account.development_runtime : identity => account.email }
+  description = "Active retained development runtime identities consumed by the disposable platform root."
+  value = {
+    for identity, account in google_service_account.development_runtime :
+    identity => account.email
+    if contains(local.development_runtime_identities, identity)
+  }
 }
 
 output "development_qualification_service_accounts" {

@@ -10,10 +10,13 @@ Foundation composes the environment baseline module, which owns the retained,
 development-only `us-east4` VPC, Direct VPC egress subnet, static Cloud NAT,
 private services access, private DNS, firewall rules, and an optional Temporal
 Cloud Private Service Connect endpoint. The `development/platform` root reads
-those provider resources by their reviewed names. Foundation also retains the
-six runtime service-account identities, three qualification-only identities,
-the exact Cloud SQL and conditional secret-access roles, and three probe-only
-`actAs` grants. Data authority owns zonal private-IP Cloud SQL PostgreSQL with
+those provider resources by their reviewed names. Foundation also retains four
+active runtime service-account identities, two disabled dormant identities from
+the retired database-job design, and three qualification-only identities. The
+dormant records have no project roles, secret access, `actAs` grants, Cloud SQL
+IAM users, or downstream runtime output. The active boundary retains the exact
+Cloud SQL and conditional secret-access roles, plus three probe-only `actAs`
+grants. Data authority owns zonal private-IP Cloud SQL PostgreSQL with
 IAM database authentication, Secret Manager containers, immutable Artifact Registry tags,
 and the disposable content-addressed artifact bucket. Command buffer owns the
 single ordered Pub/Sub topic and StreamingPull subscription.
@@ -37,9 +40,11 @@ incur cost after a platform destroy. They are not shared with production and
 the scheduled foundation refresh-only plan owns their drift. The disposable
 root creates and destroys Cloud SQL, Pub/Sub, secret containers,
 Artifact Registry, the artifact bucket, qualification jobs, and its private
-database DNS record. Retaining the named runtime identities avoids tombstoned
-IAM principals across repeated platform recreation while granting them no
-payload access beyond the explicit disposable secret policies.
+database DNS record. Retaining the named active runtime identities avoids
+tombstoned IAM principals across repeated platform recreation while granting
+them no payload access beyond the explicit disposable secret policies. The two
+dormant database-job identities remain only because foundation lifecycle
+protection forbids destroying an established identity record.
 
 The reviewed variable set exposes database size and retention, storage names,
 quota expectations, process connection pools, concurrency, fixed worker counts,

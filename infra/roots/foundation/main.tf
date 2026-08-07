@@ -141,6 +141,20 @@ locals {
     "transport",
   ])
 
+  # These records were created before database administration moved out of
+  # Cloud Run. Keep them protected and disabled so an existing foundation
+  # state never plans their destruction. They are deliberately excluded from
+  # every authority map and downstream output.
+  development_dormant_runtime_identities = toset([
+    "migration",
+    "reconciliation",
+  ])
+
+  development_protected_runtime_identities = setunion(
+    local.development_runtime_identities,
+    local.development_dormant_runtime_identities,
+  )
+
   development_runtime_cloud_sql_bindings = {
     for binding in setproduct(local.development_runtime_identities, toset([
       "roles/cloudsql.client",
@@ -885,12 +899,17 @@ resource "google_project_iam_member" "development_secret_access" {
 }
 
 resource "google_service_account" "development_runtime" {
-  for_each = local.development_runtime_identities
+  for_each = local.development_protected_runtime_identities
 
   project      = google_project.environment["development"].project_id
   account_id   = "${var.development_environment_baseline.name_prefix}-${each.key}"
   display_name = "Osfo development ${each.key}"
-  description  = "Retained identity for repeatable disposable development platform lifecycles."
+  description = (
+    contains(local.development_dormant_runtime_identities, each.key)
+    ? "Protected dormant identity retained only for lifecycle safety; no runtime authority."
+    : "Retained identity for repeatable disposable development platform lifecycles."
+  )
+  disabled = contains(local.development_dormant_runtime_identities, each.key)
 
   lifecycle {
     prevent_destroy = true
@@ -923,7 +942,11 @@ resource "google_service_account_iam_member" "development_platform_probe_act_as"
 }
 
 resource "google_service_account_iam_member" "development_runtime_act_as" {
-  for_each = google_service_account.development_runtime
+  for_each = {
+    for identity, account in google_service_account.development_runtime :
+    identity => account
+    if contains(local.development_runtime_identities, identity)
+  }
 
   service_account_id = each.value.name
   role               = "roles/iam.serviceAccountUser"

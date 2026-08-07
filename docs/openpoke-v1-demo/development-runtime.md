@@ -163,11 +163,14 @@ platform remains the separate issue #89 lifecycle. Any unexecuted stage is
 
 ## Removal plan safety
 
-This change removes the migration and reconciliation service accounts, their
-Cloud SQL and act-as bindings, their Cloud SQL IAM users, and the obsolete
+This change removes the migration and reconciliation Cloud Run jobs, project
+roles, secret access, `actAs` bindings, Cloud SQL IAM users, and the obsolete
 database-administrator and reference-bearer secret containers from Terraform.
-An environment that previously applied those resources will show destroys in
-the foundation and development-platform roots. Review and bind each plan
-exactly before applying it. Do not interrupt either root while its shared state
-is locked. Database schema and product rows remain owned by Cloud SQL and are
-not destroyed by this runtime cleanup.
+Their established service-account records remain in the foundation state as
+disabled, `prevent_destroy` protected dormant identities. They are excluded
+from every platform and runtime output. A reviewed foundation plan may update
+those two records to their disabled dormant description, but must not destroy
+them. Review and bind each foundation and development-platform plan exactly
+before applying it. Do not interrupt either root while its shared state is
+locked. Database schema and product rows remain owned by Cloud SQL and are not
+destroyed by this runtime cleanup.
