@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
-import { sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import * as PgDrizzle from "drizzle-orm/effect-postgres";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -8,9 +8,14 @@ import * as Redacted from "effect/Redacted";
 import {
   admissionGlobalCapacity,
   admissionPrincipalCapacity,
+  acceptanceReceipts,
+  agentRunCapacityReservations,
+  agentRuns,
   authenticationSessions,
   principals,
+  threadEvents,
   threads,
+  userMessages,
 } from "./schema.js";
 
 export interface MessageAdmissionFixture {
@@ -23,6 +28,10 @@ export interface MessageAdmissionFixture {
 
 export class MessageAuthorityCountsUnavailable extends Data.TaggedError(
   "MessageAuthorityCountsUnavailable",
+) {}
+
+export class ReferenceJourneyAuthorityUnavailable extends Data.TaggedError(
+  "ReferenceJourneyAuthorityUnavailable",
 ) {}
 
 const withTestDatabase = <A, E>(
@@ -107,3 +116,84 @@ export const readMessageAuthorityCounts = (databaseUrl: string) =>
   );
 
 export type MessageAuthorityCounts = Effect.Success<ReturnType<typeof readMessageAuthorityCounts>>;
+
+export interface ReferenceJourneyAuthorityRequest {
+  readonly agentRunId: string;
+  readonly receiptId: string;
+  readonly threadId: string;
+  readonly userMessageId: string;
+}
+
+export const readReferenceJourneyAuthority = (
+  databaseUrl: string,
+  request: ReferenceJourneyAuthorityRequest,
+) =>
+  withTestDatabase(
+    databaseUrl,
+    Effect.gen(function* () {
+      const db = yield* PgDrizzle.makeWithDefaults();
+      const [facts] = yield* db
+        .select({
+          acceptanceReceipts: sql<string>`(
+            SELECT count(*) FROM ${acceptanceReceipts} receipt
+            WHERE receipt.receipt_id = ${request.receiptId}::uuid
+              AND receipt.agent_run_id = ${request.agentRunId}::uuid
+              AND receipt.user_message_id = ${request.userMessageId}::uuid
+          )::text`,
+          agentRunState: agentRuns.state,
+          agentRuns: sql<string>`(
+            SELECT count(*) FROM ${agentRuns} counted_run
+            WHERE counted_run.agent_run_id = ${request.agentRunId}::uuid
+              AND counted_run.thread_id = ${request.threadId}::uuid
+          )::text`,
+          globalReserved: admissionGlobalCapacity.reservedCount,
+          principalId: agentRuns.principalId,
+          principalReserved: admissionPrincipalCapacity.reservedCount,
+          reservationState: agentRunCapacityReservations.state,
+          terminalEvents: sql<string>`(
+            SELECT count(*) FROM ${threadEvents} terminal_event
+            WHERE terminal_event.agent_run_id = ${request.agentRunId}::uuid
+              AND terminal_event.event_type IN ('AgentRunSucceeded', 'AgentRunFailed')
+          )::text`,
+          userMessages: sql<string>`(
+            SELECT count(*) FROM ${userMessages} counted_message
+            WHERE counted_message.user_message_id = ${request.userMessageId}::uuid
+              AND counted_message.thread_id = ${request.threadId}::uuid
+          )::text`,
+        })
+        .from(agentRuns)
+        .innerJoin(
+          agentRunCapacityReservations,
+          eq(agentRunCapacityReservations.agentRunId, agentRuns.agentRunId),
+        )
+        .innerJoin(
+          admissionPrincipalCapacity,
+          eq(admissionPrincipalCapacity.principalId, agentRuns.principalId),
+        )
+        .innerJoin(admissionGlobalCapacity, eq(admissionGlobalCapacity.singleton, true))
+        .where(
+          and(
+            eq(agentRuns.agentRunId, request.agentRunId),
+            eq(agentRuns.threadId, request.threadId),
+          ),
+        );
+      if (facts === undefined) return yield* new ReferenceJourneyAuthorityUnavailable();
+
+      const events = yield* db
+        .select({ eventType: threadEvents.eventType, position: threadEvents.position })
+        .from(threadEvents)
+        .where(
+          and(
+            eq(threadEvents.agentRunId, request.agentRunId),
+            eq(threadEvents.threadId, request.threadId),
+          ),
+        )
+        .orderBy(threadEvents.position);
+
+      return {
+        ...facts,
+        eventTypes: events.map((event) => event.eventType),
+        threadPositions: events.map((event) => String(event.position)),
+      };
+    }),
+  );

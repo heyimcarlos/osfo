@@ -1,6 +1,22 @@
 import { DatabaseIcon } from "lucide-react";
+import type { ThreadSynchronization } from "./atoms";
 
-export function ThreadHeader({ threadId }: { readonly threadId: string }) {
+export function ThreadHeader({
+  clientInstanceId,
+  synchronization,
+  threadId,
+}: {
+  readonly clientInstanceId: string;
+  readonly synchronization: ThreadSynchronization;
+  readonly threadId: string;
+}) {
+  const status =
+    synchronization.type === "synchronized"
+      ? `Synchronized through ${synchronization.throughPosition}`
+      : synchronization.type === "reconnecting"
+        ? "Reconnecting"
+        : "Synchronizing";
+
   return (
     <header className="border-b px-4 pb-4 pt-3 sm:px-6">
       <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
@@ -15,9 +31,14 @@ export function ThreadHeader({ threadId }: { readonly threadId: string }) {
           <h1 className="truncate font-semibold">Reference Thread</h1>
           <p className="truncate font-mono text-xs text-muted-foreground">{threadId}</p>
         </div>
-        <span className="rounded-full border bg-background px-3 py-1.5 text-xs font-medium shadow-sm">
-          Ingress API
-        </span>
+        <div className="flex shrink-0 flex-col items-end gap-1.5 text-xs">
+          <span className="rounded-full border bg-background px-3 py-1 font-medium shadow-sm">
+            Tab {clientInstanceId}
+          </span>
+          <span className="text-muted-foreground" role="status">
+            {status}
+          </span>
+        </div>
       </div>
     </header>
   );

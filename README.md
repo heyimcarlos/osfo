@@ -78,6 +78,13 @@ crash-consistently, and renders messages only from canonical Thread authority.
 The development server proxies `/v1` to ingress on port 3000, so browser HTTP
 remains same-origin.
 
+Add `?device=A`, `?device=B`, or `?device=C` to label independent reference
+tabs. Each tab displays its own synchronization position while its complete
+projection and ThreadCursor remain isolated in that tab's session storage.
+`bun run db:verify` exercises this journey through a Vite production build in
+real Google Chrome, including independent tab disconnect and resume followed by
+PostgreSQL authority reconciliation.
+
 The reference seed is explicit and idempotent. It creates only the local
 Principal, authentication session, Thread, and capacity rows named by the
 `VITE_OSFO_*` values in `.env`. It does not start PostgreSQL or run migrations.

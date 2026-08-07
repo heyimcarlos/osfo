@@ -52,6 +52,7 @@ describe("Thread chat atoms", () => {
     const chat = makeThreadChat({
       authenticationToken: "reference-session",
       baseUrl: "https://osfo.test",
+      clientInstanceId: "test",
       threadId,
       submitMessage: (command) =>
         Effect.sync(() => {
@@ -84,6 +85,7 @@ describe("Thread chat atoms", () => {
     const chat = makeThreadChat({
       authenticationToken: "reference-session",
       baseUrl: "https://osfo.test",
+      clientInstanceId: "test",
       threadId,
       submitMessage: () => Effect.fail(new CommitUnknown()),
     });
@@ -136,6 +138,7 @@ describe("Thread chat atoms", () => {
     const chat = makeThreadChat({
       authenticationToken: "reference-session",
       baseUrl: "https://osfo.test",
+      clientInstanceId: "test",
       threadId,
       projectionStore,
       resumeTransport: transport,
