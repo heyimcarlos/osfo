@@ -904,12 +904,8 @@ resource "google_service_account" "development_runtime" {
   project      = google_project.environment["development"].project_id
   account_id   = "${var.development_environment_baseline.name_prefix}-${each.key}"
   display_name = "Osfo development ${each.key}"
-  description = (
-    contains(local.development_dormant_runtime_identities, each.key)
-    ? "Protected dormant identity retained only for lifecycle safety; no runtime authority."
-    : "Retained identity for repeatable disposable development platform lifecycles."
-  )
-  disabled = contains(local.development_dormant_runtime_identities, each.key)
+  description  = "Retained identity for repeatable disposable development platform lifecycles."
+  disabled     = contains(local.development_dormant_runtime_identities, each.key)
 
   lifecycle {
     prevent_destroy = true

@@ -38,10 +38,12 @@ runtime_account=$(sed -n \
   '/resource "google_service_account" "development_runtime"/,/^}/p' "$foundation")
 for protected_contract in \
   'for_each = local.development_protected_runtime_identities' \
-  'prevent_destroy = true' \
-  'disabled = contains(local.development_dormant_runtime_identities, each.key)'; do
+  'prevent_destroy = true'; do
   grep -Fq "$protected_contract" <<<"$runtime_account"
 done
+grep -Eq \
+  'disabled[[:space:]]*=[[:space:]]*contains\(local[.]development_dormant_runtime_identities, each[.]key\)' \
+  <<<"$runtime_account"
 
 cloud_sql_authority=$(sed -n \
   '/development_runtime_cloud_sql_bindings =/,/  }/p' "$foundation")

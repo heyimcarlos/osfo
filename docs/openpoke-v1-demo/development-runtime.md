@@ -167,10 +167,11 @@ This change removes the migration and reconciliation Cloud Run jobs, project
 roles, secret access, `actAs` bindings, Cloud SQL IAM users, and the obsolete
 database-administrator and reference-bearer secret containers from Terraform.
 Their established service-account records remain in the foundation state as
-disabled, `prevent_destroy` protected dormant identities. They are excluded
-from every platform and runtime output. A reviewed foundation plan may update
-those two records to their disabled dormant description, but must not destroy
-them. Review and bind each foundation and development-platform plan exactly
-before applying it. Do not interrupt either root while its shared state is
-locked. Database schema and product rows remain owned by Cloud SQL and are not
-destroyed by this runtime cleanup.
+disabled, `prevent_destroy` protected dormant identities. They retain the
+original service-account description because Google Cloud rejects description
+edits after disablement, and they are excluded from every platform and runtime
+output. A reviewed foundation plan must not destroy them. Review and bind each
+foundation and development-platform plan exactly before applying it. Do not
+interrupt either root while its shared state is locked. Database schema and
+product rows remain owned by Cloud SQL and are not destroyed by this runtime
+cleanup.
