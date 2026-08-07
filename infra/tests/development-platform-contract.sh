@@ -388,10 +388,17 @@ foundation_zone_binding=$(sed -n \
 # shellcheck disable=SC2016
 for foundation_zone_boundary in \
   'role    = google_project_iam_custom_role.foundation_dns_zone_iam_manager.name' \
-  'google_service_account.terraform["foundation"].email' \
-  'module.development_environment_baseline.private_dns_managed_zone_id'; do
+  'google_service_account.terraform["foundation"].email'; do
   grep -Fq "$foundation_zone_boundary" <<<"$foundation_zone_binding"
 done
+if grep -Fq 'condition {' <<<"$foundation_zone_binding"; then
+  printf 'foundation zone IAM bootstrap cannot use unsupported ManagedZone condition attributes\n' >&2
+  exit 1
+fi
+rg --fixed-strings --quiet 'infra/tests/development-platform-dns-policy-preflight.sh' \
+  .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'gcloud dns managed-zones get-iam-policy "$name_prefix-private"' \
+  infra/tests/development-platform-dns-policy-preflight.sh
 rg --fixed-strings --quiet 'resource "google_project_iam_custom_role" "development_artifact_cleaner"' \
   infra/roots/foundation/main.tf
 artifact_cleaner_role=$(sed -n \
@@ -421,10 +428,6 @@ rg --fixed-strings --quiet 'infra/tests/development-platform-recovery-preflight.
 # Shell variables are intentionally matched as literal source text.
 # shellcheck disable=SC2016
 for recovery_preflight_contract in \
-  'gcloud dns managed-zones describe "$name_prefix-private"' \
-  'gcloud dns managed-zones get-iam-policy "$name_prefix-private"' \
-  'FAIL: exact managed-zone DNS record binding is not applied' \
-  'FAIL: unconditional managed-zone DNS prerequisite binding is not applied' \
   'gcloud storage buckets get-iam-policy "gs://$evidence_bucket"' \
   'FAIL: exact development evidence writer, reader, and lister bindings are not applied'; do
   rg --fixed-strings --quiet "$recovery_preflight_contract" \

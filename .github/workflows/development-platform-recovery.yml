@@ -235,7 +235,8 @@ jobs:
                 and any($jobs[];
                   .name == "development-configuration" and .conclusion == "success")
                 and any($jobs[];
-                  .name == "development-lifecycle"
+                  (.name == "development-lifecycle"
+                    or .name == "development-dns-permission-preflight")
                   and (.conclusion == "failure" or .conclusion == "cancelled"
                     or .conclusion == "timed_out" or .conclusion == "stale"))
                 and (any($jobs[];
@@ -406,6 +407,25 @@ jobs:
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
         with:
           version: 569.0.0
+      - name: Remove exact out-of-state DNS permission probe residue
+        id: dns_probe_cleanup
+        continue-on-error: true
+        shell: bash
+        run: infra/tests/development-platform-dns-probe-cleanup.sh
       - name: Apply bound destroy and prove provider absence
+        id: platform_destroy
+        if: always()
         shell: bash
         run: infra/tests/development-platform-live.sh
+      - name: Report independent cleanup outcomes
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.dns_probe_cleanup.outcome }}" != success \
+            || "${{ steps.platform_destroy.outcome }}" != success ]]; then
+            printf 'FAIL: dns_probe_cleanup=%s platform_destroy=%s\n' \
+              "${{ steps.dns_probe_cleanup.outcome }}" \
+              "${{ steps.platform_destroy.outcome }}" >&2
+            exit 1
+          fi
+          printf 'PASS: DNS probe cleanup and Terraform destroy both completed\n'

@@ -714,12 +714,6 @@ resource "google_project_iam_member" "foundation_development_dns_zone_iam_manage
   project = google_project.environment["development"].project_id
   role    = google_project_iam_custom_role.foundation_dns_zone_iam_manager.name
   member  = "serviceAccount:${google_service_account.terraform["foundation"].email}"
-
-  condition {
-    title       = "exact_development_private_zone_iam"
-    description = "Restricts foundation IAM policy ownership to the retained development private zone."
-    expression  = "resource.name == 'projects/${google_project.environment["development"].project_id}/managedZones/${module.development_environment_baseline.private_dns_managed_zone_id}'"
-  }
 }
 
 resource "google_dns_managed_zone_iam_member" "development_platform_database_record" {
