@@ -341,6 +341,9 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
                 ) {
                   return yield* executionError(session, "Provider output item identity changed");
                 }
+                if (outputItem.done) {
+                  return yield* executionError(session, "Provider finalized output item twice");
+                }
                 const content = event.item.content;
                 if (
                   textPart === undefined ||
@@ -427,6 +430,9 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
                     session,
                     "Provider finalized an invalid content part",
                   );
+                }
+                if (textPart.contentPartDone) {
+                  return yield* executionError(session, "Provider finalized content part twice");
                 }
                 textPart.contentPartDone = true;
                 return [];

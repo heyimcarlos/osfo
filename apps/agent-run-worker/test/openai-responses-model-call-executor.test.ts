@@ -470,6 +470,114 @@ describe("OpenAI Responses ModelCall executor", () => {
     }),
   );
 
+  it.effect("rejects duplicate content-part finalization", () =>
+    Effect.gen(function* () {
+      const sse = [
+        'data: {"type":"response.created","response":{"id":"resp_part_done"}}',
+        "",
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_part_done","type":"message","status":"in_progress","role":"assistant","content":[]},"sequence_number":1}',
+        "",
+        'data: {"type":"response.content_part.added","item_id":"msg_part_done","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]},"sequence_number":2}',
+        "",
+        'data: {"type":"response.output_text.delta","item_id":"msg_part_done","output_index":0,"content_index":0,"delta":"Hello","sequence_number":3}',
+        "",
+        'data: {"type":"response.output_text.done","item_id":"msg_part_done","output_index":0,"content_index":0,"text":"Hello","sequence_number":4}',
+        "",
+        'data: {"type":"response.content_part.done","item_id":"msg_part_done","output_index":0,"content_index":0,"part":{"type":"output_text","text":"Hello","annotations":[]},"sequence_number":5}',
+        "",
+        'data: {"type":"response.content_part.done","item_id":"msg_part_done","output_index":0,"content_index":0,"part":{"type":"output_text","text":"Hello","annotations":[]},"sequence_number":6}',
+        "",
+      ].join("\n");
+      const http = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(sse, {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          ),
+        ),
+      );
+      const result = yield* ModelCallExecutor.use((executor) =>
+        Stream.runDrain(execute(executor)),
+      ).pipe(
+        Effect.provide(layer),
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.exit,
+      );
+
+      expect(Exit.isFailure(result)).toBe(true);
+      if (Exit.isFailure(result)) {
+        expect(result.cause.reasons).toContainEqual(
+          expect.objectContaining({
+            _tag: "Fail",
+            error: expect.objectContaining({
+              _tag: "ModelCallExecutionError",
+              cause: "Provider finalized content part twice",
+              dispatchEvidence: { type: "confirmed", providerRequestId: "resp_part_done" },
+            }),
+          }),
+        );
+      }
+    }),
+  );
+
+  it.effect("rejects duplicate output-item finalization", () =>
+    Effect.gen(function* () {
+      const sse = [
+        'data: {"type":"response.created","response":{"id":"resp_item_done"}}',
+        "",
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_item_done","type":"message","status":"in_progress","role":"assistant","content":[]},"sequence_number":1}',
+        "",
+        'data: {"type":"response.content_part.added","item_id":"msg_item_done","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]},"sequence_number":2}',
+        "",
+        'data: {"type":"response.output_text.delta","item_id":"msg_item_done","output_index":0,"content_index":0,"delta":"Hello","sequence_number":3}',
+        "",
+        'data: {"type":"response.output_text.done","item_id":"msg_item_done","output_index":0,"content_index":0,"text":"Hello","sequence_number":4}',
+        "",
+        'data: {"type":"response.content_part.done","item_id":"msg_item_done","output_index":0,"content_index":0,"part":{"type":"output_text","text":"Hello","annotations":[]},"sequence_number":5}',
+        "",
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_item_done","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello","annotations":[]}]} ,"sequence_number":6}',
+        "",
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_item_done","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello","annotations":[]}]} ,"sequence_number":7}',
+        "",
+      ].join("\n");
+      const http = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(sse, {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          ),
+        ),
+      );
+      const result = yield* ModelCallExecutor.use((executor) =>
+        Stream.runDrain(execute(executor)),
+      ).pipe(
+        Effect.provide(layer),
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.exit,
+      );
+
+      expect(Exit.isFailure(result)).toBe(true);
+      if (Exit.isFailure(result)) {
+        expect(result.cause.reasons).toContainEqual(
+          expect.objectContaining({
+            _tag: "Fail",
+            error: expect.objectContaining({
+              _tag: "ModelCallExecutionError",
+              cause: "Provider finalized output item twice",
+              dispatchEvidence: { type: "confirmed", providerRequestId: "resp_item_done" },
+            }),
+          }),
+        );
+      }
+    }),
+  );
+
   it.effect("rejects a text lifecycle that starts at nonzero indexes", () =>
     Effect.gen(function* () {
       const sse = [
