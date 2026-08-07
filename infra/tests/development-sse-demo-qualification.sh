@@ -535,9 +535,9 @@ for index in $(seq 0 $((device_count - 1))); do
 
   jq -c --argjson position "${device_positions[$index]}" \
     '[.events[] | select((.threadPosition | tonumber) > $position) |
-      {eventId,threadPosition,cursor,eventType}]' \
+      {eventId,threadPosition,eventType}]' \
     "$evidence_directory/raw/history-after.json" >"$work_directory/device-$device-expected.json"
-  jq -sc '[.[] | {eventId,threadPosition,cursor,eventType}]' \
+  jq -sc '[.[] | {eventId,threadPosition,eventType}]' \
     "$evidence_directory/device-$device-canonical.ndjson" \
     >"$work_directory/device-$device-observed.json"
   if ! cmp --silent "$work_directory/device-$device-expected.json" \

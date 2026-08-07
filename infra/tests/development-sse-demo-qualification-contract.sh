@@ -14,6 +14,11 @@ rg --fixed-strings --quiet 'OSFO_REFERENCE_THREAD_ID' "$script"
 rg --fixed-strings --quiet 'header = "Authorization: Bearer $authentication_token"' "$script"
 rg --fixed-strings --quiet 'sender disconnected after admission and before its terminal event' "$script"
 rg --fixed-strings --quiet 'canonical replay had a gap, duplicate, or ordering violation' "$script"
+[[ $(rg --fixed-strings --count '{eventId,threadPosition,eventType}' "$script") == 2 ]]
+if rg --fixed-strings --quiet '{eventId,threadPosition,cursor,eventType}' "$script"; then
+  printf 'qualification harness must not require reissued signed cursor bytes to be stable\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet 'accepted commands reached terminal canonical events in ${drain_ms}ms' "$script"
 rg --fixed-strings --quiet 'healthy_concurrent_stream_ceiling' "$script"
 rg --fixed-strings --quiet 'breaking_point' "$script"
