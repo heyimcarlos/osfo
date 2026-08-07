@@ -207,6 +207,59 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
 
       yield* Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
+        yield* sql`INSERT INTO assistant_outputs (
+            assistant_output_id, agent_run_id, state, created_at
+          ) VALUES (
+            '46290831-b9ca-414a-abf1-4055b5347133'::uuid,
+            '86ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
+            'open',
+            transaction_timestamp()
+          )`;
+        yield* sql`INSERT INTO model_calls (
+            model_call_id, agent_run_id, model_binding, prompt, state, created_at
+          ) VALUES (
+            '1f60df64-c87c-4878-8340-001f23623491'::uuid,
+            '86ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
+            'oz.rolling-base-writer.v1',
+            'Base writer after expansion migration',
+            'pending',
+            transaction_timestamp()
+          )`;
+        yield* sql`INSERT INTO model_call_attempts (
+            model_call_attempt_id, model_call_id, agent_run_id, assistant_output_id,
+            attempt_number, claim_epoch, state, started_at
+          ) VALUES (
+            'ed0496f6-c20f-4c86-bc69-e3138b699f06'::uuid,
+            '1f60df64-c87c-4878-8340-001f23623491'::uuid,
+            '86ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
+            '46290831-b9ca-414a-abf1-4055b5347133'::uuid,
+            1,
+            1,
+            'started',
+            transaction_timestamp()
+          )`;
+        yield* sql`UPDATE model_call_attempts
+          SET state = 'succeeded', finished_at = transaction_timestamp()
+          WHERE model_call_attempt_id = 'ed0496f6-c20f-4c86-bc69-e3138b699f06'::uuid`;
+        const rollingRows = yield* sql<{
+          readonly dispatchState: string;
+          readonly modelBinding: string | null;
+          readonly state: string;
+        }>`SELECT
+            state,
+            model_binding AS "modelBinding",
+            dispatch_state AS "dispatchState"
+          FROM model_call_attempts
+          WHERE model_call_attempt_id = 'ed0496f6-c20f-4c86-bc69-e3138b699f06'::uuid`;
+        if (
+          rollingRows[0]?.state !== "succeeded" ||
+          rollingRows[0].modelBinding !== null ||
+          rollingRows[0].dispatchState !== "prepared"
+        ) {
+          return yield* Effect.die(
+            new Error("Expansion migration did not preserve the base ModelCall writer"),
+          );
+        }
         const rows = yield* sql<{
           readonly claimEpoch: string;
           readonly claimOwner: string | null;
