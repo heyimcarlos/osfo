@@ -5,6 +5,25 @@ import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { NodeRuntime } from "@effect/platform-node";
 import { Data, Effect, Schema } from "effect";
 
+const InspectedOpenPokeRevision = "5b5f635935a64ab37884c025d70abb0ed731c094";
+const InspectedOpenPokeRevisionReference =
+  `[${InspectedOpenPokeRevision}]` +
+  `(https://github.com/shlokkhemani/openpoke/tree/${InspectedOpenPokeRevision})`;
+const OpenPokeSourceReferences = [
+  ["ChatRequest", "server/models/chat.py#L26-L35"],
+  ["chat_send", "server/routes/chat.py#L10-L45"],
+  ["handle_chat_request", "server/services/conversation/chat_handler.py#L22-L49"],
+  ["POST", "web/app/api/chat/route.ts#L22-L56"],
+  ["request_chat_completion", "server/openrouter_client/client.py#L49-L82"],
+  ["ConversationLog", "server/services/conversation/log.py#L52-L82"],
+  ["app", "server/app.py#L49-L83"],
+  ["get_active_gmail_user_id", "server/services/gmail/client.py#L18-L40"],
+  ["TriggerScheduler", "server/services/trigger_scheduler.py#L26-L116"],
+  ["ExecutionBatchManager", "server/agents/execution_agent/batch_manager.py#L36-L145"],
+  ["gmail_execute_draft", "server/agents/execution_agent/tools/gmail.py#L375-L427"],
+  ["execute_gmail_tool", "server/services/gmail/client.py#L466-L494"],
+] as const;
+
 const EvidenceStatusSchema = Schema.Literals(["PASS", "FAIL", "MISSING"]);
 const ArtifactKindSchema = Schema.Literals([
   "sealed-run",
@@ -161,6 +180,40 @@ const parseSourceManifest = (manifestId: string, bytes: Buffer) => {
   );
 };
 
+const verifyWalkthroughInspection = (artifactId: string, bytes: Buffer) => {
+  const walkthrough = bytes.toString("utf8");
+  if (/uninspected repository/iu.test(walkthrough)) {
+    return Effect.fail(
+      new DemoPacketVerificationError({
+        code: "ARTIFACT_INVALID",
+        message: `${artifactId}: superseded uninspected repository disclaimer`,
+      }),
+    );
+  }
+  if (!walkthrough.includes(InspectedOpenPokeRevisionReference)) {
+    return Effect.fail(
+      new DemoPacketVerificationError({
+        code: "ARTIFACT_INVALID",
+        message: `${artifactId}: inspected OpenPoke revision is missing or changed`,
+      }),
+    );
+  }
+  for (const [symbol, sourcePath] of OpenPokeSourceReferences) {
+    const reference =
+      `[${symbol}]` +
+      `(https://github.com/shlokkhemani/openpoke/blob/${InspectedOpenPokeRevision}/${sourcePath})`;
+    if (!walkthrough.includes(reference)) {
+      return Effect.fail(
+        new DemoPacketVerificationError({
+          code: "ARTIFACT_INVALID",
+          message: `${artifactId}: missing exact OpenPoke source reference ${symbol}`,
+        }),
+      );
+    }
+  }
+  return Effect.void;
+};
+
 export const verifyDemoPacket = (indexPath: string) =>
   Effect.gen(function* () {
     const index = yield* readIndex(indexPath);
@@ -204,6 +257,12 @@ export const verifyDemoPacket = (indexPath: string) =>
         ),
       { concurrency: 1 },
     );
+
+    for (const { artifact, bytes } of verified) {
+      if (artifact.id === "three-part-walkthrough") {
+        yield* verifyWalkthroughInspection(artifact.id, bytes);
+      }
+    }
 
     for (const { artifact } of verified) {
       if (

@@ -24,6 +24,96 @@ const runVerifier = (...arguments_: ReadonlyArray<string>) =>
   execFileAsync("bun", [verifierPath, ...arguments_]);
 
 describe("OpenPoke demo packet verifier CLI", () => {
+  it("rejects the superseded uninspected OpenPoke walkthrough disclaimer", async () => {
+    const root = await createPacketRoot();
+    const walkthrough = [
+      "# OpenPoke v1 walkthrough",
+      "",
+      "## Part 3: OpenPoke architecture and next improvements",
+      "",
+      "Without asserting uninspected repository details, process-local authority fails first.",
+      "",
+    ].join("\n");
+    await writeFile(join(root, "walkthrough.md"), walkthrough);
+    const indexPath = await writeIndex(root, [
+      {
+        id: "three-part-walkthrough",
+        kind: "document",
+        artifactStatus: "PASS",
+        evidenceStatus: "PASS",
+        path: "walkthrough.md",
+        sha256: sha256(walkthrough),
+        description: "The three-part walkthrough.",
+      },
+    ]);
+
+    await expect(runVerifier(indexPath)).rejects.toMatchObject({
+      stderr:
+        "FAIL: ARTIFACT_INVALID: three-part-walkthrough: superseded uninspected repository disclaimer\n",
+    });
+  });
+
+  it("rejects an OpenPoke walkthrough without the inspected source revision", async () => {
+    const root = await createPacketRoot();
+    const walkthrough = [
+      "# OpenPoke v1 walkthrough",
+      "",
+      "## Part 3: OpenPoke architecture and next improvements",
+      "",
+      "The command returns 202 before its detached task finishes.",
+      "",
+    ].join("\n");
+    await writeFile(join(root, "walkthrough.md"), walkthrough);
+    const indexPath = await writeIndex(root, [
+      {
+        id: "three-part-walkthrough",
+        kind: "document",
+        artifactStatus: "PASS",
+        evidenceStatus: "PASS",
+        path: "walkthrough.md",
+        sha256: sha256(walkthrough),
+        description: "The three-part walkthrough.",
+      },
+    ]);
+
+    await expect(runVerifier(indexPath)).rejects.toMatchObject({
+      stderr:
+        "FAIL: ARTIFACT_INVALID: three-part-walkthrough: inspected OpenPoke revision is missing or changed\n",
+    });
+  });
+
+  it("rejects an inspected OpenPoke walkthrough without exact source references", async () => {
+    const root = await createPacketRoot();
+    const revision = "5b5f635935a64ab37884c025d70abb0ed731c094";
+    const walkthrough = [
+      "# OpenPoke v1 walkthrough",
+      "",
+      "## Part 3: OpenPoke architecture and next improvements",
+      "",
+      `Inspected OpenPoke revision: [${revision}](https://github.com/shlokkhemani/openpoke/tree/${revision}).`,
+      "",
+      "The command returns 202 before its detached task finishes.",
+      "",
+    ].join("\n");
+    await writeFile(join(root, "walkthrough.md"), walkthrough);
+    const indexPath = await writeIndex(root, [
+      {
+        id: "three-part-walkthrough",
+        kind: "document",
+        artifactStatus: "PASS",
+        evidenceStatus: "PASS",
+        path: "walkthrough.md",
+        sha256: sha256(walkthrough),
+        description: "The three-part walkthrough.",
+      },
+    ]);
+
+    await expect(runVerifier(indexPath)).rejects.toMatchObject({
+      stderr:
+        "FAIL: ARTIFACT_INVALID: three-part-walkthrough: missing exact OpenPoke source reference ChatRequest\n",
+    });
+  });
+
   it("accepts verified artifacts and explicit MISSING placeholders", async () => {
     const root = await createPacketRoot();
     const artifact = "sealed evidence\n";

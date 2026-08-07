@@ -106,36 +106,72 @@ changing any load result or production qualification.
 
 ## Part 3: OpenPoke architecture and next improvements
 
-The supplied scenario says current OpenPoke works for one user, one machine,
-and one process. Without asserting uninspected repository details, the first
-general failure is process-local authority: in-memory conversation order,
-response buffers, device connections, and worker ownership disappear together
-on restart and cannot support independent resume across instances.
+Inspected OpenPoke revision:
+[5b5f635935a64ab37884c025d70abb0ed731c094](https://github.com/shlokkhemani/openpoke/tree/5b5f635935a64ab37884c025d70abb0ed731c094).
+This is a static source inspection of that revision. It is not deployed, load,
+failure-recovery, live-model, or production-qualification evidence.
 
-Improve it in this order:
+### What fails first
 
-1. Define Principal, Thread, UserMessage, immutable ThreadEvent, ThreadPosition,
-   ThreadCursor, AgentRun, and Acceptance Receipt as separate durable concepts.
-2. Put account-scoped authentication and authorization in front of every
-   command, snapshot, history page, and stream.
-3. Commit input, receipt, root work, capacity, and outbox atomically in
-   PostgreSQL before acknowledging the client.
-4. Split Native Thread Transport, relay, and workers into independently
-   deployable roles. Keep the transport and worker roles stateless enough to
-   replace or scale horizontally.
-5. Use a bounded durable broker buffer with point-addressed database claims,
-   finite leases, monotonic epochs, and harmless redelivery.
-6. Persist output before delivery. Resume by opaque cursor, replay canonical
-   order, then cross once into live SSE for every independently connected
-   device.
-7. Make effectful tools explicit Actions with stable idempotency, approval,
-   attempt, uncertainty, and receipt semantics.
-8. Bound queue depth, per-Principal work, database connections, stream counts,
-   and execution slots. Shed overload before unbounded waiting destroys useful
-   work.
-9. Qualify the Production Acceptance Corpus, growth corpora, overload knee,
-   process and dependency loss, recovery reserve, multi-device load, and total
-   cost before declaring production readiness.
-10. Add multi-region recovery only after the single-region authority and
-    failover contracts are explicit. Do not introduce two writable Thread
-    orders accidentally.
+The first process-replacement failure is command admission, before streaming or
+worker throughput becomes the limiting factor:
+
+```text
+browser POST
+  -> chat proxy POST (stream: false)
+  -> chat_send
+  -> handle_chat_request
+  -> asyncio.create_task(InteractionAgentRuntime.execute(...))
+  -> empty HTTP 202 returned
+       X process exits: acknowledged work has no durable command or owner
+  -> non-streaming OpenRouter completion
+  -> optional in-process execution task and direct external action
+  -> reply appended to one local conversation file
+  -> browser polls global history and guesses which reply completed its turn
+```
+
+The call graph is confirmed by the exported UI
+[POST](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/web/app/api/chat/route.ts#L22-L56),
+[chat_send](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/routes/chat.py#L10-L45),
+[handle_chat_request](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/services/conversation/chat_handler.py#L22-L49),
+[InteractionAgentRuntime.execute](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/agents/interaction_agent/runtime.py#L65-L89),
+and
+[request_chat_completion](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/openrouter_client/client.py#L49-L82).
+The loss after 202 is an inference from the absence of a durable admission
+record between task creation and acknowledgement. No crash experiment was run.
+
+### Source facts and scale implications
+
+| Seam | Confirmed in the pinned source | Inference for process replacement, multiple devices, or horizontal scale |
+| --- | --- | --- |
+| Command | [ChatRequest](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/models/chat.py#L26-L35) carries messages, model, system, and stream, but no Principal, Thread, command identity, idempotency key, or expected position. `handle_chat_request` extracts the latest user text, schedules an event-loop task, and returns an empty 202. | A crash can erase acknowledged work. A client retry has no stable identity with which to distinguish replay from a new command. |
+| Response delivery | The UI proxy sends `stream: false`; the OpenRouter client also sends `stream: false` and buffers one JSON response. Browser [sendMessage](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/web/app/page.tsx#L110-L190) polls global history for up to 30 seconds, matching equal user text and the last assistant message. | There is no cursor or response-stream resume point. Concurrent devices or equal messages can attribute another turn's last reply to the wrong request. |
+| Conversation state | [ConversationLog](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/services/conversation/log.py#L52-L82) is one module singleton over one fixed local file and a process-local thread lock. The runtime reads the transcript before appending the new user message. | Separate replicas can diverge on separate disks. The lock cannot serialize processes, and concurrent turns can read the same predecessor and interleave. |
+| Authentication and isolation | FastAPI [app](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/app.py#L49-L83) installs CORS, routes, a scheduler, and a watcher. The chat send, history, and global clear handlers have no authentication dependency. Gmail exposes one process-global [get_active_gmail_user_id](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/services/gmail/client.py#L18-L40). | A second user is not isolated from global chat state, and replicas can select different active Gmail users. A device-generated identifier is not an authenticated Principal. |
+| Persistence | Conversation, working memory, execution journals, roster, timezone, and Gmail seen IDs use host-local files. [TriggerStore](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/services/triggers/store.py#L13-L68) uses local SQLite. | Host replacement can lose state, and independent replicas do not share one conversation, account, or scheduling authority. Local locks do not make these stores multi-process safe. |
+| Workers | Every API process starts its own scheduler and email watcher. [TriggerScheduler](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/services/trigger_scheduler.py#L26-L116) keeps `_in_flight` in memory, creates a task for due work, and advances the schedule only after execution succeeds. | Replicas can select the same due trigger. A crash after an external effect but before schedule advancement permits repeat execution. |
+| Queue and capacity | Interactive dispatch uses one process-global [ExecutionBatchManager](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/agents/execution_agent/batch_manager.py#L36-L145). Its pending map, lock, and single current batch are memory-only. Dispatch uses event-loop tasks, and the [requirements](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/requirements.txt#L1-L7) list no broker client. | There is no durable bounded queue, capacity admission, claim lease, fencing, or cross-process handoff. Unrelated concurrent turns can join one process-global batch, and queued work disappears with the process. |
+| External actions | [gmail_execute_draft](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/agents/execution_agent/tools/gmail.py#L375-L427) and the sibling send operations enter a [journal wrapper](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/agents/execution_agent/tools/gmail.py#L324-L343), which calls the public [execute_gmail_tool](https://github.com/shlokkhemani/openpoke/blob/5b5f635935a64ab37884c025d70abb0ed731c094/server/services/gmail/client.py#L466-L494) before recording success or failure. The tool schemas contain provider object IDs but no application Action identity or idempotency key. | A lost provider acknowledgement creates an unknown outcome. Retrying can duplicate a send, forward, or reply because no durable attempt-before-contact record or ActionReceipt supports reconciliation. |
+
+### Prioritized improvement sequence
+
+1. Authenticate a Principal, then scope every command, history read, clear,
+   stream, Gmail binding, trigger, and tool action to a Principal and Thread.
+2. Before returning 202, atomically commit the idempotent command, UserMessage,
+   ThreadPosition, Acceptance Receipt, capacity decision, root AgentRun, and
+   outbox record in shared PostgreSQL.
+3. Persist immutable ThreadEvents before delivery. Replace global history
+   polling with an opaque ThreadCursor, ordered replay, and one transition to
+   live SSE for every independently authenticated device.
+4. Move execution behind a bounded durable broker and point-addressed database
+   claims. Add finite leases, monotonic fencing, harmless redelivery, explicit
+   queue depth, and admission shedding before overload.
+5. Make provider effects approved Actions. Commit a stable Action identity and
+   attempt before contact, pass provider idempotency where supported, represent
+   uncertain outcomes, reconcile them, and publish an ActionReceipt.
+6. Move triggers, working memory, roster, Gmail connection and seen state,
+   timezone, and journals into account-scoped shared storage. Claim due work
+   atomically so only one worker owns it.
+7. Split transport, relay, and workers into replaceable deployment roles, then
+   qualify process loss, multi-device ordering, overload, recovery, saturation,
+   and cost. The source inspection alone proves none of those production gates.
