@@ -62,6 +62,7 @@ locals {
       "compute.googleapis.com",
       "dns.googleapis.com",
       "pubsub.googleapis.com",
+      "run.googleapis.com",
       "secretmanager.googleapis.com",
       "servicedirectory.googleapis.com",
       "servicenetworking.googleapis.com",
@@ -85,6 +86,7 @@ locals {
     "roles/compute.networkAdmin",
     "roles/compute.securityAdmin",
     "roles/dns.admin",
+    "roles/iam.roleAdmin",
     "roles/servicenetworking.networksAdmin",
   ]))
 
@@ -119,8 +121,9 @@ locals {
     "roles/compute.networkAdmin",
     "roles/dns.admin",
     "roles/iam.serviceAccountAdmin",
+    "roles/logging.viewer",
     "roles/pubsub.admin",
-    "roles/secretmanager.admin",
+    "roles/run.admin",
     "roles/servicenetworking.networksAdmin",
     "roles/serviceusage.serviceUsageViewer",
     "roles/storage.admin",
@@ -140,6 +143,30 @@ locals {
       constraint  = pair[1]
     }
   }
+}
+
+resource "google_project_iam_custom_role" "platform_secret_manager" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoPlatformSecretManager"
+  title       = "Osfo platform secret manager"
+  description = "Manages secret containers, policy, and new versions without reading payloads."
+  permissions = [
+    "resourcemanager.projects.get",
+    "secretmanager.locations.get",
+    "secretmanager.locations.list",
+    "secretmanager.secrets.create",
+    "secretmanager.secrets.delete",
+    "secretmanager.secrets.get",
+    "secretmanager.secrets.getIamPolicy",
+    "secretmanager.secrets.list",
+    "secretmanager.secrets.setIamPolicy",
+    "secretmanager.secrets.update",
+    "secretmanager.versions.add",
+  ]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
 }
 
 resource "google_project" "environment" {
@@ -500,6 +527,12 @@ resource "google_project_iam_member" "platform" {
   project = google_project.environment[each.value.environment].project_id
   role    = each.value.role
   member  = "serviceAccount:${google_service_account.terraform["${each.value.environment}-platform"].email}"
+}
+
+resource "google_project_iam_member" "platform_secret_manager" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.platform_secret_manager.name
+  member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
 }
 
 resource "google_storage_bucket_iam_member" "development_evidence" {

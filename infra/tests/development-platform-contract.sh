@@ -33,6 +33,16 @@ rg --fixed-strings --quiet 'gcloud pubsub topics publish' infra/tests/developmen
 rg --fixed-strings --quiet 'gcloud storage cp --if-generation-match=0' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'temporal_private_service_connect' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'authorized_secret_version_access' infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet 'google_cloud_run_v2_job' infra/modules/qualification-probe/main.tf
+rg --fixed-strings --quiet 'egress = "ALL_TRAFFIC"' infra/modules/qualification-probe/main.tf
+rg --fixed-strings --quiet 'private_database_connection_from_direct_vpc: "PASS"' infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet 'static_nat_traffic_from_direct_vpc: "PASS"' infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet 'negative_secret_payload_access: "PASS"' infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet 'artifact_overwrite_rejected: "PASS"' infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet 'development-platform-absent.sh' infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'development-platform-audit.sh' infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'diff-index --quiet HEAD --' infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'state_status=$?' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'exact_disposable_destroy: "PASS"' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'trap cleanup_on_exit EXIT' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'quota_requirement static_external_ipv4_addresses' infra/tests/development-platform-preflight.sh
@@ -58,5 +68,19 @@ if rg --quiet --glob '*.tf' 'secret_data|google_secret_manager_secret_version' "
   printf 'secret payloads must not enter Terraform\n' >&2
   exit 1
 fi
+
+if rg --fixed-strings --quiet 'roles/secretmanager.admin' infra/roots/foundation/main.tf; then
+  printf 'platform identity must not have project-wide secret payload access\n' >&2
+  exit 1
+fi
+
+if rg --fixed-strings --quiet 'roles/iam.serviceAccountTokenCreator' infra/modules/data-authority/main.tf; then
+  printf 'platform identity must not mint runtime identity tokens\n' >&2
+  exit 1
+fi
+
+rg --fixed-strings --quiet 'foundation-drift' .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'development-platform-absent.sh' .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'Report missing protected configuration' .github/workflows/terraform.yml
 
 printf 'PASS: development platform topology, reviewed inputs, and teardown boundaries\n'

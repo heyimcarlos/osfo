@@ -12,19 +12,6 @@ variable "enable_managed_platform" { type = bool }
 variable "name_prefix" { type = string }
 variable "cost_owner" { type = string }
 variable "proof_token" { type = string }
-variable "temporal_service_attachment_uri" {
-  type     = string
-  default  = null
-  nullable = true
-  validation {
-    condition = var.temporal_service_attachment_uri == null || can(regex(
-      "^projects/[^/]+/regions/us-east4/serviceAttachments/[^/]+$",
-      var.temporal_service_attachment_uri,
-    ))
-    error_message = "Temporal service attachment must be a us-east4 service attachment URI."
-  }
-}
-variable "temporal_dns_name" { type = string }
 variable "cloud_sql_tier" { type = string }
 variable "cloud_sql_disk_size_gb" { type = number }
 variable "cloud_sql_database_version" { type = string }

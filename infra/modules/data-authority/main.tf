@@ -27,14 +27,14 @@ resource "google_project_iam_member" "cloud_sql_instance_user" {
   member   = "serviceAccount:${each.value.email}"
 }
 
-resource "google_service_account_iam_member" "terraform_token_creator" {
+resource "google_service_account_iam_member" "terraform_job_act_as" {
   for_each = {
     for key, account in google_service_account.runtime : key => account
-    if contains(["agentrun", "temporal"], key)
+    if contains(["agentrun", "temporal", "reconciliation"], key)
   }
 
   service_account_id = each.value.name
-  role               = "roles/iam.serviceAccountTokenCreator"
+  role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${var.terraform_service_account_email}"
 }
 

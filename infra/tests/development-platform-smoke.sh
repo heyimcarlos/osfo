@@ -13,15 +13,26 @@ cost_owner=$(jq -r '.cost_owner' "$varset")
 evidence_bucket=$(jq -r '.evidence_archive_bucket_name' "$varset")
 preflight_report=${PREFLIGHT_REPORT_FILE:-${TMPDIR:-/tmp}/osfo-development-platform-preflight.json}
 scratch=$(mktemp -d)
-trap 'rm -rf "$scratch"' EXIT
+smoke_subscription=""
+cleanup_smoke() {
+  if [[ -n "$smoke_subscription" ]]; then
+    CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB="https://$region-pubsub.googleapis.com/" \
+      gcloud pubsub subscriptions delete "$smoke_subscription" \
+      --project="$project_id" --quiet >/dev/null 2>&1 || true
+  fi
+  rm -rf "$scratch"
+}
+trap cleanup_smoke EXIT
 
 "$terraform_bin" -chdir="$root" output -json platform >"$scratch/platform.json"
 sql_instance=$(jq -r '.cloud_sql_connection_name | split(":")[-1]' "$scratch/platform.json")
 topic=$(jq -r '.pubsub_topic_id' "$scratch/platform.json")
-subscription=$(jq -r '.pubsub_subscription_id' "$scratch/platform.json")
 artifact_bucket=$(jq -r '.artifact_bucket_name' "$scratch/platform.json")
 network_id=$(jq -r '.network_id' "$scratch/platform.json")
 static_egress_ip=$(jq -r '.static_egress_ip' "$scratch/platform.json")
+network_probe_job=$(jq -r '.qualification_probe_jobs.network' "$scratch/platform.json")
+temporal_secret_probe_job=$(jq -r '.qualification_probe_jobs.temporal_secret' "$scratch/platform.json")
+denied_secret_probe_job=$(jq -r '.qualification_probe_jobs.denied_secret' "$scratch/platform.json")
 
 gcloud sql instances describe "$sql_instance" --project="$project_id" --format=json >"$scratch/sql.json"
 gcloud sql users list --instance="$sql_instance" --project="$project_id" --format=json >"$scratch/sql-users.json"
@@ -40,11 +51,17 @@ jq -r '.runtime_service_accounts[] | sub("[.]gserviceaccount[.]com$"; "")' "$scr
     done
 
 ordering_key="smoke-$(date -u +%Y%m%dT%H%M%SZ)"
-gcloud pubsub topics publish "$topic" --project="$project_id" --ordering-key="$ordering_key" --message=first >/dev/null
-gcloud pubsub topics publish "$topic" --project="$project_id" --ordering-key="$ordering_key" --message=second >/dev/null
+smoke_subscription="$name_prefix-ordering-$RANDOM"
+export CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB="https://$region-pubsub.googleapis.com/"
+gcloud pubsub subscriptions create "$smoke_subscription" --project="$project_id" \
+  --topic="$topic" --enable-message-ordering --expiration-period=1d >/dev/null
+gcloud pubsub topics publish "$topic" --project="$project_id" \
+  --ordering-key="$ordering_key" --message=first >/dev/null
+gcloud pubsub topics publish "$topic" --project="$project_id" \
+  --ordering-key="$ordering_key" --message=second >/dev/null
 printf '[]\n' >"$scratch/messages.json"
 for _ in {1..12}; do
-  gcloud pubsub subscriptions pull "$subscription" --project="$project_id" \
+  gcloud pubsub subscriptions pull "$smoke_subscription" --project="$project_id" \
     --auto-ack --limit=10 --format=json >"$scratch/message-batch.json"
   jq -s --arg ordering_key "$ordering_key" \
     'add | map(select(.message.orderingKey == $ordering_key))' \
@@ -60,18 +77,35 @@ jq -e 'length >= 2 and ([.[0:2][].message.data | @base64d] == ["first", "second"
 gcloud pubsub topics describe "$topic" --project="$project_id" --format=json \
   | jq -e --arg cost_owner "$cost_owner" \
     '.labels.environment == "development" and .labels.cost_owner == $cost_owner' >/dev/null
+gcloud pubsub subscriptions delete "$smoke_subscription" --project="$project_id" --quiet >/dev/null
+smoke_subscription=""
+unset CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB
 
 printf 'osfo development artifact smoke\n' >"$scratch/artifact"
 artifact_sha=$(sha256sum "$scratch/artifact" | cut -d' ' -f1)
 artifact_uri="gs://$artifact_bucket/sha256/$artifact_sha"
 gcloud storage cp --if-generation-match=0 "$scratch/artifact" "$artifact_uri" >/dev/null
+if gcloud storage cp --if-generation-match=0 "$scratch/artifact" "$artifact_uri" \
+  >"$scratch/artifact-overwrite.out" 2>&1; then
+  printf 'FAIL: content-addressed artifact accepted a second generation\n' >&2
+  exit 1
+fi
+generation_count=$(gcloud storage ls --all-versions "$artifact_uri" | wc -l | tr -d ' ')
+if [[ "$generation_count" != 1 ]]; then
+  printf 'FAIL: content-addressed artifact has %s generations\n' "$generation_count" >&2
+  exit 1
+fi
 gcloud storage cp "$artifact_uri" "$scratch/artifact.read" >/dev/null
 cmp "$scratch/artifact" "$scratch/artifact.read"
 
 printf 'osfo non-secret authorization smoke\n' >"$scratch/secret-payload"
-active_account=$(gcloud auth list --filter=status:ACTIVE --format='value(account)')
 terraform_service_account=$(jq -r '.terraform_service_account_email' "$varset")
-secret_version_access_status=MISSING
+effective_account=${CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT:-$(gcloud auth list --filter=status:ACTIVE --format='value(account)')}
+if [[ "$effective_account" != "$terraform_service_account" ]]; then
+  printf 'FAIL: live proof must run as CI platform identity %s, got %s\n' \
+    "$terraform_service_account" "$effective_account" >&2
+  exit 1
+fi
 for secret_key in model-adapter temporal-cloud; do
   secret=$(jq -r --arg secret_key "$secret_key" '.secret_names[$secret_key]' "$scratch/platform.json")
   case "$secret_key" in
@@ -84,20 +118,16 @@ for secret_key in model-adapter temporal-cloud; do
     | jq -e --arg member "$member" '
       any(.bindings[]; .role == "roles/secretmanager.secretAccessor" and any(.members[]; . == $member))
     ' >/dev/null
-  if [[ "$active_account" == "$terraform_service_account" ]]; then
-    gcloud secrets versions add "$secret" --project="$project_id" \
-      --data-file="$scratch/secret-payload" >/dev/null
-    for _ in {1..12}; do
-      if gcloud secrets versions access latest --secret="$secret" --project="$project_id" \
-        --impersonate-service-account="$accessor" >"$scratch/$secret_key.read" 2>/dev/null; then
-        break
-      fi
-      sleep 5
-    done
-    cmp "$scratch/secret-payload" "$scratch/$secret_key.read"
-    secret_version_access_status=PASS
-  fi
+  gcloud secrets versions add "$secret" --project="$project_id" \
+    --data-file="$scratch/secret-payload" >/dev/null
 done
+
+gcloud run jobs execute "$network_probe_job" --project="$project_id" \
+  --region="$region" --wait --format=json >"$scratch/network-execution.json"
+gcloud run jobs execute "$temporal_secret_probe_job" --project="$project_id" \
+  --region="$region" --wait --format=json >"$scratch/temporal-secret-execution.json"
+gcloud run jobs execute "$denied_secret_probe_job" --project="$project_id" \
+  --region="$region" --wait --format=json >"$scratch/denied-secret-execution.json"
 
 gcloud compute routers nats describe "$name_prefix-nat" --router="$name_prefix-router" \
   --region="$region" --project="$project_id" --format=json >"$scratch/nat.json"
@@ -126,14 +156,17 @@ jq -e --arg network_id "$network_id" --arg cost_owner "$cost_owner" '
   and .labels.cost_owner == $cost_owner
 ' "$scratch/dns.json" >/dev/null
 
-temporal_attachment=$(jq -r '.temporal_service_attachment_uri // empty' "$varset")
 temporal_status=MISSING
 private_dns_record_status=MISSING
-if [[ -n "$temporal_attachment" ]]; then
-  gcloud compute forwarding-rules describe "$name_prefix-temporal-psc" \
-    --region="$region" --project="$project_id" --format=json >"$scratch/temporal.json"
-  jq -e '.pscConnectionStatus == "ACCEPTED"' "$scratch/temporal.json" >/dev/null
-  gcloud dns record-sets describe "api.$(jq -r '.temporal_dns_name' "$varset")" \
+temporal_attachment=""
+if gcloud compute forwarding-rules describe "$name_prefix-temporal-psc" \
+  --region="$region" --project="$project_id" --format=json >"$scratch/temporal.json" 2>/dev/null; then
+  temporal_attachment=$(jq -r '.target' "$scratch/temporal.json")
+  jq -e '
+    .pscConnectionStatus == "ACCEPTED"
+    and (.target | test("^projects/[^/]+/regions/us-east4/serviceAttachments/[^/]+$"))
+  ' "$scratch/temporal.json" >/dev/null
+  gcloud dns record-sets describe "api.temporal.internal." \
     --zone="$name_prefix-private" --type=A --project="$project_id" --format=json \
     >"$scratch/temporal-dns.json"
   temporal_status=PASS
@@ -145,25 +178,38 @@ jq -n \
   --arg project_id "$project_id" \
   --arg region "$region" \
   --arg artifact_sha256 "$artifact_sha" \
+  --arg pubsub_endpoint "$region-pubsub.googleapis.com" \
+  --arg temporal_service_attachment "$temporal_attachment" \
   --arg temporal_private_service_connect "$temporal_status" \
   --arg private_dns_record "$private_dns_record_status" \
-  --arg authorized_secret_version_access "$secret_version_access_status" \
   --slurpfile quota_preflight "$preflight_report" \
+  --slurpfile network_execution "$scratch/network-execution.json" \
+  --slurpfile temporal_secret_execution "$scratch/temporal-secret-execution.json" \
+  --slurpfile denied_secret_execution "$scratch/denied-secret-execution.json" \
   '{schema_version: 1, qualification: "MISSING", project_id: $project_id, region: $region, checks: {
     private_cloud_sql_configuration_and_iam_users: "PASS",
-    private_database_connection_from_direct_vpc: "MISSING",
+    private_database_connection_from_direct_vpc: "PASS",
     ordered_pubsub_round_trip: "PASS",
     immutable_artifact_round_trip: "PASS",
+    artifact_overwrite_rejected: "PASS",
     intended_secret_accessor_policy: "PASS",
-    authorized_secret_version_access: $authorized_secret_version_access,
+    authorized_secret_version_access: "PASS",
+    negative_secret_payload_access: "PASS",
     private_dns_zone_and_static_nat_configuration: "PASS",
+    private_dns_resolution_from_direct_vpc: "PASS",
     private_dns_record: $private_dns_record,
-    static_nat_traffic_from_direct_vpc: "MISSING",
+    static_nat_traffic_from_direct_vpc: "PASS",
     temporal_private_service_connect: $temporal_private_service_connect,
     quota_preflight: $quota_preflight[0]
-  }, artifact_sha256: $artifact_sha256}' >"$scratch/report.json"
+  }, artifact_sha256: $artifact_sha256, pubsub_endpoint: $pubsub_endpoint,
+  qualification_executions: {
+    network: $network_execution[0].metadata.name,
+    temporal_secret: $temporal_secret_execution[0].metadata.name,
+    denied_secret: $denied_secret_execution[0].metadata.name
+  },
+  temporal_service_attachment: $temporal_service_attachment}' >"$scratch/report.json"
 
 report_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
   "$scratch/report.json" "$evidence_bucket")
 
-printf 'MISSING: runtime network probes and Temporal PSC, managed checks retained as evidence=%s\n' "$report_sha"
+printf 'MISSING: Temporal PSC, all implementable managed checks retained as evidence=%s\n' "$report_sha"

@@ -28,14 +28,6 @@ data "google_compute_address" "environment_egress" {
   name    = "${var.name_prefix}-egress"
 }
 
-data "google_compute_address" "temporal" {
-  count = var.enable_managed_platform && var.temporal_service_attachment_uri != null ? 1 : 0
-
-  project = var.project_id
-  region  = var.region
-  name    = "${var.name_prefix}-temporal-psc"
-}
-
 module "data_authority" {
   source = "../../../modules/data-authority"
 
@@ -66,6 +58,25 @@ module "command_buffer" {
   labels                     = local.labels
 }
 
+module "qualification_probe" {
+  source = "../../../modules/qualification-probe"
+
+  enabled                   = var.enable_managed_platform
+  project_id                = var.project_id
+  region                    = var.region
+  name_prefix               = var.name_prefix
+  network_name              = try(data.google_compute_network.environment_baseline[0].name, null)
+  subnetwork_name           = try(data.google_compute_subnetwork.environment_baseline[0].name, null)
+  private_dns_zone_name     = "${var.name_prefix}-private"
+  cloud_sql_connection_name = module.data_authority.cloud_sql_connection_name
+  cloud_sql_private_ip      = module.data_authority.cloud_sql_private_ip
+  static_egress_ip          = try(data.google_compute_address.environment_egress[0].address, null)
+  runtime_service_accounts  = module.data_authority.runtime_service_accounts
+  secret_names              = module.data_authority.secret_names
+  probe_image               = jsondecode(file("${path.root}/image-digests.json")).qualification_probe
+  labels                    = local.labels
+}
+
 resource "terraform_data" "disposable_proof" {
   input = {
     environment = "development"
@@ -88,7 +99,6 @@ output "platform" {
     network_id                   = try(data.google_compute_network.environment_baseline[0].id, null)
     subnetwork_id                = try(data.google_compute_subnetwork.environment_baseline[0].id, null)
     static_egress_ip             = try(data.google_compute_address.environment_egress[0].address, null)
-    temporal_endpoint_ip         = try(data.google_compute_address.temporal[0].address, null)
     cloud_sql_connection_name    = module.data_authority.cloud_sql_connection_name
     cloud_sql_private_ip         = module.data_authority.cloud_sql_private_ip
     pubsub_topic_id              = module.command_buffer.topic_id
@@ -98,6 +108,8 @@ output "platform" {
     evidence_archive_bucket_name = module.data_authority.evidence_archive_bucket_name
     secret_names                 = module.data_authority.secret_names
     runtime_service_accounts     = module.data_authority.runtime_service_accounts
+    qualification_probe_jobs     = module.qualification_probe.job_names
+    qualification_database_dns   = module.qualification_probe.database_dns_name
   }
 }
 

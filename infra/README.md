@@ -23,6 +23,15 @@ outside the disposable root is required for reliable exact cleanup. A platform
 destroy removes every resource in its state without disabling capabilities or
 blocking later recreations.
 
+That retained boundary has a deliberate development-only blast radius. The VPC,
+subnet, static external address, Cloud NAT, router, private DNS zone, firewall,
+and private services access allocation continue to exist and may continue to
+incur cost after a platform destroy. They are not shared with production and
+the scheduled foundation refresh-only plan owns their drift. The disposable
+root creates and destroys Cloud SQL, Pub/Sub, runtime service accounts, secret
+containers and policy, Artifact Registry, the artifact bucket, qualification
+jobs, and its private database DNS record.
+
 The reviewed variable set exposes database size and retention, storage names,
 quota expectations, process connection pools, concurrency, fixed worker counts,
 streams, and execution slots. These are development inputs and conditional
@@ -36,15 +45,26 @@ not part of development destroy. The development artifact bucket uses
 evidence before teardown.
 
 Temporal Cloud must publish and authorize a same-region service attachment.
-Set `temporal_service_attachment_uri` to its non-secret `us-east4` URI. When it
-is null, the report records Temporal PSC as `MISSING`, never `PASS`.
+Foundation alone accepts its non-secret `us-east4` URI and DNS name. The
+disposable root discovers the retained forwarding rule and records its exact
+target, so duplicated root inputs cannot drift. When the forwarding rule is not
+available, the report records Temporal PSC as `MISSING`, never `PASS`.
 
-The platform smoke checks managed-service behavior that can be exercised before
-the runtime root exists: ordered publish and pull, immutable artifact storage,
-intended-principal secret access, private Cloud SQL configuration and IAM users,
-and NAT and private-DNS configuration. An application connection from Direct
-VPC egress, DNS resolution inside that workload, and observed static-NAT traffic
-remain `MISSING` until the runtime ticket supplies the pinned workload image.
+The platform smoke uses digest-pinned disposable Cloud Run Jobs with Direct VPC
+egress. It proves private-only Cloud SQL connectivity with an IAM database
+login, private DNS resolution, and observed public egress through the retained
+static NAT address. It also uses the intended AgentRun and Temporal identities
+to read known non-secret qualification versions and proves the reconciliation
+identity cannot read them. The platform identity may create versions and manage
+containers and policy, but its custom role cannot access version payloads or
+mint runtime identity tokens. Its narrowly scoped `actAs` bindings exist only
+to configure the three reviewed qualification jobs.
+
+The ordered Pub/Sub round trip uses an isolated disposable subscription and the
+`us-east4` regional API endpoint, so it cannot acknowledge runtime messages.
+The artifact proof creates one content-addressed object, rejects a second
+generation with a zero-generation precondition, and verifies that only one
+generation exists.
 
 After foundation has applied the evidence bucket and platform IAM additions,
 initialize the development backend and run the destructive, disposable proof:
@@ -57,12 +77,21 @@ SAVED_PLAN_BUCKET="$GCP_SAVED_PLAN_BUCKET" \
   infra/tests/development-platform-live.sh
 ```
 
-The proof runs quota preflight against every reviewed quota input, exact
-saved-plan apply, an empty second plan, managed-service smoke checks, immutable
-evidence upload, exact destroy, and an empty disposable state check. It retains
-separate content-addressed managed-service and post-destroy lifecycle reports,
-and verifies that the foundation network baseline remains present.
-Scheduled drift remains read-only and never auto-applies.
+The proof refuses a dirty tree and binds evidence to the exact commit, reviewed
+variable and image files, and create, no-change, and destroy plan manifests. It
+runs quota preflight, exact saved-plan apply, an empty second plan,
+managed-service smoke checks, immutable evidence upload, and exact destroy. The
+post-destroy gate fails closed if Terraform state cannot be read, then performs
+negative provider lookups for every disposable service and queries retained
+Cloud Audit Logs for lifecycle deletion history. Separate content-addressed
+reports preserve managed checks, absence checks, audit events, and the final
+lifecycle binding.
+
+Both scheduled drift jobs are read-only. One refreshes the retained foundation
+baseline, while the other refreshes the empty disposable state and performs the
+same provider absence checks. Neither job applies. Missing protected workflow
+configuration fails with an explicit `MISSING` message instead of silently
+skipping a green job.
 
 ## Fixed toolchain
 
@@ -252,10 +281,12 @@ infra/scripts/apply-plan.sh production infra/roots/production/platform \
   .plans/production/platform/BINDING_SHA256.tfplan
 ```
 
-The manual development workflow applies the harmless `terraform_data` proof,
-runs a locked read-only refresh plan, and destroys only that proof. Its remote
-state remains versioned and recoverable. The scheduled drift job is read-only
-and fails when `-detailed-exitcode` reports drift. It never applies.
+The manual development workflow creates the full disposable development
+platform and the three qualification jobs, exercises live managed services,
+then destroys that complete disposable set. It does not destroy the retained
+foundation network baseline. Its remote state remains versioned and
+recoverable. A remaining acceptance gap, including unavailable Temporal PSC,
+is reported as `MISSING` and the lifecycle command exits nonzero.
 
 Terraform may create Secret Manager containers, IAM, replication, and rotation
 policy in later roots. Secret versions and payloads are prohibited from source,

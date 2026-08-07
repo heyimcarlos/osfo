@@ -14,6 +14,18 @@ region=$(jq -r '.region' "$varset")
 name_prefix=$(jq -r '.name_prefix' "$varset")
 mkdir -p "$plan_dir"
 
+if ! git -C "$repo_root" diff-index --quiet HEAD -- \
+  || [[ -n "$(git -C "$repo_root" ls-files --others --exclude-standard)" ]]; then
+  printf 'FAIL: live evidence requires a clean reviewed source commit\n' >&2
+  exit 1
+fi
+
+source_commit=$(git -C "$repo_root" rev-parse HEAD)
+varset_sha=$(sha256sum "$varset" | cut -d' ' -f1)
+image_digests_sha=$(sha256sum "$image_digests" | cut -d' ' -f1)
+lifecycle_started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+destroy_binding=""
+
 export TF_VARSET_FILE=$varset
 export TF_IMAGE_DIGESTS_FILE=$image_digests
 
@@ -27,6 +39,7 @@ destroy_platform() {
     if "$repo_root/infra/scripts/create-plan.sh" development "$root" "$destroy_plan" -destroy \
       && "$repo_root/infra/scripts/store-plan.sh" "$SAVED_PLAN_BUCKET" "$destroy_plan" \
       && "$repo_root/infra/scripts/apply-plan.sh" development "$root" "$destroy_plan"; then
+      destroy_binding=$(jq -r '.binding_sha256' "$destroy_plan.manifest.json")
       destroyed=true
       break
     fi
@@ -40,7 +53,18 @@ destroy_platform() {
     return 1
   fi
 
-  if [[ -n "$("$terraform_bin" -chdir="$root" state list)" ]]; then
+  local state_output
+  local state_status
+  set +e
+  state_output=$("$terraform_bin" -chdir="$root" state list 2>"$plan_dir/state-list.error")
+  state_status=$?
+  set -e
+  if ((state_status != 0)); then
+    printf 'FAIL: unable to verify empty development platform state\n' >&2
+    cat "$plan_dir/state-list.error" >&2
+    return 1
+  fi
+  if [[ -n "$state_output" ]]; then
     printf 'FAIL: development platform state still contains disposable resources\n' >&2
     return 1
   fi
@@ -54,6 +78,8 @@ destroy_platform() {
 }
 
 cleanup_required=false
+# Invoked through the EXIT trap below.
+# shellcheck disable=SC2329
 cleanup_on_exit() {
   local command_status=$?
   trap - EXIT
@@ -72,12 +98,14 @@ trap cleanup_on_exit EXIT
 create_plan="$plan_dir/create.tfplan"
 "$repo_root/infra/scripts/create-plan.sh" development "$root" "$create_plan"
 "$repo_root/infra/scripts/store-plan.sh" "$SAVED_PLAN_BUCKET" "$create_plan"
+create_binding=$(jq -r '.binding_sha256' "$create_plan.manifest.json")
 cleanup_required=true
 "$repo_root/infra/scripts/apply-plan.sh" development "$root" "$create_plan"
 
 second_plan="$plan_dir/second.tfplan"
 "$repo_root/infra/scripts/create-plan.sh" development "$root" "$second_plan" -detailed-exitcode
 "$repo_root/infra/scripts/store-plan.sh" "$SAVED_PLAN_BUCKET" "$second_plan"
+second_binding=$(jq -r '.binding_sha256' "$second_plan.manifest.json")
 
 smoke_output=$("$repo_root/infra/tests/development-platform-smoke.sh")
 printf '%s\n' "$smoke_output"
@@ -87,21 +115,53 @@ test -n "$managed_report_sha"
 destroy_platform
 cleanup_required=false
 
+absence_report=$(mktemp)
+audit_report=$(mktemp)
 lifecycle_report=$(mktemp)
-trap 'rm -f "$lifecycle_report"' EXIT
+trap 'rm -f "$absence_report" "$audit_report" "$lifecycle_report"' EXIT
+"$repo_root/infra/tests/development-platform-absent.sh" "$absence_report"
+absence_report_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
+  "$absence_report" "$evidence_bucket")
+"$repo_root/infra/tests/development-platform-audit.sh" \
+  "$lifecycle_started_at" "$audit_report"
+audit_report_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
+  "$audit_report" "$evidence_bucket")
+
 jq -n \
+  --arg source_commit "$source_commit" \
+  --arg variable_set_sha256 "$varset_sha" \
+  --arg image_digests_sha256 "$image_digests_sha" \
+  --arg create_plan_binding_sha256 "$create_binding" \
+  --arg second_plan_binding_sha256 "$second_binding" \
+  --arg destroy_plan_binding_sha256 "$destroy_binding" \
   --arg managed_report_sha256 "$managed_report_sha" \
-  '{schema_version: 1, qualification: "MISSING", checks: {
+  --arg absence_report_sha256 "$absence_report_sha" \
+  --arg audit_report_sha256 "$audit_report_sha" \
+  '{schema_version: 1, qualification: "MISSING", source: {
+    commit_sha: $source_commit,
+    clean_tree: true,
+    variable_set_sha256: $variable_set_sha256,
+    image_digests_sha256: $image_digests_sha256,
+    create_plan_binding_sha256: $create_plan_binding_sha256,
+    second_plan_binding_sha256: $second_plan_binding_sha256,
+    destroy_plan_binding_sha256: $destroy_plan_binding_sha256
+  }, checks: {
     empty_second_plan: "PASS",
     exact_disposable_destroy: "PASS",
     empty_disposable_state: "PASS",
+    negative_provider_lookups: "PASS",
     retained_environment_baseline: "PASS",
     backend_state_retained: "PASS",
-    audit_history_retained: "MISSING",
-    managed_service_qualification: "MISSING"
-  }, managed_service_report_sha256: $managed_report_sha256}' >"$lifecycle_report"
+    audit_history_retained: "PASS",
+    implementable_managed_service_checks: "PASS",
+    managed_service_qualification: "MISSING",
+    temporal_private_service_connect: "MISSING"
+  }, managed_service_report_sha256: $managed_report_sha256,
+  absence_report_sha256: $absence_report_sha256,
+  audit_report_sha256: $audit_report_sha256}' >"$lifecycle_report"
 lifecycle_report_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
   "$lifecycle_report" "$evidence_bucket")
 
-printf 'PASS: empty second plan and exact destroy, qualification=MISSING, lifecycle evidence=%s\n' \
+printf 'MISSING: Temporal PSC, implementable lifecycle gates PASS, lifecycle evidence=%s\n' \
   "$lifecycle_report_sha"
+exit 3
