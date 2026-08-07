@@ -144,7 +144,7 @@ rg --fixed-strings --quiet \
 jq -e '
   .platform_ready == true
   and .serving_enabled == true
-  and .public_hostname == null
+  and .public_hostname == "34.117.18.9.sslip.io"
   and .cursor_secret_version == "1"
   and .model_adapter_secret_version == "1"
   and .execution_profile_ref == "oz.openrouter.minimax.minimax-m3.chat-completions.v1"
