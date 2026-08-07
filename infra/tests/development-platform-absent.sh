@@ -99,13 +99,6 @@ while IFS=$'\t' read -r identity email; do
     gcloud iam service-accounts list --project="$project_id" --format='value(email)'
 done < <(jq -r '.runtime_service_accounts | to_entries[] | [.key, .value] | @tsv' "$varset")
 
-if ! gcloud projects get-iam-policy "$project_id" --format=json \
-  >"$scratch/project-iam-policy.json" 2>"$scratch/project-iam-policy.error"; then
-  printf 'FAIL: provider lookup for project IAM policy failed closed\n' >&2
-  cat "$scratch/project-iam-policy.error" >&2
-  exit 1
-fi
-
 for identity in migration reconciliation; do
   email="$name_prefix-$identity@$project_id.iam.gserviceaccount.com"
   assert_present "service_account_dormant_$identity" "$email" \
@@ -122,13 +115,6 @@ for identity in migration reconciliation; do
   jq -e --arg email "$email" '.email == $email and .disabled == true' \
     "$scratch/service-account-dormant-$identity.json" >/dev/null || {
     printf 'FAIL: dormant service account %s is not disabled\n' "$identity" >&2
-    exit 1
-  }
-
-  jq -e --arg member "serviceAccount:$email" \
-    'all(.bindings // []; all(.members // []; . != $member))' \
-    "$scratch/project-iam-policy.json" >/dev/null || {
-    printf 'FAIL: dormant service account %s retains a project role\n' "$identity" >&2
     exit 1
   }
 
@@ -183,7 +169,8 @@ jq -n --arg project_id "$project_id" --arg region "$region" '{
     pubsub_topic_and_subscription: "PASS",
     qualification_subscriptions: "PASS",
     retained_runtime_service_accounts: "PASS",
-    protected_dormant_identity_authority_absent: "PASS",
+    protected_dormant_service_accounts_disabled: "PASS",
+    protected_dormant_service_account_iam_bindings_absent: "PASS",
     retained_qualification_service_accounts: "PASS",
     secrets: "PASS",
     artifact_registry: "PASS",

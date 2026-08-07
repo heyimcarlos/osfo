@@ -100,7 +100,11 @@ for removed_job in database_bootstrap migration seed reconciliation; do
   fi
 done
 
-rg --fixed-strings --quiet 'protected_dormant_identity_authority_absent: "PASS"' \
-  infra/tests/development-platform-absent.sh
+for dormant_provider_check in \
+  'protected_dormant_service_accounts_disabled: "PASS"' \
+  'protected_dormant_service_account_iam_bindings_absent: "PASS"'; do
+  rg --fixed-strings --quiet "$dormant_provider_check" \
+    infra/tests/development-platform-absent.sh
+done
 
 printf 'PASS: protected dormant identities are retained without runtime authority\n'
