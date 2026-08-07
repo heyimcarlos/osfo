@@ -73,12 +73,16 @@ Jobs with Direct VPC egress. It proves private-only Cloud SQL connectivity with
 an IAM database login, private DNS resolution, and observed public egress
 through the retained static NAT address. No qualification identity has secret
 access, and runtime identities are never impersonable by the platform identity.
-The denied probe must fail with the exact `secretmanager.versions.access`
-permission denial. The platform may create versions and manage containers, but
-it cannot change secret IAM, access version payloads, or mint runtime
-credentials. Authorized secret-version access therefore remains `MISSING` in
-this preparatory PR. Package installation inside the pinned base image is still
-mutable, so full probe toolchain determinism is also `MISSING`.
+The denied probe requires a nonzero secret-version access result with an empty
+payload, independently of human-readable `gcloud` errors. A foundation preflight
+validates the exact live denied identity, resolves every project role bound to
+it, and rejects any role granting secret payload access. The same preflight
+rejects secret-level IAM resources in the disposable platform definition. The
+platform may create versions and manage containers, but it cannot change secret
+IAM, access version payloads, or mint runtime credentials. Authorized
+secret-version access therefore remains `MISSING` in this preparatory PR.
+Package installation inside the pinned base image is still mutable, so full
+probe toolchain determinism is also `MISSING`.
 The retained private zone owns two narrow platform bindings. The conditional
 record role uses Cloud DNS's numeric project and managed-zone identifiers to
 match the full `database.temporal.internal.` A resource name exactly. A

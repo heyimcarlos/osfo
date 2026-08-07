@@ -66,9 +66,35 @@ rg --fixed-strings --quiet 'private_database_connection_from_direct_vpc: "PASS"'
 rg --fixed-strings --quiet 'static_nat_traffic_from_direct_vpc: "PASS"' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'exact_permission_denied_secret_payload_access: "PASS"' \
   infra/tests/development-platform-smoke.sh
-rg --fixed-strings --quiet "grep -Fq 'PERMISSION_DENIED'" infra/modules/qualification-probe/main.tf
-rg --fixed-strings --quiet "grep -Fq 'secretmanager.versions.access'" \
+rg --fixed-strings --quiet \
+  'file("${path.module}/denied-secret-proof.sh")' \
   infra/modules/qualification-probe/main.tf
+for denied_secret_runtime_proof in \
+  '>"$payload_file" 2>"$error_file"' \
+  'if ((access_status == 0)); then' \
+  'if [[ -s "$payload_file" ]]; then'; do
+  rg --fixed-strings --quiet -- "$denied_secret_runtime_proof" \
+    infra/modules/qualification-probe/denied-secret-proof.sh
+done
+for denied_secret_policy_proof in \
+  'gcloud projects get-iam-policy "$project_id" --format=json' \
+  'gcloud iam roles describe "$bound_role" --format=json' \
+  'google_secret_manager_secret_iam_(member|binding|policy)' \
+  'secretmanager.versions.access'; do
+  rg --fixed-strings --quiet -- "$denied_secret_policy_proof" \
+    infra/tests/development-denied-secret-iam-preflight.sh
+done
+if rg --quiet 'PERMISSION_DENIED|HTTPError|denial wording' \
+  infra/modules/qualification-probe/denied-secret-proof.sh \
+  infra/tests/development-denied-secret-iam-preflight.sh; then
+  printf 'denied-secret proof must not parse human-readable gcloud errors\n' >&2
+  exit 1
+fi
+if rg --quiet 'resource "google_secret_manager_secret_iam_' \
+  "$root" infra/modules; then
+  printf 'disposable platform must not create secret-level IAM bindings\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet 'artifact_immutability_enforced_by_iam: "PASS"' \
   infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'artifact_unconditional_overwrite_denied_by_iam: "PASS"' \
@@ -452,6 +478,8 @@ rg --fixed-strings --quiet \
   "resource.name.startsWith('projects/_/buckets/\${local.development_artifact_bucket_name}/objects/')" \
   infra/roots/foundation/main.tf
 rg --fixed-strings --quiet 'infra/tests/development-platform-recovery-preflight.sh' \
+  .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'infra/tests/development-denied-secret-iam-preflight.sh' \
   .github/workflows/terraform.yml
 # Shell variables are intentionally matched as literal source text.
 # shellcheck disable=SC2016

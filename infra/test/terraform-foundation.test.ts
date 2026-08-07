@@ -51,6 +51,20 @@ describe("Terraform foundation", () => {
     ),
   );
 
+  it.effect("proves denied secret access fails without a payload", () =>
+    expectCheckPasses(
+      "infra/tests/development-denied-secret-proof-contract.sh",
+      "development denied-secret runtime proof assertions",
+    ),
+  );
+
+  it.effect("proves denied secret IAM authority is absent", () =>
+    expectCheckPasses(
+      "infra/tests/development-denied-secret-iam-preflight-contract.sh",
+      "development denied-secret IAM preflight assertions",
+    ),
+  );
+
   it.effect("enforces development failure diagnostics and teardown independence", () =>
     expectCheckPasses(
       "infra/tests/development-platform-repair-contract.sh",
