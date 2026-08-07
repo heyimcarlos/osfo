@@ -2,7 +2,12 @@ import { describe, expect, it } from "@effect/vitest";
 import { getTableName } from "drizzle-orm";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { InvalidMessageAdmissionDatabaseConfig, makeMessageAdmissionLayer } from "../src/index";
+import {
+  InvalidMessageAdmissionDatabaseConfig,
+  InvalidThreadResumeDatabaseConfig,
+  makeMessageAdmissionLayer,
+  makeThreadResumeLayer,
+} from "../src/index";
 import { databaseSchema } from "../src/schema";
 
 describe("database schema", () => {
@@ -11,6 +16,8 @@ describe("database schema", () => {
       "acceptance_receipts",
       "admission_global_capacity",
       "admission_principal_capacity",
+      "admission_principal_set_generation",
+      "admission_rejections",
       "agent_run_capacity_reservations",
       "agent_runs",
       "assistant_outputs",
@@ -31,15 +38,16 @@ describe("database schema", () => {
     ]);
   });
 
-  it.effect("rejects invalid database adapter configuration before connecting", () =>
+  it.effect("rejects an unbounded message admission database pool before connecting", () =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(
         Effect.scoped(
           Layer.build(
             makeMessageAdmissionLayer({
-              databaseUrl: "",
+              databaseUrl: "postgres://not-contacted.invalid/osfo",
               executionProfileRef: "test",
               globalNonTerminalLimit: 1,
+              maxConnections: 0,
               principalNonTerminalLimit: 1,
             }),
           ),
@@ -47,6 +55,28 @@ describe("database schema", () => {
       );
 
       expect(error).toBeInstanceOf(InvalidMessageAdmissionDatabaseConfig);
+    }),
+  );
+
+  it.effect("rejects an unbounded Thread resume database pool before connecting", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        Effect.scoped(
+          Layer.build(
+            makeThreadResumeLayer({
+              cursorSecret: "local-reference-cursor-secret-change-in-production",
+              databaseUrl: "postgres://not-contacted.invalid/osfo",
+              maxConnections: 0,
+              pollIntervalMs: 1,
+              replayEventLimit: 1,
+              replayGuaranteedForMs: 1,
+              snapshotTimelineLimit: 1,
+            }),
+          ),
+        ),
+      );
+
+      expect(error).toBeInstanceOf(InvalidThreadResumeDatabaseConfig);
     }),
   );
 });

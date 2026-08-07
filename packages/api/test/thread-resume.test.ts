@@ -1,5 +1,6 @@
 import {
   AcceptanceReceipt,
+  AdmissionUnavailable,
   MessageAdmission,
   ThreadResume,
   type ThreadResumeService,
@@ -61,6 +62,8 @@ const makeHarness = (resume: ThreadResumeService) => {
     accept: (
       _command: SubmitMessageCommand,
     ): Effect.Effect<AcceptanceReceipt, MessageAdmissionError> => Effect.succeed(receipt),
+    reconcile: () => Effect.succeed(receipt),
+    reconcileCapacity: () => Effect.fail(new AdmissionUnavailable()),
   });
   const web = HttpRouter.toWebHandler(
     OsfoApiLive.pipe(

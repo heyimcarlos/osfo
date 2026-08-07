@@ -77,6 +77,18 @@ export class AdmissionUnavailable extends Schema.TaggedErrorClass<AdmissionUnava
   { httpApiStatus: 503 },
 ) {}
 
+export class AdmissionCommitUnknown extends Schema.TaggedErrorClass<AdmissionCommitUnknown>()(
+  "AdmissionCommitUnknown",
+  {},
+  { httpApiStatus: 503 },
+) {}
+
+export class AdmissionNotAccepted extends Schema.TaggedErrorClass<AdmissionNotAccepted>()(
+  "AdmissionNotAccepted",
+  {},
+  { httpApiStatus: 404 },
+) {}
+
 export class InvalidCursor extends Schema.TaggedErrorClass<InvalidCursor>()(
   "InvalidCursor",
   {},
@@ -166,7 +178,22 @@ export const ThreadsApi = HttpApiGroup.make("threads")
       params: { threadId: Uuid },
       payload: SubmitMessagePayload,
       success: AcceptanceReceipt,
-      error: [ThreadNotFound, IdempotencyConflict, CapacityRejected, AdmissionUnavailable],
+      error: [
+        ThreadNotFound,
+        IdempotencyConflict,
+        CapacityRejected,
+        AdmissionNotAccepted,
+        AdmissionUnavailable,
+        AdmissionCommitUnknown,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("reconcileMessageAdmission", "/v1/threads/:threadId/messages/reconcile", {
+      params: { threadId: Uuid },
+      payload: SubmitMessagePayload,
+      success: AcceptanceReceipt,
+      error: [ThreadNotFound, IdempotencyConflict, AdmissionNotAccepted, AdmissionCommitUnknown],
     }),
   )
   .add(

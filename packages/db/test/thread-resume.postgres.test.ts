@@ -33,11 +33,13 @@ const runtime = ManagedRuntime.make(
       databaseUrl,
       executionProfileRef: "oz.thread-resume-test.v1",
       globalNonTerminalLimit: 20,
+      maxConnections: 12,
       principalNonTerminalLimit: 20,
     }),
     makeThreadResumeLayer({
       cursorSecret,
       databaseUrl,
+      maxConnections: 12,
       pollIntervalMs: 10,
       replayEventLimit: 2,
       replayGuaranteedForMs: 30_000,

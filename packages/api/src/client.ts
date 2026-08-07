@@ -1,13 +1,19 @@
 import { Data, Effect, Layer, Schema, Stream } from "effect";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientError,
-  HttpClientRequest,
-} from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { HttpApiClient, HttpApiMiddleware } from "effect/unstable/httpapi";
 import { OsfoApi } from "./api.js";
-import { Authentication, type SubmitMessagePayload } from "./threads/api.js";
+import {
+  AdmissionCommitUnknown,
+  AdmissionNotAccepted,
+  AdmissionUnavailable,
+  Authentication,
+  AuthenticationRejected,
+  CapacityRejected,
+  IdempotencyConflict,
+  MalformedRequest,
+  ThreadNotFound,
+  type SubmitMessagePayload,
+} from "./threads/api.js";
 
 export class CommitUnknown extends Data.TaggedError("CommitUnknown") {}
 
@@ -35,28 +41,75 @@ export interface SubmitThreadMessage
   readonly threadId: string;
 }
 
-const isAmbiguousClientFailure = (error: unknown) =>
-  HttpClientError.isHttpClientError(error) || Schema.isSchemaError(error);
+const isDefiniteSubmissionRejection = Schema.is(
+  Schema.Union([
+    AdmissionUnavailable,
+    AdmissionNotAccepted,
+    AuthenticationRejected,
+    CapacityRejected,
+    IdempotencyConflict,
+    MalformedRequest,
+    ThreadNotFound,
+  ]),
+);
+
+const isDefiniteReconciliationResult = Schema.is(
+  Schema.Union([AdmissionNotAccepted, IdempotencyConflict, ThreadNotFound]),
+);
 
 export const submitThreadMessage = Effect.fn("OsfoApiClient.submitThreadMessage")(function* (
   command: SubmitThreadMessage,
 ) {
-  const client = yield* makeApiClient(command);
-  const receipt = yield* client.threads
-    .submitMessage({
+  const payload = {
+    protocolVersion: 1 as const,
+    idempotencyKey: command.idempotencyKey,
+    message: command.message,
+  };
+  const submit = Effect.gen(function* () {
+    const client = yield* makeApiClient(command);
+    const receipt = yield* client.threads.submitMessage({
       params: { threadId: command.threadId },
-      payload: {
-        protocolVersion: 1,
-        idempotencyKey: command.idempotencyKey,
-        message: command.message,
-      },
-    })
-    .pipe(Effect.catchIf(isAmbiguousClientFailure, () => Effect.fail(new CommitUnknown())));
+      payload,
+    });
+    if (
+      receipt.threadId !== command.threadId ||
+      receipt.idempotencyKey !== command.idempotencyKey
+    ) {
+      return yield* new CommitUnknown();
+    }
+    return receipt;
+  }).pipe(
+    Effect.mapError((error) =>
+      Schema.is(AdmissionCommitUnknown)(error) || !isDefiniteSubmissionRejection(error)
+        ? new CommitUnknown()
+        : error,
+    ),
+  );
 
-  if (receipt.threadId !== command.threadId || receipt.idempotencyKey !== command.idempotencyKey) {
-    return yield* new CommitUnknown();
-  }
-  return receipt;
+  const reconcile = Effect.gen(function* () {
+    const client = yield* makeApiClient(command);
+    const receipt = yield* client.threads.reconcileMessageAdmission({
+      params: { threadId: command.threadId },
+      payload,
+    });
+    if (
+      receipt.threadId !== command.threadId ||
+      receipt.idempotencyKey !== command.idempotencyKey
+    ) {
+      return yield* new CommitUnknown();
+    }
+    return receipt;
+  }).pipe(
+    Effect.mapError((error) =>
+      isDefiniteReconciliationResult(error) ? error : new CommitUnknown(),
+    ),
+  );
+
+  return yield* submit.pipe(
+    Effect.catchTag("CommitUnknown", () =>
+      submit.pipe(Effect.matchEffect({ onFailure: () => reconcile, onSuccess: Effect.succeed })),
+    ),
+  );
 });
 
 export interface GetThreadSnapshot extends ApiClientOptions {

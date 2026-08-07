@@ -22,6 +22,7 @@ export function SubmissionError({ submission }: { readonly submission: ThreadCha
           () => "That retry key already belongs to a different message.",
         ),
         Match.tag("CapacityRejected", () => "Thread admission is currently at capacity."),
+        Match.tag("AdmissionNotAccepted", () => "This message was not accepted."),
         Match.tag("AdmissionUnavailable", () => "Durable admission is temporarily unavailable."),
         Match.tag("MalformedRequest", () => "The message does not match the Thread contract."),
         Match.exhaustive,

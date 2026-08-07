@@ -1,10 +1,13 @@
 export { OsfoApi } from "./api.js";
 export {
+  AdmissionCapacityReconciliationSchema,
   MessageAdmission,
   ThreadResume,
   isThreadResumeError,
   isThreadSnapshotError,
+  type AdmissionCapacityReconciliation,
   type MessageAdmissionError,
+  type MessageAdmissionReconciliationError,
   type SubmitMessageCommand,
   type ThreadAccess,
   type ThreadHistoryRequest,
@@ -15,6 +18,8 @@ export {
 } from "./services.js";
 export {
   AcceptanceReceipt,
+  AdmissionCommitUnknown,
+  AdmissionNotAccepted,
   AdmissionUnavailable,
   AuthenticationRejected,
   CapacityRejected,

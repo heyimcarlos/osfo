@@ -42,6 +42,18 @@ export const ThreadsHandlers = HttpApiBuilder.group(OsfoApi, "threads", (handler
       }),
     )
     .handle(
+      "reconcileMessageAdmission",
+      Effect.fn("OsfoApi.threads.reconcileMessageAdmission")(function* ({ params, payload }) {
+        const authenticationToken = yield* AuthenticationToken;
+        const admission = yield* MessageAdmission;
+        return yield* admission.reconcile({
+          ...payload,
+          authenticationToken,
+          threadId: params.threadId,
+        });
+      }),
+    )
+    .handle(
       "getSnapshot",
       Effect.fn("OsfoApi.threads.getSnapshot")(function* ({ params }) {
         const authenticationToken = yield* AuthenticationToken;
