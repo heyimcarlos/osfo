@@ -26,13 +26,17 @@ normalize_listing() {
   local destination_file=$2
 
   : >"$destination_file"
-  while IFS= read -r listed_uri; do
-    [[ -n "$listed_uri" ]] || continue
-    if [[ "$listed_uri" == "gs://$artifact_bucket/"*":" ]]; then
-      continue
-    fi
-    printf '%s\n' "$listed_uri" >>"$destination_file"
-  done <"$source_file"
+  if ! grep -q '[^[:space:]]' "$source_file"; then
+    return 0
+  fi
+  if ! jq -e '
+    type == "array"
+    and all(.[]; .type == "object" and (.url | type == "string"))
+  ' "$source_file" >/dev/null; then
+    printf 'FAIL: artifact object listing was not valid structured object metadata\n' >&2
+    return 1
+  fi
+  jq -r '.[].url' "$source_file" >"$destination_file"
 }
 
 if ! gcloud storage buckets describe "gs://$artifact_bucket" --project="$project_id" \
@@ -46,7 +50,7 @@ if ! gcloud storage buckets describe "gs://$artifact_bucket" --project="$project
   exit 1
 fi
 
-if ! gcloud storage ls --all-versions --recursive "gs://$artifact_bucket" \
+if ! gcloud storage ls --all-versions --recursive --json "gs://$artifact_bucket" \
   >"$scratch/objects" 2>"$scratch/objects.error"; then
   printf 'FAIL: artifact object listing failed closed\n' >&2
   cat "$scratch/objects.error" >&2
@@ -55,7 +59,7 @@ fi
 normalize_listing "$scratch/objects" "$scratch/object-uris"
 
 while IFS= read -r object_uri; do
-  if [[ "$object_uri" != "gs://$artifact_bucket/sha256/"* ]]; then
+  if [[ ! "$object_uri" =~ ^gs://$artifact_bucket/sha256/[0-9a-f]{64}(#[0-9]+)?$ ]]; then
     printf 'FAIL: refusing unexpected artifact object %s\n' "$object_uri" >&2
     exit 1
   fi
@@ -63,7 +67,7 @@ while IFS= read -r object_uri; do
 done <"$scratch/object-uris"
 
 remaining_status=0
-gcloud storage ls --all-versions --recursive "gs://$artifact_bucket" \
+gcloud storage ls --all-versions --recursive --json "gs://$artifact_bucket" \
   >"$scratch/remaining" 2>"$scratch/remaining.error" || remaining_status=$?
 if ((remaining_status != 0)); then
   printf 'FAIL: final artifact object listing failed closed\n' >&2

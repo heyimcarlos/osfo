@@ -70,7 +70,7 @@ printf '%s\n' \
   '    fi' \
   '    printf "%s\n" "{\"name\":\"osfo-development-artifacts-318708913\"}"' \
   '    ;;' \
-  '  "storage ls --all-versions --recursive gs://osfo-development-artifacts-318708913")' \
+  '  "storage ls --all-versions --recursive --json gs://osfo-development-artifacts-318708913")' \
     '    if [[ "${MOCK_STORAGE_MODE:-empty}" == list-permission ]]; then' \
     '      printf "PERMISSION_DENIED: storage.objects.list\n" >&2' \
     '      exit 1' \
@@ -80,8 +80,10 @@ printf '%s\n' \
     '      [[ ! -f "$MOCK_STORAGE_CALLS" ]] || list_count=$(<"$MOCK_STORAGE_CALLS")' \
     '      printf "%s\n" "$((list_count + 1))" >"$MOCK_STORAGE_CALLS"' \
     '      if ((list_count == 0)); then' \
-    '        printf "\n%s\n%s\n%s\n" "gs://osfo-development-artifacts-318708913/sha256/:" "gs://osfo-development-artifacts-318708913/sha256/abc#100" "gs://osfo-development-artifacts-318708913/sha256/abc#101"' \
+    '        printf "%s\n" "[{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#100\",\"type\":\"object\",\"metadata\":{}},{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#101\",\"type\":\"object\",\"metadata\":{}}]"' \
     '      fi' \
+    '    elif [[ "${MOCK_STORAGE_MODE:-empty}" == header-like-object ]]; then' \
+    '      printf "%s\n" "[{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:\",\"type\":\"object\",\"metadata\":{}}]"' \
     '    fi' \
     '    ;;' \
   '  "storage ls"*)' \
@@ -123,10 +125,25 @@ PATH="$mock_bin:$PATH" \
 grep -Fq 'PASS: foundation recovery removed only reviewed content-addressed artifact objects' \
   "$populated_output"
 cat >"$scratch/expected-storage-removals" <<'EOF'
-gs://osfo-development-artifacts-318708913/sha256/abc#100
-gs://osfo-development-artifacts-318708913/sha256/abc#101
+gs://osfo-development-artifacts-318708913/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#100
+gs://osfo-development-artifacts-318708913/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#101
 EOF
 cmp "$scratch/expected-storage-removals" "$storage_removals"
+
+header_like_output=$scratch/header-like-output
+if PATH="$mock_bin:$PATH" \
+  FOUNDATION_SERVICE_ACCOUNT=$foundation_account \
+  MOCK_STORAGE_MODE=header-like-object \
+  TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
+  infra/tests/development-platform-prepare-cleanup.sh >"$header_like_output" 2>&1; then
+  printf 'header-like object name must fail exact artifact validation\n' >&2
+  exit 1
+fi
+grep -Fq 'FAIL: refusing unexpected artifact object' "$header_like_output"
+if grep -Fq 'PASS:' "$header_like_output"; then
+  printf 'header-like object rejection must not report PASS\n' >&2
+  exit 1
+fi
 
 permission_output=$scratch/permission-output
 if PATH="$mock_bin:$PATH" \
