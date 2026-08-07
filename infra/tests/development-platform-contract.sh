@@ -65,6 +65,13 @@ rg --fixed-strings --quiet 'probe_toolchain_determinism: "MISSING"' \
   infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'development-platform-absent.sh' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'development-platform-audit.sh' infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'gcloud storage buckets describe "gs://$artifact_bucket"' \
+  infra/tests/development-platform-absent.sh
+if rg --fixed-strings --quiet 'gcloud storage buckets list' \
+  infra/tests/development-platform-absent.sh; then
+  printf 'artifact absence must use its exact scoped bucket permission\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet 'qualification_subscription "$name_prefix-ordering-"' \
   infra/tests/development-platform-absent.sh
 rg --fixed-strings --quiet 'diff-index --quiet HEAD --' infra/tests/development-platform-live.sh

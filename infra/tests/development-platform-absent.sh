@@ -65,6 +65,23 @@ assert_present() {
   fi
 }
 
+assert_exact_absent() {
+  local label=$1
+  shift
+  local lookup_status=0
+
+  "$@" >"$scratch/$label.describe" 2>"$scratch/$label.error" || lookup_status=$?
+  if ((lookup_status == 0)); then
+    printf 'FAIL: exact provider lookup found disposable %s\n' "$label" >&2
+    return 1
+  fi
+  if ! grep -Eqi '404|not found|does not exist' "$scratch/$label.error"; then
+    printf 'FAIL: exact provider lookup for %s failed closed\n' "$label" >&2
+    cat "$scratch/$label.error" >&2
+    return 1
+  fi
+}
+
 assert_absent cloud_sql "$name_prefix-postgres" \
   gcloud sql instances list --project="$project_id" --format='value(name)'
 
@@ -95,8 +112,8 @@ done
 assert_absent artifact_registry "$repository" \
   gcloud artifacts repositories list --project="$project_id" --location="$region" \
   --format='value(name)'
-assert_absent artifact_bucket "$artifact_bucket" \
-  gcloud storage buckets list --project="$project_id" --format='value(name)'
+assert_exact_absent artifact_bucket \
+  gcloud storage buckets describe "gs://$artifact_bucket" --project="$project_id"
 
 for job in network-probe temporal-secret-probe denied-secret-probe; do
   assert_absent "run_job_${job//-/_}" "$name_prefix-$job" \
