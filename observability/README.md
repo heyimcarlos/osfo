@@ -25,10 +25,12 @@ and output paths inside evidence roots are rejected.
 
 Metrics and reports retain only the bounded bundle slug and checksum-manifest
 hash. Local filesystem paths are never emitted. A run contributes to the
-qualification matrix only when its checksum-bound identity is in the
-top-level `qualifyingRuns` selection, its sealed region matches
-`selectedRegion`, and it names a sealed matrix cell. Per-bundle metadata cannot
-promote a contextual or historical run into production qualification.
+qualification matrix only when its sealed issue-87 suite and lane identify a
+qualification candidate and its sealed region matches `selectedRegion`.
+Per-bundle request metadata cannot promote a contextual or historical run into
+production qualification. A qualified narrative additionally requires every
+sealed target repetition, fault cut, recovery-reserve lane, and explicit
+qualification requirement to pass.
 
 ## One-command walkthrough
 
@@ -75,8 +77,8 @@ Ports can be changed with `OSFO_OPENPOKE_GRAFANA_PORT` and
 Optional sealed `first-meaningful-event.json`, `recovery.json`, and
 `multi-device.json` artifacts can supply their corresponding gates. When those
 artifacts are absent, the gates and their detailed requirements remain
-**MISSING**. Good Root Outcome counts are emitted only from explicit
-`good_root_outcomes` or `completed_root_outcomes` evidence.
+**MISSING**. Completed Root Outcomes and Good Root Outcomes are distinct:
+each count is emitted only from its corresponding explicit field.
 
 All dashboards and the Prometheus data source are immutable provisioning files.
 Grafana UI updates are disabled and anonymous access is viewer-only.

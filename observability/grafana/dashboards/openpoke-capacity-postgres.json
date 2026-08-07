@@ -137,7 +137,18 @@
             "mode": "palette-classic"
           },
           "decimals": 3,
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "color": "gray",
+                  "index": 0,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -171,7 +182,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_receipt_within_1s_ratio{run=\"$run\"}",
+          "expr": "openpoke_receipt_within_1s_ratio{run=\"$run\"} or on() vector(-1)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -199,7 +210,18 @@
             "mode": "palette-classic"
           },
           "decimals": 2,
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "color": "gray",
+                  "index": 0,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -233,7 +255,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_atomic_admission_mean_ms{run=\"$run\"}",
+          "expr": "openpoke_atomic_admission_mean_ms{run=\"$run\"} or on() vector(-1)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -260,7 +282,18 @@
           "color": {
             "mode": "palette-classic"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "color": "gray",
+                  "index": 0,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -294,7 +327,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_cloud_run_429_total{run=\"$run\"}",
+          "expr": "openpoke_cloud_run_429_total{run=\"$run\"} or on() vector(-1)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -322,7 +355,18 @@
             "mode": "palette-classic"
           },
           "decimals": 2,
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "color": "gray",
+                  "index": 0,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -356,7 +400,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_database_cpu_p95_ratio{run=\"$run\"}",
+          "expr": "openpoke_database_cpu_p95_ratio{run=\"$run\"} or on() vector(-1)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -383,7 +427,18 @@
           "color": {
             "mode": "palette-classic"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "color": "gray",
+                  "index": 0,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -419,7 +474,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_latency_ms{run=\"$run\",operation=\"durable_receipt\"}",
+          "expr": "openpoke_latency_ms{run=\"$run\",operation=\"durable_receipt\"} or on() vector(-1)",
           "instant": true,
           "legendFormat": "{{quantile}}",
           "range": false,
@@ -446,7 +501,18 @@
           "color": {
             "mode": "palette-classic"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "color": "gray",
+                  "index": 0,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -482,7 +548,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "label_replace(openpoke_database_backends_p95{run=\"$run\"}, \"quantile\", \"p95\", \"__name__\", \".*\") or label_replace(openpoke_database_backends_max{run=\"$run\"}, \"quantile\", \"max\", \"__name__\", \".*\")",
+          "expr": "label_replace(openpoke_database_backends_p95{run=\"$run\"}, \"quantile\", \"p95\", \"__name__\", \".*\") or label_replace(openpoke_database_backends_max{run=\"$run\"}, \"quantile\", \"max\", \"__name__\", \".*\") or on() vector(-1)",
           "instant": true,
           "legendFormat": "{{quantile}}",
           "range": false,
@@ -509,7 +575,18 @@
           "color": {
             "mode": "palette-classic"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "color": "gray",
+                  "index": 0,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -543,7 +620,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_database_wal_bytes{run=\"$run\"}",
+          "expr": "openpoke_database_wal_bytes{run=\"$run\"} or on() vector(-1)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -570,7 +647,18 @@
           "color": {
             "mode": "palette-classic"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "color": "gray",
+                  "index": 0,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -604,7 +692,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_checkpoint_starts{run=\"$run\"}",
+          "expr": "openpoke_checkpoint_starts{run=\"$run\"} or on() vector(-1)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -631,7 +719,18 @@
           "color": {
             "mode": "palette-classic"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "color": "gray",
+                  "index": 0,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -665,7 +764,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_checkpoint_duration_p95_seconds{run=\"$run\"}",
+          "expr": "openpoke_checkpoint_duration_p95_seconds{run=\"$run\"} or on() vector(-1)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -692,7 +791,18 @@
           "color": {
             "mode": "palette-classic"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "color": "gray",
+                  "index": 0,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -726,7 +836,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_outbox_table_bytes{run=\"$run\"}",
+          "expr": "openpoke_outbox_table_bytes{run=\"$run\"} or on() vector(-1)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -753,7 +863,18 @@
           "color": {
             "mode": "palette-classic"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "color": "gray",
+                  "index": 0,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -787,7 +908,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_outbox_index_bytes{run=\"$run\"}",
+          "expr": "openpoke_outbox_index_bytes{run=\"$run\"} or on() vector(-1)",
           "instant": true,
           "legendFormat": "",
           "range": false,

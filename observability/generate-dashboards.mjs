@@ -47,6 +47,8 @@ const missingMappings = [
   },
 ];
 
+const withMissing = (expr) => `${expr} or on() vector(-1)`;
+
 const stat = (id, title, expr, position, options = {}) => ({
   id,
   title,
@@ -108,7 +110,7 @@ const barGauge = (id, title, expr, position, unit = "short") => ({
   fieldConfig: {
     defaults: {
       color: { mode: "palette-classic" },
-      mappings: [],
+      mappings: missingMappings,
       thresholds: { mode: "absolute", steps: [{ color: "green", value: null }] },
       unit,
     },
@@ -309,60 +311,97 @@ const capacity = common("OpenPoke Capacity and PostgreSQL", "openpoke-capacity-p
   stat(
     3,
     "Receipt within 1 second",
-    'openpoke_receipt_within_1s_ratio{run="$run"}',
+    withMissing('openpoke_receipt_within_1s_ratio{run="$run"}'),
     grid(8, 4, 4, 4),
-    { decimals: 3, unit: "percentunit" },
+    { decimals: 3, missing: true, unit: "percentunit" },
   ),
   stat(
     4,
     "Atomic admission mean",
-    'openpoke_atomic_admission_mean_ms{run="$run"}',
+    withMissing('openpoke_atomic_admission_mean_ms{run="$run"}'),
     grid(12, 4, 4, 4),
-    { decimals: 2, unit: "ms" },
+    { decimals: 2, missing: true, unit: "ms" },
   ),
   stat(
     5,
     "Cloud Run platform 429s",
-    'openpoke_cloud_run_429_total{run="$run"}',
+    withMissing('openpoke_cloud_run_429_total{run="$run"}'),
     grid(16, 4, 4, 4),
     {
+      missing: true,
       unit: "locale",
     },
   ),
-  stat(6, "PostgreSQL CPU p95", 'openpoke_database_cpu_p95_ratio{run="$run"}', grid(20, 4, 4, 4), {
-    decimals: 2,
-    unit: "percentunit",
-  }),
+  stat(
+    6,
+    "PostgreSQL CPU p95",
+    withMissing('openpoke_database_cpu_p95_ratio{run="$run"}'),
+    grid(20, 4, 4, 4),
+    {
+      decimals: 2,
+      missing: true,
+      unit: "percentunit",
+    },
+  ),
   barGauge(
     7,
     "Durable receipt latency",
-    'openpoke_latency_ms{run="$run",operation="durable_receipt"}',
+    withMissing('openpoke_latency_ms{run="$run",operation="durable_receipt"}'),
     grid(8, 8, 8, 4),
     "ms",
   ),
   barGauge(
     8,
     "PostgreSQL backends",
-    'label_replace(openpoke_database_backends_p95{run="$run"}, "quantile", "p95", "__name__", ".*") or label_replace(openpoke_database_backends_max{run="$run"}, "quantile", "max", "__name__", ".*")',
+    withMissing(
+      'label_replace(openpoke_database_backends_p95{run="$run"}, "quantile", "p95", "__name__", ".*") or label_replace(openpoke_database_backends_max{run="$run"}, "quantile", "max", "__name__", ".*")',
+    ),
     grid(16, 8, 8, 4),
   ),
-  stat(9, "WAL generated", 'openpoke_database_wal_bytes{run="$run"}', grid(0, 12, 4, 4), {
-    unit: "bytes",
-  }),
-  stat(10, "Checkpoint starts", 'openpoke_checkpoint_starts{run="$run"}', grid(4, 12, 4, 4)),
+  stat(
+    9,
+    "WAL generated",
+    withMissing('openpoke_database_wal_bytes{run="$run"}'),
+    grid(0, 12, 4, 4),
+    {
+      missing: true,
+      unit: "bytes",
+    },
+  ),
+  stat(
+    10,
+    "Checkpoint starts",
+    withMissing('openpoke_checkpoint_starts{run="$run"}'),
+    grid(4, 12, 4, 4),
+    { missing: true },
+  ),
   stat(
     11,
     "Checkpoint duration p95",
-    'openpoke_checkpoint_duration_p95_seconds{run="$run"}',
+    withMissing('openpoke_checkpoint_duration_p95_seconds{run="$run"}'),
     grid(8, 12, 4, 4),
-    { unit: "s" },
+    { missing: true, unit: "s" },
   ),
-  stat(12, "Outbox relation", 'openpoke_outbox_table_bytes{run="$run"}', grid(12, 12, 4, 4), {
-    unit: "bytes",
-  }),
-  stat(13, "Outbox indexes", 'openpoke_outbox_index_bytes{run="$run"}', grid(16, 12, 4, 4), {
-    unit: "bytes",
-  }),
+  stat(
+    12,
+    "Outbox relation",
+    withMissing('openpoke_outbox_table_bytes{run="$run"}'),
+    grid(12, 12, 4, 4),
+    {
+      missing: true,
+      unit: "bytes",
+    },
+  ),
+  stat(
+    13,
+    "Outbox indexes",
+    withMissing('openpoke_outbox_index_bytes{run="$run"}'),
+    grid(16, 12, 4, 4),
+    {
+      missing: true,
+      unit: "bytes",
+    },
+  ),
   stat(
     14,
     "Complete durable acceptance",

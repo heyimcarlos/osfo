@@ -72,6 +72,30 @@ describe("provisioned qualification dashboards", () => {
     }
   });
 
+  it("renders absent capacity measurements as MISSING instead of No data", async () => {
+    const dashboard = await readDashboard("openpoke-capacity-postgres.json");
+    const measurementPanels = [
+      "Receipt within 1 second",
+      "Atomic admission mean",
+      "Cloud Run platform 429s",
+      "PostgreSQL CPU p95",
+      "Durable receipt latency",
+      "PostgreSQL backends",
+      "WAL generated",
+      "Checkpoint starts",
+      "Checkpoint duration p95",
+      "Outbox relation",
+      "Outbox indexes",
+    ];
+
+    for (const title of measurementPanels) {
+      const panel = dashboard.panels.find((candidate) => candidate.title === title);
+      expect(panel?.targets?.map((target) => target.expr)).toEqual([
+        expect.stringContaining("or on() vector(-1)"),
+      ]);
+    }
+  });
+
   it("presents StreamingPull as a candidate and never exposes filesystem provenance", async () => {
     for (const filename of dashboardFiles) {
       const encoded = await readFile(join(dashboardDirectory, filename), "utf8");

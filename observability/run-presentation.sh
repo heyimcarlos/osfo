@@ -110,7 +110,6 @@ jq -n \
   --arg pilot_run "$pilot_run" \
   '{
     selectedRegion:"us-east4",
-    qualifyingRuns:[$failed_run],
     bundles:[
       {root:$retained,run:$retained_run,classification:"retained"},
       {root:$failed,run:$failed_run,classification:"failed"},
@@ -214,6 +213,7 @@ for dashboard_uid in "${dashboard_uids[@]}"; do
     --virtual-time-budget=12000 \
     --window-size=1920,1080 \
     --dump-dom \
+    --screenshot="$output_dir/screenshots/$dashboard_uid.png" \
     "$dashboard_url" \
     > "$output_dir/dom/$dashboard_uid.html" \
     2> "$diagnostic_path"; then
@@ -222,22 +222,9 @@ for dashboard_uid in "${dashboard_uids[@]}"; do
   fi
   if ! bun "$observability_dir/validate-dashboard-dom.ts" \
     "$output_dir/dom/$dashboard_uid.html" \
+    "$output_dir/screenshots/$dashboard_uid.png" \
     "$failed_run" \
     "$expected_range"; then
-    cat "$diagnostic_path" >&2
-    exit 1
-  fi
-  if ! chromium \
-    --headless=new \
-    --no-sandbox \
-    --disable-gpu \
-    --hide-scrollbars \
-    --user-data-dir="$browser_profile" \
-    --virtual-time-budget=12000 \
-    --window-size=1920,1080 \
-    --screenshot="$output_dir/screenshots/$dashboard_uid.png" \
-    "$dashboard_url" \
-    >> "$diagnostic_path" 2>&1; then
     cat "$diagnostic_path" >&2
     exit 1
   fi

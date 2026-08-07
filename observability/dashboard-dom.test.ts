@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { validateDashboardDom } from "./validate-dashboard-dom.js";
+import { validateDashboardCapture, validateDashboardDom } from "./validate-dashboard-dom.js";
 
 const expected = {
   range: "2026-08-06 20:24:10 to 2026-08-07 01:50:00 UTC",
@@ -18,6 +18,14 @@ const dashboard = (content: string, controls = `${expected.run} ${expected.range
 describe("Grafana DOM evidence validation", () => {
   it("accepts a populated dashboard with the selected run and locked range", () => {
     expect(validateDashboardDom(dashboard("PASS"), expected).panelCount).toBe(1);
+  });
+
+  it("accepts the DOM and PNG as one validated capture pair", () => {
+    const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 1]);
+    expect(validateDashboardCapture(dashboard("PASS"), png, expected).panelCount).toBe(1);
+    expect(() => validateDashboardCapture(dashboard("PASS"), new Uint8Array(), expected)).toThrow(
+      "screenshot is not a PNG",
+    );
   });
 
   it("rejects wrong context, loading, errors, No data, and absent panels", () => {

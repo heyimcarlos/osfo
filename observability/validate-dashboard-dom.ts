@@ -45,12 +45,36 @@ export const validateDashboardDom = (
   return { panelCount, visibleText };
 };
 
-const runCli = async (): Promise<void> => {
-  const [domPath, run, range] = process.argv.slice(2);
-  if (domPath === undefined || run === undefined || range === undefined) {
-    throw new Error("usage: validate-dashboard-dom.ts DOM.html RUN UTC_RANGE");
+export const validateDashboardCapture = (
+  html: string,
+  screenshot: Uint8Array,
+  expected: ExpectedDashboardContext,
+): { readonly panelCount: number; readonly visibleText: string } => {
+  const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (
+    screenshot.length <= pngSignature.length ||
+    pngSignature.some((byte, index) => screenshot[index] !== byte)
+  ) {
+    throw new Error("screenshot is not a PNG");
   }
-  validateDashboardDom(await readFile(resolve(domPath), "utf8"), { range, run });
+  return validateDashboardDom(html, expected);
+};
+
+const runCli = async (): Promise<void> => {
+  const [domPath, screenshotPath, run, range] = process.argv.slice(2);
+  if (
+    domPath === undefined ||
+    screenshotPath === undefined ||
+    run === undefined ||
+    range === undefined
+  ) {
+    throw new Error("usage: validate-dashboard-dom.ts DOM.html SCREENSHOT.png RUN UTC_RANGE");
+  }
+  validateDashboardCapture(
+    await readFile(resolve(domPath), "utf8"),
+    await readFile(resolve(screenshotPath)),
+    { range, run },
+  );
 };
 
 const invokedPath =

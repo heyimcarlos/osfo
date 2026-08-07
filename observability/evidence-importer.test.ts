@@ -39,25 +39,10 @@ const makeBundle = async (files: Readonly<Record<string, string>>) => {
   return root;
 };
 
-type TestBundle = Parameters<typeof importEvidenceBundles>[0]["bundles"][number] & {
-  readonly qualifying?: boolean;
-};
+type TestBundle = Parameters<typeof importEvidenceBundles>[0]["bundles"][number];
 
-const importBundles = (
-  bundles: ReadonlyArray<TestBundle>,
-  selectedRegion = "us-east4",
-  explicitlyQualifyingRuns?: ReadonlyArray<string>,
-) => {
-  const qualifyingRuns =
-    explicitlyQualifyingRuns ??
-    bundles.flatMap((bundle) => (bundle.qualifying ? [bundle.run] : []));
-  const normalizedBundles = bundles.map(({ qualifying, ...bundle }) => {
-    void qualifying;
-    return bundle;
-  });
-  const request = { bundles: normalizedBundles, qualifyingRuns, selectedRegion };
-  return importEvidenceBundles(request);
-};
+const importBundles = (bundles: ReadonlyArray<TestBundle>, selectedRegion = "us-east4") =>
+  importEvidenceBundles({ bundles, selectedRegion });
 
 const runCliPaths = (manifest: string, output: string, openMetrics: string, report: string) =>
   execFileAsync("bun", [
@@ -81,7 +66,7 @@ const runCli = (manifest: string, outputDirectory: string) =>
   );
 
 const scenario = JSON.stringify({
-  manifest: "must-not-be-a-label",
+  manifest: "issue-87-postgres-admission-stability-r400k-v1",
   benchmark_id: "us-east4-current-wal",
   candidate: "streaming-pull-lockin",
   lane: "matrix-A-clean-current-wal",
@@ -95,10 +80,89 @@ const scenario = JSON.stringify({
   ended_at: "2026-08-07T00:14:48Z",
 });
 
+const completeCorrectnessFields = {
+  accepted_incoming: 10,
+  authoritative_agent_runs: 15,
+  succeeded_agent_runs: 15,
+  good_root_outcomes: 10,
+  nonterminal_agent_runs: 0,
+  unpublished_outbox_records: 0,
+  stranded_accepted_runs: 0,
+  ghost_delivery_attempts: 0,
+  duplicate_terminal_commits: 0,
+  unfinished_agent_run_attempts: 0,
+  unfinished_model_call_attempts: 0,
+  unknown_caller_outcomes: 0,
+  stale_commit_violations: 0,
+  ordering_violations: 0,
+  inflight_agent_run_budget_mismatch: 0,
+  principal_budget_mismatch: 0,
+} as const;
+
+const fullPassingFiles = (
+  benchmarkId: string,
+  scenarioFields: Readonly<Record<string, unknown>> = {},
+): Readonly<Record<string, string>> => ({
+  "audit.json": JSON.stringify({
+    ...completeCorrectnessFields,
+    benchmark_id: benchmarkId,
+    completed_root_outcomes: 10,
+    duplicate_publications: 0,
+    expected_incoming: 10,
+    verdict: "PASS",
+  }),
+  "first-meaningful-event.json": JSON.stringify({
+    verdict: "PASS",
+    within_10_seconds_ratio: 0.99,
+  }),
+  "multi-device.json": JSON.stringify({
+    concurrent_sse_connections: 4,
+    converged: true,
+    device_cursor_positions: 4,
+    ordering_violations: 0,
+    replay_latency_ms: 2_000,
+    requirements: {
+      concurrent_sse_connections: "PASS",
+      device_cursor_positions: "PASS",
+      replay_latency: "PASS",
+    },
+    stream_duplicates: 0,
+    stream_gaps: 0,
+    verdict: "PASS",
+  }),
+  "qualification-metrics.json": JSON.stringify({
+    benchmark_id: benchmarkId,
+    receipt: { within_1_second_ratio: 1 },
+    reconciliation: { verdict: "PASS" },
+    region: "us-east4",
+  }),
+  "recovery.json": JSON.stringify({
+    backlog_bounded: true,
+    drain_duration_seconds: 1_200,
+    full_drain_within_20_minutes: true,
+    process_cut_timeline_seconds: 60,
+    progress_within_5_minutes: true,
+    recovery_rate_per_second: 609,
+    requirements: {
+      dependency_outage: "PASS",
+      process_cut_timeline: "PASS",
+      recovery_rate: "PASS",
+    },
+    verdict: "PASS",
+  }),
+  "scenario.json": JSON.stringify({
+    benchmark_id: benchmarkId,
+    count: 10,
+    region: "us-east4",
+    ...scenarioFields,
+  }),
+});
+
 const audit = JSON.stringify({
   benchmark_id: "us-east4-current-wal",
   expected_incoming: 417_600,
   accepted_incoming: 416_518,
+  completed_root_outcomes: 416_518,
   good_root_outcomes: 416_518,
   authoritative_agent_runs: 624_784,
   succeeded_agent_runs: 624_784,
@@ -106,9 +170,15 @@ const audit = JSON.stringify({
   ghost_delivery_attempts: 0,
   duplicate_publications: 0,
   duplicate_terminal_commits: 0,
+  unpublished_outbox_records: 0,
   stranded_accepted_runs: 0,
   unfinished_agent_run_attempts: 0,
   unfinished_model_call_attempts: 0,
+  unknown_caller_outcomes: 0,
+  stale_commit_violations: 0,
+  ordering_violations: 0,
+  inflight_agent_run_budget_mismatch: 0,
+  principal_budget_mismatch: 0,
   caller_to_receipt_ms: { p95: 2617.853, p99: 4557.002, max: 37_851.826 },
   verdict: "PASS",
 });
@@ -141,7 +211,6 @@ describe("sealed evidence importer", () => {
         root,
         run: "us-east4-current-wal",
         classification: "failed",
-        qualifying: true,
       },
     ]);
 
@@ -380,16 +449,10 @@ describe("sealed evidence importer", () => {
     const root = await makeBundle({
       "audit.json": JSON.stringify({
         benchmark_id: "complete-evidence",
-        accepted_incoming: 10,
+        ...completeCorrectnessFields,
+        completed_root_outcomes: 10,
         duplicate_publications: 0,
-        duplicate_terminal_commits: 0,
-        ghost_delivery_attempts: 0,
         expected_incoming: 10,
-        good_root_outcomes: 10,
-        nonterminal_agent_runs: 0,
-        stranded_accepted_runs: 0,
-        unfinished_agent_run_attempts: 0,
-        unfinished_model_call_attempts: 0,
         verdict: "PASS",
       }),
       "first-meaningful-event.json": JSON.stringify({
@@ -397,8 +460,11 @@ describe("sealed evidence importer", () => {
         within_10_seconds_ratio: 0.999,
       }),
       "multi-device.json": JSON.stringify({
+        concurrent_sse_connections: 4,
         converged: true,
+        device_cursor_positions: 4,
         ordering_violations: 0,
+        replay_latency_ms: 2_000,
         requirements: {
           concurrent_sse_connections: "PASS",
           device_cursor_positions: "PASS",
@@ -414,8 +480,11 @@ describe("sealed evidence importer", () => {
       }),
       "recovery.json": JSON.stringify({
         backlog_bounded: true,
+        drain_duration_seconds: 1_200,
         full_drain_within_20_minutes: true,
+        process_cut_timeline_seconds: 60,
         progress_within_5_minutes: true,
+        recovery_rate_per_second: 609,
         requirements: {
           dependency_outage: "PASS",
           process_cut_timeline: "PASS",
@@ -426,7 +495,9 @@ describe("sealed evidence importer", () => {
       "scenario.json": JSON.stringify({
         benchmark_id: "complete-evidence",
         count: 10,
-        lane: "target-10",
+        lane: "matrix-A-clean-current-wal",
+        manifest: "issue-87-postgres-admission-stability-r400k-v1",
+        region: "us-east4",
       }),
     });
 
@@ -443,9 +514,49 @@ describe("sealed evidence importer", () => {
       overallStatus: "PASS",
     });
     expect(result.metrics).toContain(
-      'qualification_scope="non-qualifying-context",run="complete-evidence",summary="known-gates-passed"',
+      'qualification_scope="selected-region-candidate",run="complete-evidence",summary="known-gates-passed"',
     );
     expect(result.metrics).not.toContain('run="complete-evidence",summary="qualified"');
+    expect(result.metrics).toContain(
+      'openpoke_gate_status{gate="production_qualification",run="complete-evidence",status="MISSING"} -1',
+    );
+    expect(result.metrics).toContain(
+      'openpoke_requirement_status{requirement="three_target_repetitions",run="complete-evidence",view="qualification"} -1',
+    );
+    for (const metric of [
+      "openpoke_recovery_rate_per_second",
+      "openpoke_process_cut_timeline_seconds",
+      "openpoke_recovery_drain_duration_seconds",
+      "openpoke_concurrent_sse_connections",
+      "openpoke_device_cursor_positions",
+      "openpoke_replay_latency_ms",
+    ]) {
+      expect(result.metrics).toContain(`${metric}{run="complete-evidence"}`);
+    }
+  });
+
+  it("uses the 99 percent First Meaningful ThreadEvent threshold", async () => {
+    const passingRoot = await makeBundle({
+      "first-meaningful-event.json": JSON.stringify({
+        verdict: "PASS",
+        within_10_seconds_ratio: 0.99,
+      }),
+      "scenario.json": JSON.stringify({ benchmark_id: "first-event-pass" }),
+    });
+    const failingRoot = await makeBundle({
+      "first-meaningful-event.json": JSON.stringify({
+        verdict: "PASS",
+        within_10_seconds_ratio: 0.989,
+      }),
+      "scenario.json": JSON.stringify({ benchmark_id: "first-event-fail" }),
+    });
+
+    const result = await importBundles([
+      { root: passingRoot, run: "first-event-pass", classification: "historical" },
+      { root: failingRoot, run: "first-event-fail", classification: "historical" },
+    ]);
+    expect(result.runs[0]?.firstMeaningfulEventStatus).toBe("PASS");
+    expect(result.runs[1]?.firstMeaningfulEventStatus).toBe("FAIL");
   });
 
   it("builds matrix cells from selected-region qualifying admission evidence only", async () => {
@@ -462,6 +573,7 @@ describe("sealed evidence importer", () => {
       "scenario.json": JSON.stringify({
         benchmark_id: "selected-region",
         lane: "matrix-A-clean-current-wal",
+        manifest: "issue-87-postgres-admission-stability-r400k-v1",
         region: "us-east4",
       }),
     });
@@ -478,13 +590,11 @@ describe("sealed evidence importer", () => {
         root: montrealRoot,
         run: "montreal-history",
         classification: "retained",
-        qualifying: true,
       },
       {
         root: selectedRoot,
         run: "selected-region",
         classification: "historical",
-        qualifying: true,
       },
       {
         root: contextualRoot,
@@ -498,6 +608,87 @@ describe("sealed evidence importer", () => {
     expect(result.runs[2]?.qualifying).toBe(false);
     expect(result.metrics).toContain('openpoke_matrix_cell_status{cell="A",status="PASS"} 1');
     expect(result.metrics).toContain('openpoke_matrix_cell_status{cell="B",status="MISSING"} -1');
+  });
+
+  it("derives qualification repetition completeness from sealed suite lanes", async () => {
+    const suite = "issue-87-production-qualification-v1";
+    const repetitionOne = await makeBundle(
+      fullPassingFiles("target-repetition-1", {
+        lane: "target-232",
+        manifest: suite,
+        repetition: 1,
+      }),
+    );
+    const repetitionThree = await makeBundle(
+      fullPassingFiles("target-repetition-3", {
+        lane: "target-232",
+        manifest: suite,
+        repetition: 3,
+      }),
+    );
+    const incomplete = await importBundles([
+      {
+        root: repetitionOne,
+        run: "target-repetition-1",
+        classification: "historical",
+      },
+      {
+        root: repetitionThree,
+        run: "target-repetition-3",
+        classification: "historical",
+      },
+    ]);
+    expect(incomplete.metrics).toContain(
+      'openpoke_requirement_status{requirement="three_target_repetitions",run="target-repetition-1",view="qualification"} -1',
+    );
+    expect(incomplete.metrics).toContain(
+      'qualification_scope="selected-region-candidate",run="target-repetition-1",summary="known-gates-passed"',
+    );
+    expect(incomplete.metrics).not.toContain('summary="qualified"');
+
+    const failedFiles = fullPassingFiles("target-repetition-2", {
+      lane: "target-232",
+      manifest: suite,
+      repetition: 2,
+    });
+    const failedRepetition = await makeBundle({
+      ...failedFiles,
+      "audit.json": JSON.stringify({
+        ...completeCorrectnessFields,
+        accepted_incoming: 9,
+        authoritative_agent_runs: 14,
+        completed_root_outcomes: 9,
+        expected_incoming: 10,
+        good_root_outcomes: 9,
+        succeeded_agent_runs: 14,
+      }),
+      "qualification-metrics.json": JSON.stringify({
+        benchmark_id: "target-repetition-2",
+        receipt: { within_1_second_ratio: 1 },
+        region: "us-east4",
+      }),
+    });
+    const failed = await importBundles([
+      {
+        root: repetitionOne,
+        run: "target-repetition-1",
+        classification: "historical",
+      },
+      {
+        root: failedRepetition,
+        run: "target-repetition-2",
+        classification: "failed",
+      },
+      {
+        root: repetitionThree,
+        run: "target-repetition-3",
+        classification: "historical",
+      },
+    ]);
+    expect(failed.metrics).toContain(
+      'openpoke_requirement_status{requirement="three_target_repetitions",run="target-repetition-1",view="qualification"} 0',
+    );
+    expect(failed.metrics).not.toContain('summary="qualified"');
   });
 
   it("rejects manifest and sealed identity or region contradictions", async () => {
@@ -515,7 +706,6 @@ describe("sealed evidence importer", () => {
           root: conflictingOverride,
           run: "manifest-alias",
           classification: "historical",
-          qualifying: true,
           region: "northamerica-northeast1",
         },
       ]),
@@ -535,7 +725,6 @@ describe("sealed evidence importer", () => {
           root: conflictingSealedRegion,
           run: "sealed-region-conflict",
           classification: "historical",
-          qualifying: true,
         },
       ]),
     ).rejects.toMatchObject({ code: "MALFORMED_ARTIFACT" });
@@ -552,7 +741,6 @@ describe("sealed evidence importer", () => {
           root,
           run: "sealed-montreal",
           classification: "retained",
-          qualifying: true,
           region: "us-east4",
         },
       ]),
@@ -694,15 +882,8 @@ describe("sealed evidence importer", () => {
 
     const qualificationContradictsPass = await makeBundle({
       "audit.json": JSON.stringify({
-        accepted_incoming: 10,
-        good_root_outcomes: 10,
+        ...completeCorrectnessFields,
         duplicate_publications: 0,
-        duplicate_terminal_commits: 0,
-        ghost_delivery_attempts: 0,
-        nonterminal_agent_runs: 0,
-        stranded_accepted_runs: 0,
-        unfinished_agent_run_attempts: 0,
-        unfinished_model_call_attempts: 0,
       }),
       "qualification-metrics.json": JSON.stringify({
         reconciliation: { verdict: "FAIL" },
@@ -719,6 +900,68 @@ describe("sealed evidence importer", () => {
         },
       ]),
     ).rejects.toMatchObject({ code: "MALFORMED_ARTIFACT" });
+  });
+
+  it("requires the authoritative correctness invariant while allowing harmless redelivery", async () => {
+    const passingRoot = await makeBundle({
+      "audit.json": JSON.stringify({
+        ...completeCorrectnessFields,
+        duplicate_publications: 7,
+        verdict: "PASS",
+      }),
+      "scenario.json": JSON.stringify({ benchmark_id: "authoritative-pass" }),
+    });
+    const passing = await importBundles([
+      { root: passingRoot, run: "authoritative-pass", classification: "historical" },
+    ]);
+    expect(passing.runs[0]?.reconciliationStatus).toBe("PASS");
+
+    for (const [run, fields] of [
+      ["agent-run-mismatch", { succeeded_agent_runs: 14 }],
+      ["unpublished-obligation", { unpublished_outbox_records: 1 }],
+      ["unknown-caller", { unknown_caller_outcomes: 1 }],
+      ["stale-commit", { stale_commit_violations: 1 }],
+      ["ordering-violation", { ordering_violations: 1 }],
+      ["global-budget", { inflight_agent_run_budget_mismatch: 1 }],
+      ["principal-budget", { principal_budget_mismatch: 1 }],
+    ] as const) {
+      const root = await makeBundle({
+        "audit.json": JSON.stringify({ ...completeCorrectnessFields, ...fields }),
+        "scenario.json": JSON.stringify({ benchmark_id: run }),
+      });
+      const result = await importBundles([{ root, run, classification: "historical" }]);
+      expect(result.runs[0]?.reconciliationStatus).toBe("FAIL");
+    }
+
+    const incompleteRoot = await makeBundle({
+      "audit.json": JSON.stringify({
+        ...completeCorrectnessFields,
+        stale_commit_violations: undefined,
+      }),
+      "scenario.json": JSON.stringify({ benchmark_id: "missing-stale-audit" }),
+    });
+    const incomplete = await importBundles([
+      { root: incompleteRoot, run: "missing-stale-audit", classification: "historical" },
+    ]);
+    expect(incomplete.runs[0]?.reconciliationStatus).toBe("MISSING");
+  });
+
+  it("does not substitute Good Root Outcomes for completed root outcomes", async () => {
+    const root = await makeBundle({
+      "audit.json": JSON.stringify(completeCorrectnessFields),
+      "scenario.json": JSON.stringify({ benchmark_id: "distinct-root-outcomes" }),
+    });
+    const result = await importBundles([
+      { root, run: "distinct-root-outcomes", classification: "historical" },
+    ]);
+    expect(result.runs[0]?.completed).toBeUndefined();
+    expect(result.runs[0]?.correct).toBe(10);
+    expect(result.metrics).not.toContain(
+      'openpoke_count{measure="completed",run="distinct-root-outcomes"}',
+    );
+    expect(result.metrics).toContain(
+      'openpoke_count{measure="correct",run="distinct-root-outcomes"} 10',
+    );
   });
 
   it("keeps unevidenced optional-gate details MISSING", async () => {
@@ -770,23 +1013,103 @@ describe("sealed evidence importer", () => {
       { root, run: "optional-gates", classification: "historical" },
     ]);
     expect(result.runs[0]?.firstMeaningfulEventStatus).toBe("MISSING");
-    expect(result.runs[0]?.recoveryStatus).toBe("MISSING");
-    expect(result.runs[0]?.multiDeviceStatus).toBe("MISSING");
-    expect(result.runs[0]?.overallStatus).toBe("MISSING");
-    for (const requirement of ["recovery_rate", "process_cut_timeline"]) {
+    expect(result.runs[0]?.recoveryStatus).toBe("FAIL");
+    expect(result.runs[0]?.multiDeviceStatus).toBe("FAIL");
+    expect(result.runs[0]?.overallStatus).toBe("FAIL");
+    expect(result.metrics).toContain(
+      'openpoke_requirement_status{requirement="recovery_rate",run="optional-gates",view="recovery"} 0',
+    );
+    for (const requirement of ["process_cut_timeline"]) {
       expect(result.metrics).toContain(
         `openpoke_requirement_status{requirement="${requirement}",run="optional-gates",view="recovery"} -1`,
       );
     }
-    for (const requirement of [
-      "concurrent_sse_connections",
-      "device_cursor_positions",
-      "replay_latency",
-    ]) {
+    for (const requirement of ["concurrent_sse_connections", "device_cursor_positions"]) {
+      expect(result.metrics).toContain(
+        `openpoke_requirement_status{requirement="${requirement}",run="optional-gates",view="multi_device"} 0`,
+      );
+    }
+    for (const requirement of ["replay_latency"]) {
       expect(result.metrics).toContain(
         `openpoke_requirement_status{requirement="${requirement}",run="optional-gates",view="multi_device"} -1`,
       );
     }
+  });
+
+  it("requires recovery and multi-device measurements in addition to PASS verdicts", async () => {
+    const verdictOnlyRoot = await makeBundle({
+      "multi-device.json": JSON.stringify({
+        converged: true,
+        ordering_violations: 0,
+        requirements: {
+          concurrent_sse_connections: "PASS",
+          device_cursor_positions: "PASS",
+          replay_latency: "PASS",
+        },
+        stream_duplicates: 0,
+        stream_gaps: 0,
+        verdict: "PASS",
+      }),
+      "recovery.json": JSON.stringify({
+        backlog_bounded: true,
+        full_drain_within_20_minutes: true,
+        progress_within_5_minutes: true,
+        requirements: {
+          dependency_outage: "PASS",
+          process_cut_timeline: "PASS",
+          recovery_rate: "PASS",
+        },
+        verdict: "PASS",
+      }),
+      "scenario.json": JSON.stringify({ benchmark_id: "verdict-only-gates" }),
+    });
+    const verdictOnly = await importBundles([
+      { root: verdictOnlyRoot, run: "verdict-only-gates", classification: "historical" },
+    ]);
+    expect(verdictOnly.runs[0]?.recoveryStatus).toBe("MISSING");
+    expect(verdictOnly.runs[0]?.multiDeviceStatus).toBe("MISSING");
+
+    const belowThresholdRoot = await makeBundle({
+      "multi-device.json": JSON.stringify({
+        concurrent_sse_connections: 3,
+        converged: true,
+        device_cursor_positions: 3,
+        ordering_violations: 0,
+        replay_latency_ms: 2_001,
+        requirements: {
+          concurrent_sse_connections: "PASS",
+          device_cursor_positions: "PASS",
+          replay_latency: "PASS",
+        },
+        stream_duplicates: 0,
+        stream_gaps: 0,
+        verdict: "PASS",
+      }),
+      "recovery.json": JSON.stringify({
+        backlog_bounded: true,
+        drain_duration_seconds: 1_201,
+        full_drain_within_20_minutes: true,
+        process_cut_timeline_seconds: 60,
+        progress_within_5_minutes: true,
+        recovery_rate_per_second: 608,
+        requirements: {
+          dependency_outage: "PASS",
+          process_cut_timeline: "PASS",
+          recovery_rate: "PASS",
+        },
+        verdict: "PASS",
+      }),
+      "scenario.json": JSON.stringify({ benchmark_id: "below-threshold-gates" }),
+    });
+    const belowThreshold = await importBundles([
+      {
+        root: belowThresholdRoot,
+        run: "below-threshold-gates",
+        classification: "historical",
+      },
+    ]);
+    expect(belowThreshold.runs[0]?.recoveryStatus).toBe("FAIL");
+    expect(belowThreshold.runs[0]?.multiDeviceStatus).toBe("FAIL");
   });
 
   it("rejects negative, fractional-count, and out-of-range ratio evidence", async () => {
@@ -863,7 +1186,6 @@ describe("sealed evidence importer", () => {
     await writeFile(
       manifest,
       JSON.stringify({
-        qualifyingRuns: [],
         selectedRegion: "us-east4",
         bundles: [{ root, run: "bad-classification", classification: "unknown" }],
       }),
@@ -880,7 +1202,6 @@ describe("sealed evidence importer", () => {
     await writeFile(
       manifest,
       JSON.stringify({
-        qualifyingRuns: [],
         selectedRegion: "us-east4",
         bundles: [{ root, run: "output-escape", classification: "historical" }],
       }),
@@ -902,7 +1223,6 @@ describe("sealed evidence importer", () => {
       manifest,
       JSON.stringify({
         bundles: [{ root, run: "output-aliases", classification: "historical" }],
-        qualifyingRuns: [],
         selectedRegion: "us-east4",
       }),
     );
@@ -954,7 +1274,6 @@ describe("sealed evidence importer", () => {
       manifest,
       JSON.stringify({
         bundles: [{ root, run: "atomic-outputs", classification: "historical" }],
-        qualifyingRuns: [],
         selectedRegion: "us-east4",
       }),
     );

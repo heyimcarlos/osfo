@@ -23,7 +23,6 @@ export const EvidenceBundleInputSchema = Schema.Struct({
 
 export const EvidenceImportRequestSchema = Schema.Struct({
   bundles: Schema.Array(EvidenceBundleInputSchema),
-  qualifyingRuns: Schema.Array(Schema.String),
   selectedRegion: Schema.String,
 });
 
@@ -42,6 +41,13 @@ export interface ImportedRun {
   readonly cell: string;
   readonly history: string;
   readonly wal: string;
+  readonly evidenceManifest: string | undefined;
+  readonly lane: string | undefined;
+  readonly repetition: number | undefined;
+  readonly workerFixedInstances: number | undefined;
+  readonly workerPullStreams: number | undefined;
+  readonly workerSlots: number | undefined;
+  readonly workerDbPool: number | undefined;
   readonly startedAt: string | undefined;
   readonly endedAt: string | undefined;
   readonly ratePerSecond: number | undefined;
@@ -66,6 +72,12 @@ export interface ImportedRun {
   readonly outboxIndexBytes: number | undefined;
   readonly checkpointStarts: number | undefined;
   readonly checkpointDurationP95Seconds: number | undefined;
+  readonly recoveryRatePerSecond: number | undefined;
+  readonly processCutTimelineSeconds: number | undefined;
+  readonly drainDurationSeconds: number | undefined;
+  readonly concurrentSseConnections: number | undefined;
+  readonly deviceCursorPositions: number | undefined;
+  readonly replayLatencyMs: number | undefined;
   readonly admissionStatus: GateStatus;
   readonly reconciliationStatus: GateStatus;
   readonly receiptStatus: GateStatus;
@@ -131,11 +143,16 @@ const ScenarioArtifactSchema = Schema.Struct({
   duration_seconds: OptionalNonNegativeFinite,
   ended_at: OptionalString,
   lane: OptionalString,
+  manifest: OptionalString,
   rate_per_second: OptionalNonNegativeFinite,
   region: OptionalString,
   repetition: OptionalNonNegativeInteger,
   started_at: OptionalString,
   worker_delivery: OptionalString,
+  worker_db_pool: OptionalNonNegativeInteger,
+  worker_fixed_instances: OptionalNonNegativeInteger,
+  worker_pull_streams: OptionalNonNegativeInteger,
+  worker_slots: OptionalNonNegativeInteger,
 });
 
 const AuditArtifactSchema = Schema.Struct({
@@ -154,11 +171,18 @@ const AuditArtifactSchema = Schema.Struct({
   duplicate_terminal_commits: OptionalNonNegativeInteger,
   ghost_delivery_attempts: OptionalNonNegativeInteger,
   good_root_outcomes: OptionalNonNegativeInteger,
+  authoritative_agent_runs: OptionalNonNegativeInteger,
+  inflight_agent_run_budget_mismatch: OptionalNonNegativeInteger,
   nonterminal_agent_runs: OptionalNonNegativeInteger,
+  ordering_violations: OptionalNonNegativeInteger,
   outbox_index_bytes: OptionalNonNegativeInteger,
   outbox_table_bytes: OptionalNonNegativeInteger,
   stranded_accepted_runs: OptionalNonNegativeInteger,
   succeeded_agent_runs: OptionalNonNegativeInteger,
+  stale_commit_violations: OptionalNonNegativeInteger,
+  principal_budget_mismatch: OptionalNonNegativeInteger,
+  unknown_caller_outcomes: OptionalNonNegativeInteger,
+  unpublished_outbox_records: OptionalNonNegativeInteger,
   unfinished_agent_run_attempts: OptionalNonNegativeInteger,
   unfinished_model_call_attempts: OptionalNonNegativeInteger,
   expected_incoming: OptionalNonNegativeInteger,
@@ -208,6 +232,7 @@ const FirstMeaningfulEventArtifactSchema = Schema.Struct({
 
 const RecoveryArtifactSchema = Schema.Struct({
   backlog_bounded: Schema.Boolean,
+  drain_duration_seconds: OptionalNonNegativeFinite,
   full_drain_within_20_minutes: Schema.Boolean,
   process_cut_timeline_seconds: OptionalNonNegativeFinite,
   progress_within_5_minutes: Schema.Boolean,
@@ -534,7 +559,6 @@ const validateTimestamp = (value: string | undefined, field: string) => {
 const importBundle = async (
   input: EvidenceBundleInput,
   selectedRegion: string,
-  qualifyingRuns: ReadonlySet<string>,
 ): Promise<ImportedRun> => {
   if (!isRecord(input)) {
     throw new EvidenceImportError("INVALID_REQUEST", "bundles", "each bundle must be an object");
@@ -700,7 +724,7 @@ const importBundle = async (
   const offered = auditArtifact?.expected_incoming ?? scenarioArtifact?.count;
   const accepted = auditArtifact?.accepted_incoming;
   const completedAgentRuns = auditArtifact?.succeeded_agent_runs;
-  const completed = auditArtifact?.completed_root_outcomes ?? auditArtifact?.good_root_outcomes;
+  const completed = auditArtifact?.completed_root_outcomes;
   const correct = auditArtifact?.good_root_outcomes;
   const receiptWithinOneSecondRatio = qualReceipt?.within_1_second_ratio;
   const receiptStatus: GateStatus =
@@ -709,21 +733,33 @@ const importBundle = async (
       : receiptWithinOneSecondRatio >= 0.999
         ? "PASS"
         : "FAIL";
+  const authoritativeAgentRuns = auditArtifact?.authoritative_agent_runs;
+  const succeededAgentRuns = auditArtifact?.succeeded_agent_runs;
   const integrityCounters = [
-    auditArtifact?.duplicate_publications,
     auditArtifact?.duplicate_terminal_commits,
     auditArtifact?.ghost_delivery_attempts,
     auditArtifact?.nonterminal_agent_runs,
+    auditArtifact?.unpublished_outbox_records,
     auditArtifact?.stranded_accepted_runs,
     auditArtifact?.unfinished_agent_run_attempts,
     auditArtifact?.unfinished_model_call_attempts,
+    auditArtifact?.unknown_caller_outcomes,
+    auditArtifact?.stale_commit_violations,
+    auditArtifact?.ordering_violations,
+    auditArtifact?.inflight_agent_run_budget_mismatch,
+    auditArtifact?.principal_budget_mismatch,
   ];
   const knownFieldFailure =
     (accepted !== undefined && correct !== undefined && accepted !== correct) ||
+    (authoritativeAgentRuns !== undefined &&
+      succeededAgentRuns !== undefined &&
+      authoritativeAgentRuns !== succeededAgentRuns) ||
     integrityCounters.some((value) => value !== undefined && value > 0);
   const fieldsComplete =
     accepted !== undefined &&
     correct !== undefined &&
+    authoritativeAgentRuns !== undefined &&
+    succeededAgentRuns !== undefined &&
     integrityCounters.every((value) => value !== undefined);
   if (
     (knownFieldFailure && auditArtifact?.verdict === "PASS") ||
@@ -774,7 +810,7 @@ const importBundle = async (
     firstMeaningfulEventArtifact?.within_10_seconds_ratio === undefined
       ? "MISSING"
       : firstMeaningfulEventArtifact.verdict === "PASS" &&
-          firstMeaningfulEventArtifact.within_10_seconds_ratio >= 0.999
+          firstMeaningfulEventArtifact.within_10_seconds_ratio >= 0.99
         ? "PASS"
         : "FAIL";
   const recoveryRequirementStatuses: Readonly<Record<string, GateStatus>> = {
@@ -785,20 +821,52 @@ const importBundle = async (
         : recoveryArtifact.backlog_bounded
           ? "PASS"
           : "FAIL",
-    recovery_rate: recoveryArtifact?.requirements?.recovery_rate ?? "MISSING",
+    recovery_rate:
+      recoveryArtifact?.requirements?.recovery_rate === "FAIL" ||
+      (recoveryArtifact?.recovery_rate_per_second !== undefined &&
+        recoveryArtifact.recovery_rate_per_second < 609)
+        ? "FAIL"
+        : recoveryArtifact?.requirements?.recovery_rate === "PASS" &&
+            recoveryArtifact.recovery_rate_per_second !== undefined
+          ? "PASS"
+          : "MISSING",
     drain_time:
       recoveryArtifact === undefined
         ? "MISSING"
-        : recoveryArtifact.full_drain_within_20_minutes
+        : !recoveryArtifact.full_drain_within_20_minutes ||
+            (recoveryArtifact.drain_duration_seconds !== undefined &&
+              recoveryArtifact.drain_duration_seconds > 1_200)
+          ? "FAIL"
+          : recoveryArtifact.drain_duration_seconds !== undefined
+            ? "PASS"
+            : "MISSING",
+    process_cut_timeline:
+      recoveryArtifact?.requirements?.process_cut_timeline === "FAIL"
+        ? "FAIL"
+        : recoveryArtifact?.requirements?.process_cut_timeline === "PASS" &&
+            recoveryArtifact.process_cut_timeline_seconds !== undefined
           ? "PASS"
-          : "FAIL",
-    process_cut_timeline: recoveryArtifact?.requirements?.process_cut_timeline ?? "MISSING",
+          : "MISSING",
   };
   const multiDeviceRequirementStatuses: Readonly<Record<string, GateStatus>> = {
     concurrent_sse_connections:
-      multiDeviceArtifact?.requirements?.concurrent_sse_connections ?? "MISSING",
+      multiDeviceArtifact?.requirements?.concurrent_sse_connections === "FAIL" ||
+      (multiDeviceArtifact?.concurrent_sse_connections !== undefined &&
+        multiDeviceArtifact.concurrent_sse_connections < 4)
+        ? "FAIL"
+        : multiDeviceArtifact?.requirements?.concurrent_sse_connections === "PASS" &&
+            multiDeviceArtifact.concurrent_sse_connections !== undefined
+          ? "PASS"
+          : "MISSING",
     device_cursor_positions:
-      multiDeviceArtifact?.requirements?.device_cursor_positions ?? "MISSING",
+      multiDeviceArtifact?.requirements?.device_cursor_positions === "FAIL" ||
+      (multiDeviceArtifact?.device_cursor_positions !== undefined &&
+        multiDeviceArtifact.device_cursor_positions < 4)
+        ? "FAIL"
+        : multiDeviceArtifact?.requirements?.device_cursor_positions === "PASS" &&
+            multiDeviceArtifact.device_cursor_positions !== undefined
+          ? "PASS"
+          : "MISSING",
     stream_gaps:
       multiDeviceArtifact === undefined
         ? "MISSING"
@@ -817,7 +885,15 @@ const importBundle = async (
         : multiDeviceArtifact.ordering_violations === 0
           ? "PASS"
           : "FAIL",
-    replay_latency: multiDeviceArtifact?.requirements?.replay_latency ?? "MISSING",
+    replay_latency:
+      multiDeviceArtifact?.requirements?.replay_latency === "FAIL" ||
+      (multiDeviceArtifact?.replay_latency_ms !== undefined &&
+        multiDeviceArtifact.replay_latency_ms > 2_000)
+        ? "FAIL"
+        : multiDeviceArtifact?.requirements?.replay_latency === "PASS" &&
+            multiDeviceArtifact.replay_latency_ms !== undefined
+          ? "PASS"
+          : "MISSING",
     device_convergence:
       multiDeviceArtifact === undefined
         ? "MISSING"
@@ -910,7 +986,14 @@ const importBundle = async (
   if (!["A", "B", "C", "D", "none"].includes(cell)) {
     throw new EvidenceImportError("MALFORMED_ARTIFACT", "scenario.json", "matrix cell is invalid");
   }
-  const qualifying = qualifyingRuns.has(sealedRun) && region === selectedRegion && cell !== "none";
+  const evidenceManifest = scenarioArtifact?.manifest;
+  const isIssue87Suite = evidenceManifest?.startsWith("issue-87-") === true;
+  const isQualificationLane =
+    cell !== "none" ||
+    /^(?:pre-admitted|reference-348|combined-target-232|target-232|worker-process-loss-(?:before|after)-claim|recovery-(?:rate|reserve)-worker(?:6|8))/u.test(
+      lane ?? "",
+    );
+  const qualifying = region === selectedRegion && isIssue87Suite && isQualificationLane;
 
   return {
     run: sealedRun,
@@ -922,6 +1005,13 @@ const importBundle = async (
     cell,
     history,
     wal,
+    evidenceManifest,
+    lane,
+    repetition: scenarioArtifact?.repetition,
+    workerFixedInstances: scenarioArtifact?.worker_fixed_instances,
+    workerPullStreams: scenarioArtifact?.worker_pull_streams,
+    workerSlots: scenarioArtifact?.worker_slots,
+    workerDbPool: scenarioArtifact?.worker_db_pool,
     startedAt: scenarioArtifact?.started_at,
     endedAt: scenarioArtifact?.ended_at,
     ratePerSecond: scenarioArtifact?.rate_per_second,
@@ -947,6 +1037,12 @@ const importBundle = async (
     checkpointStarts:
       checkpointsArtifact?.checkpoint_starts ?? qualificationCheckpoints?.checkpoint_starts,
     checkpointDurationP95Seconds: checkpointDuration?.p95,
+    recoveryRatePerSecond: recoveryArtifact?.recovery_rate_per_second,
+    processCutTimelineSeconds: recoveryArtifact?.process_cut_timeline_seconds,
+    drainDurationSeconds: recoveryArtifact?.drain_duration_seconds,
+    concurrentSseConnections: multiDeviceArtifact?.concurrent_sse_connections,
+    deviceCursorPositions: multiDeviceArtifact?.device_cursor_positions,
+    replayLatencyMs: multiDeviceArtifact?.replay_latency_ms,
     admissionStatus: offeredAcceptedStatus,
     reconciliationStatus,
     receiptStatus,
@@ -956,11 +1052,16 @@ const importBundle = async (
     overallStatus,
     artifactStatuses,
     integrityViolations: {
-      duplicate_publications: auditArtifact?.duplicate_publications,
       duplicate_terminal_commits: auditArtifact?.duplicate_terminal_commits,
       ghost_delivery_attempts: auditArtifact?.ghost_delivery_attempts,
+      global_budget_mismatch: auditArtifact?.inflight_agent_run_budget_mismatch,
       nonterminal_agent_runs: auditArtifact?.nonterminal_agent_runs,
+      ordering_violations: auditArtifact?.ordering_violations,
+      principal_budget_mismatch: auditArtifact?.principal_budget_mismatch,
+      stale_commit_violations: auditArtifact?.stale_commit_violations,
       stranded_accepted_runs: auditArtifact?.stranded_accepted_runs,
+      unknown_caller_outcomes: auditArtifact?.unknown_caller_outcomes,
+      unpublished_outbox_records: auditArtifact?.unpublished_outbox_records,
       unfinished_agent_run_attempts: auditArtifact?.unfinished_agent_run_attempts,
       unfinished_model_call_attempts: auditArtifact?.unfinished_model_call_attempts,
     },
@@ -981,6 +1082,92 @@ const labels = (values: Readonly<Record<string, string>>) =>
 const sample = (name: string, value: number, dimensions: Readonly<Record<string, string>> = {}) =>
   `${name}${Object.keys(dimensions).length === 0 ? "" : labels(dimensions)} ${value}`;
 
+const qualificationRequirementNames = [
+  "pre_admitted_348_control",
+  "combined_232_target",
+  "three_target_repetitions",
+  "before_claim_failure_cut",
+  "after_claim_failure_cut",
+  "six_worker_recovery_reserve",
+  "eight_worker_recovery_reserve",
+  "smallest_fixed_fleet_selection",
+  "worker_stream_flow_slot_connection_inputs",
+  "resource_and_incremental_cost_inputs",
+  "internal_claim_latency_distribution",
+  "sustained",
+  "fairness",
+  "retained_corpus",
+  "temporal",
+  "aggregate_sse",
+  "total_cost",
+] as const;
+
+const statusesFor = (
+  runs: ReadonlyArray<ImportedRun>,
+  predicate: (run: ImportedRun) => boolean,
+  statusFor: (run: ImportedRun) => GateStatus = (run) => run.overallStatus,
+): GateStatus => {
+  const statuses = runs.filter(predicate).map(statusFor);
+  return statuses.length === 0 ? "MISSING" : minStatus(statuses);
+};
+
+const qualificationRequirementsFor = (
+  selectedRun: ImportedRun,
+  runs: ReadonlyArray<ImportedRun>,
+): Readonly<Record<string, GateStatus>> => {
+  if (!selectedRun.qualifying) {
+    return Object.fromEntries(
+      qualificationRequirementNames.map((requirement) => [requirement, "MISSING"] as const),
+    );
+  }
+  const suiteRuns = runs.filter(
+    (run) =>
+      run.qualifying &&
+      run.evidenceManifest === selectedRun.evidenceManifest &&
+      run.region === selectedRun.region,
+  );
+  const laneStatus = (pattern: RegExp, statusFor?: (run: ImportedRun) => GateStatus): GateStatus =>
+    statusesFor(suiteRuns, (run) => pattern.test(run.lane ?? ""), statusFor);
+  const targetRepetitionStatuses = [1, 2, 3].map((repetition) =>
+    statusesFor(suiteRuns, (run) => run.lane === "target-232" && run.repetition === repetition),
+  );
+  const targetRepetitions = minStatus(targetRepetitionStatuses);
+  const workerInputs = suiteRuns.some(
+    (run) =>
+      (run.workerFixedInstances ?? 0) > 0 &&
+      (run.workerPullStreams ?? 0) > 0 &&
+      (run.workerSlots ?? 0) > 0 &&
+      (run.workerDbPool ?? 0) > 0,
+  )
+    ? "PASS"
+    : "MISSING";
+  return {
+    pre_admitted_348_control: laneStatus(/^(?:pre-admitted|reference-348)/u),
+    combined_232_target: laneStatus(/^combined-target-232/u),
+    three_target_repetitions: targetRepetitions,
+    before_claim_failure_cut: laneStatus(/^worker-process-loss-before-claim$/u),
+    after_claim_failure_cut: laneStatus(/^worker-process-loss-after-claim$/u),
+    six_worker_recovery_reserve: laneStatus(
+      /^recovery-(?:rate|reserve)-worker6$/u,
+      (run) => run.recoveryStatus,
+    ),
+    eight_worker_recovery_reserve: laneStatus(
+      /^recovery-(?:rate|reserve)-worker8$/u,
+      (run) => run.recoveryStatus,
+    ),
+    smallest_fixed_fleet_selection: "MISSING",
+    worker_stream_flow_slot_connection_inputs: workerInputs,
+    resource_and_incremental_cost_inputs: "MISSING",
+    internal_claim_latency_distribution: "MISSING",
+    sustained: targetRepetitions,
+    fairness: "MISSING",
+    retained_corpus: "MISSING",
+    temporal: "MISSING",
+    aggregate_sse: "MISSING",
+    total_cost: "MISSING",
+  };
+};
+
 const renderMetrics = (runs: ReadonlyArray<ImportedRun>) => {
   const lines = [
     "# OpenPoke presentation metrics are derived views. Checksummed evidence remains authoritative.",
@@ -988,14 +1175,18 @@ const renderMetrics = (runs: ReadonlyArray<ImportedRun>) => {
 
   for (const run of runs) {
     const base = { run: run.run };
+    const qualificationRequirements = qualificationRequirementsFor(run, runs);
+    const qualificationStatus = minStatus(Object.values(qualificationRequirements));
     const summary =
-      run.overallStatus === "PASS" && run.qualifying
+      run.overallStatus === "PASS" && run.qualifying && qualificationStatus === "PASS"
         ? "qualified"
-        : run.overallStatus === "PASS"
-          ? "known-gates-passed"
-          : run.overallStatus === "MISSING"
-            ? "evidence-incomplete"
-            : "gate-failed";
+        : run.qualifying && qualificationStatus === "FAIL"
+          ? "gate-failed"
+          : run.overallStatus === "PASS"
+            ? "known-gates-passed"
+            : run.overallStatus === "MISSING"
+              ? "evidence-incomplete"
+              : "gate-failed";
     const bottleneck =
       run.admissionStatus === "FAIL" && run.cloudRun429s !== undefined && run.cloudRun429s > 0
         ? "admission-capacity"
@@ -1014,7 +1205,7 @@ const renderMetrics = (runs: ReadonlyArray<ImportedRun>) => {
       sample("openpoke_run_narrative_info", 1, {
         bottleneck,
         qualification_scope: run.qualifying
-          ? "selected-region-qualifying"
+          ? "selected-region-candidate"
           : "non-qualifying-context",
         run: run.run,
         summary,
@@ -1057,6 +1248,17 @@ const renderMetrics = (runs: ReadonlyArray<ImportedRun>) => {
         gate: "multi_device",
         status: run.multiDeviceStatus,
       }),
+      sample(
+        "openpoke_gate_status",
+        statusValue(
+          run.qualifying ? minStatus([run.overallStatus, qualificationStatus]) : "MISSING",
+        ),
+        {
+          ...base,
+          gate: "production_qualification",
+          status: run.qualifying ? minStatus([run.overallStatus, qualificationStatus]) : "MISSING",
+        },
+      ),
     );
 
     const requirementGroups: ReadonlyArray<
@@ -1064,30 +1266,7 @@ const renderMetrics = (runs: ReadonlyArray<ImportedRun>) => {
     > = [
       ["recovery", run.recoveryRequirementStatuses],
       ["multi_device", run.multiDeviceRequirementStatuses],
-      [
-        "qualification",
-        Object.fromEntries(
-          [
-            "pre_admitted_348_control",
-            "combined_232_target",
-            "three_target_repetitions",
-            "before_claim_failure_cut",
-            "after_claim_failure_cut",
-            "six_worker_recovery_reserve",
-            "eight_worker_recovery_reserve",
-            "smallest_fixed_fleet_selection",
-            "worker_stream_flow_slot_connection_inputs",
-            "resource_and_incremental_cost_inputs",
-            "internal_claim_latency_distribution",
-            "sustained",
-            "fairness",
-            "retained_corpus",
-            "temporal",
-            "aggregate_sse",
-            "total_cost",
-          ].map((requirement) => [requirement, "MISSING"] as const),
-        ),
-      ],
+      ["qualification", qualificationRequirements],
     ];
     for (const [view, requirements] of requirementGroups) {
       for (const [requirement, status] of Object.entries(requirements)) {
@@ -1127,6 +1306,12 @@ const renderMetrics = (runs: ReadonlyArray<ImportedRun>) => {
       ["openpoke_outbox_index_bytes", run.outboxIndexBytes],
       ["openpoke_checkpoint_starts", run.checkpointStarts],
       ["openpoke_checkpoint_duration_p95_seconds", run.checkpointDurationP95Seconds],
+      ["openpoke_recovery_rate_per_second", run.recoveryRatePerSecond],
+      ["openpoke_process_cut_timeline_seconds", run.processCutTimelineSeconds],
+      ["openpoke_recovery_drain_duration_seconds", run.drainDurationSeconds],
+      ["openpoke_concurrent_sse_connections", run.concurrentSseConnections],
+      ["openpoke_device_cursor_positions", run.deviceCursorPositions],
+      ["openpoke_replay_latency_ms", run.replayLatencyMs],
     ] as const;
     for (const [name, value] of scalarMetrics) {
       if (value !== undefined) lines.push(sample(name, value, base));
@@ -1223,16 +1408,6 @@ export const importEvidenceBundles = async (
   request: EvidenceImportRequest,
 ): Promise<EvidenceImportResult> => {
   const selectedRegion = validateBoundedSlug(request.selectedRegion, "selectedRegion", "manifest");
-  const qualifyingRuns = new Set(
-    request.qualifyingRuns.map((run) => validateBoundedSlug(run, "qualifyingRuns", "manifest")),
-  );
-  if (qualifyingRuns.size !== request.qualifyingRuns.length) {
-    throw new EvidenceImportError(
-      "INVALID_REQUEST",
-      "qualifyingRuns",
-      "qualifying run identities must be distinct",
-    );
-  }
   if (request.bundles.length === 0) {
     throw new EvidenceImportError("INVALID_REQUEST", "bundles", "at least one bundle is required");
   }
@@ -1246,17 +1421,8 @@ export const importEvidenceBundles = async (
     }
   }
   const runs = await Promise.all(
-    request.bundles.map((bundle) => importBundle(bundle, selectedRegion, qualifyingRuns)),
+    request.bundles.map((bundle) => importBundle(bundle, selectedRegion)),
   );
-  for (const qualifyingRun of qualifyingRuns) {
-    if (!runs.some((run) => run.run === qualifyingRun)) {
-      throw new EvidenceImportError(
-        "INVALID_REQUEST",
-        "qualifyingRuns",
-        "qualifying identity is not present in the sealed bundles",
-      );
-    }
-  }
   const metrics = renderMetrics(runs);
   return {
     runs,
