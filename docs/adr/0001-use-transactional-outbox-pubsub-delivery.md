@@ -2,9 +2,16 @@
 
 Date: 2026-08-05
 
-Status: Accepted architecture, production qualification remains evidence-gated
+Status: Accepted authority model, worker delivery transport superseded
 
 Supersedes: ADR 0001, Retain Cloud SQL direct AgentRun dispatch
+
+Delivery correction: The approved GCP deployment contract in issue 45 replaces
+the authenticated push worker transport below with one ordered StreamingPull
+subscription and a reviewed fixed worker fleet. The transactional outbox,
+PostgreSQL authority, point claims, ordering, redelivery, and fencing decisions
+remain accepted. Production fleet qualification remains evidence-gated by issue
+87. The push-specific text below is retained as the historical evidence context.
 
 ## Context
 

@@ -22,8 +22,14 @@ rg --quiet "version[[:space:]]*=[[:space:]]*\"$google_provider_version\"" \
 [[ "$(infra/scripts/terraform-ci.sh version -json | jq -r '.terraform_version')" == "$terraform_version" ]]
 rg --fixed-strings --quiet "TERRAFORM_BIN: \${{ github.workspace }}/infra/scripts/terraform-ci.sh" \
   .github/workflows/terraform.yml
-rg --fixed-strings --quiet 'group: terraform-${{ inputs.root }}' \
+rg --fixed-strings --quiet \
+  "format('terraform-{0}', inputs.root)" \
   .github/workflows/terraform.yml
+if [[ $(rg --fixed-strings -- '- ".github/workflows/**"' \
+  .github/workflows/terraform.yml | wc -l) != 2 ]]; then
+  printf 'Terraform static checks must cover changes to every workflow file\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet "terraform_image=\$(jq -r '.ci_image'" \
   infra/scripts/terraform-ci.sh
 if rg --fixed-strings --quiet 'apk add' .github/workflows/terraform.yml; then
@@ -103,11 +109,17 @@ rg --fixed-strings --quiet \
   infra/roots/foundation/main.tf
 [[ "$(rg --fixed-strings --count \
   'project                     = google_project.environment["foundation"].project_id' \
-  infra/roots/foundation/main.tf)" == 2 ]]
+  infra/roots/foundation/main.tf)" == 3 ]]
+rg --fixed-strings --quiet \
+  'resource "google_storage_bucket" "qualification_evidence"' \
+  infra/roots/foundation/main.tf
 rg --fixed-strings --quiet \
   'id = "${var.project_ids.foundation}/${each.value}"' \
   infra/roots/foundation/imports.tf
-if rg --fixed-strings --quiet 'storage.buckets.delete' infra/roots/foundation/main.tf; then
+foundation_bucket_admin=$(sed -n \
+  '/resource "google_project_iam_custom_role" "state_bucket_admin"/,/resource "google_project_iam_member" "foundation_state_bucket_admin"/p' \
+  infra/roots/foundation/main.tf)
+if grep -Fq 'storage.buckets.delete' <<<"$foundation_bucket_admin"; then
   printf 'routine foundation identity must not receive bucket deletion authority\n' >&2
   exit 1
 fi

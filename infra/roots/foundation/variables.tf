@@ -43,6 +43,23 @@ variable "saved_plan_bucket_name" {
   type        = string
 }
 
+variable "qualification_evidence_bucket_name" {
+  description = "Globally unique foundation bucket for retained qualification evidence."
+  type        = string
+}
+
+variable "development_artifact_bucket_name" {
+  description = "Exact disposable development artifact bucket cleaned only by the foundation recovery path."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.development_artifact_bucket_name == null || can(regex("^osfo-development-artifacts-[0-9]+$", var.development_artifact_bucket_name))
+    error_message = "development_artifact_bucket_name must use the reviewed osfo-development-artifacts-N form."
+  }
+}
+
 variable "github_repository" {
   description = "GitHub repository in owner/name form, retained as an audit label."
   type        = string
@@ -81,5 +98,25 @@ variable "region" {
   validation {
     condition     = var.region == "us-east4"
     error_message = "Osfo v1 is structurally fixed to us-east4."
+  }
+}
+
+variable "development_environment_baseline" {
+  description = "Retained development network boundary required by disposable private-IP managed services."
+  type = object({
+    name_prefix                     = string
+    network_cidr                    = string
+    private_service_cidr_prefix     = number
+    temporal_service_attachment_uri = optional(string)
+    temporal_dns_name               = string
+    cost_owner                      = string
+  })
+  default = {
+    name_prefix                     = "osfo-dev"
+    network_cidr                    = "10.40.0.0/20"
+    private_service_cidr_prefix     = 20
+    temporal_service_attachment_uri = null
+    temporal_dns_name               = "temporal.internal."
+    cost_owner                      = "osfo"
   }
 }

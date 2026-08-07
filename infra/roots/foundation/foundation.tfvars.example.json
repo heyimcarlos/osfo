@@ -12,8 +12,17 @@
     "production": "osfo-production-tfstate-unique"
   },
   "saved_plan_bucket_name": "osfo-terraform-plans-unique",
+  "qualification_evidence_bucket_name": "osfo-foundation-evidence-unique",
   "github_repository": "owner/osfo",
   "github_repository_id": "123456789",
   "github_repository_owner_id": "1234567",
-  "region": "us-east4"
+  "region": "us-east4",
+  "development_environment_baseline": {
+    "name_prefix": "osfo-dev",
+    "network_cidr": "10.40.0.0/20",
+    "private_service_cidr_prefix": 20,
+    "temporal_service_attachment_uri": null,
+    "temporal_dns_name": "temporal.internal.",
+    "cost_owner": "osfo"
+  }
 }

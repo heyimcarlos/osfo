@@ -23,7 +23,7 @@
     "format": "oxfmt .oxfmtrc.json package.json turbo.json tsconfig.json tsconfig.scripts.json tsconfig.infra.json compose.postgres.yaml README.md apps packages scripts infra observability .github",
     "format:check": "oxfmt --check .oxfmtrc.json package.json turbo.json tsconfig.json tsconfig.scripts.json tsconfig.infra.json compose.postgres.yaml README.md apps packages scripts infra observability .github",
     "infra:check": "terraform fmt -check -recursive infra && bash infra/tests/policy.sh && bash infra/tests/repository-contract.sh && bash infra/scripts/check-source.sh infra",
-    "infra:test": "vitest run infra/test/terraform-foundation.test.ts",
+    "infra:test": "vitest run infra/test/terraform-foundation.test.ts --exclude '**/.worktrees/**'",
     "lint": "oxlint --deny-warnings .",
     "observability:compose:check": "docker compose --file observability/compose.yaml config --quiet",
     "observability:test": "vitest run observability/*.test.ts",

@@ -1,0 +1,412 @@
+name: Development platform recovery
+run-name: ${{ github.event_name == 'workflow_run' && format('Recovery for Terraform run {0} attempt {1}', github.event.workflow_run.id, github.event.workflow_run.run_attempt) || format('Scheduled development reconciliation {0}', github.run_id) }}
+
+on:
+  workflow_run:
+    workflows: [Terraform]
+    types: [completed]
+  schedule:
+    - cron: "43 9 * * *"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: terraform-development-platform
+  queue: max
+
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    outputs:
+      recover: ${{ steps.check.outputs.recover }}
+      source_ref: ${{ steps.check.outputs.source_ref }}
+      lifecycle_run_id: ${{ steps.check.outputs.lifecycle_run_id }}
+      marker_id: ${{ steps.check.outputs.marker_id }}
+    steps:
+      - name: Select completed protected lifecycle runs
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
+          TRIGGER_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          TRIGGER_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          TRIGGER_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+          RECOVERY_EVENT: ${{ github.event_name }}
+          RECOVERY_RUN_ATTEMPT: ${{ github.run_attempt }}
+          RECOVERY_RUN_ID: ${{ github.run_id }}
+          RECOVERY_SOURCE_SHA: ${{ github.sha }}
+          JANITOR_HISTORY_DAYS: "14"
+          JANITOR_MAX_ATTEMPT_REQUESTS: "400"
+          JANITOR_MAX_ATTEMPTS_PER_RUN: "20"
+          JANITOR_MAX_JOBS_PER_ATTEMPT: "100"
+          JANITOR_MAX_RUNS: "100"
+        run: |
+          read_attempt_jobs() {
+            local run_id=$1
+            local run_attempt=$2
+            local jobs_response
+            local returned_jobs
+            local total_jobs
+            jobs_response=$(gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/attempts/$run_attempt/jobs" \
+              -F "per_page=$JANITOR_MAX_JOBS_PER_ATTEMPT" -F page=1) || return 1
+            total_jobs=$(jq -er '
+              .total_count
+              | select(type == "number" and floor == . and . >= 0)
+            ' <<<"$jobs_response") || return 1
+            if ! jq -e '.jobs | type == "array"' \
+              <<<"$jobs_response" >/dev/null; then
+              printf 'FAIL: run %s attempt %s jobs response is not an array\n' \
+                "$run_id" "$run_attempt" >&2
+              return 1
+            fi
+            returned_jobs=$(jq -er '.jobs | length' \
+              <<<"$jobs_response") || return 1
+            if ((total_jobs > JANITOR_MAX_JOBS_PER_ATTEMPT \
+              || returned_jobs != total_jobs)); then
+              printf 'FAIL: run %s attempt %s returned %s of %s jobs with page cap %s\n' \
+                "$run_id" "$run_attempt" "$returned_jobs" "$total_jobs" \
+                "$JANITOR_MAX_JOBS_PER_ATTEMPT" >&2
+              return 1
+            fi
+            if ! jq -e --argjson run_id "$run_id" \
+              --argjson run_attempt "$run_attempt" '
+                all(.jobs[];
+                  (.id | type) == "number"
+                  and (.id | floor) == .id
+                  and .id > 0
+                  and .run_id == $run_id
+                  and .run_attempt == $run_attempt
+                  and (.name | type) == "string"
+                  and (.name | length) > 0
+                  and (.status | type) == "string"
+                  and (.conclusion == null or (.conclusion | type) == "string"))
+              ' <<<"$jobs_response" >/dev/null; then
+              printf 'FAIL: run %s attempt %s jobs are malformed or cross-boundary\n' \
+                "$run_id" "$run_attempt" >&2
+              return 1
+            fi
+            printf '%s\n' "$jobs_response"
+          }
+
+          validate_run_window() {
+            local label=$1
+            local runs_response=$2
+            local expected_event=$3
+            local expected_sha=$4
+            local max_attempt_status
+            local total_runs
+            local returned_runs
+            total_runs=$(jq -er '
+              .total_count
+              | select(type == "number" and floor == . and . >= 0)
+            ' <<<"$runs_response") || return 1
+            if ! jq -e '.workflow_runs | type == "array"' \
+              <<<"$runs_response" >/dev/null; then
+              printf 'FAIL: %s workflow_runs response is not an array\n' \
+                "$label" >&2
+              return 1
+            fi
+            returned_runs=$(jq -er '.workflow_runs | length' \
+              <<<"$runs_response") || return 1
+            if ((total_runs > JANITOR_MAX_RUNS || returned_runs != total_runs)); then
+              printf 'FAIL: %s history contains %s runs but bounded scan returned %s of at most %s\n' \
+                "$label" "$total_runs" "$returned_runs" "$JANITOR_MAX_RUNS" >&2
+              return 1
+            fi
+            if ! jq -e --arg horizon "$horizon_start" \
+              --arg expected_event "$expected_event" \
+              --arg expected_sha "$expected_sha" '
+              all(.workflow_runs[];
+                (.id | type) == "number"
+                and (.id | floor) == .id
+                and .id > 0
+                and (.created_at | type) == "string"
+                and .created_at >= $horizon
+                and (.run_attempt | type) == "number"
+                and (.run_attempt | floor) == .run_attempt
+                and .run_attempt >= 1
+                and .head_branch == "main"
+                and ($expected_event == "" or .event == $expected_event)
+                and ($expected_sha == "" or .head_sha == $expected_sha))
+            ' <<<"$runs_response" >/dev/null; then
+              printf 'FAIL: %s history escaped its branch, event, SHA, horizon, or schema boundary\n' \
+                "$label" >&2
+              return 1
+            fi
+            max_attempt_status=0
+            jq -e --argjson maximum "$JANITOR_MAX_ATTEMPTS_PER_RUN" '
+              any(.workflow_runs[]; .run_attempt > $maximum)
+            ' <<<"$runs_response" >/dev/null || max_attempt_status=$?
+            if ((max_attempt_status == 0)); then
+              printf 'FAIL: %s history exceeds %s attempts for one run\n' \
+                "$label" "$JANITOR_MAX_ATTEMPTS_PER_RUN" >&2
+              return 1
+            fi
+            if ((max_attempt_status != 1)); then
+              printf 'FAIL: %s attempt-cap validation failed\n' "$label" >&2
+              return 1
+            fi
+          }
+
+          printf 'recover=false\n' >>"$GITHUB_OUTPUT"
+          if [[ "$RECOVERY_EVENT" == schedule ]]; then
+            horizon_start=$(date --utc \
+              --date="$JANITOR_HISTORY_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ) || exit 1
+            terraform_runs=$(gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/terraform.yml/runs" \
+              -f branch=main -f event=workflow_dispatch \
+              -f "created=>=$horizon_start" -F "per_page=$JANITOR_MAX_RUNS" \
+              -F page=1) || exit 1
+            recovery_runs=$(gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/development-platform-recovery.yml/runs" \
+              -f branch=main -f "created=>=$horizon_start" \
+              -F "per_page=$JANITOR_MAX_RUNS" -F page=1) || exit 1
+            validate_run_window Terraform \
+              "$terraform_runs" workflow_dispatch "" || exit 1
+            validate_run_window recovery "$recovery_runs" "" "" || exit 1
+            terraform_attempt_requests=$(jq -er \
+              '[.workflow_runs[].run_attempt] | add // 0' \
+              <<<"$terraform_runs") || exit 1
+            recovery_attempt_requests=$(jq -er \
+              '[.workflow_runs[].run_attempt] | add // 0' \
+              <<<"$recovery_runs") || exit 1
+            attempt_request_count=$((terraform_attempt_requests \
+              + recovery_attempt_requests))
+            if ((attempt_request_count > JANITOR_MAX_ATTEMPT_REQUESTS)); then
+              printf 'FAIL: retained history needs %s attempt-job requests, exceeding budget %s\n' \
+                "$attempt_request_count" "$JANITOR_MAX_ATTEMPT_REQUESTS" >&2
+              exit 1
+            fi
+            completed_markers="$RUNNER_TEMP/development-cleanup-complete-markers"
+            : >"$completed_markers"
+            recovery_attempts=$(jq -r '
+              [.workflow_runs[]]
+              | sort_by(.created_at) | reverse[]
+              | . as $run
+              | range($run.run_attempt; 0; -1) as $attempt
+              | [$run.id, $attempt] | @tsv
+            ' <<<"$recovery_runs") || exit 1
+            while IFS=$'\t' read -r recovery_run_id recovery_run_attempt; do
+              [[ -n "$recovery_run_id" && -n "$recovery_run_attempt" ]] || continue
+              recovery_jobs=$(read_attempt_jobs \
+                "$recovery_run_id" "$recovery_run_attempt") || exit 1
+              jq -r '
+                [.jobs[]
+                  | select(.conclusion == "success")
+                  | .name
+                  | select(startswith("development-cleanup-complete-"))]
+                | .[]
+              ' <<<"$recovery_jobs" >>"$completed_markers" || exit 1
+            done <<<"$recovery_attempts"
+            terraform_attempts=$(jq -r '
+              [.workflow_runs[]]
+              | sort_by(.created_at) | reverse[]
+              | . as $run
+              | range($run.run_attempt; 0; -1) as $attempt
+              | [$run.id, $attempt] | @tsv
+            ' <<<"$terraform_runs") || exit 1
+            candidate_id=""
+            candidate_attempt=""
+            while IFS=$'\t' read -r run_id run_attempt; do
+              [[ -n "$run_id" && -n "$run_attempt" ]] || continue
+              marker_name="development-cleanup-complete-$run_id-$run_attempt"
+              marker_status=0
+              grep -Fqx "$marker_name" "$completed_markers" || marker_status=$?
+              if ((marker_status == 0)); then
+                continue
+              fi
+              if ((marker_status != 1)); then
+                printf 'FAIL: cleanup marker lookup failed for run %s attempt %s\n' \
+                  "$run_id" "$run_attempt" >&2
+                exit 1
+              fi
+              run_jobs=$(read_attempt_jobs "$run_id" "$run_attempt") || exit 1
+              candidate_status=0
+              jq -e '
+                [.jobs[]] as $jobs
+                | any($jobs[]; .name == "static" and .conclusion == "success")
+                and any($jobs[];
+                  .name == "development-authorization" and .conclusion == "success")
+                and any($jobs[];
+                  .name == "development-configuration" and .conclusion == "success")
+                and any($jobs[];
+                  .name == "development-lifecycle"
+                  and (.conclusion == "failure" or .conclusion == "cancelled"
+                    or .conclusion == "timed_out" or .conclusion == "stale"))
+                and (any($jobs[];
+                  .name == "development-cleanup" and .conclusion == "success") | not)
+              ' <<<"$run_jobs" >/dev/null || candidate_status=$?
+              if ((candidate_status == 0)); then
+                candidate_id=$run_id
+                candidate_attempt=$run_attempt
+                break
+              fi
+              if ((candidate_status != 1)); then
+                printf 'FAIL: candidate classification failed for run %s attempt %s\n' \
+                  "$run_id" "$run_attempt" >&2
+                exit 1
+              fi
+            done <<<"$terraform_attempts"
+            if [[ -z "$candidate_id" ]]; then
+              printf 'PASS: scheduled janitor found no abandoned lifecycle in the retained %s-day horizon\n' \
+                "$JANITOR_HISTORY_DAYS"
+              exit 0
+            fi
+
+            source_runs=$(gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/terraform.yml/runs" \
+              -f branch=main -f "head_sha=$RECOVERY_SOURCE_SHA" \
+              -f "created=>=$horizon_start" -F "per_page=$JANITOR_MAX_RUNS" \
+              -F page=1) || exit 1
+            validate_run_window source-static \
+              "$source_runs" "" "$RECOVERY_SOURCE_SHA" || exit 1
+            source_attempt_requests=$(jq -er \
+              '[.workflow_runs[].run_attempt] | add // 0' \
+              <<<"$source_runs") || exit 1
+            if ((attempt_request_count + source_attempt_requests \
+              > JANITOR_MAX_ATTEMPT_REQUESTS)); then
+              printf 'FAIL: source proof would exceed the %s attempt-job request budget\n' \
+                "$JANITOR_MAX_ATTEMPT_REQUESTS" >&2
+              exit 1
+            fi
+            source_static=false
+            source_attempts=$(jq -r '
+              [.workflow_runs[]]
+              | .[]
+              | . as $run
+              | range($run.run_attempt; 0; -1) as $attempt
+              | [$run.id, $attempt] | @tsv
+            ' <<<"$source_runs") || exit 1
+            while IFS=$'\t' read -r source_run_id source_run_attempt; do
+              [[ -n "$source_run_id" && -n "$source_run_attempt" ]] || continue
+              source_jobs=$(read_attempt_jobs \
+                "$source_run_id" "$source_run_attempt") || exit 1
+              source_static_status=0
+              jq -e '[.jobs[]] | any(.name == "static" and .conclusion == "success")' \
+                <<<"$source_jobs" >/dev/null || source_static_status=$?
+              if ((source_static_status == 0)); then
+                source_static=true
+                break
+              fi
+              if ((source_static_status != 1)); then
+                printf 'FAIL: source static classification failed for run %s attempt %s\n' \
+                  "$source_run_id" "$source_run_attempt" >&2
+                exit 1
+              fi
+            done <<<"$source_attempts"
+            if [[ "$source_static" != true ]]; then
+              printf 'FAIL: scheduled janitor source lacks exact successful static proof\n' >&2
+              exit 1
+            fi
+
+            printf 'recover=true\n' >>"$GITHUB_OUTPUT"
+            printf 'source_ref=%s\n' "$RECOVERY_SOURCE_SHA" >>"$GITHUB_OUTPUT"
+            printf 'lifecycle_run_id=janitor-%s-%s-%s-%s\n' \
+              "$candidate_id" "$candidate_attempt" \
+              "$RECOVERY_RUN_ID" "$RECOVERY_RUN_ATTEMPT" >>"$GITHUB_OUTPUT"
+            printf 'marker_id=%s-%s\n' \
+              "$candidate_id" "$candidate_attempt" >>"$GITHUB_OUTPUT"
+            printf 'PASS: scheduled janitor selected abandoned lifecycle %s attempt %s at reviewed source %s\n' \
+              "$candidate_id" "$candidate_attempt" "$RECOVERY_SOURCE_SHA"
+            exit 0
+          fi
+          if [[ "$TRIGGER_EVENT" != workflow_dispatch || "$TRIGGER_HEAD_BRANCH" != main ]]; then
+            printf 'PASS: completed workflow could not have run the protected lifecycle\n'
+            exit 0
+          fi
+          jobs=$(read_attempt_jobs \
+            "$TRIGGER_RUN_ID" "$TRIGGER_RUN_ATTEMPT") || exit 1
+          automatic_status=0
+          jq -e '
+            [.jobs[]] as $jobs
+            | any($jobs[]; .name == "static" and .conclusion == "success")
+            and any($jobs[];
+              .name == "development-authorization" and .conclusion == "success")
+            and any($jobs[];
+              .name == "development-configuration" and .conclusion == "success")
+          ' <<<"$jobs" >/dev/null || automatic_status=$?
+          if ((automatic_status == 0)); then
+            printf 'recover=true\n' >>"$GITHUB_OUTPUT"
+            printf 'source_ref=%s\n' "$TRIGGER_HEAD_SHA" >>"$GITHUB_OUTPUT"
+            printf 'lifecycle_run_id=%s-%s\n' \
+              "$TRIGGER_RUN_ID" "$TRIGGER_RUN_ATTEMPT" >>"$GITHUB_OUTPUT"
+            printf 'marker_id=%s-%s\n' \
+              "$TRIGGER_RUN_ID" "$TRIGGER_RUN_ATTEMPT" >>"$GITHUB_OUTPUT"
+          fi
+          if ((automatic_status != 0 && automatic_status != 1)); then
+            printf 'FAIL: automatic recovery classification failed\n' >&2
+            exit 1
+          fi
+
+  artifact-cleanup:
+    needs: authorize
+    if: needs.authorize.outputs.recover == 'true'
+    runs-on: ubuntu-24.04
+    environment: foundation
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_VARSET_FILE: ${{ github.workspace }}/infra/roots/development/platform/development.tfvars.json
+      FOUNDATION_SERVICE_ACCOUNT: ${{ vars.GCP_FOUNDATION_TERRAFORM_SERVICE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ needs.authorize.outputs.source_ref }}
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_FOUNDATION_TERRAFORM_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Remove immutable artifact objects through foundation recovery
+        shell: bash
+        run: infra/tests/development-platform-prepare-cleanup.sh
+
+  platform-cleanup:
+    name: development-cleanup-complete-${{ needs.authorize.outputs.marker_id }}
+    needs: [authorize, artifact-cleanup]
+    if: >-
+      always() &&
+      needs.authorize.outputs.recover == 'true' &&
+      needs.artifact-cleanup.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: development-platform
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+      TF_VARSET_FILE: ${{ github.workspace }}/infra/roots/development/platform/development.tfvars.json
+      TF_IMAGE_DIGESTS_FILE: ${{ github.workspace }}/infra/roots/development/platform/image-digests.json
+      TERRAFORM_BIN: ${{ github.workspace }}/infra/scripts/terraform-ci.sh
+      SAVED_PLAN_BUCKET: ${{ vars.GCP_SAVED_PLAN_BUCKET }}
+      DEVELOPMENT_STATE_BUCKET: ${{ vars.GCP_DEVELOPMENT_STATE_BUCKET }}
+      DEVELOPMENT_PLATFORM_CLEANUP_ONLY: "1"
+      DEVELOPMENT_LIFECYCLE_RUN_ID: ${{ needs.authorize.outputs.lifecycle_run_id }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ needs.authorize.outputs.source_ref }}
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT }}
+      - name: Initialize isolated development state for recovery
+        run: |
+          infra/scripts/terraform-ci.sh -chdir=infra/roots/development/platform init -input=false \
+            -backend-config="bucket=$DEVELOPMENT_STATE_BUCKET" \
+            -backend-config="prefix=roots/development/platform"
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Apply bound destroy and prove provider absence
+        shell: bash
+        run: infra/tests/development-platform-live.sh

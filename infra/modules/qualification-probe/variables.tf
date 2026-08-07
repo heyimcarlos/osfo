@@ -1,0 +1,14 @@
+variable "enabled" { type = bool }
+variable "project_id" { type = string }
+variable "region" { type = string }
+variable "name_prefix" { type = string }
+variable "network_name" { type = string }
+variable "subnetwork_name" { type = string }
+variable "private_dns_zone_name" { type = string }
+variable "cloud_sql_connection_name" { type = string }
+variable "cloud_sql_private_ip" { type = string }
+variable "static_egress_ip" { type = string }
+variable "qualification_service_accounts" { type = map(string) }
+variable "secret_names" { type = map(string) }
+variable "probe_image" { type = string }
+variable "labels" { type = map(string) }

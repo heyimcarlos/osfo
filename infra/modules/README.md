@@ -16,5 +16,9 @@ The approved module names are `environment-baseline`, `data-authority`,
 `command-buffer`, `public-edge`, `native-transport-runtime`, `relay-runtime`,
 `agentrun-runtime`, `temporal-runtime`, and `operating-contract`. Ticket 77
 creates the state and validation foundation without speculative empty modules.
+Ticket 89 implements the retained development `environment-baseline` in
+foundation and the disposable `data-authority` and `command-buffer` platform
+modules. Production roots may
+reuse them only after production safeguards and qualified inputs are supplied.
 External modules, when introduced, must use an exact registry version or an
 immutable 40-character Git commit SHA.

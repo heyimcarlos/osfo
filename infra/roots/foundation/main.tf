@@ -1,5 +1,9 @@
 locals {
   environments = toset(["foundation", "development", "production"])
+  development_artifact_bucket_name = coalesce(
+    var.development_artifact_bucket_name,
+    "osfo-development-artifacts-${split("-", var.project_ids.development)[2]}",
+  )
 
   root_identities = {
     foundation = {
@@ -39,7 +43,7 @@ locals {
     }
   }
 
-  project_services = {
+  base_project_services = {
     for pair in setproduct(local.environments, toset([
       "cloudresourcemanager.googleapis.com",
       "iam.googleapis.com",
@@ -55,12 +59,40 @@ locals {
     }
   }
 
+  development_platform_services = {
+    for service in toset([
+      "artifactregistry.googleapis.com",
+      "cloudquotas.googleapis.com",
+      "compute.googleapis.com",
+      "dns.googleapis.com",
+      "pubsub.googleapis.com",
+      "run.googleapis.com",
+      "secretmanager.googleapis.com",
+      "servicedirectory.googleapis.com",
+      "servicenetworking.googleapis.com",
+      "sqladmin.googleapis.com",
+      ]) : "development/${service}" => {
+      environment = "development"
+      service     = service
+    }
+  }
+
+  project_services = merge(local.base_project_services, local.development_platform_services)
+
   non_foundation_project_roles = toset([
     "roles/iam.serviceAccountAdmin",
     "roles/logging.configWriter",
     "roles/resourcemanager.projectIamAdmin",
     "roles/serviceusage.serviceUsageAdmin",
   ])
+
+  development_foundation_project_roles = setunion(local.non_foundation_project_roles, toset([
+    "roles/compute.networkAdmin",
+    "roles/compute.securityAdmin",
+    "roles/dns.admin",
+    "roles/iam.roleAdmin",
+    "roles/servicenetworking.networksAdmin",
+  ]))
 
   foundation_project_roles = {
     foundation = toset([
@@ -71,7 +103,7 @@ locals {
       "roles/resourcemanager.projectIamAdmin",
       "roles/serviceusage.serviceUsageAdmin",
     ])
-    development = local.non_foundation_project_roles
+    development = local.development_foundation_project_roles
     production  = local.non_foundation_project_roles
   }
 
@@ -86,6 +118,57 @@ locals {
     ]) : "${binding.environment}/${binding.role}" => binding
   }
 
+  platform_project_roles = toset([
+    "roles/artifactregistry.admin",
+    "roles/cloudsql.admin",
+    "roles/cloudquotas.viewer",
+    "roles/compute.networkViewer",
+    "roles/iam.serviceAccountViewer",
+    "roles/logging.viewer",
+    "roles/pubsub.admin",
+    "roles/run.admin",
+    "roles/serviceusage.serviceUsageViewer",
+  ])
+
+  platform_role_bindings = {
+    for role in local.platform_project_roles : role => { environment = "development", role = role }
+  }
+
+  development_runtime_identities = toset([
+    "agentrun",
+    "migration",
+    "reconciliation",
+    "relay",
+    "temporal",
+    "transport",
+  ])
+
+  development_runtime_cloud_sql_bindings = {
+    for binding in setproduct(local.development_runtime_identities, toset([
+      "roles/cloudsql.client",
+      "roles/cloudsql.instanceUser",
+      ])) : "${binding[0]}/${binding[1]}" => {
+      identity = binding[0]
+      role     = binding[1]
+    }
+  }
+
+  development_qualification_identities = {
+    denied_secret = "qual-denied"
+    network       = "qual-network"
+  }
+
+  development_secret_access_bindings = {
+    runtime_agentrun = {
+      identity = "agentrun"
+      secret   = "model-adapter"
+    }
+    runtime_temporal = {
+      identity = "temporal"
+      secret   = "temporal-cloud"
+    }
+  }
+
   security_constraints = var.organization_id == null ? {} : {
     for pair in setproduct(local.environments, toset([
       "iam.automaticIamGrantsForDefaultServiceAccounts",
@@ -96,6 +179,109 @@ locals {
       constraint  = pair[1]
     }
   }
+}
+
+resource "google_project_iam_custom_role" "platform_secret_manager" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoPlatformSecretManager"
+  title       = "Osfo platform secret manager"
+  description = "Manages secret containers and new versions without reading payloads or changing IAM."
+  permissions = [
+    "resourcemanager.projects.get",
+    "secretmanager.locations.get",
+    "secretmanager.locations.list",
+    "secretmanager.secrets.create",
+    "secretmanager.secrets.delete",
+    "secretmanager.secrets.get",
+    "secretmanager.secrets.getIamPolicy",
+    "secretmanager.secrets.list",
+    "secretmanager.secrets.update",
+    "secretmanager.versions.add",
+  ]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
+}
+
+resource "google_project_iam_custom_role" "platform_service_consumer" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoPlatformServiceConsumer"
+  title       = "Osfo platform service consumer"
+  description = "Uses enabled project services without changing service configuration."
+  permissions = ["serviceusage.services.use"]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
+}
+
+resource "google_project_iam_custom_role" "platform_storage_manager" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoPlatformStorageManager"
+  title       = "Osfo platform storage manager"
+  description = "Reads and deletes the exact disposable artifact bucket and creates immutable objects without update, delete, or overwrite authority."
+  permissions = [
+    "storage.buckets.delete",
+    "storage.buckets.get",
+    "storage.objects.create",
+    "storage.objects.get",
+    "storage.objects.list",
+  ]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
+}
+
+resource "google_project_iam_custom_role" "platform_bucket_creator" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoPlatformBucketCreator"
+  title       = "Osfo platform bucket creator"
+  description = "Creates a disposable bucket without authority to update bucket metadata or object lifecycle rules."
+  permissions = ["storage.buckets.create"]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
+}
+
+resource "google_project_iam_custom_role" "platform_dns_record_manager" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoPlatformDnsRecordManager"
+  title       = "Osfo platform DNS record manager"
+  description = "Manages only the disposable database A record in the retained development private zone."
+  permissions = [
+    "dns.changes.create",
+    "dns.changes.get",
+    "dns.managedZones.get",
+    "dns.resourceRecordSets.create",
+    "dns.resourceRecordSets.delete",
+    "dns.resourceRecordSets.get",
+    "dns.resourceRecordSets.list",
+    "dns.resourceRecordSets.update",
+  ]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
+}
+
+resource "google_project_iam_custom_role" "development_artifact_cleaner" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoDevelopmentArtifactCleaner"
+  title       = "Osfo development artifact cleaner"
+  description = "Lets the foundation recovery path inspect and delete disposable artifact objects before bucket teardown."
+  permissions = [
+    "storage.buckets.get",
+    "storage.objects.delete",
+    "storage.objects.get",
+    "storage.objects.list",
+  ]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
 }
 
 resource "google_project" "environment" {
@@ -126,6 +312,27 @@ resource "google_project_service" "required" {
   service                    = each.value.service
   disable_dependent_services = false
   disable_on_destroy         = false
+}
+
+module "development_environment_baseline" {
+  source = "../../modules/environment-baseline"
+
+  enabled     = true
+  project_id  = google_project.environment["development"].project_id
+  region      = var.region
+  name_prefix = var.development_environment_baseline.name_prefix
+  labels = {
+    environment = "development"
+    managed_by  = "terraform"
+    system      = "osfo"
+    cost_owner  = var.development_environment_baseline.cost_owner
+  }
+  network_cidr                    = var.development_environment_baseline.network_cidr
+  private_service_cidr_prefix     = var.development_environment_baseline.private_service_cidr_prefix
+  temporal_service_attachment_uri = var.development_environment_baseline.temporal_service_attachment_uri
+  temporal_dns_name               = var.development_environment_baseline.temporal_dns_name
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
 }
 
 resource "google_org_policy_policy" "security" {
@@ -242,6 +449,33 @@ resource "google_storage_bucket" "saved_plans" {
   depends_on = [google_project_service.required]
 }
 
+resource "google_storage_bucket" "qualification_evidence" {
+  project                     = google_project.environment["foundation"].project_id
+  name                        = var.qualification_evidence_bucket_name
+  location                    = "US"
+  storage_class               = "STANDARD"
+  force_destroy               = false
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  labels = {
+    environment = "foundation"
+    managed_by  = "terraform"
+    purpose     = "qualification-evidence"
+    system      = "osfo"
+  }
+
+  versioning { enabled = true }
+  retention_policy { retention_period = 34214400 }
+  soft_delete_policy { retention_duration_seconds = 2592000 }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.required]
+}
+
 resource "google_service_account" "terraform" {
   for_each = local.root_identities
 
@@ -287,7 +521,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.environment"      = "assertion.environment"
   }
 
-  attribute_condition = "assertion.repository_owner_id == '${var.github_repository_owner_id}' && assertion.repository_id == '${var.github_repository_id}'"
+  attribute_condition = "assertion.repository_owner_id == '${var.github_repository_owner_id}' && assertion.repository_id == '${var.github_repository_id}' && assertion.ref == 'refs/heads/main'"
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
@@ -400,6 +634,163 @@ resource "google_project_iam_member" "foundation" {
   project = google_project.environment[each.value.environment].project_id
   role    = each.value.role
   member  = "serviceAccount:${google_service_account.terraform["foundation"].email}"
+}
+
+resource "google_project_iam_member" "platform" {
+  for_each = local.platform_role_bindings
+
+  project = google_project.environment[each.value.environment].project_id
+  role    = each.value.role
+  member  = "serviceAccount:${google_service_account.terraform["${each.value.environment}-platform"].email}"
+}
+
+resource "google_compute_subnetwork_iam_member" "development_platform_network_user" {
+  project    = google_project.environment["development"].project_id
+  region     = var.region
+  subnetwork = module.development_environment_baseline.subnetwork_id
+  role       = "roles/compute.networkUser"
+  member     = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+}
+
+resource "google_project_iam_member" "platform_secret_manager" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.platform_secret_manager.name
+  member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+}
+
+resource "google_project_iam_member" "platform_service_consumer" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.platform_service_consumer.name
+  member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+}
+
+resource "google_project_iam_member" "platform_storage_manager" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.platform_storage_manager.name
+  member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+
+  condition {
+    title       = "exact_development_artifact_bucket"
+    description = "Restricts platform storage access to the reviewed disposable artifact bucket."
+    expression  = "resource.name == 'projects/_/buckets/${local.development_artifact_bucket_name}' || resource.name.startsWith('projects/_/buckets/${local.development_artifact_bucket_name}/objects/')"
+  }
+}
+
+resource "google_project_iam_member" "platform_bucket_creator" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.platform_bucket_creator.name
+  member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+}
+
+resource "google_dns_managed_zone_iam_member" "development_platform_database_record" {
+  project      = google_project.environment["development"].project_id
+  managed_zone = "${var.development_environment_baseline.name_prefix}-private"
+  role         = google_project_iam_custom_role.platform_dns_record_manager.name
+  member       = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+
+  condition {
+    title       = "exact_development_database_a_record"
+    description = "Restricts the disposable platform to database.temporal.internal. A while permitting safe parent-zone checks."
+    expression  = "(resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name.endsWith('/rrsets/database.temporal.internal./A')) || resource.type != 'dns.googleapis.com/ResourceRecordSet'"
+  }
+
+  depends_on = [module.development_environment_baseline]
+}
+
+resource "google_project_iam_member" "development_artifact_cleaner" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.development_artifact_cleaner.name
+  member  = "serviceAccount:${google_service_account.terraform["foundation"].email}"
+
+  condition {
+    title       = "exact_development_artifact_bucket"
+    description = "Restricts foundation cleanup to the reviewed disposable artifact bucket."
+    expression  = "resource.name == 'projects/_/buckets/${local.development_artifact_bucket_name}' || resource.name.startsWith('projects/_/buckets/${local.development_artifact_bucket_name}/objects/')"
+  }
+}
+
+resource "google_project_iam_member" "development_runtime_cloud_sql" {
+  for_each = local.development_runtime_cloud_sql_bindings
+
+  project = google_project.environment["development"].project_id
+  role    = each.value.role
+  member  = "serviceAccount:${google_service_account.development_runtime[each.value.identity].email}"
+}
+
+resource "google_project_iam_member" "development_qualification_cloud_sql_client" {
+  project = google_project.environment["development"].project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.development_qualification["network"].email}"
+}
+
+resource "google_project_iam_member" "development_qualification_cloud_sql_instance_user" {
+  project = google_project.environment["development"].project_id
+  role    = "roles/cloudsql.instanceUser"
+  member  = "serviceAccount:${google_service_account.development_qualification["network"].email}"
+}
+
+resource "google_project_iam_member" "development_secret_access" {
+  for_each = local.development_secret_access_bindings
+
+  project = google_project.environment["development"].project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${google_service_account.development_runtime[each.value.identity].email}"
+
+  condition {
+    title       = "${replace(each.key, "_", "-")}-secret"
+    description = "Restricts the retained identity to one reviewed disposable secret."
+    expression  = "resource.name.startsWith('projects/${google_project.environment["development"].number}/secrets/${var.development_environment_baseline.name_prefix}-${each.value.secret}/versions/')"
+  }
+}
+
+resource "google_service_account" "development_runtime" {
+  for_each = local.development_runtime_identities
+
+  project      = google_project.environment["development"].project_id
+  account_id   = "${var.development_environment_baseline.name_prefix}-${each.key}"
+  display_name = "Osfo development ${each.key}"
+  description  = "Retained identity for repeatable disposable development platform lifecycles."
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_service_account" "development_qualification" {
+  for_each = local.development_qualification_identities
+
+  project      = google_project.environment["development"].project_id
+  account_id   = "${var.development_environment_baseline.name_prefix}-${each.value}"
+  display_name = "Osfo development ${replace(each.key, "_", " ")} probe"
+  description  = "Retained qualification-only identity with no runtime authority."
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_service_account_iam_member" "development_platform_probe_act_as" {
+  for_each = google_service_account.development_qualification
+
+  service_account_id = each.value.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+}
+
+resource "google_storage_bucket_iam_member" "development_evidence" {
+  bucket = google_storage_bucket.qualification_evidence.name
+  role   = google_project_iam_custom_role.saved_plan_object_access.name
+  member = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+
+  condition {
+    title       = "development_platform_evidence_prefix"
+    description = "Restricts development qualification evidence to its immutable prefix."
+    expression  = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.qualification_evidence.name}/objects/roots/development/platform/')"
+  }
 }
 
 resource "google_organization_iam_member" "foundation_org_policy_admin" {

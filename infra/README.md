@@ -1,7 +1,156 @@
 # Terraform foundation
 
-Ticket 77 establishes the isolated Terraform state and validation boundary. It
-does not provision the application platform or runtime owned by later tickets.
+Ticket 77 establishes the isolated Terraform state and validation boundary.
+Ticket 89 adds the disposable development platform. Runtime deployment remains
+owned by later tickets.
+
+## Disposable development platform
+
+Foundation composes the environment baseline module, which owns the retained,
+development-only `us-east4` VPC, Direct VPC egress subnet, static Cloud NAT,
+private services access, private DNS, firewall rules, and an optional Temporal
+Cloud Private Service Connect endpoint. The `development/platform` root reads
+those provider resources by their reviewed names. Foundation also retains the
+six runtime service-account identities, two qualification-only identities,
+the exact Cloud SQL and conditional secret-access roles, and two probe-only
+`actAs` grants. Data authority owns zonal private-IP Cloud SQL PostgreSQL with
+IAM database authentication, Secret Manager containers, immutable Artifact Registry tags,
+and the disposable content-addressed artifact bucket. Command buffer owns the
+single ordered Pub/Sub topic and StreamingPull subscription.
+
+Foundation permanently owns the network baseline, development service APIs,
+and the platform root's reviewed IAM. Cloud SQL can retain producer networking
+for up to four days after instance deletion, so keeping the isolated baseline
+outside the disposable root is required for reliable exact cleanup. A platform
+cleanup removes every resource in its state without disabling capabilities or
+blocking later recreations. The platform identity cannot delete artifact
+objects. A separate foundation recovery identity removes only reviewed
+content-addressed objects before the platform identity applies Terraform
+destroy. The platform has read-only project network discovery and
+`roles/compute.networkUser` only on the retained development subnetwork; it
+cannot administer the VPC or Service Networking connection.
+
+That retained boundary has a deliberate development-only blast radius. The VPC,
+subnet, static external address, Cloud NAT, router, private DNS zone, firewall,
+and private services access allocation continue to exist and may continue to
+incur cost after a platform destroy. They are not shared with production and
+the scheduled foundation refresh-only plan owns their drift. The disposable
+root creates and destroys Cloud SQL, Pub/Sub, secret containers,
+Artifact Registry, the artifact bucket, qualification jobs, and its private
+database DNS record. Retaining the named runtime identities avoids tombstoned
+IAM principals across repeated platform recreation while granting them no
+payload access beyond the explicit disposable secret policies.
+
+The reviewed variable set exposes database size and retention, storage names,
+quota expectations, process connection pools, concurrency, fixed worker counts,
+streams, and execution slots. These are development inputs and conditional
+production candidates, not silently qualified production defaults. Secret
+payloads and Secret Manager versions remain outside Terraform.
+
+Qualification evidence is written by content digest to the foundation-owned,
+versioned evidence bucket. That bucket has a 396-day retention policy and is
+not part of development destroy. The development artifact bucket uses
+`force_destroy` only after the foundation recovery step has removed its smoke
+artifact. The platform identity can create and read objects but has no
+`storage.objects.delete`, so it cannot overwrite an existing object generation.
+Project-level storage authority is limited to bucket creation. Bucket reads,
+deletion, and object creation are conditionally scoped to the exact reviewed
+artifact bucket, and the platform has no bucket-update authority with which to
+install a deletion lifecycle rule.
+
+Temporal Cloud must publish and authorize a same-region service attachment.
+Foundation alone accepts its non-secret `us-east4` URI and DNS name. The
+disposable root discovers the retained forwarding rule and records its exact
+target, so duplicated root inputs cannot drift. When the forwarding rule is not
+available, the report records Temporal PSC as `MISSING`, never `PASS`.
+
+The platform smoke uses a digest-pinned base image for disposable Cloud Run
+Jobs with Direct VPC egress. It proves private-only Cloud SQL connectivity with
+an IAM database login, private DNS resolution, and observed public egress
+through the retained static NAT address. No qualification identity has secret
+access, and runtime identities are never impersonable by the platform identity.
+The denied probe must fail with the exact `secretmanager.versions.access`
+permission denial. The platform may create versions and manage containers, but
+it cannot change secret IAM, access version payloads, or mint runtime
+credentials. Authorized secret-version access therefore remains `MISSING` in
+this preparatory PR. Package installation inside the pinned base image is still
+mutable, so full probe toolchain determinism is also `MISSING`.
+The retained private zone grants the platform only a custom record role for
+`database.temporal.internal.` A, not project-wide DNS administration.
+
+The ordered Pub/Sub proof first validates the Terraform-managed subscription's
+topic, ordering, retention, and acknowledgement configuration. Its behavioral
+round trip then uses an isolated disposable subscription and the `us-east4`
+regional API endpoint, so qualification cannot lease or acknowledge runtime
+messages. The topic also restricts allowed persistence to `us-east4`; the
+regional endpoint alone is not treated as storage-topology evidence.
+The artifact proof creates one content-addressed object, rejects a second
+generation from an unconditional overwrite, requires the exact missing
+`storage.objects.delete` permission, and verifies that only one generation
+exists. This is IAM-enforced create-only immutability, not a caller-precondition
+claim.
+
+After foundation has applied the evidence bucket and platform IAM additions,
+initialize the development backend and run the destructive, disposable proof:
+
+```sh
+terraform -chdir=infra/roots/development/platform init -input=false \
+  -backend-config="bucket=$GCP_DEVELOPMENT_STATE_BUCKET" \
+  -backend-config="prefix=roots/development/platform"
+export DEVELOPMENT_LIFECYCLE_RUN_ID=manual-20260807-01
+SAVED_PLAN_BUCKET="$GCP_SAVED_PLAN_BUCKET" \
+  infra/tests/development-platform-live.sh
+```
+
+The proof refuses a dirty tree and binds evidence to the exact commit, reviewed
+variable and image files, and create and no-change plan manifests. It runs
+quota preflight, exact saved-plan apply, an empty second plan, and managed-service
+smoke checks. Before cleanup it stores an immutable lifecycle envelope keyed by
+the workflow run and content digest. Cleanup evidence links that envelope, or
+records the link as `MISSING` when cancellation happened before it was stored.
+The proof always reports the current acceptance result as partial while any
+required gate is `MISSING`. For a manual run, choose a new
+`DEVELOPMENT_LIFECYCLE_RUN_ID` for every attempt and reuse that exact value for
+its cleanup invocation.
+
+Cleanup is a separate two-authority workflow. Its foundation job removes only
+reviewed content-addressed artifact objects, then its platform job creates,
+stores, and applies a bound destroy plan, fails closed on state reads, performs
+negative provider lookups, and queries retained audit history when it removed
+Terraform-owned resources. A default-branch `workflow_run` recovery starts
+after every completed protected lifecycle dispatch, including cancellation of
+the original run. A scheduled default-branch janitor uses the same serialized
+cleanup path only when GitHub run history contains an abandoned protected
+lifecycle without a successful keyed recovery. It also requires a successful
+static job at its exact current-main source before OIDC, so canceling a recovery
+run cannot silently strand resources or turn an ordinary scheduled run into a
+destructive one. A successful recovery records the original Terraform run ID and
+run attempt in its cleanup job name. Later schedules consult only successful,
+attempt-specific cleanup jobs across every GitHub rerun attempt, so completed
+cleanup clears the exact marker without combining or hiding rerun results. The
+daily scan is bounded to main-branch runs from the last 14 days, which provides
+14 retry opportunities against a 24-hour cleanup SLA. It fails before OIDC when
+the retained window exceeds 100 runs, 20 attempts for one run, 100 jobs for one
+attempt, or 400 total attempt-job reads. Runs outside that retained horizon need
+the audited break-glass procedure and are never represented as automatic cleanup
+`PASS` evidence. API, parse, page-count, branch, event, SHA, run, and attempt
+mismatches all fail before OIDC. The GCP workload identity provider also rejects every ref except
+`refs/heads/main`, outside branch-controlled workflow logic. Lifecycle,
+cleanup, recovery, drift, and root plan/apply runs that can touch development
+platform state share the global `terraform-development-platform` concurrency
+group. Cancellation recovery remains an unevidenced `MISSING` gate until a
+post-merge cancellation run proves it.
+
+Cleanup reports the verified retained VPC, NAT, DNS zone, firewall, and private
+services connection separately from Temporal PSC. The Temporal retained-baseline
+check remains `MISSING` until its address, accepted forwarding-rule target, and
+DNS record are configured and verified.
+
+Both scheduled drift jobs are read-only. One refreshes the retained foundation
+baseline, while the other refreshes the empty disposable state and performs the
+same provider absence checks. Neither job applies. Missing protected workflow
+configuration fails with an explicit `MISSING` message instead of silently
+skipping a green job.
 
 ## Fixed toolchain
 
@@ -177,8 +326,9 @@ objects have a one-day lifecycle, and the manifest makes every plan unusable
 after exactly 24 hours even if asynchronous GCS cleanup has not run yet. Plans
 are never uploaded as ordinary GitHub artifacts.
 
-The manual `root-plan` and `root-apply` tasks cover all five roots under one
-root-specific GitHub concurrency group. Production uses its protected GitHub
+The manual `root-plan` and `root-apply` tasks cover all five roots under a
+root-specific GitHub concurrency group, with development platform operations
+also held by the global state concurrency group. Production uses its protected GitHub
 environment and the same deletion-policy checks used before any production
 resource exists. `root-apply` accepts only a binding checksum, fetches its exact
 plan and manifest, rechecks the current commit, inputs, state, expiry, and
@@ -191,10 +341,13 @@ infra/scripts/apply-plan.sh production infra/roots/production/platform \
   .plans/production/platform/BINDING_SHA256.tfplan
 ```
 
-The manual development workflow applies the harmless `terraform_data` proof,
-runs a locked read-only refresh plan, and destroys only that proof. Its remote
-state remains versioned and recoverable. The scheduled drift job is read-only
-and fails when `-detailed-exitcode` reports drift. It never applies.
+The manual development workflow creates the full disposable development
+platform and the two qualification jobs, exercises live managed services,
+then hands teardown to the foundation artifact-cleanup and platform destroy
+jobs. It does not destroy the retained foundation network baseline. Its remote
+state remains versioned and recoverable. A remaining acceptance gap, including
+unavailable Temporal PSC, is reported as `MISSING` and the lifecycle command
+exits nonzero.
 
 Terraform may create Secret Manager containers, IAM, replication, and rotation
 policy in later roots. Secret versions and payloads are prohibited from source,
