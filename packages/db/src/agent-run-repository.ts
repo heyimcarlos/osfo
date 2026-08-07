@@ -1118,7 +1118,10 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                       WHEN cleanup_deadline_at <= clock_timestamp() THEN 'deadlineExceeded'
                       ELSE ${cleanup.cleanupDisposition.type}
                     END,
-                    external_work_may_continue = ${cleanup.externalWorkMayContinue}
+                    external_work_may_continue = CASE
+                      WHEN cleanup_deadline_at <= clock_timestamp() THEN true
+                      ELSE ${cleanup.externalWorkMayContinue}
+                    END
                 WHERE agent_run_id = ${fence.agentRunId}::uuid
                   AND state = 'running'
                   AND claim_owner = ${fence.workerId}

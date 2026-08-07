@@ -719,7 +719,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     );
     expect(disposition).toEqual({
       cleanupDisposition: { type: "deadlineExceeded" },
-      externalWorkMayContinue: false,
+      externalWorkMayContinue: true,
     });
     const duplicate = await run(
       AgentRunCancellation.use((cancellation) =>
