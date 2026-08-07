@@ -14,13 +14,21 @@ const OpenPokeSourceReferences = [
   ["chat_send", "server/routes/chat.py#L10-L45"],
   ["handle_chat_request", "server/services/conversation/chat_handler.py#L22-L49"],
   ["POST", "web/app/api/chat/route.ts#L22-L56"],
+  ["InteractionAgentRuntime.execute", "server/agents/interaction_agent/runtime.py#L65-L89"],
   ["request_chat_completion", "server/openrouter_client/client.py#L49-L82"],
-  ["ConversationLog", "server/services/conversation/log.py#L52-L82"],
+  ["sendMessage", "web/app/page.tsx#L110-L190"],
+  ["ConversationLog", "server/services/conversation/log.py#L19-L82"],
+  ["get_conversation_log", "server/services/conversation/log.py#L214-L218"],
   ["app", "server/app.py#L49-L83"],
   ["get_active_gmail_user_id", "server/services/gmail/client.py#L18-L40"],
+  ["ensureUserId", "web/components/SettingsModal.tsx#L122-L149"],
+  ["WorkingMemoryLog", "server/services/conversation/summarization/working_memory_log.py#L16-L48"],
+  ["TriggerStore", "server/services/triggers/store.py#L13-L68"],
   ["TriggerScheduler", "server/services/trigger_scheduler.py#L26-L116"],
   ["ExecutionBatchManager", "server/agents/execution_agent/batch_manager.py#L36-L145"],
+  ["requirements", "server/requirements.txt#L1-L7"],
   ["gmail_execute_draft", "server/agents/execution_agent/tools/gmail.py#L375-L427"],
+  ["_execute", "server/agents/execution_agent/tools/gmail.py#L324-L343"],
   ["execute_gmail_tool", "server/services/gmail/client.py#L466-L494"],
 ] as const;
 
@@ -235,6 +243,20 @@ export const verifyDemoPacket = (indexPath: string) =>
         });
       }
       artifactIds.add(artifact.id);
+    }
+    const walkthroughArtifact = index.artifacts.find(
+      (artifact) => artifact.id === "three-part-walkthrough",
+    );
+    if (
+      walkthroughArtifact === undefined ||
+      walkthroughArtifact.artifactStatus !== "PASS" ||
+      walkthroughArtifact.kind !== "document" ||
+      walkthroughArtifact.path !== "walkthrough.md"
+    ) {
+      return yield* new DemoPacketVerificationError({
+        code: "INDEX_INVALID",
+        message: "required three-part-walkthrough artifact is missing or invalid",
+      });
     }
     const present = index.artifacts.filter((artifact) => artifact.artifactStatus === "PASS");
     const missing = index.artifacts.length - present.length;
