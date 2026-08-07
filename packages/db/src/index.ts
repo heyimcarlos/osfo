@@ -25,6 +25,14 @@ export {
   type DevelopmentAgentRunEvidence,
 } from "./development-reconciliation.js";
 export {
+  createDevelopmentDemoAuthority,
+  DevelopmentDemoAuthorityUnavailable,
+  makeDevelopmentDemoBootstrapLayer,
+  type CreateDevelopmentDemoAuthorityOptions,
+  type DevelopmentDemoAuthority,
+  type DevelopmentDemoBootstrapDatabaseConfig,
+} from "./development-demo-bootstrap.js";
+export {
   InvalidMessageAdmissionDatabaseConfig,
   makeMessageAdmissionLayer,
   MessageAdmissionDatabaseConfigSchema,

@@ -1,5 +1,17 @@
 export { OsfoApi } from "./api.js";
 export {
+  DevelopmentBootstrapApi,
+  DevelopmentBootstrapCapability,
+  DevelopmentBootstrapGroup,
+  DevelopmentBootstrapRateLimited,
+  DevelopmentBootstrapRejected,
+  DevelopmentBootstrapUnavailable,
+  DevelopmentDemoBootstrap,
+  DevelopmentDemoSession,
+  DevelopmentDemoSessionRequest,
+  type DevelopmentDemoBootstrapError,
+} from "./development-bootstrap.js";
+export {
   InvalidThreadStreamLifecycleConfig,
   ThreadStreamLifecycle,
   ThreadStreamLifecycleConfigSchema,
