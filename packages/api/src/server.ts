@@ -2,6 +2,11 @@ import { Effect, Layer, Redacted } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder, HttpApiMiddleware } from "effect/unstable/httpapi";
 import { OsfoApi } from "./api.js";
+import {
+  DevelopmentBootstrapApi,
+  DevelopmentBootstrapCapability,
+  DevelopmentDemoBootstrap,
+} from "./development-bootstrap.js";
 import { AgentRunCancellation, MessageAdmission, ThreadResume } from "./services.js";
 import {
   ThreadStreamLifecycle,
@@ -107,6 +112,45 @@ export const ThreadsHandlers = HttpApiBuilder.group(OsfoApi, "threads", (handler
       }),
     ),
 ).pipe(Layer.provide([AuthenticationLive, RequestValidationLive]));
+
+const DevelopmentBootstrapHandlers = HttpApiBuilder.group(
+  DevelopmentBootstrapApi,
+  "developmentBootstrap",
+  (handlers) =>
+    handlers
+      .handle("getCapability", () =>
+        Effect.succeed(
+          new DevelopmentBootstrapCapability({
+            enabled: true,
+            productionQualification: "MISSING",
+            scope: "development",
+          }),
+        ),
+      )
+      .handle(
+        "createDemoSession",
+        Effect.fn("OsfoApi.developmentBootstrap.createDemoSession")(function* ({ headers }) {
+          const bootstrap = yield* DevelopmentDemoBootstrap;
+          return yield* bootstrap.create({ accessCode: headers["x-osfo-demo-bootstrap-code"] });
+        }),
+      ),
+).pipe(Layer.provide(RequestValidationLive));
+
+const DevelopmentBootstrapNoStore = HttpRouter.middleware(
+  (httpEffect) =>
+    Effect.map(httpEffect, (response) =>
+      HttpServerResponse.setHeaders(response, {
+        "cache-control": "private, no-store",
+        "x-content-type-options": "nosniff",
+      }),
+    ),
+  { global: true },
+);
+
+export const DevelopmentBootstrapApiLive = Layer.merge(
+  HttpApiBuilder.layer(DevelopmentBootstrapApi).pipe(Layer.provide(DevelopmentBootstrapHandlers)),
+  DevelopmentBootstrapNoStore,
+);
 
 const ApiRoutes = HttpApiBuilder.layer(OsfoApi, {
   openapiPath: "/openapi.json",

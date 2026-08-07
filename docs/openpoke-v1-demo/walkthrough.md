@@ -100,6 +100,13 @@ sending tab closing mid-response, session expiry, authorization revocation,
 target-load concurrency, or production behavior. Those stronger journeys must
 be exercised before making any stronger claim.
 
+The deployed development configuration screen can expose the same isolated
+authority flow only when ingress receives `OSFO_RUNTIME_ENVIRONMENT=development`
+and a server-only `OSFO_DEMO_BOOTSTRAP_CODE_SHA256` digest. Missing configuration
+leaves the route absent, while production plus a digest fails startup. The
+plaintext code and generated bearer never enter URLs or web assets. The
+response is `no-store`, and production qualification remains `MISSING`.
+
 The bounded Mailpit retry control passed, but a production external-action
 guarantee is `MISSING`. Test an exact committed Action, stable idempotency key,
 attempt recorded before contact, lost acknowledgement after provider apply,

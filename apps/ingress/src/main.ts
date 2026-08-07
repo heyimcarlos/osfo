@@ -1,17 +1,20 @@
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import {
+  DevelopmentBootstrapRejected,
+  DevelopmentDemoBootstrap,
   MessageAdmission,
   ThreadStreamLifecycle,
   makeThreadStreamLifecycleLayer,
   type ThreadStreamLifecycleService,
 } from "@osfo/api";
-import { OsfoApiLive } from "@osfo/api/server";
+import { DevelopmentBootstrapApiLive, OsfoApiLive } from "@osfo/api/server";
 import {
+  makeDevelopmentDemoBootstrapLayer,
   makeAgentRunCancellationLayer,
   makeMessageAdmissionLayer,
   makeThreadResumeLayer,
 } from "@osfo/db";
-import { Config, Context, Effect, Layer, Schema } from "effect";
+import { Config, Context, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -21,6 +24,7 @@ import {
   emitIngressLifecycleTelemetry,
   slowConsumerTelemetry,
 } from "./lifecycle-telemetry.js";
+import { resolveDevelopmentBootstrapConfig } from "./development-bootstrap-config.js";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const AdmissionLimit = PositiveInteger.check(Schema.isLessThanOrEqualTo(256));
@@ -96,6 +100,13 @@ const IngressConfig = Config.all({
     Config.withDefault(100),
   ),
   webRoot: Config.nonEmptyString("OSFO_WEB_ROOT").pipe(Config.withDefault("/srv/osfo/web")),
+  runtimeEnvironment: Config.literals(
+    ["development", "production"],
+    "OSFO_RUNTIME_ENVIRONMENT",
+  ).pipe(Config.withDefault("production")),
+  developmentBootstrapAccessCodeSha256: Config.option(
+    Config.redacted("OSFO_DEMO_BOOTSTRAP_CODE_SHA256"),
+  ),
 });
 
 const announceReady = HttpServer.HttpServer.use((server) => {
@@ -120,7 +131,16 @@ const contentType = (path: string) => {
 
 const ServerLive = Layer.unwrap(
   IngressConfig.pipe(
-    Effect.map((config) => {
+    Effect.flatMap((config) =>
+      resolveDevelopmentBootstrapConfig(
+        config.runtimeEnvironment,
+        Option.match(config.developmentBootstrapAccessCodeSha256, {
+          onNone: () => undefined,
+          onSome: Redacted.value,
+        }),
+      ).pipe(Effect.map((developmentBootstrap) => ({ config, developmentBootstrap }))),
+    ),
+    Effect.map(({ config, developmentBootstrap }) => {
       const server = createServer();
       if (config.lifecycleTelemetryEnabled) {
         server.once("close", () =>
@@ -185,7 +205,22 @@ const ServerLive = Layer.unwrap(
           );
         }),
       );
-      const RunningApi = HttpRouter.serve(Layer.merge(OsfoApiLive, WebRoutes)).pipe(
+      const DevelopmentBootstrapRoutes = developmentBootstrap.enabled
+        ? DevelopmentBootstrapApiLive
+        : Layer.empty;
+      const DevelopmentBootstrapService = developmentBootstrap.enabled
+        ? makeDevelopmentDemoBootstrapLayer({
+            accessCodeSha256: developmentBootstrap.accessCodeSha256,
+            databaseUrl: config.databaseUrl,
+          })
+        : Layer.succeed(DevelopmentDemoBootstrap)(
+            DevelopmentDemoBootstrap.of({
+              create: () => Effect.fail(new DevelopmentBootstrapRejected()),
+            }),
+          );
+      const RunningApi = HttpRouter.serve(
+        Layer.mergeAll(OsfoApiLive, DevelopmentBootstrapRoutes, WebRoutes),
+      ).pipe(
         Layer.provide(
           Layer.mergeAll(
             AdmissionLive,
@@ -205,6 +240,7 @@ const ServerLive = Layer.unwrap(
           ),
         ),
         Layer.provideMerge(ThreadStreamLifecycleLive),
+        Layer.provide(DevelopmentBootstrapService),
       );
       const RunningWithRecovery = Layer.merge(RunningApi, CapacityRecovery);
       const LifecycleTelemetryLive = Layer.succeed(IngressLifecycleTelemetry)({

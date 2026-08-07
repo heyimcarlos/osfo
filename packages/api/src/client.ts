@@ -7,6 +7,7 @@ import {
 } from "effect/unstable/http";
 import { HttpApiClient, HttpApiMiddleware } from "effect/unstable/httpapi";
 import { OsfoApi } from "./api.js";
+import { DevelopmentBootstrapApi } from "./development-bootstrap.js";
 import {
   AdmissionCommitUnknown,
   AdmissionNotAccepted,
@@ -40,6 +41,37 @@ export const makeApiClient = (options: ApiClientOptions) =>
     Effect.provide(authenticationClient(options.authenticationToken)),
     Effect.provide(options.httpClientLayer ?? FetchHttpClient.layer),
   );
+
+export interface CreateDevelopmentDemoSession {
+  readonly accessCode: string;
+  readonly baseUrl: string;
+  readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
+}
+
+export interface GetDevelopmentBootstrapCapability {
+  readonly baseUrl: string;
+  readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
+}
+
+export const getDevelopmentBootstrapCapability = Effect.fn(
+  "OsfoApiClient.getDevelopmentBootstrapCapability",
+)(function* (options: GetDevelopmentBootstrapCapability) {
+  const client = yield* HttpApiClient.make(DevelopmentBootstrapApi, {
+    baseUrl: options.baseUrl,
+  }).pipe(Effect.provide(options.httpClientLayer ?? FetchHttpClient.layer));
+  return yield* client.developmentBootstrap.getCapability();
+});
+
+export const createDevelopmentDemoSession = Effect.fn("OsfoApiClient.createDevelopmentDemoSession")(
+  function* (options: CreateDevelopmentDemoSession) {
+    const client = yield* HttpApiClient.make(DevelopmentBootstrapApi, {
+      baseUrl: options.baseUrl,
+    }).pipe(Effect.provide(options.httpClientLayer ?? FetchHttpClient.layer));
+    return yield* client.developmentBootstrap.createDemoSession({
+      headers: { "x-osfo-demo-bootstrap-code": options.accessCode },
+    });
+  },
+);
 
 export interface SubmitThreadMessage
   extends ApiClientOptions, Pick<SubmitMessagePayload, "idempotencyKey" | "message"> {

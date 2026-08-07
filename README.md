@@ -112,6 +112,22 @@ projection and ThreadCursor remain isolated in that tab's session storage.
 real Google Chrome, including independent tab disconnect and resume followed by
 PostgreSQL authority reconciliation.
 
+For an interactive demo, the configuration screen can generate a fresh
+eight-hour authentication session and Thread when ingress starts with both:
+
+```text
+OSFO_RUNTIME_ENVIRONMENT=development
+OSFO_DEMO_BOOTSTRAP_CODE_SHA256=<64 lowercase hex SHA-256 of a high-entropy access code>
+```
+
+The endpoint is absent when the digest is missing, and ingress fails startup if
+the digest is supplied outside development. The operator enters the plaintext
+access code only in the browser. It is sent in a request header over HTTPS,
+never placed in a URL, web asset, log, or database, and is compared in constant
+time. The response is `no-store`, returns the bearer once, and the UI waits for
+an explicit Connect before using per-tab session storage. Five attempts are
+allowed per ingress process per minute.
+
 The reference seed is explicit and idempotent. It creates only the local
 Principal, authentication session, Thread, and capacity rows named by the
 `OSFO_REFERENCE_*` values in `.env`. It does not start PostgreSQL or run
