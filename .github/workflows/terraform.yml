@@ -49,7 +49,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: terraform-${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.task == 'development-proof')) && 'development-platform-workflow' || github.run_id }}
+  group: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.task == 'development-proof' || inputs.root == 'development-platform'))) && 'terraform-development-platform' || (github.event_name == 'workflow_dispatch' && (inputs.task == 'root-plan' || inputs.task == 'root-apply')) && format('terraform-{0}', inputs.root) || format('terraform-run-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
@@ -92,12 +92,13 @@ jobs:
         shell: bash
         env:
           WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          FOUNDATION_SERVICE_ACCOUNT: ${{ vars.GCP_FOUNDATION_TERRAFORM_SERVICE_ACCOUNT }}
           PLATFORM_SERVICE_ACCOUNT: ${{ vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT }}
           DEVELOPMENT_STATE_BUCKET: ${{ vars.GCP_DEVELOPMENT_STATE_BUCKET }}
           SAVED_PLAN_BUCKET: ${{ vars.GCP_SAVED_PLAN_BUCKET }}
         run: |
           missing=0
-          for name in WORKLOAD_IDENTITY_PROVIDER PLATFORM_SERVICE_ACCOUNT DEVELOPMENT_STATE_BUCKET SAVED_PLAN_BUCKET; do
+          for name in WORKLOAD_IDENTITY_PROVIDER FOUNDATION_SERVICE_ACCOUNT PLATFORM_SERVICE_ACCOUNT DEVELOPMENT_STATE_BUCKET SAVED_PLAN_BUCKET; do
             if [[ -z "${!name}" ]]; then
               printf 'MISSING: protected configuration %s\n' "$name" >&2
               missing=1
@@ -112,15 +113,11 @@ jobs:
       - name: Require an explicitly reviewed lifecycle ref
         shell: bash
         run: |
-          case "$GITHUB_REF" in
-            refs/heads/main|refs/heads/codex/provision-development-platform)
-              printf 'PASS: authorized development lifecycle ref %s\n' "$GITHUB_REF"
-              ;;
-            *)
-              printf 'FAIL: unauthorized development lifecycle ref %s\n' "$GITHUB_REF" >&2
-              exit 1
-              ;;
-          esac
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            printf 'FAIL: development lifecycle is authorized only from protected main\n' >&2
+            exit 1
+          fi
+          printf 'PASS: authorized protected main lifecycle\n'
 
   development-lifecycle:
     if: >-
@@ -159,12 +156,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes ripgrep
-      - name: Apply, smoke-check, and exactly destroy the development platform
+      - name: Apply and smoke-check the partial development platform
         shell: bash
         run: |
           infra/tests/development-platform-live.sh
 
-  development-cleanup:
+  development-artifact-cleanup:
     if: >-
       always() &&
       github.event_name == 'workflow_dispatch' &&
@@ -173,6 +170,34 @@ jobs:
       needs.development-authorization.result == 'success' &&
       needs.development-configuration.result == 'success'
     needs: [static, development-lifecycle, development-authorization, development-configuration]
+    runs-on: ubuntu-24.04
+    environment: foundation
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_VARSET_FILE: ${{ github.workspace }}/infra/roots/development/platform/development.tfvars.json
+      FOUNDATION_SERVICE_ACCOUNT: ${{ vars.GCP_FOUNDATION_TERRAFORM_SERVICE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_FOUNDATION_TERRAFORM_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Remove immutable artifact objects through foundation recovery
+        shell: bash
+        run: infra/tests/development-platform-prepare-cleanup.sh
+
+  development-cleanup:
+    if: >-
+      always() &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.task == 'development-proof' &&
+      needs.development-artifact-cleanup.result == 'success'
+    needs: [development-lifecycle, development-artifact-cleanup]
     runs-on: ubuntu-24.04
     environment: development-platform
     permissions:
@@ -201,7 +226,7 @@ jobs:
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
         with:
           version: 569.0.0
-      - name: Independently destroy and verify the disposable platform
+      - name: Apply bound destroy and verify provider absence
         shell: bash
         run: infra/tests/development-platform-live.sh
 
@@ -216,9 +241,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    concurrency:
-      group: terraform-${{ inputs.root }}
-      cancel-in-progress: false
     env:
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"

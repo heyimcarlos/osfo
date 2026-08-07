@@ -1,0 +1,107 @@
+name: Development platform recovery
+
+on:
+  workflow_run:
+    workflows: [Terraform]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: terraform-development-platform
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    outputs:
+      recover: ${{ steps.check.outputs.recover }}
+    steps:
+      - name: Select completed protected lifecycle runs
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
+          TRIGGER_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          printf 'recover=false\n' >>"$GITHUB_OUTPUT"
+          if [[ "$TRIGGER_EVENT" != workflow_dispatch || "$TRIGGER_HEAD_BRANCH" != main ]]; then
+            printf 'PASS: completed workflow could not have run the protected lifecycle\n'
+            exit 0
+          fi
+          jobs=$(gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$TRIGGER_RUN_ID/jobs?filter=all")
+          if jq -e '[.[].jobs[]] | any(.name == "development-authorization" and .conclusion == "success")' \
+            <<<"$jobs" >/dev/null; then
+            printf 'recover=true\n' >>"$GITHUB_OUTPUT"
+          fi
+
+  artifact-cleanup:
+    needs: authorize
+    if: needs.authorize.outputs.recover == 'true'
+    runs-on: ubuntu-24.04
+    environment: foundation
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_VARSET_FILE: ${{ github.workspace }}/infra/roots/development/platform/development.tfvars.json
+      FOUNDATION_SERVICE_ACCOUNT: ${{ vars.GCP_FOUNDATION_TERRAFORM_SERVICE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_FOUNDATION_TERRAFORM_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Remove immutable artifact objects through foundation recovery
+        shell: bash
+        run: infra/tests/development-platform-prepare-cleanup.sh
+
+  platform-cleanup:
+    needs: [authorize, artifact-cleanup]
+    if: >-
+      always() &&
+      needs.authorize.outputs.recover == 'true' &&
+      needs.artifact-cleanup.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: development-platform
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+      TF_VARSET_FILE: ${{ github.workspace }}/infra/roots/development/platform/development.tfvars.json
+      TF_IMAGE_DIGESTS_FILE: ${{ github.workspace }}/infra/roots/development/platform/image-digests.json
+      TERRAFORM_BIN: ${{ github.workspace }}/infra/scripts/terraform-ci.sh
+      SAVED_PLAN_BUCKET: ${{ vars.GCP_SAVED_PLAN_BUCKET }}
+      DEVELOPMENT_STATE_BUCKET: ${{ vars.GCP_DEVELOPMENT_STATE_BUCKET }}
+      DEVELOPMENT_PLATFORM_CLEANUP_ONLY: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT }}
+      - name: Initialize isolated development state for recovery
+        run: |
+          infra/scripts/terraform-ci.sh -chdir=infra/roots/development/platform init -input=false \
+            -backend-config="bucket=$DEVELOPMENT_STATE_BUCKET" \
+            -backend-config="prefix=roots/development/platform"
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Apply bound destroy and prove provider absence
+        shell: bash
+        run: infra/tests/development-platform-live.sh

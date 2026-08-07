@@ -85,8 +85,10 @@ done
 jq -e 'length >= 2 and ([.[0:2][].message.data | @base64d] == ["first", "second"])' \
   "$scratch/messages.json" >/dev/null
 gcloud pubsub topics describe "$topic" --project="$project_id" --format=json \
-  | jq -e --arg cost_owner "$cost_owner" \
-    '.labels.environment == "development" and .labels.cost_owner == $cost_owner' >/dev/null
+  | jq -e --arg cost_owner "$cost_owner" --arg region "$region" \
+    '.labels.environment == "development"
+      and .labels.cost_owner == $cost_owner
+      and .messageStoragePolicy.allowedPersistenceRegions == [$region]' >/dev/null
 gcloud pubsub subscriptions delete "$smoke_subscription" --project="$project_id" --quiet >/dev/null
 smoke_subscription=""
 unset CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB
@@ -95,11 +97,13 @@ printf 'osfo development artifact smoke\n' >"$scratch/artifact"
 artifact_sha=$(sha256sum "$scratch/artifact" | cut -d' ' -f1)
 artifact_uri="gs://$artifact_bucket/sha256/$artifact_sha"
 gcloud storage cp --if-generation-match=0 "$scratch/artifact" "$artifact_uri" >/dev/null
-if gcloud storage cp --if-generation-match=0 "$scratch/artifact" "$artifact_uri" \
+if gcloud storage cp "$scratch/artifact" "$artifact_uri" \
   >"$scratch/artifact-overwrite.out" 2>&1; then
-  printf 'FAIL: content-addressed artifact accepted a second generation\n' >&2
+  printf 'FAIL: IAM allowed an unconditional content-addressed artifact overwrite\n' >&2
   exit 1
 fi
+grep -Eq 'HTTPError 403|PERMISSION_DENIED' "$scratch/artifact-overwrite.out"
+grep -Fq 'storage.objects.delete' "$scratch/artifact-overwrite.out"
 generation_count=$(gcloud storage ls --all-versions "$artifact_uri" | wc -l | tr -d ' ')
 if [[ "$generation_count" != 1 ]]; then
   printf 'FAIL: content-addressed artifact has %s generations\n' "$generation_count" >&2
@@ -172,7 +176,21 @@ if gcloud compute forwarding-rules describe "$name_prefix-temporal-psc" \
 fi
 
 test -f "$preflight_report"
-managed_qualification=MISSING
+artifact_immutability=PASS
+authorized_secret_version_access=MISSING
+probe_toolchain_determinism=MISSING
+required_qualification_statuses=(
+  "$artifact_immutability"
+  "$authorized_secret_version_access"
+  "$probe_toolchain_determinism"
+  "$temporal_status"
+)
+managed_qualification=PASS
+for required_status in "${required_qualification_statuses[@]}"; do
+  if [[ "$required_status" != PASS ]]; then
+    managed_qualification=MISSING
+  fi
+done
 jq -n \
   --arg qualification "$managed_qualification" \
   --arg project_id "$project_id" \
@@ -192,7 +210,7 @@ jq -n \
     ordered_pubsub_round_trip: "PASS",
     artifact_precondition_round_trip: "PASS",
     artifact_precondition_rejected_second_generation: "PASS",
-    artifact_immutability_enforced_by_iam: "MISSING",
+    artifact_immutability_enforced_by_iam: "PASS",
     authorized_secret_version_access: "MISSING",
     exact_permission_denied_secret_payload_access: "PASS",
     probe_base_image_digest: "PASS",

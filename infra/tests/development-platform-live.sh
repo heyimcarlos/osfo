@@ -23,7 +23,6 @@ fi
 source_commit=$(git -C "$repo_root" rev-parse HEAD)
 varset_sha=$(sha256sum "$varset" | cut -d' ' -f1)
 image_digests_sha=$(sha256sum "$image_digests" | cut -d' ' -f1)
-lifecycle_started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 destroy_bindings_json='[]'
 
 export TF_VARSET_FILE=$varset
@@ -132,31 +131,51 @@ destroy_platform() {
   gcloud dns managed-zones describe "$name_prefix-private" --project="$project_id" >/dev/null
 }
 
-cleanup_required=false
-# Invoked through the EXIT trap below.
-# shellcheck disable=SC2329
-cleanup_on_exit() {
-  local command_status=$?
-  trap - EXIT
-  if [[ "$cleanup_required" == true ]]; then
-    printf 'cleanup: destroying the development platform after an earlier failure\n' >&2
-    if ! destroy_platform; then
-      command_status=1
-    fi
-  fi
-  exit "$command_status"
-}
-trap cleanup_on_exit EXIT
-trap 'printf "cleanup: lifecycle interrupted by signal\n" >&2; exit 130' INT TERM
-
 if [[ "${DEVELOPMENT_PLATFORM_CLEANUP_ONLY:-0}" == 1 ]]; then
+  cleanup_started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  state_before_cleanup=$("$terraform_bin" -chdir="$root" state list)
   cleanup_absence_report="$plan_dir/cleanup-absence.json"
+  cleanup_audit_report="$plan_dir/cleanup-audit.json"
+  cleanup_report="$plan_dir/cleanup.json"
   destroy_platform
   "$repo_root/infra/tests/development-platform-absent.sh" "$cleanup_absence_report"
   cleanup_absence_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
     "$cleanup_absence_report" "$evidence_bucket")
-  printf 'PASS: independent cleanup completed source=%s absence_evidence=%s\n' \
-    "$source_commit" "$cleanup_absence_sha"
+  cleanup_audit_status=NOT_REQUIRED
+  cleanup_audit_sha=""
+  if [[ -n "$state_before_cleanup" ]]; then
+    "$repo_root/infra/tests/development-platform-audit.sh" \
+      "$cleanup_started_at" "$cleanup_audit_report"
+    cleanup_audit_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
+      "$cleanup_audit_report" "$evidence_bucket")
+    cleanup_audit_status=PASS
+  fi
+  jq -n \
+    --arg source_commit "$source_commit" \
+    --arg variable_set_sha256 "$varset_sha" \
+    --arg image_digests_sha256 "$image_digests_sha" \
+    --argjson destroy_plan_bindings "$destroy_bindings_json" \
+    --arg absence_report_sha256 "$cleanup_absence_sha" \
+    --arg audit_status "$cleanup_audit_status" \
+    --arg audit_report_sha256 "$cleanup_audit_sha" \
+    '{schema_version: 1, qualification: "PARTIAL", source: {
+      commit_sha: $source_commit,
+      clean_tree: true,
+      variable_set_sha256: $variable_set_sha256,
+      image_digests_sha256: $image_digests_sha256,
+      destroy_plan_bindings: $destroy_plan_bindings
+    }, checks: {
+      exact_disposable_destroy: "PASS",
+      empty_disposable_state: "PASS",
+      negative_provider_lookups: "PASS",
+      retained_environment_baseline: "PASS",
+      audit_history_retained: $audit_status
+    }, absence_report_sha256: $absence_report_sha256,
+    audit_report_sha256: $audit_report_sha256}' >"$cleanup_report"
+  cleanup_report_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
+    "$cleanup_report" "$evidence_bucket")
+  printf 'PASS: independent cleanup completed source=%s absence_evidence=%s audit=%s cleanup_evidence=%s\n' \
+    "$source_commit" "$cleanup_absence_sha" "$cleanup_audit_status" "$cleanup_report_sha"
   exit 0
 fi
 
@@ -166,7 +185,6 @@ create_plan="$plan_dir/create.tfplan"
 "$repo_root/infra/scripts/create-plan.sh" development "$root" "$create_plan"
 "$repo_root/infra/scripts/store-plan.sh" "$SAVED_PLAN_BUCKET" "$create_plan"
 create_binding=$(jq -r '.binding_sha256' "$create_plan.manifest.json")
-cleanup_required=true
 "$repo_root/infra/scripts/apply-plan.sh" development "$root" "$create_plan"
 
 second_plan="$plan_dir/second.tfplan"
@@ -183,63 +201,7 @@ test -n "$managed_report_sha"
 [[ "$managed_qualification" =~ ^(PASS|MISSING)$ ]]
 [[ "$temporal_qualification" =~ ^(PASS|MISSING)$ ]]
 
-destroy_platform
-cleanup_required=false
-
-absence_report=$(mktemp)
-audit_report=$(mktemp)
-lifecycle_report=$(mktemp)
-trap 'rm -f "$absence_report" "$audit_report" "$lifecycle_report"' EXIT
-"$repo_root/infra/tests/development-platform-absent.sh" "$absence_report"
-absence_report_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
-  "$absence_report" "$evidence_bucket")
-"$repo_root/infra/tests/development-platform-audit.sh" \
-  "$lifecycle_started_at" "$audit_report"
-audit_report_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
-  "$audit_report" "$evidence_bucket")
-
-jq -n \
-  --arg source_commit "$source_commit" \
-  --arg variable_set_sha256 "$varset_sha" \
-  --arg image_digests_sha256 "$image_digests_sha" \
-  --arg create_plan_binding_sha256 "$create_binding" \
-  --arg second_plan_binding_sha256 "$second_binding" \
-  --argjson destroy_plan_bindings "$destroy_bindings_json" \
-  --arg managed_qualification "$managed_qualification" \
-  --arg temporal_qualification "$temporal_qualification" \
-  --arg managed_report_sha256 "$managed_report_sha" \
-  --arg absence_report_sha256 "$absence_report_sha" \
-  --arg audit_report_sha256 "$audit_report_sha" \
-  '{schema_version: 1, qualification: $managed_qualification, source: {
-    commit_sha: $source_commit,
-    clean_tree: true,
-    variable_set_sha256: $variable_set_sha256,
-    image_digests_sha256: $image_digests_sha256,
-    create_plan_binding_sha256: $create_plan_binding_sha256,
-    second_plan_binding_sha256: $second_plan_binding_sha256,
-    destroy_plan_bindings: $destroy_plan_bindings
-  }, checks: {
-    empty_second_plan: "PASS",
-    exact_disposable_destroy: "PASS",
-    empty_disposable_state: "PASS",
-    negative_provider_lookups: "PASS",
-    retained_environment_baseline: "PASS",
-    backend_state_retained: "PASS",
-    audit_history_retained: "PASS",
-    verified_managed_service_checks: "PASS",
-    artifact_immutability_enforced_by_iam: "MISSING",
-    probe_toolchain_determinism: "MISSING",
-    managed_service_qualification: $managed_qualification,
-    temporal_private_service_connect: $temporal_qualification
-  }, managed_service_report_sha256: $managed_report_sha256,
-  absence_report_sha256: $absence_report_sha256,
-  audit_report_sha256: $audit_report_sha256}' >"$lifecycle_report"
-lifecycle_report_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
-  "$lifecycle_report" "$evidence_bucket")
-
-printf 'qualification=%s temporal=%s lifecycle_evidence=%s\n' \
-  "$managed_qualification" "$temporal_qualification" "$lifecycle_report_sha"
-if [[ "$managed_qualification" == PASS ]]; then
-  exit 0
-fi
+printf 'qualification=%s temporal=%s lifecycle=MISSING create_binding=%s second_binding=%s evidence=%s source=%s inputs=%s images=%s\n' \
+  "$managed_qualification" "$temporal_qualification" "$create_binding" "$second_binding" \
+  "$managed_report_sha" "$source_commit" "$varset_sha" "$image_digests_sha"
 exit 3

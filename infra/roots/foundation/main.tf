@@ -1,5 +1,9 @@
 locals {
   environments = toset(["foundation", "development", "production"])
+  development_artifact_bucket_name = coalesce(
+    var.development_artifact_bucket_name,
+    "osfo-development-artifacts-${split("-", var.project_ids.development)[2]}",
+  )
 
   root_identities = {
     foundation = {
@@ -118,15 +122,13 @@ locals {
     "roles/artifactregistry.admin",
     "roles/cloudsql.admin",
     "roles/cloudquotas.viewer",
-    "roles/compute.networkAdmin",
+    "roles/compute.networkViewer",
     "roles/dns.admin",
     "roles/iam.serviceAccountViewer",
     "roles/logging.viewer",
     "roles/pubsub.admin",
     "roles/run.admin",
-    "roles/servicenetworking.networksAdmin",
     "roles/serviceusage.serviceUsageViewer",
-    "roles/storage.admin",
   ])
 
   platform_role_bindings = {
@@ -209,6 +211,44 @@ resource "google_project_iam_custom_role" "platform_service_consumer" {
   title       = "Osfo platform service consumer"
   description = "Uses enabled project services without changing service configuration."
   permissions = ["serviceusage.services.use"]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
+}
+
+resource "google_project_iam_custom_role" "platform_storage_manager" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoPlatformStorageManager"
+  title       = "Osfo platform storage manager"
+  description = "Manages disposable bucket metadata and creates immutable objects without delete or overwrite authority."
+  permissions = [
+    "storage.buckets.create",
+    "storage.buckets.delete",
+    "storage.buckets.get",
+    "storage.buckets.list",
+    "storage.buckets.update",
+    "storage.objects.create",
+    "storage.objects.get",
+    "storage.objects.list",
+  ]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
+}
+
+resource "google_project_iam_custom_role" "development_artifact_cleaner" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoDevelopmentArtifactCleaner"
+  title       = "Osfo development artifact cleaner"
+  description = "Lets the foundation recovery path inspect and delete disposable artifact objects before bucket teardown."
+  permissions = [
+    "storage.buckets.get",
+    "storage.objects.delete",
+    "storage.objects.get",
+    "storage.objects.list",
+  ]
 
   lifecycle { prevent_destroy = true }
 
@@ -452,7 +492,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.environment"      = "assertion.environment"
   }
 
-  attribute_condition = "assertion.repository_owner_id == '${var.github_repository_owner_id}' && assertion.repository_id == '${var.github_repository_id}'"
+  attribute_condition = "assertion.repository_owner_id == '${var.github_repository_owner_id}' && assertion.repository_id == '${var.github_repository_id}' && assertion.ref == 'refs/heads/main'"
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
@@ -575,6 +615,14 @@ resource "google_project_iam_member" "platform" {
   member  = "serviceAccount:${google_service_account.terraform["${each.value.environment}-platform"].email}"
 }
 
+resource "google_compute_subnetwork_iam_member" "development_platform_network_user" {
+  project    = google_project.environment["development"].project_id
+  region     = var.region
+  subnetwork = module.development_environment_baseline.subnetwork_id
+  role       = "roles/compute.networkUser"
+  member     = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+}
+
 resource "google_project_iam_member" "platform_secret_manager" {
   project = google_project.environment["development"].project_id
   role    = google_project_iam_custom_role.platform_secret_manager.name
@@ -585,6 +633,24 @@ resource "google_project_iam_member" "platform_service_consumer" {
   project = google_project.environment["development"].project_id
   role    = google_project_iam_custom_role.platform_service_consumer.name
   member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+}
+
+resource "google_project_iam_member" "platform_storage_manager" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.platform_storage_manager.name
+  member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+}
+
+resource "google_project_iam_member" "development_artifact_cleaner" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.development_artifact_cleaner.name
+  member  = "serviceAccount:${google_service_account.terraform["foundation"].email}"
+
+  condition {
+    title       = "exact_development_artifact_bucket"
+    description = "Restricts foundation cleanup to the reviewed disposable artifact bucket."
+    expression  = "resource.name == 'projects/_/buckets/${local.development_artifact_bucket_name}' || resource.name.startsWith('projects/_/buckets/${local.development_artifact_bucket_name}/objects/')"
+  }
 }
 
 resource "google_project_iam_member" "development_runtime_cloud_sql" {

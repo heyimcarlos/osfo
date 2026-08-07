@@ -48,6 +48,18 @@ variable "qualification_evidence_bucket_name" {
   type        = string
 }
 
+variable "development_artifact_bucket_name" {
+  description = "Exact disposable development artifact bucket cleaned only by the foundation recovery path."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.development_artifact_bucket_name == null || can(regex("^osfo-development-artifacts-[0-9]+$", var.development_artifact_bucket_name))
+    error_message = "development_artifact_bucket_name must use the reviewed osfo-development-artifacts-N form."
+  }
+}
+
 variable "github_repository" {
   description = "GitHub repository in owner/name form, retained as an audit label."
   type        = string

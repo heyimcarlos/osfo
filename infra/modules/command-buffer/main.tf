@@ -3,6 +3,10 @@ resource "google_pubsub_topic" "agentruns" {
   project = var.project_id
   name    = "${var.name_prefix}-agentruns"
   labels  = var.labels
+
+  message_storage_policy {
+    allowed_persistence_regions = [var.region]
+  }
 }
 
 resource "google_pubsub_subscription" "agentruns" {

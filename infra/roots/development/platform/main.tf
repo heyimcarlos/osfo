@@ -55,6 +55,7 @@ module "command_buffer" {
 
   enabled                    = var.enable_managed_platform
   project_id                 = var.project_id
+  region                     = var.region
   name_prefix                = var.name_prefix
   message_retention_duration = var.pubsub_message_retention_duration
   labels                     = local.labels

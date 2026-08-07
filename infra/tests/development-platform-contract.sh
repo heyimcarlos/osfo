@@ -18,6 +18,8 @@ done
 
 rg --quiet 'enable_message_ordering\s*=\s*true' infra/modules/command-buffer/main.tf
 rg --quiet 'message_retention_duration\s*=\s*var.message_retention_duration' infra/modules/command-buffer/main.tf
+rg --fixed-strings --quiet 'allowed_persistence_regions = [var.region]' \
+  infra/modules/command-buffer/main.tf
 rg --fixed-strings --quiet 'cloudsql.iam_authentication' infra/modules/data-authority/main.tf
 rg --fixed-strings --quiet 'ipv4_enabled    = false' infra/modules/data-authority/main.tf
 rg --quiet 'availability_type\s*=\s*"ZONAL"' infra/modules/data-authority/main.tf
@@ -31,6 +33,8 @@ rg --fixed-strings --quiet 'google_compute_firewall' infra/modules/environment-b
 rg --fixed-strings --quiet 'gcloud sql instances describe' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'gcloud pubsub topics publish' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'gcloud storage cp --if-generation-match=0' infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet 'gcloud storage cp "$scratch/artifact" "$artifact_uri"' \
+  infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'temporal_private_service_connect' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'authorized_secret_version_access: "MISSING"' \
   infra/tests/development-platform-smoke.sh
@@ -43,7 +47,9 @@ rg --fixed-strings --quiet 'exact_permission_denied_secret_payload_access: "PASS
 rg --fixed-strings --quiet "grep -Fq 'PERMISSION_DENIED'" infra/modules/qualification-probe/main.tf
 rg --fixed-strings --quiet "grep -Fq 'secretmanager.versions.access'" \
   infra/modules/qualification-probe/main.tf
-rg --fixed-strings --quiet 'artifact_immutability_enforced_by_iam: "MISSING"' \
+rg --fixed-strings --quiet 'artifact_immutability_enforced_by_iam: "PASS"' \
+  infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet "grep -Fq 'storage.objects.delete'" \
   infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'probe_toolchain_determinism: "MISSING"' \
   infra/tests/development-platform-smoke.sh
@@ -59,7 +65,7 @@ if rg --fixed-strings --quiet 'state-list.error' infra/tests/development-platfor
   printf 'state-list diagnostics must not dirty the reviewed source tree\n' >&2
   exit 1
 fi
-rg --fixed-strings --quiet 'exact_disposable_destroy: "PASS"' infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'qualification: "PARTIAL"' infra/tests/development-platform-live.sh
 # The literal shell variable references are part of the implementation contract.
 # shellcheck disable=SC2016
 for retained_lookup in \
@@ -71,14 +77,15 @@ for retained_lookup in \
   'services vpc-peerings list'; do
   rg --fixed-strings --quiet "$retained_lookup" infra/tests/development-platform-live.sh
 done
-rg --fixed-strings --quiet 'trap cleanup_on_exit EXIT' infra/tests/development-platform-live.sh
-rg --fixed-strings --quiet "exit 130' INT TERM" infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'lifecycle=MISSING' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'quota_requirement static_external_ipv4_addresses' infra/tests/development-platform-preflight.sh
 rg --fixed-strings --quiet 'quota_requirement pubsub_publisher_kb_per_minute' infra/tests/development-platform-preflight.sh
 rg --fixed-strings --quiet 'run.googleapis.com' infra/tests/development-platform-preflight.sh
 rg --fixed-strings --quiet 'managed_ordered_subscription_configuration: "PASS"' \
   infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'gcloud pubsub subscriptions describe "$subscription"' \
+  infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet '.messageStoragePolicy.allowedPersistenceRegions == [$region]' \
   infra/tests/development-platform-smoke.sh
 
 jq -e '
@@ -96,6 +103,13 @@ jq -e '
     "static_external_ipv4_addresses"
   ]
 ' "$root/development.tfvars.json" >/dev/null
+
+project_id=$(jq -r '.project_id' "$root/development.tfvars.json")
+artifact_bucket=$(jq -r '.artifact_bucket_name' "$root/development.tfvars.json")
+if [[ "$artifact_bucket" != "osfo-development-artifacts-${project_id##*-}" ]]; then
+  printf 'foundation-derived and disposable platform artifact bucket names must match\n' >&2
+  exit 1
+fi
 
 if rg --quiet --glob '*.tf' 'secret_data|google_secret_manager_secret_version' "$root" infra/modules; then
   printf 'secret payloads must not enter Terraform\n' >&2
@@ -144,6 +158,24 @@ if grep -Eq 'roles/(iam.serviceAccountAdmin|resourcemanager.projectIamAdmin|serv
   printf 'platform identity must not administer project or service-account IAM\n' >&2
   exit 1
 fi
+if grep -Eq 'roles/(compute.networkAdmin|servicenetworking.networksAdmin|storage.admin)' \
+  <<<"$platform_roles"; then
+  printf 'platform identity must not administer the retained network or artifact objects\n' >&2
+  exit 1
+fi
+if ! grep -Fq 'roles/compute.networkViewer' <<<"$platform_roles"; then
+  printf 'platform identity is missing read-only retained-network authority\n' >&2
+  exit 1
+fi
+network_use=$(sed -n \
+  '/resource "google_compute_subnetwork_iam_member" "development_platform_network_user"/,/^}/p' \
+  infra/roots/foundation/main.tf)
+for exact_network_binding in \
+  'subnetwork = module.development_environment_baseline.subnetwork_id' \
+  'role       = "roles/compute.networkUser"' \
+  'google_service_account.terraform["development-platform"].email'; do
+  grep -Fq "$exact_network_binding" <<<"$network_use"
+done
 probe_act_as=$(sed -n \
   '/resource "google_service_account_iam_member" "development_platform_probe_act_as"/,/^}/p' \
   infra/roots/foundation/main.tf)
@@ -176,6 +208,23 @@ if grep -Fq 'iam.serviceAccounts.actAs' <<<"$platform_custom_roles"; then
   printf 'platform custom roles must not permit service-account impersonation\n' >&2
   exit 1
 fi
+platform_storage_role=$(sed -n \
+  '/resource "google_project_iam_custom_role" "platform_storage_manager"/,/resource "google_project_iam_custom_role" "development_artifact_cleaner"/p' \
+  infra/roots/foundation/main.tf)
+for permission in storage.buckets.delete storage.objects.create storage.objects.get storage.objects.list; do
+  grep -Fq "$permission" <<<"$platform_storage_role"
+done
+if grep -Fq 'storage.objects.delete' <<<"$platform_storage_role"; then
+  printf 'platform identity must not delete or overwrite content-addressed objects\n' >&2
+  exit 1
+fi
+rg --fixed-strings --quiet 'resource "google_project_iam_custom_role" "development_artifact_cleaner"' \
+  infra/roots/foundation/main.tf
+rg --fixed-strings --quiet \
+  "resource.name.startsWith('projects/_/buckets/\${local.development_artifact_bucket_name}/objects/')" \
+  infra/roots/foundation/main.tf
+rg --fixed-strings --quiet 'infra/tests/development-platform-prepare-cleanup.sh' \
+  .github/workflows/terraform.yml .github/workflows/development-platform-recovery.yml
 
 jq -e '
   . as $config
@@ -200,19 +249,37 @@ rg --fixed-strings --quiet 'foundation-drift' .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'development-platform-absent.sh' .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'Report missing protected configuration' .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'Require an explicitly reviewed lifecycle ref' .github/workflows/terraform.yml
-rg --fixed-strings --quiet 'refs/heads/codex/provision-development-platform' .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'refs/heads/main' .github/workflows/terraform.yml
+if rg --fixed-strings --quiet 'refs/heads/codex/provision-development-platform' \
+  .github/workflows/terraform.yml .github/workflows/development-platform-recovery.yml; then
+  printf 'privileged workflows must not trust a mutable feature branch\n' >&2
+  exit 1
+fi
+rg --fixed-strings --quiet "assertion.ref == 'refs/heads/main'" infra/roots/foundation/main.tf
 rg --fixed-strings --quiet 'DEVELOPMENT_PLATFORM_CLEANUP_ONLY: "1"' .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'always()' .github/workflows/terraform.yml
 rg --fixed-strings --quiet "needs.static.result == 'success'" .github/workflows/terraform.yml
-rg --fixed-strings --quiet "'development-platform-workflow'" .github/workflows/terraform.yml
+rg --fixed-strings --quiet "'terraform-development-platform'" .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'group: terraform-development-platform' \
+  .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet 'workflows: [Terraform]' \
+  .github/workflows/development-platform-recovery.yml
+if [[ $(rg --fixed-strings 'ref: ${{ github.event.workflow_run.head_sha }}' \
+  .github/workflows/development-platform-recovery.yml | wc -l) != 2 ]]; then
+  printf 'durable recovery must use the exact protected lifecycle source commit\n' >&2
+  exit 1
+fi
 if [[ $(rg --fixed-strings 'needs: [static, drift-configuration]' \
   .github/workflows/terraform.yml | wc -l) != 2 ]]; then
   printf 'scheduled drift must validate reviewed source before OIDC authentication\n' >&2
   exit 1
 fi
-if rg --fixed-strings --quiet 'group: terraform-development-platform' \
-  .github/workflows/terraform.yml; then
-  printf 'development lifecycle serialization must cover its independent cleanup job\n' >&2
+if rg --fixed-strings --quiet 'development-platform-workflow' .github/workflows/terraform.yml; then
+  printf 'all development platform state operations must share the global concurrency group\n' >&2
+  exit 1
+fi
+if rg --fixed-strings --quiet 'development-platform-root-job' .github/workflows/terraform.yml; then
+  printf 'development root operations must not use a second job-level state lock\n' >&2
   exit 1
 fi
 
