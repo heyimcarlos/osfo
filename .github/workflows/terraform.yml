@@ -104,8 +104,7 @@ jobs:
   development-lifecycle:
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      inputs.task == 'development-proof' &&
-      github.ref == 'refs/heads/main'
+      inputs.task == 'development-proof'
     needs: [static, development-configuration]
     runs-on: ubuntu-24.04
     environment: development-platform
