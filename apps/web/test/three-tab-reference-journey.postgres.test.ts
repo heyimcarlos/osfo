@@ -33,6 +33,9 @@ const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
 const canonicalProjection = ({ throughCursor: _throughCursor, ...projection }: ThreadSnapshot) =>
   projection;
 
+const resumedCursor = (eventRequestUrl: string) =>
+  new URL(eventRequestUrl).searchParams.get("after");
+
 describe("three-tab Oz Reference Journey", () => {
   it.live(
     "converges independently resumed Chrome tabs against PostgreSQL authority",
@@ -60,6 +63,7 @@ describe("three-tab Oz Reference Journey", () => {
         const initialB = yield* tabB.waitForProjection(threadId, "0");
         expect(canonicalProjection(initialA)).toEqual(canonicalProjection(initialB));
 
+        const tabBRequestsBeforeDisconnect = yield* tabB.eventRequestCount();
         yield* tabB.disconnect();
         expect(yield* tabB.location()).toBe("about:blank");
         const receipt = yield* tabA.submitMessage("Hello, Oz");
@@ -119,6 +123,10 @@ describe("three-tab Oz Reference Journey", () => {
         expect(yield* tabC.location()).toBe("about:blank");
 
         yield* tabB.resume();
+        const initialBResumeRequest = yield* tabB.waitForEventRequestAfter(
+          tabBRequestsBeforeDisconnect,
+        );
+        expect(resumedCursor(initialBResumeRequest)).toBe(initialB.throughCursor);
         yield* tabC.navigate(client.origin);
         yield* tabC.waitForText("Tab C");
         const finalB = yield* tabB.waitForProjection(threadId, authoritySnapshot.throughPosition);
@@ -129,11 +137,13 @@ describe("three-tab Oz Reference Journey", () => {
         expect(canonicalProjection(finalC)).toEqual(authoritativeProjection);
 
         for (const tab of [tabA, tabB, tabC]) {
+          const localProjection = yield* tab.readRequiredProjection(threadId);
           const previousRequests = yield* tab.eventRequestCount();
           yield* tab.disconnect();
           yield* Effect.sleep(50);
           yield* tab.resume();
-          yield* tab.waitForEventRequestAfter(previousRequests);
+          const resumeRequest = yield* tab.waitForEventRequestAfter(previousRequests);
+          expect(resumedCursor(resumeRequest)).toBe(localProjection.throughCursor);
           expect(canonicalProjection(yield* tab.readRequiredProjection(threadId))).toEqual(
             authoritativeProjection,
           );

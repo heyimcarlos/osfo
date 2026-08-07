@@ -16,7 +16,6 @@ const chromeCandidates = [
   process.env.CHROME_BINARY,
   "/usr/bin/google-chrome-stable",
   "/usr/bin/google-chrome",
-  "/usr/bin/chromium",
 ].filter((candidate): candidate is string => candidate !== undefined);
 
 const ThreadSnapshotFromJson = Schema.fromJsonString(ThreadSnapshotSchema);
@@ -316,6 +315,7 @@ class CdpConnection {
 
   takeCompletedMessage = Effect.sync(() => this.#completedMessages.shift());
   eventRequestCount = Effect.sync(() => this.#eventRequests.length);
+  eventRequestAt = (index: number) => Effect.sync(() => this.#eventRequests[index]);
 
   close = Effect.sync(() => this.socket.close());
 }
@@ -382,17 +382,11 @@ class ChromeTab {
   };
 
   waitForText = (text: string) => {
-    return Effect.gen({ self: this }, function* () {
-      let body = "";
-      for (let attempt = 0; attempt < 200; attempt += 1) {
-        body = yield* this.evaluate("document.body?.textContent ?? ''", Schema.String);
-        if (body.includes(text)) return;
-        yield* Effect.sleep(25);
-      }
-      return yield* new ReferenceBrowserError({
-        operation: `wait for ${JSON.stringify(text)} in tab ${this.label}: ${body}`,
-      });
-    });
+    return waitFor(
+      `wait for ${JSON.stringify(text)} in tab ${this.label}`,
+      this.evaluate("document.body?.textContent ?? ''", Schema.String),
+      (body) => body.includes(text),
+    ).pipe(Effect.asVoid);
   };
 
   readProjection = (threadId: string) =>
@@ -483,11 +477,10 @@ class ChromeTab {
   eventRequestCount = () => this.connection.eventRequestCount;
 
   waitForEventRequestAfter = (count: number) =>
-    waitFor(
+    waitForDefined(
       `wait for tab ${this.label} to resume its event stream`,
-      this.connection.eventRequestCount,
-      (current) => current > count,
-    ).pipe(Effect.asVoid);
+      this.connection.eventRequestAt(count),
+    );
 }
 
 const findChrome = Effect.gen(function* () {
@@ -500,6 +493,35 @@ const findChrome = Effect.gen(function* () {
   }
   return yield* new ReferenceBrowserError({ operation: "find Google Chrome" });
 });
+
+const verifyGoogleChrome = (executable: string) =>
+  Effect.gen(function* () {
+    const handle = yield* ChildProcess.make(executable, ["--version"], {
+      stdin: "ignore",
+      forceKillAfter: "3 seconds",
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ReferenceBrowserError({ operation: "start Google Chrome version check", cause }),
+      ),
+    );
+    const version = yield* collectProcessOutput(handle).pipe(
+      Effect.mapError(
+        (cause) => new ReferenceBrowserError({ operation: "read Google Chrome version", cause }),
+      ),
+    );
+    const exitCode = yield* handle.exitCode.pipe(
+      Effect.mapError(
+        (cause) =>
+          new ReferenceBrowserError({ operation: "wait for Google Chrome version", cause }),
+      ),
+    );
+    if (exitCode !== 0 || !/^Google Chrome(?: for Testing)? /u.test(version)) {
+      return yield* new ReferenceBrowserError({
+        operation: `require Google Chrome binary: ${version.trim()}`,
+      });
+    }
+  });
 
 export const startGoogleChrome = () =>
   Effect.gen(function* () {
@@ -517,6 +539,7 @@ export const startGoogleChrome = () =>
       }).pipe(Effect.ignore),
     );
     const chrome = yield* findChrome;
+    yield* verifyGoogleChrome(chrome);
     yield* ChildProcess.make(
       chrome,
       [
