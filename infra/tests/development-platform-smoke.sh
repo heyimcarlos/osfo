@@ -161,8 +161,11 @@ jq -e --arg network_id "$network_id" --arg cost_owner "$cost_owner" '
 temporal_status=MISSING
 private_dns_record_status=MISSING
 temporal_attachment=""
-if gcloud compute forwarding-rules describe "$name_prefix-temporal-psc" \
-  --region="$region" --project="$project_id" --format=json >"$scratch/temporal.json" 2>/dev/null; then
+temporal_lookup_status=0
+gcloud compute forwarding-rules describe "$name_prefix-temporal-psc" \
+  --region="$region" --project="$project_id" --format=json \
+  >"$scratch/temporal.json" 2>"$scratch/temporal.error" || temporal_lookup_status=$?
+if ((temporal_lookup_status == 0)); then
   temporal_attachment=$(jq -r '.target' "$scratch/temporal.json")
   jq -e '
     .pscConnectionStatus == "ACCEPTED"
@@ -173,6 +176,12 @@ if gcloud compute forwarding-rules describe "$name_prefix-temporal-psc" \
     >"$scratch/temporal-dns.json"
   temporal_status=PASS
   private_dns_record_status=PASS
+elif grep -Eqi '404|not found|does not exist' "$scratch/temporal.error"; then
+  printf 'MISSING: Temporal PSC forwarding rule is not configured\n' >&2
+else
+  printf 'FAIL: Temporal PSC forwarding rule lookup failed closed\n' >&2
+  cat "$scratch/temporal.error" >&2
+  exit 1
 fi
 
 test -f "$preflight_report"

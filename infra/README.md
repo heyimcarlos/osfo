@@ -91,6 +91,7 @@ initialize the development backend and run the destructive, disposable proof:
 terraform -chdir=infra/roots/development/platform init -input=false \
   -backend-config="bucket=$GCP_DEVELOPMENT_STATE_BUCKET" \
   -backend-config="prefix=roots/development/platform"
+export DEVELOPMENT_LIFECYCLE_RUN_ID=manual-20260807-01
 SAVED_PLAN_BUCKET="$GCP_SAVED_PLAN_BUCKET" \
   infra/tests/development-platform-live.sh
 ```
@@ -102,7 +103,9 @@ smoke checks. Before cleanup it stores an immutable lifecycle envelope keyed by
 the workflow run and content digest. Cleanup evidence links that envelope, or
 records the link as `MISSING` when cancellation happened before it was stored.
 The proof always reports the current acceptance result as partial while any
-required gate is `MISSING`.
+required gate is `MISSING`. For a manual run, choose a new
+`DEVELOPMENT_LIFECYCLE_RUN_ID` for every attempt and reuse that exact value for
+its cleanup invocation.
 
 Cleanup is a separate two-authority workflow. Its foundation job removes only
 reviewed content-addressed artifact objects, then its platform job creates,

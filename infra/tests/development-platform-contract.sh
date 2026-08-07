@@ -36,6 +36,9 @@ rg --fixed-strings --quiet 'gcloud storage cp --if-generation-match=0' infra/tes
 rg --fixed-strings --quiet 'gcloud storage cp "$scratch/artifact" "$artifact_uri"' \
   infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'temporal_private_service_connect' infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet 'temporal_lookup_status=$?' infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet 'FAIL: Temporal PSC forwarding rule lookup failed closed' \
+  infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'authorized_secret_version_access: "MISSING"' \
   infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'google_cloud_run_v2_job' infra/modules/qualification-probe/main.tf
@@ -67,6 +70,9 @@ rg --fixed-strings --quiet 'qualification_subscription "$name_prefix-ordering-"'
 rg --fixed-strings --quiet 'diff-index --quiet HEAD --' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'state_status=$?' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'destroy_plan_bindings: $destroy_plan_bindings' \
+  infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet \
+  'DEVELOPMENT_LIFECYCLE_RUN_ID is required and must be unique per lifecycle attempt' \
   infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'lifecycle_evidence_linkage: $lifecycle_envelope_status' \
   infra/tests/development-platform-live.sh

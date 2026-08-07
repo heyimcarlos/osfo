@@ -24,7 +24,7 @@ source_commit=$(git -C "$repo_root" rev-parse HEAD)
 varset_sha=$(sha256sum "$varset" | cut -d' ' -f1)
 image_digests_sha=$(sha256sum "$image_digests" | cut -d' ' -f1)
 destroy_bindings_json='[]'
-lifecycle_run_id=${DEVELOPMENT_LIFECYCLE_RUN_ID:-${GITHUB_RUN_ID:-manual-$source_commit}}
+lifecycle_run_id=${DEVELOPMENT_LIFECYCLE_RUN_ID:?DEVELOPMENT_LIFECYCLE_RUN_ID is required and must be unique per lifecycle attempt}
 if [[ ! "$lifecycle_run_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
   printf 'FAIL: lifecycle run identifier contains unsafe characters\n' >&2
   exit 1
