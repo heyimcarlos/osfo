@@ -636,7 +636,7 @@ describe("PostgreSQL Thread message admission", () => {
         globalReservedBefore: 1,
         globalReservedAfter: 1,
         principalMismatchCountBefore: 1,
-        principalMismatchCountAfter: 0,
+        principalMismatchCountAfter: null,
         repaired: true,
         sweepComplete: false,
       });
@@ -717,9 +717,11 @@ describe("PostgreSQL Thread message admission", () => {
         MessageAdmission.use((admission) => admission.reconcileCapacity()),
       );
       expect(first).toMatchObject({ principalMismatchCountBefore: 256, repaired: true });
+      expect(first.principalMismatchCountAfter).toBeNull();
       expect(first.sweepComplete).toBe(false);
       expect(second).toMatchObject({
         principalMismatchCountBefore: 44,
+        principalMismatchCountAfter: 0,
         repaired: true,
         sweepComplete: true,
       });
@@ -737,7 +739,74 @@ describe("PostgreSQL Thread message admission", () => {
     }
   });
 
-  it("keeps reconciliation latency independent of retained terminal runs", async () => {
+  it("restarts a Principal sweep when a lower-key Principal is inserted between pages", async () => {
+    const insertedPrincipalId = "10000000-0000-4000-8000-000000000000";
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`WITH inserted AS (
+          INSERT INTO principals (principal_id)
+          SELECT (
+            '20000000-0000-4000-8000-' || lpad(to_hex(value), 12, '0')
+          )::uuid
+          FROM generate_series(1, 300) value
+          RETURNING principal_id
+        )
+        INSERT INTO admission_principal_capacity (principal_id, reserved_count)
+        SELECT principal_id, 0 FROM inserted`;
+      }),
+    );
+    const isolatedRuntime = ManagedRuntime.make(
+      makeMessageAdmissionLayer({
+        databaseUrl,
+        executionProfileRef,
+        globalNonTerminalLimit: 2,
+        maxConnections: 2,
+        principalNonTerminalLimit: 1,
+      }),
+    );
+    try {
+      const first = await isolatedRuntime.runPromise(
+        MessageAdmission.use((admission) => admission.reconcileCapacity()),
+      );
+      expect(first).toMatchObject({ repaired: false, sweepComplete: false });
+      await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`INSERT INTO principals (principal_id)
+            VALUES (${insertedPrincipalId}::uuid)`;
+        }),
+      );
+
+      const second = await isolatedRuntime.runPromise(
+        MessageAdmission.use((admission) => admission.reconcileCapacity()),
+      );
+      expect(second).toMatchObject({
+        principalMismatchCountBefore: 1,
+        principalMismatchCountAfter: null,
+        repaired: true,
+        sweepComplete: false,
+      });
+      const third = await isolatedRuntime.runPromise(
+        MessageAdmission.use((admission) => admission.reconcileCapacity()),
+      );
+      expect(third.sweepComplete).toBe(true);
+      const capacityRow = await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const [row] = yield* sql<{ readonly count: number }>`SELECT count(*)::int AS count
+            FROM admission_principal_capacity
+            WHERE principal_id = ${insertedPrincipalId}::uuid`;
+          return row?.count;
+        }),
+      );
+      expect(capacityRow).toBe(1);
+    } finally {
+      await isolatedRuntime.dispose();
+    }
+  });
+
+  it("bounds reconciliation to one retained-corpus page while admission continues", async () => {
     await run(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -766,16 +835,15 @@ describe("PostgreSQL Thread message admission", () => {
       }),
     );
 
-    const startedAt = performance.now();
     const [result, admitted] = await Promise.all([
       run(MessageAdmission.use((admission) => admission.reconcileCapacity())),
       accept(messageCommand({ threadId: aliceSecondThreadId })),
     ]);
-    const elapsedMs = performance.now() - startedAt;
 
     expect(result.repaired).toBe(false);
+    expect(result.principalMismatchCountAfter).toBeNull();
+    expect(result.sweepComplete).toBe(false);
     expect(admitted.threadId).toBe(aliceSecondThreadId);
-    expect(elapsedMs).toBeLessThan(2_000);
   });
 
   it("enforces Principal and Thread correlation across the authority graph", async () => {

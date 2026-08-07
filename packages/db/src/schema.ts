@@ -136,6 +136,18 @@ export const admissionGlobalCapacity = pgTable(
   ],
 );
 
+export const admissionPrincipalSetGeneration = pgTable(
+  "admission_principal_set_generation",
+  {
+    singleton: boolean("singleton").primaryKey().default(true),
+    generation: bigint("generation", { mode: "bigint" }).notNull().default(0n),
+  },
+  (table) => [
+    check("admission_principal_set_generation_singleton_check", sql`${table.singleton}`),
+    check("admission_principal_set_generation_generation_check", sql`${table.generation} >= 0`),
+  ],
+);
+
 export const admissionPrincipalCapacity = pgTable(
   "admission_principal_capacity",
   {
@@ -759,6 +771,7 @@ export const databaseSchema = {
   admissionRejections,
   admissionGlobalCapacity,
   admissionPrincipalCapacity,
+  admissionPrincipalSetGeneration,
   agentRunCapacityReservations,
   agentRuns,
   assistantOutputs,

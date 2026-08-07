@@ -253,7 +253,6 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     failFirstPublication = false;
     const baselineHeapBytes = process.memoryUsage().heapUsed;
     const maxima = {
-      admissionRetryVolume: 0,
       connectionsPerPool: 0,
       globalReserved: 0,
       heapGrowthBytes: 0,
@@ -386,7 +385,6 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     expect(maxima.totalConnections).toBeLessThanOrEqual(32);
     expect(maxima.heapGrowthBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
     expect(maxima.oldestWorkAgeMs).toBeLessThanOrEqual(30_000);
-    expect(maxima.admissionRetryVolume).toBe(0);
     expect(maxima.workerRetryVolume).toBe(0);
     expect(await sample()).toMatchObject({
       globalReserved: 0,

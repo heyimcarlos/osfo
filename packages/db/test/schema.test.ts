@@ -16,6 +16,7 @@ describe("database schema", () => {
       "acceptance_receipts",
       "admission_global_capacity",
       "admission_principal_capacity",
+      "admission_principal_set_generation",
       "admission_rejections",
       "agent_run_capacity_reservations",
       "agent_runs",

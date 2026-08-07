@@ -25,7 +25,7 @@ export const AdmissionCapacityReconciliationSchema = Schema.Struct({
   globalReservedBefore: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   globalReservedAfter: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   principalMismatchCountBefore: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  principalMismatchCountAfter: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  principalMismatchCountAfter: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   reservationMismatchCountBefore: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   reservationMismatchCountAfter: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   repaired: Schema.Boolean,

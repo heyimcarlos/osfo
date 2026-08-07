@@ -26,6 +26,7 @@ import {
   acceptanceReceipts,
   admissionGlobalCapacity,
   admissionPrincipalCapacity,
+  admissionPrincipalSetGeneration,
   admissionRejections,
   agentRunCapacityReservations,
   agentRuns,
@@ -458,6 +459,7 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
       const reconciliationBatchSize = config.capacityReconciliationBatchSize ?? 256;
       let nonZeroCapacityReconciliationCursor: string | undefined;
       let principalReconciliationCursor: string | undefined;
+      let principalSetGenerationCursor: bigint | undefined;
 
       const repairCapacityOnce = Effect.fn("DatabaseMessageAdmission.repairCapacityOnce")(
         function* () {
@@ -474,6 +476,22 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
             .from(admissionGlobalCapacity)
             .where(eq(admissionGlobalCapacity.singleton, true));
           if (globalBefore === undefined) return yield* new AdmissionUnavailable();
+          const [principalSetBefore] = yield* db
+            .select({ generation: admissionPrincipalSetGeneration.generation })
+            .from(admissionPrincipalSetGeneration)
+            .where(eq(admissionPrincipalSetGeneration.singleton, true));
+          if (principalSetBefore === undefined) return yield* new AdmissionUnavailable();
+          if (
+            principalSetGenerationCursor !== undefined &&
+            principalSetGenerationCursor !== principalSetBefore.generation
+          ) {
+            nonZeroCapacityReconciliationCursor = undefined;
+            principalReconciliationCursor = undefined;
+            principalSetGenerationCursor = undefined;
+            return { type: "stale" as const };
+          }
+          const expectedPrincipalSetGeneration =
+            principalSetGenerationCursor ?? principalSetBefore.generation;
 
           const activeRuns = yield* db
             .select({
@@ -619,9 +637,35 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
             globalBefore.reservedCount !== activeRuns.length ||
             principalMismatchCountBefore > 0 ||
             reservationMismatchCountBefore > 0;
-          if (!repaired) {
+          const advanceSweep = () => {
             nonZeroCapacityReconciliationCursor = nextNonZeroCapacityReconciliationCursor;
             principalReconciliationCursor = nextPrincipalReconciliationCursor;
+            principalSetGenerationCursor = sweepComplete
+              ? undefined
+              : expectedPrincipalSetGeneration;
+          };
+          if (!repaired) {
+            const validated = yield* db.transaction((tx) =>
+              Effect.gen(function* () {
+                yield* tx.execute(
+                  sql`SELECT pg_advisory_xact_lock(
+                    hashtextextended(${ADMISSION_CAPACITY_LOCK_KEY}, 0)
+                  )`,
+                );
+                const result = yield* tx.execute(sql`SELECT capacity.revision
+                  FROM admission_global_capacity capacity
+                  CROSS JOIN admission_principal_set_generation principal_set
+                  WHERE capacity.singleton = true
+                    AND capacity.revision = ${globalBefore.revision}
+                    AND principal_set.singleton = true
+                    AND principal_set.generation = ${expectedPrincipalSetGeneration}
+                  FOR UPDATE OF capacity, principal_set`);
+                const { rowCount } = yield* Schema.decodeUnknownEffect(QueryResultRowCount)(result);
+                return rowCount === 1;
+              }),
+            );
+            if (!validated) return { type: "stale" as const };
+            advanceSweep();
             return {
               type: "complete" as const,
               result: {
@@ -629,7 +673,7 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
                 globalReservedBefore: globalBefore.reservedCount,
                 globalReservedAfter: globalBefore.reservedCount,
                 principalMismatchCountBefore: 0,
-                principalMismatchCountAfter: 0,
+                principalMismatchCountAfter: sweepComplete ? 0 : null,
                 reservationMismatchCountBefore: 0,
                 reservationMismatchCountAfter: 0,
                 repaired: false,
@@ -675,8 +719,15 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
               );
               const updated = yield* tx.execute(sql<{
                 readonly reservedCount: number;
-              }>`WITH guard AS MATERIALIZED (
+              }>`WITH principal_set_guard AS MATERIALIZED (
+                  SELECT generation
+                  FROM admission_principal_set_generation
+                  WHERE singleton = true
+                    AND generation = ${expectedPrincipalSetGeneration}
+                  FOR UPDATE
+                ), guard AS MATERIALIZED (
                   SELECT 1 FROM admission_global_capacity
+                  CROSS JOIN principal_set_guard
                   WHERE singleton = true
                     AND revision = ${globalBefore.revision}
                 ), reset_stale_principals AS (
@@ -729,6 +780,7 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
                   SET reserved_count = ${activeRuns.length}, revision = revision + 1
                   WHERE singleton = true
                     AND revision = ${globalBefore.revision}
+                    AND EXISTS (SELECT 1 FROM guard)
                   RETURNING reserved_count AS "reservedCount"
                 )
                 SELECT "reservedCount" FROM update_global`);
@@ -742,7 +794,7 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
                   globalReservedBefore: globalBefore.reservedCount,
                   globalReservedAfter: activeRuns.length,
                   principalMismatchCountBefore,
-                  principalMismatchCountAfter: 0,
+                  principalMismatchCountAfter: sweepComplete ? 0 : null,
                   reservationMismatchCountBefore,
                   reservationMismatchCountAfter: Math.max(
                     0,
@@ -756,8 +808,7 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
           );
           const outcome = yield* transaction;
           if (outcome.type === "complete") {
-            nonZeroCapacityReconciliationCursor = nextNonZeroCapacityReconciliationCursor;
-            principalReconciliationCursor = nextPrincipalReconciliationCursor;
+            advanceSweep();
           }
           return outcome;
         },
