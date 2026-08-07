@@ -279,7 +279,13 @@ const processMessage = (message: StreamingPullMessage) =>
     Effect.flatMap((delivery) =>
       AgentRunWorker.use((worker) => worker.handle(delivery)).pipe(
         Effect.flatMap((disposition) =>
-          settle(message, disposition.type === "acknowledge" ? "acknowledge" : "nack"),
+          settle(message, disposition.type === "acknowledge" ? "acknowledge" : "nack").pipe(
+            Effect.andThen(
+              Effect.logInfo(
+                `OSFO_AGENT_RUN_DELIVERY_SETTLED:${message.id}:${delivery.deliveryId}:${disposition.type === "acknowledge" ? disposition.outcome : "retry"}`,
+              ),
+            ),
+          ),
         ),
       ),
     ),

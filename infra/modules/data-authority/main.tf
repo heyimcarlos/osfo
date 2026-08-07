@@ -1,5 +1,11 @@
 locals {
-  secret_containers = toset(["model-adapter", "temporal-cloud"])
+  secret_containers = toset([
+    "cursor-signing",
+    "database-admin-url",
+    "model-adapter",
+    "reference-client-auth",
+    "temporal-cloud",
+  ])
 }
 
 resource "google_sql_database_instance" "authority" {

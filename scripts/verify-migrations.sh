@@ -33,6 +33,8 @@ OSFO_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_li
 OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
   bun run --cwd packages/db test:postgres
 OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
+  bun run --cwd apps/database-jobs test:postgres
+OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
   bun run --cwd apps/outbox-relay test:postgres
 OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
   bun run --cwd apps/agent-run-worker test:postgres

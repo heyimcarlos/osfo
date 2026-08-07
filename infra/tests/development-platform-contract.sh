@@ -298,7 +298,7 @@ done
 probe_act_as=$(sed -n \
   '/resource "google_service_account_iam_member" "development_platform_probe_act_as"/,/^}/p' \
   infra/roots/foundation/main.tf)
-if [[ $(rg --fixed-strings 'roles/iam.serviceAccountUser' infra/roots/foundation/main.tf | wc -l) != 1 ]] \
+if [[ $(rg --fixed-strings 'roles/iam.serviceAccountUser' <<<"$probe_act_as" | wc -l) != 1 ]] \
   || ! grep -Fq 'for_each = google_service_account.development_qualification' <<<"$probe_act_as" \
   || ! grep -Fq 'service_account_id = each.value.name' <<<"$probe_act_as" \
   || ! grep -Fq 'google_service_account.terraform["development-platform"].email' <<<"$probe_act_as"; then

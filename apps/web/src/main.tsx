@@ -6,7 +6,11 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { makeThreadChat } from "./chat/atoms";
 import { ConfigurationRequired } from "./configuration-required";
-import { decodeReferenceClientConfig } from "./reference-client-config";
+import {
+  decodeReferenceClientConfig,
+  decodeStoredReferenceClientAuthority,
+  referenceClientAuthorityStorageKey,
+} from "./reference-client-config";
 
 const root = document.querySelector("#root");
 
@@ -14,27 +18,34 @@ if (!(root instanceof HTMLElement)) {
   throw new Error("Browser reference root element is missing");
 }
 
-const config = decodeReferenceClientConfig({
-  authenticationToken: import.meta.env.VITE_OSFO_AUTHENTICATION_TOKEN,
-  baseUrl: globalThis.location.origin,
-  clientInstanceId: new URLSearchParams(globalThis.location.search).get("device") ?? "local",
-  threadId: import.meta.env.VITE_OSFO_THREAD_ID,
-});
+const storedAuthority = decodeStoredReferenceClientAuthority(
+  globalThis.sessionStorage.getItem(referenceClientAuthorityStorageKey),
+);
 
-const application = Exit.match(config, {
+const application = Exit.match(storedAuthority, {
   onFailure: () => <ConfigurationRequired />,
-  onSuccess: (referenceConfig) => {
-    const chat = makeThreadChat({
-      authenticationToken: referenceConfig.authenticationToken,
-      baseUrl: referenceConfig.baseUrl.toString(),
-      clientInstanceId: referenceConfig.clientInstanceId,
-      threadId: referenceConfig.threadId,
+  onSuccess: (authority) => {
+    const config = decodeReferenceClientConfig({
+      ...authority,
+      baseUrl: globalThis.location.origin,
+      clientInstanceId: new URLSearchParams(globalThis.location.search).get("device") ?? "local",
     });
-    return (
-      <RegistryProvider>
-        <App chat={chat} threadId={referenceConfig.threadId} />
-      </RegistryProvider>
-    );
+    return Exit.match(config, {
+      onFailure: () => <ConfigurationRequired />,
+      onSuccess: (referenceConfig) => {
+        const chat = makeThreadChat({
+          authenticationToken: referenceConfig.authenticationToken,
+          baseUrl: referenceConfig.baseUrl.toString(),
+          clientInstanceId: referenceConfig.clientInstanceId,
+          threadId: referenceConfig.threadId,
+        });
+        return (
+          <RegistryProvider>
+            <App chat={chat} threadId={referenceConfig.threadId} />
+          </RegistryProvider>
+        );
+      },
+    });
   },
 });
 

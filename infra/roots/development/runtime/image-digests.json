@@ -1,1 +1,4 @@
-{}
+{
+  "application": null,
+  "cloud_sql_auth_proxy": "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.22.0@sha256:fa4c7308245407157c5e9c4e16f1c0f1113899d6f29dc8f8be3e30efae86467f"
+}

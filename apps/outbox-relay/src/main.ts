@@ -24,7 +24,9 @@ const RelayConfig = Config.all({
   publisherConcurrency: Config.schema(Schema.Literal(4), "OSFO_RELAY_PUBLISHER_CONCURRENCY").pipe(
     Config.withDefault(4),
   ),
-  relayId: Config.nonEmptyString("OSFO_RELAY_ID"),
+  relayId: Config.nonEmptyString("OSFO_RELAY_ID").pipe(
+    Config.orElse(() => Config.nonEmptyString("HOSTNAME")),
+  ),
   safetyDrainIntervalMs: Config.schema(
     Schema.Literal(1_000),
     "OSFO_RELAY_SAFETY_DRAIN_INTERVAL_MS",

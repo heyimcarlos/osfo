@@ -25,6 +25,7 @@ export interface CompiledIngressOptions {
   readonly port?: number;
   readonly principalNonTerminalLimit?: number;
   readonly streamPollIntervalMs?: number;
+  readonly webRoot?: string;
 }
 
 export class CompiledIngressStartError extends Data.TaggedError("CompiledIngressStartError")<{
@@ -159,6 +160,7 @@ export const startCompiledIngress = (options: CompiledIngressOptions) =>
         OSFO_MAX_STREAM_CONNECTIONS: String(options.maxStreamConnections ?? 64),
         OSFO_PRINCIPAL_NON_TERMINAL_LIMIT: String(options.principalNonTerminalLimit ?? 4),
         OSFO_STREAM_POLL_INTERVAL_MS: String(options.streamPollIntervalMs ?? 250),
+        ...(options.webRoot === undefined ? {} : { OSFO_WEB_ROOT: options.webRoot }),
       },
       extendEnv: true,
       stdin: "ignore",

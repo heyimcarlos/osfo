@@ -5,6 +5,7 @@ Current overall qualification is `MISSING`, not `PASS`.
 
 - [Current architecture](architecture.md)
 - [Exact evidence matrix](evidence.md)
+- [Development runtime demo disposition](development-runtime.md)
 - [Three-part walkthrough](walkthrough.md)
 - [Fail-closed artifact index](artifact-index.json)
 

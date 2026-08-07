@@ -1,0 +1,69 @@
+name: Development runtime image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: development-runtime-image
+  cancel-in-progress: false
+
+jobs:
+  configuration:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report missing protected configuration
+        shell: bash
+        env:
+          WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_DEVELOPMENT_RUNTIME_TERRAFORM_SERVICE_ACCOUNT }}
+        run: |
+          missing=0
+          for name in WORKLOAD_IDENTITY_PROVIDER RUNTIME_SERVICE_ACCOUNT; do
+            if [[ -z "${!name}" ]]; then
+              printf 'MISSING: protected image configuration %s\n' "$name" >&2
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+  build:
+    if: github.ref == 'refs/heads/main'
+    needs: configuration
+    runs-on: ubuntu-24.04
+    environment: development-runtime
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEVELOPMENT_RUNTIME_TERRAFORM_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Build and publish one immutable application image
+        id: image
+        shell: bash
+        env:
+          PROJECT_ID: osfo-development-318708913
+          REGION: us-east4
+        run: |
+          repository="$REGION-docker.pkg.dev/$PROJECT_ID/osfo/application"
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          docker buildx build --file Containerfile --provenance=true --sbom=true \
+            --tag "$repository:source-$GITHUB_SHA" --push \
+            --metadata-file "$RUNNER_TEMP/image-metadata.json" .
+          digest=$(jq -r '.["containerimage.digest"]' "$RUNNER_TEMP/image-metadata.json")
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            printf 'FAIL: build did not return an immutable image digest\n' >&2
+            exit 1
+          fi
+          docker buildx imagetools inspect "$repository@$digest" >/dev/null
+          printf 'image=%s@%s\n' "$repository" "$digest" >>"$GITHUB_OUTPUT"
+          printf '### Development application image\n\n`%s@%s`\n\n' "$repository" "$digest" >>"$GITHUB_STEP_SUMMARY"
+          printf 'MISSING: update the reviewed runtime image-digests.json in a follow-up PR before apply.\n' >>"$GITHUB_STEP_SUMMARY"

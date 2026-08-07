@@ -253,30 +253,42 @@ export const makeWorkerThreadModelCallExecutorLayer = (
   config: WorkerThreadModelCallExecutorConfig,
 ) => workerThreadModelCallExecutorLayer(config);
 
-export const deterministicModelCallWorkerSource = String.raw`
+export const makeDeterministicModelCallWorkerSource = (delayMs: number) => String.raw`
   const { parentPort, workerData } = require("node:worker_threads");
   const attemptId = workerData.attempt.modelCallAttemptId;
+  const delayMs = ${JSON.stringify(delayMs)};
+  let settled = false;
+  let timer;
   parentPort.on("message", (message) => {
-    if (message && message.type === "cancel" && message.modelCallAttemptId === attemptId) {
+    if (!settled && message && message.type === "cancel" && message.modelCallAttemptId === attemptId) {
+      settled = true;
+      clearTimeout(timer);
       parentPort.postMessage({
         type: "canceled",
         modelCallAttemptId: attemptId,
         disposition: "confirmedStopped",
       });
+      parentPort.close();
     }
   });
-  parentPort.postMessage({
-    type: "observation",
-    modelCallAttemptId: attemptId,
-    fragmentIndex: 0,
-    text: "Echo: ",
-  });
-  parentPort.postMessage({
-    type: "observation",
-    modelCallAttemptId: attemptId,
-    fragmentIndex: 1,
-    text: workerData.attempt.prompt,
-  });
-  parentPort.postMessage({ type: "completed", modelCallAttemptId: attemptId });
-  parentPort.close();
+  timer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    parentPort.postMessage({
+      type: "observation",
+      modelCallAttemptId: attemptId,
+      fragmentIndex: 0,
+      text: "Echo: ",
+    });
+    parentPort.postMessage({
+      type: "observation",
+      modelCallAttemptId: attemptId,
+      fragmentIndex: 1,
+      text: workerData.attempt.prompt,
+    });
+    parentPort.postMessage({ type: "completed", modelCallAttemptId: attemptId });
+    parentPort.close();
+  }, delayMs);
 `;
+
+export const deterministicModelCallWorkerSource = makeDeterministicModelCallWorkerSource(0);
