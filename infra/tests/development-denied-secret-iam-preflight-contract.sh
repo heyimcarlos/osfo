@@ -7,6 +7,8 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 mock_bin=$scratch/bin
 mkdir -p "$mock_bin"
+real_jq=$(command -v jq)
+real_grep=$(command -v grep)
 
 project_id=osfo-development-123456789
 name_prefix=osfo-dev
@@ -141,6 +143,30 @@ printf '%s\n' \
   'esac' >"$mock_bin/gcloud"
 chmod +x "$mock_bin/gcloud"
 
+# The selector mock targets only the policy role-selection jq program. All
+# other structured parsing remains real jq behavior.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'if [[ "${MOCK_SELECTOR_FAILURE:-0}" == 1 && "$*" == *"def directly_effective"* ]]; then' \
+  '  exit 47' \
+  'fi' \
+  'exec "$REAL_JQ" "$@"' >"$mock_bin/jq"
+chmod +x "$mock_bin/jq"
+
+# The grep mock reproduces a filesystem or scanner failure at the Terraform
+# source boundary without changing the repository under test.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'if [[ "${MOCK_TERRAFORM_SCAN_FAILURE:-0}" == 1 && "$*" == *"--include=*.tf"* ]]; then' \
+  '  exit 2' \
+  'fi' \
+  'exec "$REAL_GREP" "$@"' >"$mock_bin/grep"
+chmod +x "$mock_bin/grep"
+
 run_preflight() {
   local scope=$1
   local varset=$2
@@ -169,6 +195,10 @@ run_preflight() {
     MOCK_SECRET_POLICY="$secret_policy" \
     MOCK_ACCESSOR_ROLE="$scratch/accessor-role.json" \
     MOCK_WIDENED_ROLE="$scratch/widened-role.json" \
+    MOCK_SELECTOR_FAILURE="${MOCK_SELECTOR_FAILURE:-0}" \
+    MOCK_TERRAFORM_SCAN_FAILURE="${MOCK_TERRAFORM_SCAN_FAILURE:-0}" \
+    REAL_JQ="$real_jq" \
+    REAL_GREP="$real_grep" \
     "$preflight" >"$output" 2>&1
 }
 
@@ -266,6 +296,14 @@ expect_preflight_fails \
   malformed-target-secret-policy target-secret "$scratch/varset.json" \
   "$scratch/project-policy.json" "$scratch/policy-malformed.json" \
   'FAIL: target-secret IAM policy is malformed'
+MOCK_SELECTOR_FAILURE=1 expect_preflight_fails \
+  selector-failure target-secret "$scratch/varset.json" \
+  "$scratch/project-policy.json" "$scratch/secret-policy.json" \
+  'FAIL: unable to select potentially effective denied-secret role bindings'
+MOCK_TERRAFORM_SCAN_FAILURE=1 expect_preflight_fails \
+  terraform-scan-failure project "$scratch/varset.json" \
+  "$scratch/project-policy.json" "$scratch/secret-policy.json" \
+  'FAIL: unable to scan disposable platform Terraform for secret-level IAM authority'
 expect_preflight_fails \
   missing-identity project "$scratch/varset-missing-identity.json" \
   "$scratch/project-policy.json" "$scratch/secret-policy.json" \

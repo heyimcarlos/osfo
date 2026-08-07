@@ -149,18 +149,11 @@ check_policy_for_payload_access() {
   local label=$2
   local bound_role
   local principal_scope
+  local selected_bindings=$scratch/$label-selected-bindings.tsv
 
   validate_policy "$policy" "$label"
-  while IFS=$'\t' read -r bound_role principal_scope; do
-    if role_grants_payload_access "$bound_role"; then
-      if [[ "$principal_scope" == aggregate ]]; then
-        fail 'aggregate principal inheritance cannot be excluded for a role granting secretmanager.versions.access'
-      fi
-      fail 'denied qualification identity has a role granting secretmanager.versions.access'
-    fi
-  done < <(
-    jq -r \
-      --arg member "$target_member" '
+  if ! jq -r \
+    --arg member "$target_member" '
       def directly_effective:
         . == $member
         or . == "allUsers"
@@ -178,8 +171,18 @@ check_policy_for_payload_access() {
           ]]
       | unique[]
       | @tsv
-    ' "$policy"
-  )
+    ' "$policy" >"$selected_bindings" 2>"$scratch/$label-selection.error"; then
+    fail 'unable to select potentially effective denied-secret role bindings'
+  fi
+
+  while IFS=$'\t' read -r bound_role principal_scope; do
+    if role_grants_payload_access "$bound_role"; then
+      if [[ "$principal_scope" == aggregate ]]; then
+        fail 'aggregate principal inheritance cannot be excluded for a role granting secretmanager.versions.access'
+      fi
+      fail 'denied qualification identity has a role granting secretmanager.versions.access'
+    fi
+  done <"$selected_bindings"
 }
 
 if [[ "$scope" == project ]]; then
@@ -200,12 +203,19 @@ if [[ "$scope" == project ]]; then
   fi
   check_policy_for_payload_access "$scratch/project-policy.json" project
 
-  if grep -ER --include='*.tf' \
+  terraform_scan_status=0
+  set +e
+  grep -ER --include='*.tf' \
     'resource[[:space:]]+"google_secret_manager_secret_iam_(member|binding|policy)"|secretmanager[.]secrets[.]setIamPolicy' \
     "$repo_root/infra/roots/development/platform" "$repo_root/infra/modules" \
-    >/dev/null; then
-    fail 'disposable platform declares secret-level IAM authority'
-  fi
+    >/dev/null 2>"$scratch/terraform-scan.error"
+  terraform_scan_status=$?
+  set -e
+  case "$terraform_scan_status" in
+    0) fail 'disposable platform declares secret-level IAM authority' ;;
+    1) ;;
+    *) fail 'unable to scan disposable platform Terraform for secret-level IAM authority' ;;
+  esac
   printf 'PASS: denied qualification identity has no project payload access role\n'
   exit 0
 fi
