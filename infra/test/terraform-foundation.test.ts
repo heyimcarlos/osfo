@@ -86,6 +86,13 @@ describe("Terraform foundation", () => {
     ),
   );
 
+  it.effect("enforces the deployed SSE demo qualification contract", () =>
+    expectCheckPasses(
+      "infra/tests/development-sse-demo-qualification-contract.sh",
+      "Development SSE demo qualification contract assertions passed",
+    ),
+  );
+
   it.effect("proves runtime absence checks fail closed", () =>
     expectCheckPasses(
       "infra/tests/development-runtime-absent-contract.sh",
