@@ -28,6 +28,7 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
   Effect.flatMap((databaseUrl) =>
     Effect.gen(function* () {
       const upgradeDatabaseName = "osfo_upgrade_path";
+      const legacyAstralFragment = "😀".repeat(8_193);
       const upgradeUrl = new URL(databaseUrl);
       upgradeUrl.pathname = `/${upgradeDatabaseName}`;
       const migrationsFolder = mkdtempSync(join(tmpdir(), "osfo-upgrade-migrations-"));
@@ -134,7 +135,7 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
                 'assistantOutputId', '36290831-b9ca-414a-abf1-4055b5347133',
                 'agentRunId', '96ae49eb-b1ab-41cb-a468-b68893ec82c3',
                 'content', jsonb_build_array(jsonb_build_object(
-                  'type', 'text', 'text', 'historical fragment'
+                  'type', 'text', 'text', ${legacyAstralFragment}::text
                 ))
               ),
               transaction_timestamp()
@@ -191,7 +192,7 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
             'dd0496f6-c20f-4c86-bc69-e3138b699f06'::uuid,
             '36290831-b9ca-414a-abf1-4055b5347133'::uuid,
             '96ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
-            'historical fragment',
+            ${legacyAstralFragment}::text,
             '7b82a82b-7983-49ca-a054-13b040f9f5da'::uuid,
             transaction_timestamp()
           )`;
@@ -359,6 +360,29 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
         ) {
           return yield* Effect.die(
             new Error("Historical dispatched ModelCall attempt evidence was not preserved"),
+          );
+        }
+        const fragmentConstraintRows = yield* sql<{
+          readonly codeUnits: number;
+          readonly constraintValidated: boolean;
+          readonly legacyCharacters: number;
+        }>`SELECT
+            length(fragment.text) AS "legacyCharacters",
+            text_utf16_code_units(fragment.text) AS "codeUnits",
+            constraint_state.convalidated AS "constraintValidated"
+          FROM model_call_fragments fragment
+          CROSS JOIN pg_constraint constraint_state
+          WHERE fragment.model_call_attempt_id =
+              'dd0496f6-c20f-4c86-bc69-e3138b699f06'::uuid
+            AND constraint_state.conrelid = 'model_call_fragments'::regclass
+            AND constraint_state.conname = 'model_call_fragments_text_check'`;
+        if (
+          fragmentConstraintRows[0]?.legacyCharacters !== 8_193 ||
+          fragmentConstraintRows[0].codeUnits !== 16_386 ||
+          fragmentConstraintRows[0].constraintValidated !== false
+        ) {
+          return yield* Effect.die(
+            new Error("Expansion migration did not preserve legacy astral fragment evidence"),
           );
         }
       }).pipe(Effect.provide(upgradeLayer));

@@ -9,7 +9,9 @@ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
   FROM generate_series(1, length(value)) AS character_index;
 $$;--> statement-breakpoint
 ALTER TABLE "model_call_fragments" DROP CONSTRAINT "model_call_fragments_text_check";--> statement-breakpoint
-ALTER TABLE "model_call_fragments" ADD CONSTRAINT "model_call_fragments_text_check" CHECK (text_utf16_code_units("text") BETWEEN 1 AND 16384);--> statement-breakpoint
+ALTER TABLE "model_call_fragments" ADD CONSTRAINT "model_call_fragments_text_check" CHECK (text_utf16_code_units("text") BETWEEN 1 AND 16384) NOT VALID;--> statement-breakpoint
+COMMENT ON CONSTRAINT "model_call_fragments_text_check" ON "model_call_fragments" IS
+  'Expansion-only UTF-16 durability bound. Existing legacy fragments require audit and backfill before a later contract migration runs VALIDATE CONSTRAINT.';--> statement-breakpoint
 ALTER TABLE "model_call_attempts" ADD COLUMN "model_binding" text;--> statement-breakpoint
 ALTER TABLE "model_call_attempts" ADD COLUMN "dispatch_state" text DEFAULT 'prepared' NOT NULL;--> statement-breakpoint
 ALTER TABLE "model_call_attempts" ADD COLUMN "provider_request_id" text;--> statement-breakpoint
