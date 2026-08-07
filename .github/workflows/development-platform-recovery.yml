@@ -91,6 +91,7 @@ jobs:
       SAVED_PLAN_BUCKET: ${{ vars.GCP_SAVED_PLAN_BUCKET }}
       DEVELOPMENT_STATE_BUCKET: ${{ vars.GCP_DEVELOPMENT_STATE_BUCKET }}
       DEVELOPMENT_PLATFORM_CLEANUP_ONLY: "1"
+      DEVELOPMENT_LIFECYCLE_RUN_ID: ${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:

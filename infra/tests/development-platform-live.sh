@@ -24,6 +24,12 @@ source_commit=$(git -C "$repo_root" rev-parse HEAD)
 varset_sha=$(sha256sum "$varset" | cut -d' ' -f1)
 image_digests_sha=$(sha256sum "$image_digests" | cut -d' ' -f1)
 destroy_bindings_json='[]'
+lifecycle_run_id=${DEVELOPMENT_LIFECYCLE_RUN_ID:-${GITHUB_RUN_ID:-manual-$source_commit}}
+if [[ ! "$lifecycle_run_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  printf 'FAIL: lifecycle run identifier contains unsafe characters\n' >&2
+  exit 1
+fi
+lifecycle_envelope_uri="gs://$evidence_bucket/roots/development/platform/lifecycles/$lifecycle_run_id.json"
 
 export TF_VARSET_FILE=$varset
 export TF_IMAGE_DIGESTS_FILE=$image_digests
@@ -137,6 +143,7 @@ if [[ "${DEVELOPMENT_PLATFORM_CLEANUP_ONLY:-0}" == 1 ]]; then
   cleanup_absence_report="$plan_dir/cleanup-absence.json"
   cleanup_audit_report="$plan_dir/cleanup-audit.json"
   cleanup_report="$plan_dir/cleanup.json"
+  lifecycle_envelope="$plan_dir/lifecycle-envelope.json"
   destroy_platform
   "$repo_root/infra/tests/development-platform-absent.sh" "$cleanup_absence_report"
   cleanup_absence_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
@@ -150,6 +157,36 @@ if [[ "${DEVELOPMENT_PLATFORM_CLEANUP_ONLY:-0}" == 1 ]]; then
       "$cleanup_audit_report" "$evidence_bucket")
     cleanup_audit_status=PASS
   fi
+  lifecycle_envelope_status=MISSING
+  lifecycle_envelope_sha=""
+  lifecycle_lookup_error="$plan_dir/lifecycle-envelope.error"
+  set +e
+  gcloud storage objects describe "$lifecycle_envelope_uri" \
+    >"$plan_dir/lifecycle-envelope-metadata.json" 2>"$lifecycle_lookup_error"
+  lifecycle_lookup_status=$?
+  set -e
+  if ((lifecycle_lookup_status == 0)); then
+    gcloud storage cp "$lifecycle_envelope_uri" "$lifecycle_envelope" >/dev/null
+    if ! jq -e \
+      --arg source_commit "$source_commit" \
+      --arg lifecycle_run_id "$lifecycle_run_id" \
+      '.source.commit_sha == $source_commit and .lifecycle_run_id == $lifecycle_run_id' \
+      "$lifecycle_envelope" >/dev/null; then
+      printf 'FAIL: lifecycle envelope does not match cleanup source and run\n' >&2
+      exit 1
+    fi
+    lifecycle_envelope_sha=$(sha256sum "$lifecycle_envelope" | cut -d' ' -f1)
+    lifecycle_content_uri="gs://$evidence_bucket/roots/development/platform/sha256/$lifecycle_envelope_sha.json"
+    gcloud storage cp "$lifecycle_content_uri" "$plan_dir/lifecycle-envelope-content.json" >/dev/null
+    cmp "$lifecycle_envelope" "$plan_dir/lifecycle-envelope-content.json"
+    lifecycle_envelope_status=PASS
+  elif grep -Eqi '404|not found|does not exist' "$lifecycle_lookup_error"; then
+    printf 'MISSING: lifecycle ended before its evidence envelope was stored\n' >&2
+  else
+    printf 'FAIL: lifecycle envelope lookup failed closed\n' >&2
+    cat "$lifecycle_lookup_error" >&2
+    exit 1
+  fi
   jq -n \
     --arg source_commit "$source_commit" \
     --arg variable_set_sha256 "$varset_sha" \
@@ -158,6 +195,9 @@ if [[ "${DEVELOPMENT_PLATFORM_CLEANUP_ONLY:-0}" == 1 ]]; then
     --arg absence_report_sha256 "$cleanup_absence_sha" \
     --arg audit_status "$cleanup_audit_status" \
     --arg audit_report_sha256 "$cleanup_audit_sha" \
+    --arg lifecycle_run_id "$lifecycle_run_id" \
+    --arg lifecycle_envelope_status "$lifecycle_envelope_status" \
+    --arg lifecycle_envelope_sha256 "$lifecycle_envelope_sha" \
     '{schema_version: 1, qualification: "PARTIAL", source: {
       commit_sha: $source_commit,
       clean_tree: true,
@@ -169,13 +209,20 @@ if [[ "${DEVELOPMENT_PLATFORM_CLEANUP_ONLY:-0}" == 1 ]]; then
       empty_disposable_state: "PASS",
       negative_provider_lookups: "PASS",
       retained_environment_baseline: "PASS",
-      audit_history_retained: $audit_status
+      audit_history_retained: $audit_status,
+      lifecycle_evidence_linkage: $lifecycle_envelope_status
     }, absence_report_sha256: $absence_report_sha256,
-    audit_report_sha256: $audit_report_sha256}' >"$cleanup_report"
+    audit_report_sha256: $audit_report_sha256,
+    lifecycle: {
+      run_id: $lifecycle_run_id,
+      envelope_status: $lifecycle_envelope_status,
+      envelope_sha256: $lifecycle_envelope_sha256
+    }}' >"$cleanup_report"
   cleanup_report_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
     "$cleanup_report" "$evidence_bucket")
-  printf 'PASS: independent cleanup completed source=%s absence_evidence=%s audit=%s cleanup_evidence=%s\n' \
-    "$source_commit" "$cleanup_absence_sha" "$cleanup_audit_status" "$cleanup_report_sha"
+  printf 'PASS: independent cleanup completed source=%s absence_evidence=%s audit=%s lifecycle_link=%s cleanup_evidence=%s\n' \
+    "$source_commit" "$cleanup_absence_sha" "$cleanup_audit_status" \
+    "$lifecycle_envelope_status" "$cleanup_report_sha"
   exit 0
 fi
 
@@ -201,7 +248,51 @@ test -n "$managed_report_sha"
 [[ "$managed_qualification" =~ ^(PASS|MISSING)$ ]]
 [[ "$temporal_qualification" =~ ^(PASS|MISSING)$ ]]
 
-printf 'qualification=%s temporal=%s lifecycle=MISSING create_binding=%s second_binding=%s evidence=%s source=%s inputs=%s images=%s\n' \
+lifecycle_envelope="$plan_dir/lifecycle-envelope.json"
+jq -n \
+  --arg lifecycle_run_id "$lifecycle_run_id" \
+  --arg source_commit "$source_commit" \
+  --arg variable_set_sha256 "$varset_sha" \
+  --arg image_digests_sha256 "$image_digests_sha" \
+  --arg create_plan_binding_sha256 "$create_binding" \
+  --arg second_plan_binding_sha256 "$second_binding" \
+  --arg managed_report_sha256 "$managed_report_sha" \
+  --arg managed_qualification "$managed_qualification" \
+  --arg temporal_qualification "$temporal_qualification" \
+  '{schema_version: 1, qualification: "PARTIAL", lifecycle_run_id: $lifecycle_run_id,
+    source: {
+      commit_sha: $source_commit,
+      clean_tree: true,
+      variable_set_sha256: $variable_set_sha256,
+      image_digests_sha256: $image_digests_sha256
+    }, create_plan_binding_sha256: $create_plan_binding_sha256,
+    second_plan_binding_sha256: $second_plan_binding_sha256,
+    managed_report_sha256: $managed_report_sha256,
+    checks: {
+      managed_qualification: $managed_qualification,
+      temporal_qualification: $temporal_qualification
+    }}' >"$lifecycle_envelope"
+lifecycle_envelope_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
+  "$lifecycle_envelope" "$evidence_bucket")
+lifecycle_locator_error="$plan_dir/lifecycle-locator.error"
+set +e
+gcloud storage objects describe "$lifecycle_envelope_uri" \
+  >"$plan_dir/lifecycle-locator-metadata.json" 2>"$lifecycle_locator_error"
+lifecycle_locator_status=$?
+set -e
+if ((lifecycle_locator_status == 0)); then
+  gcloud storage cp "$lifecycle_envelope_uri" "$plan_dir/existing-lifecycle-envelope.json" >/dev/null
+  cmp "$lifecycle_envelope" "$plan_dir/existing-lifecycle-envelope.json"
+elif grep -Eqi '404|not found|does not exist' "$lifecycle_locator_error"; then
+  gcloud storage cp --if-generation-match=0 \
+    "$lifecycle_envelope" "$lifecycle_envelope_uri" >/dev/null
+else
+  printf 'FAIL: lifecycle envelope locator lookup failed closed\n' >&2
+  cat "$lifecycle_locator_error" >&2
+  exit 1
+fi
+
+printf 'qualification=%s temporal=%s lifecycle=MISSING create_binding=%s second_binding=%s evidence=%s lifecycle_envelope=%s source=%s inputs=%s images=%s\n' \
   "$managed_qualification" "$temporal_qualification" "$create_binding" "$second_binding" \
-  "$managed_report_sha" "$source_commit" "$varset_sha" "$image_digests_sha"
+  "$managed_report_sha" "$lifecycle_envelope_sha" "$source_commit" "$varset_sha" "$image_digests_sha"
 exit 3

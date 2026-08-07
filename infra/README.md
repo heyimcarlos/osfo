@@ -98,8 +98,11 @@ SAVED_PLAN_BUCKET="$GCP_SAVED_PLAN_BUCKET" \
 The proof refuses a dirty tree and binds evidence to the exact commit, reviewed
 variable and image files, and create and no-change plan manifests. It runs
 quota preflight, exact saved-plan apply, an empty second plan, and managed-service
-smoke checks. It always reports the current acceptance result as partial while
-any required gate is `MISSING`.
+smoke checks. Before cleanup it stores an immutable lifecycle envelope keyed by
+the workflow run and content digest. Cleanup evidence links that envelope, or
+records the link as `MISSING` when cancellation happened before it was stored.
+The proof always reports the current acceptance result as partial while any
+required gate is `MISSING`.
 
 Cleanup is a separate two-authority workflow. Its foundation job removes only
 reviewed content-addressed artifact objects, then its platform job creates,

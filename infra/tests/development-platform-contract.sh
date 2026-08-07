@@ -68,6 +68,16 @@ rg --fixed-strings --quiet 'diff-index --quiet HEAD --' infra/tests/development-
 rg --fixed-strings --quiet 'state_status=$?' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'destroy_plan_bindings: $destroy_plan_bindings' \
   infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'lifecycle_evidence_linkage: $lifecycle_envelope_status' \
+  infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'create_plan_binding_sha256: $create_plan_binding_sha256' \
+  infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'second_plan_binding_sha256: $second_plan_binding_sha256' \
+  infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'managed_report_sha256: $managed_report_sha256' \
+  infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'MISSING: lifecycle ended before its evidence envelope was stored' \
+  infra/tests/development-platform-live.sh
 if rg --fixed-strings --quiet 'state-list.error' infra/tests/development-platform-live.sh; then
   printf 'state-list diagnostics must not dirty the reviewed source tree\n' >&2
   exit 1
@@ -264,6 +274,12 @@ if rg --fixed-strings --quiet 'refs/heads/codex/provision-development-platform' 
 fi
 rg --fixed-strings --quiet "assertion.ref == 'refs/heads/main'" infra/roots/foundation/main.tf
 rg --fixed-strings --quiet 'DEVELOPMENT_PLATFORM_CLEANUP_ONLY: "1"' .github/workflows/terraform.yml
+rg --fixed-strings --quiet \
+  'DEVELOPMENT_LIFECYCLE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}' \
+  .github/workflows/terraform.yml
+rg --fixed-strings --quiet \
+  'DEVELOPMENT_LIFECYCLE_RUN_ID: ${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}' \
+  .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet 'always()' .github/workflows/terraform.yml
 rg --fixed-strings --quiet "needs.static.result == 'success'" .github/workflows/terraform.yml
 rg --fixed-strings --quiet "'terraform-development-platform'" .github/workflows/terraform.yml
