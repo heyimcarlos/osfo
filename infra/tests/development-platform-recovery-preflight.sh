@@ -93,7 +93,7 @@ jq -e --arg role "$dns_role" --arg member "$dns_member" --arg condition "$dns_co
   exit 1
 }
 
-if ! gcloud storage buckets get-iam-policy "gs://$evidence_bucket" \
+if ! gcloud storage buckets get-iam-policy "gs://$evidence_bucket" --format=json \
   >"$scratch/evidence-policy.json" 2>"$scratch/evidence-policy.error"; then
   printf 'FAIL: unable to verify development evidence bucket policy\n' >&2
   cat "$scratch/evidence-policy.error" >&2

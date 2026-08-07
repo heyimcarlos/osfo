@@ -70,14 +70,25 @@ printf '%s\n' \
   '    fi' \
   '    printf "%s\n" "{\"name\":\"osfo-development-artifacts-318708913\"}"' \
   '    ;;' \
+  '  "storage ls --all-versions --recursive gs://osfo-development-artifacts-318708913")' \
+    '    if [[ "${MOCK_STORAGE_MODE:-empty}" == list-permission ]]; then' \
+    '      printf "PERMISSION_DENIED: storage.objects.list\n" >&2' \
+    '      exit 1' \
+    '    fi' \
+    '    if [[ "${MOCK_STORAGE_MODE:-empty}" == populated ]]; then' \
+    '      list_count=0' \
+    '      [[ ! -f "$MOCK_STORAGE_CALLS" ]] || list_count=$(<"$MOCK_STORAGE_CALLS")' \
+    '      printf "%s\n" "$((list_count + 1))" >"$MOCK_STORAGE_CALLS"' \
+    '      if ((list_count == 0)); then' \
+    '        printf "\n%s\n%s\n%s\n" "gs://osfo-development-artifacts-318708913/sha256/:" "gs://osfo-development-artifacts-318708913/sha256/abc#100" "gs://osfo-development-artifacts-318708913/sha256/abc#101"' \
+    '      fi' \
+    '    fi' \
+    '    ;;' \
   '  "storage ls"*)' \
-  '    if [[ "${MOCK_STORAGE_MODE:-empty}" == list-permission ]]; then' \
-  '      printf "PERMISSION_DENIED: storage.objects.list\n" >&2' \
-  '      exit 1' \
-  '    fi' \
-  '    printf "ERROR: One or more URLs matched no objects.\n" >&2' \
-  '    exit 1' \
+  '    printf "artifact listing must use the bucket-root recursive form: %s\n" "$*" >&2' \
+  '    exit 92' \
   '    ;;' \
+    '  "storage rm"*) printf "%s\n" "${*:3}" >>"$MOCK_STORAGE_REMOVALS" ;;' \
   '  "storage objects describe"*)' \
   '    if [[ "${MOCK_STORAGE_MODE:-empty}" == evidence-permission ]]; then' \
   '      printf "PERMISSION_DENIED: storage.objects.get\n" >&2' \
@@ -98,6 +109,24 @@ PATH="$mock_bin:$PATH" \
   TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
   infra/tests/development-platform-prepare-cleanup.sh >"$empty_output" 2>&1
 grep -Fq 'PASS: disposable artifact bucket is empty' "$empty_output"
+
+populated_output=$scratch/populated-output
+storage_calls=$scratch/storage-calls
+storage_removals=$scratch/storage-removals
+PATH="$mock_bin:$PATH" \
+  FOUNDATION_SERVICE_ACCOUNT=$foundation_account \
+  MOCK_STORAGE_MODE=populated \
+  MOCK_STORAGE_CALLS=$storage_calls \
+  MOCK_STORAGE_REMOVALS=$storage_removals \
+  TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
+  infra/tests/development-platform-prepare-cleanup.sh >"$populated_output" 2>&1
+grep -Fq 'PASS: foundation recovery removed only reviewed content-addressed artifact objects' \
+  "$populated_output"
+cat >"$scratch/expected-storage-removals" <<'EOF'
+gs://osfo-development-artifacts-318708913/sha256/abc#100
+gs://osfo-development-artifacts-318708913/sha256/abc#101
+EOF
+cmp "$scratch/expected-storage-removals" "$storage_removals"
 
 permission_output=$scratch/permission-output
 if PATH="$mock_bin:$PATH" \
@@ -217,7 +246,11 @@ printf '%s\n' \
   '  "iam roles describe"*) cat "$MOCK_PREFLIGHT_ROLE" ;;' \
   '  "projects get-iam-policy"*) cat "$MOCK_PREFLIGHT_PROJECT_POLICY" ;;' \
   '  "dns managed-zones describe"*) cat "$MOCK_PREFLIGHT_ZONE" ;;' \
-  '  "storage buckets get-iam-policy"*) cat "$MOCK_PREFLIGHT_EVIDENCE_POLICY" ;;' \
+  '  storage\ buckets\ get-iam-policy*--format=json) cat "$MOCK_PREFLIGHT_EVIDENCE_POLICY" ;;' \
+  '  storage\ buckets\ get-iam-policy*)' \
+  '    printf "evidence policy lookup requires --format=json\n" >&2' \
+  '    exit 91' \
+  '    ;;' \
   '  *) printf "unexpected preflight gcloud invocation: %s\n" "$*" >&2; exit 90 ;;' \
   'esac' >"$mock_bin/gcloud"
 chmod +x "$mock_bin/gcloud"
