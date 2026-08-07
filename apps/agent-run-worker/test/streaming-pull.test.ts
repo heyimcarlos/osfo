@@ -4,7 +4,7 @@ import {
   type RunnableAgentRunDelivery,
 } from "@osfo/agent-run";
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer } from "effect";
+import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
 import {
   runStreamingPullWorker,
   StreamingPullSource,
@@ -49,6 +49,7 @@ const makeMessage = (id: string, value: unknown, orderingKey: string | undefined
 const makeSource = () => {
   const started = Deferred.makeUnsafe<void>();
   const stopped = Deferred.makeUnsafe<void>();
+  const closed = Deferred.makeUnsafe<void>();
   const events: Array<string> = [];
   let handlers: StreamingPullHandlers | undefined;
   const source = StreamingPullSource.of({
@@ -63,12 +64,21 @@ const makeSource = () => {
         events.push("receiving-stopped");
         Deferred.doneUnsafe(stopped, Effect.void);
       }),
+    close: () =>
+      Effect.sync(() => {
+        events.push("client-closed");
+        Deferred.doneUnsafe(closed, Effect.void);
+      }),
   });
   const emit = (message: StreamingPullMessage) =>
     Effect.sync(() => {
       handlers?.onMessage(message);
     });
-  return { emit, events, source, started, stopped };
+  const fail = (cause: unknown) =>
+    Effect.sync(() => {
+      handlers?.onError(cause);
+    });
+  return { closed, emit, events, fail, source, started, stopped };
 };
 
 const runWorker = (
@@ -252,12 +262,40 @@ describe("StreamingPull AgentRun delivery", () => {
       const shutdown = yield* Effect.forkChild(Fiber.interrupt(running));
       yield* Deferred.await(source.stopped);
       expect(source.events).toEqual(["receiving", "receiving-stopped"]);
+      expect(yield* Deferred.isDone(source.closed)).toBe(false);
       expect(calls).toBe(1);
 
       yield* Deferred.succeed(releaseFirst, undefined);
       yield* Effect.all([Deferred.await(first.acknowledged), Deferred.await(queued.nacked)]);
       yield* Fiber.join(shutdown);
+      yield* Deferred.await(source.closed);
+      expect(source.events).toEqual(["receiving", "receiving-stopped", "client-closed"]);
       expect(calls).toBe(1);
+    }),
+  );
+
+  it.effect("fails the ready worker when StreamingPull closes fatally", () =>
+    Effect.gen(function* () {
+      const source = makeSource();
+      const running = yield* Effect.forkChild(
+        runWorker(
+          source.source,
+          () => Effect.succeed({ type: "acknowledge" as const, outcome: "succeeded" as const }),
+          1,
+        ),
+      );
+      yield* Deferred.await(source.started);
+
+      yield* source.fail("subscriber closed");
+      const exit = yield* Fiber.await(running).pipe(
+        Effect.timeoutOrElse({
+          duration: "1 second",
+          orElse: () => Effect.die("ready worker stayed alive after fatal StreamingPull closure"),
+        }),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(source.events).toEqual(["receiving", "receiving-stopped", "client-closed"]);
     }),
   );
 });

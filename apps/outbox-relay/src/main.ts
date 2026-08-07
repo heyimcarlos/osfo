@@ -31,6 +31,7 @@ const RelayLive = Layer.unwrap(
       const repository = makeAgentRunRepositoryLayer({ databaseUrl: config.databaseUrl });
       const publisher = makeGooglePubSubPublisherLayer({
         projectId: config.projectId,
+        requestTimeoutMs: Math.max(1, Math.floor(config.leaseDurationMs / 2)),
         topicId: config.topicId,
       }).pipe(Layer.provide(NodeHttpClient.layerUndici));
       return makeOutboxRelayLayer({

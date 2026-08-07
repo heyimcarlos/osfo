@@ -1,6 +1,6 @@
 import { PubSub, type Message, type Subscription } from "@google-cloud/pubsub";
 import { AgentRunWorker, decodeRunnableDeliveryData } from "@osfo/agent-run";
-import { Context, Data, Effect, FiberMap, Layer, Schema, Semaphore } from "effect";
+import { Context, Data, Deferred, Effect, FiberMap, Layer, Schema, Semaphore } from "effect";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 
@@ -19,7 +19,7 @@ export class InvalidGoogleStreamingPullConfig extends Data.TaggedError(
 
 export class StreamingPullSourceUnavailable extends Data.TaggedError(
   "StreamingPullSourceUnavailable",
-)<{ readonly cause: unknown; readonly operation: "create" | "start" | "stop" }> {}
+)<{ readonly cause: unknown; readonly operation: "create" | "receive" | "start" | "stop" }> {}
 
 export class StreamingPullSettlementFailed extends Data.TaggedError(
   "StreamingPullSettlementFailed",
@@ -45,6 +45,7 @@ export class StreamingPullSource extends Context.Service<
       handlers: StreamingPullHandlers,
     ) => Effect.Effect<void, StreamingPullSourceUnavailable>;
     readonly stop: () => Effect.Effect<void, StreamingPullSourceUnavailable>;
+    readonly close: () => Effect.Effect<void, StreamingPullSourceUnavailable>;
   }
 >()("@osfo/agent-run-worker/StreamingPullSource") {}
 
@@ -76,37 +77,54 @@ const makeGoogleSource = (config: GoogleStreamingPullConfig) =>
     let activeHandlers:
       | {
           readonly error: (cause: unknown) => void;
+          readonly close: () => void;
           readonly message: (message: Message) => void;
         }
       | undefined;
-    let stopped = false;
+    let intakeStopped = false;
+    let closed = false;
 
     const start = (handlers: StreamingPullHandlers) =>
       Effect.try({
         try: () => {
           const message = (value: Message) => handlers.onMessage(adaptMessage(value));
           const error = (cause: unknown) => handlers.onError(cause);
+          const close = () => handlers.onError("StreamingPull subscription closed");
           subscription.on("message", message);
           subscription.on("error", error);
-          activeHandlers = { error, message };
+          subscription.on("close", close);
+          activeHandlers = { close, error, message };
         },
         catch: (cause) => new StreamingPullSourceUnavailable({ cause, operation: "start" }),
       });
 
     const stop = () =>
       Effect.suspend(() => {
-        if (stopped) return Effect.void;
-        stopped = true;
-        return Effect.gen(function* () {
+        if (intakeStopped) return Effect.void;
+        intakeStopped = true;
+        return Effect.sync(() => {
           if (activeHandlers !== undefined) {
             subscription.removeListener("message", activeHandlers.message);
             subscription.removeListener("error", activeHandlers.error);
+            subscription.removeListener("close", activeHandlers.close);
           }
-          yield* closeGoogleClient(subscription, client);
         });
       });
 
-    return StreamingPullSource.of({ start, stop });
+    const close = () =>
+      Effect.suspend(() => {
+        if (closed) return Effect.void;
+        return stop().pipe(
+          Effect.andThen(closeGoogleClient(subscription, client)),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              closed = true;
+            }),
+          ),
+        );
+      });
+
+    return StreamingPullSource.of({ close, start, stop });
   });
 
 const closeGoogleClient = (subscription: Subscription, client: PubSub) =>
@@ -121,7 +139,7 @@ const closeGoogleClient = (subscription: Subscription, client: PubSub) =>
 const googleSourceLayer = (config: GoogleStreamingPullConfig) =>
   Layer.effect(
     StreamingPullSource,
-    Effect.acquireRelease(makeGoogleSource(config), (source) => source.stop().pipe(Effect.ignore)),
+    Effect.acquireRelease(makeGoogleSource(config), (source) => source.close().pipe(Effect.ignore)),
   );
 
 export const makeGoogleStreamingPullSourceLayer = (config: GoogleStreamingPullConfig) =>
@@ -189,6 +207,7 @@ export const runStreamingPullWorker = (
       const execution = yield* Semaphore.make(config.executionSlots);
       const fibers = yield* FiberMap.make<string, void, never>();
       const run = yield* FiberMap.runtime(fibers)<AgentRunWorker>();
+      const sourceFailure = yield* Deferred.make<void, StreamingPullSourceUnavailable>();
       const lanes = new Map<string, OrderingLane>();
       let accepting = true;
       let sequence = 0;
@@ -220,8 +239,10 @@ export const runStreamingPullWorker = (
 
       const handlers: StreamingPullHandlers = {
         onError: (cause) => {
-          sequence += 1;
-          run(`source-error:${sequence}`, Effect.logError("StreamingPull source error", cause));
+          Deferred.doneUnsafe(
+            sourceFailure,
+            Effect.fail(new StreamingPullSourceUnavailable({ cause, operation: "receive" })),
+          );
         },
         onMessage: schedule,
       };
@@ -231,7 +252,7 @@ export const runStreamingPullWorker = (
         () =>
           Effect.logInfo(
             `OSFO_AGENT_RUN_WORKER_READY:streaming-pull:${config.executionSlots}`,
-          ).pipe(Effect.andThen(Effect.never)),
+          ).pipe(Effect.andThen(Deferred.await(sourceFailure))),
         () =>
           Effect.gen(function* () {
             accepting = false;
@@ -241,6 +262,13 @@ export const runStreamingPullWorker = (
                 Effect.catch((cause) => Effect.logError("StreamingPull source stop failed", cause)),
               );
             yield* FiberMap.awaitEmpty(fibers);
+            yield* source
+              .close()
+              .pipe(
+                Effect.catch((cause) =>
+                  Effect.logError("StreamingPull source close failed", cause),
+                ),
+              );
           }),
       );
     }),

@@ -10,6 +10,7 @@ const NonEmptyText = Schema.String.check(Schema.isNonEmpty());
 
 export const GooglePubSubPublisherConfigSchema = Schema.Struct({
   projectId: NonEmptyText,
+  requestTimeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
   topicId: NonEmptyText,
 });
 
@@ -37,42 +38,90 @@ const publisherLayer = (config: GooglePubSubPublisherConfig) =>
     RunnableDeliveryPublisher,
     Effect.gen(function* () {
       const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
-      const fetchAccessToken = HttpClientRequest.get(metadataTokenUrl).pipe(
-        HttpClientRequest.setHeader("metadata-flavor", "Google"),
-        client.execute,
-        Effect.flatMap(HttpClientResponse.schemaBodyJson(AccessTokenResponseSchema)),
-        Effect.mapError((cause) => new RunnableDeliveryPublisherUnavailable({ cause })),
+      const withRequestTimeout = <A, E>(
+        operation: "publication" | "publish" | "token",
+        effect: Effect.Effect<A, E>,
+      ) =>
+        effect.pipe(
+          Effect.timeoutOrElse({
+            duration: config.requestTimeoutMs,
+            orElse: () =>
+              Effect.fail(
+                new RunnableDeliveryPublisherUnavailable({
+                  cause: `${operation} request exceeded ${config.requestTimeoutMs} ms`,
+                }),
+              ),
+          }),
+          Effect.mapError((cause) =>
+            cause instanceof RunnableDeliveryPublisherUnavailable
+              ? cause
+              : new RunnableDeliveryPublisherUnavailable({ cause }),
+          ),
+        );
+      const fetchAccessToken = withRequestTimeout(
+        "token",
+        HttpClientRequest.get(metadataTokenUrl).pipe(
+          HttpClientRequest.setHeader("metadata-flavor", "Google"),
+          client.execute,
+          Effect.flatMap(HttpClientResponse.schemaBodyJson(AccessTokenResponseSchema)),
+        ),
       );
-      const accessToken = yield* Effect.cachedWithTTL(fetchAccessToken, "5 minutes");
+      let cachedToken:
+        | { readonly refreshAfterMs: number; readonly value: typeof AccessTokenResponseSchema.Type }
+        | undefined;
+      const accessToken = Effect.suspend(() => {
+        if (cachedToken !== undefined && Date.now() < cachedToken.refreshAfterMs) {
+          return Effect.succeed(cachedToken.value);
+        }
+        return fetchAccessToken.pipe(
+          Effect.tap((value) =>
+            Effect.sync(() => {
+              const lifetimeMs = value.expires_in * 1_000;
+              cachedToken = {
+                refreshAfterMs:
+                  Date.now() + Math.max(1, lifetimeMs - Math.min(60_000, lifetimeMs / 2)),
+                value,
+              };
+            }),
+          ),
+        );
+      });
       const publishUrl = `https://pubsub.googleapis.com/v1/projects/${encodeURIComponent(config.projectId)}/topics/${encodeURIComponent(config.topicId)}:publish`;
 
-      const publish = Effect.fn("GooglePubSubPublisher.publish")(function* (delivery) {
-        const token = yield* accessToken;
-        const request = yield* HttpClientRequest.post(publishUrl).pipe(
-          HttpClientRequest.bearerToken(token.access_token),
-          HttpClientRequest.bodyJson({
-            messages: [
-              {
-                data: encodeRunnableDeliveryData(delivery),
-                attributes: { executionProfileRef: delivery.executionProfileRef },
-                orderingKey: delivery.threadId,
-              },
-            ],
-          }),
-          Effect.mapError((cause) => new RunnableDeliveryPublisherUnavailable({ cause })),
-        );
-        const response = yield* client.execute(request).pipe(
-          Effect.flatMap(HttpClientResponse.schemaBodyJson(PublishResponseSchema)),
-          Effect.mapError((cause) => new RunnableDeliveryPublisherUnavailable({ cause })),
-        );
-        const providerMessageId = response.messageIds[0];
-        if (providerMessageId === undefined) {
-          return yield* new RunnableDeliveryPublisherUnavailable({
-            cause: "Pub/Sub confirmation omitted the provider message identity",
-          });
-        }
-        return { providerMessageId };
-      });
+      const publishRequest = Effect.fn("GooglePubSubPublisher.publishRequest")(
+        function* (delivery) {
+          const token = yield* accessToken;
+          const request = yield* HttpClientRequest.post(publishUrl).pipe(
+            HttpClientRequest.bearerToken(token.access_token),
+            HttpClientRequest.bodyJson({
+              messages: [
+                {
+                  data: encodeRunnableDeliveryData(delivery),
+                  attributes: { executionProfileRef: delivery.executionProfileRef },
+                  orderingKey: delivery.threadId,
+                },
+              ],
+            }),
+            Effect.mapError((cause) => new RunnableDeliveryPublisherUnavailable({ cause })),
+          );
+          const response = yield* withRequestTimeout(
+            "publish",
+            client
+              .execute(request)
+              .pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(PublishResponseSchema))),
+          );
+          const providerMessageId = response.messageIds[0];
+          if (providerMessageId === undefined) {
+            return yield* new RunnableDeliveryPublisherUnavailable({
+              cause: "Pub/Sub confirmation omitted the provider message identity",
+            });
+          }
+          return { providerMessageId };
+        },
+      );
+      const publish = Effect.fn("GooglePubSubPublisher.publish")((delivery) =>
+        withRequestTimeout("publication", publishRequest(delivery)),
+      );
 
       return RunnableDeliveryPublisher.of({ publish });
     }),

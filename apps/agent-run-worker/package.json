@@ -7,7 +7,8 @@
     "build": "tsc --project tsconfig.build.json",
     "dev": "node --import tsx src/main.ts",
     "start": "node dist/main.js",
-    "test": "vitest run --exclude '**/.typescript/**' --exclude '**/dist/**'",
+    "test": "vitest run --exclude '**/*.postgres.test.ts' --exclude '**/.typescript/**' --exclude '**/dist/**'",
+    "test:postgres": "vitest run test/*.postgres.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
