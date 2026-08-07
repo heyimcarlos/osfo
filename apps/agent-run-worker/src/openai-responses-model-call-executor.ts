@@ -1,4 +1,5 @@
 import {
+  modelCallObservationTextMaxLength,
   ModelCallExecutionError,
   ModelCallExecutor,
   type ModelCallAttempt,
@@ -173,13 +174,24 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
 
         const flush = (): ReadonlyArray<ModelCallObservation> => {
           if (pendingDeltas.length === 0) return [];
-          const observation = {
-            fragmentIndex,
-            text: pendingDeltas.join(""),
-          } satisfies ModelCallObservation;
-          fragmentIndex += 1;
+          const text = pendingDeltas.join("");
           pendingDeltas = [];
-          return [observation];
+          const observations: Array<ModelCallObservation> = [];
+          let chunk = "";
+          let chunkLength = 0;
+          const emitChunk = () => {
+            observations.push({ fragmentIndex, text: chunk });
+            fragmentIndex += 1;
+            chunk = "";
+            chunkLength = 0;
+          };
+          for (const character of text) {
+            if (chunkLength + character.length > modelCallObservationTextMaxLength) emitChunk();
+            chunk += character;
+            chunkLength += character.length;
+          }
+          if (chunkLength > 0) emitChunk();
+          return observations;
         };
 
         const handleEvent = (event: ResponsesEvent) =>

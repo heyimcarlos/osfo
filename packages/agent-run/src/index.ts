@@ -23,6 +23,8 @@ const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const PositiveEpoch = Schema.String.check(Schema.isPattern(/^[1-9]\d*$/u));
 const NonEmptyText = Schema.String.check(Schema.isNonEmpty());
 
+export const modelCallObservationTextMaxLength = 16_384;
+
 export const RunnableAgentRunDeliverySchema = Schema.Struct({
   version: Schema.Literal(1),
   deliveryId: Identity,
@@ -83,7 +85,7 @@ export type ModelCallAttemptStart =
 
 export const ModelCallObservationSchema = Schema.Struct({
   fragmentIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  text: NonEmptyText,
+  text: NonEmptyText.check(Schema.isMaxLength(modelCallObservationTextMaxLength)),
 });
 
 export type ModelCallObservation = typeof ModelCallObservationSchema.Type;

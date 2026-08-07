@@ -1,4 +1,8 @@
-import { ModelCallExecutor, type ModelCallAttempt } from "@osfo/agent-run";
+import {
+  modelCallObservationTextMaxLength,
+  ModelCallExecutor,
+  type ModelCallAttempt,
+} from "@osfo/agent-run";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Exit, Stream } from "effect";
 import {
@@ -27,6 +31,74 @@ const layer = makeOpenAIResponsesModelCallExecutorLayer({
   apiKey: "test-api-key",
   profile: liveOpenAIExecutionProfile,
 });
+
+const successfulTextSse = (text: string, suffix: string) => {
+  const responseId = `resp_${suffix}`;
+  const messageId = `msg_${suffix}`;
+  const events = [
+    { type: "response.created", response: { id: responseId } },
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { id: messageId, type: "message", content: [] },
+    },
+    {
+      type: "response.content_part.added",
+      item_id: messageId,
+      output_index: 0,
+      content_index: 0,
+      part: { type: "output_text", text: "" },
+    },
+    {
+      type: "response.output_text.delta",
+      item_id: messageId,
+      output_index: 0,
+      content_index: 0,
+      delta: text,
+    },
+    {
+      type: "response.output_text.done",
+      item_id: messageId,
+      output_index: 0,
+      content_index: 0,
+      text,
+    },
+    {
+      type: "response.content_part.done",
+      item_id: messageId,
+      output_index: 0,
+      content_index: 0,
+      part: { type: "output_text", text },
+    },
+    {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        id: messageId,
+        type: "message",
+        content: [{ type: "output_text", text }],
+      },
+    },
+    {
+      type: "response.completed",
+      response: {
+        id: responseId,
+        status: "completed",
+        model: "gpt-4.1-mini-2025-04-14",
+        store: false,
+        output: [
+          {
+            id: messageId,
+            type: "message",
+            content: [{ type: "output_text", text }],
+          },
+        ],
+        usage: { input_tokens: 4, output_tokens: 2 },
+      },
+    },
+  ];
+  return events.map((event) => `data: ${JSON.stringify(event)}\n`).join("\n");
+};
 
 describe("OpenAI Responses ModelCall executor", () => {
   it.effect("sends the pinned non-stored streaming request and normalizes text and usage", () =>
@@ -90,6 +162,79 @@ describe("OpenAI Responses ModelCall executor", () => {
         store: false,
         stream: true,
       });
+    }),
+  );
+
+  it.effect("keeps one observation at the durable text boundary", () =>
+    Effect.gen(function* () {
+      const text = "a".repeat(modelCallObservationTextMaxLength);
+      const http = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(successfulTextSse(text, "boundary"), {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          ),
+        ),
+      );
+      const observations = yield* ModelCallExecutor.use((executor) =>
+        Stream.runCollect(execute(executor)),
+      ).pipe(Effect.provide(layer), Effect.provideService(HttpClient.HttpClient, http));
+
+      expect(Array.from(observations)).toEqual([{ fragmentIndex: 0, text }]);
+    }),
+  );
+
+  it.effect("splits one oversized provider delta at the durable text boundary", () =>
+    Effect.gen(function* () {
+      const text = "b".repeat(modelCallObservationTextMaxLength + 1);
+      const http = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(successfulTextSse(text, "oversized"), {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          ),
+        ),
+      );
+      const observations = yield* ModelCallExecutor.use((executor) =>
+        Stream.runCollect(execute(executor)),
+      ).pipe(Effect.provide(layer), Effect.provideService(HttpClient.HttpClient, http));
+
+      expect(Array.from(observations)).toEqual([
+        { fragmentIndex: 0, text: text.slice(0, modelCallObservationTextMaxLength) },
+        { fragmentIndex: 1, text: text.slice(modelCallObservationTextMaxLength) },
+      ]);
+    }),
+  );
+
+  it.effect("does not split an astral character at the durable text boundary", () =>
+    Effect.gen(function* () {
+      const prefix = "c".repeat(modelCallObservationTextMaxLength - 1);
+      const text = `${prefix}😀`;
+      const http = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(successfulTextSse(text, "astral"), {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          ),
+        ),
+      );
+      const observations = yield* ModelCallExecutor.use((executor) =>
+        Stream.runCollect(execute(executor)),
+      ).pipe(Effect.provide(layer), Effect.provideService(HttpClient.HttpClient, http));
+
+      expect(Array.from(observations)).toEqual([
+        { fragmentIndex: 0, text: prefix },
+        { fragmentIndex: 1, text: "😀" },
+      ]);
     }),
   );
 

@@ -1,3 +1,4 @@
+import { modelCallObservationTextMaxLength } from "@osfo/agent-run";
 import { sql } from "drizzle-orm";
 import type { ThreadEvent } from "@osfo/session";
 import {
@@ -18,6 +19,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 const transactionTimestamp = sql`transaction_timestamp()`;
+const modelCallObservationTextMaxLengthSql = sql.raw(String(modelCallObservationTextMaxLength));
 
 type PublicationEvidence =
   | { readonly type: "pubsub"; readonly providerMessageId: string }
@@ -775,7 +777,10 @@ export const modelCallFragments = pgTable(
       ],
     }),
     check("model_call_fragments_index_check", sql`${table.fragmentIndex} >= 0`),
-    check("model_call_fragments_text_check", sql`length(${table.text}) BETWEEN 1 AND 16384`),
+    check(
+      "model_call_fragments_text_check",
+      sql`length(${table.text}) BETWEEN 1 AND ${modelCallObservationTextMaxLengthSql}`,
+    ),
   ],
 );
 
