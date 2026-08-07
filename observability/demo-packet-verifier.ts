@@ -10,6 +10,7 @@ const ArtifactKindSchema = Schema.Literals([
   "sealed-run",
   "dashboard-view",
   "recording",
+  "post-run-render",
   "document",
   "source-manifest",
 ]);

@@ -42,7 +42,7 @@ describe("OpenPoke demo packet verifier CLI", () => {
       },
       {
         id: "sealed-run",
-        kind: "sealed-run",
+        kind: "post-run-render",
         artifactStatus: "PASS",
         evidenceStatus: "PASS",
         path: "artifact.txt",

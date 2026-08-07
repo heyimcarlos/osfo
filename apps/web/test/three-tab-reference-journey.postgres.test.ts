@@ -22,6 +22,7 @@ import { Data, Effect, Layer } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { startGoogleChrome, startProductionReferenceClient } from "./reference-browser.js";
 import { makeReferencePubSubBoundary } from "./reference-pubsub.js";
+import { startThreeTabEvidenceCapture } from "./three-tab-evidence.js";
 
 const databaseUrl = process.env.OSFO_TEST_DATABASE_URL;
 if (databaseUrl === undefined) {
@@ -108,6 +109,11 @@ describe("three-tab Oz Reference Journey", () => {
         yield* tabA.waitForProjection(threadId, "0");
         const initialB = yield* tabB.waitForProjection(threadId, "0");
         yield* tabC.waitForProjection(threadId, "0");
+        const evidenceCapture = yield* startThreeTabEvidenceCapture({
+          directory: process.env.OSFO_THREE_TAB_EVIDENCE_DIR,
+          tabs: [tabA, tabB, tabC],
+        });
+        yield* evidenceCapture.mark("initial-synchronized", {});
 
         const pubsub = yield* makeReferencePubSubBoundary;
         const repositoryLayer = makeAgentRunRepositoryLayer({ databaseUrl });
@@ -153,11 +159,19 @@ describe("three-tab Oz Reference Journey", () => {
 
         const tabBRequestCount = yield* tabB.eventRequestCount();
         yield* tabB.disconnect();
+        yield* evidenceCapture.mark("tab-b-disconnected", {
+          tab: "B",
+          fromPosition: initialB.throughPosition,
+        });
         const firstReceipt = yield* tabA.submitMessage(contents[0]);
         receipts.push(firstReceipt);
         expect(firstReceipt.threadPosition).toBe("1");
         expect(yield* pubsub.waitForSettlement(0)).toBe("acknowledged");
         const throughFive = yield* waitForAuthorityPosition(ingress.origin, "5");
+        yield* evidenceCapture.mark("first-message-completed", {
+          tab: "A",
+          toPosition: throughFive.throughPosition,
+        });
         yield* tabB.resume();
         const tabBResponse = yield* tabB.waitForEventResponseAfter(tabBRequestCount);
         expect(tabBResponse.status).toBe(200);
@@ -166,15 +180,28 @@ describe("three-tab Oz Reference Journey", () => {
         expect(replayedB.throughPosition).not.toBe(initialB.throughPosition);
         yield* tabB.waitForText("Echo: First from Oz");
         yield* tabB.waitForText("Synchronized through 5");
+        yield* evidenceCapture.mark("tab-b-resumed-from-own-cursor", {
+          tab: "B",
+          fromPosition: initialB.throughPosition,
+          toPosition: replayedB.throughPosition,
+        });
 
         const beforeC = yield* tabC.waitForProjection(threadId, "5");
         const tabCRequestCount = yield* tabC.eventRequestCount();
         yield* tabC.disconnect();
+        yield* evidenceCapture.mark("tab-c-disconnected", {
+          tab: "C",
+          fromPosition: beforeC.throughPosition,
+        });
         const secondReceipt = yield* tabB.submitMessage(contents[1]);
         receipts.push(secondReceipt);
         expect(secondReceipt.threadPosition).toBe("6");
         expect(yield* pubsub.waitForSettlement(1)).toBe("acknowledged");
         const throughTen = yield* waitForAuthorityPosition(ingress.origin, "10");
+        yield* evidenceCapture.mark("second-message-completed", {
+          tab: "B",
+          toPosition: throughTen.throughPosition,
+        });
         yield* tabC.resume();
         const tabCResponse = yield* tabC.waitForEventResponseAfter(tabCRequestCount);
         expect(tabCResponse.status).toBe(200);
@@ -183,15 +210,28 @@ describe("three-tab Oz Reference Journey", () => {
         expect(replayedC.throughPosition).not.toBe(beforeC.throughPosition);
         yield* tabC.waitForText("Echo: Second from Oz");
         yield* tabC.waitForText("Synchronized through 10");
+        yield* evidenceCapture.mark("tab-c-resumed-from-own-cursor", {
+          tab: "C",
+          fromPosition: beforeC.throughPosition,
+          toPosition: replayedC.throughPosition,
+        });
 
         const beforeA = yield* tabA.waitForProjection(threadId, "10");
         const tabARequestCount = yield* tabA.eventRequestCount();
         yield* tabA.disconnect();
+        yield* evidenceCapture.mark("tab-a-disconnected", {
+          tab: "A",
+          fromPosition: beforeA.throughPosition,
+        });
         const thirdReceipt = yield* tabC.submitMessage(contents[2]);
         receipts.push(thirdReceipt);
         expect(thirdReceipt.threadPosition).toBe("11");
         expect(yield* pubsub.waitForSettlement(2)).toBe("acknowledged");
         const throughFifteen = yield* waitForAuthorityPosition(ingress.origin, "15");
+        yield* evidenceCapture.mark("third-message-completed", {
+          tab: "C",
+          toPosition: throughFifteen.throughPosition,
+        });
         yield* tabA.resume();
         const tabAResponse = yield* tabA.waitForEventResponseAfter(tabARequestCount);
         expect(tabAResponse.status).toBe(200);
@@ -200,6 +240,11 @@ describe("three-tab Oz Reference Journey", () => {
         expect(replayedA.throughPosition).not.toBe(beforeA.throughPosition);
         yield* tabA.waitForText("Echo: Third from Oz");
         yield* tabA.waitForText("Synchronized through 15");
+        yield* evidenceCapture.mark("tab-a-resumed-from-own-cursor", {
+          tab: "A",
+          fromPosition: beforeA.throughPosition,
+          toPosition: replayedA.throughPosition,
+        });
 
         const finalProjections = yield* Effect.all([
           Effect.succeed(replayedA),
@@ -403,6 +448,8 @@ describe("three-tab Oz Reference Journey", () => {
         expect(throughFive.throughPosition).toBe("5");
         expect(throughTen.throughPosition).toBe("10");
         expect(throughFifteen.activeState).toEqual([]);
+        yield* evidenceCapture.mark("all-projections-reconciled", { toPosition: "15" });
+        yield* evidenceCapture.stop;
       }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer)),
     90_000,
   );
