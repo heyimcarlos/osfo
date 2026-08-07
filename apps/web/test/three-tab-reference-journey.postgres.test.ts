@@ -264,7 +264,18 @@ describe("three-tab Oz Reference Journey", () => {
           tabB.eventRequestCount(),
           tabC.eventRequestCount(),
         ]);
-        yield* ingress.terminate;
+        const plannedDrain = yield* ingress.terminate;
+        expect(plannedDrain).toMatchObject({
+          exitCode: 130,
+          fallbackInvoked: false,
+          sentSignal: "SIGTERM",
+          drain: {
+            accepting: false,
+            activeConnections: 0,
+            httpServerListening: true,
+          },
+          shutdownSequence: ["drained", "http_closed"],
+        });
         const alternateIngress = yield* startCompiledIngress({
           databaseUrl,
           executionProfileRef,

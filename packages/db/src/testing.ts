@@ -28,6 +28,8 @@ import {
   userMessages,
 } from "./schema.js";
 
+export { makeThreadResumeTestLayer, type ThreadResumeTestHooks } from "./thread-resume.js";
+
 export interface MessageAdmissionFixture {
   readonly principals: ReadonlyArray<{
     readonly principalId: string;

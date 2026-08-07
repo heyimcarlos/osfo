@@ -111,77 +111,120 @@ describe("compiled ingress Thread stream lifecycle", () => {
     }),
   );
 
-  it.live("closes a slow HTTP client and replays every durable event from its cursor", () =>
-    Effect.gen(function* () {
-      yield* prepareMessageAdmissionFixture(databaseUrl, {
-        principals: [{ authenticationToken, principalId, threadIds: [threadId] }],
-      });
-      const slowIngress = yield* startCompiledIngress({
-        databaseUrl,
-        globalNonTerminalLimit: 64,
-        maxStreamBufferedAgeMs: 100,
-        maxStreamBufferedBytes: 65_536,
-        maxStreamBufferedEvents: 4,
-        maxStreamConnections: 1,
-        principalNonTerminalLimit: 64,
-        streamPollIntervalMs: 10,
-      });
-      const origin = yield* getThreadSnapshot({
-        authenticationToken,
-        baseUrl: slowIngress.origin,
-        threadId,
-      });
-      const submissions = Array.from({ length: 32 }, (_, index) => index);
-      yield* Effect.forEach(
-        submissions,
-        (index) =>
-          submitThreadMessage({
-            authenticationToken,
-            baseUrl: slowIngress.origin,
-            idempotencyKey: crypto.randomUUID(),
-            message: { content: `${String(index).padStart(2, "0")}:${"x".repeat(15_990)}` },
-            threadId,
-          }),
-        { concurrency: 8 },
-      );
+  it.live(
+    "closes a slow HTTP client and replays every durable event from its cursor",
+    () =>
+      Effect.gen(function* () {
+        yield* prepareMessageAdmissionFixture(databaseUrl, {
+          principals: [{ authenticationToken, principalId, threadIds: [threadId] }],
+        });
+        const slowIngress = yield* startCompiledIngress({
+          databaseUrl,
+          globalNonTerminalLimit: 64,
+          maxStreamBufferedAgeMs: 100,
+          maxStreamBufferedBytes: 65_536,
+          maxStreamBufferedEvents: 4,
+          maxStreamConnections: 2,
+          principalNonTerminalLimit: 64,
+          streamPollIntervalMs: 10,
+        });
+        const origin = yield* getThreadSnapshot({
+          authenticationToken,
+          baseUrl: slowIngress.origin,
+          threadId,
+        });
+        const healthyCaughtUp = yield* Deferred.make<void>();
+        const healthyStream = yield* streamThreadEvents({
+          after: origin.throughCursor,
+          authenticationToken,
+          baseUrl: slowIngress.origin,
+          threadId,
+        });
+        const healthyFiber = yield* healthyStream.pipe(
+          Stream.tap((event) =>
+            event.event === "caught_up"
+              ? Deferred.succeed(healthyCaughtUp, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+          ),
+          Stream.take(34),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Deferred.await(healthyCaughtUp).pipe(Effect.timeout("2 seconds"));
+        const submissions = Array.from({ length: 32 }, (_, index) => index);
+        yield* Effect.forEach(
+          submissions,
+          (index) =>
+            submitThreadMessage({
+              authenticationToken,
+              baseUrl: slowIngress.origin,
+              idempotencyKey: crypto.randomUUID(),
+              message: { content: `${String(index).padStart(2, "0")}:${"x".repeat(15_990)}` },
+              threadId,
+            }),
+          { concurrency: 8 },
+        );
 
-      const http = yield* HttpClient.HttpClient;
-      const response = yield* http.execute(
-        HttpClientRequest.get(
-          `${slowIngress.origin}/v1/threads/${threadId}/events?after=${encodeURIComponent(origin.throughCursor)}`,
-        ).pipe(
-          HttpClientRequest.bearerToken(authenticationToken),
-          HttpClientRequest.setHeader("accept", "text/event-stream"),
-        ),
-      );
-      expect(response.status).toBe(200);
-      yield* Effect.sleep(500);
-      yield* response.stream.pipe(Stream.runDrain, Effect.timeout("2 seconds"));
-      yield* slowIngress.terminate;
+        const http = yield* HttpClient.HttpClient;
+        const response = yield* http.execute(
+          HttpClientRequest.get(
+            `${slowIngress.origin}/v1/threads/${threadId}/events?after=${encodeURIComponent(origin.throughCursor)}`,
+          ).pipe(
+            HttpClientRequest.bearerToken(authenticationToken),
+            HttpClientRequest.setHeader("accept", "text/event-stream"),
+          ),
+        );
+        expect(response.status).toBe(200);
+        const slowClose = yield* slowIngress.waitForSlowConsumerClose.pipe(
+          Effect.timeout("2 seconds"),
+        );
+        expect(slowClose).toMatchObject({
+          reason: "slow_consumer",
+          status: { activeConnections: 1, slowConsumerCloses: 1 },
+        });
+        yield* response.stream.pipe(Stream.runDrain, Effect.timeout("2 seconds"));
+        const healthyAfterClose = yield* submitThreadMessage({
+          authenticationToken,
+          baseUrl: slowIngress.origin,
+          idempotencyKey: crypto.randomUUID(),
+          message: { content: "healthy after slow close" },
+          threadId,
+        });
+        expect(healthyAfterClose.threadPosition).toBe("33");
+        const healthyDelivered = Array.from(
+          yield* Fiber.join(healthyFiber).pipe(Effect.timeout("2 seconds")),
+        );
+        expect(
+          healthyDelivered.flatMap((event) =>
+            event.event === "thread_event" ? [event.data.threadPosition] : [],
+          ),
+        ).toEqual(Array.from({ length: 33 }, (_, index) => String(index + 1)));
+        yield* slowIngress.terminate;
 
-      const replacement = yield* startCompiledIngress({
-        databaseUrl,
-        maxStreamBufferedBytes: 1_048_576,
-        maxStreamBufferedEvents: 64,
-        streamPollIntervalMs: 10,
-      });
-      const replay = yield* streamThreadEvents({
-        after: origin.throughCursor,
-        authenticationToken,
-        baseUrl: replacement.origin,
-        threadId,
-      });
-      const delivered = Array.from(yield* replay.pipe(Stream.take(33), Stream.runCollect));
+        const replacement = yield* startCompiledIngress({
+          databaseUrl,
+          maxStreamBufferedBytes: 1_048_576,
+          maxStreamBufferedEvents: 64,
+          streamPollIntervalMs: 10,
+        });
+        const replay = yield* streamThreadEvents({
+          after: origin.throughCursor,
+          authenticationToken,
+          baseUrl: replacement.origin,
+          threadId,
+        });
+        const delivered = Array.from(yield* replay.pipe(Stream.take(34), Stream.runCollect));
 
-      expect(
-        delivered.flatMap((event) =>
-          event.event === "thread_event" ? [event.data.threadPosition] : [],
-        ),
-      ).toEqual(submissions.map((index) => String(index + 1)));
-      expect(delivered.at(-1)).toMatchObject({
-        event: "caught_up",
-        data: { throughPosition: "32" },
-      });
-    }).pipe(Effect.provide(FetchHttpClient.layer)),
+        expect(
+          delivered.flatMap((event) =>
+            event.event === "thread_event" ? [event.data.threadPosition] : [],
+          ),
+        ).toEqual(Array.from({ length: 33 }, (_, index) => String(index + 1)));
+        expect(delivered.at(-1)).toMatchObject({
+          event: "caught_up",
+          data: { throughPosition: "33" },
+        });
+      }).pipe(Effect.provide(FetchHttpClient.layer)),
+    15_000,
   );
 });

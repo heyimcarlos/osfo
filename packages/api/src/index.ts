@@ -5,6 +5,7 @@ export {
   ThreadStreamLifecycleConfigSchema,
   makeThreadStreamLifecycleLayer,
   type ThreadStreamLifecycleConfig,
+  type ThreadStreamLifecycleService,
   type ThreadStreamLifecycleStatus,
 } from "./thread-stream-lifecycle.js";
 export {

@@ -9,9 +9,9 @@ import {
   ThreadResume,
   type SubmitMessageCommand,
 } from "@osfo/api";
-import { Effect, Layer, ManagedRuntime, Redacted, Stream } from "effect";
+import { Effect, Fiber, Latch, Layer, ManagedRuntime, Redacted, Ref, Stream } from "effect";
 import { makeMessageAdmissionLayer, makeThreadResumeLayer } from "../src/index";
-import { prepareMessageAdmissionFixture } from "../src/testing";
+import { makeThreadResumeTestLayer, prepareMessageAdmissionFixture } from "../src/testing";
 
 const databaseUrl = process.env.OSFO_TEST_DATABASE_URL;
 if (databaseUrl === undefined) {
@@ -252,32 +252,70 @@ describe("PostgreSQL Thread resume", () => {
     expect(second).toMatchObject({ throughPosition: "2", hasMore: false });
   });
 
-  it("reconciles notification loss across the replay-to-live cut without gaps", async () => {
+  it("reconciles a dropped PostgreSQL notification across the replay-to-live cut", async () => {
     const origin = (await run(ThreadResume.use((resume) => resume.snapshot(access)))).throughCursor;
     await accept("Replay one");
     await accept("Replay two");
-    const replayStream = await run(
-      ThreadResume.use((resume) => resume.stream({ ...access, after: origin })),
+    const delivered = await Effect.runPromise(
+      Effect.gen(function* () {
+        const dropFirstHint = yield* Ref.make(true);
+        const notificationDropped = yield* Latch.make();
+        const notificationSubscribed = yield* Latch.make();
+        return yield* Effect.gen(function* () {
+          const resume = yield* ThreadResume;
+          const lostHintRecovered = yield* Latch.make();
+          const replayStream = yield* resume.stream({ ...access, after: origin });
+          const collector = yield* replayStream.pipe(
+            Stream.tap((event) => {
+              if (event.event === "caught_up") {
+                return Effect.promise(() => accept("Committed while its hint is dropped")).pipe(
+                  Effect.asVoid,
+                );
+              }
+              return event.data.threadPosition === "3" ? lostHintRecovered.open : Effect.void;
+            }),
+            Stream.take(5),
+            Stream.runCollect,
+            Effect.forkChild,
+          );
+
+          yield* notificationDropped.await;
+          yield* lostHintRecovered.await;
+          yield* notificationSubscribed.await;
+          yield* Effect.promise(() => accept("Delivered by notification hint"));
+          return yield* Fiber.join(collector).pipe(Effect.timeout("2 seconds"));
+        }).pipe(
+          Effect.provide(
+            makeThreadResumeTestLayer(
+              { ...resumeConfig, pollIntervalMs: 60_000 },
+              {
+                dropNotificationHint: (notifiedThreadId) =>
+                  notifiedThreadId === threadId
+                    ? Ref.getAndSet(dropFirstHint, false).pipe(
+                        Effect.tap((drop) => (drop ? notificationDropped.open : Effect.void)),
+                      )
+                    : Effect.succeed(false),
+                onNotificationSubscription: (subscribedThreadId) =>
+                  subscribedThreadId === threadId ? notificationSubscribed.open : Effect.void,
+              },
+            ),
+          ),
+        );
+      }),
     );
 
-    await accept("Live three");
-    await accept("Live four");
-    await accept("Live five");
-    const delivered = Array.from(await run(replayStream.pipe(Stream.take(6), Stream.runCollect)));
-
-    expect(delivered.map((message) => message.event)).toEqual([
+    expect(Array.from(delivered).map((message) => message.event)).toEqual([
       "thread_event",
       "thread_event",
       "caught_up",
       "thread_event",
       "thread_event",
-      "thread_event",
     ]);
     expect(
-      delivered.flatMap((message) =>
+      Array.from(delivered).flatMap((message) =>
         message.event === "thread_event" ? [message.data.threadPosition] : [],
       ),
-    ).toEqual(["1", "2", "3", "4", "5"]);
+    ).toEqual(["1", "2", "3", "4"]);
     expect(delivered[2]).toMatchObject({
       event: "caught_up",
       data: { throughPosition: "2" },

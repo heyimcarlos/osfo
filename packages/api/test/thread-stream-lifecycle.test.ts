@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Fiber, Latch, Stream } from "effect";
+import { Effect, Fiber, Latch, Ref, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import {
   ConnectionLimitExceeded,
@@ -7,6 +7,7 @@ import {
   ThreadStreamLifecycle,
   makeThreadStreamLifecycleLayer,
 } from "../src/index.js";
+import { makeThreadStreamLifecycleTestLayer } from "../src/testing.js";
 import type { ThreadStreamEvent } from "../src/index.js";
 
 const checkpoint = (position: string): ThreadStreamEvent => ({
@@ -23,6 +24,63 @@ const config = {
 };
 
 describe("Thread stream lifecycle", () => {
+  it.effect("releases a reserved slot when stream protection fails", () =>
+    Effect.gen(function* () {
+      const failFirstProtection = yield* Ref.make(true);
+      yield* Effect.gen(function* () {
+        const lifecycle = yield* ThreadStreamLifecycle;
+
+        const failure = yield* lifecycle.open(Stream.never).pipe(Effect.flip);
+        expect(failure).toEqual(new ThreadResumeUnavailable());
+        expect((yield* lifecycle.status).activeConnections).toBe(0);
+
+        const replacement = yield* lifecycle.open(Stream.make(checkpoint("1")));
+        expect(Array.from(yield* Stream.runCollect(replacement))).toEqual([checkpoint("1")]);
+        expect((yield* lifecycle.status).activeConnections).toBe(0);
+      }).pipe(
+        Effect.provide(
+          makeThreadStreamLifecycleTestLayer(config, {
+            beforeProtect: Ref.getAndSet(failFirstProtection, false).pipe(
+              Effect.flatMap((fail) =>
+                fail ? Effect.fail(new ThreadResumeUnavailable()) : Effect.void,
+              ),
+            ),
+          }),
+        ),
+      );
+    }),
+  );
+
+  it.effect("releases a reserved slot when the authorized stream handshake is interrupted", () =>
+    Effect.gen(function* () {
+      const blockFirstProtection = yield* Ref.make(true);
+      const protectionStarted = yield* Latch.make();
+      yield* Effect.gen(function* () {
+        const lifecycle = yield* ThreadStreamLifecycle;
+        const opening = yield* lifecycle.open(Stream.never).pipe(Effect.forkChild);
+
+        yield* protectionStarted.await;
+        expect((yield* lifecycle.status).activeConnections).toBe(1);
+        yield* Fiber.interrupt(opening);
+        expect((yield* lifecycle.status).activeConnections).toBe(0);
+
+        const replacement = yield* lifecycle.open(Stream.make(checkpoint("1")));
+        expect(Array.from(yield* Stream.runCollect(replacement))).toEqual([checkpoint("1")]);
+        expect((yield* lifecycle.status).activeConnections).toBe(0);
+      }).pipe(
+        Effect.provide(
+          makeThreadStreamLifecycleTestLayer(config, {
+            beforeProtect: Ref.getAndSet(blockFirstProtection, false).pipe(
+              Effect.flatMap((block) =>
+                block ? protectionStarted.open.pipe(Effect.andThen(Effect.never)) : Effect.void,
+              ),
+            ),
+          }),
+        ),
+      );
+    }),
+  );
+
   it.effect("rejects excess connections before streaming and releases the slot on close", () =>
     Effect.gen(function* () {
       const lifecycle = yield* ThreadStreamLifecycle;
