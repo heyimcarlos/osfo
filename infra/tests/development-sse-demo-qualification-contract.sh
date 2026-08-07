@@ -14,6 +14,11 @@ rg --fixed-strings --quiet 'OSFO_REFERENCE_THREAD_ID' "$script"
 rg --fixed-strings --quiet 'header = "Authorization: Bearer $authentication_token"' "$script"
 rg --fixed-strings --quiet 'sender disconnected after admission and before its terminal event' "$script"
 rg --fixed-strings --quiet 'canonical replay had a gap, duplicate, or ordering violation' "$script"
+[[ $(rg --fixed-strings --count '{eventId,threadPosition,eventType}' "$script") == 2 ]]
+if rg --fixed-strings --quiet '{eventId,threadPosition,cursor,eventType}' "$script"; then
+  printf 'qualification harness must not require reissued signed cursor bytes to be stable\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet 'accepted commands reached terminal canonical events in ${drain_ms}ms' "$script"
 rg --fixed-strings --quiet 'healthy_concurrent_stream_ceiling' "$script"
 rg --fixed-strings --quiet 'breaking_point' "$script"
@@ -30,6 +35,10 @@ rg --fixed-strings --quiet 'commandTerminalDrainMs:$drain_ms' "$script"
 rg --fixed-strings --quiet 'brokerBacklogDrainMs:"MISSING"' "$script"
 rg --fixed-strings --quiet '(.timeSeries // []) | length > 0' "$script"
 rg --fixed-strings --quiet 'offer_ended_epoch_ms=$(date +%s%3N)' "$script"
+if rg --fixed-strings --quiet 'all($runs[] as $run;' "$script"; then
+  printf 'qualification harness must use a jq-compatible run aggregation form\n' >&2
+  exit 1
+fi
 
 if rg --quiet 'echo .*authentication_token|printf .*authentication_token|set -x' "$script"; then
   printf 'qualification harness must not print the bearer\n' >&2
@@ -38,6 +47,29 @@ fi
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
+printf '%s\n' run-1 run-2 >"$scratch/run-ids"
+jq -e --rawfile ids "$scratch/run-ids" '
+  . as $history
+  | ($ids | split("\n") | map(select(length > 0))) as $runs
+  | [$runs[] as $run
+      | any($history.events[];
+          (.eventType == "AgentRunSucceeded" or .eventType == "AgentRunFailed" or .eventType == "AgentRunCanceled")
+          and .payload.agentRunId == $run)]
+  | all
+' <<'JSON' >/dev/null
+{"events":[
+  {"eventType":"AgentRunSucceeded","payload":{"agentRunId":"run-1"}},
+  {"eventType":"AgentRunFailed","payload":{"agentRunId":"run-2"}}
+]}
+JSON
+jq -e --rawfile ids "$scratch/run-ids" '
+  . as $snapshot
+  | ($ids | split("\n") | map(select(length > 0))) as $runs
+  | [$runs[] as $run | all($snapshot.activeState[]?; .agentRunId != $run)]
+  | all
+' <<'JSON' >/dev/null
+{"activeState":[{"agentRunId":"another-run"}]}
+JSON
 contract_bearer=contract-bearer-must-not-be-sealed
 set +e
 env -u OSFO_RUNTIME_ORIGIN \

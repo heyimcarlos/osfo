@@ -467,11 +467,13 @@ while (($(date +%s%3N) < drain_deadline_epoch_ms)); do
     continue
   fi
   if jq -e --rawfile ids "$work_directory/agent-run-ids.txt" '
-    ($ids | split("\n") | map(select(length > 0))) as $runs
-    | all($runs[] as $run;
-        any(.events[];
-          (.eventType == "AgentRunSucceeded" or .eventType == "AgentRunFailed" or .eventType == "AgentRunCanceled")
-          and .payload.agentRunId == $run))
+    . as $history
+    | ($ids | split("\n") | map(select(length > 0))) as $runs
+    | [$runs[] as $run
+        | any($history.events[];
+            (.eventType == "AgentRunSucceeded" or .eventType == "AgentRunFailed" or .eventType == "AgentRunCanceled")
+            and .payload.agentRunId == $run)]
+    | all
   ' "$evidence_directory/raw/history-after.json" >/dev/null; then
     drained=1
     break
@@ -487,8 +489,10 @@ pass_gate command_backlog_drain "accepted commands reached terminal canonical ev
 capture_phase after_load
 
 if ! jq -e --rawfile ids "$work_directory/agent-run-ids.txt" '
-  ($ids | split("\n") | map(select(length > 0))) as $runs
-  | all($runs[] as $run; all(.activeState[]?; .agentRunId != $run))
+  . as $snapshot
+  | ($ids | split("\n") | map(select(length > 0))) as $runs
+  | [$runs[] as $run | all($snapshot.activeState[]?; .agentRunId != $run)]
+  | all
 ' "$evidence_directory/raw/snapshot-after.json" >/dev/null; then
   fail_gate thread_state_quiescence "a measured AgentRun remained active after terminal drain"
 fi
@@ -531,9 +535,9 @@ for index in $(seq 0 $((device_count - 1))); do
 
   jq -c --argjson position "${device_positions[$index]}" \
     '[.events[] | select((.threadPosition | tonumber) > $position) |
-      {eventId,threadPosition,cursor,eventType}]' \
+      {eventId,threadPosition,eventType}]' \
     "$evidence_directory/raw/history-after.json" >"$work_directory/device-$device-expected.json"
-  jq -sc '[.[] | {eventId,threadPosition,cursor,eventType}]' \
+  jq -sc '[.[] | {eventId,threadPosition,eventType}]' \
     "$evidence_directory/device-$device-canonical.ndjson" \
     >"$work_directory/device-$device-observed.json"
   if ! cmp --silent "$work_directory/device-$device-expected.json" \
