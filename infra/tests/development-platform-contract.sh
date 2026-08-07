@@ -337,16 +337,27 @@ dns_record_binding=$(sed -n \
 dns_change_binding=$(sed -n \
   '/resource "google_dns_managed_zone_iam_member" "development_platform_database_changes"/,/^}/p' \
   infra/roots/foundation/main.tf)
-# These Terraform expressions are intentionally matched as literal strings.
-# shellcheck disable=SC2016
-for exact_dns_boundary in \
+dns_record_condition=$(grep -F 'expression  =' <<<"$dns_record_binding")
+for exact_dns_binding in \
   'managed_zone = module.development_environment_baseline.private_dns_managed_zone_name' \
-  'role         = google_project_iam_custom_role.platform_dns_record_manager.name' \
-  "resource.type == 'dns.googleapis.com/ResourceRecordSet'" \
-  'module.development_environment_baseline.private_dns_managed_zone_id' \
-  "/rrsets/database.temporal.internal./A'"; do
-  grep -Fq "$exact_dns_boundary" <<<"$dns_record_binding"
+  'role         = google_project_iam_custom_role.platform_dns_record_manager.name'; do
+  grep -Fq "$exact_dns_binding" <<<"$dns_record_binding"
 done
+dns_record_condition_matches_reviewed_boundary() {
+  local condition=$1
+  local expected="    expression  = \"resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/\${google_project.environment[\"development\"].number}/managedZones/\${module.development_environment_baseline.private_dns_managed_zone_id}/rrsets/database.temporal.internal./A'\""
+
+  [[ "$condition" == "$expected" ]]
+}
+if ! dns_record_condition_matches_reviewed_boundary "$dns_record_condition"; then
+  printf 'exact-record condition must use the numeric project number and full equality\n' >&2
+  exit 1
+fi
+widened_dns_record_condition="${dns_record_condition%\"} || true\""
+if dns_record_condition_matches_reviewed_boundary "$widened_dns_record_condition"; then
+  printf 'exact-record condition matcher must reject appended widening clauses\n' >&2
+  exit 1
+fi
 for exact_dns_prerequisite in \
   'managed_zone = module.development_environment_baseline.private_dns_managed_zone_name' \
   'role         = google_project_iam_custom_role.platform_dns_change_manager.name'; do

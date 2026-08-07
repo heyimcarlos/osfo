@@ -80,11 +80,12 @@ credentials. Authorized secret-version access therefore remains `MISSING` in
 this preparatory PR. Package installation inside the pinned base image is still
 mutable, so full probe toolchain determinism is also `MISSING`.
 The retained private zone owns two narrow platform bindings. The conditional
-record role applies only to the zone's numeric ID and the exact
-`database.temporal.internal.` A path. A separate unconditional role on that
-same zone supplies only the change, zone-read, and record-list prerequisites
-required by Cloud DNS. Neither role can create, update, or delete a managed
-zone, and the platform cannot change zone IAM. Foundation owns the two durable
+record role uses Cloud DNS's numeric project and managed-zone identifiers to
+match the full `database.temporal.internal.` A resource name exactly. A
+separate unconditional role on that same zone supplies only the change,
+zone-read, and record-list prerequisites required by Cloud DNS. Neither role
+can create, update, or delete a managed zone, and the platform cannot change
+zone IAM. Foundation owns the two durable
 zone bindings through a custom role containing only managed-zone IAM policy
 get and set. Cloud DNS does not expose ManagedZone resource attributes to IAM
 conditions, so this foundation bootstrap role is unconditionally scoped to the
