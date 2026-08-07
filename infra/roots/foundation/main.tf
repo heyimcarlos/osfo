@@ -284,7 +284,7 @@ resource "google_project_iam_custom_role" "foundation_dns_zone_iam_manager" {
   project     = google_project.environment["development"].project_id
   role_id     = "osfoFoundationDnsZoneIamManager"
   title       = "Osfo foundation DNS zone IAM manager"
-  description = "Lets foundation own IAM only for the retained development private zone."
+  description = "Lets foundation own managed-zone IAM policy in the development project."
   permissions = [
     "dns.managedZones.getIamPolicy",
     "dns.managedZones.setIamPolicy",
