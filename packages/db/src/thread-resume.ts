@@ -111,12 +111,12 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
     maxConnections: config.maxConnections,
     url: Redacted.make(config.databaseUrl),
   });
-
   return Layer.effect(
     ThreadResume,
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
       const notificationHints = yield* PubSub.sliding<string>(1_024);
+      // PgClient.listen owns a dedicated listener connection and does not lease a query-pool slot.
       const listenForNotificationHints = sql.listen(threadEventsNotificationChannel).pipe(
         Stream.runForEach((notifiedThreadId) =>
           hooks.dropNotificationHint(notifiedThreadId).pipe(

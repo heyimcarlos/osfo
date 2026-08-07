@@ -1,5 +1,5 @@
 import { Effect, Layer, Redacted } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder, HttpApiMiddleware } from "effect/unstable/httpapi";
 import { OsfoApi } from "./api.js";
 import { MessageAdmission, ThreadResume } from "./services.js";
@@ -99,13 +99,15 @@ const ApiRoutes = HttpApiBuilder.layer(OsfoApi, {
   openapiPath: "/openapi.json",
 }).pipe(Layer.provide(ThreadsHandlers));
 
-const hardenResponse = (response: HttpServerResponse.HttpServerResponse) => {
+const threadEventsPath = /^\/v1\/threads\/[^/]+\/events(?:\?|$)/u;
+
+const hardenResponse = (requestUrl: string, response: HttpServerResponse.HttpServerResponse) => {
   const authenticated =
     response.status === 401
       ? HttpServerResponse.setHeader(response, "www-authenticate", "Bearer")
       : response;
   const guided =
-    response.status === 429
+    response.status === 429 && threadEventsPath.test(requestUrl)
       ? HttpServerResponse.setHeader(
           authenticated,
           "retry-after",
@@ -125,7 +127,12 @@ const hardenResponse = (response: HttpServerResponse.HttpServerResponse) => {
 };
 
 const HardenResponses = HttpRouter.middleware(
-  (httpEffect) => Effect.map(httpEffect, hardenResponse),
+  (httpEffect) =>
+    HttpServerRequest.HttpServerRequest.pipe(
+      Effect.flatMap((request) =>
+        Effect.map(httpEffect, (response) => hardenResponse(request.url, response)),
+      ),
+    ),
   {
     global: true,
   },

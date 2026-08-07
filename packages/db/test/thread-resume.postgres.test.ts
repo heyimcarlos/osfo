@@ -9,7 +9,18 @@ import {
   ThreadResume,
   type SubmitMessageCommand,
 } from "@osfo/api";
-import { Effect, Fiber, Latch, Layer, ManagedRuntime, Redacted, Ref, Stream } from "effect";
+import {
+  Context,
+  Effect,
+  Fiber,
+  Latch,
+  Layer,
+  ManagedRuntime,
+  Redacted,
+  Ref,
+  Schedule,
+  Stream,
+} from "effect";
 import { makeMessageAdmissionLayer, makeThreadResumeLayer } from "../src/index";
 import { makeThreadResumeTestLayer, prepareMessageAdmissionFixture } from "../src/testing";
 
@@ -320,6 +331,37 @@ describe("PostgreSQL Thread resume", () => {
       event: "caught_up",
       data: { throughPosition: "2" },
     });
+  });
+
+  it("keeps the configured query slot available while PostgreSQL notifications are listening", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const countListeners = sql<{ readonly count: string }>`SELECT count(*)::text AS count
+            FROM pg_stat_activity
+            WHERE application_name = 'osfo-thread-resume'
+              AND query LIKE 'LISTEN %'`;
+          const baseline = Number((yield* countListeners)[0]?.count ?? "0");
+          const services = yield* Layer.build(
+            makeThreadResumeLayer({ ...resumeConfig, maxConnections: 1 }),
+          );
+          const resume = Context.get(services, ThreadResume);
+          const listener = yield* countListeners.pipe(
+            Effect.filterOrFail(
+              (rows) => Number(rows[0]?.count ?? "0") === baseline + 1,
+              () => "listener not ready",
+            ),
+            Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
+            Effect.timeout("2 seconds"),
+          );
+          expect(Number(listener[0]?.count)).toBe(baseline + 1);
+
+          const snapshot = yield* resume.snapshot(access).pipe(Effect.timeout("2 seconds"));
+          expect(snapshot.threadId).toBe(threadId);
+        }),
+      ).pipe(Effect.provide(databaseLayer)),
+    );
   });
 
   it("keeps unknown and unauthorized Threads indistinguishable", async () => {

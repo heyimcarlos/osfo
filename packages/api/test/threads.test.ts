@@ -2,6 +2,7 @@ import {
   AcceptanceReceipt,
   AdmissionCommitUnknown,
   AdmissionUnavailable,
+  CapacityRejected,
   IdempotencyConflict,
   MessageAdmission,
   SnapshotUnavailable,
@@ -200,6 +201,33 @@ describe("Osfo Threads API", () => {
       );
 
       expect(error).toEqual(new IdempotencyConflict());
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("does not attach the stream retry policy to message admission limits", async () => {
+    const harness = makeHarness(() => Effect.fail(new CapacityRejected({ scope: "global" })));
+
+    try {
+      const response = await harness.request(
+        new Request(`http://osfo.test/v1/threads/${threadId}/messages`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer session-token",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            protocolVersion: 1,
+            idempotencyKey,
+            message: { content: "At capacity" },
+          }),
+        }),
+      );
+
+      expect(response.status).toBe(429);
+      expect(response.headers.get("retry-after")).toBeNull();
+      expect(await response.json()).toEqual({ _tag: "CapacityRejected", scope: "global" });
     } finally {
       await harness.dispose();
     }

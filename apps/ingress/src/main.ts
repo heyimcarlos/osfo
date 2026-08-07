@@ -23,7 +23,7 @@ const DatabasePoolMax = PositiveInteger.check(Schema.isLessThanOrEqualTo(8));
 class IngressLifecycleTelemetry extends Context.Service<
   IngressLifecycleTelemetry,
   {
-    readonly observe: (lifecycle: ThreadStreamLifecycleService) => Effect.Effect<never>;
+    readonly observe: (lifecycle: ThreadStreamLifecycleService) => Effect.Effect<void>;
     readonly reportDrained: (lifecycle: ThreadStreamLifecycleService) => Effect.Effect<void>;
   }
 >()("@osfo/ingress/IngressLifecycleTelemetry") {}
@@ -156,20 +156,19 @@ const ServerLive = Layer.unwrap(
       const RunningWithRecovery = Layer.merge(RunningApi, CapacityRecovery);
       const LifecycleTelemetryLive = Layer.succeed(IngressLifecycleTelemetry)({
         observe: (lifecycle) =>
-          Effect.gen(function* () {
-            let observedSlowConsumerCloses = 0;
-            while (true) {
-              const status = yield* lifecycle.status;
-              if (status.slowConsumerCloses > observedSlowConsumerCloses) {
-                observedSlowConsumerCloses = status.slowConsumerCloses;
-                yield* emitIngressLifecycleTelemetry(
-                  config.lifecycleTelemetryEnabled,
-                  slowConsumerTelemetry(status),
-                );
-              }
-              yield* Effect.sleep(1);
-            }
-          }),
+          config.lifecycleTelemetryEnabled
+            ? Effect.gen(function* () {
+                let observedSlowConsumerCloses = 0;
+                while (true) {
+                  const status = yield* lifecycle.status;
+                  if (status.slowConsumerCloses > observedSlowConsumerCloses) {
+                    observedSlowConsumerCloses = status.slowConsumerCloses;
+                    yield* emitIngressLifecycleTelemetry(true, slowConsumerTelemetry(status));
+                  }
+                  yield* Effect.sleep(1);
+                }
+              })
+            : Effect.void,
         reportDrained: (lifecycle) =>
           lifecycle.status.pipe(
             Effect.flatMap((status) =>
