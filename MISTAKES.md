@@ -260,3 +260,10 @@ The development HTTPS edge configured `timeout_sec` on a backend service whose
 backend is a serverless network endpoint group. Google rejects that field for
 serverless NEG backends. Leave it unset and enforce the provider boundary in the
 runtime contract.
+
+## 2026-08-07: Assuming one worker-pool JSON representation
+
+The live smoke expected the Cloud Run v2 `scaling.manualInstanceCount` field,
+but the installed `gcloud beta run worker-pools describe` command returns the
+Knative-style manual count annotation. Normalize both documented output shapes
+before asserting the fixed fleet size.

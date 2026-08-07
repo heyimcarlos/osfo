@@ -223,11 +223,15 @@ gcloud pubsub subscriptions describe "$prefix-agentruns" --project="$project_id"
 gcloud sql instances describe "$prefix-postgres" --project="$project_id" \
   --format=json >"$work_directory/database.json"
 
-if ! jq -e '.scaling.manualInstanceCount == 1' "$work_directory/relay.json" >/dev/null; then
+if ! jq -e '
+  ((.scaling.manualInstanceCount // .metadata.annotations["run.googleapis.com/manualInstanceCount"]) | tonumber) == 1
+' "$work_directory/relay.json" >/dev/null; then
   printf 'FAIL: relay worker pool is not fixed at one instance\n' >&2
   exit 1
 fi
-if ! jq -e '.scaling.manualInstanceCount == 6' "$work_directory/agentrun.json" >/dev/null; then
+if ! jq -e '
+  ((.scaling.manualInstanceCount // .metadata.annotations["run.googleapis.com/manualInstanceCount"]) | tonumber) == 6
+' "$work_directory/agentrun.json" >/dev/null; then
   printf 'FAIL: AgentRun candidate is not fixed at six workers\n' >&2
   exit 1
 fi

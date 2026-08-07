@@ -277,6 +277,7 @@ rg --fixed-strings --quiet 'oz.openrouter.minimax.minimax-m3.chat-completions.v1
 rg --fixed-strings --quiet 'openrouter.chat-completions.minimax.minimax-m3.v1' infra/tests/development-runtime-smoke.sh
 rg --fixed-strings --quiet 'reportedUsageAttemptCount == "1"' infra/tests/development-runtime-smoke.sh
 rg --fixed-strings --quiet 'positiveReasoningUsageAttemptCount == "1"' infra/tests/development-runtime-smoke.sh
+rg --fixed-strings --quiet 'run.googleapis.com/manualInstanceCount' infra/tests/development-runtime-smoke.sh
 rg --fixed-strings --quiet 'MISSING: replacement-before-provider-contact' infra/tests/development-runtime-recovery.sh
 if rg --quiet 'OSFO_DETERMINISTIC_MODEL_DELAY_MS|processReplacement: "PASS"' infra/tests/development-runtime-recovery.sh; then
   printf 'deployed OpenRouter recovery must not claim deterministic delay evidence\n' >&2
