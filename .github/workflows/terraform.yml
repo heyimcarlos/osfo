@@ -145,12 +145,78 @@ jobs:
         shell: bash
         run: infra/tests/development-platform-recovery-preflight.sh
 
-  development-lifecycle:
+  development-dns-policy-preflight:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.task == 'development-proof'
     needs:
       [static, development-authorization, development-configuration, development-recovery-preflight]
+    runs-on: ubuntu-24.04
+    environment: foundation
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_VARSET_FILE: ${{ github.workspace }}/infra/roots/development/platform/development.tfvars.json
+      FOUNDATION_SERVICE_ACCOUNT: ${{ vars.GCP_FOUNDATION_TERRAFORM_SERVICE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_FOUNDATION_TERRAFORM_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Verify exact managed-zone DNS policy before permission probe
+        shell: bash
+        run: infra/tests/development-platform-dns-policy-preflight.sh
+
+  development-dns-permission-preflight:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.task == 'development-proof'
+    needs:
+      [
+        static,
+        development-authorization,
+        development-configuration,
+        development-recovery-preflight,
+        development-dns-policy-preflight,
+      ]
+    runs-on: ubuntu-24.04
+    environment: development-platform
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_VARSET_FILE: ${{ github.workspace }}/infra/roots/development/platform/development.tfvars.json
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Prove exact managed-zone DNS authority before platform apply
+        shell: bash
+        run: infra/tests/development-platform-dns-permission-preflight.sh
+
+  development-lifecycle:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.task == 'development-proof'
+    needs:
+      [
+        static,
+        development-authorization,
+        development-configuration,
+        development-recovery-preflight,
+        development-dns-policy-preflight,
+        development-dns-permission-preflight,
+      ]
     runs-on: ubuntu-24.04
     environment: development-platform
     permissions:
@@ -202,6 +268,8 @@ jobs:
       [
         static,
         development-lifecycle,
+        development-dns-policy-preflight,
+        development-dns-permission-preflight,
         development-authorization,
         development-configuration,
         development-recovery-preflight,
@@ -239,6 +307,8 @@ jobs:
       [
         development-lifecycle,
         development-artifact-cleanup,
+        development-dns-policy-preflight,
+        development-dns-permission-preflight,
         development-authorization,
         development-configuration,
         development-recovery-preflight,
@@ -272,9 +342,28 @@ jobs:
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
         with:
           version: 569.0.0
+      - name: Remove exact out-of-state DNS permission probe residue
+        id: dns_probe_cleanup
+        continue-on-error: true
+        shell: bash
+        run: infra/tests/development-platform-dns-probe-cleanup.sh
       - name: Apply bound destroy and verify provider absence
+        id: platform_destroy
+        if: always()
         shell: bash
         run: infra/tests/development-platform-live.sh
+      - name: Report independent cleanup outcomes
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.dns_probe_cleanup.outcome }}" != success \
+            || "${{ steps.platform_destroy.outcome }}" != success ]]; then
+            printf 'FAIL: dns_probe_cleanup=%s platform_destroy=%s\n' \
+              "${{ steps.dns_probe_cleanup.outcome }}" \
+              "${{ steps.platform_destroy.outcome }}" >&2
+            exit 1
+          fi
+          printf 'PASS: DNS probe cleanup and Terraform destroy both completed\n'
 
   root-workflow:
     if: >-

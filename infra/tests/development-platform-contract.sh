@@ -308,31 +308,97 @@ grep -Fq "resource.name.startsWith('projects/_/buckets/\${local.development_arti
   <<<"$platform_storage_binding"
 rg --fixed-strings --quiet 'resource "google_project_iam_custom_role" "platform_dns_record_manager"' \
   infra/roots/foundation/main.tf
-dns_binding=$(sed -n \
-  '/resource "google_project_iam_member" "development_platform_database_record"/,/resource "google_project_iam_member" "development_artifact_cleaner"/p' \
+rg --fixed-strings --quiet 'resource "google_project_iam_custom_role" "platform_dns_change_manager"' \
+  infra/roots/foundation/main.tf
+record_role=$(sed -n \
+  '/resource "google_project_iam_custom_role" "platform_dns_record_manager"/,/resource "google_project_iam_custom_role" "platform_dns_change_manager"/p' \
   infra/roots/foundation/main.tf)
-# The Terraform expression is intentionally matched as a literal string.
+change_role=$(sed -n \
+  '/resource "google_project_iam_custom_role" "platform_dns_change_manager"/,/resource "google_project_iam_custom_role" "foundation_dns_zone_iam_manager"/p' \
+  infra/roots/foundation/main.tf)
+for permission in create delete get update; do
+  grep -Fq "dns.resourceRecordSets.$permission" <<<"$record_role"
+done
+if grep -Eq 'dns\.(changes|managedZones)\.' <<<"$record_role" \
+  || grep -Eq 'dns\.resourceRecordSets\.(create|delete|get|update)' <<<"$change_role"; then
+  printf 'managed-zone DNS authority must use separate record and prerequisite roles\n' >&2
+  exit 1
+fi
+for permission in \
+  dns.changes.create \
+  dns.changes.get \
+  dns.managedZones.get \
+  dns.resourceRecordSets.list; do
+  grep -Fq "$permission" <<<"$change_role"
+done
+dns_record_binding=$(sed -n \
+  '/resource "google_dns_managed_zone_iam_member" "development_platform_database_record"/,/^}/p' \
+  infra/roots/foundation/main.tf)
+dns_change_binding=$(sed -n \
+  '/resource "google_dns_managed_zone_iam_member" "development_platform_database_changes"/,/^}/p' \
+  infra/roots/foundation/main.tf)
+# These Terraform expressions are intentionally matched as literal strings.
 # shellcheck disable=SC2016
 for exact_dns_boundary in \
+  'managed_zone = module.development_environment_baseline.private_dns_managed_zone_name' \
+  'role         = google_project_iam_custom_role.platform_dns_record_manager.name' \
   "resource.type == 'dns.googleapis.com/ResourceRecordSet'" \
   'module.development_environment_baseline.private_dns_managed_zone_id' \
-  "/rrsets/database.temporal.internal./A'" \
-  "resource.type != 'dns.googleapis.com/ResourceRecordSet'"; do
-  grep -Fq "$exact_dns_boundary" <<<"$dns_binding"
+  "/rrsets/database.temporal.internal./A'"; do
+  grep -Fq "$exact_dns_boundary" <<<"$dns_record_binding"
 done
+for exact_dns_prerequisite in \
+  'managed_zone = module.development_environment_baseline.private_dns_managed_zone_name' \
+  'role         = google_project_iam_custom_role.platform_dns_change_manager.name'; do
+  grep -Fq "$exact_dns_prerequisite" <<<"$dns_change_binding"
+done
+if grep -Fq 'condition {' <<<"$dns_change_binding"; then
+  printf 'managed-zone prerequisite role must be unconditional at the exact zone\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet \
   'output "private_dns_managed_zone_id"' \
   infra/modules/environment-baseline/main.tf
+rg --fixed-strings --quiet \
+  'output "private_dns_managed_zone_name"' \
+  infra/modules/environment-baseline/main.tf
 if rg --fixed-strings --quiet \
-  'google_dns_managed_zone_iam_' \
+  'resource "google_project_iam_member" "development_platform_database_record"' \
   infra/roots/foundation/main.tf; then
-  printf 'platform DNS record authority and one-off recovery reconciliation must not use durable zone IAM\n' >&2
+  printf 'platform DNS record authority must not use ineffective project IAM\n' >&2
   exit 1
 fi
-if rg --fixed-strings --quiet 'dns.managedZones.setIamPolicy' infra/roots/foundation/main.tf; then
-  printf 'foundation must not receive durable zone IAM mutation authority for operator reconciliation\n' >&2
+if grep -Fq 'dns.managedZones.setIamPolicy' <<<"$record_role$change_role"; then
+  printf 'platform identity must not receive managed-zone IAM mutation authority\n' >&2
   exit 1
 fi
+foundation_zone_role=$(sed -n \
+  '/resource "google_project_iam_custom_role" "foundation_dns_zone_iam_manager"/,/resource "google_project_iam_custom_role" "development_artifact_cleaner"/p' \
+  infra/roots/foundation/main.tf)
+if [[ $(grep -Fc 'dns.managedZones.getIamPolicy' <<<"$foundation_zone_role") != 1 ]] \
+  || [[ $(grep -Fc 'dns.managedZones.setIamPolicy' <<<"$foundation_zone_role") != 1 ]] \
+  || grep -Eq 'dns\.(changes|resourceRecordSets)\.' <<<"$foundation_zone_role"; then
+  printf 'foundation zone IAM role must contain only exact managed-zone policy authority\n' >&2
+  exit 1
+fi
+foundation_zone_binding=$(sed -n \
+  '/resource "google_project_iam_member" "foundation_development_dns_zone_iam_manager"/,/^}/p' \
+  infra/roots/foundation/main.tf)
+# These Terraform expressions are intentionally matched as literal strings.
+# shellcheck disable=SC2016
+for foundation_zone_boundary in \
+  'role    = google_project_iam_custom_role.foundation_dns_zone_iam_manager.name' \
+  'google_service_account.terraform["foundation"].email'; do
+  grep -Fq "$foundation_zone_boundary" <<<"$foundation_zone_binding"
+done
+if grep -Fq 'condition {' <<<"$foundation_zone_binding"; then
+  printf 'foundation zone IAM bootstrap cannot use unsupported ManagedZone condition attributes\n' >&2
+  exit 1
+fi
+rg --fixed-strings --quiet 'infra/tests/development-platform-dns-policy-preflight.sh' \
+  .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'gcloud dns managed-zones get-iam-policy "$name_prefix-private"' \
+  infra/tests/development-platform-dns-policy-preflight.sh
 rg --fixed-strings --quiet 'resource "google_project_iam_custom_role" "development_artifact_cleaner"' \
   infra/roots/foundation/main.tf
 artifact_cleaner_role=$(sed -n \
@@ -362,8 +428,6 @@ rg --fixed-strings --quiet 'infra/tests/development-platform-recovery-preflight.
 # Shell variables are intentionally matched as literal source text.
 # shellcheck disable=SC2016
 for recovery_preflight_contract in \
-  'gcloud dns managed-zones describe "$name_prefix-private"' \
-  'FAIL: exact project-level DNS record binding is not applied' \
   'gcloud storage buckets get-iam-policy "gs://$evidence_bucket"' \
   'FAIL: exact development evidence writer, reader, and lister bindings are not applied'; do
   rg --fixed-strings --quiet "$recovery_preflight_contract" \

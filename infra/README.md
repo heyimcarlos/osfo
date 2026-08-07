@@ -79,16 +79,27 @@ it cannot change secret IAM, access version payloads, or mint runtime
 credentials. Authorized secret-version access therefore remains `MISSING` in
 this preparatory PR. Package installation inside the pinned base image is still
 mutable, so full probe toolchain determinism is also `MISSING`.
-Project IAM grants the platform only a custom record role conditioned on the
-retained zone's numeric ID and the exact `database.temporal.internal.` A path,
-not project-wide DNS administration. Non-record prerequisite checks pass
-through the condition, but the custom role contains no zone create, update, or
-delete permission. A temporary zone-level binding used for incident recovery is
-not represented as durable Terraform state. After the project-level conditioned
-binding is applied and verified, a privileged operator must remove that
-temporary binding and record the empty zone policy in the recovery evidence.
-Foundation receives no managed-zone IAM mutation permission for this one-off
-reconciliation.
+The retained private zone owns two narrow platform bindings. The conditional
+record role applies only to the zone's numeric ID and the exact
+`database.temporal.internal.` A path. A separate unconditional role on that
+same zone supplies only the change, zone-read, and record-list prerequisites
+required by Cloud DNS. Neither role can create, update, or delete a managed
+zone, and the platform cannot change zone IAM. Foundation owns the two durable
+zone bindings through a custom role containing only managed-zone IAM policy
+get and set. Cloud DNS does not expose ManagedZone resource attributes to IAM
+conditions, so this foundation bootstrap role is unconditionally scoped to the
+development project rather than making an unsupported exact-zone claim. The
+foundation root creates only the one retained private zone in that project.
+Before any disposable platform apply, the platform identity must create, read,
+update, and delete a documentation-range A value at the exact reviewed record;
+it refuses to replace an existing record and its failure path cleans up only
+that probe target. Automatic and scheduled recovery also recognize a canceled
+permission probe and remove only a matching `192.0.2.89` or `192.0.2.90` probe
+record before the independently scheduled Terraform destroy. A DNS residue
+cleanup failure cannot skip destroy, but the job still reports either failure.
+The DNS policy preflight verifies exactly two zone bindings and rejects stale
+project-level platform DNS grants. It is separate from the artifact recovery
+preflight so DNS qualification cannot suppress cleanup.
 
 The ordered Pub/Sub proof first validates the Terraform-managed subscription's
 topic, ordering, retention, and acknowledgement configuration. Its behavioral

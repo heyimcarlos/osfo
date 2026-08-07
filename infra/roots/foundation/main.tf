@@ -250,16 +250,44 @@ resource "google_project_iam_custom_role" "platform_dns_record_manager" {
   project     = google_project.environment["development"].project_id
   role_id     = "osfoPlatformDnsRecordManager"
   title       = "Osfo platform DNS record manager"
-  description = "Manages only the disposable database A record in the retained development private zone."
+  description = "Manages only the exact disposable database A record when bound conditionally on the retained private zone."
+  permissions = [
+    "dns.resourceRecordSets.create",
+    "dns.resourceRecordSets.delete",
+    "dns.resourceRecordSets.get",
+    "dns.resourceRecordSets.update",
+  ]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
+}
+
+resource "google_project_iam_custom_role" "platform_dns_change_manager" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoPlatformDnsChangeManager"
+  title       = "Osfo platform DNS change manager"
+  description = "Supplies the non-record prerequisites for record changes only when bound on the retained private zone."
   permissions = [
     "dns.changes.create",
     "dns.changes.get",
     "dns.managedZones.get",
-    "dns.resourceRecordSets.create",
-    "dns.resourceRecordSets.delete",
-    "dns.resourceRecordSets.get",
     "dns.resourceRecordSets.list",
-    "dns.resourceRecordSets.update",
+  ]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
+}
+
+resource "google_project_iam_custom_role" "foundation_dns_zone_iam_manager" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoFoundationDnsZoneIamManager"
+  title       = "Osfo foundation DNS zone IAM manager"
+  description = "Lets foundation own managed-zone IAM policy in the development project."
+  permissions = [
+    "dns.managedZones.getIamPolicy",
+    "dns.managedZones.setIamPolicy",
   ]
 
   lifecycle { prevent_destroy = true }
@@ -682,16 +710,34 @@ resource "google_project_iam_member" "platform_bucket_creator" {
   member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
 }
 
-resource "google_project_iam_member" "development_platform_database_record" {
+resource "google_project_iam_member" "foundation_development_dns_zone_iam_manager" {
   project = google_project.environment["development"].project_id
-  role    = google_project_iam_custom_role.platform_dns_record_manager.name
-  member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+  role    = google_project_iam_custom_role.foundation_dns_zone_iam_manager.name
+  member  = "serviceAccount:${google_service_account.terraform["foundation"].email}"
+}
+
+resource "google_dns_managed_zone_iam_member" "development_platform_database_record" {
+  project      = google_project.environment["development"].project_id
+  managed_zone = module.development_environment_baseline.private_dns_managed_zone_name
+  role         = google_project_iam_custom_role.platform_dns_record_manager.name
+  member       = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
 
   condition {
     title       = "exact_development_database_a_record"
-    description = "Restricts the disposable platform to the exact retained zone and database.temporal.internal. A while permitting prerequisite checks."
-    expression  = "(resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/${google_project.environment["development"].project_id}/managedZones/${module.development_environment_baseline.private_dns_managed_zone_id}/rrsets/database.temporal.internal./A') || resource.type != 'dns.googleapis.com/ResourceRecordSet'"
+    description = "Restricts the disposable platform to database.temporal.internal. A in the retained private zone."
+    expression  = "resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/${google_project.environment["development"].project_id}/managedZones/${module.development_environment_baseline.private_dns_managed_zone_id}/rrsets/database.temporal.internal./A'"
   }
+
+  depends_on = [google_project_iam_member.foundation_development_dns_zone_iam_manager]
+}
+
+resource "google_dns_managed_zone_iam_member" "development_platform_database_changes" {
+  project      = google_project.environment["development"].project_id
+  managed_zone = module.development_environment_baseline.private_dns_managed_zone_name
+  role         = google_project_iam_custom_role.platform_dns_change_manager.name
+  member       = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+
+  depends_on = [google_project_iam_member.foundation_development_dns_zone_iam_manager]
 }
 
 resource "google_project_iam_member" "development_artifact_cleaner" {
