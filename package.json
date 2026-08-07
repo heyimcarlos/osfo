@@ -33,6 +33,7 @@
     "observability:test": "vitest run observability/*.test.ts --exclude '**/.worktrees/**'",
     "observability:typecheck": "tsc --project observability/tsconfig.json",
     "qualification:reconcile-agent-run": "node --env-file=.env --conditions=development --import tsx scripts/qualification/reconcile-agent-run.ts",
+    "qualification:sse-demo": "bash infra/tests/development-sse-demo-qualification.sh",
     "start:agent-run-worker": "bun run --cwd apps/agent-run-worker start",
     "start:outbox-relay": "bun run --cwd apps/outbox-relay start",
     "start:ingress": "bun run --cwd apps/ingress start",
