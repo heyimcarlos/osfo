@@ -133,16 +133,12 @@ const makeGoogleSource = (config: GoogleStreamingPullConfig) =>
     const close = () =>
       Effect.suspend(() => {
         if (closed) return Effect.void;
-        return stop().pipe(
-          Effect.andThen(
-            Effect.suspend(() =>
-              closeStreamingPullResources(
-                { close: () => subscriptionClose ?? subscription.close() },
-                client,
-                config.closeTimeoutMs,
-              ),
-            ),
-          ),
+        return closeStreamingPullSource(
+          stop(),
+          { close: () => subscriptionClose ?? subscription.close() },
+          client,
+          config.closeTimeoutMs,
+        ).pipe(
           Effect.tap(() =>
             Effect.sync(() => {
               closed = true;
@@ -220,6 +216,24 @@ export const closeStreamingPullResources = (
           );
     }),
   );
+
+export const closeStreamingPullSource = (
+  stop: Effect.Effect<void, StreamingPullSourceUnavailable>,
+  subscription: StreamingPullCloseResource,
+  client: StreamingPullCloseResource,
+  timeoutMs: number,
+) =>
+  Effect.gen(function* () {
+    const stopExit = yield* Effect.exit(stop);
+    const closeExit = yield* Effect.exit(
+      closeStreamingPullResources(subscription, client, timeoutMs),
+    );
+    if (Exit.isSuccess(stopExit) && Exit.isSuccess(closeExit)) return;
+    return yield* new StreamingPullSourceUnavailable({
+      cause: { type: "StreamingPullSourceCloseFailures", stopExit, closeExit },
+      operation: "stop",
+    });
+  });
 
 const googleSourceLayer = (config: GoogleStreamingPullConfig) =>
   Layer.effect(

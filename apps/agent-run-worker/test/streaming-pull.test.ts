@@ -4,10 +4,11 @@ import {
   type RunnableAgentRunDelivery,
 } from "@osfo/agent-run";
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import {
   beginStreamingPullSubscriptionClose,
+  closeStreamingPullSource,
   closeStreamingPullResources,
   makeStreamingPullWorker,
   runStreamingPullWorker,
@@ -130,6 +131,45 @@ describe("StreamingPull AgentRun delivery", () => {
       expect(Exit.isFailure(exit)).toBe(true);
       expect(listenerRemoved).toBe(true);
       expect(closeCalls).toBe(1);
+    }),
+  );
+
+  it.effect("attempts both closes when subscription stop initiation fails", () =>
+    Effect.gen(function* () {
+      let clientCloseCalls = 0;
+      let subscriptionCloseCalls = 0;
+      const subscription = {
+        close: () => {
+          subscriptionCloseCalls += 1;
+          throw new Error("subscription close start failed");
+        },
+      };
+      const exit = yield* closeStreamingPullSource(
+        beginStreamingPullSubscriptionClose(subscription).pipe(Effect.asVoid),
+        subscription,
+        {
+          close: () => {
+            clientCloseCalls += 1;
+            return Promise.reject(new Error("client close failed"));
+          },
+        },
+        1_000,
+      ).pipe(Effect.exit);
+      const error = Exit.match(exit, {
+        onFailure: (cause) => Option.getOrThrow(Cause.findErrorOption(cause)),
+        onSuccess: () => new Error("StreamingPull source unexpectedly closed successfully"),
+      });
+
+      expect(error).toMatchObject({
+        _tag: "StreamingPullSourceUnavailable",
+        cause: {
+          type: "StreamingPullSourceCloseFailures",
+          stopExit: { _tag: "Failure" },
+          closeExit: { _tag: "Failure" },
+        },
+      });
+      expect(subscriptionCloseCalls).toBe(2);
+      expect(clientCloseCalls).toBe(1);
     }),
   );
 
