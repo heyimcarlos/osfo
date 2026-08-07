@@ -111,12 +111,12 @@ jobs:
               -F "per_page=$JANITOR_MAX_RUNS" -F page=1)
             validate_run_window Terraform "$terraform_runs"
             validate_run_window recovery "$recovery_runs"
-            attempt_request_count=$(jq -nr \
-              --argjson terraform "$terraform_runs" \
-              --argjson recovery "$recovery_runs" '
-                ([$terraform.workflow_runs[].run_attempt] | add // 0)
-                + ([$recovery.workflow_runs[].run_attempt] | add // 0)
-              ')
+            terraform_attempt_requests=$(jq -er \
+              '[.workflow_runs[].run_attempt] | add // 0' <<<"$terraform_runs")
+            recovery_attempt_requests=$(jq -er \
+              '[.workflow_runs[].run_attempt] | add // 0' <<<"$recovery_runs")
+            attempt_request_count=$((terraform_attempt_requests \
+              + recovery_attempt_requests))
             if ((attempt_request_count > JANITOR_MAX_ATTEMPT_REQUESTS)); then
               printf 'FAIL: retained history needs %s attempt-job requests, exceeding budget %s\n' \
                 "$attempt_request_count" "$JANITOR_MAX_ATTEMPT_REQUESTS" >&2
