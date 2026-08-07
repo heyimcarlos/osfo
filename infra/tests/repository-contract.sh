@@ -77,6 +77,18 @@ rg --fixed-strings --quiet 'from "@effect/vitest"' infra/test/terraform-foundati
 rg --fixed-strings --quiet 'google_project_iam_custom_role.state_object_lister.name' \
   infra/roots/foundation/main.tf
 rg --fixed-strings --quiet 'saved_plan_bucket_name' infra/roots/foundation/main.tf
+rg --fixed-strings --quiet \
+  '"attribute.environment"      = "assertion.environment"' \
+  infra/roots/foundation/main.tf
+rg --fixed-strings --quiet \
+  'principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.environment/${each.value.github_environment}' \
+  infra/roots/foundation/main.tf
+if rg --fixed-strings --quiet \
+  '/subject/repo:${var.github_repository}:environment:' \
+  infra/roots/foundation/main.tf; then
+  printf 'GitHub environment trust must use the mapped environment attribute\n' >&2
+  exit 1
+fi
 if rg --fixed-strings --quiet \
   '"roles/orgpolicy.policyAdmin",' \
   infra/roots/foundation/main.tf; then

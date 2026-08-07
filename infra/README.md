@@ -156,7 +156,9 @@ Production environments require protected approval.
 
 Cloud Audit Logs enable Admin Read, Data Read, and Data Write for every service
 in each project. WIF validates immutable numeric repository and owner IDs, and
-each service account trusts only its exact GitHub environment subject.
+each service account trusts only its mapped GitHub environment attribute. The
+provider-level immutable repository gate applies before any environment can
+impersonate a root identity.
 
 ## Plan, apply, drift, and destroy
 

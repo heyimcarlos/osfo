@@ -284,6 +284,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repository"       = "assertion.repository"
     "attribute.repository_id"    = "assertion.repository_id"
     "attribute.repository_owner" = "assertion.repository_owner"
+    "attribute.environment"      = "assertion.environment"
   }
 
   attribute_condition = "assertion.repository_owner_id == '${var.github_repository_owner_id}' && assertion.repository_id == '${var.github_repository_id}'"
@@ -302,7 +303,7 @@ resource "google_service_account_iam_member" "github_workload_identity" {
 
   service_account_id = google_service_account.terraform[each.key].name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject/repo:${var.github_repository}:environment:${each.value.github_environment}"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.environment/${each.value.github_environment}"
 }
 
 resource "google_storage_bucket_iam_member" "state" {
