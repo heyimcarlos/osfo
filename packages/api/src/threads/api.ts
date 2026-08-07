@@ -113,6 +113,12 @@ export class ThreadResumeUnavailable extends Schema.TaggedErrorClass<ThreadResum
   { httpApiStatus: 503 },
 ) {}
 
+export class ConnectionLimitExceeded extends Schema.TaggedErrorClass<ConnectionLimitExceeded>()(
+  "ConnectionLimitExceeded",
+  { retryAfterSeconds: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 60 })) },
+  { httpApiStatus: 429 },
+) {}
+
 const NonNegativePosition = Schema.String.check(Schema.isPattern(/^\d+$/u));
 const PositivePageLimit = Schema.NumberFromString.pipe(
   Schema.check(Schema.isInt()),
@@ -218,6 +224,7 @@ export const ThreadsApi = HttpApiGroup.make("threads")
         AuthenticationRejected,
         InvalidCursor,
         CursorOutsideRetention,
+        ConnectionLimitExceeded,
         ThreadResumeUnavailable,
         MalformedRequest,
       ],

@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import {
   AuthenticationRejected,
@@ -23,9 +23,26 @@ import {
   makeEmptyThreadSnapshot,
   type ThreadEventEnvelope,
 } from "@osfo/session";
-import { Data, Effect, Layer, Option, Redacted, Schema, Stream } from "effect";
+import {
+  Data,
+  Deferred,
+  Effect,
+  Layer,
+  Option,
+  PubSub,
+  Redacted,
+  Ref,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect";
+import { listenForPostgresNotifications } from "./postgres-notification-listener.js";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
+const threadEventsNotificationChannel = "osfo_thread_events";
+const notificationListenerLivenessIntervalMs = 1_000;
+const notificationListenerReconnectDelayMs = 100;
+const notificationListenerHeartbeatTimeoutMs = 1_000;
 
 export const ThreadResumeDatabaseConfigSchema = Schema.Struct({
   databaseUrl: Schema.NonEmptyString,
@@ -42,6 +59,14 @@ export type ThreadResumeDatabaseConfig = typeof ThreadResumeDatabaseConfigSchema
 export class InvalidThreadResumeDatabaseConfig extends Data.TaggedError(
   "InvalidThreadResumeDatabaseConfig",
 )<{ readonly cause: unknown }> {}
+
+export interface ThreadResumeTestHooks {
+  readonly beforeNotificationListenerConnect?: Effect.Effect<void>;
+  readonly beforeNotificationListenerGracefulClose?: Effect.Effect<void>;
+  readonly dropNotificationHeartbeat?: (token: string) => Effect.Effect<boolean>;
+  readonly dropNotificationHint: (threadId: string) => Effect.Effect<boolean>;
+  readonly onNotificationSubscription: (threadId: string) => Effect.Effect<void>;
+}
 
 const CursorPayloadSchema = Schema.Struct({
   eventId: Schema.NullOr(Schema.String.check(Schema.isUUID())),
@@ -99,17 +124,83 @@ const decodeCursor = Effect.fn("DatabaseThreadResume.decodeCursor")(function* (
   ).pipe(Effect.mapError(() => new InvalidCursor()));
 });
 
-const threadResumeLayer = (config: ThreadResumeDatabaseConfig) => {
+const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResumeTestHooks) => {
+  const applicationName = `osfo-thread-resume-${randomUUID().slice(0, 8)}`;
+  const heartbeatChannel = `osfo_thread_resume_${randomUUID().replaceAll("-", "")}`;
   const postgresLayer = PgClient.layer({
-    applicationName: "osfo-thread-resume",
+    applicationName,
     maxConnections: config.maxConnections,
     url: Redacted.make(config.databaseUrl),
   });
-
   return Layer.effect(
     ThreadResume,
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
+      const notificationHints = yield* PubSub.sliding<string>(1_024);
+      const pendingHeartbeat = yield* Ref.make<
+        Option.Option<{
+          readonly observed: Deferred.Deferred<void>;
+          readonly token: string;
+        }>
+      >(Option.none());
+      const listenForNotificationHints = Effect.scoped(
+        Effect.gen(function* () {
+          yield* hooks.beforeNotificationListenerConnect ?? Effect.void;
+          yield* listenForPostgresNotifications({
+            applicationName,
+            channels: [threadEventsNotificationChannel, heartbeatChannel],
+            databaseUrl: config.databaseUrl,
+            ...(hooks.beforeNotificationListenerGracefulClose === undefined
+              ? {}
+              : { beforeGracefulClose: hooks.beforeNotificationListenerGracefulClose }),
+          }).pipe(
+            Stream.runForEach(({ channel, payload }) =>
+              Ref.get(pendingHeartbeat).pipe(
+                Effect.flatMap((heartbeat) =>
+                  channel === heartbeatChannel &&
+                  Option.isSome(heartbeat) &&
+                  heartbeat.value.token === payload
+                    ? (hooks.dropNotificationHeartbeat?.(payload) ?? Effect.succeed(false)).pipe(
+                        Effect.flatMap((drop) =>
+                          drop
+                            ? Effect.void
+                            : Deferred.succeed(heartbeat.value.observed, undefined),
+                        ),
+                      )
+                    : channel === heartbeatChannel
+                      ? Effect.void
+                      : hooks
+                          .dropNotificationHint(payload)
+                          .pipe(
+                            Effect.flatMap((drop) =>
+                              drop ? Effect.void : PubSub.publish(notificationHints, payload),
+                            ),
+                          ),
+                ),
+                Effect.asVoid,
+              ),
+            ),
+            Effect.forkScoped,
+          );
+          while (true) {
+            yield* Effect.sleep(notificationListenerLivenessIntervalMs);
+            const observed = yield* Deferred.make<void>();
+            const token = randomUUID();
+            yield* Ref.set(pendingHeartbeat, Option.some({ observed, token }));
+            yield* sql.notify(heartbeatChannel, token);
+            yield* Deferred.await(observed).pipe(
+              Effect.timeout(notificationListenerHeartbeatTimeoutMs),
+            );
+            yield* Ref.set(pendingHeartbeat, Option.none());
+          }
+        }),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Thread event notification listener reconnecting", cause),
+        ),
+        Effect.andThen(Effect.sleep(notificationListenerReconnectDelayMs)),
+      );
+      yield* Effect.forever(listenForNotificationHints).pipe(Effect.forkScoped);
 
       const authorize = Effect.fn("DatabaseThreadResume.authorize")(function* (
         request: ThreadAccess,
@@ -465,27 +556,43 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig) => {
           data: { throughPosition: cut.head.position, throughCursor: cut.throughCursor },
         });
 
-        const live = Stream.paginate(cut.head.position, (position) =>
-          Effect.gen(function* () {
-            yield* authorize(request);
-            const currentHead = (yield* readHead(request.threadId))[0];
-            if (currentHead === undefined) return yield* new ThreadResumeUnavailable();
-            const rows = yield* readEvents(
-              request.threadId,
-              position,
-              currentHead.position,
-              config.replayEventLimit,
-            );
-            if (rows.length === 0) {
-              yield* Effect.sleep(config.pollIntervalMs);
-              return [[], Option.some(position)] as const;
-            }
-            const events = yield* Effect.forEach(rows, toEnvelope);
-            return [
-              events.map((data) => ({ event: "thread_event" as const, data })),
-              Option.some(events.at(-1)!.threadPosition),
-            ] as const;
-          }).pipe(Effect.mapError(() => new ThreadResumeUnavailable())),
+        const notificationWakeups = Stream.unwrap(
+          PubSub.subscribe(notificationHints).pipe(
+            Effect.tap(() => hooks.onNotificationSubscription(request.threadId)),
+            Effect.map(Stream.fromSubscription),
+          ),
+        ).pipe(
+          Stream.filter((notifiedThreadId) => notifiedThreadId === request.threadId),
+          Stream.map(() => undefined),
+        );
+        const pollingWakeups = Stream.fromEffect(Effect.sleep(config.pollIntervalMs)).pipe(
+          Stream.repeat(Schedule.forever),
+        );
+        const live = Stream.merge(
+          Stream.make(undefined),
+          Stream.merge(notificationWakeups, pollingWakeups),
+        ).pipe(
+          Stream.mapAccumEffect(
+            () => cut.head.position,
+            (position) =>
+              Effect.gen(function* () {
+                yield* authorize(request);
+                const currentHead = (yield* readHead(request.threadId))[0];
+                if (currentHead === undefined) return yield* new ThreadResumeUnavailable();
+                const rows = yield* readEvents(
+                  request.threadId,
+                  position,
+                  currentHead.position,
+                  config.replayEventLimit,
+                );
+                const events = yield* Effect.forEach(rows, toEnvelope);
+                const nextPosition = events.at(-1)?.threadPosition ?? position;
+                return [
+                  nextPosition,
+                  events.map((data) => ({ event: "thread_event" as const, data })),
+                ] as const;
+              }).pipe(Effect.mapError(() => new ThreadResumeUnavailable())),
+          ),
         );
 
         return replay.pipe(Stream.concat(caughtUp), Stream.concat(live));
@@ -496,10 +603,21 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig) => {
   ).pipe(Layer.provide(postgresLayer));
 };
 
-export const makeThreadResumeLayer = (config: ThreadResumeDatabaseConfig) =>
+const makeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResumeTestHooks) =>
   Layer.unwrap(
     Schema.decodeUnknownEffect(ThreadResumeDatabaseConfigSchema)(config).pipe(
       Effect.mapError((cause) => new InvalidThreadResumeDatabaseConfig({ cause })),
-      Effect.map(threadResumeLayer),
+      Effect.map((decoded) => threadResumeLayer(decoded, hooks)),
     ),
   );
+
+export const makeThreadResumeLayer = (config: ThreadResumeDatabaseConfig) =>
+  makeLayer(config, {
+    dropNotificationHint: () => Effect.succeed(false),
+    onNotificationSubscription: () => Effect.void,
+  });
+
+export const makeThreadResumeTestLayer = (
+  config: ThreadResumeDatabaseConfig,
+  hooks: ThreadResumeTestHooks,
+) => makeLayer(config, hooks);

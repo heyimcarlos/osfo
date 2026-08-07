@@ -1,14 +1,32 @@
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
-import { MessageAdmission } from "@osfo/api";
+import {
+  MessageAdmission,
+  ThreadStreamLifecycle,
+  makeThreadStreamLifecycleLayer,
+  type ThreadStreamLifecycleService,
+} from "@osfo/api";
 import { OsfoApiLive } from "@osfo/api/server";
 import { makeMessageAdmissionLayer, makeThreadResumeLayer } from "@osfo/db";
-import { Config, Effect, Layer, Schema } from "effect";
+import { Config, Context, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { createServer } from "node:http";
+import {
+  drainedTelemetry,
+  emitIngressLifecycleTelemetry,
+  slowConsumerTelemetry,
+} from "./lifecycle-telemetry.js";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const AdmissionLimit = PositiveInteger.check(Schema.isLessThanOrEqualTo(256));
 const DatabasePoolMax = PositiveInteger.check(Schema.isLessThanOrEqualTo(8));
+
+class IngressLifecycleTelemetry extends Context.Service<
+  IngressLifecycleTelemetry,
+  {
+    readonly observe: (lifecycle: ThreadStreamLifecycleService) => Effect.Effect<void>;
+    readonly reportDrained: (lifecycle: ThreadStreamLifecycleService) => Effect.Effect<void>;
+  }
+>()("@osfo/ingress/IngressLifecycleTelemetry") {}
 
 const IngressConfig = Config.all({
   admissionCapacityReconciliationIntervalMs: Config.schema(
@@ -28,6 +46,25 @@ const IngressConfig = Config.all({
     "OSFO_EXECUTION_PROFILE_REF",
   ),
   globalNonTerminalLimit: Config.schema(AdmissionLimit, "OSFO_GLOBAL_NON_TERMINAL_LIMIT"),
+  lifecycleTelemetryEnabled: Config.boolean("OSFO_TEST_LIFECYCLE_TELEMETRY").pipe(
+    Config.withDefault(false),
+  ),
+  maxStreamBufferedAgeMs: Config.schema(PositiveInteger, "OSFO_MAX_STREAM_BUFFERED_AGE_MS").pipe(
+    Config.withDefault(5_000),
+  ),
+  maxStreamBufferedBytes: Config.schema(PositiveInteger, "OSFO_MAX_STREAM_BUFFERED_BYTES").pipe(
+    Config.withDefault(1_048_576),
+  ),
+  maxStreamBufferedEvents: Config.schema(PositiveInteger, "OSFO_MAX_STREAM_BUFFERED_EVENTS").pipe(
+    Config.withDefault(64),
+  ),
+  maxStreamConnectionLifetimeMs: Config.schema(
+    PositiveInteger,
+    "OSFO_MAX_STREAM_CONNECTION_LIFETIME_MS",
+  ).pipe(Config.withDefault(1_800_000)),
+  maxStreamConnections: Config.schema(PositiveInteger, "OSFO_MAX_STREAM_CONNECTIONS").pipe(
+    Config.withDefault(64),
+  ),
   principalNonTerminalLimit: Config.schema(AdmissionLimit, "OSFO_PRINCIPAL_NON_TERMINAL_LIMIT"),
   resumeDatabasePoolMax: Config.schema(DatabasePoolMax, "OSFO_RESUME_DATABASE_POOL_MAX").pipe(
     Config.withDefault(4),
@@ -59,6 +96,16 @@ const announceReady = HttpServer.HttpServer.use((server) => {
 const ServerLive = Layer.unwrap(
   IngressConfig.pipe(
     Effect.map((config) => {
+      const server = createServer();
+      if (config.lifecycleTelemetryEnabled) {
+        server.once("close", () =>
+          Effect.runFork(
+            emitIngressLifecycleTelemetry(true, {
+              type: "http_closed",
+            }),
+          ),
+        );
+      }
       const AdmissionLive = makeMessageAdmissionLayer({
         databaseUrl: config.databaseUrl,
         executionProfileRef: config.executionProfileRef,
@@ -82,6 +129,13 @@ const ServerLive = Layer.unwrap(
           );
         }),
       ).pipe(Layer.provide(AdmissionLive));
+      const ThreadStreamLifecycleLive = makeThreadStreamLifecycleLayer({
+        maxBufferedAgeMs: config.maxStreamBufferedAgeMs,
+        maxBufferedBytes: config.maxStreamBufferedBytes,
+        maxBufferedEvents: config.maxStreamBufferedEvents,
+        maxConnectionLifetimeMs: config.maxStreamConnectionLifetimeMs,
+        maxConnections: config.maxStreamConnections,
+      });
       const RunningApi = HttpRouter.serve(OsfoApiLive).pipe(
         Layer.provide(
           Layer.merge(
@@ -97,15 +151,55 @@ const ServerLive = Layer.unwrap(
             }),
           ),
         ),
+        Layer.provideMerge(ThreadStreamLifecycleLive),
       );
       const RunningWithRecovery = Layer.merge(RunningApi, CapacityRecovery);
+      const LifecycleTelemetryLive = Layer.succeed(IngressLifecycleTelemetry)({
+        observe: (lifecycle) =>
+          config.lifecycleTelemetryEnabled
+            ? Effect.gen(function* () {
+                let observedSlowConsumerCloses = 0;
+                while (true) {
+                  const status = yield* lifecycle.status;
+                  if (status.slowConsumerCloses > observedSlowConsumerCloses) {
+                    observedSlowConsumerCloses = status.slowConsumerCloses;
+                    yield* emitIngressLifecycleTelemetry(true, slowConsumerTelemetry(status));
+                  }
+                  yield* Effect.sleep(1);
+                }
+              })
+            : Effect.void,
+        reportDrained: (lifecycle) =>
+          lifecycle.status.pipe(
+            Effect.flatMap((status) =>
+              emitIngressLifecycleTelemetry(
+                config.lifecycleTelemetryEnabled,
+                drainedTelemetry(status, server.listening),
+              ),
+            ),
+          ),
+      });
 
-      return Layer.effectDiscard(announceReady).pipe(
+      const RunningServer = Layer.effectDiscard(announceReady).pipe(
         Layer.provideMerge(RunningWithRecovery),
-        Layer.provide(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: config.port })),
+        Layer.provide(NodeHttpServer.layer(() => server, { host: "127.0.0.1", port: config.port })),
       );
+      return Layer.merge(RunningServer, LifecycleTelemetryLive);
     }),
   ),
 );
 
-NodeRuntime.runMain(Layer.launch(ServerLive));
+const program = Effect.scoped(
+  Effect.gen(function* () {
+    const services = yield* Layer.build(ServerLive);
+    const lifecycle = Context.get(services, ThreadStreamLifecycle);
+    const telemetry = Context.get(services, IngressLifecycleTelemetry);
+    yield* Effect.forkScoped(telemetry.observe(lifecycle));
+    yield* Effect.addFinalizer(() =>
+      lifecycle.drain.pipe(Effect.andThen(telemetry.reportDrained(lifecycle))),
+    );
+    return yield* Effect.never;
+  }),
+);
+
+NodeRuntime.runMain(program);

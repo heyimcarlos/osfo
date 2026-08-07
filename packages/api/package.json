@@ -18,6 +18,11 @@
       "types": "./dist/server.d.ts",
       "development": "./src/server.ts",
       "default": "./dist/server.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "development": "./src/testing.ts",
+      "default": "./dist/testing.js"
     }
   },
   "scripts": {

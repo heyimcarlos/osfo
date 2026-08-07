@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as PgDrizzle from "drizzle-orm/effect-postgres";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -27,6 +27,8 @@ import {
   threads,
   userMessages,
 } from "./schema.js";
+
+export { makeThreadResumeTestLayer, type ThreadResumeTestHooks } from "./thread-resume.js";
 
 export interface MessageAdmissionFixture {
   readonly principals: ReadonlyArray<{
@@ -100,6 +102,35 @@ export const prepareMessageAdmissionFixture = (
       }
       yield* db.insert(admissionGlobalCapacity).values({ singleton: true, reservedCount: 0 });
       yield* db.insert(relayDispatchCapacity).values({ singleton: true, activeCount: 0 });
+    }),
+  );
+
+export const setAuthenticationSessionState = (
+  databaseUrl: string,
+  options: {
+    readonly authenticationToken: string;
+    readonly state: "active" | "expired" | "revoked";
+  },
+) =>
+  withTestDatabase(
+    databaseUrl,
+    Effect.gen(function* () {
+      const db = yield* PgDrizzle.makeWithDefaults();
+      const now = Date.now();
+      yield* db
+        .update(authenticationSessions)
+        .set({
+          expiresAt: new Date(
+            options.state === "expired" ? now - 1_000 : now + 60 * 60 * 1_000,
+          ).toISOString(),
+          revokedAt: options.state === "revoked" ? new Date(now).toISOString() : null,
+        })
+        .where(
+          eq(
+            authenticationSessions.tokenSha256,
+            createHash("sha256").update(options.authenticationToken).digest("hex"),
+          ),
+        );
     }),
   );
 

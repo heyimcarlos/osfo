@@ -1,8 +1,12 @@
 import { Effect, Layer, Redacted } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder, HttpApiMiddleware } from "effect/unstable/httpapi";
 import { OsfoApi } from "./api.js";
 import { MessageAdmission, ThreadResume } from "./services.js";
+import {
+  ThreadStreamLifecycle,
+  threadStreamConnectionRetryAfterSeconds,
+} from "./thread-stream-lifecycle.js";
 import {
   Authentication,
   AuthenticationRejected,
@@ -70,11 +74,13 @@ export const ThreadsHandlers = HttpApiBuilder.group(OsfoApi, "threads", (handler
         const authenticationToken = yield* AuthenticationToken;
         const resume = yield* ThreadResume;
         if (query.after !== undefined) {
-          return yield* resume.stream({
+          const source = yield* resume.stream({
             after: query.after,
             authenticationToken,
             threadId: params.threadId,
           });
+          const lifecycle = yield* ThreadStreamLifecycle;
+          return yield* lifecycle.open(source);
         }
         return yield* resume.history({
           afterPosition: query.afterPosition ?? "0",
@@ -93,8 +99,22 @@ const ApiRoutes = HttpApiBuilder.layer(OsfoApi, {
   openapiPath: "/openapi.json",
 }).pipe(Layer.provide(ThreadsHandlers));
 
-const hardenResponse = (response: HttpServerResponse.HttpServerResponse) => {
-  const noStore = HttpServerResponse.setHeaders(response, {
+const threadEventsPath = /^\/v1\/threads\/[^/]+\/events(?:\?|$)/u;
+
+const hardenResponse = (requestUrl: string, response: HttpServerResponse.HttpServerResponse) => {
+  const authenticated =
+    response.status === 401
+      ? HttpServerResponse.setHeader(response, "www-authenticate", "Bearer")
+      : response;
+  const guided =
+    response.status === 429 && threadEventsPath.test(requestUrl)
+      ? HttpServerResponse.setHeader(
+          authenticated,
+          "retry-after",
+          String(threadStreamConnectionRetryAfterSeconds),
+        )
+      : authenticated;
+  const noStore = HttpServerResponse.setHeaders(guided, {
     "cache-control": "private, no-store",
     "x-content-type-options": "nosniff",
   });
@@ -107,7 +127,12 @@ const hardenResponse = (response: HttpServerResponse.HttpServerResponse) => {
 };
 
 const HardenResponses = HttpRouter.middleware(
-  (httpEffect) => Effect.map(httpEffect, hardenResponse),
+  (httpEffect) =>
+    HttpServerRequest.HttpServerRequest.pipe(
+      Effect.flatMap((request) =>
+        Effect.map(httpEffect, (response) => hardenResponse(request.url, response)),
+      ),
+    ),
   {
     global: true,
   },

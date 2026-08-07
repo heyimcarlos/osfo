@@ -2,11 +2,13 @@ import {
   AcceptanceReceipt,
   AdmissionCommitUnknown,
   AdmissionUnavailable,
+  CapacityRejected,
   IdempotencyConflict,
   MessageAdmission,
   SnapshotUnavailable,
   ThreadResume,
   ThreadResumeUnavailable,
+  ThreadStreamLifecycle,
   type MessageAdmissionError,
   type MessageAdmissionReconciliationError,
   type SubmitMessageCommand,
@@ -23,6 +25,7 @@ import {
   HttpRouter,
   HttpServer,
 } from "effect/unstable/http";
+import { makeTestThreadStreamLifecycle } from "./thread-stream-lifecycle-harness.js";
 
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
 const idempotencyKey = "51b93c36-6a91-45d2-b25e-aaf249dc5208";
@@ -60,14 +63,20 @@ const makeHarness = (
     history: () => Effect.fail(new ThreadResumeUnavailable()),
     stream: () => Effect.fail(new ThreadResumeUnavailable()),
   });
+  const testLifecycle = makeTestThreadStreamLifecycle(100);
+  const lifecycle = testLifecycle.lifecycle;
   const web = HttpRouter.toWebHandler(
     OsfoApiLive.pipe(
       Layer.provide(Layer.succeed(MessageAdmission)(admission)),
       Layer.provide(Layer.succeed(ThreadResume)(resume)),
+      Layer.provide(Layer.succeed(ThreadStreamLifecycle)(lifecycle)),
       Layer.provideMerge(HttpServer.layerServices),
     ),
   );
-  const context = Context.make(MessageAdmission, admission).pipe(Context.add(ThreadResume, resume));
+  const context = Context.make(MessageAdmission, admission).pipe(
+    Context.add(ThreadResume, resume),
+    Context.add(ThreadStreamLifecycle, lifecycle),
+  );
   const handler = (request: Request) => web.handler(request, context);
   const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
     HttpClient.make((request, _url, signal) =>
@@ -88,7 +97,10 @@ const makeHarness = (
   return {
     httpClientLayer,
     request: handler,
-    dispose: web.dispose,
+    dispose: async () => {
+      await web.dispose();
+      await testLifecycle.dispose();
+    },
   };
 };
 
@@ -194,6 +206,33 @@ describe("Osfo Threads API", () => {
     }
   });
 
+  it("does not attach the stream retry policy to message admission limits", async () => {
+    const harness = makeHarness(() => Effect.fail(new CapacityRejected({ scope: "global" })));
+
+    try {
+      const response = await harness.request(
+        new Request(`http://osfo.test/v1/threads/${threadId}/messages`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer session-token",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            protocolVersion: 1,
+            idempotencyKey,
+            message: { content: "At capacity" },
+          }),
+        }),
+      );
+
+      expect(response.status).toBe(429);
+      expect(response.headers.get("retry-after")).toBeNull();
+      expect(await response.json()).toEqual({ _tag: "CapacityRejected", scope: "global" });
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it("rejects a missing bearer credential before admission", async () => {
     let called = false;
     const harness = makeHarness(() => {
@@ -216,6 +255,7 @@ describe("Osfo Threads API", () => {
 
       expect(response.status).toBe(401);
       expect(await response.json()).toEqual({ _tag: "AuthenticationRejected" });
+      expect(response.headers.get("www-authenticate")).toBe("Bearer");
       expect(called).toBe(false);
     } finally {
       await harness.dispose();
