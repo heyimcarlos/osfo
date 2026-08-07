@@ -235,6 +235,18 @@ expect_evaluator_fails duplicate-result \
   'FAIL: managed qualification result is missing or malformed' \
   "$scratch/duplicate.logs.json"
 
+jq -c '.' "$scratch/logs.json" >"$scratch/concatenated-root.logs.json"
+jq -c '.' "$scratch/logs.json" >>"$scratch/concatenated-root.logs.json"
+expect_evaluator_fails concatenated-log-roots \
+  'FAIL: managed qualification result evaluator failed closed' \
+  "$scratch/concatenated-root.logs.json"
+
+jq '.[0] as $valid | . + [$valid | .textPayload = "not-json"]' \
+  "$scratch/logs.json" >"$scratch/valid-plus-malformed.logs.json"
+expect_evaluator_fails valid-plus-malformed-result \
+  'FAIL: managed qualification result is missing or malformed' \
+  "$scratch/valid-plus-malformed.logs.json"
+
 printf 'not-json\n' >"$scratch/evaluator-tool.logs.json"
 expect_evaluator_fails evaluator-tool-failure \
   'FAIL: managed qualification result evaluator failed closed' \
@@ -315,6 +327,7 @@ printf '%s\n' \
   '    case "${MOCK_LIVE_MODE:-success}" in' \
   '      execution-failure) printf "provider diagnostic must not escape\n" >&2; exit 1 ;;' \
   '      malformed-execution) printf "%s\n" "{\"metadata\":{}}" ;;' \
+  '      duplicate-execution) printf "%s\n%s\n" "{\"metadata\":{\"name\":\"osfo-dev-authorized-secret-probe-abc12\"}}" "{\"metadata\":{\"name\":\"osfo-dev-authorized-secret-probe-abc12\"}}" ;;' \
   '      wrong-execution) printf "%s\n" "{\"metadata\":{\"name\":\"wrong-execution\"}}" ;;' \
   '      *) printf "%s\n" "{\"metadata\":{\"name\":\"osfo-dev-authorized-secret-probe-abc12\"}}" ;;' \
   '    esac' \
@@ -434,6 +447,8 @@ done
 expect_live_fails execution-failure execution-failure \
   'FAIL: managed authorized-secret qualification execution failed closed'
 expect_live_fails malformed-execution malformed-execution \
+  'FAIL: managed authorized-secret execution result is malformed'
+expect_live_fails duplicate-execution duplicate-execution \
   'FAIL: managed authorized-secret execution result is malformed'
 expect_live_fails wrong-execution wrong-execution \
   'FAIL: managed authorized-secret execution identity is invalid'

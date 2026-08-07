@@ -90,7 +90,11 @@ if ! gcloud run jobs execute "$job" --project="$project_id" --region="$region" \
   >"$execution_file" 2>/dev/null; then
   fail 'managed authorized-secret qualification execution failed closed'
 fi
-execution=$(jq -e -r '.metadata.name | select(type == "string")' \
+execution=$(jq -s -e -r '
+  select(length == 1)
+  | .[0]
+  | .metadata.name
+  | select(type == "string")' \
   "$execution_file" 2>/dev/null) \
   || fail 'managed authorized-secret execution result is malformed'
 if [[ ! "$execution" =~ ^${job}-[a-z0-9-]+$ ]]; then

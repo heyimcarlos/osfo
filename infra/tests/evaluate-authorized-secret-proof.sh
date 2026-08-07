@@ -23,12 +23,15 @@ trap 'rm -rf "$scratch"' EXIT
 result_file=$scratch/result.json
 
 set +e
-jq -e \
+jq -s -e \
   --arg project "$expected_project" \
   --arg region "$expected_region" \
   --arg job "$expected_job" \
   --arg execution "$expected_execution" '
-    if type != "array" then error("logs must be an array") else . end
+    if length != 1 or (.[0] | type) != "array"
+      then error("logs must be exactly one array")
+      else .[0]
+      end
     | map(select(
         .resource.type == "cloud_run_job"
         and .resource.labels.project_id == $project
@@ -36,10 +39,12 @@ jq -e \
         and .resource.labels.job_name == $job
         and .labels["run.googleapis.com/execution_name"] == $execution
         and (.textPayload | type == "string")
-        and ((.textPayload | fromjson?) != null)
-      ) | .textPayload | fromjson)
+      ))
     | select(length == 1)
     | .[0]
+    | .textPayload
+    | select((fromjson? | type) == "object")
+    | fromjson
     | select(
         type == "object"
         and (keys | sort) == [
