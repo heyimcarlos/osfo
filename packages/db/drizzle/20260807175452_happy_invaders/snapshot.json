@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "91d0af31-91b1-48ef-932a-11e3b92c0c8a",
+  "id": "8047e563-b3ea-4455-8f2a-fd5a8e784775",
   "prevIds": ["f8f3c957-e0ef-457e-adb6-ec61c16ad308"],
   "ddl": [
     {
@@ -2771,6 +2771,34 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "relay_threads"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "agent_run_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "claim_epoch",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"state\" = 'started'",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "tool_call_attempts_active_run_epoch_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "tool_call_attempts"
     },
     {
       "nameExplicit": false,

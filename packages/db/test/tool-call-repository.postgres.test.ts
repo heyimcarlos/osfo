@@ -350,10 +350,14 @@ describe("PostgreSQL non-Action ToolCall authority", () => {
     expect(evidence).toEqual({ attemptState: "started", callState: "running" });
   });
 
-  it("fences stale workers and lets cancellation win one terminal outcome", async () => {
+  it("replaces a stale attempt without consuming the retry budget", async () => {
     const batch = await run(
       ToolCallRepository.use((repository) =>
-        repository.commitBatch(fence, { ...request, requests: [request.requests[0]] }),
+        repository.commitBatch(fence, {
+          ...request,
+          attemptLimit: 1,
+          requests: [request.requests[0]],
+        }),
       ),
     );
     const first = await run(
@@ -390,6 +394,44 @@ describe("PostgreSQL non-Action ToolCall authority", () => {
     if (replacement.type !== "started") throw new Error("Expected replacement attempt");
     expect(replacement.attempt.toolCallId).toBe(first.attempt.toolCallId);
     expect(replacement.attempt.toolCallAttemptId).not.toBe(first.attempt.toolCallAttemptId);
+    expect(replacement.attempt.attemptNumber).toBe(2);
+
+    await run(
+      ToolCallRepository.use((repository) =>
+        repository.completeAttempt(replacementFence, replacement.attempt, {
+          type: "succeeded",
+          result: { type: "text", text: "replacement completed" },
+        }),
+      ),
+    );
+    expect(
+      await run(
+        ToolCallRepository.use((repository) => repository.loadBatchState(replacementFence, batch)),
+      ),
+    ).toEqual({
+      type: "succeeded",
+      outcomes: [
+        {
+          toolCallId: first.attempt.toolCallId,
+          outcome: {
+            type: "succeeded",
+            result: { type: "text", text: "replacement completed" },
+          },
+        },
+      ],
+    });
+  });
+
+  it("lets requested cancellation win one terminal outcome", async () => {
+    const batch = await run(
+      ToolCallRepository.use((repository) =>
+        repository.commitBatch(fence, { ...request, requests: [request.requests[0]] }),
+      ),
+    );
+    const claim = await run(
+      ToolCallRepository.use((repository) => repository.claimNextAttempt(fence, batch)),
+    );
+    if (claim.type !== "started") throw new Error("Expected ToolCall attempt");
 
     await run(
       Effect.gen(function* () {
@@ -401,12 +443,10 @@ describe("PostgreSQL non-Action ToolCall authority", () => {
       }),
     );
 
-    await run(
-      ToolCallRepository.use((repository) => repository.cancelBatch(replacementFence, batch)),
-    );
+    await run(ToolCallRepository.use((repository) => repository.cancelBatch(fence, batch)));
     const lateSuccess = await run(
       ToolCallRepository.use((repository) =>
-        repository.completeAttempt(replacementFence, replacement.attempt, {
+        repository.completeAttempt(fence, claim.attempt, {
           type: "succeeded",
           result: { type: "text", text: "too late" },
         }),
@@ -414,9 +454,7 @@ describe("PostgreSQL non-Action ToolCall authority", () => {
     );
     expect(Exit.isFailure(lateSuccess)).toBe(true);
     expect(
-      await run(
-        ToolCallRepository.use((repository) => repository.loadBatchState(replacementFence, batch)),
-      ),
+      await run(ToolCallRepository.use((repository) => repository.loadBatchState(fence, batch))),
     ).toEqual({ type: "canceled" });
   });
 });

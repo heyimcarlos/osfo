@@ -118,6 +118,7 @@ CREATE TABLE "tool_calls" (
       ))
 );
 --> statement-breakpoint
+CREATE INDEX "tool_call_attempts_active_run_epoch_idx" ON "tool_call_attempts" ("agent_run_id","claim_epoch") WHERE "state" = 'started';--> statement-breakpoint
 ALTER TABLE "tool_call_attempts" ADD CONSTRAINT "tool_call_attempts_jnEhM8cRioYb_fkey" FOREIGN KEY ("tool_call_id","agent_run_id") REFERENCES "tool_calls"("tool_call_id","agent_run_id");--> statement-breakpoint
 ALTER TABLE "tool_call_batches" ADD CONSTRAINT "tool_call_batches_agent_run_id_agent_runs_agent_run_id_fkey" FOREIGN KEY ("agent_run_id") REFERENCES "agent_runs"("agent_run_id");--> statement-breakpoint
 ALTER TABLE "tool_call_progress_events" ADD CONSTRAINT "tool_call_progress_events_PQiHgjb5TRdm_fkey" FOREIGN KEY ("tool_call_attempt_id","tool_call_id","agent_run_id") REFERENCES "tool_call_attempts"("tool_call_attempt_id","tool_call_id","agent_run_id");--> statement-breakpoint

@@ -294,11 +294,16 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               const call = candidates[0];
               if (call === undefined) return { type: "none" as const };
 
-              const counts = yield* sql<{ readonly count: number }>`SELECT count(*)::int AS count
+              const counts = yield* sql<{
+                readonly attemptCount: number;
+                readonly retryableCount: number;
+              }>`SELECT
+                  count(*)::int AS "attemptCount",
+                  count(*) FILTER (WHERE state = 'retryable')::int AS "retryableCount"
                 FROM tool_call_attempts
                 WHERE tool_call_id = ${call.toolCallId}`;
-              const attemptNumber = (counts[0]?.count ?? 0) + 1;
-              if (attemptNumber > call.attemptLimit) {
+              const attemptNumber = (counts[0]?.attemptCount ?? 0) + 1;
+              if ((counts[0]?.retryableCount ?? 0) >= call.attemptLimit) {
                 const outcome = {
                   type: "failed" as const,
                   cause: "dependencyUnavailable" as const,

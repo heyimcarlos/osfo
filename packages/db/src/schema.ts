@@ -959,6 +959,9 @@ export const toolCallAttempts = pgTable(
       table.toolCallId,
       table.agentRunId,
     ),
+    index("tool_call_attempts_active_run_epoch_idx")
+      .on(table.agentRunId, table.claimEpoch)
+      .where(sql`${table.state} = 'started'`),
     check("tool_call_attempts_number_check", sql`${table.attemptNumber} > 0`),
     check("tool_call_attempts_epoch_check", sql`${table.claimEpoch} > 0`),
     check(
