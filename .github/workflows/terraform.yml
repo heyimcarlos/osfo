@@ -83,6 +83,8 @@ jobs:
             infra/scripts/terraform-ci.sh -chdir="$root" init -backend=false -input=false -lockfile=readonly
             infra/scripts/terraform-ci.sh -chdir="$root" validate
           done < <(find infra/roots -mindepth 1 -type f -name versions.tf -exec dirname {} \; | sort)
+      - name: Test development runtime input contracts
+        run: infra/scripts/terraform-ci.sh -chdir=infra/roots/development/runtime test
 
   development-configuration:
     if: github.event_name == 'workflow_dispatch' && inputs.task == 'development-proof'

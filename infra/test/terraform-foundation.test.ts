@@ -65,6 +65,20 @@ describe("Terraform foundation", () => {
     ),
   );
 
+  it.effect("enforces the development runtime demo contract", () =>
+    expectCheckPasses(
+      "infra/tests/development-runtime-contract.sh",
+      "development runtime demo topology",
+    ),
+  );
+
+  it.effect("proves runtime absence checks fail closed", () =>
+    expectCheckPasses(
+      "infra/tests/development-runtime-absent-contract.sh",
+      "absence proof fails closed",
+    ),
+  );
+
   it.effect("enforces development failure diagnostics and teardown independence", () =>
     expectCheckPasses(
       "infra/tests/development-platform-repair-contract.sh",

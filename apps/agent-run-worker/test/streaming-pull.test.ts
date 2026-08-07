@@ -4,7 +4,7 @@ import {
   type RunnableAgentRunDelivery,
 } from "@osfo/agent-run";
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Logger, Option } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import {
   beginStreamingPullSubscriptionClose,
@@ -50,6 +50,9 @@ const makeMessage = (id: string, value: unknown, orderingKey: string | undefined
   };
   return { acknowledged, message, nacked };
 };
+
+const renderLogMessage = (message: unknown): string =>
+  Array.isArray(message) ? message.map(String).join(" ") : String(message);
 
 const makeSource = () => {
   const started = Deferred.makeUnsafe<void>();
@@ -238,6 +241,41 @@ describe("StreamingPull AgentRun delivery", () => {
         Deferred.await(invalid.nacked),
       ]);
       expect(calls).toBe(3);
+      yield* Fiber.interrupt(running);
+    }),
+  );
+
+  it.effect("does not report a delivery settled when acknowledgement fails", () =>
+    Effect.gen(function* () {
+      const source = makeSource();
+      const settlementFailed = yield* Deferred.make<void>();
+      const logMessages: Array<string> = [];
+      const logger = Logger.make(({ message }) => {
+        const text = renderLogMessage(message);
+        logMessages.push(text);
+        if (text.includes("StreamingPull message settlement failed")) {
+          Deferred.doneUnsafe(settlementFailed, Effect.void);
+        }
+      });
+      const failedMessage = makeMessage("failed-ack", deliveries.completed);
+      const message = {
+        ...failedMessage.message,
+        acknowledge: () => {
+          Effect.runSync(Effect.die("acknowledgement failed"));
+        },
+      };
+      const running = yield* runWorker(
+        source.source,
+        () => Effect.succeed({ type: "acknowledge" as const, outcome: "succeeded" as const }),
+        1,
+      ).pipe(Effect.provide(Logger.layer([logger])), Effect.forkChild);
+      yield* Deferred.await(source.started);
+      yield* source.emit(message);
+      yield* Deferred.await(settlementFailed);
+
+      expect(logMessages.some((entry) => entry.includes("OSFO_AGENT_RUN_DELIVERY_SETTLED"))).toBe(
+        false,
+      );
       yield* Fiber.interrupt(running);
     }),
   );

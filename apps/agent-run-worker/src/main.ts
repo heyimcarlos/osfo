@@ -8,10 +8,12 @@ import { makeOpenRouterChatCompletionsModelCallExecutorLayer } from "./openroute
 import { makeGoogleStreamingPullSourceLayer, runStreamingPullWorker } from "./streaming-pull.js";
 import {
   deterministicModelCallWorkerSource,
+  makeDeterministicModelCallWorkerSource,
   makeWorkerThreadModelCallExecutorLayer,
 } from "./worker-thread-model-call-executor.js";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
+const NonNegativeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const DatabasePoolMax = PositiveInteger.check(Schema.isLessThanOrEqualTo(8));
 
 const WorkerConfig = Config.all({
@@ -19,6 +21,10 @@ const WorkerConfig = Config.all({
     Config.withDefault(8),
   ),
   databaseUrl: Config.nonEmptyString("OSFO_DATABASE_URL"),
+  deterministicQualificationModelDelayMs: Config.schema(
+    NonNegativeInteger,
+    "OSFO_DETERMINISTIC_QUALIFICATION_MODEL_DELAY_MS",
+  ).pipe(Config.withDefault(0)),
   executionProfileRef: Config.nonEmptyString("OSFO_EXECUTION_PROFILE_REF"),
   executionSlots: Config.schema(PositiveInteger, "OSFO_AGENT_RUN_EXECUTION_SLOTS").pipe(
     Config.withDefault(32),
@@ -47,7 +53,9 @@ const WorkerConfig = Config.all({
     PositiveInteger,
     "OSFO_AGENT_RUN_TERMINATION_DEADLINE_MS",
   ).pipe(Config.withDefault(1_000)),
-  workerId: Config.nonEmptyString("OSFO_AGENT_RUN_WORKER_ID"),
+  workerId: Config.nonEmptyString("OSFO_AGENT_RUN_WORKER_ID").pipe(
+    Config.orElse(() => Config.nonEmptyString("HOSTNAME")),
+  ),
 });
 
 class InvalidWorkerExecutionProfile extends Data.TaggedError("InvalidWorkerExecutionProfile")<{
@@ -59,6 +67,7 @@ const modelCallExecutorLayer = (
   profile: OzExecutionProfile,
   openRouterApiKey: Option.Option<Redacted.Redacted<string>>,
   cancellationGraceMs: number,
+  deterministicModelDelayMs: number,
   terminationDeadlineMs: number,
 ): Effect.Effect<Layer.Layer<ModelCallExecutor>, InvalidWorkerExecutionProfile> => {
   switch (profile.type) {
@@ -66,7 +75,10 @@ const modelCallExecutorLayer = (
       return Effect.succeed(
         makeWorkerThreadModelCallExecutorLayer({
           cancellationGraceMs,
-          source: deterministicModelCallWorkerSource,
+          source:
+            deterministicModelDelayMs === 0
+              ? deterministicModelCallWorkerSource
+              : makeDeterministicModelCallWorkerSource(deterministicModelDelayMs),
           terminationDeadlineMs,
         }),
       );
@@ -103,6 +115,7 @@ const program = WorkerConfig.pipe(
       profile,
       config.openRouterApiKey,
       config.cancellationGraceMs,
+      config.deterministicQualificationModelDelayMs,
       config.terminationDeadlineMs,
     ).pipe(
       Effect.flatMap((executorLayer) => {

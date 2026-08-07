@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+cd "$repo_root"
+
+root=infra/roots/development/runtime
+
+for resource in \
+  google_cloud_run_v2_job.migration \
+  google_cloud_run_v2_job.database_bootstrap \
+  google_cloud_run_v2_job.seed \
+  google_cloud_run_v2_job.reconciliation \
+  google_cloud_run_v2_service.transport \
+  google_cloud_run_v2_worker_pool.relay \
+  google_cloud_run_v2_worker_pool.agentrun \
+  google_pubsub_topic_iam_member.relay_publisher \
+  google_pubsub_subscription_iam_member.agentrun_subscriber \
+  google_compute_region_network_endpoint_group.transport \
+  google_compute_security_policy.edge \
+  google_compute_managed_ssl_certificate.edge \
+  google_monitoring_dashboard.runtime; do
+  rg --fixed-strings --quiet "resource \"${resource%.*}\" \"${resource#*.}\"" "$root/main.tf"
+done
+
+rg --fixed-strings --quiet 'manual_instance_count = var.operating_contract.relay_worker_count' "$root/main.tf"
+rg --fixed-strings --quiet 'manual_instance_count = var.operating_contract.agentrun_worker_count' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_RELAY_PUBLISHER_CONCURRENCY' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_RELAY_PUBLICATION_WINDOW_SIZE' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_RELAY_SAFETY_DRAIN_INTERVAL_MS' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_PUBSUB_STREAM_COUNT' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_AGENT_RUN_EXECUTION_SLOTS' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_AGENT_RUN_LEASE_DURATION_MS' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_AGENT_RUN_LEASE_RENEWAL_INTERVAL_MS' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_AGENT_RUN_CANCELLATION_POLL_INTERVAL_MS' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_AGENT_RUN_CANCELLATION_GRACE_MS' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_AGENT_RUN_TERMINATION_DEADLINE_MS' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_DATABASE_POOL_MAX' "$root/main.tf"
+rg --fixed-strings --quiet 'production_candidate = "unqualified"' "$root/main.tf"
+rg --fixed-strings --quiet 'six_worker_candidate_qualified = false' "$root/main.tf"
+rg --fixed-strings --quiet 'production_qualification       = "MISSING"' "$root/main.tf"
+rg --fixed-strings --quiet 'openrouter_minimax_status      = "MISSING"' "$root/main.tf"
+rg --fixed-strings --quiet \
+  'Production qualification: MISSING. Final us-east4 A/B/C/D admission matrix: FAIL.' \
+  "$root/main.tf"
+if rg --fixed-strings --quiet 'Production qualification: FAIL/MISSING.' "$root/main.tf"; then
+  printf 'runtime evidence must separate overall qualification from the failed admission matrix\n' >&2
+  exit 1
+fi
+rg --fixed-strings --quiet 'google_cloud_run_v2_job.database_bootstrap' "$root/main.tf"
+rg --fixed-strings --quiet 'INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER' "$root/main.tf"
+if rg --fixed-strings --quiet 'INGRESS_TRAFFIC_ALL' "$root/main.tf"; then
+  printf 'transport must remain internal-and-load-balancer only\n' >&2
+  exit 1
+fi
+edge_address_block=$(sed -n '/resource "google_compute_global_address" "edge" {/,/^}/p' "$root/main.tf")
+rg --fixed-strings --quiet 'serving_ready              = local.runtime_ready && var.serving_enabled' "$root/main.tf"
+rg --fixed-strings --quiet 'public_edge_ready          = local.serving_ready && var.public_hostname != null' "$root/main.tf"
+rg --fixed-strings --quiet 'count   = local.serving_ready ? 1 : 0' <<<"$edge_address_block"
+
+for resource in \
+  'google_cloud_run_v2_service_iam_member" "transport_public_invoker' \
+  'google_compute_region_network_endpoint_group" "transport' \
+  'google_compute_security_policy" "edge' \
+  'google_compute_backend_service" "transport' \
+  'google_compute_managed_ssl_certificate" "edge' \
+  'google_compute_url_map" "edge' \
+  'google_compute_target_https_proxy" "edge' \
+  'google_compute_global_forwarding_rule" "edge'; do
+  resource_block=$(sed -n "/resource \"${resource}\" {/,/^}/p" "$root/main.tf")
+  rg --fixed-strings --quiet 'local.public_edge_ready ? 1 : 0' <<<"$resource_block"
+done
+rg --fixed-strings --quiet 'edge_ip_address                = try(google_compute_global_address.edge[0].address, null)' "$root/main.tf"
+rg --fixed-strings --quiet 'public_edge_status             = local.public_edge_ready ? "CANDIDATE" : "MISSING"' "$root/main.tf"
+rg --fixed-strings --quiet 'serving apply with `public_hostname = null`' \
+  docs/openpoke-v1-demo/development-runtime.md
+rg --fixed-strings --quiet 'reported as `runtime.edge_ip_address`' \
+  docs/openpoke-v1-demo/development-runtime.md
+rg --quiet 'protocol\s*=\s*"HTTP"' "$root/main.tf"
+rg --fixed-strings --quiet 'Transport request outcomes' "$root/main.tf"
+rg --fixed-strings --quiet 'Ordered subscription backlog age' "$root/main.tf"
+rg --fixed-strings --quiet 'PostgreSQL connections' "$root/main.tf"
+rg --fixed-strings --quiet 'Runtime CPU utilization' "$root/main.tf"
+rg --fixed-strings --quiet 'Runtime dependency, lease, fence, cancellation, and rollout logs' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_REFERENCE_AUTHENTICATION_TOKEN' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_DATABASE_ADMIN_URL' "$root/main.tf"
+rg --fixed-strings --quiet 'OSFO_CURSOR_SECRET' "$root/main.tf"
+rg --fixed-strings --quiet 'value_source {' "$root/main.tf"
+rg --fixed-strings --quiet 'model_adapter_secret_name  = "${var.name_prefix}-model-adapter"' "$root/main.tf"
+rg --fixed-strings --quiet 'var.model_adapter_secret_version != null' "$root/main.tf"
+rg --fixed-strings --quiet 'name = "OPENROUTER_API_KEY"' "$root/main.tf"
+rg --fixed-strings --quiet 'secret  = local.model_adapter_secret_name' "$root/main.tf"
+rg --fixed-strings --quiet 'version = var.model_adapter_secret_version' "$root/main.tf"
+[[ $(rg --fixed-strings --count 'name = "OPENROUTER_API_KEY"' "$root/main.tf") == 1 ]]
+for secret_version in \
+  database_admin_secret_version \
+  cursor_secret_version \
+  reference_auth_secret_version \
+  model_adapter_secret_version; do
+  variable_block=$(sed -n "/variable \"$secret_version\" {/,/^}/p" "$root/variables.tf")
+  rg --fixed-strings --quiet \
+    "var.$secret_version == null || can(regex(\"^[1-9][0-9]*\\\\z\", var.$secret_version))" \
+    <<<"$variable_block"
+done
+[[ $(rg --fixed-strings --count \
+  'error_message = "The secret version must be null or an exact positive integer string."' \
+  "$root/variables.tf") == 4 ]]
+secret_version_test="$root/tests/secret-version-validation.tftest.hcl"
+[[ $(rg --count '^run "' "$secret_version_test") == 19 ]]
+[[ $(rg --fixed-strings --count 'expect_failures = [var.' "$secret_version_test") == 17 ]]
+rg --fixed-strings --quiet 'run "accept_positive_integer_versions"' "$secret_version_test"
+for invalid_case in latest zero whitespace newline nonnumeric; do
+  rg --quiet "^run \"reject_.*_$invalid_case\"" "$secret_version_test"
+done
+rg --fixed-strings --quiet \
+  'infra/scripts/terraform-ci.sh -chdir=infra/roots/development/runtime test' \
+  .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'timeout_sec           = 3600' "$root/main.tf"
+if rg --ignore-case --quiet 'OSFO_MODEL_BINDING|OSFO_OPENROUTER_MODEL|OSFO_DETERMINISTIC_MODEL_DELAY_MS|openai' "$root"; then
+  printf 'runtime must use only the immutable OpenRouter MiniMax profile\n' >&2
+  exit 1
+fi
+rg --fixed-strings --quiet 'OSFO_DETERMINISTIC_QUALIFICATION_MODEL_DELAY_MS' \
+  apps/agent-run-worker/src/main.ts
+rg --line-regexp --quiet 'OPENROUTER_API_KEY=' .env.example
+if rg --quiet 'OSFO_OPENROUTER_MODEL|OPENAI_API_KEY' .env.example; then
+  printf 'the immutable profile must own the model and OpenRouter must be the only provider secret\n' >&2
+  exit 1
+fi
+rg --fixed-strings --quiet 'gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.22.0@sha256:' "$root/image-digests.json"
+
+jq -e '
+  .platform_ready == false
+  and .serving_enabled == false
+  and .public_hostname == null
+  and .database_admin_secret_version == null
+  and .model_adapter_secret_version == null
+  and .execution_profile_ref == "oz.openrouter.minimax.minimax-m3.chat-completions.v1"
+  and (has("execution_profiles") | not)
+  and .operating_contract.relay_worker_count == 1
+  and .operating_contract.relay_publisher_count == 4
+  and .operating_contract.agentrun_worker_count == 6
+  and .operating_contract.agentrun_streams_per_worker == 4
+  and .operating_contract.agentrun_execution_slots_per_worker == 32
+  and .operating_contract.agentrun_db_pool_connections == 8
+  and .operating_contract.agentrun_lease_duration_ms == 30000
+  and .operating_contract.agentrun_lease_renewal_interval_ms == 10000
+  and .operating_contract.agentrun_cancellation_poll_interval_ms == 100
+  and .operating_contract.agentrun_cancellation_grace_ms == 100
+  and .operating_contract.agentrun_termination_deadline_ms == 1000
+' "$root/development.tfvars.json" >/dev/null
+
+if rg --quiet 'VITE_OSFO_AUTHENTICATION_TOKEN|VITE_OSFO_THREAD_ID' \
+  apps/web/src/main.tsx apps/web/src/configuration-required.tsx Containerfile "$root"; then
+  printf 'browser authority must not be compiled into Vite or Terraform\n' >&2
+  exit 1
+fi
+
+rg --fixed-strings --quiet 'referenceClientAuthorityStorageKey' apps/web/src/main.tsx
+rg --fixed-strings --quiet 'type="password"' apps/web/src/configuration-required.tsx
+rg --fixed-strings --quiet 'USER node' Containerfile
+rg --line-regexp --quiet '\.env' .dockerignore
+[[ $(rg --fixed-strings --count '@sha256:' Containerfile) == 3 ]]
+rg --fixed-strings --quiet 'docker buildx build' .github/workflows/development-runtime-image.yml
+rg --fixed-strings --quiet 'containerimage.digest' .github/workflows/development-runtime-image.yml
+rg --fixed-strings --quiet 'github.ref == '\''refs/heads/main'\''' .github/workflows/development-runtime-image.yml
+rg --fixed-strings --quiet '"cursor-signing"' infra/modules/data-authority/main.tf
+rg --fixed-strings --quiet '"reference-client-auth"' infra/modules/data-authority/main.tf
+rg --fixed-strings --quiet '"database-admin-url"' infra/modules/data-authority/main.tf
+rg --fixed-strings --quiet 'runtime_transport_cursor' infra/roots/foundation/main.tf
+rg --fixed-strings --quiet 'runtime_migration_reference' infra/roots/foundation/main.tf
+rg --fixed-strings --quiet 'runtime_migration_database_admin' infra/roots/foundation/main.tf
+rg --fixed-strings --quiet 'runtime_agentrun' infra/roots/foundation/main.tf
+rg --fixed-strings --quiet 'secret   = "model-adapter"' infra/roots/foundation/main.tf
+rg --fixed-strings --quiet 'development_runtime_act_as' infra/roots/foundation/main.tf
+rg --fixed-strings --quiet 'development_runtime_service_consumer' infra/roots/foundation/main.tf
+for script in development-runtime-jobs.sh development-runtime-smoke.sh development-runtime-recovery.sh development-runtime-absent.sh; do
+  bash -n "infra/tests/$script"
+done
+absence_script=infra/tests/development-runtime-absent.sh
+rg --fixed-strings --quiet 'gcloud auth list' "$absence_script"
+rg --fixed-strings --quiet 'gcloud projects describe "$project_id"' "$absence_script"
+rg --fixed-strings --quiet -- "--format='json(account,status)'" "$absence_script"
+rg --fixed-strings --quiet -- "--format='json(projectId)'" "$absence_script"
+rg --fixed-strings --quiet 'and .projectId == $project_id' "$absence_script"
+for list_command in \
+  'gcloud run services list' \
+  'gcloud beta run worker-pools list' \
+  'gcloud run jobs list' \
+  'gcloud compute network-endpoint-groups list' \
+  'gcloud compute backend-services list' \
+  'gcloud compute ssl-certificates list' \
+  'gcloud compute addresses list' \
+  'gcloud compute security-policies list' \
+  'gcloud compute url-maps list' \
+  'gcloud compute target-https-proxies list' \
+  'gcloud compute forwarding-rules list'; do
+  rg --fixed-strings --quiet "$list_command" "$absence_script"
+done
+if rg --quiet 'require_absent|services describe|worker-pools describe|jobs describe|network-endpoint-groups describe|backend-services describe|ssl-certificates describe|addresses describe|security-policies describe|url-maps describe|target-https-proxies describe|forwarding-rules describe|2>&1' "$absence_script"; then
+  printf 'runtime absence evidence must use successful list queries without raw provider diagnostics\n' >&2
+  exit 1
+fi
+bash -n infra/tests/development-runtime-absent-contract.sh
+rg --fixed-strings --quiet 'development-runtime-absent-contract.sh' \
+  infra/test/terraform-foundation.test.ts
+rg --fixed-strings --quiet 'productionQualification: "MISSING"' infra/tests/development-runtime-smoke.sh
+rg --fixed-strings --quiet 'exit 2' infra/tests/development-runtime-smoke.sh
+rg --fixed-strings --quiet 'oz.openrouter.minimax.minimax-m3.chat-completions.v1' infra/tests/development-runtime-smoke.sh
+rg --fixed-strings --quiet 'openrouter.chat-completions.minimax.minimax-m3.v1' infra/tests/development-runtime-smoke.sh
+rg --fixed-strings --quiet 'reportedUsageAttemptCount == "1"' infra/tests/development-runtime-smoke.sh
+rg --fixed-strings --quiet 'positiveReasoningUsageAttemptCount == "1"' infra/tests/development-runtime-smoke.sh
+rg --fixed-strings --quiet 'MISSING: replacement-before-provider-contact' infra/tests/development-runtime-recovery.sh
+if rg --quiet 'OSFO_DETERMINISTIC_MODEL_DELAY_MS|processReplacement: "PASS"' infra/tests/development-runtime-recovery.sh; then
+  printf 'deployed OpenRouter recovery must not claim deterministic delay evidence\n' >&2
+  exit 1
+fi
+rg --fixed-strings --quiet '| Production qualification | MISSING |' \
+  docs/openpoke-v1-demo/development-runtime.md
+rg --fixed-strings --quiet '| Final `us-east4` A/B/C/D admission matrix | FAIL |' \
+  docs/openpoke-v1-demo/development-runtime.md
+rg --fixed-strings --quiet -- '-> duplicate-delivery recovery proof' \
+  docs/openpoke-v1-demo/development-runtime.md
+if rg --quiet 'duplicate-delivery and worker-replacement recovery proof|sequence supplies rollout, process-replacement' \
+  docs/openpoke-v1-demo/development-runtime.md; then
+  printf 'deployed evidence must not overstate process replacement qualification\n' >&2
+  exit 1
+fi
+rg --fixed-strings --quiet 'relay publisher binding' infra/tests/development-runtime-absent.sh
+rg --fixed-strings --quiet 'AgentRun subscriber binding' infra/tests/development-runtime-absent.sh
+
+printf 'PASS: development runtime demo topology, credential boundary, digest pins, and honest qualification labels\n'

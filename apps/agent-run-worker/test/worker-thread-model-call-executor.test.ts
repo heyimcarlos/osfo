@@ -52,6 +52,32 @@ const workerSource = String.raw`
   }
 `;
 
+const gatedDeterministicWorkerSource = String.raw`
+  const { BroadcastChannel, parentPort, workerData } = require("node:worker_threads");
+  const attempt = workerData.attempt;
+  const id = attempt.modelCallAttemptId;
+  const control = new BroadcastChannel(id);
+  control.onmessage = (message) => {
+    if (message.data !== "release") return;
+    control.close();
+    parentPort.postMessage({
+      type: "observation",
+      modelCallAttemptId: id,
+      fragmentIndex: 0,
+      text: "Echo: ",
+    });
+    parentPort.postMessage({
+      type: "observation",
+      modelCallAttemptId: id,
+      fragmentIndex: 1,
+      text: attempt.prompt,
+    });
+    parentPort.postMessage({ type: "completed", modelCallAttemptId: id });
+    parentPort.close();
+  };
+  control.postMessage("waiting");
+`;
+
 const withPrompt = (prompt: string, modelCallAttemptId: string = attempt.modelCallAttemptId) => ({
   ...attempt,
   modelCallAttemptId,
@@ -69,7 +95,44 @@ const makeLayer = (onActiveSessionCountChange?: (count: number) => void) =>
 const execute = (executor: ModelCallExecutor["Service"], value: ModelCallAttempt) =>
   Stream.unwrap(executor.execute(value));
 
+const isBroadcastMessage = (value: unknown): value is { readonly data: unknown } =>
+  typeof value === "object" && value !== null && "data" in value;
+
 describe("worker-thread ModelCall executor", () => {
+  it.live("holds deterministic output until the qualification gate is released", () =>
+    Effect.gen(function* () {
+      const completed = yield* Deferred.make<void>();
+      const waiting = yield* Deferred.make<void>();
+      const control = new BroadcastChannel(attempt.modelCallAttemptId);
+      control.onmessage = (message) => {
+        if (isBroadcastMessage(message) && message.data === "waiting") {
+          Deferred.doneUnsafe(waiting, Effect.void);
+        }
+      };
+      const layer = makeWorkerThreadModelCallExecutorLayer({
+        cancellationGraceMs: 10,
+        source: gatedDeterministicWorkerSource,
+        terminationDeadlineMs: 1_000,
+      });
+      const program = ModelCallExecutor.use((executor) =>
+        Effect.gen(function* () {
+          yield* Stream.runDrain(execute(executor, attempt)).pipe(
+            Effect.andThen(Deferred.succeed(completed, undefined)),
+            Effect.forkScoped,
+          );
+          yield* Deferred.await(waiting);
+          expect(yield* Deferred.isDone(completed)).toBe(false);
+          control.postMessage("release");
+          yield* Deferred.await(completed);
+        }),
+      );
+
+      yield* Effect.scoped(program.pipe(Effect.provide(layer))).pipe(
+        Effect.ensuring(Effect.sync(() => control.close())),
+      );
+    }),
+  );
+
   it.live("kills an executor that ignores cancellation before releasing its session", () =>
     Effect.gen(function* () {
       const active = yield* Deferred.make<void>();

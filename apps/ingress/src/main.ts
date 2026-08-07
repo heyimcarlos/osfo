@@ -12,8 +12,10 @@ import {
   makeThreadResumeLayer,
 } from "@osfo/db";
 import { Config, Context, Effect, Layer, Schema } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { extname, resolve, sep } from "node:path";
 import {
   drainedTelemetry,
   emitIngressLifecycleTelemetry,
@@ -53,6 +55,7 @@ const IngressConfig = Config.all({
   lifecycleTelemetryEnabled: Config.boolean("OSFO_TEST_LIFECYCLE_TELEMETRY").pipe(
     Config.withDefault(false),
   ),
+  host: Config.nonEmptyString("OSFO_INGRESS_HOST").pipe(Config.withDefault("127.0.0.1")),
   maxStreamBufferedAgeMs: Config.schema(PositiveInteger, "OSFO_MAX_STREAM_BUFFERED_AGE_MS").pipe(
     Config.withDefault(5_000),
   ),
@@ -92,6 +95,7 @@ const IngressConfig = Config.all({
   streamPollIntervalMs: Config.schema(PositiveInteger, "OSFO_STREAM_POLL_INTERVAL_MS").pipe(
     Config.withDefault(100),
   ),
+  webRoot: Config.nonEmptyString("OSFO_WEB_ROOT").pipe(Config.withDefault("/srv/osfo/web")),
 });
 
 const announceReady = HttpServer.HttpServer.use((server) => {
@@ -100,6 +104,19 @@ const announceReady = HttpServer.HttpServer.use((server) => {
     ? Effect.sync(() => console.log(`OSFO_INGRESS_READY:${address.port}`))
     : Effect.void;
 });
+
+const contentType = (path: string) => {
+  switch (extname(path)) {
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".js":
+      return "text/javascript; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml";
+    default:
+      return "text/html; charset=utf-8";
+  }
+};
 
 const ServerLive = Layer.unwrap(
   IngressConfig.pipe(
@@ -144,7 +161,31 @@ const ServerLive = Layer.unwrap(
         maxConnectionLifetimeMs: config.maxStreamConnectionLifetimeMs,
         maxConnections: config.maxStreamConnections,
       });
-      const RunningApi = HttpRouter.serve(OsfoApiLive).pipe(
+      const WebRoutes = Layer.merge(
+        HttpRouter.add(
+          "GET",
+          "/healthz",
+          HttpServerResponse.jsonUnsafe({
+            profile: config.executionProfileRef,
+            status: "ready",
+          }),
+        ),
+        HttpRouter.add("GET", "/*", (request) => {
+          const pathname = new URL(request.url, "http://osfo.invalid").pathname;
+          const requestedPath = resolve(config.webRoot, `.${pathname}`);
+          const webRootPrefix = resolve(config.webRoot) + sep;
+          const assetPath =
+            requestedPath.startsWith(webRootPrefix) && existsSync(requestedPath)
+              ? requestedPath
+              : resolve(config.webRoot, "index.html");
+          return Effect.succeed(
+            HttpServerResponse.uint8Array(readFileSync(assetPath), {
+              contentType: contentType(assetPath),
+            }),
+          );
+        }),
+      );
+      const RunningApi = HttpRouter.serve(Layer.merge(OsfoApiLive, WebRoutes)).pipe(
         Layer.provide(
           Layer.mergeAll(
             AdmissionLive,
@@ -194,7 +235,7 @@ const ServerLive = Layer.unwrap(
 
       const RunningServer = Layer.effectDiscard(announceReady).pipe(
         Layer.provideMerge(RunningWithRecovery),
-        Layer.provide(NodeHttpServer.layer(() => server, { host: "127.0.0.1", port: config.port })),
+        Layer.provide(NodeHttpServer.layer(() => server, { host: config.host, port: config.port })),
       );
       return Layer.merge(RunningServer, LifecycleTelemetryLive);
     }),

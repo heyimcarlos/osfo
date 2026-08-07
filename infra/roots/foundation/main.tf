@@ -153,6 +153,19 @@ locals {
     }
   }
 
+  development_runtime_root_project_roles = toset([
+    "roles/artifactregistry.writer",
+    "roles/compute.loadBalancerAdmin",
+    "roles/compute.networkViewer",
+    "roles/compute.securityAdmin",
+    "roles/iam.serviceAccountViewer",
+    "roles/logging.viewer",
+    "roles/monitoring.editor",
+    "roles/pubsub.viewer",
+    "roles/run.admin",
+    "roles/secretmanager.viewer",
+  ])
+
   development_qualification_identities = {
     denied_secret = "qual-denied"
     network       = "qual-network"
@@ -167,6 +180,18 @@ locals {
       identity = "temporal"
       secret   = "temporal-cloud"
     }
+    runtime_transport_cursor = {
+      identity = "transport"
+      secret   = "cursor-signing"
+    }
+    runtime_migration_reference = {
+      identity = "migration"
+      secret   = "reference-client-auth"
+    }
+    runtime_migration_database_admin = {
+      identity = "migration"
+      secret   = "database-admin-url"
+    }
   }
 
   security_constraints = var.organization_id == null ? {} : {
@@ -179,6 +204,25 @@ locals {
       constraint  = pair[1]
     }
   }
+}
+
+resource "google_project_iam_custom_role" "development_runtime_pubsub_policy_manager" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoRuntimePubSubPolicyManager"
+  title       = "Osfo runtime Pub/Sub policy manager"
+  description = "Manages IAM only on the reviewed development AgentRun topic and subscription."
+  permissions = [
+    "pubsub.subscriptions.get",
+    "pubsub.subscriptions.getIamPolicy",
+    "pubsub.subscriptions.setIamPolicy",
+    "pubsub.topics.get",
+    "pubsub.topics.getIamPolicy",
+    "pubsub.topics.setIamPolicy",
+  ]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
 }
 
 resource "google_project_iam_custom_role" "platform_secret_manager" {
@@ -760,6 +804,40 @@ resource "google_project_iam_member" "development_runtime_cloud_sql" {
   member  = "serviceAccount:${google_service_account.development_runtime[each.value.identity].email}"
 }
 
+resource "google_project_iam_member" "development_runtime_root" {
+  for_each = local.development_runtime_root_project_roles
+
+  project = google_project.environment["development"].project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.terraform["development-runtime"].email}"
+}
+
+resource "google_project_iam_member" "development_runtime_service_consumer" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.platform_service_consumer.name
+  member  = "serviceAccount:${google_service_account.terraform["development-runtime"].email}"
+}
+
+resource "google_project_iam_member" "development_runtime_pubsub_policy" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.development_runtime_pubsub_policy_manager.name
+  member  = "serviceAccount:${google_service_account.terraform["development-runtime"].email}"
+
+  condition {
+    title       = "exact_development_agentrun_buffer"
+    description = "Restricts runtime IAM changes to the reviewed topic and subscription."
+    expression  = "resource.name == 'projects/${google_project.environment["development"].project_id}/topics/${var.development_environment_baseline.name_prefix}-agentruns' || resource.name == 'projects/${google_project.environment["development"].project_id}/subscriptions/${var.development_environment_baseline.name_prefix}-agentruns'"
+  }
+}
+
+resource "google_compute_subnetwork_iam_member" "development_runtime_network_user" {
+  project    = google_project.environment["development"].project_id
+  region     = var.region
+  subnetwork = module.development_environment_baseline.subnetwork_id
+  role       = "roles/compute.networkUser"
+  member     = "serviceAccount:${google_service_account.terraform["development-runtime"].email}"
+}
+
 resource "google_project_iam_member" "development_qualification_cloud_sql_client" {
   project = google_project.environment["development"].project_id
   role    = "roles/cloudsql.client"
@@ -822,6 +900,14 @@ resource "google_service_account_iam_member" "development_platform_probe_act_as"
   service_account_id = each.value.name
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+}
+
+resource "google_service_account_iam_member" "development_runtime_act_as" {
+  for_each = google_service_account.development_runtime
+
+  service_account_id = each.value.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.terraform["development-runtime"].email}"
 }
 
 resource "google_storage_bucket_iam_member" "development_evidence" {

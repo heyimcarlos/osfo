@@ -4,6 +4,9 @@ import { CommitUnknown, submitThreadMessage } from "@osfo/api/client";
 import { seedReferenceClientAuthority } from "@osfo/db/reference-client";
 import { prepareMessageAdmissionFixture, readMessageAuthorityCounts } from "@osfo/db/testing";
 import { describe, expect, it } from "@effect/vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import {
   FetchHttpClient,
@@ -22,6 +25,35 @@ const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
 const authenticationToken = "browser-composition-session";
 
 describe("Osfo ingress composition", () => {
+  it.live("serves readiness and the production web shell without authentication", () =>
+    Effect.gen(function* () {
+      const webRoot = yield* Effect.acquireRelease(
+        Effect.tryPromise(() => mkdtemp(join(tmpdir(), "osfo-ingress-web-"))),
+        (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+      );
+      yield* Effect.promise(() =>
+        writeFile(join(webRoot, "index.html"), "<main>Osfo deployed shell</main>"),
+      );
+      const ingress = yield* startCompiledIngress({
+        databaseUrl,
+        executionProfileRef: "oz.composition-test.v1",
+        webRoot,
+      });
+      const client = yield* HttpClient.HttpClient;
+
+      const health = yield* client.execute(HttpClientRequest.get(`${ingress.origin}/healthz`));
+      expect(health.status).toBe(200);
+      expect(yield* health.json).toEqual({
+        profile: "oz.composition-test.v1",
+        status: "ready",
+      });
+
+      const shell = yield* client.execute(HttpClientRequest.get(`${ingress.origin}/`));
+      expect(shell.status).toBe(200);
+      expect(yield* shell.text).toContain("Osfo deployed shell");
+    }).pipe(Effect.provide(FetchHttpClient.layer)),
+  );
+
   it.live("accepts one authenticated Thread message durably", () =>
     Effect.gen(function* () {
       yield* prepareMessageAdmissionFixture(databaseUrl, { principals: [] });
