@@ -218,9 +218,13 @@ const scorecard = common("OpenPoke 100k DAU Scorecard", "openpoke-100k-scorecard
     `${evidenceWarning}\n\n**Traffic model:** 100,000 DAU × 20 messages/day = 2,000,000 daily messages = 23.15 messages/s average. The 232 messages/s lane is the modeled 10× peak.`,
     grid(0, 0, 24, 4),
   ),
-  stat(2, "Overall qualification", 'openpoke_run_status{run="$run"}', grid(0, 4, 4, 4), {
-    status: true,
-  }),
+  stat(
+    2,
+    "Overall qualification",
+    'openpoke_gate_status{run="$run",gate="production_qualification"}',
+    grid(0, 4, 4, 4),
+    { status: true },
+  ),
   stat(3, "Daily messages", "vector(2000000)", grid(4, 4, 4, 4), { unit: "locale" }),
   stat(4, "Daily average", "vector(2000000 / 86400)", grid(8, 4, 4, 4), {
     decimals: 2,

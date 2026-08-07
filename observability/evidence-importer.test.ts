@@ -102,61 +102,66 @@ const completeCorrectnessFields = {
 const fullPassingFiles = (
   benchmarkId: string,
   scenarioFields: Readonly<Record<string, unknown>> = {},
-): Readonly<Record<string, string>> => ({
-  "audit.json": JSON.stringify({
-    ...completeCorrectnessFields,
-    benchmark_id: benchmarkId,
-    completed_root_outcomes: 10,
-    duplicate_publications: 0,
-    expected_incoming: 10,
-    verdict: "PASS",
-  }),
-  "first-meaningful-event.json": JSON.stringify({
-    verdict: "PASS",
-    within_10_seconds_ratio: 0.99,
-  }),
-  "multi-device.json": JSON.stringify({
-    concurrent_sse_connections: 4,
-    converged: true,
-    device_cursor_positions: 4,
-    ordering_violations: 0,
-    replay_latency_ms: 2_000,
-    requirements: {
-      concurrent_sse_connections: "PASS",
-      device_cursor_positions: "PASS",
-      replay_latency: "PASS",
-    },
-    stream_duplicates: 0,
-    stream_gaps: 0,
-    verdict: "PASS",
-  }),
-  "qualification-metrics.json": JSON.stringify({
-    benchmark_id: benchmarkId,
-    receipt: { within_1_second_ratio: 1 },
-    reconciliation: { verdict: "PASS" },
-    region: "us-east4",
-  }),
-  "recovery.json": JSON.stringify({
-    backlog_bounded: true,
-    drain_duration_seconds: 1_200,
-    full_drain_within_20_minutes: true,
-    process_cut_timeline_seconds: 60,
-    progress_within_5_minutes: true,
-    recovery_rate_per_second: 609,
-    requirements: {
-      dependency_outage: "PASS",
-      process_cut_timeline: "PASS",
-      recovery_rate: "PASS",
-    },
-    verdict: "PASS",
-  }),
-  "scenario.json": JSON.stringify({
-    benchmark_id: benchmarkId,
-    count: 10,
-    region: "us-east4",
-    ...scenarioFields,
-  }),
-});
+): Readonly<Record<string, string>> => {
+  const rootOutcomes = typeof scenarioFields.count === "number" ? scenarioFields.count : 10;
+  return {
+    "audit.json": JSON.stringify({
+      ...completeCorrectnessFields,
+      accepted_incoming: rootOutcomes,
+      benchmark_id: benchmarkId,
+      completed_root_outcomes: rootOutcomes,
+      duplicate_publications: 0,
+      expected_incoming: rootOutcomes,
+      good_root_outcomes: rootOutcomes,
+      verdict: "PASS",
+    }),
+    "first-meaningful-event.json": JSON.stringify({
+      verdict: "PASS",
+      within_10_seconds_ratio: 0.99,
+    }),
+    "multi-device.json": JSON.stringify({
+      concurrent_sse_connections: 4,
+      converged: true,
+      device_cursor_positions: 4,
+      ordering_violations: 0,
+      replay_latency_ms: 2_000,
+      requirements: {
+        concurrent_sse_connections: "PASS",
+        device_cursor_positions: "PASS",
+        replay_latency: "PASS",
+      },
+      stream_duplicates: 0,
+      stream_gaps: 0,
+      verdict: "PASS",
+    }),
+    "qualification-metrics.json": JSON.stringify({
+      benchmark_id: benchmarkId,
+      receipt: { within_1_second_ratio: 1 },
+      reconciliation: { verdict: "PASS" },
+      region: "us-east4",
+    }),
+    "recovery.json": JSON.stringify({
+      backlog_bounded: true,
+      drain_duration_seconds: 1_200,
+      full_drain_within_20_minutes: true,
+      process_cut_timeline_seconds: 60,
+      progress_within_5_minutes: true,
+      recovery_rate_per_second: 609,
+      requirements: {
+        dependency_outage: "PASS",
+        process_cut_timeline: "PASS",
+        recovery_rate: "PASS",
+      },
+      verdict: "PASS",
+    }),
+    "scenario.json": JSON.stringify({
+      benchmark_id: benchmarkId,
+      count: rootOutcomes,
+      region: "us-east4",
+      ...scenarioFields,
+    }),
+  };
+};
 
 const audit = JSON.stringify({
   benchmark_id: "us-east4-current-wal",
@@ -572,9 +577,34 @@ describe("sealed evidence importer", () => {
       "audit.json": JSON.stringify({ accepted_incoming: 10, expected_incoming: 10 }),
       "scenario.json": JSON.stringify({
         benchmark_id: "selected-region",
+        count: 417_600,
+        duration_seconds: 1_800,
         lane: "matrix-A-clean-current-wal",
         manifest: "issue-87-postgres-admission-stability-r400k-v1",
+        rate_per_second: 232,
         region: "us-east4",
+        worker_concurrency: 32,
+        worker_db_pool: 8,
+        worker_flow_max_outstanding_bytes: 67_108_864,
+        worker_flow_max_outstanding_messages: 32,
+        worker_pull_streams: 4,
+        worker_slots: 32,
+      }),
+    });
+    const wrongWorkloadRoot = await makeBundle({
+      "audit.json": JSON.stringify({ accepted_incoming: 10, expected_incoming: 10 }),
+      "scenario.json": JSON.stringify({
+        benchmark_id: "wrong-matrix-workload",
+        count: 41_400,
+        duration_seconds: 1_800,
+        lane: "matrix-C-clean-current-wal",
+        manifest: "issue-87-postgres-admission-stability-r400k-v1",
+        rate_per_second: 23,
+        region: "us-east4",
+        worker_concurrency: 32,
+        worker_db_pool: 8,
+        worker_pull_streams: 4,
+        worker_slots: 32,
       }),
     });
     const contextualRoot = await makeBundle({
@@ -601,6 +631,11 @@ describe("sealed evidence importer", () => {
         run: "same-region-context",
         classification: "historical",
       },
+      {
+        root: wrongWorkloadRoot,
+        run: "wrong-matrix-workload",
+        classification: "historical",
+      },
     ]);
 
     expect(result.runs[0]?.qualifying).toBe(false);
@@ -608,12 +643,25 @@ describe("sealed evidence importer", () => {
     expect(result.runs[2]?.qualifying).toBe(false);
     expect(result.metrics).toContain('openpoke_matrix_cell_status{cell="A",status="PASS"} 1');
     expect(result.metrics).toContain('openpoke_matrix_cell_status{cell="B",status="MISSING"} -1');
+    expect(result.metrics).toContain('openpoke_matrix_cell_status{cell="C",status="FAIL"} 0');
   });
 
   it("derives qualification repetition completeness from sealed suite lanes", async () => {
     const suite = "issue-87-production-qualification-v1";
+    const targetContract = {
+      count: 417_600,
+      duration_seconds: 1_800,
+      rate_per_second: 232,
+      worker_concurrency: 32,
+      worker_db_pool: 8,
+      worker_flow_max_outstanding_bytes: 67_108_864,
+      worker_flow_max_outstanding_messages: 32,
+      worker_pull_streams: 4,
+      worker_slots: 32,
+    } as const;
     const repetitionOne = await makeBundle(
       fullPassingFiles("target-repetition-1", {
+        ...targetContract,
         lane: "target-232",
         manifest: suite,
         repetition: 1,
@@ -621,6 +669,7 @@ describe("sealed evidence importer", () => {
     );
     const repetitionThree = await makeBundle(
       fullPassingFiles("target-repetition-3", {
+        ...targetContract,
         lane: "target-232",
         manifest: suite,
         repetition: 3,
@@ -647,6 +696,7 @@ describe("sealed evidence importer", () => {
     expect(incomplete.metrics).not.toContain('summary="qualified"');
 
     const failedFiles = fullPassingFiles("target-repetition-2", {
+      ...targetContract,
       lane: "target-232",
       manifest: suite,
       repetition: 2,
@@ -689,6 +739,152 @@ describe("sealed evidence importer", () => {
       'openpoke_requirement_status{requirement="three_target_repetitions",run="target-repetition-1",view="qualification"} 0',
     );
     expect(failed.metrics).not.toContain('summary="qualified"');
+  });
+
+  it("requires the exact target workload and explicit flow-control limits", async () => {
+    const suite = "issue-87-workload-contract-v1";
+    const exactTarget = {
+      count: 417_600,
+      duration_seconds: 1_800,
+      lane: "target-232",
+      manifest: suite,
+      rate_per_second: 232,
+      worker_concurrency: 32,
+      worker_db_pool: 8,
+      worker_flow_max_outstanding_bytes: 67_108_864,
+      worker_flow_max_outstanding_messages: 32,
+      worker_pull_streams: 4,
+      worker_slots: 32,
+    } as const;
+    const bundlesFor = async (
+      prefix: string,
+      fieldsFor: (repetition: number) => Readonly<Record<string, unknown>>,
+    ) =>
+      Promise.all(
+        [1, 2, 3].map(async (repetition) => {
+          const run = `${prefix}-${repetition}`;
+          return {
+            classification: "historical" as const,
+            root: await makeBundle(
+              fullPassingFiles(run, {
+                ...exactTarget,
+                repetition,
+                ...fieldsFor(repetition),
+              }),
+            ),
+            run,
+          };
+        }),
+      );
+
+    const wrongWorkload = await importBundles(
+      await bundlesFor("wrong-target", (repetition) =>
+        repetition === 2 ? { rate_per_second: 231 } : {},
+      ),
+    );
+    expect(wrongWorkload.metrics).toContain(
+      'openpoke_requirement_status{requirement="three_target_repetitions",run="wrong-target-1",view="qualification"} 0',
+    );
+
+    const missingFlowControl = await importBundles(
+      await bundlesFor("missing-flow", () => ({
+        worker_flow_max_outstanding_messages: undefined,
+      })),
+    );
+    expect(missingFlowControl.metrics).toContain(
+      'openpoke_requirement_status{requirement="three_target_repetitions",run="missing-flow-1",view="qualification"} -1',
+    );
+
+    const exact = await importBundles(await bundlesFor("exact-target", () => ({})));
+    expect(exact.metrics).toContain(
+      'openpoke_requirement_status{requirement="three_target_repetitions",run="exact-target-1",view="qualification"} 1',
+    );
+  });
+
+  it("requires exact six-worker and eight-worker recovery reserve fleets", async () => {
+    const suite = "issue-87-recovery-reserve-v1";
+    const reserveBundle = async (run: string, laneFleet: 6 | 8, actualFleet: number) => ({
+      classification: "historical" as const,
+      root: await makeBundle(
+        fullPassingFiles(run, {
+          count: 36_540,
+          duration_seconds: 60,
+          lane: `recovery-rate-609-workers-${laneFleet}`,
+          manifest: suite,
+          rate_per_second: 609,
+          repetition: 1,
+          worker_concurrency: 32,
+          worker_db_pool: 8,
+          worker_fixed_instances: actualFleet,
+          worker_flow_max_outstanding_bytes: 67_108_864,
+          worker_flow_max_outstanding_messages: 32,
+          worker_pull_streams: 4,
+          worker_slots: 32,
+        }),
+      ),
+      run,
+    });
+
+    const exact = await importBundles([
+      await reserveBundle("reserve-worker-6", 6, 6),
+      await reserveBundle("reserve-worker-8", 8, 8),
+    ]);
+    expect(exact.metrics).toContain(
+      'openpoke_requirement_status{requirement="six_worker_recovery_reserve",run="reserve-worker-6",view="qualification"} 1',
+    );
+    expect(exact.metrics).toContain(
+      'openpoke_requirement_status{requirement="eight_worker_recovery_reserve",run="reserve-worker-6",view="qualification"} 1',
+    );
+
+    const wrongFleet = await importBundles([await reserveBundle("wrong-reserve-worker-6", 6, 8)]);
+    expect(wrongFleet.metrics).toContain(
+      'openpoke_requirement_status{requirement="six_worker_recovery_reserve",run="wrong-reserve-worker-6",view="qualification"} 0',
+    );
+  });
+
+  it("requires exact pre-admitted and combined control workloads", async () => {
+    const suite = "issue-87-control-workloads-v1";
+    const flowControl = {
+      repetition: 1,
+      worker_concurrency: 32,
+      worker_db_pool: 8,
+      worker_fixed_instances: 4,
+      worker_flow_max_outstanding_bytes: 67_108_864,
+      worker_flow_max_outstanding_messages: 32,
+      worker_pull_streams: 4,
+      worker_slots: 32,
+    } as const;
+    const preAdmitted = await makeBundle(
+      fullPassingFiles("wrong-pre-admitted", {
+        ...flowControl,
+        count: 20_820,
+        duration_seconds: 60,
+        lane: "pre-admitted-348",
+        manifest: suite,
+        rate_per_second: 347,
+      }),
+    );
+    const combined = await makeBundle(
+      fullPassingFiles("wrong-combined-target", {
+        ...flowControl,
+        count: 13_860,
+        duration_seconds: 60,
+        lane: "combined-target-232",
+        manifest: suite,
+        rate_per_second: 231,
+      }),
+    );
+
+    const result = await importBundles([
+      { root: preAdmitted, run: "wrong-pre-admitted", classification: "historical" },
+      { root: combined, run: "wrong-combined-target", classification: "historical" },
+    ]);
+    expect(result.metrics).toContain(
+      'openpoke_requirement_status{requirement="pre_admitted_348_control",run="wrong-pre-admitted",view="qualification"} 0',
+    );
+    expect(result.metrics).toContain(
+      'openpoke_requirement_status{requirement="combined_232_target",run="wrong-pre-admitted",view="qualification"} 0',
+    );
   });
 
   it("rejects manifest and sealed identity or region contradictions", async () => {
@@ -962,6 +1158,29 @@ describe("sealed evidence importer", () => {
     expect(result.metrics).toContain(
       'openpoke_count{measure="correct",run="distinct-root-outcomes"} 10',
     );
+  });
+
+  it("rejects impossible root-outcome count relationships", async () => {
+    for (const [run, auditFields] of [
+      [
+        "correct-exceeds-completed",
+        { accepted_incoming: 12, completed_root_outcomes: 10, good_root_outcomes: 11 },
+      ],
+      [
+        "completed-exceeds-accepted",
+        { accepted_incoming: 10, completed_root_outcomes: 11, good_root_outcomes: 10 },
+      ],
+      ["correct-exceeds-accepted", { accepted_incoming: 10, good_root_outcomes: 11 }],
+    ] as const) {
+      const root = await makeBundle({
+        "audit.json": JSON.stringify(auditFields),
+        "scenario.json": JSON.stringify({ benchmark_id: run }),
+      });
+
+      await expect(
+        importBundles([{ root, run, classification: "historical" }]),
+      ).rejects.toMatchObject({ code: "MALFORMED_ARTIFACT" });
+    }
   });
 
   it("keeps unevidenced optional-gate details MISSING", async () => {

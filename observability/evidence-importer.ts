@@ -44,7 +44,11 @@ export interface ImportedRun {
   readonly evidenceManifest: string | undefined;
   readonly lane: string | undefined;
   readonly repetition: number | undefined;
+  readonly declaredCommands: number | undefined;
+  readonly workerConcurrency: number | undefined;
   readonly workerFixedInstances: number | undefined;
+  readonly workerFlowMaxOutstandingBytes: number | undefined;
+  readonly workerFlowMaxOutstandingMessages: number | undefined;
   readonly workerPullStreams: number | undefined;
   readonly workerSlots: number | undefined;
   readonly workerDbPool: number | undefined;
@@ -149,8 +153,11 @@ const ScenarioArtifactSchema = Schema.Struct({
   repetition: OptionalNonNegativeInteger,
   started_at: OptionalString,
   worker_delivery: OptionalString,
+  worker_concurrency: OptionalNonNegativeInteger,
   worker_db_pool: OptionalNonNegativeInteger,
   worker_fixed_instances: OptionalNonNegativeInteger,
+  worker_flow_max_outstanding_bytes: OptionalNonNegativeInteger,
+  worker_flow_max_outstanding_messages: OptionalNonNegativeInteger,
   worker_pull_streams: OptionalNonNegativeInteger,
   worker_slots: OptionalNonNegativeInteger,
 });
@@ -726,6 +733,17 @@ const importBundle = async (
   const completedAgentRuns = auditArtifact?.succeeded_agent_runs;
   const completed = auditArtifact?.completed_root_outcomes;
   const correct = auditArtifact?.good_root_outcomes;
+  if (
+    (correct !== undefined && completed !== undefined && correct > completed) ||
+    (completed !== undefined && accepted !== undefined && completed > accepted) ||
+    (correct !== undefined && accepted !== undefined && correct > accepted)
+  ) {
+    throw new EvidenceImportError(
+      "MALFORMED_ARTIFACT",
+      "audit.json",
+      "root-outcome counts contradict accepted or completed work",
+    );
+  }
   const receiptWithinOneSecondRatio = qualReceipt?.within_1_second_ratio;
   const receiptStatus: GateStatus =
     receiptWithinOneSecondRatio === undefined
@@ -990,7 +1008,7 @@ const importBundle = async (
   const isIssue87Suite = evidenceManifest?.startsWith("issue-87-") === true;
   const isQualificationLane =
     cell !== "none" ||
-    /^(?:pre-admitted|reference-348|combined-target-232|target-232|worker-process-loss-(?:before|after)-claim|recovery-(?:rate|reserve)-worker(?:6|8))/u.test(
+    /^(?:pre-admitted-(?:348|reference-348)|combined-target-232|target-232|worker-process-loss-(?:before|after)-claim|recovery-(?:rate|reserve)-609-workers-(?:6|8))$/u.test(
       lane ?? "",
     );
   const qualifying = region === selectedRegion && isIssue87Suite && isQualificationLane;
@@ -1008,7 +1026,11 @@ const importBundle = async (
     evidenceManifest,
     lane,
     repetition: scenarioArtifact?.repetition,
+    declaredCommands: scenarioArtifact?.count,
+    workerConcurrency: scenarioArtifact?.worker_concurrency,
     workerFixedInstances: scenarioArtifact?.worker_fixed_instances,
+    workerFlowMaxOutstandingBytes: scenarioArtifact?.worker_flow_max_outstanding_bytes,
+    workerFlowMaxOutstandingMessages: scenarioArtifact?.worker_flow_max_outstanding_messages,
     workerPullStreams: scenarioArtifact?.worker_pull_streams,
     workerSlots: scenarioArtifact?.worker_slots,
     workerDbPool: scenarioArtifact?.worker_db_pool,
@@ -1111,6 +1133,72 @@ const statusesFor = (
   return statuses.length === 0 ? "MISSING" : minStatus(statuses);
 };
 
+const exactFieldsStatus = (
+  fields: ReadonlyArray<readonly [actual: number | undefined, expected: number]>,
+): GateStatus =>
+  fields.some(([actual, expected]) => actual !== undefined && actual !== expected)
+    ? "FAIL"
+    : fields.some(([actual]) => actual === undefined)
+      ? "MISSING"
+      : "PASS";
+
+const flowControlStatus = (run: ImportedRun): GateStatus =>
+  exactFieldsStatus([
+    [run.workerPullStreams, 4],
+    [run.workerConcurrency, 32],
+    [run.workerSlots, 32],
+    [run.workerDbPool, 8],
+    [run.workerFlowMaxOutstandingMessages, 32],
+    [run.workerFlowMaxOutstandingBytes, 67_108_864],
+  ]);
+
+const targetWorkloadStatus = (run: ImportedRun): GateStatus =>
+  minStatus([
+    exactFieldsStatus([
+      [run.ratePerSecond, 232],
+      [run.durationSeconds, 1_800],
+      [run.declaredCommands, 417_600],
+    ]),
+    flowControlStatus(run),
+  ]);
+
+const targetRepetitionStatus = (run: ImportedRun, repetition: number): GateStatus =>
+  minStatus([
+    run.overallStatus,
+    targetWorkloadStatus(run),
+    exactFieldsStatus([[run.repetition, repetition]]),
+  ]);
+
+const recoveryReserveStatus = (run: ImportedRun, workerFleet: 6 | 8): GateStatus =>
+  minStatus([
+    run.recoveryStatus,
+    exactFieldsStatus([
+      [run.ratePerSecond, 609],
+      [run.durationSeconds, 60],
+      [run.declaredCommands, 36_540],
+      [run.repetition, 1],
+      [run.workerFixedInstances, workerFleet],
+    ]),
+    flowControlStatus(run),
+  ]);
+
+const controlWorkloadStatus = (
+  run: ImportedRun,
+  ratePerSecond: 232 | 348,
+  commands: 13_920 | 20_880,
+): GateStatus =>
+  minStatus([
+    run.overallStatus,
+    exactFieldsStatus([
+      [run.ratePerSecond, ratePerSecond],
+      [run.durationSeconds, 60],
+      [run.declaredCommands, commands],
+      [run.repetition, 1],
+      [run.workerFixedInstances, 4],
+    ]),
+    flowControlStatus(run),
+  ]);
+
 const qualificationRequirementsFor = (
   selectedRun: ImportedRun,
   runs: ReadonlyArray<ImportedRun>,
@@ -1129,31 +1217,29 @@ const qualificationRequirementsFor = (
   const laneStatus = (pattern: RegExp, statusFor?: (run: ImportedRun) => GateStatus): GateStatus =>
     statusesFor(suiteRuns, (run) => pattern.test(run.lane ?? ""), statusFor);
   const targetRepetitionStatuses = [1, 2, 3].map((repetition) =>
-    statusesFor(suiteRuns, (run) => run.lane === "target-232" && run.repetition === repetition),
+    statusesFor(
+      suiteRuns,
+      (run) => run.lane === "target-232" && run.repetition === repetition,
+      (run) => targetRepetitionStatus(run, repetition),
+    ),
   );
   const targetRepetitions = minStatus(targetRepetitionStatuses);
-  const workerInputs = suiteRuns.some(
-    (run) =>
-      (run.workerFixedInstances ?? 0) > 0 &&
-      (run.workerPullStreams ?? 0) > 0 &&
-      (run.workerSlots ?? 0) > 0 &&
-      (run.workerDbPool ?? 0) > 0,
-  )
-    ? "PASS"
-    : "MISSING";
+  const workerInputs = statusesFor(suiteRuns, () => true, flowControlStatus);
   return {
-    pre_admitted_348_control: laneStatus(/^(?:pre-admitted|reference-348)/u),
-    combined_232_target: laneStatus(/^combined-target-232/u),
+    pre_admitted_348_control: laneStatus(/^pre-admitted-(?:348|reference-348)$/u, (run) =>
+      controlWorkloadStatus(run, 348, 20_880),
+    ),
+    combined_232_target: laneStatus(/^combined-target-232$/u, (run) =>
+      controlWorkloadStatus(run, 232, 13_920),
+    ),
     three_target_repetitions: targetRepetitions,
     before_claim_failure_cut: laneStatus(/^worker-process-loss-before-claim$/u),
     after_claim_failure_cut: laneStatus(/^worker-process-loss-after-claim$/u),
-    six_worker_recovery_reserve: laneStatus(
-      /^recovery-(?:rate|reserve)-worker6$/u,
-      (run) => run.recoveryStatus,
+    six_worker_recovery_reserve: laneStatus(/^recovery-(?:rate|reserve)-609-workers-6$/u, (run) =>
+      recoveryReserveStatus(run, 6),
     ),
-    eight_worker_recovery_reserve: laneStatus(
-      /^recovery-(?:rate|reserve)-worker8$/u,
-      (run) => run.recoveryStatus,
+    eight_worker_recovery_reserve: laneStatus(/^recovery-(?:rate|reserve)-609-workers-8$/u, (run) =>
+      recoveryReserveStatus(run, 8),
     ),
     smallest_fixed_fleet_selection: "MISSING",
     worker_stream_flow_slot_connection_inputs: workerInputs,
@@ -1348,7 +1434,7 @@ const renderMetrics = (runs: ReadonlyArray<ImportedRun>) => {
   for (const cell of ["A", "B", "C", "D"]) {
     const statuses = runs
       .filter((run) => run.qualifying && run.cell === cell)
-      .map((run) => run.admissionStatus);
+      .map((run) => minStatus([run.admissionStatus, targetWorkloadStatus(run)]));
     lines.push(
       sample(
         "openpoke_matrix_cell_status",

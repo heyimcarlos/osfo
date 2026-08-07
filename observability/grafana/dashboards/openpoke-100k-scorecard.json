@@ -137,7 +137,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_run_status{run=\"$run\"}",
+          "expr": "openpoke_gate_status{run=\"$run\",gate=\"production_qualification\"}",
           "instant": true,
           "legendFormat": "",
           "range": false,

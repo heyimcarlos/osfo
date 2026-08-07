@@ -72,6 +72,14 @@ describe("provisioned qualification dashboards", () => {
     }
   });
 
+  it("binds Overall qualification to the production qualification gate", async () => {
+    const dashboard = await readDashboard("openpoke-100k-scorecard.json");
+    const panel = dashboard.panels.find((candidate) => candidate.title === "Overall qualification");
+    expect(panel?.targets?.map((target) => target.expr)).toEqual([
+      'openpoke_gate_status{run="$run",gate="production_qualification"}',
+    ]);
+  });
+
   it("renders absent capacity measurements as MISSING instead of No data", async () => {
     const dashboard = await readDashboard("openpoke-capacity-postgres.json");
     const measurementPanels = [

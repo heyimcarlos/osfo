@@ -32,6 +32,16 @@ production qualification. A qualified narrative additionally requires every
 sealed target repetition, fault cut, recovery-reserve lane, and explicit
 qualification requirement to pass.
 
+Lane names do not establish qualification by themselves. The importer checks
+the sealed workload declaration: target repetitions are exactly 232 commands/s
+for 1,800 seconds and repetitions 1, 2, and 3; the pre-admitted and combined
+controls retain their declared 348/s and 232/s profiles; and recovery-reserve
+lanes declare exactly six or eight fixed workers. PASS also requires four pull
+streams, concurrency and execution-slot limits of 32, an eight-connection
+database pool, and explicit flow-control limits of 32 outstanding messages and
+64 MiB outstanding bytes. Missing declarations stay **MISSING** and known
+contradictions are **FAIL**.
+
 ## One-command walkthrough
 
 Pass three explicit sealed run directories in this order:
