@@ -40,6 +40,7 @@ import {
   userMessages,
 } from "./schema.js";
 import { ADMISSION_CAPACITY_LOCK_KEY } from "./admission-capacity.js";
+import { OUTBOX_RELAY_WAKE_CHANNEL, OUTBOX_RELAY_WAKE_PAYLOAD } from "./outbox-relay-wake.js";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const AdmissionLimit = PositiveInteger.check(Schema.isLessThanOrEqualTo(256));
@@ -416,6 +417,9 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
               .insert(relayThreads)
               .values({ threadId: command.threadId, principalId })
               .onConflictDoNothing();
+            yield* tx.execute(
+              sql`SELECT pg_notify(${OUTBOX_RELAY_WAKE_CHANNEL}, ${OUTBOX_RELAY_WAKE_PAYLOAD})`,
+            );
 
             const [receipt] = yield* tx
               .insert(acceptanceReceipts)

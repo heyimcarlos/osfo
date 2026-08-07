@@ -19,7 +19,8 @@
     "build": "tsc --project tsconfig.build.json",
     "dev": "node --conditions=development --import tsx src/main.ts",
     "start": "node dist/main.js",
-    "test": "vitest run --exclude '**/.typescript/**' --exclude '**/dist/**'",
+    "test": "vitest run --exclude '**/*.postgres.test.ts' --exclude '**/.typescript/**' --exclude '**/dist/**'",
+    "test:postgres": "vitest run --no-file-parallelism test/*.postgres.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -30,6 +31,8 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@osfo/agent-runtime": "workspace:*",
+    "@osfo/api": "workspace:*",
     "@types/node": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",

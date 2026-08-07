@@ -69,6 +69,8 @@
       },
       "devDependencies": {
         "@effect/vitest": "catalog:",
+        "@osfo/agent-runtime": "workspace:*",
+        "@osfo/api": "workspace:*",
         "@types/node": "catalog:",
         "tsx": "catalog:",
         "typescript": "catalog:",

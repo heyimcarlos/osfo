@@ -395,7 +395,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     });
   });
 
-  it("publishes one eligible Thread head from the lowest Principal virtual pass", async () => {
+  it("selects one eligible Thread head from each lowest-pass Principal", async () => {
     failFirstPublication = false;
     await run(
       Effect.gen(function* () {
@@ -437,10 +437,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     await run(OutboxRelay.use((relay) => relay.publishOnce()));
     await run(OutboxRelay.use((relay) => relay.publishOnce()));
 
-    expect(published.map((delivery) => delivery.agentRunId)).toEqual([
-      noisyFirst.agentRunId,
-      quiet.agentRunId,
-    ]);
+    expect(new Set(published.map((delivery) => delivery.agentRunId))).toEqual(
+      new Set([noisyFirst.agentRunId, quiet.agentRunId]),
+    );
   });
 
   it("reconciles relay loss, worker replacement, and duplicate delivery", async () => {

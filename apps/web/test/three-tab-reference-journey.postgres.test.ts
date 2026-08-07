@@ -57,6 +57,23 @@ const waitForAuthorityPosition = (origin: string, position: string) =>
     return yield* new ReferenceJourneyTimeout({ position });
   });
 
+const waitForPublicationDrain = () =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const authority = yield* readReferenceJourneyAuthority(databaseUrl);
+      if (
+        authority.outbox.length === contents.length &&
+        authority.outbox.every((obligation) => obligation.published) &&
+        authority.relayDispatchCapacities[0]?.activeCount === 0 &&
+        authority.relayPublicationTasks.length === 0
+      ) {
+        return authority;
+      }
+      yield* Effect.sleep(10);
+    }
+    return yield* new ReferenceJourneyTimeout({ position: "publication-drain" });
+  });
+
 describe("three-tab Oz Reference Journey", () => {
   it.live(
     "replays three independent Chrome tabs through the composed durable path",
@@ -127,7 +144,7 @@ describe("three-tab Oz Reference Journey", () => {
           publicationWindowSize: 32,
         }).pipe(Layer.provide(repositoryLayer), Layer.provide(publisherLayer));
         yield* Effect.forkScoped(
-          runOutboxRelay({ idlePollIntervalMs: 10, publisherConcurrency: 1 }).pipe(
+          runOutboxRelay({ publisherConcurrency: 1, safetyDrainIntervalMs: 10 }).pipe(
             Effect.provide(relayLayer),
           ),
         );
@@ -210,7 +227,7 @@ describe("three-tab Oz Reference Journey", () => {
           threadId,
         ]);
 
-        const authority = yield* readReferenceJourneyAuthority(databaseUrl);
+        const authority = yield* waitForPublicationDrain();
         expect(authority.principals).toEqual([{ principalId: referenceClientPrincipalId }]);
         expect(authority.authenticationSessions).toEqual([
           { principalId: referenceClientPrincipalId },

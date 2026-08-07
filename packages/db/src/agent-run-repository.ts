@@ -19,6 +19,7 @@ import {
 } from "@osfo/session";
 import { Data, Effect, Layer, Predicate, Redacted, Schema } from "effect";
 import { ADMISSION_CAPACITY_LOCK_KEY } from "./admission-capacity.js";
+import { OUTBOX_RELAY_SELECTOR_LOCK_ID, makeOutboxRelayWakeLayer } from "./outbox-relay-wake.js";
 
 export const AgentRunRepositoryDatabaseConfigSchema = Schema.Struct({
   databaseUrl: Schema.NonEmptyString,
@@ -62,7 +63,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
     url: Redacted.make(config.databaseUrl),
   });
 
-  return Layer.effect(
+  const repository = Layer.effect(
     AgentRunRepository,
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
@@ -147,7 +148,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              yield* sql`SELECT pg_advisory_xact_lock(2026080601)`;
+              yield* sql`SELECT pg_advisory_xact_lock(${OUTBOX_RELAY_SELECTOR_LOCK_ID})`;
               const capacities = yield* sql<{ readonly activeCount: number }>`SELECT
                     active_count AS "activeCount"
                   FROM relay_dispatch_capacity
@@ -159,15 +160,20 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   cause: "Relay dispatch capacity is not initialized",
                 });
               }
-              if (capacity.activeCount >= request.publicationWindowSize) {
-                return { type: "none" as const };
-              }
+              const available = request.publicationWindowSize - capacity.activeCount;
+              if (available <= 0) return { type: "none" as const };
               const selections = yield* sql<{
                 readonly outboxId: string;
-                readonly principalId: string;
-                readonly threadId: string;
-              }>`WITH candidate AS (
-                    SELECT obligation.outbox_id
+              }>`WITH eligible AS MATERIALIZED (
+                    SELECT obligation.outbox_id,
+                           obligation.principal_id,
+                           obligation.thread_id,
+                           principal.virtual_pass AS principal_pass,
+                           row_number() OVER (
+                             PARTITION BY obligation.principal_id
+                             ORDER BY thread.virtual_pass, thread.thread_id,
+                               receipt.thread_position, obligation.outbox_id
+                           ) AS principal_rank
                     FROM outbox_obligations obligation
                     JOIN relay_principals principal
                       ON principal.principal_id = obligation.principal_id
@@ -187,40 +193,67 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                         obligation.predecessor_outbox_id IS NULL
                         OR predecessor.published_at IS NOT NULL
                       )
+                  ), chosen AS MATERIALIZED (
+                    SELECT ranked.outbox_id,
+                           ranked.principal_id,
+                           ranked.thread_id,
+                           ranked.principal_pass + ranked.principal_rank - 1
+                             AS dispatch_pass,
+                           ranked.principal_rank
+                    FROM eligible ranked
                     ORDER BY
-                      principal.virtual_pass,
-                      principal.principal_id,
-                      thread.virtual_pass,
-                      thread.thread_id,
-                      receipt.thread_position,
-                      obligation.outbox_id
-                    FOR UPDATE OF obligation SKIP LOCKED
-                    LIMIT 1
+                      dispatch_pass,
+                      ranked.principal_id,
+                      ranked.principal_rank
+                    LIMIT ${available}
                   ), selected AS (
                     INSERT INTO relay_publication_tasks (
                       outbox_id, publication_state, publication_epoch, created_at
                     )
-                    SELECT outbox_id, 'pending', 0, transaction_timestamp()
-                    FROM candidate
+                    SELECT chosen.outbox_id, 'pending', 0, transaction_timestamp()
+                    FROM chosen
                     RETURNING outbox_id
+                  ), selected_rows AS MATERIALIZED (
+                    SELECT chosen.*
+                    FROM chosen
+                    JOIN selected USING (outbox_id)
+                  ), principal_counts AS MATERIALIZED (
+                    SELECT principal_id, count(*)::bigint AS selected_count
+                    FROM selected_rows
+                    GROUP BY principal_id
+                  ), updated_principals AS (
+                    UPDATE relay_principals principal
+                    SET virtual_pass = principal.virtual_pass + counts.selected_count
+                    FROM principal_counts counts
+                    WHERE principal.principal_id = counts.principal_id
+                    RETURNING principal.principal_id
+                  ), updated_threads AS (
+                    UPDATE relay_threads thread
+                    SET virtual_pass = thread.virtual_pass + 1
+                    FROM selected_rows selected
+                    WHERE thread.thread_id = selected.thread_id
+                    RETURNING thread.thread_id
+                  ), updated_capacity AS (
+                    UPDATE relay_dispatch_capacity dispatch
+                    SET active_count = dispatch.active_count + selected_count.value
+                    FROM (
+                      SELECT count(*)::int AS value FROM selected_rows
+                    ) selected_count
+                    WHERE dispatch.singleton = true AND selected_count.value > 0
+                    RETURNING dispatch.singleton
                   )
-                  SELECT selected.outbox_id::text AS "outboxId",
-                         obligation.principal_id::text AS "principalId",
-                         obligation.thread_id::text AS "threadId"
-                  FROM selected
-                  JOIN outbox_obligations obligation USING (outbox_id)`;
-              const selection = selections[0];
-              if (selection === undefined) return { type: "none" as const };
-              yield* sql`UPDATE relay_principals
-                SET virtual_pass = virtual_pass + 1
-                WHERE principal_id = ${selection.principalId}::uuid`;
-              yield* sql`UPDATE relay_threads
-                SET virtual_pass = virtual_pass + 1
-                WHERE thread_id = ${selection.threadId}::uuid`;
-              yield* sql`UPDATE relay_dispatch_capacity
-                SET active_count = active_count + 1
-                WHERE singleton = true`;
-              return { type: "selected" as const, outboxId: selection.outboxId };
+                  SELECT selected.outbox_id::text AS "outboxId"
+                  FROM selected_rows selected
+                  CROSS JOIN (SELECT count(*) FROM updated_principals) principal_updates
+                  CROSS JOIN (SELECT count(*) FROM updated_threads) thread_updates
+                  CROSS JOIN (SELECT count(*) FROM updated_capacity) capacity_updates
+                  ORDER BY selected.dispatch_pass, selected.principal_id,
+                    selected.principal_rank`;
+              if (selections.length === 0) return { type: "none" as const };
+              return {
+                type: "selected" as const,
+                outboxIds: selections.map((selection) => selection.outboxId),
+              };
             }),
           ),
         );
@@ -345,9 +378,14 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     AND publication_epoch = ${claim.publicationEpoch}::bigint
                   RETURNING outbox_id::text AS "outboxId"`;
               if (removed[0] === undefined) return yield* new AgentRunFenceRejected();
-              yield* sql`UPDATE relay_dispatch_capacity
+              const releasedCapacity = yield* sql<{ readonly singleton: boolean }>`UPDATE
+                    relay_dispatch_capacity
                 SET active_count = active_count - 1
-                WHERE singleton = true AND active_count > 0`;
+                WHERE singleton = true AND active_count > 0
+                RETURNING singleton`;
+              if (releasedCapacity[0] === undefined) {
+                return yield* new AgentRunFenceRejected();
+              }
             }),
           ),
         );
@@ -866,7 +904,10 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         commitTerminal,
       });
     }),
-  ).pipe(Layer.provide(postgresLayer));
+  );
+  return Layer.merge(repository, makeOutboxRelayWakeLayer(config.databaseUrl)).pipe(
+    Layer.provide(postgresLayer),
+  );
 };
 
 export const makeAgentRunRepositoryLayer = (config: AgentRunRepositoryDatabaseConfig) =>
