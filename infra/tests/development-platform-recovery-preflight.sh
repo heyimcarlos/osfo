@@ -11,7 +11,8 @@ name_prefix=$(jq -r '.name_prefix' "$varset")
 platform_account=$(jq -r '.terraform_service_account_email' "$varset")
 expected_account=${FOUNDATION_SERVICE_ACCOUNT:?FOUNDATION_SERVICE_ACCOUNT is required}
 effective_account=${CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT:-$(gcloud auth list --filter=status:ACTIVE --format='value(account)')}
-role="projects/$project_id/roles/osfoDevelopmentArtifactCleaner"
+role_id=osfoDevelopmentArtifactCleaner
+role="projects/$project_id/roles/$role_id"
 member="serviceAccount:$expected_account"
 condition="resource.name == 'projects/_/buckets/$artifact_bucket' || resource.name.startsWith('projects/_/buckets/$artifact_bucket/objects/')"
 foundation_project_id="osfo-foundation-${project_id##*-}"
@@ -34,7 +35,7 @@ fi
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
-if ! gcloud iam roles describe "$role" --format=json \
+if ! gcloud iam roles describe "$role_id" --project="$project_id" --format=json \
   >"$scratch/role.json" 2>"$scratch/role.error"; then
   printf 'FAIL: reviewed artifact recovery role is not applied\n' >&2
   cat "$scratch/role.error" >&2

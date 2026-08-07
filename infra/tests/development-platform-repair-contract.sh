@@ -243,7 +243,11 @@ printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
   'case "$*" in' \
-  '  "iam roles describe"*) cat "$MOCK_PREFLIGHT_ROLE" ;;' \
+  '  "iam roles describe osfoDevelopmentArtifactCleaner --project=osfo-development-318708913 --format=json") cat "$MOCK_PREFLIGHT_ROLE" ;;' \
+  '  "iam roles describe"*)' \
+  '    printf "artifact role lookup requires exact ID, project, and JSON format: %s\n" "$*" >&2' \
+  '    exit 93' \
+  '    ;;' \
   '  "projects get-iam-policy"*) cat "$MOCK_PREFLIGHT_PROJECT_POLICY" ;;' \
   '  "dns managed-zones describe"*) cat "$MOCK_PREFLIGHT_ZONE" ;;' \
   '  storage\ buckets\ get-iam-policy*--format=json) cat "$MOCK_PREFLIGHT_EVIDENCE_POLICY" ;;' \
