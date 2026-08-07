@@ -497,6 +497,23 @@ describe("OpenRouter Chat Completions ModelCall executor", () => {
       );
 
       expect(Exit.isFailure(result)).toBe(true);
+      if (Exit.isFailure(result)) {
+        expect(result.cause.reasons).toContainEqual(
+          expect.objectContaining({
+            _tag: "Fail",
+            error: expect.objectContaining({
+              _tag: "ModelCallExecutionError",
+              dispatchEvidence: { type: "confirmed", providerRequestId: "gen-123" },
+              usage: {
+                type: "reported",
+                inputUnits: 4,
+                outputUnits: 5,
+                reasoningUnits: 7,
+              },
+            }),
+          }),
+        );
+      }
     }),
   );
 

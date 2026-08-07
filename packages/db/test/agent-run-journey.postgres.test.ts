@@ -389,22 +389,38 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             cleanupDisposition: { type: "completed" as const },
             externalWorkMayContinue: false,
           };
-          yield* repository.recordModelCallCleanup(claimed.fence, attempt, cleanup);
-          yield* repository.commitCancellation(claimed.fence, cleanup, {
-            attempt,
-            outcome: {
+          const knownOutcome = {
+            dispatchEvidence: {
+              type: "confirmed" as const,
+              providerRequestId: "gen-canceled-during-reasoning",
+            },
+            usage: {
+              type: "reported" as const,
+              inputUnits: 4,
+              outputUnits: 5,
+              reasoningUnits: 7,
+            },
+          };
+          yield* repository.recordModelCallCleanup(claimed.fence, attempt, cleanup, knownOutcome);
+          yield* repository.recordModelCallCleanup(claimed.fence, attempt, cleanup, knownOutcome);
+          const conflictingIdentity = yield* Effect.flip(
+            repository.recordModelCallCleanup(claimed.fence, attempt, cleanup, {
+              ...knownOutcome,
               dispatchEvidence: {
                 type: "confirmed",
-                providerRequestId: "gen-canceled-during-reasoning",
+                providerRequestId: "gen-conflicting-retry",
               },
-              usage: {
-                type: "reported",
-                inputUnits: 4,
-                outputUnits: 5,
-                reasoningUnits: 7,
-              },
-            },
-          });
+            }),
+          );
+          expect(conflictingIdentity).toBeInstanceOf(AgentRunFenceRejected);
+          const downgradedEvidence = yield* Effect.flip(
+            repository.recordModelCallCleanup(claimed.fence, attempt, cleanup, {
+              dispatchEvidence: { type: "uncertain" },
+              usage: { type: "unknown" },
+            }),
+          );
+          expect(downgradedEvidence).toBeInstanceOf(AgentRunFenceRejected);
+          yield* repository.commitCancellation(claimed.fence, cleanup);
         }),
       ),
     );

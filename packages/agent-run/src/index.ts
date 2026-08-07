@@ -120,11 +120,6 @@ export const ModelCallAttemptOutcomeSchema = Schema.Struct({
 
 export type ModelCallAttemptOutcome = typeof ModelCallAttemptOutcomeSchema.Type;
 
-export interface CanceledModelCallAttemptEvidence {
-  readonly attempt: ModelCallAttempt;
-  readonly outcome: ModelCallAttemptOutcome;
-}
-
 export const AgentRunClaimSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("busy") }),
   Schema.Struct({
@@ -251,6 +246,7 @@ export interface AgentRunRepositoryService {
     fence: AgentRunFence,
     attempt: ModelCallAttempt,
     cleanup: AgentRunCleanupResult,
+    outcome?: ModelCallAttemptOutcome,
   ) => Effect.Effect<void, AgentRunRepositoryError>;
   readonly loadCancellation: (
     fence: AgentRunFence,
@@ -262,7 +258,6 @@ export interface AgentRunRepositoryService {
   readonly commitCancellation: (
     fence: AgentRunFence,
     cleanup: AgentRunCleanupResult,
-    canceledAttemptEvidence?: CanceledModelCallAttemptEvidence,
   ) => Effect.Effect<AgentRunCleanupResult, AgentRunRepositoryError>;
   readonly commitTerminal: (
     fence: AgentRunFence,
@@ -437,6 +432,7 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
         attempt: ModelCallAttempt,
         cleanup: AgentRunCleanupResult,
         deadlineAtEpochMs: number,
+        outcome?: ModelCallAttemptOutcome,
       ) {
         const now = yield* Clock.currentTimeMillis;
         const remainingMs = deadlineAtEpochMs - now;
@@ -445,13 +441,15 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
             cause: "ModelCallAttempt cleanup persistence deadline exceeded",
           });
         }
-        const recorded = yield* repository.recordModelCallCleanup(fence, attempt, cleanup).pipe(
-          Effect.retry({
-            schedule: Schedule.spaced(10),
-            while: Predicate.isTagged("AgentRunRepositoryUnavailable"),
-          }),
-          Effect.timeoutOption(remainingMs),
-        );
+        const recorded = yield* repository
+          .recordModelCallCleanup(fence, attempt, cleanup, outcome)
+          .pipe(
+            Effect.retry({
+              schedule: Schedule.spaced(10),
+              while: Predicate.isTagged("AgentRunRepositoryUnavailable"),
+            }),
+            Effect.timeoutOption(remainingMs),
+          );
         if (Option.isNone(recorded)) {
           return yield* new AgentRunRepositoryUnavailable({
             cause: "ModelCallAttempt cleanup persistence deadline exceeded",
@@ -491,7 +489,13 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
             execution,
             cache,
           );
-          yield* recordCleanup(fence, attempt, cleanup, now + config.leaseDurationMs);
+          yield* recordCleanup(
+            fence,
+            attempt,
+            cleanup,
+            now + config.leaseDurationMs,
+            cache.outcome,
+          );
         },
       );
 
@@ -524,6 +528,7 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
               activeAttempt,
               activeCleanup,
               persistenceStartedAt + config.leaseDurationMs,
+              cleanupCache.outcome,
             );
             cleanup = {
               cleanupDisposition: activeCleanup.cleanupDisposition,
@@ -532,11 +537,7 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
             };
           }
 
-          const canceledAttemptEvidence =
-            activeAttempt === undefined || cleanupCache.outcome === undefined
-              ? undefined
-              : { attempt: activeAttempt, outcome: cleanupCache.outcome };
-          return yield* repository.commitCancellation(fence, cleanup, canceledAttemptEvidence);
+          return yield* repository.commitCancellation(fence, cleanup);
         });
         return yield* cancellation;
       });

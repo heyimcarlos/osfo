@@ -115,6 +115,7 @@ interface OpenRouterChatCompletionsSession {
   readonly cancellation: Deferred.Deferred<never, ModelCallExecutionError>;
   readonly outcome: Deferred.Deferred<ModelCallAttemptOutcome, ModelCallExecutionError>;
   dispatchEvidence: ModelCallDispatchEvidence;
+  usage: ModelCallAttemptOutcome["usage"];
 }
 
 export interface OpenRouterChatCompletionsModelCallExecutorConfig {
@@ -143,7 +144,7 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
         new ModelCallExecutionError({
           cause,
           dispatchEvidence: session.dispatchEvidence,
-          usage: { type: "unknown" },
+          usage: session.usage,
         });
 
       const decodeEvent = (session: OpenRouterChatCompletionsSession, data: string) =>
@@ -232,11 +233,13 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
           ) {
             return Effect.fail(executionError(session, "Provider reported inconsistent usage"));
           }
-          return Effect.succeed({
+          const validatedUsage = {
             inputUnits: usage.prompt_tokens,
             outputUnits: usage.completion_tokens,
             reasoningUnits,
-          } satisfies ValidatedUsage);
+          } satisfies ValidatedUsage;
+          session.usage = { type: "reported", ...validatedUsage };
+          return Effect.succeed(validatedUsage);
         };
 
         const handleChunk = (chunk: ChatCompletionChunk) =>
@@ -459,6 +462,7 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
           cancellation,
           outcome,
           dispatchEvidence: { type: "notDispatched" },
+          usage: { type: "unknown" },
         };
         sessions.set(attempt.modelCallAttemptId, session);
         return makeOutputStream(session);

@@ -965,7 +965,7 @@ describe("AgentRun worker", () => {
       const executionStarted = yield* Deferred.make<void>();
       const cancellationSignal = yield* Deferred.make<never, ModelCallExecutionError>();
       let renewalCount = 0;
-      let canceledAttemptEvidence: unknown;
+      let recordedAttemptOutcome: unknown;
       const cancellation = {
         ...repository.service,
         renewLease: () =>
@@ -977,10 +977,9 @@ describe("AgentRun worker", () => {
                   Effect.andThen(Effect.fail(new AgentRunCancellationObserved())),
                 );
           }),
-        commitCancellation: (_fence, cleanup, attemptEvidence) =>
+        recordModelCallCleanup: (_fence, _attempt, _cleanup, outcome) =>
           Effect.sync(() => {
-            canceledAttemptEvidence = attemptEvidence;
-            return cleanup;
+            recordedAttemptOutcome = outcome;
           }),
       } satisfies AgentRunRepositoryService;
       const interruption = new ModelCallExecutionError({
@@ -1026,16 +1025,13 @@ describe("AgentRun worker", () => {
       expect(
         yield* AgentRunWorker.use((worker) => worker.handle(delivery)).pipe(Effect.provide(layer)),
       ).toEqual({ type: "acknowledge", outcome: "canceled" });
-      expect(canceledAttemptEvidence).toEqual({
-        attempt,
-        outcome: {
-          dispatchEvidence: { type: "confirmed", providerRequestId: "gen-canceled" },
-          usage: {
-            type: "reported",
-            inputUnits: 4,
-            outputUnits: 5,
-            reasoningUnits: 7,
-          },
+      expect(recordedAttemptOutcome).toEqual({
+        dispatchEvidence: { type: "confirmed", providerRequestId: "gen-canceled" },
+        usage: {
+          type: "reported",
+          inputUnits: 4,
+          outputUnits: 5,
+          reasoningUnits: 7,
         },
       });
     }),

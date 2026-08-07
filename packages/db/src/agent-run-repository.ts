@@ -917,18 +917,32 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
 
       const recordModelCallCleanup: AgentRunRepositoryService["recordModelCallCleanup"] = Effect.fn(
         "AgentRunRepository.recordModelCallCleanup",
-      )(function* (fence, attempt, cleanup) {
+      )(function* (fence, attempt, cleanup, outcome) {
+        const normalizedOutcome =
+          outcome === undefined ? undefined : attemptOutcomeColumns(outcome);
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
               yield* requireFence(fence);
               const rows = yield* sql<{
                 readonly cleanupDisposition: "completed" | "deadlineExceeded" | null;
+                readonly dispatchState: "prepared" | "not_dispatched" | "uncertain" | "confirmed";
                 readonly externalWorkMayContinue: boolean | null;
+                readonly inputUnits: number | null;
+                readonly outputUnits: number | null;
+                readonly providerRequestId: string | null;
+                readonly reasoningUnits: number | null;
                 readonly state: "started" | "succeeded" | "failed" | "canceled";
+                readonly usageType: "unknown" | "reported" | "estimated";
               }>`SELECT
                     cleanup_disposition AS "cleanupDisposition",
                     external_work_may_continue AS "externalWorkMayContinue",
+                    dispatch_state AS "dispatchState",
+                    provider_request_id AS "providerRequestId",
+                    usage_type AS "usageType",
+                    input_units AS "inputUnits",
+                    output_units AS "outputUnits",
+                    reasoning_units AS "reasoningUnits",
                     state
                   FROM model_call_attempts
                   WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
@@ -940,31 +954,71 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               if (existing === undefined) {
                 return yield* new AgentRunFenceRejected();
               }
-              if (
+              const cleanupMatches =
                 existing.cleanupDisposition === cleanup.cleanupDisposition.type &&
-                existing.externalWorkMayContinue === cleanup.externalWorkMayContinue
-              ) {
-                return;
-              }
+                existing.externalWorkMayContinue === cleanup.externalWorkMayContinue;
+              if (cleanupMatches && normalizedOutcome === undefined) return;
               if (
-                existing.cleanupDisposition !== null ||
-                existing.externalWorkMayContinue !== null
+                !cleanupMatches &&
+                (existing.cleanupDisposition !== null || existing.externalWorkMayContinue !== null)
               ) {
                 return yield* new AgentRunFenceRejected();
               }
+              const outcomeMatches =
+                normalizedOutcome !== undefined &&
+                existing.dispatchState === normalizedOutcome.dispatchState &&
+                existing.providerRequestId === normalizedOutcome.providerRequestId &&
+                existing.usageType === normalizedOutcome.usageType &&
+                existing.inputUnits === normalizedOutcome.inputUnits &&
+                existing.outputUnits === normalizedOutcome.outputUnits &&
+                existing.reasoningUnits === normalizedOutcome.reasoningUnits;
+              if (cleanupMatches && outcomeMatches) return;
               if (existing.state !== "started") {
                 return yield* new AgentRunFenceRejected();
               }
-              const recorded = yield* sql`UPDATE model_call_attempts
-                  SET cleanup_disposition = ${cleanup.cleanupDisposition.type},
-                      external_work_may_continue = ${cleanup.externalWorkMayContinue}
-                  WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
-                    AND model_call_id = ${attempt.modelCallId}::uuid
-                    AND agent_run_id = ${fence.agentRunId}::uuid
-                    AND assistant_output_id = ${attempt.assistantOutputId}::uuid
-                    AND cleanup_disposition IS NULL
-                    AND external_work_may_continue IS NULL
-                  RETURNING model_call_attempt_id`;
+              const outcomeIsInitial =
+                existing.dispatchState === "prepared" &&
+                existing.providerRequestId === null &&
+                existing.usageType === "unknown" &&
+                existing.inputUnits === null &&
+                existing.outputUnits === null &&
+                existing.reasoningUnits === null;
+              if (normalizedOutcome !== undefined && !outcomeMatches && !outcomeIsInitial) {
+                return yield* new AgentRunFenceRejected();
+              }
+              const recorded =
+                normalizedOutcome === undefined
+                  ? yield* sql`UPDATE model_call_attempts
+                      SET cleanup_disposition = ${cleanup.cleanupDisposition.type},
+                          external_work_may_continue = ${cleanup.externalWorkMayContinue}
+                      WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
+                        AND model_call_id = ${attempt.modelCallId}::uuid
+                        AND agent_run_id = ${fence.agentRunId}::uuid
+                        AND assistant_output_id = ${attempt.assistantOutputId}::uuid
+                        AND cleanup_disposition IS NULL
+                        AND external_work_may_continue IS NULL
+                      RETURNING model_call_attempt_id`
+                  : yield* sql`UPDATE model_call_attempts
+                      SET cleanup_disposition = ${cleanup.cleanupDisposition.type},
+                          external_work_may_continue = ${cleanup.externalWorkMayContinue},
+                          dispatch_state = ${normalizedOutcome.dispatchState},
+                          provider_request_id = ${normalizedOutcome.providerRequestId},
+                          usage_type = ${normalizedOutcome.usageType},
+                          input_units = ${normalizedOutcome.inputUnits},
+                          output_units = ${normalizedOutcome.outputUnits},
+                          reasoning_units = ${normalizedOutcome.reasoningUnits}
+                      WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
+                        AND model_call_id = ${attempt.modelCallId}::uuid
+                        AND agent_run_id = ${fence.agentRunId}::uuid
+                        AND assistant_output_id = ${attempt.assistantOutputId}::uuid
+                        AND (
+                          (cleanup_disposition IS NULL AND external_work_may_continue IS NULL)
+                          OR (
+                            cleanup_disposition = ${cleanup.cleanupDisposition.type}
+                            AND external_work_may_continue = ${cleanup.externalWorkMayContinue}
+                          )
+                        )
+                      RETURNING model_call_attempt_id`;
               if (recorded.length !== 1) {
                 return yield* new AgentRunFenceRejected();
               }
@@ -1133,14 +1187,10 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
 
       const commitCancellation: AgentRunRepositoryService["commitCancellation"] = Effect.fn(
         "AgentRunRepository.commitCancellation",
-      )(function* (fence, _cleanup, canceledAttemptEvidence) {
+      )(function* (fence, _cleanup) {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              const normalizedCanceledAttemptEvidence =
-                canceledAttemptEvidence === undefined
-                  ? undefined
-                  : attemptOutcomeColumns(canceledAttemptEvidence.outcome);
               const authority = yield* lockCapacityBeforeFence(fence);
               if (
                 authority.cancellationRequestedAt === null ||
@@ -1249,31 +1299,10 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     AND cleanup_disposition IS NULL
                     AND external_work_may_continue IS NULL`;
               }
-              if (
-                canceledAttemptEvidence !== undefined &&
-                normalizedCanceledAttemptEvidence !== undefined
-              ) {
-                const recordedEvidence = yield* sql`UPDATE model_call_attempts
-                  SET state = 'canceled',
-                      dispatch_state = ${normalizedCanceledAttemptEvidence.dispatchState},
-                      provider_request_id = ${normalizedCanceledAttemptEvidence.providerRequestId},
-                      usage_type = ${normalizedCanceledAttemptEvidence.usageType},
-                      input_units = ${normalizedCanceledAttemptEvidence.inputUnits},
-                      output_units = ${normalizedCanceledAttemptEvidence.outputUnits},
-                      reasoning_units = ${normalizedCanceledAttemptEvidence.reasoningUnits},
-                      finished_at = transaction_timestamp()
-                  WHERE model_call_attempt_id = ${canceledAttemptEvidence.attempt.modelCallAttemptId}::uuid
-                    AND model_call_id = ${canceledAttemptEvidence.attempt.modelCallId}::uuid
-                    AND assistant_output_id = ${canceledAttemptEvidence.attempt.assistantOutputId}::uuid
-                    AND agent_run_id = ${fence.agentRunId}::uuid
-                    AND claim_epoch = ${fence.claimEpoch}::bigint
-                    AND state = 'started'
-                  RETURNING model_call_attempt_id`;
-                if (recordedEvidence.length !== 1) return yield* new AgentRunFenceRejected();
-              }
               yield* sql`UPDATE model_call_attempts
                 SET state = 'canceled',
                     dispatch_state = CASE
+                      WHEN dispatch_state <> 'prepared' THEN dispatch_state
                       WHEN EXISTS (
                         SELECT 1 FROM model_call_fragments fragment
                         WHERE fragment.model_call_attempt_id = model_call_attempts.model_call_attempt_id
