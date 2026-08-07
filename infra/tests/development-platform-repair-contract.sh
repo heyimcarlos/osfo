@@ -658,19 +658,19 @@ for workflow in \
   fi
 done
 
-lifecycle_needs=$(yq -r '.jobs."development-lifecycle".needs' \
+lifecycle_needs=$(yq -r '.jobs."development-lifecycle".needs[]' \
   .github/workflows/terraform.yml)
-jq -e 'index("development-dns-permission-preflight") != null' \
-  <<<"$lifecycle_needs" >/dev/null
-jq -e 'index("development-dns-policy-preflight") != null' \
-  <<<"$lifecycle_needs" >/dev/null
+grep -Fxq 'development-dns-permission-preflight' <<<"$lifecycle_needs"
+grep -Fxq 'development-dns-policy-preflight' <<<"$lifecycle_needs"
+if rg --fixed-strings --quiet "jq -e 'index(\"development-dns" "$0"; then
+  printf 'workflow needs checks must consume yq scalar elements, not parse implementation-specific containers\n' >&2
+  exit 1
+fi
 for cleanup_job in development-artifact-cleanup development-cleanup; do
-  cleanup_needs=$(yq -r ".jobs.\"$cleanup_job\".needs" \
+  cleanup_needs=$(yq -r ".jobs.\"$cleanup_job\".needs[]" \
     .github/workflows/terraform.yml)
-  jq -e 'index("development-dns-permission-preflight") != null' \
-    <<<"$cleanup_needs" >/dev/null
-  jq -e 'index("development-dns-policy-preflight") != null' \
-    <<<"$cleanup_needs" >/dev/null
+  grep -Fxq 'development-dns-permission-preflight' <<<"$cleanup_needs"
+  grep -Fxq 'development-dns-policy-preflight' <<<"$cleanup_needs"
   cleanup_condition=$(yq -r ".jobs.\"$cleanup_job\".if" \
     .github/workflows/terraform.yml)
   if grep -Eq "development-dns-(policy|permission)-preflight.result == 'success'" \
