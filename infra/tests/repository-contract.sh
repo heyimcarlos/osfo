@@ -103,7 +103,10 @@ rg --fixed-strings --quiet \
   infra/roots/foundation/main.tf
 [[ "$(rg --fixed-strings --count \
   'project                     = google_project.environment["foundation"].project_id' \
-  infra/roots/foundation/main.tf)" == 2 ]]
+  infra/roots/foundation/main.tf)" == 3 ]]
+rg --fixed-strings --quiet \
+  'resource "google_storage_bucket" "qualification_evidence"' \
+  infra/roots/foundation/main.tf
 rg --fixed-strings --quiet \
   'id = "${var.project_ids.foundation}/${each.value}"' \
   infra/roots/foundation/imports.tf

@@ -1,0 +1,59 @@
+variable "project_id" { type = string }
+variable "terraform_service_account_email" { type = string }
+variable "region" {
+  type    = string
+  default = "us-east4"
+  validation {
+    condition     = var.region == "us-east4"
+    error_message = "The development platform is fixed to us-east4."
+  }
+}
+variable "enable_managed_platform" { type = bool }
+variable "name_prefix" { type = string }
+variable "cost_owner" { type = string }
+variable "proof_token" { type = string }
+variable "temporal_service_attachment_uri" {
+  type     = string
+  default  = null
+  nullable = true
+  validation {
+    condition = var.temporal_service_attachment_uri == null || can(regex(
+      "^projects/[^/]+/regions/us-east4/serviceAttachments/[^/]+$",
+      var.temporal_service_attachment_uri,
+    ))
+    error_message = "Temporal service attachment must be a us-east4 service attachment URI."
+  }
+}
+variable "temporal_dns_name" { type = string }
+variable "cloud_sql_tier" { type = string }
+variable "cloud_sql_disk_size_gb" { type = number }
+variable "cloud_sql_database_version" { type = string }
+variable "cloud_sql_backup_retained_count" { type = number }
+variable "artifact_bucket_name" { type = string }
+variable "artifact_registry_repository_id" { type = string }
+variable "evidence_archive_bucket_name" { type = string }
+variable "pubsub_message_retention_duration" { type = string }
+variable "secret_accessors" {
+  type    = map(set(string))
+  default = {}
+}
+variable "operating_contract" {
+  type = object({
+    transport_request_concurrency         = number
+    transport_db_pool_connections         = number
+    relay_worker_count                    = number
+    relay_publisher_count                 = number
+    relay_db_pool_connections             = number
+    agentrun_worker_count                 = number
+    agentrun_streams_per_worker           = number
+    agentrun_execution_slots_per_worker   = number
+    agentrun_db_pool_connections          = number
+    temporal_worker_count                 = number
+    temporal_db_pool_connections          = number
+    application_log_retention_days        = number
+    security_log_retention_days           = number
+    metric_retention_days                 = number
+    qualification_evidence_retention_days = number
+  })
+}
+variable "quota_requirements" { type = map(number) }

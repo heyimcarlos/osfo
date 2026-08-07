@@ -10,12 +10,14 @@ scratch=$(mktemp -d "$repo_root/tmp/terraform-proof.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 
 cp -R "$root_directory/." "$scratch/root"
+cp -R "$repo_root/infra/modules" "$scratch/modules"
 # A prior live init leaves backend metadata that must not enter the offline copy.
 rm -rf "$scratch/root/.terraform"
 # The committed root uses its isolated GCS backend. The offline lifecycle proof
 # removes only the backend declaration from its disposable copy so the same
 # configuration can prove plan binding without cloud credentials.
 sed -i '/backend "gcs" {}/d' "$scratch/root/versions.tf"
+sed -i 's#../../../modules/#../modules/#g' "$scratch/root/main.tf"
 cd "$scratch/root"
 
 export TERRAFORM_BIN="$terraform_bin"
@@ -23,6 +25,10 @@ export TF_IN_AUTOMATION=1
 export TF_INPUT=0
 export TF_VARSET_FILE="$scratch/root/development.tfvars.json"
 export TF_IMAGE_DIGESTS_FILE="$scratch/root/image-digests.json"
+
+jq '.enable_managed_platform = false' "$scratch/root/development.tfvars.json" \
+  >"$scratch/root/development.offline.tfvars.json"
+export TF_VARSET_FILE="$scratch/root/development.offline.tfvars.json"
 
 "$terraform_bin" init -backend=false -input=false >/dev/null
 "$terraform_bin" validate >/dev/null

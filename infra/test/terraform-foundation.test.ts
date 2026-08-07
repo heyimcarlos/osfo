@@ -37,6 +37,13 @@ describe("Terraform foundation", () => {
     expectCheckPasses("infra/tests/repository-contract.sh", "pinned toolchain"),
   );
 
+  it.effect("enforces the disposable development platform contract", () =>
+    expectCheckPasses(
+      "infra/tests/development-platform-contract.sh",
+      "development platform topology",
+    ),
+  );
+
   it.effect(
     "proves a bound disposable development lifecycle",
     () => expectCheckPasses("infra/tests/development-proof.sh", "recoverable state"),

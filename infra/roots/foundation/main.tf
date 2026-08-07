@@ -39,7 +39,7 @@ locals {
     }
   }
 
-  project_services = {
+  base_project_services = {
     for pair in setproduct(local.environments, toset([
       "cloudresourcemanager.googleapis.com",
       "iam.googleapis.com",
@@ -55,12 +55,38 @@ locals {
     }
   }
 
+  development_platform_services = {
+    for service in toset([
+      "artifactregistry.googleapis.com",
+      "cloudquotas.googleapis.com",
+      "compute.googleapis.com",
+      "dns.googleapis.com",
+      "pubsub.googleapis.com",
+      "secretmanager.googleapis.com",
+      "servicedirectory.googleapis.com",
+      "servicenetworking.googleapis.com",
+      "sqladmin.googleapis.com",
+      ]) : "development/${service}" => {
+      environment = "development"
+      service     = service
+    }
+  }
+
+  project_services = merge(local.base_project_services, local.development_platform_services)
+
   non_foundation_project_roles = toset([
     "roles/iam.serviceAccountAdmin",
     "roles/logging.configWriter",
     "roles/resourcemanager.projectIamAdmin",
     "roles/serviceusage.serviceUsageAdmin",
   ])
+
+  development_foundation_project_roles = setunion(local.non_foundation_project_roles, toset([
+    "roles/compute.networkAdmin",
+    "roles/compute.securityAdmin",
+    "roles/dns.admin",
+    "roles/servicenetworking.networksAdmin",
+  ]))
 
   foundation_project_roles = {
     foundation = toset([
@@ -71,7 +97,7 @@ locals {
       "roles/resourcemanager.projectIamAdmin",
       "roles/serviceusage.serviceUsageAdmin",
     ])
-    development = local.non_foundation_project_roles
+    development = local.development_foundation_project_roles
     production  = local.non_foundation_project_roles
   }
 
@@ -84,6 +110,24 @@ locals {
         }
       ]
     ]) : "${binding.environment}/${binding.role}" => binding
+  }
+
+  platform_project_roles = toset([
+    "roles/artifactregistry.admin",
+    "roles/cloudsql.admin",
+    "roles/cloudquotas.viewer",
+    "roles/compute.networkAdmin",
+    "roles/dns.admin",
+    "roles/iam.serviceAccountAdmin",
+    "roles/pubsub.admin",
+    "roles/secretmanager.admin",
+    "roles/servicenetworking.networksAdmin",
+    "roles/serviceusage.serviceUsageViewer",
+    "roles/storage.admin",
+  ])
+
+  platform_role_bindings = {
+    for role in local.platform_project_roles : role => { environment = "development", role = role }
   }
 
   security_constraints = var.organization_id == null ? {} : {
@@ -126,6 +170,27 @@ resource "google_project_service" "required" {
   service                    = each.value.service
   disable_dependent_services = false
   disable_on_destroy         = false
+}
+
+module "development_environment_baseline" {
+  source = "../../modules/environment-baseline"
+
+  enabled     = true
+  project_id  = google_project.environment["development"].project_id
+  region      = var.region
+  name_prefix = var.development_environment_baseline.name_prefix
+  labels = {
+    environment = "development"
+    managed_by  = "terraform"
+    system      = "osfo"
+    cost_owner  = var.development_environment_baseline.cost_owner
+  }
+  network_cidr                    = var.development_environment_baseline.network_cidr
+  private_service_cidr_prefix     = var.development_environment_baseline.private_service_cidr_prefix
+  temporal_service_attachment_uri = var.development_environment_baseline.temporal_service_attachment_uri
+  temporal_dns_name               = var.development_environment_baseline.temporal_dns_name
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
 }
 
 resource "google_org_policy_policy" "security" {
@@ -234,6 +299,33 @@ resource "google_storage_bucket" "saved_plans" {
       days_since_noncurrent_time = 1
     }
   }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_storage_bucket" "qualification_evidence" {
+  project                     = google_project.environment["foundation"].project_id
+  name                        = var.qualification_evidence_bucket_name
+  location                    = "US"
+  storage_class               = "STANDARD"
+  force_destroy               = false
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  labels = {
+    environment = "foundation"
+    managed_by  = "terraform"
+    purpose     = "qualification-evidence"
+    system      = "osfo"
+  }
+
+  versioning { enabled = true }
+  retention_policy { retention_period = 34214400 }
+  soft_delete_policy { retention_duration_seconds = 2592000 }
 
   lifecycle {
     prevent_destroy = true
@@ -400,6 +492,26 @@ resource "google_project_iam_member" "foundation" {
   project = google_project.environment[each.value.environment].project_id
   role    = each.value.role
   member  = "serviceAccount:${google_service_account.terraform["foundation"].email}"
+}
+
+resource "google_project_iam_member" "platform" {
+  for_each = local.platform_role_bindings
+
+  project = google_project.environment[each.value.environment].project_id
+  role    = each.value.role
+  member  = "serviceAccount:${google_service_account.terraform["${each.value.environment}-platform"].email}"
+}
+
+resource "google_storage_bucket_iam_member" "development_evidence" {
+  bucket = google_storage_bucket.qualification_evidence.name
+  role   = google_project_iam_custom_role.saved_plan_object_access.name
+  member = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+
+  condition {
+    title       = "development_platform_evidence_prefix"
+    description = "Restricts development qualification evidence to its immutable prefix."
+    expression  = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.qualification_evidence.name}/objects/roots/development/platform/')"
+  }
 }
 
 resource "google_organization_iam_member" "foundation_org_policy_admin" {

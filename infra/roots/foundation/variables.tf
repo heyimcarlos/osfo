@@ -43,6 +43,11 @@ variable "saved_plan_bucket_name" {
   type        = string
 }
 
+variable "qualification_evidence_bucket_name" {
+  description = "Globally unique foundation bucket for retained qualification evidence."
+  type        = string
+}
+
 variable "github_repository" {
   description = "GitHub repository in owner/name form, retained as an audit label."
   type        = string
@@ -81,5 +86,25 @@ variable "region" {
   validation {
     condition     = var.region == "us-east4"
     error_message = "Osfo v1 is structurally fixed to us-east4."
+  }
+}
+
+variable "development_environment_baseline" {
+  description = "Retained development network boundary required by disposable private-IP managed services."
+  type = object({
+    name_prefix                     = string
+    network_cidr                    = string
+    private_service_cidr_prefix     = number
+    temporal_service_attachment_uri = optional(string)
+    temporal_dns_name               = string
+    cost_owner                      = string
+  })
+  default = {
+    name_prefix                     = "osfo-dev"
+    network_cidr                    = "10.40.0.0/20"
+    private_service_cidr_prefix     = 20
+    temporal_service_attachment_uri = null
+    temporal_dns_name               = "temporal.internal."
+    cost_owner                      = "osfo"
   }
 }

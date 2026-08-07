@@ -120,18 +120,10 @@ jobs:
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
         with:
           version: 569.0.0
-      - name: Apply, drift-check, and destroy the disposable proof
+      - name: Apply, smoke-check, and exactly destroy the development platform
         shell: bash
         run: |
-          infra/scripts/create-plan.sh development infra/roots/development/platform .plans/development-create.tfplan
-          infra/scripts/store-plan.sh "$SAVED_PLAN_BUCKET" .plans/development-create.tfplan
-          infra/scripts/apply-plan.sh development infra/roots/development/platform .plans/development-create.tfplan
-          infra/scripts/create-plan.sh development infra/roots/development/platform .plans/development-drift.tfplan -refresh-only -detailed-exitcode
-          infra/scripts/store-plan.sh "$SAVED_PLAN_BUCKET" .plans/development-drift.tfplan
-          infra/scripts/apply-plan.sh development infra/roots/development/platform .plans/development-drift.tfplan
-          infra/scripts/create-plan.sh development infra/roots/development/platform .plans/development-destroy.tfplan -destroy
-          infra/scripts/store-plan.sh "$SAVED_PLAN_BUCKET" .plans/development-destroy.tfplan
-          infra/scripts/apply-plan.sh development infra/roots/development/platform .plans/development-destroy.tfplan
+          infra/tests/development-platform-live.sh
 
   root-workflow:
     if: >-

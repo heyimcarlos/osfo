@@ -1,7 +1,68 @@
 # Terraform foundation
 
-Ticket 77 establishes the isolated Terraform state and validation boundary. It
-does not provision the application platform or runtime owned by later tickets.
+Ticket 77 establishes the isolated Terraform state and validation boundary.
+Ticket 89 adds the disposable development platform. Runtime deployment remains
+owned by later tickets.
+
+## Disposable development platform
+
+Foundation composes the environment baseline module, which owns the retained,
+development-only `us-east4` VPC, Direct VPC egress subnet, static Cloud NAT,
+private services access, private DNS, firewall rules, and an optional Temporal
+Cloud Private Service Connect endpoint. The `development/platform` root reads
+those provider resources by their reviewed names. Data authority owns zonal private-IP
+Cloud SQL PostgreSQL with IAM database authentication, runtime identities,
+Secret Manager containers and per-secret IAM, immutable Artifact Registry tags,
+and the disposable content-addressed artifact bucket. Command buffer owns the
+single ordered Pub/Sub topic and StreamingPull subscription.
+
+Foundation permanently owns the network baseline, development service APIs,
+and the platform root's reviewed IAM. Cloud SQL can retain producer networking
+for up to four days after instance deletion, so keeping the isolated baseline
+outside the disposable root is required for reliable exact cleanup. A platform
+destroy removes every resource in its state without disabling capabilities or
+blocking later recreations.
+
+The reviewed variable set exposes database size and retention, storage names,
+quota expectations, process connection pools, concurrency, fixed worker counts,
+streams, and execution slots. These are development inputs and conditional
+production candidates, not silently qualified production defaults. Secret
+payloads and Secret Manager versions remain outside Terraform.
+
+Qualification evidence is written by content digest to the foundation-owned,
+versioned evidence bucket. That bucket has a 396-day retention policy and is
+not part of development destroy. The development artifact bucket uses
+`force_destroy` because its smoke artifact is already represented in retained
+evidence before teardown.
+
+Temporal Cloud must publish and authorize a same-region service attachment.
+Set `temporal_service_attachment_uri` to its non-secret `us-east4` URI. When it
+is null, the report records Temporal PSC as `MISSING`, never `PASS`.
+
+The platform smoke checks managed-service behavior that can be exercised before
+the runtime root exists: ordered publish and pull, immutable artifact storage,
+intended-principal secret access, private Cloud SQL configuration and IAM users,
+and NAT and private-DNS configuration. An application connection from Direct
+VPC egress, DNS resolution inside that workload, and observed static-NAT traffic
+remain `MISSING` until the runtime ticket supplies the pinned workload image.
+
+After foundation has applied the evidence bucket and platform IAM additions,
+initialize the development backend and run the destructive, disposable proof:
+
+```sh
+terraform -chdir=infra/roots/development/platform init -input=false \
+  -backend-config="bucket=$GCP_DEVELOPMENT_STATE_BUCKET" \
+  -backend-config="prefix=roots/development/platform"
+SAVED_PLAN_BUCKET="$GCP_SAVED_PLAN_BUCKET" \
+  infra/tests/development-platform-live.sh
+```
+
+The proof runs quota preflight against every reviewed quota input, exact
+saved-plan apply, an empty second plan, managed-service smoke checks, immutable
+evidence upload, exact destroy, and an empty disposable state check. It retains
+separate content-addressed managed-service and post-destroy lifecycle reports,
+and verifies that the foundation network baseline remains present.
+Scheduled drift remains read-only and never auto-applies.
 
 ## Fixed toolchain
 
