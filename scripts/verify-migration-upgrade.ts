@@ -253,11 +253,11 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
           WHERE model_call_attempt_id = 'ed0496f6-c20f-4c86-bc69-e3138b699f06'::uuid`;
         if (
           rollingRows[0]?.state !== "succeeded" ||
-          rollingRows[0].modelBinding !== null ||
-          rollingRows[0].dispatchState !== "prepared"
+          rollingRows[0].modelBinding !== "oz.rolling-base-writer.v1" ||
+          rollingRows[0].dispatchState !== "confirmed"
         ) {
           return yield* Effect.die(
-            new Error("Expansion migration did not preserve the base ModelCall writer"),
+            new Error("Expansion migration did not complete base-writer attempt evidence"),
           );
         }
         const rows = yield* sql<{
