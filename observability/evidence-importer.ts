@@ -728,7 +728,21 @@ const importBundle = async (
   const qualificationCheckpoints = qualificationArtifact?.checkpoints;
   const checkpointDuration = qualificationCheckpoints?.duration_seconds;
 
-  const offered = auditArtifact?.expected_incoming ?? scenarioArtifact?.count;
+  const declaredCommands = scenarioArtifact?.count;
+  const expectedIncoming = auditArtifact?.expected_incoming;
+  if (
+    declaredCommands !== undefined &&
+    expectedIncoming !== undefined &&
+    declaredCommands !== expectedIncoming
+  ) {
+    throw new EvidenceImportError(
+      "MALFORMED_ARTIFACT",
+      "audit.json",
+      "expected incoming contradicts scenario.json declared command volume",
+    );
+  }
+
+  const offered = expectedIncoming ?? declaredCommands;
   const accepted = auditArtifact?.accepted_incoming;
   const completedAgentRuns = auditArtifact?.succeeded_agent_runs;
   const completed = auditArtifact?.completed_root_outcomes;
@@ -1026,7 +1040,7 @@ const importBundle = async (
     evidenceManifest,
     lane,
     repetition: scenarioArtifact?.repetition,
-    declaredCommands: scenarioArtifact?.count,
+    declaredCommands,
     workerConcurrency: scenarioArtifact?.worker_concurrency,
     workerFixedInstances: scenarioArtifact?.worker_fixed_instances,
     workerFlowMaxOutstandingBytes: scenarioArtifact?.worker_flow_max_outstanding_bytes,

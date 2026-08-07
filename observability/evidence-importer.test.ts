@@ -574,7 +574,10 @@ describe("sealed evidence importer", () => {
       }),
     });
     const selectedRoot = await makeBundle({
-      "audit.json": JSON.stringify({ accepted_incoming: 10, expected_incoming: 10 }),
+      "audit.json": JSON.stringify({
+        accepted_incoming: 417_600,
+        expected_incoming: 417_600,
+      }),
       "scenario.json": JSON.stringify({
         benchmark_id: "selected-region",
         count: 417_600,
@@ -592,7 +595,7 @@ describe("sealed evidence importer", () => {
       }),
     });
     const wrongWorkloadRoot = await makeBundle({
-      "audit.json": JSON.stringify({ accepted_incoming: 10, expected_incoming: 10 }),
+      "audit.json": JSON.stringify({ accepted_incoming: 41_400, expected_incoming: 41_400 }),
       "scenario.json": JSON.stringify({
         benchmark_id: "wrong-matrix-workload",
         count: 41_400,
@@ -705,11 +708,11 @@ describe("sealed evidence importer", () => {
       ...failedFiles,
       "audit.json": JSON.stringify({
         ...completeCorrectnessFields,
-        accepted_incoming: 9,
+        accepted_incoming: 417_599,
         authoritative_agent_runs: 14,
-        completed_root_outcomes: 9,
-        expected_incoming: 10,
-        good_root_outcomes: 9,
+        completed_root_outcomes: 417_599,
+        expected_incoming: 417_600,
+        good_root_outcomes: 417_599,
         succeeded_agent_runs: 14,
       }),
       "qualification-metrics.json": JSON.stringify({
@@ -1181,6 +1184,26 @@ describe("sealed evidence importer", () => {
         importBundles([{ root, run, classification: "historical" }]),
       ).rejects.toMatchObject({ code: "MALFORMED_ARTIFACT" });
     }
+  });
+
+  it("rejects a declared workload volume that contradicts audited incoming work", async () => {
+    const root = await makeBundle({
+      "audit.json": JSON.stringify({
+        accepted_incoming: 10,
+        expected_incoming: 10,
+        good_root_outcomes: 10,
+      }),
+      "scenario.json": JSON.stringify({
+        benchmark_id: "contradictory-command-volume",
+        count: 417_600,
+        duration_seconds: 1_800,
+        rate_per_second: 232,
+      }),
+    });
+
+    await expect(
+      importBundles([{ root, run: "contradictory-command-volume", classification: "historical" }]),
+    ).rejects.toMatchObject({ code: "MALFORMED_ARTIFACT" });
   });
 
   it("keeps unevidenced optional-gate details MISSING", async () => {
