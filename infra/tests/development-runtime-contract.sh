@@ -206,6 +206,12 @@ for proxy_script in \
   scripts/qualification/reconcile-agent-run.ts; do
   [[ $(rg --fixed-strings --count 'requireApprovedDatabaseProxy' "$proxy_script") == 2 ]]
 done
+rg --fixed-strings --quiet 'databaseAdminUrl: Config.redacted("OSFO_DATABASE_ADMIN_URL")' \
+  scripts/db/bootstrap-access.ts
+rg --fixed-strings --quiet 'Schema.decodeUnknownEffect(Schema.URLFromString)' \
+  scripts/db/bootstrap-access.ts
+rg --fixed-strings --quiet 'databaseAdminUrl: Redacted.make(databaseAdminUrl)' \
+  scripts/db/bootstrap-access.ts
 for reconciliation_caller in \
   infra/tests/development-runtime-smoke.sh \
   infra/tests/development-runtime-recovery.sh; do
