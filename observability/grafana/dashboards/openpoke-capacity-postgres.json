@@ -51,7 +51,7 @@
         "h": 4
       },
       "options": {
-        "content": "> **Derived presentation view.** Grafana is not evidence authority. The importer verifies the sealed bundle first. Use the provenance table to locate its checksum manifest. Missing evidence stays **MISSING**.\n\nThe matrix isolates history state and WAL envelope. A = clean/current WAL, B = accumulated/current WAL, C = clean/larger WAL, D = accumulated/larger WAL. Rows remain **MISSING** until a sealed bundle is imported.",
+        "content": "> **Derived presentation view.** Grafana is not evidence authority. The importer verifies the sealed bundle first. Provenance is limited to the selected bundle slug and checksum-manifest hash. Missing evidence stays **MISSING**.\n\nThe matrix isolates history state and WAL envelope. A = clean/current WAL, B = accumulated/current WAL, C = clean/larger WAL, D = accumulated/larger WAL. Rows remain **MISSING** until a sealed bundle is imported.",
         "mode": "markdown"
       }
     },
@@ -63,7 +63,7 @@
         "type": "prometheus",
         "uid": "openpoke-prometheus"
       },
-      "description": "The first imported A run fails. B, C, and D have no imported evidence yet.",
+      "description": "Each cell uses only its complete-durable-acceptance gate in explicitly qualifying selected-region evidence. Unrelated missing gates do not alter the cell.",
       "gridPos": {
         "x": 0,
         "y": 4,
@@ -887,28 +887,54 @@
     },
     {
       "id": 15,
-      "title": "First saturated component",
-      "type": "text",
+      "title": "Selected run interpretation",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "description": "The selected run variable controls this interpretation. bottleneck is admission-capacity only when sealed admission failure and nonzero platform 429 evidence agree.",
       "gridPos": {
         "x": 0,
         "y": 16,
         "w": 24,
         "h": 5
       },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": []
+        },
+        "overrides": []
+      },
       "options": {
-        "content": "**Observed:** PostgreSQL atomic admission stalls first. The effect becomes user-visible at ingress: queued requests exceed Cloud Run capacity, some receive platform 429s, and receipt p95/p99 cross the one-second SLO. Worker completion and accepted-work reconciliation remain exact, so delivery is not the first saturated module in this run.",
-        "mode": "markdown"
-      }
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "openpoke_run_narrative_info{run=\"$run\"}",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "format": "table"
+        }
+      ]
     },
     {
       "id": 16,
-      "title": "Evidence provenance: immutable source path and checksum-manifest hash",
+      "title": "Evidence provenance: bundle slug and checksum-manifest hash",
       "type": "table",
       "datasource": {
         "type": "prometheus",
         "uid": "openpoke-prometheus"
       },
-      "description": "The source bundle is never mutated. source_hash is SHA-256 of the verified checksum manifest.",
+      "description": "The source bundle is never mutated. source_hash is SHA-256 of the verified checksum manifest. Filesystem paths are intentionally excluded.",
       "gridPos": {
         "x": 0,
         "y": 21,

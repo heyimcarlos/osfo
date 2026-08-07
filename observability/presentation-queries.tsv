@@ -1,4 +1,5 @@
 run-info	openpoke_run_info
+run-narratives	openpoke_run_narrative_info
 run-status	openpoke_run_status
 gate-status	openpoke_gate_status
 scorecard-counts	openpoke_count
@@ -6,4 +7,5 @@ matrix-status	openpoke_matrix_cell_status
 postgres-saturation	{__name__=~"openpoke_(atomic_admission_mean_ms|cloud_run_429_total|database_.*|checkpoint_.*)"}
 integrity	openpoke_integrity_violations
 missing-requirements	openpoke_requirement_status
+qualification-requirements	openpoke_requirement_status{view="qualification"}
 topology-decisions	openpoke_topology_decision_info

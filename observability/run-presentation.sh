@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-prototype_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+observability_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 output_dir="${1:?usage: run-presentation.sh OUTPUT_DIR RETAINED_ROOT FAILED_ROOT PILOT_ROOT}"
 retained_root="${2:?missing retained Montreal evidence root}"
 failed_root="${3:?missing us-east4 current-WAL failure root}"
@@ -11,6 +11,7 @@ grafana_port="${OSFO_OPENPOKE_GRAFANA_PORT:-13000}"
 prometheus_url="http://127.0.0.1:${prometheus_port}"
 grafana_url="http://127.0.0.1:${grafana_port}"
 
+output_dir="$(realpath --canonicalize-missing -- "$output_dir")"
 if [[ -e "$output_dir" ]]; then
   echo "refusing to overwrite presentation bundle: $output_dir" >&2
   exit 1
@@ -21,7 +22,25 @@ for evidence_root in "$retained_root" "$failed_root" "$pilot_root"; do
     echo "evidence root is not a directory: $evidence_root" >&2
     exit 1
   fi
+  evidence_root="$(realpath -- "$evidence_root")"
+  if [[ "$output_dir" == "$evidence_root" || "$output_dir" == "$evidence_root/"* ]]; then
+    echo "presentation output must be outside every evidence root" >&2
+    exit 1
+  fi
 done
+
+retained_root="$(realpath -- "$retained_root")"
+failed_root="$(realpath -- "$failed_root")"
+pilot_root="$(realpath -- "$pilot_root")"
+manifest_path="$(mktemp)"
+browser_profile=""
+cleanup() {
+  rm -f -- "$manifest_path"
+  if [[ -n "$browser_profile" && -d "$browser_profile" ]]; then
+    rm -rf -- "$browser_profile"
+  fi
+}
+trap cleanup EXIT
 
 mkdir -p \
   "$output_dir/config" \
@@ -29,19 +48,16 @@ mkdir -p \
   "$output_dir/prometheus/queries" \
   "$output_dir/screenshots"
 
-printf '%q ' "$0" "$@" > "$output_dir/capture-command.txt"
-printf '\n' >> "$output_dir/capture-command.txt"
-
 jq -n \
   --arg retained "$retained_root" \
   --arg failed "$failed_root" \
   --arg pilot "$pilot_root" \
-  '{bundles:[
+  '{selectedRegion:"us-east4",bundles:[
     {
       root:$retained,
       run:"montreal-sustained-232",
       classification:"retained",
-      qualifying:true,
+      qualifying:false,
       region:"northamerica-northeast1",
       history:"accumulated",
       wal:"current"
@@ -50,7 +66,7 @@ jq -n \
       root:$failed,
       run:"us-east4-current-wal",
       classification:"failed",
-      qualifying:false
+      qualifying:true
     },
     {
       root:$pilot,
@@ -61,22 +77,22 @@ jq -n \
       history:"clean",
       wal:"current"
     }
-  ]}' > "$output_dir/config/presentation-runs.json"
+  ]}' > "$manifest_path"
 
-bun "$prototype_dir/evidence-importer.ts" \
-  --manifest "$output_dir/config/presentation-runs.json" \
+bun "$observability_dir/evidence-importer.ts" \
+  --manifest "$manifest_path" \
   --output "$output_dir/openpoke.prom" \
   --openmetrics "$output_dir/openpoke.openmetrics" \
   --report "$output_dir/import-report.json"
-cp "$output_dir/openpoke.prom" "$prototype_dir/generated/openpoke.prom"
-cp "$output_dir/openpoke.openmetrics" "$prototype_dir/generated/openpoke.openmetrics"
+cp "$output_dir/openpoke.prom" "$observability_dir/generated/openpoke.prom"
+cp "$output_dir/openpoke.openmetrics" "$observability_dir/generated/openpoke.openmetrics"
 
-docker compose --file "$prototype_dir/compose.yaml" down --volumes --remove-orphans
-docker compose --file "$prototype_dir/compose.yaml" run --rm --no-deps \
+docker compose --file "$observability_dir/compose.yaml" down --volumes --remove-orphans
+docker compose --file "$observability_dir/compose.yaml" run --rm --no-deps \
   --entrypoint /bin/promtool \
   prometheus \
   tsdb create-blocks-from openmetrics /evidence/openpoke.openmetrics /prometheus
-docker compose --file "$prototype_dir/compose.yaml" up --detach --wait
+docker compose --file "$observability_dir/compose.yaml" up --detach --wait
 
 curl --fail --silent --show-error "$prometheus_url/-/ready" > "$output_dir/prometheus/ready.txt"
 curl --fail --silent --show-error "$grafana_url/api/health" > "$output_dir/grafana/health.json"
@@ -111,11 +127,11 @@ jq -n \
   '{timezone:"UTC",from:$from,to:$to,from_milliseconds:$from_ms,to_milliseconds:$to_ms}' \
   > "$output_dir/config/locked-time-range.json"
 
-cp "$prototype_dir/compose.yaml" "$output_dir/config/compose.yaml"
-cp "$prototype_dir/prometheus.yml" "$output_dir/config/prometheus.yml"
-cp "$prototype_dir/presentation-queries.tsv" "$output_dir/config/presentation-queries.tsv"
-cp "$prototype_dir/evidence-importer.ts" "$output_dir/config/evidence-importer.ts"
-cp -R "$prototype_dir/grafana" "$output_dir/config/grafana"
+cp "$observability_dir/compose.yaml" "$output_dir/config/compose.yaml"
+cp "$observability_dir/prometheus.yml" "$output_dir/config/prometheus.yml"
+cp "$observability_dir/presentation-queries.tsv" "$output_dir/config/presentation-queries.tsv"
+cp "$observability_dir/evidence-importer.ts" "$output_dir/config/evidence-importer.ts"
+cp -R "$observability_dir/grafana" "$output_dir/config/grafana"
 
 while IFS=$'\t' read -r query_name query; do
   curl --fail --silent --show-error --get \
@@ -123,7 +139,7 @@ while IFS=$'\t' read -r query_name query; do
     --data-urlencode "time=$to_seconds" \
     "$prometheus_url/api/v1/query" \
     > "$output_dir/prometheus/queries/$query_name.json"
-done < "$prototype_dir/presentation-queries.tsv"
+done < "$observability_dir/presentation-queries.tsv"
 
 curl --fail --silent --show-error "$prometheus_url/api/v1/status/config" \
   > "$output_dir/prometheus/runtime-config.json"
@@ -155,9 +171,10 @@ for dashboard_uid in "${dashboard_uids[@]}"; do
     --window-size=1920,1080 \
     --screenshot="$output_dir/screenshots/$dashboard_uid.png" \
     "$dashboard_url" \
-    > "$output_dir/screenshots/$dashboard_uid.browser.log" 2>&1
+    > /dev/null 2>&1
 done
-rm -rf "$browser_profile"
+rm -rf -- "$browser_profile"
+browser_profile=""
 
 (
   cd "$output_dir"

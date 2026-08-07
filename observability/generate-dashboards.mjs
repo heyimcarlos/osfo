@@ -40,6 +40,13 @@ const statusMappings = [
   },
 ];
 
+const missingMappings = [
+  {
+    type: "value",
+    options: { "-1": { color: "gray", index: 0, text: "MISSING" } },
+  },
+];
+
 const stat = (id, title, expr, position, options = {}) => ({
   id,
   title,
@@ -50,7 +57,7 @@ const stat = (id, title, expr, position, options = {}) => ({
     defaults: {
       color: { mode: options.status ? "thresholds" : "palette-classic" },
       decimals: options.decimals,
-      mappings: options.status ? statusMappings : [],
+      mappings: options.status ? statusMappings : options.missing ? missingMappings : [],
       thresholds: options.status
         ? {
             mode: "absolute",
@@ -191,15 +198,15 @@ const common = (title, uid, panels, withRun = true) => ({
   weekStart: "monday",
 });
 
-const evidenceWarning = `> **Derived presentation view.** Grafana is not evidence authority. The importer verifies the sealed bundle first. Use the provenance table to locate its checksum manifest. Missing evidence stays **MISSING**.`;
+const evidenceWarning = `> **Derived presentation view.** Grafana is not evidence authority. The importer verifies the sealed bundle first. Provenance is limited to the selected bundle slug and checksum-manifest hash. Missing evidence stays **MISSING**.`;
 
 const provenance = (id, y) =>
   table(
     id,
-    "Evidence provenance: immutable source path and checksum-manifest hash",
+    "Evidence provenance: bundle slug and checksum-manifest hash",
     'openpoke_run_info{run="$run"}',
     grid(0, y, 24, 5),
-    "The source bundle is never mutated. source_hash is SHA-256 of the verified checksum manifest.",
+    "The source bundle is never mutated. source_hash is SHA-256 of the verified checksum manifest. Filesystem paths are intentionally excluded.",
   );
 
 const scorecard = common("OpenPoke 100k DAU Scorecard", "openpoke-100k-scorecard", [
@@ -233,16 +240,16 @@ const scorecard = common("OpenPoke 100k DAU Scorecard", "openpoke-100k-scorecard
   stat(
     10,
     "Completed root outcomes",
-    'openpoke_count{run="$run",measure="completed"}',
+    'openpoke_count{run="$run",measure="completed"} or on() vector(-1)',
     grid(8, 8, 4, 4),
-    { unit: "locale" },
+    { missing: true, unit: "locale" },
   ),
   stat(
     11,
     "Correct root outcomes",
-    'openpoke_count{run="$run",measure="correct"}',
+    'openpoke_count{run="$run",measure="correct"} or on() vector(-1)',
     grid(12, 8, 4, 4),
-    { unit: "locale" },
+    { missing: true, unit: "locale" },
   ),
   stat(
     12,
@@ -274,13 +281,14 @@ const scorecard = common("OpenPoke 100k DAU Scorecard", "openpoke-100k-scorecard
     "Absent scenario, audit, qualification, checkpoint, or bounded monitoring artifacts remain visible.",
     true,
   ),
-  text(
+  table(
     16,
-    "Current breaking point",
-    "The current us-east4 current-WAL result fails at authenticated admission. PostgreSQL admission stalls exhaust Cloud Run ingress capacity, produce platform 429s, and miss the one-second durable receipt SLO. Accepted work still reconciles exactly. This is a real failure result, not a topology success claim.",
-    grid(0, 19, 24, 4),
+    "Selected run interpretation",
+    'openpoke_run_narrative_info{run="$run"}',
+    grid(0, 19, 24, 5),
+    "The selected run variable controls this bounded interpretation. Labels distinguish qualification scope, status, observed bottleneck, and topology state.",
   ),
-  provenance(17, 23),
+  provenance(17, 24),
 ]);
 
 const capacity = common("OpenPoke Capacity and PostgreSQL", "openpoke-capacity-postgres", [
@@ -295,7 +303,7 @@ const capacity = common("OpenPoke Capacity and PostgreSQL", "openpoke-capacity-p
     "Admission stability matrix A/B/C/D",
     "openpoke_matrix_cell_status",
     grid(0, 4, 8, 8),
-    "The first imported A run fails. B, C, and D have no imported evidence yet.",
+    "Each cell uses only its complete-durable-acceptance gate in explicitly qualifying selected-region evidence. Unrelated missing gates do not alter the cell.",
     true,
   ),
   stat(
@@ -362,11 +370,12 @@ const capacity = common("OpenPoke Capacity and PostgreSQL", "openpoke-capacity-p
     grid(20, 12, 4, 4),
     { status: true },
   ),
-  text(
+  table(
     15,
-    "First saturated component",
-    "**Observed:** PostgreSQL atomic admission stalls first. The effect becomes user-visible at ingress: queued requests exceed Cloud Run capacity, some receive platform 429s, and receipt p95/p99 cross the one-second SLO. Worker completion and accepted-work reconciliation remain exact, so delivery is not the first saturated module in this run.",
+    "Selected run interpretation",
+    'openpoke_run_narrative_info{run="$run"}',
     grid(0, 16, 24, 5),
+    "The selected run variable controls this interpretation. bottleneck is admission-capacity only when sealed admission failure and nonzero platform 429 evidence agree.",
   ),
   provenance(16, 21),
 ]);
@@ -416,7 +425,7 @@ const durability = common("OpenPoke Durability and Recovery", "openpoke-durabili
   table(
     7,
     "Recovery evidence still required",
-    'openpoke_requirement_status{view="recovery"}',
+    'openpoke_requirement_status{run="$run",view="recovery"}',
     grid(12, 8, 12, 8),
     "MISSING is intentional until process-cut and dependency-outage bundles provide bounded recovery evidence.",
     true,
@@ -434,7 +443,7 @@ const multiDevice = common("OpenPoke Multi-device Streams", "openpoke-multi-devi
   text(
     1,
     "Multi-device contract",
-    `${evidenceWarning}\n\nOne canonical Thread is durable in PostgreSQL. Every authenticated device owns an independent cursor, resumes by cursor, and converges on the same ordered ThreadEvent projection. No imported run proves this under load yet.`,
+    `${evidenceWarning}\n\nOne canonical Thread is durable in PostgreSQL. Every authenticated device owns an independent cursor, resumes by cursor, and converges on the same ordered ThreadEvent projection. The selected run controls whether the sealed multi-device gate and its requirements are PASS, FAIL, or MISSING.`,
     grid(0, 0, 24, 4),
   ),
   stat(
@@ -449,7 +458,7 @@ const multiDevice = common("OpenPoke Multi-device Streams", "openpoke-multi-devi
   table(
     3,
     "Required stream evidence",
-    'openpoke_requirement_status{view="multi_device"}',
+    'openpoke_requirement_status{run="$run",view="multi_device"}',
     grid(6, 4, 18, 10),
     "Connections, cursor positions, gaps, duplicates, ordering, replay latency, and convergence stay MISSING until the real harness emits them.",
     true,
@@ -470,7 +479,7 @@ const topology = common(
     text(
       1,
       "Selected presentation topology",
-      `${evidenceWarning}\n\n\`INTERFACE authenticated HTTP admission\` → \`DURABLE PostgreSQL authority + outbox\` → \`RUNTIME relay\` → \`DURABLE ordered Pub/Sub subscription\` → \`RUNTIME six fixed StreamingPull workers\` → \`DURABLE ThreadEvents\` → \`INTERFACE authenticated cursor SSE\`\n\nPressure is owned by PostgreSQL admission in the current failing run.`,
+      `${evidenceWarning}\n\n\`INTERFACE authenticated HTTP admission\` → \`DURABLE PostgreSQL authority + outbox\` → \`RUNTIME relay\` → \`DURABLE ordered Pub/Sub subscription\` → \`RUNTIME fixed StreamingPull candidate fleet\` → \`DURABLE ThreadEvents\` → \`INTERFACE authenticated cursor SSE\`\n\nStreamingPull is the selected candidate pending production qualification. The selected run table below states whether its evidence is qualifying or contextual.`,
       grid(0, 0, 24, 5),
     ),
     table(
@@ -483,11 +492,19 @@ const topology = common(
     text(
       3,
       "Evolution narrative",
-      "| Step | Change | Evidence-backed decision |\n|---|---|---|\n| Direct PostgreSQL | No atomic broker handoff | Rejected, dual-write stranded and ghost work |\n| Push | Authenticated Cloud Run push | Rejected, cold-start delivery tail |\n| Corrected push | Durable publication ownership | Correctness retained, combined-load tail remained |\n| Sharded push | More subscriptions | Rejected, complexity without user-visible SLO win |\n| Durable activation | Second Pub/Sub hop | Rejected, extra authority and recovery surface |\n| Fixed StreamingPull | One ordered subscription, fixed warm fleet | Selected for predictable delivery and recovery reserve |",
+      "| Step | Change | Evidence-backed decision |\n|---|---|---|\n| Direct PostgreSQL | No atomic broker handoff | Rejected, dual-write stranded and ghost work |\n| Push | Authenticated Cloud Run push | Rejected, cold-start delivery tail |\n| Corrected push | Durable publication ownership | Correctness retained, combined-load tail remained |\n| Sharded push | More subscriptions | Rejected, complexity without user-visible SLO win |\n| Durable activation | Second Pub/Sub hop | Rejected, extra authority and recovery surface |\n| Fixed StreamingPull | One ordered subscription, fixed warm fleet | selected candidate pending production qualification |",
       grid(0, 16, 24, 9),
     ),
+    table(
+      4,
+      "Selected run interpretation",
+      'openpoke_run_narrative_info{run="$run"}',
+      grid(0, 25, 24, 5),
+      "The selected run variable controls qualification scope and candidate state.",
+    ),
+    provenance(5, 30),
   ],
-  false,
+  true,
 );
 
 await mkdir(output, { recursive: true });

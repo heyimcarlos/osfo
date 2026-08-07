@@ -25,7 +25,7 @@
     "infra:test": "vitest run infra/test/terraform-foundation.test.ts",
     "lint": "oxlint --deny-warnings .",
     "observability:compose:check": "docker compose --file observability/compose.yaml config --quiet",
-    "observability:test": "vitest run observability/evidence-importer.test.ts",
+    "observability:test": "vitest run observability/*.test.ts",
     "observability:typecheck": "tsc --project observability/tsconfig.json",
     "start:agent-run-worker": "bun run --cwd apps/agent-run-worker start",
     "start:ingress": "bun run --cwd apps/ingress start",

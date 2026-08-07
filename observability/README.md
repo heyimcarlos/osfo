@@ -16,10 +16,17 @@ sealed run bundles
   -> sealed presentation bundle
 ```
 
-The importer module has one interface: a manifest containing explicit evidence
-roots and bounded presentation metadata. It verifies every file listed by
-`SEALED-SHA256SUMS` or `SHA256SUMS` before parsing any recognized artifact. It
-never writes inside a source evidence root.
+The importer module has one interface: a manifest containing a selected region,
+explicit evidence roots, and bounded presentation metadata. It opens each
+checksum-listed regular file once, verifies those exact bytes, and parses only
+those bytes. Recognized JSON that exists outside the checksum manifest,
+symlink escapes, duplicate run slugs, malformed metadata, invalid timestamps,
+and output paths inside evidence roots are rejected.
+
+Metrics and reports retain only the bounded bundle slug and checksum-manifest
+hash. Local filesystem paths are never emitted. A run contributes to the
+qualification matrix only when its manifest explicitly sets `qualifying` and
+its region matches `selectedRegion`.
 
 ## One-command walkthrough
 
@@ -56,7 +63,13 @@ Ports can be changed with `OSFO_OPENPOKE_GRAFANA_PORT` and
 - **Multi-device Streams:** the cursor contract and explicitly missing stream
   qualification evidence.
 - **Topology Evolution:** retained and rejected delivery designs and the final
-  fixed StreamingPull presentation topology.
+  StreamingPull candidate pending production qualification.
+
+Optional sealed `first-meaningful-event.json`, `recovery.json`, and
+`multi-device.json` artifacts can supply their corresponding gates. When those
+artifacts are absent, the gates and their detailed requirements remain
+**MISSING**. Good Root Outcome counts are emitted only from explicit
+`good_root_outcomes` or `completed_root_outcomes` evidence.
 
 All dashboards and the Prometheus data source are immutable provisioning files.
 Grafana UI updates are disabled and anonymous access is viewer-only.

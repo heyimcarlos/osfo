@@ -51,7 +51,7 @@
         "h": 4
       },
       "options": {
-        "content": "> **Derived presentation view.** Grafana is not evidence authority. The importer verifies the sealed bundle first. Use the provenance table to locate its checksum manifest. Missing evidence stays **MISSING**.\n\n**Traffic model:** 100,000 DAU × 20 messages/day = 2,000,000 daily messages = 23.15 messages/s average. The 232 messages/s lane is the modeled 10× peak.",
+        "content": "> **Derived presentation view.** Grafana is not evidence authority. The importer verifies the sealed bundle first. Provenance is limited to the selected bundle slug and checksum-manifest hash. Missing evidence stays **MISSING**.\n\n**Traffic model:** 100,000 DAU × 20 messages/day = 2,000,000 daily messages = 23.15 messages/s average. The 232 messages/s lane is the modeled 10× peak.",
         "mode": "markdown"
       }
     },
@@ -592,7 +592,18 @@
           "color": {
             "mode": "palette-classic"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "color": "gray",
+                  "index": 0,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -626,7 +637,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_count{run=\"$run\",measure=\"completed\"}",
+          "expr": "openpoke_count{run=\"$run\",measure=\"completed\"} or on() vector(-1)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -653,7 +664,18 @@
           "color": {
             "mode": "palette-classic"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "color": "gray",
+                  "index": 0,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -687,7 +709,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_count{run=\"$run\",measure=\"correct\"}",
+          "expr": "openpoke_count{run=\"$run\",measure=\"correct\"} or on() vector(-1)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -1001,31 +1023,57 @@
     },
     {
       "id": 16,
-      "title": "Current breaking point",
-      "type": "text",
-      "gridPos": {
-        "x": 0,
-        "y": 19,
-        "w": 24,
-        "h": 4
-      },
-      "options": {
-        "content": "The current us-east4 current-WAL result fails at authenticated admission. PostgreSQL admission stalls exhaust Cloud Run ingress capacity, produce platform 429s, and miss the one-second durable receipt SLO. Accepted work still reconciles exactly. This is a real failure result, not a topology success claim.",
-        "mode": "markdown"
-      }
-    },
-    {
-      "id": 17,
-      "title": "Evidence provenance: immutable source path and checksum-manifest hash",
+      "title": "Selected run interpretation",
       "type": "table",
       "datasource": {
         "type": "prometheus",
         "uid": "openpoke-prometheus"
       },
-      "description": "The source bundle is never mutated. source_hash is SHA-256 of the verified checksum manifest.",
+      "description": "The selected run variable controls this bounded interpretation. Labels distinguish qualification scope, status, observed bottleneck, and topology state.",
       "gridPos": {
         "x": 0,
-        "y": 23,
+        "y": 19,
+        "w": 24,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "openpoke_run_narrative_info{run=\"$run\"}",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "title": "Evidence provenance: bundle slug and checksum-manifest hash",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "description": "The source bundle is never mutated. source_hash is SHA-256 of the verified checksum manifest. Filesystem paths are intentionally excluded.",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
         "w": 24,
         "h": 5
       },

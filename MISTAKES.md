@@ -235,3 +235,9 @@ An evidence inventory used `path` as a loop variable. In zsh, `path` is tied to
 `PATH`, so the first iteration hid commands such as `rg`, `wc`, and `du`. Use a
 task-specific loop name such as `evidence_item`, especially for lowercase zsh
 special parameters.
+
+## 2026-08-07: Passing a Jest-only flag to Vitest
+
+A focused observability test command passed `--runInBand`, which Vitest does
+not support, so the runner rejected the command before collecting tests. Use
+the repository's scoped `vitest run ...` command without Jest-only flags.

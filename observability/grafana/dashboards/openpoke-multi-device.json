@@ -51,7 +51,7 @@
         "h": 4
       },
       "options": {
-        "content": "> **Derived presentation view.** Grafana is not evidence authority. The importer verifies the sealed bundle first. Use the provenance table to locate its checksum manifest. Missing evidence stays **MISSING**.\n\nOne canonical Thread is durable in PostgreSQL. Every authenticated device owns an independent cursor, resumes by cursor, and converges on the same ordered ThreadEvent projection. No imported run proves this under load yet.",
+        "content": "> **Derived presentation view.** Grafana is not evidence authority. The importer verifies the sealed bundle first. Provenance is limited to the selected bundle slug and checksum-manifest hash. Missing evidence stays **MISSING**.\n\nOne canonical Thread is durable in PostgreSQL. Every authenticated device owns an independent cursor, resumes by cursor, and converges on the same ordered ThreadEvent projection. The selected run controls whether the sealed multi-device gate and its requirements are PASS, FAIL, or MISSING.",
         "mode": "markdown"
       }
     },
@@ -198,7 +198,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_requirement_status{view=\"multi_device\"}",
+          "expr": "openpoke_requirement_status{run=\"$run\",view=\"multi_device\"}",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -224,13 +224,13 @@
     },
     {
       "id": 5,
-      "title": "Evidence provenance: immutable source path and checksum-manifest hash",
+      "title": "Evidence provenance: bundle slug and checksum-manifest hash",
       "type": "table",
       "datasource": {
         "type": "prometheus",
         "uid": "openpoke-prometheus"
       },
-      "description": "The source bundle is never mutated. source_hash is SHA-256 of the verified checksum manifest.",
+      "description": "The source bundle is never mutated. source_hash is SHA-256 of the verified checksum manifest. Filesystem paths are intentionally excluded.",
       "gridPos": {
         "x": 0,
         "y": 21,
