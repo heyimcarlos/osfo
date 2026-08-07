@@ -120,9 +120,12 @@ negative provider lookups, and queries retained audit history when it removed
 Terraform-owned resources. A default-branch `workflow_run` recovery starts
 after every completed protected lifecycle dispatch, including cancellation of
 the original run. A scheduled default-branch janitor uses the same serialized
-cleanup path, so canceling a recovery run cannot silently strand resources
-past the next reconciliation. The GCP workload identity provider also rejects every ref
-except `refs/heads/main`, outside branch-controlled workflow logic. Lifecycle,
+cleanup path only when GitHub run history contains an abandoned protected
+lifecycle without a successful keyed recovery. It also requires a successful
+static job at its exact current-main source before OIDC, so canceling a recovery
+run cannot silently strand resources or turn an ordinary scheduled run into a
+destructive one. The GCP workload identity provider also rejects every ref except
+`refs/heads/main`, outside branch-controlled workflow logic. Lifecycle,
 cleanup, recovery, drift, and root plan/apply runs that can touch development
 platform state share the global `terraform-development-platform` concurrency
 group. Cancellation recovery remains an unevidenced `MISSING` gate until a

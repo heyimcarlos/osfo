@@ -373,7 +373,15 @@ rg --fixed-strings --quiet 'workflows: [Terraform]' \
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet 'cron: "43 9 * * *"' \
   .github/workflows/development-platform-recovery.yml
-rg --fixed-strings --quiet 'PASS: scheduled default-branch janitor selected' \
+rg --fixed-strings --quiet 'Recovery for Terraform run {0}' \
+  .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet 'PASS: scheduled janitor found no abandoned protected lifecycle marker' \
+  .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet 'FAIL: scheduled janitor source lacks exact successful static proof' \
+  .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet 'development-platform-recovery.yml/runs?status=success' \
+  .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet '.name == "development-cleanup" and .conclusion == "success"' \
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet \
   '.name == "static" and .conclusion == "success"' \
@@ -381,6 +389,12 @@ rg --fixed-strings --quiet \
 rg --fixed-strings --quiet \
   '.name == "development-authorization" and .conclusion == "success"' \
   .github/workflows/development-platform-recovery.yml
+if [[ $(rg --fixed-strings \
+  '.name == "development-configuration" and .conclusion == "success"' \
+  .github/workflows/development-platform-recovery.yml | wc -l) != 2 ]]; then
+  printf 'automatic and scheduled recovery must require complete protected configuration\n' >&2
+  exit 1
+fi
 if [[ $(rg --fixed-strings 'ref: ${{ needs.authorize.outputs.source_ref }}' \
   .github/workflows/development-platform-recovery.yml | wc -l) != 2 ]]; then
   printf 'durable recovery must use the exact protected lifecycle source commit\n' >&2

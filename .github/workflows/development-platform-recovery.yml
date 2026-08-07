@@ -1,4 +1,5 @@
 name: Development platform recovery
+run-name: ${{ github.event_name == 'workflow_run' && format('Recovery for Terraform run {0}', github.event.workflow_run.id) || format('Scheduled development reconciliation {0}', github.run_id) }}
 
 on:
   workflow_run:
@@ -40,11 +41,76 @@ jobs:
         run: |
           printf 'recover=false\n' >>"$GITHUB_OUTPUT"
           if [[ "$RECOVERY_EVENT" == schedule ]]; then
+            terraform_runs=$(gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/terraform.yml/runs?status=completed&per_page=100")
+            successful_recoveries=$(gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/development-platform-recovery.yml/runs?status=success&per_page=100")
+            candidate_id=""
+            candidate_attempt=""
+            while IFS=$'\t' read -r run_id run_attempt; do
+              [[ -n "$run_id" ]] || continue
+              recovery_title="Recovery for Terraform run $run_id"
+              if jq -e --arg title "$recovery_title" \
+                '[.[].workflow_runs[]] | any(.display_title == $title)' \
+                <<<"$successful_recoveries" >/dev/null; then
+                continue
+              fi
+              run_jobs=$(gh api --paginate --slurp \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?filter=all")
+              if jq -e '
+                [.[].jobs[]] as $jobs
+                | any($jobs[]; .name == "static" and .conclusion == "success")
+                and any($jobs[];
+                  .name == "development-authorization" and .conclusion == "success")
+                and any($jobs[];
+                  .name == "development-configuration" and .conclusion == "success")
+                and any($jobs[];
+                  .name == "development-lifecycle"
+                  and (.conclusion == "failure" or .conclusion == "cancelled"
+                    or .conclusion == "timed_out" or .conclusion == "stale"))
+                and (any($jobs[];
+                  .name == "development-cleanup" and .conclusion == "success") | not)
+              ' <<<"$run_jobs" >/dev/null; then
+                candidate_id=$run_id
+                candidate_attempt=$run_attempt
+                break
+              fi
+            done < <(jq -r '
+              [.[].workflow_runs[]
+                | select(.event == "workflow_dispatch" and .head_branch == "main")]
+              | sort_by(.created_at) | reverse[]
+              | [.id, .run_attempt] | @tsv
+            ' <<<"$terraform_runs")
+            if [[ -z "$candidate_id" ]]; then
+              printf 'PASS: scheduled janitor found no abandoned protected lifecycle marker\n'
+              exit 0
+            fi
+
+            source_static=false
+            while IFS= read -r source_run_id; do
+              [[ -n "$source_run_id" ]] || continue
+              source_jobs=$(gh api --paginate --slurp \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$source_run_id/jobs?filter=all")
+              if jq -e '[.[].jobs[]] | any(.name == "static" and .conclusion == "success")' \
+                <<<"$source_jobs" >/dev/null; then
+                source_static=true
+                break
+              fi
+            done < <(jq -r --arg source_sha "$RECOVERY_SOURCE_SHA" '
+              [.[].workflow_runs[] | select(.head_sha == $source_sha)] | .[].id
+            ' <<<"$terraform_runs")
+            if [[ "$source_static" != true ]]; then
+              printf 'FAIL: scheduled janitor source lacks exact successful static proof\n' >&2
+              exit 1
+            fi
+
             printf 'recover=true\n' >>"$GITHUB_OUTPUT"
             printf 'source_ref=%s\n' "$RECOVERY_SOURCE_SHA" >>"$GITHUB_OUTPUT"
-            printf 'lifecycle_run_id=janitor-%s-%s\n' \
+            printf 'lifecycle_run_id=janitor-%s-%s-%s-%s\n' \
+              "$candidate_id" "$candidate_attempt" \
               "$RECOVERY_RUN_ID" "$RECOVERY_RUN_ATTEMPT" >>"$GITHUB_OUTPUT"
-            printf 'PASS: scheduled default-branch janitor selected\n'
+            printf 'PASS: scheduled janitor selected abandoned lifecycle %s attempt %s at reviewed source %s\n' \
+              "$candidate_id" "$candidate_attempt" "$RECOVERY_SOURCE_SHA"
             exit 0
           fi
           if [[ "$TRIGGER_EVENT" != workflow_dispatch || "$TRIGGER_HEAD_BRANCH" != main ]]; then
@@ -58,6 +124,8 @@ jobs:
             | any($jobs[]; .name == "static" and .conclusion == "success")
             and any($jobs[];
               .name == "development-authorization" and .conclusion == "success")
+            and any($jobs[];
+              .name == "development-configuration" and .conclusion == "success")
           ' \
             <<<"$jobs" >/dev/null; then
             printf 'recover=true\n' >>"$GITHUB_OUTPUT"
