@@ -36,13 +36,13 @@ import {
   Schema,
   Stream,
 } from "effect";
+import { listenForPostgresNotifications } from "./postgres-notification-listener.js";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const threadEventsNotificationChannel = "osfo_thread_events";
 const notificationListenerLivenessIntervalMs = 1_000;
 const notificationListenerReconnectDelayMs = 100;
 const notificationListenerHeartbeatTimeoutMs = 1_000;
-const notificationListenerHeartbeatPrefix = "__osfo_listener_heartbeat__:";
 
 export const ThreadResumeDatabaseConfigSchema = Schema.Struct({
   databaseUrl: Schema.NonEmptyString,
@@ -61,6 +61,9 @@ export class InvalidThreadResumeDatabaseConfig extends Data.TaggedError(
 )<{ readonly cause: unknown }> {}
 
 export interface ThreadResumeTestHooks {
+  readonly beforeNotificationListenerConnect?: Effect.Effect<void>;
+  readonly beforeNotificationListenerGracefulClose?: Effect.Effect<void>;
+  readonly dropNotificationHeartbeat?: (token: string) => Effect.Effect<boolean>;
   readonly dropNotificationHint: (threadId: string) => Effect.Effect<boolean>;
   readonly onNotificationSubscription: (threadId: string) => Effect.Effect<void>;
 }
@@ -123,6 +126,7 @@ const decodeCursor = Effect.fn("DatabaseThreadResume.decodeCursor")(function* (
 
 const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResumeTestHooks) => {
   const applicationName = `osfo-thread-resume-${randomUUID().slice(0, 8)}`;
+  const heartbeatChannel = `osfo_thread_resume_${randomUUID().replaceAll("-", "")}`;
   const postgresLayer = PgClient.layer({
     applicationName,
     maxConnections: config.maxConnections,
@@ -139,28 +143,37 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
           readonly token: string;
         }>
       >(Option.none());
-      const readListenerBackend = sql<{ readonly pid: string }>`SELECT pid::text AS pid
-        FROM pg_stat_activity
-        WHERE application_name = ${applicationName}
-          AND query LIKE 'LISTEN %'
-        LIMIT 1`;
       const listenForNotificationHints = Effect.scoped(
         Effect.gen(function* () {
-          yield* sql.listen(threadEventsNotificationChannel).pipe(
-            Stream.runForEach((notifiedThreadId) =>
+          yield* hooks.beforeNotificationListenerConnect ?? Effect.void;
+          yield* listenForPostgresNotifications({
+            applicationName,
+            channels: [threadEventsNotificationChannel, heartbeatChannel],
+            databaseUrl: config.databaseUrl,
+            ...(hooks.beforeNotificationListenerGracefulClose === undefined
+              ? {}
+              : { beforeGracefulClose: hooks.beforeNotificationListenerGracefulClose }),
+          }).pipe(
+            Stream.runForEach(({ channel, payload }) =>
               Ref.get(pendingHeartbeat).pipe(
                 Effect.flatMap((heartbeat) =>
-                  Option.isSome(heartbeat) && heartbeat.value.token === notifiedThreadId
-                    ? Deferred.succeed(heartbeat.value.observed, undefined)
-                    : notifiedThreadId.startsWith(notificationListenerHeartbeatPrefix)
+                  channel === heartbeatChannel &&
+                  Option.isSome(heartbeat) &&
+                  heartbeat.value.token === payload
+                    ? (hooks.dropNotificationHeartbeat?.(payload) ?? Effect.succeed(false)).pipe(
+                        Effect.flatMap((drop) =>
+                          drop
+                            ? Effect.void
+                            : Deferred.succeed(heartbeat.value.observed, undefined),
+                        ),
+                      )
+                    : channel === heartbeatChannel
                       ? Effect.void
                       : hooks
-                          .dropNotificationHint(notifiedThreadId)
+                          .dropNotificationHint(payload)
                           .pipe(
                             Effect.flatMap((drop) =>
-                              drop
-                                ? Effect.void
-                                : PubSub.publish(notificationHints, notifiedThreadId),
+                              drop ? Effect.void : PubSub.publish(notificationHints, payload),
                             ),
                           ),
                 ),
@@ -169,18 +182,12 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
             ),
             Effect.forkScoped,
           );
-          yield* readListenerBackend.pipe(
-            Effect.flatMap((rows) =>
-              rows[0] === undefined ? Effect.fail(new ThreadResumeUnavailable()) : Effect.void,
-            ),
-            Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 200 }),
-          );
           while (true) {
             yield* Effect.sleep(notificationListenerLivenessIntervalMs);
             const observed = yield* Deferred.make<void>();
-            const token = `${notificationListenerHeartbeatPrefix}${randomUUID()}`;
+            const token = randomUUID();
             yield* Ref.set(pendingHeartbeat, Option.some({ observed, token }));
-            yield* sql.notify(threadEventsNotificationChannel, token);
+            yield* sql.notify(heartbeatChannel, token);
             yield* Deferred.await(observed).pipe(
               Effect.timeout(notificationListenerHeartbeatTimeoutMs),
             );

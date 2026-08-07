@@ -375,8 +375,27 @@ describe("PostgreSQL Thread resume", () => {
             WHERE application_name LIKE 'osfo-thread-resume-%'
               AND query LIKE 'LISTEN %'`;
           const baseline = new Set((yield* listenerPids).map((row) => row.pid));
+          const allowReconnect = yield* Latch.make();
+          const reconnectBlocked = yield* Latch.make();
+          const listenerCycle = yield* Ref.make(0);
           const services = yield* Layer.build(
-            makeThreadResumeLayer({ ...resumeConfig, maxConnections: 1, pollIntervalMs: 60_000 }),
+            makeThreadResumeTestLayer(
+              { ...resumeConfig, maxConnections: 1, pollIntervalMs: 60_000 },
+              {
+                beforeNotificationListenerConnect: Ref.getAndUpdate(
+                  listenerCycle,
+                  (cycle) => cycle + 1,
+                ).pipe(
+                  Effect.flatMap((cycle) =>
+                    cycle === 0
+                      ? Effect.void
+                      : reconnectBlocked.open.pipe(Effect.andThen(allowReconnect.await)),
+                  ),
+                ),
+                dropNotificationHint: () => Effect.succeed(false),
+                onNotificationSubscription: () => Effect.void,
+              },
+            ),
           );
           const resume = Context.get(services, ThreadResume);
           const initialListenerPid = yield* listenerPids.pipe(
@@ -399,8 +418,20 @@ describe("PostgreSQL Thread resume", () => {
           );
           yield* caughtUp.await;
 
-          yield* sql`SELECT pg_terminate_backend(${initialListenerPid}::integer)`;
+          const terminated = yield* sql<{ readonly terminated: boolean }>`SELECT
+            pg_terminate_backend(${initialListenerPid}::integer) AS terminated`;
+          expect(terminated[0]?.terminated).toBe(true);
+          yield* reconnectBlocked.await;
+          yield* listenerPids.pipe(
+            Effect.filterOrFail(
+              (rows) => rows.every((row) => row.pid !== initialListenerPid),
+              () => "terminated notification listener is still present",
+            ),
+            Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 200 }),
+            Effect.timeout("3 seconds"),
+          );
           yield* Effect.promise(() => accept("Committed while listener is unavailable"));
+          yield* allowReconnect.open;
           yield* listenerPids.pipe(
             Effect.filterOrFail(
               (rows) =>
@@ -424,6 +455,82 @@ describe("PostgreSQL Thread resume", () => {
       ).pipe(Effect.provide(databaseLayer)),
     );
   }, 15_000);
+
+  it("forces a blackholed notification listener closed before reconnecting", async () => {
+    const origin = (await run(ThreadResume.use((resume) => resume.snapshot(access)))).throughCursor;
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const listenerPids = sql<{ readonly pid: string }>`SELECT pid::text AS pid
+            FROM pg_stat_activity
+            WHERE application_name LIKE 'osfo-thread-resume-%'
+              AND query LIKE 'LISTEN %'`;
+          const baseline = new Set((yield* listenerPids).map((row) => row.pid));
+          const dropFirstHeartbeat = yield* Ref.make(true);
+          const heartbeatDropped = yield* Latch.make();
+          const gracefulCloseStarted = yield* Latch.make();
+          const services = yield* Layer.build(
+            makeThreadResumeTestLayer(
+              { ...resumeConfig, maxConnections: 1, pollIntervalMs: 60_000 },
+              {
+                beforeNotificationListenerGracefulClose: gracefulCloseStarted.open.pipe(
+                  Effect.andThen(Effect.never),
+                ),
+                dropNotificationHeartbeat: () =>
+                  Ref.getAndSet(dropFirstHeartbeat, false).pipe(
+                    Effect.tap((drop) => (drop ? heartbeatDropped.open : Effect.void)),
+                  ),
+                dropNotificationHint: () => Effect.succeed(false),
+                onNotificationSubscription: () => Effect.void,
+              },
+            ),
+          );
+          const resume = Context.get(services, ThreadResume);
+          const initialListenerPid = yield* listenerPids.pipe(
+            Effect.flatMap((rows) => {
+              const pid = rows.find((row) => !baseline.has(row.pid))?.pid;
+              return pid === undefined ? Effect.fail("listener not ready") : Effect.succeed(pid);
+            }),
+            Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 200 }),
+            Effect.timeout("3 seconds"),
+          );
+          const caughtUp = yield* Latch.make();
+          const stream = yield* resume.stream({ ...access, after: origin });
+          const collector = yield* stream.pipe(
+            Stream.tap((event) =>
+              event.event === "caught_up" ? caughtUp.open.pipe(Effect.asVoid) : Effect.void,
+            ),
+            Stream.take(2),
+            Stream.runCollect,
+            Effect.forkChild,
+          );
+          yield* caughtUp.await;
+          yield* heartbeatDropped.await;
+          yield* gracefulCloseStarted.await;
+          yield* listenerPids.pipe(
+            Effect.filterOrFail(
+              (rows) =>
+                rows.some((row) => row.pid !== initialListenerPid && !baseline.has(row.pid)),
+              () => "blackholed notification listener has not been replaced",
+            ),
+            Effect.retry({ schedule: Schedule.spaced("25 millis"), times: 200 }),
+            Effect.timeout("6 seconds"),
+          );
+          yield* Effect.promise(() => accept("Delivered after forced listener replacement"));
+
+          const delivered = Array.from(
+            yield* Fiber.join(collector).pipe(Effect.timeout("3 seconds")),
+          );
+          expect(
+            delivered.flatMap((event) =>
+              event.event === "thread_event" ? [event.data.threadPosition] : [],
+            ),
+          ).toEqual(["1"]);
+        }),
+      ).pipe(Effect.provide(databaseLayer)),
+    );
+  }, 20_000);
 
   it("keeps unknown and unauthorized Threads indistinguishable", async () => {
     const unauthorized = await run(

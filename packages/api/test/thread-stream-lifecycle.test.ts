@@ -6,6 +6,7 @@ import {
   ThreadResumeUnavailable,
   ThreadStreamLifecycle,
   makeThreadStreamLifecycleLayer,
+  type ThreadStreamLifecycleService,
 } from "../src/index.js";
 import { makeThreadStreamLifecycleTestLayer } from "../src/testing.js";
 import type { ThreadStreamEvent } from "../src/index.js";
@@ -23,6 +24,17 @@ const config = {
   maxConnections: 1,
 };
 
+const collectRequest = (
+  lifecycle: ThreadStreamLifecycleService,
+  source: Stream.Stream<ThreadStreamEvent, ThreadResumeUnavailable>,
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const stream = yield* lifecycle.open(source);
+      return yield* Stream.runCollect(stream);
+    }),
+  );
+
 describe("Thread stream lifecycle", () => {
   it.effect("releases a reserved slot when stream protection fails", () =>
     Effect.gen(function* () {
@@ -30,12 +42,13 @@ describe("Thread stream lifecycle", () => {
       yield* Effect.gen(function* () {
         const lifecycle = yield* ThreadStreamLifecycle;
 
-        const failure = yield* lifecycle.open(Stream.never).pipe(Effect.flip);
+        const failure = yield* Effect.scoped(lifecycle.open(Stream.never)).pipe(Effect.flip);
         expect(failure).toEqual(new ThreadResumeUnavailable());
         expect((yield* lifecycle.status).activeConnections).toBe(0);
 
-        const replacement = yield* lifecycle.open(Stream.make(checkpoint("1")));
-        expect(Array.from(yield* Stream.runCollect(replacement))).toEqual([checkpoint("1")]);
+        expect(Array.from(yield* collectRequest(lifecycle, Stream.make(checkpoint("1"))))).toEqual([
+          checkpoint("1"),
+        ]);
         expect((yield* lifecycle.status).activeConnections).toBe(0);
       }).pipe(
         Effect.provide(
@@ -57,15 +70,16 @@ describe("Thread stream lifecycle", () => {
       const protectionStarted = yield* Latch.make();
       yield* Effect.gen(function* () {
         const lifecycle = yield* ThreadStreamLifecycle;
-        const opening = yield* lifecycle.open(Stream.never).pipe(Effect.forkChild);
+        const opening = yield* Effect.scoped(lifecycle.open(Stream.never)).pipe(Effect.forkChild);
 
         yield* protectionStarted.await;
         expect((yield* lifecycle.status).activeConnections).toBe(1);
         yield* Fiber.interrupt(opening);
         expect((yield* lifecycle.status).activeConnections).toBe(0);
 
-        const replacement = yield* lifecycle.open(Stream.make(checkpoint("1")));
-        expect(Array.from(yield* Stream.runCollect(replacement))).toEqual([checkpoint("1")]);
+        expect(Array.from(yield* collectRequest(lifecycle, Stream.make(checkpoint("1"))))).toEqual([
+          checkpoint("1"),
+        ]);
         expect((yield* lifecycle.status).activeConnections).toBe(0);
       }).pipe(
         Effect.provide(
@@ -87,9 +101,9 @@ describe("Thread stream lifecycle", () => {
       const sourceFinalized = yield* Latch.make();
       yield* Effect.gen(function* () {
         const lifecycle = yield* ThreadStreamLifecycle;
-        const opening = yield* lifecycle
-          .open(Stream.never.pipe(Stream.ensuring(sourceFinalized.open)))
-          .pipe(Effect.forkChild);
+        const opening = yield* Effect.scoped(
+          lifecycle.open(Stream.never.pipe(Stream.ensuring(sourceFinalized.open))),
+        ).pipe(Effect.forkChild);
 
         yield* handoffStarted.await;
         yield* Fiber.interrupt(opening);
@@ -107,29 +121,58 @@ describe("Thread stream lifecycle", () => {
     }),
   );
 
+  it.effect("releases a discarded open when its request scope is interrupted", () =>
+    Effect.gen(function* () {
+      const opened = yield* Latch.make();
+      const sourceFinalized = yield* Latch.make();
+      const lifecycle = yield* ThreadStreamLifecycle;
+      const request = yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* lifecycle.open(Stream.never.pipe(Stream.ensuring(sourceFinalized.open)));
+          yield* opened.open;
+          yield* Effect.never;
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* opened.await;
+      expect((yield* lifecycle.status).activeConnections).toBe(1);
+      yield* Fiber.interrupt(request);
+      yield* sourceFinalized.await.pipe(Effect.timeout("1 second"));
+      expect((yield* lifecycle.status).activeConnections).toBe(0);
+
+      expect(Array.from(yield* collectRequest(lifecycle, Stream.make(checkpoint("1"))))).toEqual([
+        checkpoint("1"),
+      ]);
+    }).pipe(Effect.provide(makeThreadStreamLifecycleLayer(config))),
+  );
+
   it.effect("rejects excess connections before streaming and releases the slot on close", () =>
     Effect.gen(function* () {
       const lifecycle = yield* ThreadStreamLifecycle;
-      const first = yield* lifecycle.open(
-        Stream.make(checkpoint("0")).pipe(Stream.concat(Stream.never)),
-      );
+      const offered = yield* Latch.make();
+      const running = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const first = yield* lifecycle.open(
+            Stream.make(checkpoint("0")).pipe(Stream.concat(Stream.never)),
+          );
+          yield* first.pipe(
+            Stream.tap(() => offered.open),
+            Stream.runDrain,
+          );
+        }),
+      ).pipe(Effect.forkChild);
+      yield* offered.await;
 
-      const rejected = yield* lifecycle.open(Stream.never).pipe(Effect.flip);
+      const rejected = yield* Effect.scoped(lifecycle.open(Stream.never)).pipe(Effect.flip);
       expect(rejected).toEqual(new ConnectionLimitExceeded({ retryAfterSeconds: 5 }));
       expect((yield* lifecycle.status).activeConnections).toBe(1);
 
-      const offered = yield* Latch.make();
-      const running = yield* first.pipe(
-        Stream.tap(() => offered.open),
-        Stream.runDrain,
-        Effect.forkChild,
-      );
-      yield* offered.await;
       yield* Fiber.interrupt(running);
       expect((yield* lifecycle.status).activeConnections).toBe(0);
 
-      const replacement = yield* lifecycle.open(Stream.make(checkpoint("0")));
-      expect(Array.from(yield* Stream.runCollect(replacement))).toEqual([checkpoint("0")]);
+      expect(Array.from(yield* collectRequest(lifecycle, Stream.make(checkpoint("0"))))).toEqual([
+        checkpoint("0"),
+      ]);
     }).pipe(Effect.provide(makeThreadStreamLifecycleLayer(config))),
   );
 
@@ -138,30 +181,46 @@ describe("Thread stream lifecycle", () => {
       const lifecycle = yield* ThreadStreamLifecycle;
       const allowHealthyEvent = yield* Latch.make();
       const healthyEventSeen = yield* Latch.make();
-      const healthyStream = yield* lifecycle.open(
-        Stream.fromEffectDrain(allowHealthyEvent.await).pipe(
-          Stream.concat(Stream.make(checkpoint("9"))),
-          Stream.concat(Stream.never),
-        ),
-      );
-      const healthyFiber = yield* healthyStream.pipe(
-        Stream.tap(() => healthyEventSeen.open),
-        Stream.runDrain,
-        Effect.forkChild,
-      );
-      const allowBurst = yield* Latch.make();
-      const protectedStream = yield* lifecycle.open(
-        Stream.make(checkpoint("1")).pipe(
-          Stream.concat(
-            Stream.fromEffectDrain(allowBurst.await).pipe(
-              Stream.concat(Stream.make(checkpoint("2"), checkpoint("3"), checkpoint("4"))),
+      const healthyFiber = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const healthyStream = yield* lifecycle.open(
+            Stream.fromEffectDrain(allowHealthyEvent.await).pipe(
+              Stream.concat(Stream.make(checkpoint("9"))),
+              Stream.concat(Stream.never),
             ),
-          ),
-        ),
-      );
+          );
+          yield* healthyStream.pipe(
+            Stream.tap(() => healthyEventSeen.open),
+            Stream.runDrain,
+          );
+        }),
+      ).pipe(Effect.forkChild);
+      const allowBurst = yield* Latch.make();
+      const burstFinished = yield* Latch.make();
+      const slowOpened = yield* Latch.make();
+      const startSlowConsumer = yield* Latch.make();
+      const slowFiber = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const protectedStream = yield* lifecycle.open(
+            Stream.make(checkpoint("1")).pipe(
+              Stream.concat(
+                Stream.fromEffectDrain(allowBurst.await).pipe(
+                  Stream.concat(Stream.make(checkpoint("2"), checkpoint("3"), checkpoint("4"))),
+                ),
+              ),
+              Stream.ensuring(burstFinished.open),
+            ),
+          );
+          yield* slowOpened.open;
+          yield* startSlowConsumer.await;
+          return yield* Stream.runCollect(protectedStream);
+        }),
+      ).pipe(Effect.forkChild);
+      yield* slowOpened.await;
       yield* allowBurst.open;
-      while ((yield* lifecycle.status).slowConsumerCloses === 0) yield* Effect.yieldNow;
-      const delivered = Array.from(yield* Stream.runCollect(protectedStream));
+      yield* burstFinished.await;
+      yield* startSlowConsumer.open;
+      const delivered = Array.from(yield* Fiber.join(slowFiber));
 
       expect(
         delivered.map((event) =>
@@ -190,9 +249,9 @@ describe("Thread stream lifecycle", () => {
   it.effect("closes a stream whose unsent bytes exceed its bound", () =>
     Effect.gen(function* () {
       const lifecycle = yield* ThreadStreamLifecycle;
-      const protectedStream = yield* lifecycle.open(Stream.make(checkpoint("1")));
-
-      expect(Array.from(yield* Stream.runCollect(protectedStream))).toEqual([]);
+      expect(Array.from(yield* collectRequest(lifecycle, Stream.make(checkpoint("1"))))).toEqual(
+        [],
+      );
       expect((yield* lifecycle.status).slowConsumerCloses).toBe(1);
     }).pipe(
       Effect.provide(
@@ -208,26 +267,32 @@ describe("Thread stream lifecycle", () => {
     Effect.gen(function* () {
       const lifecycle = yield* ThreadStreamLifecycle;
       const allowSecond = yield* Latch.make();
-      const protectedStream = yield* lifecycle.open(
-        Stream.make(checkpoint("1")).pipe(
-          Stream.concat(
-            Stream.fromEffectDrain(allowSecond.await).pipe(
-              Stream.concat(Stream.make(checkpoint("2"))),
-              Stream.concat(Stream.never),
+      const opened = yield* Latch.make();
+      const startConsumer = yield* Latch.make();
+      const request = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const protectedStream = yield* lifecycle.open(
+            Stream.make(checkpoint("1")).pipe(
+              Stream.concat(
+                Stream.fromEffectDrain(allowSecond.await).pipe(
+                  Stream.concat(Stream.make(checkpoint("2"))),
+                  Stream.concat(Stream.never),
+                ),
+              ),
             ),
-          ),
-        ),
-      );
+          );
+          yield* opened.open;
+          yield* startConsumer.await;
+          return yield* Stream.runCollect(protectedStream);
+        }),
+      ).pipe(Effect.forkChild);
+      yield* opened.await;
       yield* allowSecond.open;
-      yield* Effect.gen(function* () {
-        while ((yield* lifecycle.status).slowConsumerCloses === 0) {
-          yield* Effect.sleep(10);
-        }
-      }).pipe(Effect.timeout(config.maxBufferedAgeMs * 5));
-      expect((yield* lifecycle.status).slowConsumerCloses).toBe(1);
-      const delivered = Array.from(yield* Stream.runCollect(protectedStream));
+      yield* Effect.sleep(config.maxBufferedAgeMs * 2);
+      yield* startConsumer.open;
+      const delivered = Array.from(yield* Fiber.join(request));
 
-      expect(delivered).toEqual([]);
+      expect(delivered).toEqual([checkpoint("1")]);
       expect((yield* lifecycle.status).slowConsumerCloses).toBe(1);
       expect((yield* lifecycle.status).activeConnections).toBe(0);
     }).pipe(Effect.provide(makeThreadStreamLifecycleLayer(config))),
@@ -236,14 +301,21 @@ describe("Thread stream lifecycle", () => {
   it.effect("drains active streams and rejects new streams until process replacement", () =>
     Effect.gen(function* () {
       const lifecycle = yield* ThreadStreamLifecycle;
-      const protectedStream = yield* lifecycle.open(Stream.never);
-      const running = yield* protectedStream.pipe(Stream.runDrain, Effect.forkChild);
+      const opened = yield* Latch.make();
+      const running = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const stream = yield* lifecycle.open(Stream.never);
+          yield* opened.open;
+          yield* Stream.runDrain(stream);
+        }),
+      ).pipe(Effect.forkChild);
 
+      yield* opened.await;
       yield* lifecycle.drain;
       yield* Fiber.join(running);
       expect(yield* lifecycle.status).toMatchObject({ accepting: false, activeConnections: 0 });
 
-      const rejected = yield* lifecycle.open(Stream.never).pipe(Effect.flip);
+      const rejected = yield* Effect.scoped(lifecycle.open(Stream.never)).pipe(Effect.flip);
       expect(rejected).toEqual(new ThreadResumeUnavailable());
     }).pipe(Effect.provide(makeThreadStreamLifecycleLayer(config))),
   );
@@ -255,33 +327,64 @@ describe("Thread stream lifecycle", () => {
       const sourceStarted = yield* Latch.make();
       const sourceFinalizerStarted = yield* Latch.make();
       const lifecycle = yield* ThreadStreamLifecycle;
-      const protectedStream = yield* lifecycle.open(
-        Stream.fromEffectDrain(sourceStarted.open).pipe(
-          Stream.concat(Stream.never),
-          Stream.ensuring(
-            sourceFinalizerStarted.open.pipe(Effect.andThen(allowSourceFinalizer.await)),
-          ),
-        ),
-      );
-      const consumer = yield* protectedStream.pipe(
-        Stream.ensuring(consumerFinalized.open),
-        Stream.runDrain,
-        Effect.forkChild,
-      );
+      const consumer = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const protectedStream = yield* lifecycle.open(
+            Stream.fromEffectDrain(sourceStarted.open).pipe(
+              Stream.concat(Stream.never),
+              Stream.ensuring(
+                sourceFinalizerStarted.open.pipe(Effect.andThen(allowSourceFinalizer.await)),
+              ),
+            ),
+          );
+          yield* protectedStream.pipe(Stream.ensuring(consumerFinalized.open), Stream.runDrain);
+        }),
+      ).pipe(Effect.forkChild);
       yield* sourceStarted.await;
       const draining = yield* lifecycle.drain.pipe(Effect.forkChild);
 
       yield* sourceFinalizerStarted.await;
       yield* consumerFinalized.await;
       const drainIsWaiting = draining.pollUnsafe() === undefined;
-      const consumerIsFinished = consumer.pollUnsafe() !== undefined;
+      const requestIsWaitingForSource = consumer.pollUnsafe() === undefined;
       const activeConnections = (yield* lifecycle.status).activeConnections;
 
       yield* allowSourceFinalizer.open;
       yield* Fiber.join(draining);
       yield* Fiber.join(consumer);
       expect(drainIsWaiting).toBe(true);
-      expect(consumerIsFinished).toBe(true);
+      expect(requestIsWaitingForSource).toBe(true);
+      expect(activeConnections).toBe(1);
+      expect((yield* lifecycle.status).activeConnections).toBe(0);
+    }).pipe(Effect.provide(makeThreadStreamLifecycleLayer(config))),
+  );
+
+  it.effect("waits for the outer transport consumer scope before drain returns", () =>
+    Effect.gen(function* () {
+      const allowTransportFinalizer = yield* Latch.make();
+      const transportFinalizerStarted = yield* Latch.make();
+      const lifecycle = yield* ThreadStreamLifecycle;
+      const consumer = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const protectedStream = yield* lifecycle.open(Stream.never);
+          yield* protectedStream.pipe(
+            Stream.ensuring(
+              transportFinalizerStarted.open.pipe(Effect.andThen(allowTransportFinalizer.await)),
+            ),
+            Stream.runDrain,
+          );
+        }),
+      ).pipe(Effect.forkChild);
+      const draining = yield* lifecycle.drain.pipe(Effect.forkChild);
+
+      yield* transportFinalizerStarted.await;
+      const drainIsWaiting = draining.pollUnsafe() === undefined;
+      const activeConnections = (yield* lifecycle.status).activeConnections;
+
+      yield* allowTransportFinalizer.open;
+      yield* Fiber.join(draining);
+      yield* Fiber.join(consumer);
+      expect(drainIsWaiting).toBe(true);
       expect(activeConnections).toBe(1);
       expect((yield* lifecycle.status).activeConnections).toBe(0);
     }).pipe(Effect.provide(makeThreadStreamLifecycleLayer(config))),
@@ -293,19 +396,26 @@ describe("Thread stream lifecycle", () => {
       Effect.gen(function* () {
         const lifecycle = yield* ThreadStreamLifecycle;
         const failSource = yield* Latch.make();
-        const protectedStream = yield* lifecycle.open(
-          Stream.make(checkpoint("1")).pipe(
-            Stream.concat(
-              Stream.fromEffect(
-                failSource.await.pipe(Effect.andThen(Effect.fail(new ThreadResumeUnavailable()))),
+        const request = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const protectedStream = yield* lifecycle.open(
+              Stream.make(checkpoint("1")).pipe(
+                Stream.concat(
+                  Stream.fromEffect(
+                    failSource.await.pipe(
+                      Effect.andThen(Effect.fail(new ThreadResumeUnavailable())),
+                    ),
+                  ),
+                ),
               ),
-            ),
-          ),
-        );
+            );
+            return yield* Stream.runCollect(protectedStream);
+          }),
+        ).pipe(Effect.forkChild);
         yield* failSource.open;
-        while ((yield* lifecycle.status).activeConnections > 0) yield* Effect.yieldNow;
+        const delivered = Array.from(yield* Fiber.join(request));
 
-        expect(Array.from(yield* Stream.runCollect(protectedStream))).toEqual([]);
+        expect(delivered).toEqual([]);
         expect((yield* lifecycle.status).activeConnections).toBe(0);
       }).pipe(Effect.provide(makeThreadStreamLifecycleLayer(config))),
   );
@@ -313,8 +423,9 @@ describe("Thread stream lifecycle", () => {
   it.effect("closes a stream at its configured maximum lifetime", () =>
     Effect.gen(function* () {
       const lifecycle = yield* ThreadStreamLifecycle;
-      const protectedStream = yield* lifecycle.open(Stream.never);
-      const running = yield* protectedStream.pipe(Stream.runDrain, Effect.forkChild);
+      const running = yield* Effect.scoped(
+        lifecycle.open(Stream.never).pipe(Effect.flatMap(Stream.runDrain)),
+      ).pipe(Effect.forkChild);
 
       yield* TestClock.adjust(config.maxConnectionLifetimeMs);
       yield* Fiber.join(running);
