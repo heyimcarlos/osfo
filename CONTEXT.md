@@ -18,7 +18,8 @@ _Avoid_: Product Composition, Osfo instance, Osfo product
 
 **Reference Agent Application**:
 An Agent Application maintained to prove and document how reusable Osfo
-modules compose. The Single-Thread Agent demo is the initial reference.
+modules compose. Oz is the initial reference and remains a deployable product,
+not a temporary demonstration harness.
 _Avoid_: Reference Product Composition, Osfo core, throwaway sample
 
 **Oz**:
@@ -243,6 +244,16 @@ The Osfo-owned execution interface that accepts one committed ModelCallAttempt
 and emits normalized observations without owning ModelCall retry or lifecycle
 policy. Concrete Model Adapters implement this interface.
 _Avoid_: Agent Runtime, model provider, uncommitted ModelCall
+
+**Model Adapter**:
+A concrete integration that translates one Osfo-owned ModelCallAttempt into a
+provider protocol and normalizes provider observations and outcomes back into
+Osfo-owned values through ModelCallExecutor. It owns protocol translation and
+provider conformance, but never AgentRun lifecycle, retry policy, canonical
+Thread state, credentials in durable records, or provider selection policy.
+OpenRouter is one Model Adapter available to an Agent Application, not an Osfo
+runtime dependency or the identity of Oz.
+_Avoid_: Agent Runtime, model router, Agent Application, provider SDK wrapper
 
 **ToolCall**:
 One identified logical tool operation within an AgentRun. Its durable intent is

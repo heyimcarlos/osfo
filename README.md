@@ -3,6 +3,19 @@
 Osfo is a TypeScript and Effect 4 workspace managed by Bun and Turbo. Production
 application entrypoints run on Node 24.
 
+## Architecture
+
+[`CONTEXT.md`](CONTEXT.md) defines the domain language. The
+[`Osfo v1 architecture and Oz reference journey`](docs/specs/osfo-v1.md) is the
+implementation baseline. It keeps Osfo as the reusable reliable agent
+foundation, makes Oz the long-lived Reference Agent Application, and keeps
+OpenRouter and other providers behind the Osfo-owned Model Adapter seam.
+
+The current comparable study is
+[`docs/research/osfo-agent-platform-comparables-20260807.md`](docs/research/osfo-agent-platform-comparables-20260807.md).
+Production qualification remains PASS, FAIL, or MISSING per gate and is never
+inferred from a successful development demonstration.
+
 ## Workspace commands
 
 ```sh
