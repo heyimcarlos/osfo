@@ -63,7 +63,7 @@ done
 
 assert_absent private_dns_record database.temporal.internal. \
   gcloud dns record-sets list --project="$project_id" --zone="$name_prefix-private" \
-  --type=A --format='value(name)'
+  --format='value(name)'
 
 jq -n --arg project_id "$project_id" --arg region "$region" '{
   schema_version: 1,
