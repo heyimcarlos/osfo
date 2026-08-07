@@ -43,6 +43,98 @@ read_reconciliation() {
     "$agent_run_id" "$destination"
 }
 
+read_agent_run_events() {
+  local after_position=$1
+  local through_position=$2
+  local destination=$3
+  local page="$work_directory/agent-run-history-page.json"
+  local merged="$work_directory/agent-run-history-merged.json"
+  local status next_after_position
+
+  printf '[]\n' >"$destination"
+  while :; do
+    status=$(authenticated_curl --header 'accept: application/json' --output "$page" \
+      --write-out '%{http_code}' \
+      "$origin/v1/threads/$thread_id/events?afterPosition=$after_position&throughPosition=$through_position&limit=1000")
+    if [[ "$status" != 200 ]] ||
+      ! jq -e --arg thread_id "$thread_id" --arg after_position "$after_position" \
+        '.threadId == $thread_id and .afterPosition == $after_position' "$page" >/dev/null; then
+      return 1
+    fi
+
+    jq -s '.[0] + .[1].events' "$destination" "$page" >"$merged"
+    mv "$merged" "$destination"
+    if jq -e '.hasMore == false' "$page" >/dev/null; then
+      return 0
+    fi
+
+    next_after_position=$(jq -r '.nextAfterPosition' "$page")
+    if [[ ! "$next_after_position" =~ ^[0-9]+$ ]] ||
+      ((next_after_position <= after_position)); then
+      return 1
+    fi
+    after_position=$next_after_position
+  done
+}
+
+wait_for_authoritative_output() {
+  local agent_run_id=$1
+  local receipt_position=$2
+  local snapshot_destination=$3
+  local label=$4
+  local snapshot_status current_position outcome terminal_event
+  local events="$work_directory/agent-run-events.json"
+
+  for _ in $(seq 1 120); do
+    snapshot_status=$(authenticated_curl --output "$snapshot_destination" \
+      --write-out '%{http_code}' "$origin/v1/threads/$thread_id/snapshot")
+    if [[ "$snapshot_status" != 200 ]] ||
+      ! jq -e --arg thread_id "$thread_id" \
+        '.threadId == $thread_id and (.throughPosition | test("^[0-9]+$"))' \
+        "$snapshot_destination" >/dev/null; then
+      sleep 1
+      continue
+    fi
+    current_position=$(jq -r '.throughPosition' "$snapshot_destination")
+    if ! read_agent_run_events "$receipt_position" "$current_position" "$events"; then
+      sleep 1
+      continue
+    fi
+
+    if ! outcome=$(jq -r --arg agent_run_id "$agent_run_id" \
+      -f infra/tests/development-runtime-agent-run-outcome.jq "$events"); then
+      sleep 1
+      continue
+    fi
+    case "$outcome" in
+      succeeded)
+        terminal_event=$(jq -c --arg agent_run_id "$agent_run_id" \
+          '[.[] | select(.eventType == "AgentRunSucceeded" and .payload.agentRunId == $agent_run_id)] | last' \
+          "$events")
+        waited_agent_run_cursor=$(jq -r '.cursor' <<<"$terminal_event")
+        waited_agent_run_position=$(jq -r '.threadPosition' <<<"$terminal_event")
+        if [[ -z "$waited_agent_run_cursor" || ! "$waited_agent_run_position" =~ ^[0-9]+$ ]]; then
+          printf 'FAIL: %s terminal event omitted its canonical checkpoint\n' "$label" >&2
+          return 1
+        fi
+        return 0
+        ;;
+      failed)
+        printf 'FAIL: %s reached AgentRunFailed before authoritative output completed\n' "$label" >&2
+        return 1
+        ;;
+      canceled)
+        printf 'FAIL: %s reached AgentRunCanceled before authoritative output completed\n' "$label" >&2
+        return 1
+        ;;
+    esac
+    sleep 1
+  done
+
+  printf 'FAIL: %s did not reach its own authoritative assistant output\n' "$label" >&2
+  return 1
+}
+
 health_status=$(curl --silent --show-error --output "$work_directory/health.json" \
   --write-out '%{http_code}' "$origin/healthz")
 if [[ "$health_status" != 200 ]] ||
@@ -73,9 +165,6 @@ if [[ "$snapshot_status" != 200 ]] ||
 fi
 initial_cursor=$(jq -r '.throughCursor' "$work_directory/snapshot-before.json")
 initial_position=$(jq -r '.throughPosition' "$work_directory/snapshot-before.json")
-initial_assistant_outputs=$(jq '[.timeline[] | select(.type == "assistantOutput")] | length' \
-  "$work_directory/snapshot-before.json")
-
 idempotency_key=$(< /proc/sys/kernel/random/uuid)
 command_body=$(jq -nc --arg key "$idempotency_key" \
   '{protocolVersion: 1, idempotencyKey: $key, message: {content: "Development Oz MiniMax M3 proof"}}')
@@ -91,6 +180,7 @@ if [[ "$command_status" != 200 ]] ||
 fi
 printf 'PASS: Oz command returned a durable acceptance receipt\n'
 proof_agent_run_id=$(jq -r '.agentRunId' "$work_directory/receipt.json")
+proof_receipt_position=$(jq -r '.threadPosition' "$work_directory/receipt.json")
 
 duplicate_status=$(authenticated_curl --request POST --header 'content-type: application/json' \
   --data "$command_body" --output "$work_directory/receipt-duplicate.json" --write-out '%{http_code}' \
@@ -103,27 +193,13 @@ if [[ "$duplicate_status" != 200 ]] ||
 fi
 printf 'PASS: repeated command admission returned the same durable receipt\n'
 
-completed=0
-for _ in $(seq 1 120); do
-  authenticated_curl --output "$work_directory/snapshot-after.json" \
-    "$origin/v1/threads/$thread_id/snapshot"
-  current_position=$(jq -r '.throughPosition' "$work_directory/snapshot-after.json")
-  if [[ "$current_position" != "$initial_position" ]] &&
-    jq -e --argjson initial_assistant_outputs "$initial_assistant_outputs" \
-      '[.timeline[] | select(.type == "assistantOutput")] | length > $initial_assistant_outputs' \
-      "$work_directory/snapshot-after.json" >/dev/null; then
-    completed=1
-    break
-  fi
-  sleep 1
-done
-if ((completed == 0)); then
-  printf 'FAIL: Oz AgentRun did not reach authoritative assistant output\n' >&2
+if ! wait_for_authoritative_output "$proof_agent_run_id" "$proof_receipt_position" \
+  "$work_directory/snapshot-after.json" 'accepted Oz AgentRun'; then
   exit 1
 fi
-printf 'PASS: ordered delivery committed authoritative Oz output\n'
-first_cursor=$(jq -r '.throughCursor' "$work_directory/snapshot-after.json")
-first_position=$current_position
+printf 'PASS: accepted Oz AgentRun committed its own ordered authoritative output\n'
+first_cursor=$waited_agent_run_cursor
+first_position=$waited_agent_run_position
 
 if ! read_reconciliation "$proof_agent_run_id" "$work_directory/reconciliation.json" ||
   ! jq -e --arg agent_run_id "$proof_agent_run_id" '
@@ -148,29 +224,24 @@ printf 'PASS: exact Oz AgentRun retained one MiniMax request, terminal output, a
 checkpoint_key=$(< /proc/sys/kernel/random/uuid)
 checkpoint_body=$(jq -nc --arg key "$checkpoint_key" \
   '{protocolVersion: 1, idempotencyKey: $key, message: {content: "Development cursor checkpoint"}}')
-checkpoint_outputs=$(jq '[.timeline[] | select(.type == "assistantOutput")] | length' \
-  "$work_directory/snapshot-after.json")
-authenticated_curl --request POST --header 'content-type: application/json' \
+checkpoint_status=$(authenticated_curl --request POST --header 'content-type: application/json' \
   --data "$checkpoint_body" --output "$work_directory/checkpoint-receipt.json" \
-  "$origin/v1/threads/$thread_id/messages"
-checkpoint_completed=0
-for _ in $(seq 1 120); do
-  authenticated_curl --output "$work_directory/snapshot-checkpoint.json" \
-    "$origin/v1/threads/$thread_id/snapshot"
-  if jq -e --argjson checkpoint_outputs "$checkpoint_outputs" \
-    '[.timeline[] | select(.type == "assistantOutput")] | length > $checkpoint_outputs' \
-    "$work_directory/snapshot-checkpoint.json" >/dev/null; then
-    checkpoint_completed=1
-    break
-  fi
-  sleep 1
-done
-if ((checkpoint_completed == 0)); then
-  printf 'FAIL: cursor checkpoint did not reach authoritative output\n' >&2
+  --write-out '%{http_code}' "$origin/v1/threads/$thread_id/messages")
+if [[ "$checkpoint_status" != 200 ]] ||
+  ! jq -e --arg key "$checkpoint_key" --arg thread_id "$thread_id" \
+    '.idempotencyKey == $key and .threadId == $thread_id and (.agentRunId | length > 0)' \
+    "$work_directory/checkpoint-receipt.json" >/dev/null; then
+  printf 'FAIL: cursor checkpoint admission returned status %s\n' "$checkpoint_status" >&2
   exit 1
 fi
-checkpoint_cursor=$(jq -r '.throughCursor' "$work_directory/snapshot-checkpoint.json")
-current_position=$(jq -r '.throughPosition' "$work_directory/snapshot-checkpoint.json")
+checkpoint_agent_run_id=$(jq -r '.agentRunId' "$work_directory/checkpoint-receipt.json")
+checkpoint_receipt_position=$(jq -r '.threadPosition' "$work_directory/checkpoint-receipt.json")
+if ! wait_for_authoritative_output "$checkpoint_agent_run_id" "$checkpoint_receipt_position" \
+  "$work_directory/snapshot-checkpoint.json" 'accepted cursor-checkpoint AgentRun'; then
+  exit 1
+fi
+checkpoint_cursor=$waited_agent_run_cursor
+current_position=$waited_agent_run_position
 if [[ "$initial_cursor" == "$first_cursor" || "$first_cursor" == "$checkpoint_cursor" || "$initial_cursor" == "$checkpoint_cursor" ]]; then
   printf 'FAIL: three clients did not retain distinct cursor checkpoints\n' >&2
   exit 1
