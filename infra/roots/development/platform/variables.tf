@@ -20,10 +20,11 @@ variable "qualification_service_accounts" {
 
   validation {
     condition = toset(keys(var.qualification_service_accounts)) == toset([
+      "authorized_secret",
       "denied_secret",
       "network",
     ])
-    error_message = "qualification_service_accounts must contain exactly the two reviewed probe identities."
+    error_message = "qualification_service_accounts must contain exactly the three reviewed probe identities."
   }
 }
 variable "region" {

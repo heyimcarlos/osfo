@@ -247,6 +247,15 @@ if [[ "${DEVELOPMENT_PLATFORM_CLEANUP_ONLY:-0}" == 1 ]]; then
       printf 'FAIL: managed smoke report does not match lifecycle envelope digest\n' >&2
       exit 1
     fi
+    if ! jq -e '
+      .checks.authorized_secret_version_access == "PASS"
+      and .checks.exact_permission_denied_secret_payload_access == "PASS"
+      and .authorized_secret_evidence.payload_sha256_match == true
+      and (.authorized_secret_evidence.expected_payload_length | type == "number" and . > 0)
+    ' "$plan_dir/managed-report.json" >/dev/null; then
+      printf 'FAIL: managed report does not preserve both secret-boundary proofs\n' >&2
+      exit 1
+    fi
     lifecycle_envelope_status=PASS
   elif grep -Eqi '404|not found|does not exist' "$lifecycle_lookup_error"; then
     printf 'MISSING: lifecycle ended before its evidence envelope was stored\n' >&2
@@ -320,6 +329,14 @@ create_binding=$(jq -r '.binding_sha256' "$create_plan.manifest.json")
 
 DENIED_SECRET_IAM_SCOPE=target-secret \
   "$repo_root/infra/tests/development-denied-secret-iam-preflight.sh"
+for protected_secret in model-adapter temporal-cloud; do
+  DENIED_SECRET_IAM_SCOPE=target-secret \
+  SECRET_ACCESS_IDENTITY_KEY=authorized_secret \
+  SECRET_ACCESS_IDENTITY_LABEL=authorized \
+  SECRET_ACCESS_PROOF_LABEL=authorized-secret \
+  SECRET_ACCESS_TARGET_SUFFIX="$protected_secret" \
+    "$repo_root/infra/tests/development-denied-secret-iam-preflight.sh"
+done
 
 second_plan="$plan_dir/second.tfplan"
 "$repo_root/infra/scripts/create-plan.sh" development "$root" "$second_plan" -detailed-exitcode

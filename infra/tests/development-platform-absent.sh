@@ -104,7 +104,7 @@ while IFS=$'\t' read -r identity email; do
     gcloud iam service-accounts list --project="$project_id" --format='value(email)'
 done < <(jq -r '.qualification_service_accounts | to_entries[] | [.key, .value] | @tsv' "$varset")
 
-for secret in model-adapter temporal-cloud; do
+for secret in model-adapter temporal-cloud authorized-secret-proof; do
   assert_absent "secret_${secret//-/_}" "$name_prefix-$secret" \
     gcloud secrets list --project="$project_id" --format='value(name)'
 done
@@ -115,7 +115,7 @@ assert_absent artifact_registry "$repository" \
 assert_exact_absent artifact_bucket \
   gcloud storage buckets describe "gs://$artifact_bucket" --project="$project_id"
 
-for job in network-probe temporal-secret-probe denied-secret-probe; do
+for job in network-probe temporal-secret-probe denied-secret-probe authorized-secret-probe; do
   assert_absent "run_job_${job//-/_}" "$name_prefix-$job" \
     gcloud run jobs list --project="$project_id" --region="$region" --format='value(name)'
 done

@@ -149,6 +149,13 @@ jobs:
       - name: Verify denied-secret IAM authority before apply
         shell: bash
         run: infra/tests/development-denied-secret-iam-preflight.sh
+      - name: Verify authorized-secret identity has no project payload authority
+        shell: bash
+        env:
+          SECRET_ACCESS_IDENTITY_KEY: authorized_secret
+          SECRET_ACCESS_IDENTITY_LABEL: authorized
+          SECRET_ACCESS_PROOF_LABEL: authorized-secret
+        run: infra/tests/development-denied-secret-iam-preflight.sh
 
   development-dns-policy-preflight:
     if: >-

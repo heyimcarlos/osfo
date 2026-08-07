@@ -11,8 +11,8 @@ development-only `us-east4` VPC, Direct VPC egress subnet, static Cloud NAT,
 private services access, private DNS, firewall rules, and an optional Temporal
 Cloud Private Service Connect endpoint. The `development/platform` root reads
 those provider resources by their reviewed names. Foundation also retains the
-six runtime service-account identities, two qualification-only identities,
-the exact Cloud SQL and conditional secret-access roles, and two probe-only
+six runtime service-account identities, three qualification-only identities,
+the exact Cloud SQL and conditional secret-access roles, and three probe-only
 `actAs` grants. Data authority owns zonal private-IP Cloud SQL PostgreSQL with
 IAM database authentication, Secret Manager containers, immutable Artifact Registry tags,
 and the disposable content-addressed artifact bucket. Command buffer owns the
@@ -71,8 +71,10 @@ available, the report records Temporal PSC as `MISSING`, never `PASS`.
 The platform smoke uses a digest-pinned base image for disposable Cloud Run
 Jobs with Direct VPC egress. It proves private-only Cloud SQL connectivity with
 an IAM database login, private DNS resolution, and observed public egress
-through the retained static NAT address. No qualification identity has secret
-access, and runtime identities are never impersonable by the platform identity.
+through the retained static NAT address. Runtime identities are never
+impersonable by the platform identity. The dedicated authorized-secret probe
+identity can access only versions of one disposable, explicitly non-secret
+qualification target. It has no access to `model-adapter` or `temporal-cloud`.
 The denied probe requires a nonzero secret-version access result with an empty
 payload, independently of human-readable `gcloud` errors. A foundation preflight
 validates the exact live denied identity, requires project-only ancestry, and
@@ -81,10 +83,18 @@ include that identity. It fails closed for any parent hierarchy or unresolved
 aggregate authority that could grant secret payload access. After apply, the
 existing platform read authority performs the matching structural check against
 the exact live target-secret policy before the runtime probe. The source
-contract also rejects secret-level IAM resources in the disposable platform
-definition. The platform may create versions and manage containers, but it
-cannot change secret IAM, access version payloads, or mint runtime credentials.
-Authorized secret-version access therefore remains `MISSING` in this preparatory PR.
+contract permits exactly one disposable secret-level accessor binding, for the
+dedicated qualification identity and target. Foundation grants the platform
+only `getIamPolicy` and `setIamPolicy` on the exact qualification secret name.
+The protected workflow derives a disposable non-secret sentinel from the unique
+lifecycle run identifier outside Terraform. The managed job independently
+derives the expected digest, executes once with zero task retries, and retains
+only the expected length and a digest-match boolean. Payloads, raw digests, provider errors,
+credentials, and authorization headers are never printed or archived.
+Independent Terraform cleanup removes the sentinel version with its container,
+the job, accessor binding, and empty state, including after proof failure.
+Authorized secret-version access is `PASS` only when one valid managed result
+matches both the expected length and digest.
 Package installation inside the pinned base image is still mutable, so full
 probe toolchain determinism is also `MISSING`.
 The retained private zone owns two narrow platform bindings. The conditional

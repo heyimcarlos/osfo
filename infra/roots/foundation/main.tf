@@ -167,9 +167,12 @@ locals {
   ])
 
   development_qualification_identities = {
-    denied_secret = "qual-denied"
-    network       = "qual-network"
+    authorized_secret = "qual-authorized"
+    denied_secret     = "qual-denied"
+    network           = "qual-network"
   }
+
+  development_authorized_secret_name = "${var.development_environment_baseline.name_prefix}-authorized-secret-proof"
 
   development_secret_access_bindings = {
     runtime_agentrun = {
@@ -241,6 +244,21 @@ resource "google_project_iam_custom_role" "platform_secret_manager" {
     "secretmanager.secrets.list",
     "secretmanager.secrets.update",
     "secretmanager.versions.add",
+  ]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
+}
+
+resource "google_project_iam_custom_role" "platform_qualification_secret_iam" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoPlatformQualificationSecretIam"
+  title       = "Osfo platform qualification secret IAM manager"
+  description = "Manages IAM only on the disposable non-secret qualification target."
+  permissions = [
+    "secretmanager.secrets.getIamPolicy",
+    "secretmanager.secrets.setIamPolicy",
   ]
 
   lifecycle { prevent_destroy = true }
@@ -728,6 +746,18 @@ resource "google_project_iam_member" "platform_secret_manager" {
   project = google_project.environment["development"].project_id
   role    = google_project_iam_custom_role.platform_secret_manager.name
   member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+}
+
+resource "google_project_iam_member" "platform_qualification_secret_iam" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.platform_qualification_secret_iam.name
+  member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+
+  condition {
+    title       = "exact_development_authorized_secret_proof"
+    description = "Restricts IAM mutation to the disposable non-secret qualification target."
+    expression  = "resource.name == 'projects/${google_project.environment["development"].number}/secrets/${local.development_authorized_secret_name}'"
+  }
 }
 
 resource "google_project_iam_member" "platform_service_consumer" {

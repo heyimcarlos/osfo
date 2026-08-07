@@ -58,6 +58,13 @@ describe("Terraform foundation", () => {
     ),
   );
 
+  it.effect("proves authorized secret access with sanitized evidence", () =>
+    expectCheckPasses(
+      "infra/tests/development-authorized-secret-proof-contract.sh",
+      "development authorized-secret proof assertions",
+    ),
+  );
+
   it.effect("proves denied secret IAM authority is absent", () =>
     expectCheckPasses(
       "infra/tests/development-denied-secret-iam-preflight-contract.sh",
@@ -76,6 +83,13 @@ describe("Terraform foundation", () => {
     expectCheckPasses(
       "infra/tests/development-runtime-absent-contract.sh",
       "absence proof fails closed",
+    ),
+  );
+
+  it.effect("proves authorized identity has no protected-secret authority", () =>
+    expectCheckPasses(
+      "infra/tests/development-authorized-secret-iam-preflight-contract.sh",
+      "development authorized-secret IAM preflight assertions",
     ),
   );
 
