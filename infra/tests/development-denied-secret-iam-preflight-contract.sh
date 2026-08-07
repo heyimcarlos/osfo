@@ -58,9 +58,64 @@ jq -n \
 jq '.disabled = true' "$scratch/identity.json" >"$scratch/identity-disabled.json"
 
 jq -n '{bindings: [
-  {role: "roles/viewer", members: ["serviceAccount:unrelated@example.invalid"]}
+  {
+    role: "roles/iam.serviceAccountAdmin",
+    members: ["serviceAccount:foundation@example.invalid"]
+  }
 ]}' >"$scratch/project-policy.json"
+jq -n '{bindings: [
+  {
+    role: "roles/iam.serviceAccountAdmin",
+    members: ["serviceAccount:foundation@example.invalid"]
+  },
+  {
+    role: "roles/storage.objectAdmin",
+    members: ["serviceAccount:artifact-writer@example.invalid"],
+    condition: {
+      title: "exact_synthetic_artifact_bucket",
+      description: "Synthetic shape matching a conditioned live project binding.",
+      expression: "resource.name.startsWith(\"projects/_/buckets/synthetic-artifacts/objects/\")"
+    }
+  }
+]}' >"$scratch/project-policy-condition-valid-title.json"
+jq -n '{bindings: [
+  {
+    role: "roles/iam.serviceAccountAdmin",
+    members: ["serviceAccount:foundation@example.invalid"],
+    condition: null
+  }
+]}' >"$scratch/project-policy-condition-null.json"
+jq -n '{bindings: [
+  {
+    role: "roles/storage.objectAdmin",
+    members: ["serviceAccount:artifact-writer@example.invalid"],
+    condition: {
+      expression: "resource.name.startsWith(\"projects/_/buckets/synthetic-artifacts/objects/\")"
+    }
+  }
+]}' >"$scratch/project-policy-condition-without-title.json"
 jq -n '{bindings: {}}' >"$scratch/policy-malformed.json"
+jq -n '{bindings: [
+  {
+    role: "roles/viewer",
+    members: ["serviceAccount:unrelated@example.invalid"],
+    condition: "not-an-object"
+  }
+]}' >"$scratch/policy-condition-malformed-type.json"
+jq -n '{bindings: [
+  {
+    role: "roles/viewer",
+    members: ["serviceAccount:unrelated@example.invalid"],
+    condition: {title: "missing_expression"}
+  }
+]}' >"$scratch/policy-condition-missing-expression.json"
+jq -n '{bindings: [
+  {
+    role: "roles/viewer",
+    members: ["serviceAccount:unrelated@example.invalid"],
+    condition: {title: 7, expression: "resource.name != \"\""}
+  }
+]}' >"$scratch/policy-condition-malformed-title.json"
 jq -n --arg project_id "$project_id" \
   '[{id: $project_id, type: "project"}]' >"$scratch/ancestors.json"
 jq -n --arg project_id "$project_id" \
@@ -214,6 +269,30 @@ grep -Fxq \
   'PASS: denied qualification identity has no project payload access role' \
   "$pass_output"
 
+valid_title_output=$scratch/valid-title-output
+run_preflight \
+  project "$scratch/varset.json" "$scratch/project-policy-condition-valid-title.json" \
+  "$scratch/secret-policy.json" "$valid_title_output"
+grep -Fxq \
+  'PASS: denied qualification identity has no project payload access role' \
+  "$valid_title_output"
+
+condition_null_output=$scratch/condition-null-output
+run_preflight \
+  project "$scratch/varset.json" "$scratch/project-policy-condition-null.json" \
+  "$scratch/secret-policy.json" "$condition_null_output"
+grep -Fxq \
+  'PASS: denied qualification identity has no project payload access role' \
+  "$condition_null_output"
+
+condition_without_title_output=$scratch/condition-without-title-output
+run_preflight \
+  project "$scratch/varset.json" "$scratch/project-policy-condition-without-title.json" \
+  "$scratch/secret-policy.json" "$condition_without_title_output"
+grep -Fxq \
+  'PASS: denied qualification identity has no project payload access role' \
+  "$condition_without_title_output"
+
 target_pass_output=$scratch/target-pass-output
 run_preflight \
   target-secret "$scratch/varset.json" "$scratch/project-policy.json" \
@@ -275,6 +354,12 @@ expect_preflight_fails \
   malformed-project-policy project "$scratch/varset.json" \
   "$scratch/policy-malformed.json" "$scratch/secret-policy.json" \
   'FAIL: project IAM policy is malformed'
+for malformed_condition in malformed-type missing-expression malformed-title; do
+  expect_preflight_fails \
+    "malformed-project-condition-$malformed_condition" project "$scratch/varset.json" \
+    "$scratch/policy-condition-$malformed_condition.json" "$scratch/secret-policy.json" \
+    'FAIL: project IAM policy is malformed'
+done
 expect_preflight_fails \
   unseen-project-parent project "$scratch/varset.json" \
   "$scratch/project-policy.json" "$scratch/secret-policy.json" \
