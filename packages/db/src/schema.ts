@@ -214,7 +214,7 @@ export const agentRuns = pgTable(
     check("agent_runs_claim_epoch_check", sql`${table.claimEpoch} >= 0`),
     check(
       "agent_runs_claim_check",
-      sql`(
+      sql`((
         (${table.state} = 'running'
           AND ${table.claimEpoch} > 0
           AND ${table.claimOwner} IS NOT NULL
@@ -222,7 +222,7 @@ export const agentRuns = pgTable(
         OR (${table.state} <> 'running'
           AND ${table.claimOwner} IS NULL
           AND ${table.leaseExpiresAt} IS NULL)
-      )`,
+      )) IS TRUE`,
     ),
     index("agent_runs_expired_claim_idx")
       .on(table.leaseExpiresAt)
@@ -357,10 +357,10 @@ export const agentRunCapacityReservations = pgTable(
     ),
     check(
       "agent_run_capacity_reservations_release_check",
-      sql`(
+      sql`((
         (${table.state} = 'held' AND ${table.releasedAt} IS NULL)
         OR (${table.state} = 'released' AND ${table.releasedAt} IS NOT NULL)
-      )`,
+      )) IS TRUE`,
     ),
   ],
 );
@@ -372,6 +372,7 @@ export const outboxObligations = pgTable(
     agentRunId: uuid("agent_run_id").notNull().unique(),
     threadId: uuid("thread_id").notNull(),
     principalId: uuid("principal_id").notNull(),
+    predecessorOutboxId: uuid("predecessor_outbox_id"),
     kind: text("kind").notNull(),
     version: smallint("version").notNull(),
     publicationEvidence: jsonb("publication_evidence").$type<PublicationEvidence>(),
@@ -383,14 +384,18 @@ export const outboxObligations = pgTable(
       columns: [table.agentRunId, table.threadId, table.principalId],
       foreignColumns: [agentRuns.agentRunId, agentRuns.threadId, agentRuns.principalId],
     }),
+    foreignKey({
+      columns: [table.predecessorOutboxId],
+      foreignColumns: [table.outboxId],
+    }),
     check("outbox_obligations_kind_check", sql`${table.kind} = 'AgentRunPending'`),
     check("outbox_obligations_version_check", sql`${table.version} = 1`),
     check(
       "outbox_obligations_publication_check",
-      sql`(
+      sql`((
         (${table.publicationEvidence} IS NULL AND ${table.publishedAt} IS NULL)
         OR (${table.publicationEvidence} IS NOT NULL AND ${table.publishedAt} IS NOT NULL)
-      )`,
+      )) IS TRUE`,
     ),
     check(
       "outbox_obligations_publication_evidence_check",
@@ -434,7 +439,7 @@ export const relayPublicationTasks = pgTable(
     check("relay_publication_tasks_epoch_check", sql`${table.publicationEpoch} >= 0`),
     check(
       "relay_publication_tasks_claim_check",
-      sql`(
+      sql`((
         (${table.publicationState} = 'pending'
           AND ${table.publicationOwner} IS NULL
           AND ${table.publicationLeaseExpiresAt} IS NULL)
@@ -442,7 +447,7 @@ export const relayPublicationTasks = pgTable(
           AND ${table.publicationEpoch} > 0
           AND ${table.publicationOwner} IS NOT NULL
           AND ${table.publicationLeaseExpiresAt} IS NOT NULL)
-      )`,
+      )) IS TRUE`,
     ),
     index("relay_publication_tasks_claim_idx").on(
       table.publicationState,
@@ -479,7 +484,7 @@ export const relayPublicationAttempts = pgTable(
     ),
     check(
       "relay_publication_attempts_outcome_check",
-      sql`(
+      sql`((
         (${table.state} = 'started'
           AND ${table.providerMessageId} IS NULL
           AND ${table.finishedAt} IS NULL)
@@ -489,7 +494,7 @@ export const relayPublicationAttempts = pgTable(
         OR (${table.state} = 'confirmed'
           AND length(${table.providerMessageId}) BETWEEN 1 AND 255
           AND ${table.finishedAt} IS NOT NULL)
-      )`,
+      )) IS TRUE`,
     ),
   ],
 );
@@ -514,7 +519,7 @@ export const assistantOutputs = pgTable(
     ),
     check(
       "assistant_outputs_terminal_check",
-      sql`(
+      sql`((
         (${table.state} = 'open'
           AND ${table.interruptionCause} IS NULL
           AND ${table.terminatedAt} IS NULL)
@@ -524,7 +529,7 @@ export const assistantOutputs = pgTable(
         OR (${table.state} = 'interrupted'
           AND ${table.interruptionCause} = 'modelCallFailed'
           AND ${table.terminatedAt} IS NOT NULL)
-      )`,
+      )) IS TRUE`,
     ),
   ],
 );
@@ -551,7 +556,7 @@ export const modelCalls = pgTable(
     check("model_calls_state_check", sql`${table.state} IN ('pending', 'succeeded', 'failed')`),
     check(
       "model_calls_outcome_check",
-      sql`(
+      sql`((
         (${table.state} = 'pending'
           AND ${table.failureCause} IS NULL
           AND ${table.completedAt} IS NULL)
@@ -561,7 +566,7 @@ export const modelCalls = pgTable(
         OR (${table.state} = 'failed'
           AND ${table.failureCause} = 'modelCallFailed'
           AND ${table.completedAt} IS NOT NULL)
-      )`,
+      )) IS TRUE`,
     ),
   ],
 );
@@ -606,21 +611,21 @@ export const modelCallAttempts = pgTable(
     ),
     check(
       "model_call_attempts_usage_check",
-      sql`(
+      sql`((
         (${table.usageType} = 'unknown'
           AND ${table.inputUnits} IS NULL
           AND ${table.outputUnits} IS NULL)
         OR (${table.usageType} IN ('reported', 'estimated')
           AND ${table.inputUnits} >= 0
           AND ${table.outputUnits} >= 0)
-      )`,
+      )) IS TRUE`,
     ),
     check(
       "model_call_attempts_finished_check",
-      sql`(
+      sql`((
         (${table.state} = 'started' AND ${table.finishedAt} IS NULL)
         OR (${table.state} <> 'started' AND ${table.finishedAt} IS NOT NULL)
-      )`,
+      )) IS TRUE`,
     ),
   ],
 );
@@ -707,6 +712,7 @@ export const acceptanceReceipts = pgTable(
       sql`${table.requestFingerprint} ~ '^[0-9a-f]{64}$'`,
     ),
     check("acceptance_receipts_thread_position_check", sql`${table.threadPosition} > 0`),
+    index("acceptance_receipts_thread_position_idx").on(table.threadId, table.threadPosition),
   ],
 );
 

@@ -8,6 +8,7 @@ import * as Redacted from "effect/Redacted";
 export interface DatabaseConfig {
   readonly databaseUrl: string;
   readonly applicationName: string;
+  readonly migrationsFolder?: string;
 }
 
 const migrationsFolder = fileURLToPath(new URL("../drizzle", import.meta.url));
@@ -21,5 +22,5 @@ const postgresLayer = (config: DatabaseConfig) =>
 export const migrateDatabase = (config: DatabaseConfig) =>
   Effect.gen(function* () {
     const db = yield* PgDrizzle.makeWithDefaults();
-    yield* migrateDrizzle(db, { migrationsFolder });
+    yield* migrateDrizzle(db, { migrationsFolder: config.migrationsFolder ?? migrationsFolder });
   }).pipe(Effect.provide(postgresLayer(config)));

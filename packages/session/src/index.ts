@@ -399,6 +399,9 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
       if (existing !== undefined && existing.status.type !== "streaming") {
         return yield* failAuthorityConflict();
       }
+      if (existing !== undefined && existing.agentRunId !== event.payload.agentRunId) {
+        return yield* failAuthorityConflict();
+      }
       timeline =
         existing === undefined
           ? [
@@ -438,6 +441,9 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
       if (existing !== undefined && existing.status.type !== "streaming") {
         return yield* failAuthorityConflict();
       }
+      if (existing !== undefined && existing.agentRunId !== event.payload.agentRunId) {
+        return yield* failAuthorityConflict();
+      }
       const status =
         event.eventType === "AssistantOutputCompleted"
           ? ({ type: "completed" } as const)
@@ -469,6 +475,8 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
     }
     case "AgentRunSucceeded":
     case "AgentRunFailed": {
+      const activeRun = activeState.find((run) => run.agentRunId === event.payload.agentRunId);
+      if (activeRun === undefined) return yield* failAuthorityConflict();
       const openOutput = timeline.find(
         (item) =>
           item.type === "assistantOutput" &&

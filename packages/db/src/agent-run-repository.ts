@@ -173,25 +173,25 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     JOIN relay_threads thread
                       ON thread.thread_id = obligation.thread_id
                      AND thread.principal_id = obligation.principal_id
+                    JOIN acceptance_receipts receipt
+                      ON receipt.agent_run_id = obligation.agent_run_id
+                    LEFT JOIN outbox_obligations predecessor
+                      ON predecessor.outbox_id = obligation.predecessor_outbox_id
                     WHERE obligation.published_at IS NULL
                       AND NOT EXISTS (
                         SELECT 1 FROM relay_publication_tasks task
                         WHERE task.outbox_id = obligation.outbox_id
                       )
-                      AND NOT EXISTS (
-                        SELECT 1
-                        FROM outbox_obligations predecessor
-                        WHERE predecessor.thread_id = obligation.thread_id
-                          AND predecessor.published_at IS NULL
-                          AND (predecessor.created_at, predecessor.outbox_id)
-                            < (obligation.created_at, obligation.outbox_id)
+                      AND (
+                        obligation.predecessor_outbox_id IS NULL
+                        OR predecessor.published_at IS NOT NULL
                       )
                     ORDER BY
                       principal.virtual_pass,
                       principal.principal_id,
                       thread.virtual_pass,
                       thread.thread_id,
-                      obligation.created_at,
+                      receipt.thread_position,
                       obligation.outbox_id
                     FOR UPDATE OF obligation SKIP LOCKED
                     LIMIT 1
@@ -373,22 +373,22 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                       SELECT 1 FROM outbox_obligations obligation
                       WHERE obligation.outbox_id = ${delivery.deliveryId}::uuid
                         AND obligation.agent_run_id = run.agent_run_id
+                        AND (
+                          obligation.predecessor_outbox_id IS NULL
+                          OR EXISTS (
+                            SELECT 1
+                            FROM outbox_obligations predecessor
+                            JOIN agent_runs predecessor_run
+                              ON predecessor_run.agent_run_id = predecessor.agent_run_id
+                            WHERE predecessor.outbox_id = obligation.predecessor_outbox_id
+                              AND predecessor_run.state IN ('succeeded', 'failed', 'canceled')
+                          )
+                        )
                     )
                     AND run.execution_profile_ref = ${delivery.executionProfileRef}
                     AND (
                       run.state = 'pending'
                       OR (run.state = 'running' AND run.lease_expires_at <= clock_timestamp())
-                    )
-                    AND NOT EXISTS (
-                      SELECT 1
-                      FROM acceptance_receipts current_receipt
-                      JOIN acceptance_receipts earlier_receipt
-                        ON earlier_receipt.thread_id = current_receipt.thread_id
-                        AND earlier_receipt.thread_position < current_receipt.thread_position
-                      JOIN agent_runs earlier_run
-                        ON earlier_run.agent_run_id = earlier_receipt.agent_run_id
-                      WHERE current_receipt.agent_run_id = run.agent_run_id
-                        AND earlier_run.state NOT IN ('succeeded', 'failed', 'canceled')
                     )
                   RETURNING run.agent_run_id::text AS "agentRunId",
                     run.claim_epoch::text AS "claimEpoch"`;
@@ -412,8 +412,13 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   | "failed"
                   | "canceled";
               }>`SELECT state
-                  FROM agent_runs
-                  WHERE agent_run_id = ${delivery.agentRunId}::uuid`;
+                  FROM agent_runs run
+                  JOIN outbox_obligations obligation
+                    ON obligation.agent_run_id = run.agent_run_id
+                  WHERE run.agent_run_id = ${delivery.agentRunId}::uuid
+                    AND run.thread_id = ${delivery.threadId}::uuid
+                    AND run.execution_profile_ref = ${delivery.executionProfileRef}
+                    AND obligation.outbox_id = ${delivery.deliveryId}::uuid`;
               const state = states[0]?.state;
               if (state === "succeeded" || state === "failed" || state === "canceled") {
                 return { type: "terminal" as const, outcome: state };
@@ -600,7 +605,9 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     'open',
                     transaction_timestamp()
                   )`;
-              yield* sql`INSERT INTO model_call_attempts (
+              const inserted = yield* sql<{
+                readonly modelCallAttemptId: string;
+              }>`INSERT INTO model_call_attempts (
                     model_call_attempt_id, model_call_id, agent_run_id,
                     assistant_output_id, attempt_number, claim_epoch, state, started_at
                   )
@@ -616,7 +623,11 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   FROM model_calls
                   WHERE model_call_id = ${modelCall.modelCallId}::uuid
                     AND agent_run_id = ${fence.agentRunId}::uuid
-                    AND state = 'pending'`;
+                    AND model_binding = ${modelCall.modelBinding}
+                    AND prompt = ${modelCall.prompt}
+                    AND state = 'pending'
+                  RETURNING model_call_attempt_id::text AS "modelCallAttemptId"`;
+              if (inserted.length !== 1) return yield* new AgentRunFenceRejected();
               return {
                 ...modelCall,
                 assistantOutputId,
@@ -685,14 +696,27 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     AND state = 'pending'
                   RETURNING model_call_id::text AS "modelCallId"`;
               if (completed[0] === undefined) return yield* new AgentRunFenceRejected();
-              yield* sql`UPDATE model_call_attempts
+              const completedAttempt = yield* sql<{
+                readonly modelCallAttemptId: string;
+              }>`UPDATE model_call_attempts
                   SET state = 'succeeded', finished_at = transaction_timestamp()
                   WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
-                    AND state = 'started'`;
-              yield* sql`UPDATE assistant_outputs
+                    AND model_call_id = ${attempt.modelCallId}::uuid
+                    AND assistant_output_id = ${attempt.assistantOutputId}::uuid
+                    AND agent_run_id = ${fence.agentRunId}::uuid
+                    AND claim_epoch = ${fence.claimEpoch}::bigint
+                    AND state = 'started'
+                  RETURNING model_call_attempt_id::text AS "modelCallAttemptId"`;
+              if (completedAttempt.length !== 1) return yield* new AgentRunFenceRejected();
+              const completedOutput = yield* sql<{
+                readonly assistantOutputId: string;
+              }>`UPDATE assistant_outputs
                   SET state = 'completed', terminated_at = transaction_timestamp()
                   WHERE assistant_output_id = ${attempt.assistantOutputId}::uuid
-                    AND state = 'open'`;
+                    AND agent_run_id = ${fence.agentRunId}::uuid
+                    AND state = 'open'
+                  RETURNING assistant_output_id::text AS "assistantOutputId"`;
+              if (completedOutput.length !== 1) return yield* new AgentRunFenceRejected();
               yield* appendThreadEvent(authority, (base) =>
                 makeAssistantOutputCompleted({
                   ...base,
@@ -720,16 +744,29 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     AND state = 'pending'
                   RETURNING model_call_id::text AS "modelCallId"`;
               if (interrupted[0] === undefined) return yield* new AgentRunFenceRejected();
-              yield* sql`UPDATE model_call_attempts
+              const interruptedAttempt = yield* sql<{
+                readonly modelCallAttemptId: string;
+              }>`UPDATE model_call_attempts
                   SET state = 'failed', finished_at = transaction_timestamp()
                   WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
-                    AND state = 'started'`;
-              yield* sql`UPDATE assistant_outputs
+                    AND model_call_id = ${attempt.modelCallId}::uuid
+                    AND assistant_output_id = ${attempt.assistantOutputId}::uuid
+                    AND agent_run_id = ${fence.agentRunId}::uuid
+                    AND claim_epoch = ${fence.claimEpoch}::bigint
+                    AND state = 'started'
+                  RETURNING model_call_attempt_id::text AS "modelCallAttemptId"`;
+              if (interruptedAttempt.length !== 1) return yield* new AgentRunFenceRejected();
+              const interruptedOutput = yield* sql<{
+                readonly assistantOutputId: string;
+              }>`UPDATE assistant_outputs
                   SET state = 'interrupted',
                       interruption_cause = ${cause},
                       terminated_at = transaction_timestamp()
                   WHERE assistant_output_id = ${attempt.assistantOutputId}::uuid
-                    AND state = 'open'`;
+                    AND agent_run_id = ${fence.agentRunId}::uuid
+                    AND state = 'open'
+                  RETURNING assistant_output_id::text AS "assistantOutputId"`;
+              if (interruptedOutput.length !== 1) return yield* new AgentRunFenceRejected();
               yield* appendThreadEvent(authority, (base) =>
                 makeAssistantOutputInterrupted({
                   ...base,

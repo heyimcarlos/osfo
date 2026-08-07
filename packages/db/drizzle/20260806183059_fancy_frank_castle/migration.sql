@@ -84,6 +84,9 @@ ALTER TABLE "thread_events" DROP CONSTRAINT "thread_events_payload_message_check
 ALTER TABLE "agent_runs" ADD COLUMN "claim_epoch" bigint DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE "agent_runs" ADD COLUMN "claim_owner" text;--> statement-breakpoint
 ALTER TABLE "agent_runs" ADD COLUMN "lease_expires_at" timestamp with time zone;--> statement-breakpoint
+UPDATE "agent_runs"
+SET "state" = 'pending'
+WHERE "state" = 'running';--> statement-breakpoint
 ALTER TABLE "outbox_obligations" ADD COLUMN "publication_state" text DEFAULT 'pending' NOT NULL;--> statement-breakpoint
 ALTER TABLE "outbox_obligations" ADD COLUMN "publication_epoch" bigint DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE "outbox_obligations" ADD COLUMN "publication_owner" text;--> statement-breakpoint

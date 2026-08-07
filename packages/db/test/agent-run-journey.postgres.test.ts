@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import {
   AgentRunRepository,
+  AgentRunFenceRejected,
   AgentRunFenceSchema,
   AgentRunWorker,
   OutboxRelay,
@@ -168,6 +169,40 @@ beforeEach(async () => {
 afterAll(() => runtime.dispose());
 
 describe("deterministic PostgreSQL AgentRun journey", () => {
+  it("publishes same-Thread work in authoritative ThreadPosition order", async () => {
+    failFirstPublication = false;
+    const accept = (content: string) =>
+      run(
+        MessageAdmission.use((admission) =>
+          admission.accept({
+            protocolVersion: 1,
+            authenticationToken,
+            threadId,
+            idempotencyKey: randomUUID(),
+            message: { content },
+          }),
+        ),
+      );
+    const first = await accept("first");
+    const second = await accept("second");
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE outbox_obligations
+          SET created_at = CASE agent_run_id
+            WHEN ${first.agentRunId}::uuid THEN now() + interval '1 hour'
+            WHEN ${second.agentRunId}::uuid THEN now() - interval '1 hour'
+          END
+          WHERE agent_run_id IN (${first.agentRunId}::uuid, ${second.agentRunId}::uuid)`;
+      }),
+    );
+
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+
+    expect(published.map((delivery) => delivery.agentRunId)).toEqual([first.agentRunId]);
+  });
+
   it("publishes one eligible Thread head from the lowest Principal virtual pass", async () => {
     failFirstPublication = false;
     await run(
@@ -295,6 +330,10 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     const duplicate = await run(AgentRunWorker.use((worker) => worker.handle(delivery)));
     expect(completed).toEqual({ type: "acknowledge", outcome: "succeeded" });
     expect(duplicate).toEqual({ type: "acknowledge", outcome: "alreadyTerminal" });
+    const wrongDurableTuple = await run(
+      AgentRunWorker.use((worker) => worker.handle({ ...delivery, deliveryId: randomUUID() })),
+    );
+    expect(wrongDurableTuple).toEqual({ type: "retry" });
 
     const authority = await run(
       Effect.gen(function* () {
@@ -419,4 +458,101 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     expect(snapshot.activeState).toEqual([]);
     expect(snapshot.throughPosition).toBe("7");
   });
+
+  it("rejects beginning an attempt unless its ModelCall transition affects exactly one row", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "begin fence" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const claim = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(delivery, {
+          workerId: "row-count-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    );
+    const claimed = await Effect.runPromise(
+      Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim),
+    );
+
+    const error = await run(
+      Effect.flip(
+        AgentRunRepository.use((repository) =>
+          repository.beginModelCallAttempt(claimed.fence, {
+            modelCallId: randomUUID(),
+            modelBinding: "oz.deterministic.echo.v1",
+            prompt: `missing ${receipt.agentRunId}`,
+          }),
+        ),
+      ),
+    );
+
+    expect(error).toBeInstanceOf(AgentRunFenceRejected);
+  });
+
+  it.each(["complete", "interrupt"] as const)(
+    "rejects %s unless every attempt transition affects exactly one row",
+    async (operation) => {
+      failFirstPublication = false;
+      await run(
+        MessageAdmission.use((admission) =>
+          admission.accept({
+            protocolVersion: 1,
+            authenticationToken,
+            threadId,
+            idempotencyKey: randomUUID(),
+            message: { content: `${operation} fence` },
+          }),
+        ),
+      );
+      await run(OutboxRelay.use((relay) => relay.selectOnce()));
+      await run(OutboxRelay.use((relay) => relay.publishOnce()));
+      const delivery = published[0]!;
+      const claim = await run(
+        AgentRunRepository.use((repository) =>
+          repository.claimAgentRun(delivery, {
+            workerId: "row-count-worker",
+            leaseDurationMs: 30_000,
+          }),
+        ),
+      );
+      const claimed = await Effect.runPromise(
+        Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim),
+      );
+      const attempt = await run(
+        AgentRunRepository.use((repository) =>
+          Effect.gen(function* () {
+            const modelCall = yield* repository.ensureModelCall(claimed.fence, {
+              type: "startModelCall",
+              modelBinding: "oz.deterministic.echo.v1",
+              prompt: `${operation} fence`,
+            });
+            return yield* repository.beginModelCallAttempt(claimed.fence, modelCall);
+          }),
+        ),
+      );
+      const wrongAttempt = { ...attempt, modelCallAttemptId: randomUUID() };
+      const transition = AgentRunRepository.use((repository) =>
+        operation === "complete"
+          ? repository.completeModelCall(claimed.fence, wrongAttempt)
+          : repository.interruptModelCall(claimed.fence, wrongAttempt, "modelCallFailed"),
+      );
+
+      const error = await run(Effect.flip(transition));
+
+      expect(error).toBeInstanceOf(AgentRunFenceRejected);
+    },
+  );
 });

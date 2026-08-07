@@ -30,6 +30,7 @@
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
+    "@effect/sql-pg": "catalog:",
     "@osfo/db": "workspace:*",
     "effect": "catalog:"
   },

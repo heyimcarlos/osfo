@@ -123,6 +123,94 @@ describe("PostgreSQL Thread resume", () => {
     expect(snapshot.throughCursor).toEqual(expect.any(String));
   });
 
+  it("retains complete logical histories without fetching omitted output tails", async () => {
+    const first = await accept("First");
+    const omittedOutputId = crypto.randomUUID();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`INSERT INTO thread_events (
+            thread_id, position, event_id, principal_id, user_message_id, agent_run_id,
+            event_type, event_version, payload, occurred_at
+          ) VALUES (
+            ${threadId}::uuid, 2, ${crypto.randomUUID()}::uuid, ${principalId}::uuid,
+            ${first.userMessageId}::uuid, ${first.agentRunId}::uuid,
+            'AssistantOutputAppended', 1,
+            ${JSON.stringify({
+              assistantOutputId: omittedOutputId,
+              agentRunId: first.agentRunId,
+              content: [{ type: "text", text: "omitted-start" }],
+            })}::jsonb,
+            transaction_timestamp()
+          )`;
+        yield* sql`UPDATE threads SET next_position = 3, state_revision = 2
+          WHERE thread_id = ${threadId}::uuid`;
+      }).pipe(Effect.provide(databaseLayer)),
+    );
+    const retainedMessage = await accept("Retained");
+    const zeroFragmentOutputId = crypto.randomUUID();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`INSERT INTO thread_events (
+            thread_id, position, event_id, principal_id, user_message_id, agent_run_id,
+            event_type, event_version, payload, occurred_at
+          ) VALUES
+          (
+            ${threadId}::uuid, 4, ${crypto.randomUUID()}::uuid, ${principalId}::uuid,
+            ${retainedMessage.userMessageId}::uuid, ${retainedMessage.agentRunId}::uuid,
+            'AssistantOutputCompleted', 1,
+            ${JSON.stringify({
+              assistantOutputId: zeroFragmentOutputId,
+              agentRunId: retainedMessage.agentRunId,
+            })}::jsonb,
+            transaction_timestamp()
+          ),
+          (
+            ${threadId}::uuid, 5, ${crypto.randomUUID()}::uuid, ${principalId}::uuid,
+            ${first.userMessageId}::uuid, ${first.agentRunId}::uuid,
+            'AssistantOutputAppended', 1,
+            ${JSON.stringify({
+              assistantOutputId: omittedOutputId,
+              agentRunId: first.agentRunId,
+              content: [{ type: "text", text: "omitted-tail" }],
+            })}::jsonb,
+            transaction_timestamp()
+          ),
+          (
+            ${threadId}::uuid, 6, ${crypto.randomUUID()}::uuid, ${principalId}::uuid,
+            ${first.userMessageId}::uuid, ${first.agentRunId}::uuid,
+            'AssistantOutputCompleted', 1,
+            ${JSON.stringify({
+              assistantOutputId: omittedOutputId,
+              agentRunId: first.agentRunId,
+            })}::jsonb,
+            transaction_timestamp()
+          )`;
+        yield* sql`UPDATE threads SET next_position = 7, state_revision = 6
+          WHERE thread_id = ${threadId}::uuid`;
+      }).pipe(Effect.provide(databaseLayer)),
+    );
+
+    const snapshot = await run(ThreadResume.use((resume) => resume.snapshot(access)));
+
+    expect(snapshot.timeline).toEqual([
+      expect.objectContaining({
+        type: "userMessage",
+        userMessageId: retainedMessage.userMessageId,
+        content: [{ type: "text", text: "Retained" }],
+      }),
+      expect.objectContaining({
+        type: "assistantOutput",
+        assistantOutputId: zeroFragmentOutputId,
+        content: [],
+        status: { type: "completed" },
+      }),
+    ]);
+    expect(snapshot.historyBeforePosition).toBe("2");
+    expect(snapshot.throughPosition).toBe("6");
+  });
+
   it("keeps pagination gap-free through the first page's frozen head", async () => {
     await accept("First");
     await accept("Second");

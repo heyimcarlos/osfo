@@ -280,6 +280,124 @@ describe("UserMessageAppended", () => {
     expect(result.activeState).toEqual([]);
   });
 
+  it("rejects fragments that reuse an AssistantOutput under another AgentRun", () => {
+    const assistantOutputId = "86290831-b9ca-414a-abf1-4055b5347133";
+    const first = Effect.runSync(
+      makeAssistantOutputAppended({
+        ...eventInput,
+        eventId: "e9a31389-50d8-436a-b7be-7303b9fe42d0",
+        threadPosition: "1",
+        assistantOutputId,
+        content: "First",
+      }),
+    );
+    const conflicting = Effect.runSync(
+      makeAssistantOutputAppended({
+        ...eventInput,
+        eventId: "f04d3470-bf0c-4b72-90de-0454ac404c9c",
+        threadPosition: "2",
+        agentRunId: "71c5311f-9b88-480e-a6b3-f572c868a9a1",
+        assistantOutputId,
+        content: "Second",
+      }),
+    );
+    const snapshot = Effect.runSync(
+      applyThreadEvent(
+        Effect.runSync(
+          makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+        ),
+        { ...first, cursor: "cursor-position-1" },
+      ),
+    );
+
+    const error = Effect.runSync(
+      Effect.flip(applyThreadEvent(snapshot, { ...conflicting, cursor: "cursor-position-2" })),
+    );
+
+    expect(error).toBeInstanceOf(InvalidThreadProjection);
+    expect(error.reason).toBe("authorityConflict");
+  });
+
+  it("rejects terminal output events whose parent AgentRun does not match", () => {
+    const assistantOutputId = "86290831-b9ca-414a-abf1-4055b5347133";
+    const first = Effect.runSync(
+      makeAssistantOutputAppended({
+        ...eventInput,
+        eventId: "e9a31389-50d8-436a-b7be-7303b9fe42d0",
+        threadPosition: "1",
+        assistantOutputId,
+        content: "First",
+      }),
+    );
+    const conflicting = Effect.runSync(
+      makeAssistantOutputCompleted({
+        ...eventInput,
+        eventId: "f04d3470-bf0c-4b72-90de-0454ac404c9c",
+        threadPosition: "2",
+        agentRunId: "71c5311f-9b88-480e-a6b3-f572c868a9a1",
+        assistantOutputId,
+      }),
+    );
+    const snapshot = Effect.runSync(
+      applyThreadEvent(
+        Effect.runSync(
+          makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+        ),
+        { ...first, cursor: "cursor-position-1" },
+      ),
+    );
+
+    const error = Effect.runSync(
+      Effect.flip(applyThreadEvent(snapshot, { ...conflicting, cursor: "cursor-position-2" })),
+    );
+
+    expect(error).toBeInstanceOf(InvalidThreadProjection);
+    expect(error.reason).toBe("authorityConflict");
+  });
+
+  it("rejects AgentRun outcomes for unknown or already-terminal runs", () => {
+    const terminal = Effect.runSync(
+      makeAgentRunSucceeded({
+        ...eventInput,
+        eventId: "269787db-071e-4478-806f-1d85d00b7337",
+        threadPosition: "1",
+      }),
+    );
+    const empty = Effect.runSync(
+      makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+    );
+    const unknown = Effect.runSync(
+      Effect.flip(applyThreadEvent(empty, { ...terminal, cursor: "cursor-position-1" })),
+    );
+    expect(unknown).toBeInstanceOf(InvalidThreadProjection);
+    expect(unknown.reason).toBe("authorityConflict");
+
+    const accepted = Effect.runSync(makeUserMessageAppended(eventInput));
+    const active = Effect.runSync(
+      applyThreadEvent(empty, { ...accepted, cursor: "cursor-position-1" }),
+    );
+    const completed = Effect.runSync(
+      applyThreadEvent(active, {
+        ...terminal,
+        eventId: "0a2415a9-dccd-4dd6-8dd2-29ad6278cd6f",
+        threadPosition: "2",
+        cursor: "cursor-position-2",
+      }),
+    );
+    const duplicateOutcome = Effect.runSync(
+      Effect.flip(
+        applyThreadEvent(completed, {
+          ...terminal,
+          eventId: "31f3a2d7-02ab-4837-afbe-3f977c50efec",
+          threadPosition: "3",
+          cursor: "cursor-position-3",
+        }),
+      ),
+    );
+    expect(duplicateOutcome).toBeInstanceOf(InvalidThreadProjection);
+    expect(duplicateOutcome.reason).toBe("authorityConflict");
+  });
+
   it("ignores an identical duplicate without advancing projection state", () => {
     const event = Effect.runSync(makeUserMessageAppended(eventInput));
     const snapshot = Effect.runSync(

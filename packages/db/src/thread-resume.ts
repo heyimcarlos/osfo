@@ -200,26 +200,34 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig) => {
             const head = (yield* readHead(request.threadId))[0];
             if (head === undefined) return yield* new ThreadNotFound();
 
-            const rows = yield* sql<EventRow>`WITH timeline_starts AS (
-                SELECT position
+            const rows = yield* sql<EventRow>`WITH timeline_identities AS (
+                SELECT
+                  'userMessage'::text AS identity_type,
+                  payload ->> 'userMessageId' AS identity_id,
+                  position
                 FROM thread_events
                 WHERE thread_id = ${request.threadId}::uuid
                   AND position <= ${head.position}::bigint
                   AND event_type = 'UserMessageAppended'
                 UNION ALL
-                SELECT min(position) AS position
+                SELECT
+                  'assistantOutput'::text AS identity_type,
+                  payload ->> 'assistantOutputId' AS identity_id,
+                  min(position) AS position
                 FROM thread_events
                 WHERE thread_id = ${request.threadId}::uuid
                   AND position <= ${head.position}::bigint
-                  AND event_type = 'AssistantOutputAppended'
+                  AND event_type IN (
+                    'AssistantOutputAppended',
+                    'AssistantOutputCompleted',
+                    'AssistantOutputInterrupted'
+                  )
                 GROUP BY payload ->> 'assistantOutputId'
-              ), retained_starts AS (
-                SELECT position
-                FROM timeline_starts
+              ), retained_identities AS (
+                SELECT identity_type, identity_id, position
+                FROM timeline_identities
                 ORDER BY position DESC
                 LIMIT ${config.snapshotTimelineLimit}
-              ), boundary AS (
-                SELECT min(position) AS position FROM retained_starts
               )
               SELECT
                 event.event_id::text AS "eventId",
@@ -230,10 +238,30 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig) => {
                 event.thread_id::text AS "threadId",
                 event.position::text AS "threadPosition"
               FROM thread_events event
-              CROSS JOIN boundary
               WHERE event.thread_id = ${request.threadId}::uuid
-                AND event.position >= boundary.position
                 AND event.position <= ${head.position}::bigint
+                AND (
+                  (
+                    event.event_type = 'UserMessageAppended'
+                    AND EXISTS (
+                      SELECT 1 FROM retained_identities retained
+                      WHERE retained.identity_type = 'userMessage'
+                        AND retained.identity_id = event.payload ->> 'userMessageId'
+                    )
+                  )
+                  OR (
+                    event.event_type IN (
+                      'AssistantOutputAppended',
+                      'AssistantOutputCompleted',
+                      'AssistantOutputInterrupted'
+                    )
+                    AND EXISTS (
+                      SELECT 1 FROM retained_identities retained
+                      WHERE retained.identity_type = 'assistantOutput'
+                        AND retained.identity_id = event.payload ->> 'assistantOutputId'
+                    )
+                  )
+                )
               ORDER BY event.position ASC`;
             const events = yield* Effect.forEach(rows, toEnvelope);
             const activeRuns = yield* sql<ActiveRunRow>`SELECT
@@ -275,9 +303,18 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig) => {
               timelineLimit: config.snapshotTimelineLimit,
             }).pipe(Effect.mapError(() => new SnapshotUnavailable()));
             const base = { ...empty, throughPosition: historyBeforePosition };
-            const folded = yield* Effect.reduce(events, () => base, applyThreadEvent).pipe(
-              Effect.mapError(() => new SnapshotUnavailable()),
-            );
+            const folded = yield* Effect.reduce(
+              events,
+              () => base,
+              (projection, event) =>
+                applyThreadEvent(
+                  {
+                    ...projection,
+                    throughPosition: String(BigInt(event.threadPosition) - 1n),
+                  },
+                  event,
+                ),
+            ).pipe(Effect.mapError(() => new SnapshotUnavailable()));
 
             return yield* Schema.decodeUnknownEffect(ThreadSnapshotSchema)({
               ...folded,
