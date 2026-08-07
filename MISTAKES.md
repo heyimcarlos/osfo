@@ -245,3 +245,11 @@ special parameters.
 A focused observability test command passed `--runInBand`, which Vitest does
 not support, so the runner rejected the command before collecting tests. Use
 the repository's scoped `vitest run ...` command without Jest-only flags.
+
+## 2026-08-07: Copying a credential environment for command reuse
+
+A local verification command copied a credential-bearing environment file to
+a temporary path even though no copy was needed. The copy was deleted without
+being printed or consumed. Pass the original environment file directly to the
+one process that needs it, and inspect credential availability only through
+boolean presence checks that never emit values.
