@@ -438,6 +438,103 @@ if jq -e --arg horizon "$recovery_horizon" "$recovery_window_predicate" \
   printf 'scheduled recovery must reject run history older than its retained horizon\n' >&2
   exit 1
 fi
+# shellcheck disable=SC2016
+for response_integrity_contract in \
+  '.workflow_runs | type == "array"' \
+  '.jobs | type == "array"' \
+  'returned_jobs != total_jobs' \
+  '.run_id == $run_id' \
+  '.run_attempt == $run_attempt' \
+  '.head_branch == "main"' \
+  '.event == $expected_event' \
+  '.head_sha == $expected_sha' \
+  'workflow_dispatch "" || exit 1' \
+  '"" "$RECOVERY_SOURCE_SHA" || exit 1'; do
+  rg --fixed-strings --quiet "$response_integrity_contract" \
+    .github/workflows/development-platform-recovery.yml
+done
+if [[ $(rg --fixed-strings ') || return 1' \
+  .github/workflows/development-platform-recovery.yml | wc -l) != 5 ]] \
+  || [[ $(rg --fixed-strings ') || exit 1' \
+    .github/workflows/development-platform-recovery.yml | wc -l) != 14 ]]; then
+  printf 'every captured API, parser, date, and helper assignment must fail explicitly\n' >&2
+  exit 1
+fi
+if rg --fixed-strings --quiet '< <(' \
+  .github/workflows/development-platform-recovery.yml; then
+  printf 'recovery iteration must not hide parser failures in process substitution\n' >&2
+  exit 1
+fi
+
+recovery_authorize_script=$(mktemp)
+awk '
+  $0 == "        run: |" { capture = 1; next }
+  capture && $0 == "" { print; next }
+  capture && /^          / { sub(/^          /, ""); print; next }
+  capture { exit }
+' .github/workflows/development-platform-recovery.yml >"$recovery_authorize_script"
+if ! grep -Fq 'read_attempt_jobs()' "$recovery_authorize_script"; then
+  printf 'failed to extract the recovery authorization shell for regression tests\n' >&2
+  exit 1
+fi
+recovery_failure_dir=$(mktemp -d)
+gh_failure_output_file="$recovery_failure_dir/gh-output"
+jq_failure_output_file="$recovery_failure_dir/jq-output"
+recovery_failure_env=(
+  "GITHUB_REPOSITORY=example/osfo"
+  "JANITOR_HISTORY_DAYS=14"
+  "JANITOR_MAX_ATTEMPT_REQUESTS=400"
+  "JANITOR_MAX_ATTEMPTS_PER_RUN=20"
+  "JANITOR_MAX_JOBS_PER_ATTEMPT=100"
+  "JANITOR_MAX_RUNS=100"
+  "RECOVERY_EVENT=workflow_run"
+  "RECOVERY_SOURCE_SHA=0000000000000000000000000000000000000000"
+  "RUNNER_TEMP=$recovery_failure_dir"
+  "TRIGGER_EVENT=workflow_dispatch"
+  "TRIGGER_HEAD_BRANCH=main"
+  "TRIGGER_RUN_ATTEMPT=1"
+  "TRIGGER_RUN_ID=1"
+)
+
+# Exported into the isolated Bash process below.
+# shellcheck disable=SC2329
+gh() { return 42; }
+export -f gh
+: >"$gh_failure_output_file"
+if gh_failure_output=$(env "${recovery_failure_env[@]}" \
+  "GITHUB_OUTPUT=$gh_failure_output_file" \
+  bash --noprofile --norc -e -o pipefail "$recovery_authorize_script" 2>&1); then
+  printf 'recovery authorization must fail when the GitHub API fails\n' >&2
+  exit 1
+fi
+unset -f gh
+if grep -Fq 'PASS:' <<<"$gh_failure_output" \
+  || grep -Fq 'recover=true' "$gh_failure_output_file"; then
+  printf 'GitHub API failure must not produce PASS or recovery authorization\n' >&2
+  exit 1
+fi
+
+# shellcheck disable=SC2329
+gh() { printf '%s\n' '{"total_count":0,"jobs":[]}'; }
+# shellcheck disable=SC2329
+jq() { return 43; }
+export -f gh jq
+: >"$jq_failure_output_file"
+if jq_failure_output=$(env "${recovery_failure_env[@]}" \
+  "GITHUB_OUTPUT=$jq_failure_output_file" \
+  bash --noprofile --norc -e -o pipefail "$recovery_authorize_script" 2>&1); then
+  printf 'recovery authorization must fail when response parsing fails\n' >&2
+  exit 1
+fi
+unset -f gh jq
+if grep -Fq 'PASS:' <<<"$jq_failure_output" \
+  || grep -Fq 'recover=true' "$jq_failure_output_file"; then
+  printf 'parser failure must not produce PASS or recovery authorization\n' >&2
+  exit 1
+fi
+rm "$recovery_authorize_script" "$gh_failure_output_file" "$jq_failure_output_file"
+rmdir "$recovery_failure_dir"
+
 rg --fixed-strings --quiet \
   'development-cleanup-complete-${{ needs.authorize.outputs.marker_id }}' \
   .github/workflows/development-platform-recovery.yml
@@ -448,10 +545,10 @@ rg --fixed-strings --quiet \
   .github/workflows/development-platform-recovery.yml
 # shellcheck disable=SC2016
 for attempt_job_read in \
-  'read_attempt_jobs "$TRIGGER_RUN_ID" "$TRIGGER_RUN_ATTEMPT"' \
-  'read_attempt_jobs "$source_run_id" "$source_run_attempt"' \
-  'read_attempt_jobs "$recovery_run_id" "$recovery_run_attempt"' \
-  'read_attempt_jobs "$run_id" "$run_attempt"'; do
+  '"$TRIGGER_RUN_ID" "$TRIGGER_RUN_ATTEMPT") || exit 1' \
+  '"$source_run_id" "$source_run_attempt") || exit 1' \
+  '"$recovery_run_id" "$recovery_run_attempt") || exit 1' \
+  'read_attempt_jobs "$run_id" "$run_attempt") || exit 1'; do
   rg --fixed-strings --quiet "$attempt_job_read" \
     .github/workflows/development-platform-recovery.yml
 done

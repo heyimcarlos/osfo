@@ -133,7 +133,8 @@ daily scan is bounded to main-branch runs from the last 14 days, which provides
 the retained window exceeds 100 runs, 20 attempts for one run, 100 jobs for one
 attempt, or 400 total attempt-job reads. Runs outside that retained horizon need
 the audited break-glass procedure and are never represented as automatic cleanup
-`PASS` evidence. The GCP workload identity provider also rejects every ref except
+`PASS` evidence. API, parse, page-count, branch, event, SHA, run, and attempt
+mismatches all fail before OIDC. The GCP workload identity provider also rejects every ref except
 `refs/heads/main`, outside branch-controlled workflow logic. Lifecycle,
 cleanup, recovery, drift, and root plan/apply runs that can touch development
 platform state share the global `terraform-development-platform` concurrency
