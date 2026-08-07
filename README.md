@@ -3,6 +3,20 @@
 Osfo is a TypeScript and Effect 4 workspace managed by Bun and Turbo. Production
 application entrypoints run on Node 24.
 
+## Architecture
+
+[`CONTEXT.md`](CONTEXT.md) defines the domain language. The
+[`Osfo v1 architecture and Oz reference journey`](docs/specs/osfo-v1.md) is the
+reviewable synthesis for issue #55. Accepted durable boundaries live in
+[`docs/adr/`](docs/adr/), including the separation between Osfo, Oz, and Model
+Adapters in
+[`ADR 0002`](docs/adr/0002-separate-osfo-semantics-from-agent-applications-and-adapters.md).
+
+The current comparable study is
+[`docs/research/osfo-agent-platform-comparables-20260807.md`](docs/research/osfo-agent-platform-comparables-20260807.md).
+Production qualification remains PASS, FAIL, or MISSING per gate and is never
+inferred from a successful development demonstration.
+
 ## Workspace commands
 
 ```sh
