@@ -206,6 +206,7 @@ rg --fixed-strings --quiet 'development_runtime_service_consumer' infra/roots/fo
 for script in development-runtime-database.sh development-runtime-reconciliation.sh development-runtime-smoke.sh development-runtime-recovery.sh development-runtime-absent.sh; do
   bash -n "infra/tests/$script"
 done
+bash infra/tests/development-runtime-agent-run-outcome-contract.sh
 for operator_script in \
   scripts/db/approved-database-proxy.ts \
   scripts/db/bootstrap-access.ts \
@@ -278,6 +279,8 @@ rg --fixed-strings --quiet 'openrouter.chat-completions.minimax.minimax-m3.v1' i
 rg --fixed-strings --quiet 'reportedUsageAttemptCount == "1"' infra/tests/development-runtime-smoke.sh
 rg --fixed-strings --quiet 'positiveReasoningUsageAttemptCount == "1"' infra/tests/development-runtime-smoke.sh
 rg --fixed-strings --quiet 'run.googleapis.com/manualInstanceCount' infra/tests/development-runtime-smoke.sh
+rg --fixed-strings --quiet 'development-runtime-agent-run-outcome.jq' infra/tests/development-runtime-smoke.sh
+rg --fixed-strings --quiet 'AgentRunFailed before authoritative output completed' infra/tests/development-runtime-smoke.sh
 rg --fixed-strings --quiet 'MISSING: replacement-before-provider-contact' infra/tests/development-runtime-recovery.sh
 if rg --quiet 'OSFO_DETERMINISTIC_MODEL_DELAY_MS|processReplacement: "PASS"' infra/tests/development-runtime-recovery.sh; then
   printf 'deployed OpenRouter recovery must not claim deterministic delay evidence\n' >&2

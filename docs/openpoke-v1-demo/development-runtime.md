@@ -124,8 +124,12 @@ OSFO_REFERENCE_THREAD_ID=6ef239bd-3f04-4c77-8976-1171e75ea0ab \
 ```
 
 The smoke requires `OSFO_DATABASE_URL` to point at the approved private proxy.
-It runs `scripts/qualification/reconcile-agent-run.ts` outside Cloud Run, binds
-reconciliation to the accepted AgentRun identifier, and records
+Each output wait reads canonical history from the accepted receipt position and
+requires `AssistantOutputCompleted` plus `AgentRunSucceeded` for that exact
+AgentRun. Unrelated work on the shared seeded Thread cannot satisfy the gate,
+and an exact `AgentRunFailed` or `AgentRunCanceled` terminal event fails it. The
+smoke runs `scripts/qualification/reconcile-agent-run.ts` outside Cloud Run,
+binds reconciliation to the accepted AgentRun identifier, and records
 only sanitized counts and immutable profile/binding names. It requires one
 confirmed provider request identity, one terminal output, reported usage, and
 positive reasoning usage without recording model content, provider payloads, or
