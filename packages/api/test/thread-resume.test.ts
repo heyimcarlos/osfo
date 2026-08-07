@@ -4,6 +4,7 @@ import {
   MessageAdmission,
   ThreadNotFound,
   ThreadResume,
+  ThreadResumeUnavailable,
   ThreadStreamLifecycle,
   type ThreadResumeService,
   type MessageAdmissionError,
@@ -237,6 +238,43 @@ describe("Thread resume API", () => {
         throughPosition: "1",
         throughCursor: envelope.cursor,
       });
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("encodes reserved SSE failures and decodes them through the generated client", async () => {
+    const unavailableResume = ThreadResume.of({
+      ...resume,
+      stream: () =>
+        Effect.succeed(
+          Stream.make({
+            event: "caught_up" as const,
+            data: { throughPosition: "1", throughCursor: envelope.cursor },
+          }).pipe(Stream.concat(Stream.fail(new ThreadResumeUnavailable()))),
+        ),
+    });
+    const harness = makeHarness(unavailableResume);
+    try {
+      const response = await harness.handler(
+        authorized(
+          `http://osfo.test/v1/threads/${threadId}/events?after=cursor-origin`,
+          "text/event-stream",
+        ),
+      );
+      expect(await response.text()).toContain("event: effect/httpapi/stream/failure");
+
+      const stream = await Effect.runPromise(
+        streamThreadEvents({
+          after: "cursor-origin",
+          authenticationToken: "reference-session",
+          baseUrl: "http://osfo.test",
+          httpClientLayer: harness.httpClientLayer,
+          threadId,
+        }),
+      );
+      const failure = await Effect.runPromise(Stream.runDrain(stream).pipe(Effect.flip));
+      expect(failure).toEqual(new ThreadResumeUnavailable());
     } finally {
       await harness.dispose();
     }

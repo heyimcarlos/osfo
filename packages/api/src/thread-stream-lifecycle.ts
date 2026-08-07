@@ -57,12 +57,7 @@ interface BufferState {
   readonly events: ReadonlyArray<BufferedEvent>;
 }
 
-type CloseReason =
-  | "client_disconnect"
-  | "drain"
-  | "maximum_lifetime"
-  | "slow_consumer"
-  | "source_unavailable";
+type CloseReason = "client_disconnect" | "drain" | "maximum_lifetime" | "slow_consumer";
 
 interface ActiveConnection {
   readonly shutdown: (reason: CloseReason) => Effect.Effect<void>;
@@ -243,12 +238,7 @@ const makeLifecycle = (
           ),
           Effect.raceFirst(Deferred.await(close)),
           Effect.matchCauseEffect({
-            onFailure: () =>
-              Queue.clear(queue).pipe(
-                Effect.andThen(Ref.set(buffer, { bytes: 0, events: [] })),
-                Effect.andThen(Queue.end(queue)),
-                Effect.andThen(closeOnce("source_unavailable")),
-              ),
+            onFailure: (cause) => Queue.failCause(queue, cause),
             onSuccess: () => Queue.end(queue),
           }),
         );

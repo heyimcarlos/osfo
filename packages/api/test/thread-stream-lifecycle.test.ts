@@ -390,34 +390,30 @@ describe("Thread stream lifecycle", () => {
     }).pipe(Effect.provide(makeThreadStreamLifecycleLayer(config))),
   );
 
-  it.effect(
-    "closes an established stream cleanly when its durable source becomes unavailable",
-    () =>
-      Effect.gen(function* () {
-        const lifecycle = yield* ThreadStreamLifecycle;
-        const failSource = yield* Latch.make();
-        const request = yield* Effect.scoped(
-          Effect.gen(function* () {
-            const protectedStream = yield* lifecycle.open(
-              Stream.make(checkpoint("1")).pipe(
-                Stream.concat(
-                  Stream.fromEffect(
-                    failSource.await.pipe(
-                      Effect.andThen(Effect.fail(new ThreadResumeUnavailable())),
-                    ),
-                  ),
+  it.effect("propagates an established stream failure from its durable source", () =>
+    Effect.gen(function* () {
+      const lifecycle = yield* ThreadStreamLifecycle;
+      const failSource = yield* Latch.make();
+      const request = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const protectedStream = yield* lifecycle.open(
+            Stream.make(checkpoint("1")).pipe(
+              Stream.concat(
+                Stream.fromEffect(
+                  failSource.await.pipe(Effect.andThen(Effect.fail(new ThreadResumeUnavailable()))),
                 ),
               ),
-            );
-            return yield* Stream.runCollect(protectedStream);
-          }),
-        ).pipe(Effect.forkChild);
-        yield* failSource.open;
-        const delivered = Array.from(yield* Fiber.join(request));
+            ),
+          );
+          return yield* Stream.runCollect(protectedStream).pipe(Effect.flip);
+        }),
+      ).pipe(Effect.forkChild);
+      yield* failSource.open;
+      const failure = yield* Fiber.join(request);
 
-        expect(delivered).toEqual([]);
-        expect((yield* lifecycle.status).activeConnections).toBe(0);
-      }).pipe(Effect.provide(makeThreadStreamLifecycleLayer(config))),
+      expect(failure).toEqual(new ThreadResumeUnavailable());
+      expect((yield* lifecycle.status).activeConnections).toBe(0);
+    }).pipe(Effect.provide(makeThreadStreamLifecycleLayer(config))),
   );
 
   it.effect("closes a stream at its configured maximum lifetime", () =>
