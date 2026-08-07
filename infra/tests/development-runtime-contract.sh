@@ -131,7 +131,7 @@ rg --fixed-strings --quiet \
 
 jq -e '
   .platform_ready == true
-  and .serving_enabled == false
+  and .serving_enabled == true
   and .public_hostname == null
   and .cursor_secret_version == "1"
   and .model_adapter_secret_version == "1"
