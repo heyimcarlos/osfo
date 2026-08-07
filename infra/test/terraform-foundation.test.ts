@@ -44,6 +44,13 @@ describe("Terraform foundation", () => {
     ),
   );
 
+  it.effect("retains dormant identities without runtime authority", () =>
+    expectCheckPasses(
+      "infra/tests/foundation-dormant-runtime-identities-contract.sh",
+      "protected dormant identities",
+    ),
+  );
+
   it.effect("proves artifact overwrite verification fails closed", () =>
     expectCheckPasses(
       "infra/tests/development-artifact-overwrite-proof-contract.sh",

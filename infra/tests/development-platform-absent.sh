@@ -99,6 +99,12 @@ while IFS=$'\t' read -r identity email; do
     gcloud iam service-accounts list --project="$project_id" --format='value(email)'
 done < <(jq -r '.runtime_service_accounts | to_entries[] | [.key, .value] | @tsv' "$varset")
 
+for identity in migration reconciliation; do
+  assert_present "service_account_dormant_$identity" \
+    "$name_prefix-$identity@$project_id.iam.gserviceaccount.com" \
+    gcloud iam service-accounts list --project="$project_id" --format='value(email)'
+done
+
 while IFS=$'\t' read -r identity email; do
   assert_present "qualification_service_account_$identity" "$email" \
     gcloud iam service-accounts list --project="$project_id" --format='value(email)'
@@ -133,6 +139,7 @@ jq -n --arg project_id "$project_id" --arg region "$region" '{
     pubsub_topic_and_subscription: "PASS",
     qualification_subscriptions: "PASS",
     retained_runtime_service_accounts: "PASS",
+    protected_dormant_service_accounts: "PASS",
     retained_qualification_service_accounts: "PASS",
     secrets: "PASS",
     artifact_registry: "PASS",
