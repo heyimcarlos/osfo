@@ -109,6 +109,11 @@ interface TextPartState extends OutputItemIdentity {
   contentPartDone: boolean;
 }
 
+type ResponsesProtocolPhase =
+  | { readonly type: "awaitingCreated" }
+  | { readonly type: "streaming"; readonly providerRequestId: string }
+  | { readonly type: "completed"; readonly providerRequestId: string };
+
 interface OpenAIResponsesSession {
   readonly attempt: ModelCallAttempt;
   readonly cancellation: Deferred.Deferred<never, ModelCallExecutionError>;
@@ -146,10 +151,9 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
         );
 
       const makeOutputStream = (session: OpenAIResponsesSession) => {
-        let completed = false;
+        let phase: ResponsesProtocolPhase = { type: "awaitingCreated" };
         let fragmentIndex = 0;
         let pendingDeltas: Array<string> = [];
-        let providerRequestId: string | undefined;
         let textOutputObserved = false;
         let outputItem: (OutputItemIdentity & { done: boolean }) | undefined;
         let textPart: TextPartState | undefined;
@@ -180,18 +184,42 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
 
         const handleEvent = (event: ResponsesEvent) =>
           Effect.gen(function* () {
+            if (phase.type === "completed") {
+              return yield* executionError(
+                session,
+                `Provider emitted ${event.type} after response.completed`,
+              );
+            }
+            if (
+              phase.type === "awaitingCreated" &&
+              event.type !== "response.created" &&
+              event.type !== "error" &&
+              event.type !== "response.failed" &&
+              event.type !== "response.incomplete"
+            ) {
+              return yield* executionError(
+                session,
+                `Provider emitted ${event.type} before response.created`,
+              );
+            }
             switch (event.type) {
               case "response.created":
-                providerRequestId = event.response.id;
+                if (phase.type !== "awaitingCreated") {
+                  return yield* executionError(
+                    session,
+                    "Provider emitted duplicate response.created",
+                  );
+                }
+                phase = {
+                  type: "streaming",
+                  providerRequestId: event.response.id,
+                };
                 session.dispatchEvidence = {
                   type: "confirmed",
-                  providerRequestId,
+                  providerRequestId: event.response.id,
                 };
                 return [];
               case "response.output_text.delta":
-                if (completed) {
-                  return yield* executionError(session, "Output arrived after response.completed");
-                }
                 if (
                   textPart === undefined ||
                   !matchesTextPart(
@@ -216,20 +244,12 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
                   ? flush()
                   : [];
               case "response.completed": {
-                if (completed) {
-                  return yield* executionError(session, "Duplicate response.completed event");
-                }
                 if (event.response.model !== config.profile.model) {
                   return yield* executionError(session, "Provider completed with another model");
                 }
-                if (providerRequestId !== undefined && providerRequestId !== event.response.id) {
+                if (phase.type !== "streaming" || phase.providerRequestId !== event.response.id) {
                   return yield* executionError(session, "Provider response identity changed");
                 }
-                providerRequestId = event.response.id;
-                session.dispatchEvidence = {
-                  type: "confirmed",
-                  providerRequestId,
-                };
                 if (!textOutputObserved) {
                   return yield* executionError(session, "Provider completed without text output");
                 }
@@ -259,7 +279,10 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
                     "Provider completed with inconsistent output",
                   );
                 }
-                completed = true;
+                phase = {
+                  type: "completed",
+                  providerRequestId: event.response.id,
+                };
                 const outcome = {
                   dispatchEvidence: session.dispatchEvidence,
                   usage: {
@@ -471,7 +494,7 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
 
         const requireCompletion = Stream.fromEffectDrain(
           Effect.suspend(() =>
-            completed
+            phase.type === "completed"
               ? Effect.void
               : Effect.fail(
                   executionError(session, "Response stream ended without response.completed"),
