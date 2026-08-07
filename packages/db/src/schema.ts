@@ -1,3 +1,4 @@
+import { modelCallObservationTextMaxLength } from "@osfo/agent-run";
 import { sql } from "drizzle-orm";
 import type { ThreadEvent } from "@osfo/session";
 import {
@@ -18,6 +19,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 const transactionTimestamp = sql`transaction_timestamp()`;
+const modelCallObservationTextMaxLengthSql = sql.raw(String(modelCallObservationTextMaxLength));
 
 type PublicationEvidence =
   | { readonly type: "pubsub"; readonly providerMessageId: string }
@@ -669,10 +671,14 @@ export const modelCallAttempts = pgTable(
     assistantOutputId: uuid("assistant_output_id").notNull(),
     attemptNumber: integer("attempt_number").notNull(),
     claimEpoch: bigint("claim_epoch", { mode: "bigint" }).notNull(),
+    modelBinding: text("model_binding"),
+    dispatchState: text("dispatch_state").notNull().default("prepared"),
+    providerRequestId: text("provider_request_id"),
     state: text("state").notNull(),
     usageType: text("usage_type").notNull().default("unknown"),
     inputUnits: integer("input_units"),
     outputUnits: integer("output_units"),
+    reasoningUnits: integer("reasoning_units"),
     cleanupDisposition: text("cleanup_disposition"),
     externalWorkMayContinue: boolean("external_work_may_continue"),
     startedAt: timestamp("started_at", { withTimezone: true, mode: "string" }).notNull(),
@@ -697,6 +703,17 @@ export const modelCallAttempts = pgTable(
     check("model_call_attempts_number_check", sql`${table.attemptNumber} > 0`),
     check("model_call_attempts_epoch_check", sql`${table.claimEpoch} > 0`),
     check(
+      "model_call_attempts_binding_check",
+      sql`length(${table.modelBinding}) BETWEEN 1 AND 255`,
+    ),
+    check(
+      "model_call_attempts_dispatch_check",
+      sql`((${table.dispatchState} IN ('prepared', 'confirmed', 'not_dispatched', 'uncertain')
+        AND (${table.providerRequestId} IS NULL OR ${table.dispatchState} = 'confirmed')
+        AND (${table.providerRequestId} IS NULL OR length(${table.providerRequestId}) BETWEEN 1 AND 255)
+      )) IS TRUE`,
+    ),
+    check(
       "model_call_attempts_state_check",
       sql`${table.state} IN ('started', 'succeeded', 'failed', 'canceled')`,
     ),
@@ -705,10 +722,12 @@ export const modelCallAttempts = pgTable(
       sql`((
         (${table.usageType} = 'unknown'
           AND ${table.inputUnits} IS NULL
-          AND ${table.outputUnits} IS NULL)
+          AND ${table.outputUnits} IS NULL
+          AND ${table.reasoningUnits} IS NULL)
         OR (${table.usageType} IN ('reported', 'estimated')
           AND ${table.inputUnits} >= 0
-          AND ${table.outputUnits} >= 0)
+          AND ${table.outputUnits} >= 0
+          AND (${table.reasoningUnits} IS NULL OR ${table.reasoningUnits} >= 0))
       )) IS TRUE`,
     ),
     check(
@@ -761,7 +780,10 @@ export const modelCallFragments = pgTable(
       ],
     }),
     check("model_call_fragments_index_check", sql`${table.fragmentIndex} >= 0`),
-    check("model_call_fragments_text_check", sql`length(${table.text}) BETWEEN 1 AND 16384`),
+    check(
+      "model_call_fragments_text_check",
+      sql`text_utf16_code_units(${table.text}) BETWEEN 1 AND ${modelCallObservationTextMaxLengthSql}`,
+    ),
   ],
 );
 

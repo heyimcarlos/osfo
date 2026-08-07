@@ -23,6 +23,8 @@ const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const PositiveEpoch = Schema.String.check(Schema.isPattern(/^[1-9]\d*$/u));
 const NonEmptyText = Schema.String.check(Schema.isNonEmpty());
 
+export const modelCallObservationTextMaxLength = 16_384;
+
 export const RunnableAgentRunDeliverySchema = Schema.Struct({
   version: Schema.Literal(1),
   deliveryId: Identity,
@@ -83,10 +85,40 @@ export type ModelCallAttemptStart =
 
 export const ModelCallObservationSchema = Schema.Struct({
   fragmentIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  text: NonEmptyText,
+  text: NonEmptyText.check(Schema.isMaxLength(modelCallObservationTextMaxLength)),
 });
 
 export type ModelCallObservation = typeof ModelCallObservationSchema.Type;
+
+export const ModelCallUsageSchema = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("unknown") }),
+  Schema.Struct({
+    type: Schema.Literals(["reported", "estimated"]),
+    inputUnits: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    outputUnits: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    reasoningUnits: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  }),
+]);
+
+export type ModelCallUsage = typeof ModelCallUsageSchema.Type;
+
+export const ModelCallDispatchEvidenceSchema = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("confirmed"),
+    providerRequestId: Schema.optional(NonEmptyText),
+  }),
+  Schema.Struct({ type: Schema.Literal("notDispatched") }),
+  Schema.Struct({ type: Schema.Literal("uncertain") }),
+]);
+
+export type ModelCallDispatchEvidence = typeof ModelCallDispatchEvidenceSchema.Type;
+
+export const ModelCallAttemptOutcomeSchema = Schema.Struct({
+  dispatchEvidence: ModelCallDispatchEvidenceSchema,
+  usage: ModelCallUsageSchema,
+});
+
+export type ModelCallAttemptOutcome = typeof ModelCallAttemptOutcomeSchema.Type;
 
 export const AgentRunClaimSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("busy") }),
@@ -192,6 +224,7 @@ export interface AgentRunRepositoryService {
   readonly beginModelCallAttempt: (
     fence: AgentRunFence,
     modelCall: PreparedModelCall,
+    attemptLimit?: number,
   ) => Effect.Effect<ModelCallAttemptStart, AgentRunRepositoryError>;
   readonly appendModelOutput: (
     fence: AgentRunFence,
@@ -201,16 +234,19 @@ export interface AgentRunRepositoryService {
   readonly completeModelCall: (
     fence: AgentRunFence,
     attempt: ModelCallAttempt,
+    outcome: ModelCallAttemptOutcome,
   ) => Effect.Effect<void, AgentRunRepositoryError>;
   readonly interruptModelCall: (
     fence: AgentRunFence,
     attempt: ModelCallAttempt,
     cause: "modelCallFailed",
+    outcome: ModelCallAttemptOutcome,
   ) => Effect.Effect<void, AgentRunRepositoryError>;
   readonly recordModelCallCleanup: (
     fence: AgentRunFence,
     attempt: ModelCallAttempt,
     cleanup: AgentRunCleanupResult,
+    outcome?: ModelCallAttemptOutcome,
   ) => Effect.Effect<void, AgentRunRepositoryError>;
   readonly loadCancellation: (
     fence: AgentRunFence,
@@ -236,6 +272,8 @@ export class AgentRunRepository extends Context.Service<
 
 export class ModelCallExecutionError extends Data.TaggedError("ModelCallExecutionError")<{
   readonly cause: unknown;
+  readonly dispatchEvidence: ModelCallDispatchEvidence;
+  readonly usage: ModelCallUsage;
 }> {}
 
 export const ModelCallCancellationDispositionSchema = Schema.Union([
@@ -245,11 +283,15 @@ export const ModelCallCancellationDispositionSchema = Schema.Union([
 
 export type ModelCallCancellationDisposition = typeof ModelCallCancellationDispositionSchema.Type;
 
-type ModelCallExecutionExit = Exit.Exit<"completed" | "interrupted", AgentRunRepositoryError>;
+type ModelCallExecutionResult =
+  | { readonly type: "completed"; readonly outcome: ModelCallAttemptOutcome }
+  | { readonly type: "interrupted"; readonly outcome: ModelCallAttemptOutcome };
+type ModelCallExecutionExit = Exit.Exit<ModelCallExecutionResult, AgentRunRepositoryError>;
 type ModelCallExecutionFiber = Fiber.Fiber<ModelCallExecutionExit>;
 
 interface ModelCallCleanupCache {
   result?: AgentRunCleanupResult;
+  outcome?: ModelCallAttemptOutcome;
 }
 
 export class ModelCallExecutor extends Context.Service<
@@ -261,6 +303,9 @@ export class ModelCallExecutor extends Context.Service<
       Stream.Stream<ModelCallObservation, ModelCallExecutionError>,
       ModelCallExecutionError
     >;
+    readonly outcome: (
+      attempt: ModelCallAttempt,
+    ) => Effect.Effect<ModelCallAttemptOutcome, ModelCallExecutionError>;
     readonly cancel: (
       attempt: ModelCallAttempt,
     ) => Effect.Effect<ModelCallCancellationDisposition, ModelCallExecutionError>;
@@ -278,6 +323,11 @@ export const makeDeterministicModelCallExecutorLayer = () =>
         ),
       ),
     cancel: () => Effect.succeed({ type: "confirmedStopped" }),
+    outcome: () =>
+      Effect.succeed({
+        dispatchEvidence: { type: "confirmed" },
+        usage: { type: "unknown" },
+      }),
     terminate: () => Effect.void,
   });
 
@@ -306,6 +356,7 @@ export const AgentRunWorkerConfigSchema = Schema.Struct({
   leaseDurationMs: PositiveInteger,
   leaseRenewalIntervalMs: PositiveInteger,
   cancellationPollIntervalMs: PositiveInteger,
+  modelCallAttemptLimit: Schema.optional(PositiveInteger),
 }).check(
   Schema.makeFilter((config) =>
     config.leaseRenewalIntervalMs * 3 <= config.leaseDurationMs
@@ -330,6 +381,7 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
       const repository = yield* AgentRunRepository;
       const runtime = yield* AgentRuntime;
       const executor = yield* ModelCallExecutor;
+      const modelCallAttemptLimit = config.modelCallAttemptLimit ?? Number.MAX_SAFE_INTEGER;
 
       const observeExecutorCleanup = Effect.fn("AgentRunWorker.observeExecutorCleanup")(function* (
         attempt: ModelCallAttempt,
@@ -380,6 +432,7 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
         attempt: ModelCallAttempt,
         cleanup: AgentRunCleanupResult,
         deadlineAtEpochMs: number,
+        outcome?: ModelCallAttemptOutcome,
       ) {
         const now = yield* Clock.currentTimeMillis;
         const remainingMs = deadlineAtEpochMs - now;
@@ -388,13 +441,15 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
             cause: "ModelCallAttempt cleanup persistence deadline exceeded",
           });
         }
-        const recorded = yield* repository.recordModelCallCleanup(fence, attempt, cleanup).pipe(
-          Effect.retry({
-            schedule: Schedule.spaced(10),
-            while: Predicate.isTagged("AgentRunRepositoryUnavailable"),
-          }),
-          Effect.timeoutOption(remainingMs),
-        );
+        const recorded = yield* repository
+          .recordModelCallCleanup(fence, attempt, cleanup, outcome)
+          .pipe(
+            Effect.retry({
+              schedule: Schedule.spaced(10),
+              while: Predicate.isTagged("AgentRunRepositoryUnavailable"),
+            }),
+            Effect.timeoutOption(remainingMs),
+          );
         if (Option.isNone(recorded)) {
           return yield* new AgentRunRepositoryUnavailable({
             cause: "ModelCallAttempt cleanup persistence deadline exceeded",
@@ -411,6 +466,10 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
         ) {
           if (cache.result !== undefined) return cache.result;
           const cleanup = yield* observeExecutorCleanup(attempt, deadlineAtEpochMs, execution);
+          if (execution !== undefined) {
+            const executionExit = yield* Fiber.join(execution);
+            if (Exit.isSuccess(executionExit)) cache.outcome = executionExit.value.outcome;
+          }
           cache.result = cleanup;
           return cleanup;
         },
@@ -430,7 +489,13 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
             execution,
             cache,
           );
-          yield* recordCleanup(fence, attempt, cleanup, now + config.leaseDurationMs);
+          yield* recordCleanup(
+            fence,
+            attempt,
+            cleanup,
+            now + config.leaseDurationMs,
+            cache.outcome,
+          );
         },
       );
 
@@ -463,6 +528,7 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
               activeAttempt,
               activeCleanup,
               persistenceStartedAt + config.leaseDurationMs,
+              cleanupCache.outcome,
             );
             cleanup = {
               cleanupDisposition: activeCleanup.cleanupDisposition,
@@ -494,7 +560,11 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
             }
 
             const modelCall = yield* repository.ensureModelCall(fence, decision);
-            const attemptStart = yield* repository.beginModelCallAttempt(fence, modelCall);
+            const attemptStart = yield* repository.beginModelCallAttempt(
+              fence,
+              modelCall,
+              modelCallAttemptLimit,
+            );
             if (attemptStart.type === "cleanupRequired") {
               const now = yield* Clock.currentTimeMillis;
               const cleanup = yield* observeExecutorCleanup(
@@ -525,9 +595,16 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
             const execution = Stream.runForEach(observationStream, (observation) =>
               repository.appendModelOutput(fence, attempt, observation),
             ).pipe(
-              Effect.as("completed" as const),
-              Effect.catchTag("ModelCallExecutionError", () =>
-                Effect.succeed("interrupted" as const),
+              Effect.andThen(executor.outcome(attempt)),
+              Effect.map((outcome) => ({ type: "completed" as const, outcome })),
+              Effect.catchTag("ModelCallExecutionError", (error) =>
+                Effect.succeed({
+                  type: "interrupted" as const,
+                  outcome: {
+                    dispatchEvidence: error.dispatchEvidence,
+                    usage: error.usage,
+                  },
+                }),
               ),
             );
             const cancellation = Effect.forever(
@@ -602,16 +679,21 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
             yield* Fiber.interrupt(maintenanceFiber);
             const executionExit = yield* Fiber.join(executionFiber);
             const executionResult = yield* executionExit;
-            if (executionResult === "interrupted") {
+            if (executionResult.type === "interrupted") {
               yield* executor.terminate(attempt);
               yield* Fiber.await(executionFiber);
-              yield* repository.interruptModelCall(fence, attempt, "modelCallFailed");
+              yield* repository.interruptModelCall(
+                fence,
+                attempt,
+                "modelCallFailed",
+                executionResult.outcome,
+              );
               activeAttempt = undefined;
               activeExecution = undefined;
               activeCleanup = {};
               continue;
             }
-            yield* repository.completeModelCall(fence, attempt);
+            yield* repository.completeModelCall(fence, attempt, executionResult.outcome);
             activeAttempt = undefined;
             activeExecution = undefined;
             activeCleanup = {};
