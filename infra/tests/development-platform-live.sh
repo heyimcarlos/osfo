@@ -36,6 +36,52 @@ export TF_IMAGE_DIGESTS_FILE=$image_digests
 
 : "${SAVED_PLAN_BUCKET:?SAVED_PLAN_BUCKET is required}"
 
+# shellcheck disable=SC1091
+source "$repo_root/infra/scripts/plan-context.sh"
+provider_lock_sha256=""
+load_provider_lock_digest "$root"
+
+validate_saved_plan_binding() {
+  local binding=$1
+  local label=$2
+  local stored_plan="$plan_dir/$label.tfplan"
+  local stored_manifest="$stored_plan.manifest.json"
+  local expected_binding
+
+  if [[ ! "$binding" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'FAIL: lifecycle envelope contains an invalid %s binding\n' "$label" >&2
+    return 1
+  fi
+  gcloud storage cp \
+    "gs://$SAVED_PLAN_BUCKET/roots/development/platform/$binding.tfplan" \
+    "$stored_plan" >/dev/null
+  gcloud storage cp \
+    "gs://$SAVED_PLAN_BUCKET/roots/development/platform/$binding.tfplan.manifest.json" \
+    "$stored_manifest" >/dev/null
+  expected_binding=$(jq -S -c 'del(.binding_sha256)' "$stored_manifest" \
+    | sha256sum | cut -d' ' -f1)
+  if [[ "$expected_binding" != "$binding" ]]; then
+    printf 'FAIL: stored %s manifest does not match its binding\n' "$label" >&2
+    return 1
+  fi
+  jq -e \
+    --arg binding "$binding" \
+    --arg source_commit "$source_commit" \
+    --arg variable_set_sha256 "$varset_sha" \
+    --arg image_digests_sha256 "$image_digests_sha" \
+    --arg provider_lock_sha256 "$provider_lock_sha256" \
+    --arg plan_sha256 "$(sha256sum "$stored_plan" | cut -d' ' -f1)" \
+    '.binding_sha256 == $binding
+      and .commit_sha == $source_commit
+      and .variable_set_sha256 == $variable_set_sha256
+      and .image_digests_sha256 == $image_digests_sha256
+      and .provider_lock_sha256 == $provider_lock_sha256
+      and .plan_sha256 == $plan_sha256
+      and .environment == "development"
+      and .root_name == "development/platform"' \
+    "$stored_manifest" >/dev/null
+}
+
 destroy_platform() {
   local destroyed=false
   local attempt
@@ -170,15 +216,37 @@ if [[ "${DEVELOPMENT_PLATFORM_CLEANUP_ONLY:-0}" == 1 ]]; then
     if ! jq -e \
       --arg source_commit "$source_commit" \
       --arg lifecycle_run_id "$lifecycle_run_id" \
-      '.source.commit_sha == $source_commit and .lifecycle_run_id == $lifecycle_run_id' \
+      --arg variable_set_sha256 "$varset_sha" \
+      --arg image_digests_sha256 "$image_digests_sha" \
+      '.source.commit_sha == $source_commit
+        and .source.clean_tree == true
+        and .source.variable_set_sha256 == $variable_set_sha256
+        and .source.image_digests_sha256 == $image_digests_sha256
+        and .lifecycle_run_id == $lifecycle_run_id
+        and (.create_plan_binding_sha256 | test("^[0-9a-f]{64}$"))
+        and (.second_plan_binding_sha256 | test("^[0-9a-f]{64}$"))
+        and (.managed_report_sha256 | test("^[0-9a-f]{64}$"))
+        and .create_plan_binding_sha256 != .second_plan_binding_sha256' \
       "$lifecycle_envelope" >/dev/null; then
-      printf 'FAIL: lifecycle envelope does not match cleanup source and run\n' >&2
+      printf 'FAIL: lifecycle envelope does not match cleanup source, run, and inputs\n' >&2
       exit 1
     fi
     lifecycle_envelope_sha=$(sha256sum "$lifecycle_envelope" | cut -d' ' -f1)
     lifecycle_content_uri="gs://$evidence_bucket/roots/development/platform/sha256/$lifecycle_envelope_sha.json"
     gcloud storage cp "$lifecycle_content_uri" "$plan_dir/lifecycle-envelope-content.json" >/dev/null
     cmp "$lifecycle_envelope" "$plan_dir/lifecycle-envelope-content.json"
+    create_binding=$(jq -r '.create_plan_binding_sha256' "$lifecycle_envelope")
+    second_binding=$(jq -r '.second_plan_binding_sha256' "$lifecycle_envelope")
+    managed_report_sha=$(jq -r '.managed_report_sha256' "$lifecycle_envelope")
+    validate_saved_plan_binding "$create_binding" lifecycle-create
+    validate_saved_plan_binding "$second_binding" lifecycle-second
+    gcloud storage cp \
+      "gs://$evidence_bucket/roots/development/platform/sha256/$managed_report_sha.json" \
+      "$plan_dir/managed-report.json" >/dev/null
+    if [[ "$(sha256sum "$plan_dir/managed-report.json" | cut -d' ' -f1)" != "$managed_report_sha" ]]; then
+      printf 'FAIL: managed smoke report does not match lifecycle envelope digest\n' >&2
+      exit 1
+    fi
     lifecycle_envelope_status=PASS
   elif grep -Eqi '404|not found|does not exist' "$lifecycle_lookup_error"; then
     printf 'MISSING: lifecycle ended before its evidence envelope was stored\n' >&2

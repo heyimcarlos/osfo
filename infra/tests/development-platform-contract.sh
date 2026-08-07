@@ -91,6 +91,16 @@ rg --fixed-strings --quiet 'second_plan_binding_sha256: $second_plan_binding_sha
   infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'managed_report_sha256: $managed_report_sha256' \
   infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet '.source.variable_set_sha256 == $variable_set_sha256' \
+  infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet '.source.image_digests_sha256 == $image_digests_sha256' \
+  infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'validate_saved_plan_binding "$create_binding" lifecycle-create' \
+  infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'validate_saved_plan_binding "$second_binding" lifecycle-second' \
+  infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'managed smoke report does not match lifecycle envelope digest' \
+  infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'MISSING: lifecycle ended before its evidence envelope was stored' \
   infra/tests/development-platform-live.sh
 if rg --fixed-strings --quiet 'state-list.error' infra/tests/development-platform-live.sh; then
@@ -205,6 +215,10 @@ if grep -Eq 'roles/(compute.networkAdmin|servicenetworking.networksAdmin|storage
   printf 'platform identity must not administer the retained network or artifact objects\n' >&2
   exit 1
 fi
+if grep -Fq 'roles/dns.admin' <<<"$platform_roles"; then
+  printf 'platform identity must not administer the retained private DNS zone\n' >&2
+  exit 1
+fi
 if ! grep -Fq 'roles/compute.networkViewer' <<<"$platform_roles"; then
   printf 'platform identity is missing read-only retained-network authority\n' >&2
   exit 1
@@ -251,15 +265,48 @@ if grep -Fq 'iam.serviceAccounts.actAs' <<<"$platform_custom_roles"; then
   exit 1
 fi
 platform_storage_role=$(sed -n \
-  '/resource "google_project_iam_custom_role" "platform_storage_manager"/,/resource "google_project_iam_custom_role" "development_artifact_cleaner"/p' \
+  '/resource "google_project_iam_custom_role" "platform_storage_manager"/,/resource "google_project_iam_custom_role" "platform_bucket_creator"/p' \
   infra/roots/foundation/main.tf)
 for permission in storage.buckets.delete storage.objects.create storage.objects.get storage.objects.list; do
   grep -Fq "$permission" <<<"$platform_storage_role"
 done
-if grep -Fq 'storage.objects.delete' <<<"$platform_storage_role"; then
-  printf 'platform identity must not delete or overwrite content-addressed objects\n' >&2
+for forbidden_permission in storage.buckets.create storage.buckets.list storage.buckets.update storage.objects.delete; do
+  if grep -Fq "$forbidden_permission" <<<"$platform_storage_role"; then
+    printf 'platform scoped storage role contains unsafe permission %s\n' \
+      "$forbidden_permission" >&2
+    exit 1
+  fi
+done
+rg --fixed-strings --quiet 'resource "google_project_iam_custom_role" "platform_bucket_creator"' \
+  infra/roots/foundation/main.tf
+bucket_creator_role=$(sed -n \
+  '/resource "google_project_iam_custom_role" "platform_bucket_creator"/,/resource "google_project_iam_custom_role" "platform_dns_record_manager"/p' \
+  infra/roots/foundation/main.tf)
+if [[ $(grep -Fc 'storage.buckets.create' <<<"$bucket_creator_role") != 1 ]] \
+  || grep -Eq 'storage\.(buckets\.(delete|update)|objects\.)' <<<"$bucket_creator_role"; then
+  printf 'project-level bucket creator must grant only bucket creation\n' >&2
   exit 1
 fi
+platform_storage_binding=$(sed -n \
+  '/resource "google_project_iam_member" "platform_storage_manager"/,/resource "google_project_iam_member" "platform_bucket_creator"/p' \
+  infra/roots/foundation/main.tf)
+grep -Fq "resource.name == 'projects/_/buckets/\${local.development_artifact_bucket_name}'" \
+  <<<"$platform_storage_binding"
+grep -Fq "resource.name.startsWith('projects/_/buckets/\${local.development_artifact_bucket_name}/objects/')" \
+  <<<"$platform_storage_binding"
+rg --fixed-strings --quiet 'resource "google_project_iam_custom_role" "platform_dns_record_manager"' \
+  infra/roots/foundation/main.tf
+dns_binding=$(sed -n \
+  '/resource "google_dns_managed_zone_iam_member" "development_platform_database_record"/,/resource "google_project_iam_member" "development_artifact_cleaner"/p' \
+  infra/roots/foundation/main.tf)
+# The Terraform expression is intentionally matched as a literal string.
+# shellcheck disable=SC2016
+for exact_dns_boundary in \
+  'managed_zone = "${var.development_environment_baseline.name_prefix}-private"' \
+  "resource.type == 'dns.googleapis.com/ResourceRecordSet'" \
+  "resource.name.endsWith('/rrsets/database.temporal.internal./A')"; do
+  grep -Fq "$exact_dns_boundary" <<<"$dns_binding"
+done
 rg --fixed-strings --quiet 'resource "google_project_iam_custom_role" "development_artifact_cleaner"' \
   infra/roots/foundation/main.tf
 rg --fixed-strings --quiet \
@@ -303,7 +350,7 @@ rg --fixed-strings --quiet \
   'DEVELOPMENT_LIFECYCLE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}' \
   .github/workflows/terraform.yml
 rg --fixed-strings --quiet \
-  'DEVELOPMENT_LIFECYCLE_RUN_ID: ${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}' \
+  'DEVELOPMENT_LIFECYCLE_RUN_ID: ${{ needs.authorize.outputs.lifecycle_run_id }}' \
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet 'always()' .github/workflows/terraform.yml
 rg --fixed-strings --quiet "needs.static.result == 'success'" .github/workflows/terraform.yml
@@ -317,13 +364,17 @@ if [[ $(rg --fixed-strings 'queue: max' \
 fi
 rg --fixed-strings --quiet 'workflows: [Terraform]' \
   .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet 'cron: "43 9 * * *"' \
+  .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet 'PASS: scheduled default-branch janitor selected' \
+  .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet \
   '.name == "static" and .conclusion == "success"' \
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet \
   '.name == "development-authorization" and .conclusion == "success"' \
   .github/workflows/development-platform-recovery.yml
-if [[ $(rg --fixed-strings 'ref: ${{ github.event.workflow_run.head_sha }}' \
+if [[ $(rg --fixed-strings 'ref: ${{ needs.authorize.outputs.source_ref }}' \
   .github/workflows/development-platform-recovery.yml | wc -l) != 2 ]]; then
   printf 'durable recovery must use the exact protected lifecycle source commit\n' >&2
   exit 1

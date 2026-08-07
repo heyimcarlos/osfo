@@ -25,6 +25,11 @@ rg --fixed-strings --quiet "TERRAFORM_BIN: \${{ github.workspace }}/infra/script
 rg --fixed-strings --quiet \
   "format('terraform-{0}', inputs.root)" \
   .github/workflows/terraform.yml
+if [[ $(rg --fixed-strings -- '- ".github/workflows/**"' \
+  .github/workflows/terraform.yml | wc -l) != 2 ]]; then
+  printf 'Terraform static checks must cover changes to every workflow file\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet "terraform_image=\$(jq -r '.ci_image'" \
   infra/scripts/terraform-ci.sh
 if rg --fixed-strings --quiet 'apk add' .github/workflows/terraform.yml; then

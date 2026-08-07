@@ -123,7 +123,6 @@ locals {
     "roles/cloudsql.admin",
     "roles/cloudquotas.viewer",
     "roles/compute.networkViewer",
-    "roles/dns.admin",
     "roles/iam.serviceAccountViewer",
     "roles/logging.viewer",
     "roles/pubsub.admin",
@@ -221,16 +220,46 @@ resource "google_project_iam_custom_role" "platform_storage_manager" {
   project     = google_project.environment["development"].project_id
   role_id     = "osfoPlatformStorageManager"
   title       = "Osfo platform storage manager"
-  description = "Manages disposable bucket metadata and creates immutable objects without delete or overwrite authority."
+  description = "Reads and deletes the exact disposable artifact bucket and creates immutable objects without update, delete, or overwrite authority."
   permissions = [
-    "storage.buckets.create",
     "storage.buckets.delete",
     "storage.buckets.get",
-    "storage.buckets.list",
-    "storage.buckets.update",
     "storage.objects.create",
     "storage.objects.get",
     "storage.objects.list",
+  ]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
+}
+
+resource "google_project_iam_custom_role" "platform_bucket_creator" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoPlatformBucketCreator"
+  title       = "Osfo platform bucket creator"
+  description = "Creates a disposable bucket without authority to update bucket metadata or object lifecycle rules."
+  permissions = ["storage.buckets.create"]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
+}
+
+resource "google_project_iam_custom_role" "platform_dns_record_manager" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoPlatformDnsRecordManager"
+  title       = "Osfo platform DNS record manager"
+  description = "Manages only the disposable database A record in the retained development private zone."
+  permissions = [
+    "dns.changes.create",
+    "dns.changes.get",
+    "dns.managedZones.get",
+    "dns.resourceRecordSets.create",
+    "dns.resourceRecordSets.delete",
+    "dns.resourceRecordSets.get",
+    "dns.resourceRecordSets.list",
+    "dns.resourceRecordSets.update",
   ]
 
   lifecycle { prevent_destroy = true }
@@ -639,6 +668,33 @@ resource "google_project_iam_member" "platform_storage_manager" {
   project = google_project.environment["development"].project_id
   role    = google_project_iam_custom_role.platform_storage_manager.name
   member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+
+  condition {
+    title       = "exact_development_artifact_bucket"
+    description = "Restricts platform storage access to the reviewed disposable artifact bucket."
+    expression  = "resource.name == 'projects/_/buckets/${local.development_artifact_bucket_name}' || resource.name.startsWith('projects/_/buckets/${local.development_artifact_bucket_name}/objects/')"
+  }
+}
+
+resource "google_project_iam_member" "platform_bucket_creator" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.platform_bucket_creator.name
+  member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+}
+
+resource "google_dns_managed_zone_iam_member" "development_platform_database_record" {
+  project      = google_project.environment["development"].project_id
+  managed_zone = "${var.development_environment_baseline.name_prefix}-private"
+  role         = google_project_iam_custom_role.platform_dns_record_manager.name
+  member       = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+
+  condition {
+    title       = "exact_development_database_a_record"
+    description = "Restricts the disposable platform to database.temporal.internal. A while permitting safe parent-zone checks."
+    expression  = "(resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name.endsWith('/rrsets/database.temporal.internal./A')) || resource.type != 'dns.googleapis.com/ResourceRecordSet'"
+  }
+
+  depends_on = [module.development_environment_baseline]
 }
 
 resource "google_project_iam_member" "development_artifact_cleaner" {

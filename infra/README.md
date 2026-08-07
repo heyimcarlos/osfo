@@ -53,6 +53,10 @@ not part of development destroy. The development artifact bucket uses
 `force_destroy` only after the foundation recovery step has removed its smoke
 artifact. The platform identity can create and read objects but has no
 `storage.objects.delete`, so it cannot overwrite an existing object generation.
+Project-level storage authority is limited to bucket creation. Bucket reads,
+deletion, and object creation are conditionally scoped to the exact reviewed
+artifact bucket, and the platform has no bucket-update authority with which to
+install a deletion lifecycle rule.
 
 Temporal Cloud must publish and authorize a same-region service attachment.
 Foundation alone accepts its non-secret `us-east4` URI and DNS name. The
@@ -71,6 +75,8 @@ it cannot change secret IAM, access version payloads, or mint runtime
 credentials. Authorized secret-version access therefore remains `MISSING` in
 this preparatory PR. Package installation inside the pinned base image is still
 mutable, so full probe toolchain determinism is also `MISSING`.
+The retained private zone grants the platform only a custom record role for
+`database.temporal.internal.` A, not project-wide DNS administration.
 
 The ordered Pub/Sub proof first validates the Terraform-managed subscription's
 topic, ordering, retention, and acknowledgement configuration. Its behavioral
@@ -113,7 +119,9 @@ stores, and applies a bound destroy plan, fails closed on state reads, performs
 negative provider lookups, and queries retained audit history when it removed
 Terraform-owned resources. A default-branch `workflow_run` recovery starts
 after every completed protected lifecycle dispatch, including cancellation of
-the original run. The GCP workload identity provider also rejects every ref
+the original run. A scheduled default-branch janitor uses the same serialized
+cleanup path, so canceling a recovery run cannot silently strand resources
+past the next reconciliation. The GCP workload identity provider also rejects every ref
 except `refs/heads/main`, outside branch-controlled workflow logic. Lifecycle,
 cleanup, recovery, drift, and root plan/apply runs that can touch development
 platform state share the global `terraform-development-platform` concurrency
