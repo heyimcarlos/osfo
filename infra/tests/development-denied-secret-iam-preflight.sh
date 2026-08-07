@@ -235,8 +235,18 @@ if ! gcloud secrets describe "$target_secret" --project="$project_id" --format=j
   >"$scratch/secret.json" 2>"$scratch/secret.error"; then
   fail 'target secret does not exist or is unreadable'
 fi
-if ! jq -e --arg name "projects/$project_id/secrets/$target_secret" '
-  type == "object" and .name == $name
+if ! jq -e --arg target_secret "$target_secret" '
+  type == "object"
+  and (.name | type == "string")
+  and (
+    .name
+    | split("/") as $segments
+    | ($segments | length == 4)
+      and $segments[0] == "projects"
+      and ($segments[1] | test("^[0-9]+$"))
+      and $segments[2] == "secrets"
+      and $segments[3] == $target_secret
+  )
 ' "$scratch/secret.json" >/dev/null; then
   fail 'target secret live record is malformed or does not match configuration'
 fi

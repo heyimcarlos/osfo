@@ -11,6 +11,7 @@ real_jq=$(command -v jq)
 real_grep=$(command -v grep)
 
 project_id=osfo-development-123456789
+project_number=123456789012
 name_prefix=osfo-dev
 denied_account=osfo-dev-qual-denied@osfo-development-123456789.iam.gserviceaccount.com
 foundation_account=osfo-foundation-tf@osfo-foundation-123456789.iam.gserviceaccount.com
@@ -122,8 +123,29 @@ jq -n --arg project_id "$project_id" \
   '[{id: $project_id, type: "project"}, {id: "123456789012", type: "organization"}]' \
   >"$scratch/ancestors-with-parent.json"
 jq -n \
-  --arg name "projects/$project_id/secrets/$target_secret" \
+  --arg name "projects/$project_number/secrets/$target_secret" \
   '{name: $name}' >"$scratch/secret.json"
+jq -n \
+  --arg name "projects/$project_id/secrets/$target_secret" \
+  '{name: $name}' >"$scratch/secret-text-project.json"
+jq -n \
+  --arg name "projects/not-numeric/secrets/$target_secret" \
+  '{name: $name}' >"$scratch/secret-nonnumeric-project.json"
+jq -n \
+  --arg name "projects//secrets/$target_secret" \
+  '{name: $name}' >"$scratch/secret-empty-project.json"
+jq -n \
+  --arg name "projects/$project_number/secrets/wrong-secret" \
+  '{name: $name}' >"$scratch/secret-wrong-id.json"
+jq -n \
+  --arg name "projects/$project_number/secrets/$target_secret/versions" \
+  '{name: $name}' >"$scratch/secret-extra-segment.json"
+jq -n \
+  --arg name "projects/$project_number/secrets" \
+  '{name: $name}' >"$scratch/secret-missing-segment.json"
+jq -n '{name: 7}' >"$scratch/secret-nonstring-name.json"
+jq -n '{}' >"$scratch/secret-missing-name.json"
+jq -n '[]' >"$scratch/secret-not-object.json"
 
 jq -n \
   --arg member "$target_member" \
@@ -234,6 +256,7 @@ run_preflight() {
   local identity=${6:-$scratch/identity.json}
   local identity_mode=${7:-present}
   local ancestors=${8:-$scratch/ancestors.json}
+  local secret=${9:-$scratch/secret.json}
   local expected_account=$foundation_account
   if [[ "$scope" == target-secret ]]; then
     expected_account=$platform_account
@@ -249,7 +272,7 @@ run_preflight() {
     MOCK_IDENTITY_MODE="$identity_mode" \
     MOCK_ANCESTORS="$ancestors" \
     MOCK_PROJECT_POLICY="$project_policy" \
-    MOCK_SECRET="$scratch/secret.json" \
+    MOCK_SECRET="$secret" \
     MOCK_SECRET_POLICY="$secret_policy" \
     MOCK_ACCESSOR_ROLE="$scratch/accessor-role.json" \
     MOCK_WIDENED_ROLE="$scratch/widened-role.json" \
@@ -325,6 +348,42 @@ expect_preflight_fails() {
     exit 1
   fi
 }
+
+expect_secret_record_fails() {
+  local scenario=$1
+  local secret=$2
+  local output=$scratch/$scenario-output
+
+  if run_preflight \
+    target-secret "$scratch/varset.json" "$scratch/project-policy.json" \
+    "$scratch/secret-policy.json" "$output" \
+    "$scratch/identity.json" present "$scratch/ancestors.json" "$secret"; then
+    printf '%s denied-secret IAM preflight must fail closed\n' "$scenario" >&2
+    exit 1
+  fi
+  grep -Fxq \
+    'FAIL: target secret live record is malformed or does not match configuration' \
+    "$output"
+  if grep -Fq 'PASS:' "$output"; then
+    printf '%s denied-secret IAM preflight must not report PASS\n' "$scenario" >&2
+    exit 1
+  fi
+}
+
+expect_secret_record_fails textual-project-secret "$scratch/secret-text-project.json"
+for malformed_secret in \
+  nonnumeric-project \
+  empty-project \
+  wrong-id \
+  extra-segment \
+  missing-segment \
+  nonstring-name \
+  missing-name \
+  not-object; do
+  expect_secret_record_fails \
+    "malformed-target-secret-$malformed_secret" \
+    "$scratch/secret-$malformed_secret.json"
+done
 
 expect_preflight_fails \
   project-accessor project "$scratch/varset.json" \
