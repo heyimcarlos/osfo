@@ -126,8 +126,9 @@ static job at its exact current-main source before OIDC, so canceling a recovery
 run cannot silently strand resources or turn an ordinary scheduled run into a
 destructive one. A successful recovery records the original Terraform run ID and
 run attempt in its cleanup job name. Later schedules consult only successful,
-attempt-specific recovery history, so completed cleanup clears the exact marker
-without combining rerun results. The GCP workload identity provider also rejects every ref except
+attempt-specific cleanup jobs across every GitHub rerun attempt, so completed
+cleanup clears the exact marker without combining or hiding rerun results. The
+GCP workload identity provider also rejects every ref except
 `refs/heads/main`, outside branch-controlled workflow logic. Lifecycle,
 cleanup, recovery, drift, and root plan/apply runs that can touch development
 platform state share the global `terraform-development-platform` concurrency

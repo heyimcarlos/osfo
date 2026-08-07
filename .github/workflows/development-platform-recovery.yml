@@ -43,9 +43,9 @@ jobs:
           printf 'recover=false\n' >>"$GITHUB_OUTPUT"
           if [[ "$RECOVERY_EVENT" == schedule ]]; then
             terraform_runs=$(gh api --paginate --slurp \
-              "repos/$GITHUB_REPOSITORY/actions/workflows/terraform.yml/runs?status=completed&per_page=100")
-            successful_recoveries=$(gh api --paginate --slurp \
-              "repos/$GITHUB_REPOSITORY/actions/workflows/development-platform-recovery.yml/runs?status=success&per_page=100")
+              "repos/$GITHUB_REPOSITORY/actions/workflows/terraform.yml/runs?per_page=100")
+            recovery_runs=$(gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/development-platform-recovery.yml/runs?per_page=100")
             completed_markers="$RUNNER_TEMP/development-cleanup-complete-markers"
             : >"$completed_markers"
             while IFS=$'\t' read -r recovery_run_id recovery_run_attempt; do
@@ -62,8 +62,10 @@ jobs:
             done < <(jq -r '
               [.[].workflow_runs[]]
               | sort_by(.created_at) | reverse[]
-              | [.id, .run_attempt] | @tsv
-            ' <<<"$successful_recoveries")
+              | . as $run
+              | range($run.run_attempt; 0; -1) as $attempt
+              | [$run.id, $attempt] | @tsv
+            ' <<<"$recovery_runs")
             candidate_id=""
             candidate_attempt=""
             while IFS=$'\t' read -r run_id run_attempt; do
@@ -96,7 +98,9 @@ jobs:
               [.[].workflow_runs[]
                 | select(.event == "workflow_dispatch" and .head_branch == "main")]
               | sort_by(.created_at) | reverse[]
-              | [.id, .run_attempt] | @tsv
+              | . as $run
+              | range($run.run_attempt; 0; -1) as $attempt
+              | [$run.id, $attempt] | @tsv
             ' <<<"$terraform_runs")
             if [[ -z "$candidate_id" ]]; then
               printf 'PASS: scheduled janitor found no abandoned protected lifecycle marker\n'
@@ -116,7 +120,10 @@ jobs:
             done < <(jq -r --arg source_sha "$RECOVERY_SOURCE_SHA" '
               [.[].workflow_runs[]
                 | select(.head_sha == $source_sha and .head_branch == "main")]
-              | .[] | [.id, .run_attempt] | @tsv
+              | .[]
+              | . as $run
+              | range($run.run_attempt; 0; -1) as $attempt
+              | [$run.id, $attempt] | @tsv
             ' <<<"$terraform_runs")
             if [[ "$source_static" != true ]]; then
               printf 'FAIL: scheduled janitor source lacks exact successful static proof\n' >&2

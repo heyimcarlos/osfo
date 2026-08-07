@@ -379,7 +379,7 @@ rg --fixed-strings --quiet 'PASS: scheduled janitor found no abandoned protected
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet 'FAIL: scheduled janitor source lacks exact successful static proof' \
   .github/workflows/development-platform-recovery.yml
-rg --fixed-strings --quiet 'development-platform-recovery.yml/runs?status=success' \
+rg --fixed-strings --quiet 'development-platform-recovery.yml/runs?per_page=100' \
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet \
   'development-cleanup-complete-${{ needs.authorize.outputs.marker_id }}' \
@@ -401,6 +401,16 @@ rg --fixed-strings --quiet \
 if rg --fixed-strings --quiet 'jobs?filter=all' \
   .github/workflows/development-platform-recovery.yml; then
   printf 'recovery authorization must never combine jobs across run attempts\n' >&2
+  exit 1
+fi
+if [[ $(rg --fixed-strings 'range($run.run_attempt; 0; -1) as $attempt' \
+  .github/workflows/development-platform-recovery.yml | wc -l) != 3 ]]; then
+  printf 'recovery must enumerate every visible Terraform and recovery run attempt\n' >&2
+  exit 1
+fi
+if rg --quiet 'workflows/(terraform|development-platform-recovery)\.yml/runs\?status=' \
+  .github/workflows/development-platform-recovery.yml; then
+  printf 'run-status filters must not hide an earlier attempt marker\n' >&2
   exit 1
 fi
 rg --fixed-strings --quiet '.name == "development-cleanup" and .conclusion == "success"' \
