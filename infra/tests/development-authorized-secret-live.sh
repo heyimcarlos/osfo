@@ -101,7 +101,8 @@ if [[ ! "$execution" =~ ^${job}-[a-z0-9-]+$ ]]; then
   fail 'managed authorized-secret execution identity is invalid'
 fi
 
-log_filter="resource.type=\"cloud_run_job\" AND resource.labels.project_id=\"$project_id\" AND resource.labels.location=\"$region\" AND resource.labels.job_name=\"$job\" AND labels.\"run.googleapis.com/execution_name\"=\"$execution\""
+stdout_log_name="projects/$project_id/logs/run.googleapis.com%2Fstdout"
+log_filter="logName=\"$stdout_log_name\" AND resource.type=\"cloud_run_job\" AND resource.labels.project_id=\"$project_id\" AND resource.labels.location=\"$region\" AND resource.labels.job_name=\"$job\" AND labels.\"run.googleapis.com/execution_name\"=\"$execution\""
 qualified=false
 for observation in {1..12}; do
   if ! gcloud logging read "$log_filter" --project="$project_id" \

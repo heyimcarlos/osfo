@@ -137,12 +137,20 @@ for authorized_secret_live_contract in \
   'gcloud projects describe "$project_id" --format=json' \
   'gcloud run jobs execute "$job"' \
   '--update-env-vars="QUALIFICATION_VERSION=$version,QUALIFICATION_RUN_ID=$lifecycle_run_id"' \
+  'logs/run.googleapis.com%2Fstdout' \
   'gcloud logging read "$log_filter"' \
   'evaluate-authorized-secret-proof.sh' \
   'PASS: managed authorized secret read produced sanitized evidence'; do
   rg --fixed-strings --quiet -- "$authorized_secret_live_contract" \
     infra/tests/development-authorized-secret-live.sh
 done
+rg --fixed-strings --quiet '.jsonPayload' \
+  infra/tests/evaluate-authorized-secret-proof.sh
+if rg --fixed-strings --quiet '.textPayload' \
+  infra/tests/evaluate-authorized-secret-proof.sh; then
+  printf 'authorized-secret evaluator must consume structured stdout only\n' >&2
+  exit 1
+fi
 if rg --quiet '"payload_sha256"|payload_sha256":"' \
   infra/modules/qualification-probe/authorized-secret-proof.sh \
   infra/tests/evaluate-authorized-secret-proof.sh; then

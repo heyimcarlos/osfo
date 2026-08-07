@@ -28,23 +28,23 @@ jq -s -e \
   --arg region "$expected_region" \
   --arg job "$expected_job" \
   --arg execution "$expected_execution" '
+    ("projects/" + $project + "/logs/run.googleapis.com%2Fstdout") as $stdout_log_name
+    |
     if length != 1 or (.[0] | type) != "array"
       then error("logs must be exactly one array")
       else .[0]
       end
     | map(select(
-        .resource.type == "cloud_run_job"
+        .logName == $stdout_log_name
+        and .resource.type == "cloud_run_job"
         and .resource.labels.project_id == $project
         and .resource.labels.location == $region
         and .resource.labels.job_name == $job
         and .labels["run.googleapis.com/execution_name"] == $execution
-        and (.textPayload | type == "string")
       ))
     | select(length == 1)
     | .[0]
-    | .textPayload
-    | select((fromjson? | type) == "object")
-    | fromjson
+    | .jsonPayload
     | select(
         type == "object"
         and (keys | sort) == [

@@ -166,15 +166,25 @@ make_logs() {
     --arg region "$region" \
     --arg job "$job" \
     --arg execution "$execution" \
-    --arg result_json "$result_json" \
+    --argjson result_json "$result_json" \
     '[{
+      logName: ("projects/" + $project_id + "/logs/run.googleapis.com%2Fstdout"),
       resource: {type: "cloud_run_job", labels: {
         project_id: $project_id,
         location: $region,
         job_name: $job
       }},
       labels: {"run.googleapis.com/execution_name": $execution},
-      textPayload: $result_json
+      jsonPayload: $result_json
+    }, {
+      logName: ("projects/" + $project_id + "/logs/run.googleapis.com%2Fvarlog%2Fsystem"),
+      resource: {type: "cloud_run_job", labels: {
+        project_id: $project_id,
+        location: $region,
+        job_name: $job
+      }},
+      labels: {"run.googleapis.com/execution_name": $execution},
+      textPayload: "provider-managed system log"
     }]' >"$scratch/logs.json"
 }
 
@@ -218,13 +228,13 @@ expect_evaluator_fails malformed-result \
   'FAIL: managed qualification result is missing or malformed' \
   "$scratch/malformed.logs.json"
 
-jq '.[0].textPayload = (. [0].textPayload | fromjson | .payload_sha256_match = false | tojson)' \
+jq '.[0].jsonPayload.payload_sha256_match = false' \
   "$scratch/logs.json" >"$scratch/hash-mismatch.logs.json"
 expect_evaluator_fails hash-mismatch \
   'FAIL: managed qualification result is missing or malformed' \
   "$scratch/hash-mismatch.logs.json"
 
-jq '.[0].textPayload = (. [0].textPayload | fromjson | .payload_length += 1 | tojson)' \
+jq '.[0].jsonPayload.payload_length += 1' \
   "$scratch/logs.json" >"$scratch/length-mismatch.logs.json"
 expect_evaluator_fails length-mismatch \
   'FAIL: managed qualification payload length does not match' \
@@ -241,7 +251,7 @@ expect_evaluator_fails concatenated-log-roots \
   'FAIL: managed qualification result evaluator failed closed' \
   "$scratch/concatenated-root.logs.json"
 
-jq '.[0] as $valid | . + [$valid | .textPayload = "not-json"]' \
+jq '.[0] as $valid | . + [$valid | .jsonPayload = "not-json"]' \
   "$scratch/logs.json" >"$scratch/valid-plus-malformed.logs.json"
 expect_evaluator_fails valid-plus-malformed-result \
   'FAIL: managed qualification result is missing or malformed' \
@@ -339,7 +349,7 @@ printf '%s\n' \
   '      malformed-logs) printf "%s\n" "not-json"; exit 0 ;;' \
   '    esac' \
   '    result=$(jq -cn --argjson length "$(<"$MOCK_LIVE_LENGTH")" '\''{schema_version: 1, identity_verified: true, payload_length: $length, payload_sha256_match: true}'\'')' \
-  '    jq -n --arg result "$result" '\''[{resource: {type: "cloud_run_job", labels: {project_id: "osfo-development-123456789", location: "us-east4", job_name: "osfo-dev-authorized-secret-probe"}}, labels: {"run.googleapis.com/execution_name": "osfo-dev-authorized-secret-probe-abc12"}, textPayload: $result}]'\''' \
+  '    jq -n --argjson result "$result" '\''[{logName: "projects/osfo-development-123456789/logs/run.googleapis.com%2Fstdout", resource: {type: "cloud_run_job", labels: {project_id: "osfo-development-123456789", location: "us-east4", job_name: "osfo-dev-authorized-secret-probe"}}, labels: {"run.googleapis.com/execution_name": "osfo-dev-authorized-secret-probe-abc12"}, jsonPayload: $result}, {logName: "projects/osfo-development-123456789/logs/run.googleapis.com%2Fvarlog%2Fsystem", resource: {type: "cloud_run_job", labels: {project_id: "osfo-development-123456789", location: "us-east4", job_name: "osfo-dev-authorized-secret-probe"}}, labels: {"run.googleapis.com/execution_name": "osfo-dev-authorized-secret-probe-abc12"}, textPayload: "provider-managed system log"}]'\''' \
   '    ;;' \
   '  *) printf "unexpected live proof invocation\n" >&2; exit 90 ;;' \
   'esac' >"$live_bin/gcloud"
