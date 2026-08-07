@@ -1,5 +1,5 @@
 name: Development platform recovery
-run-name: ${{ github.event_name == 'workflow_run' && format('Recovery for Terraform run {0}', github.event.workflow_run.id) || format('Scheduled development reconciliation {0}', github.run_id) }}
+run-name: ${{ github.event_name == 'workflow_run' && format('Recovery for Terraform run {0} attempt {1}', github.event.workflow_run.id, github.event.workflow_run.run_attempt) || format('Scheduled development reconciliation {0}', github.run_id) }}
 
 on:
   workflow_run:
@@ -23,6 +23,7 @@ jobs:
       recover: ${{ steps.check.outputs.recover }}
       source_ref: ${{ steps.check.outputs.source_ref }}
       lifecycle_run_id: ${{ steps.check.outputs.lifecycle_run_id }}
+      marker_id: ${{ steps.check.outputs.marker_id }}
     steps:
       - name: Select completed protected lifecycle runs
         id: check
@@ -45,18 +46,34 @@ jobs:
               "repos/$GITHUB_REPOSITORY/actions/workflows/terraform.yml/runs?status=completed&per_page=100")
             successful_recoveries=$(gh api --paginate --slurp \
               "repos/$GITHUB_REPOSITORY/actions/workflows/development-platform-recovery.yml/runs?status=success&per_page=100")
+            completed_markers="$RUNNER_TEMP/development-cleanup-complete-markers"
+            : >"$completed_markers"
+            while IFS=$'\t' read -r recovery_run_id recovery_run_attempt; do
+              [[ -n "$recovery_run_id" && -n "$recovery_run_attempt" ]] || continue
+              recovery_jobs=$(gh api --paginate --slurp \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$recovery_run_id/attempts/$recovery_run_attempt/jobs?per_page=100")
+              jq -r '
+                [.[].jobs[]
+                  | select(.conclusion == "success")
+                  | .name
+                  | select(startswith("development-cleanup-complete-"))]
+                | .[]
+              ' <<<"$recovery_jobs" >>"$completed_markers"
+            done < <(jq -r '
+              [.[].workflow_runs[]]
+              | sort_by(.created_at) | reverse[]
+              | [.id, .run_attempt] | @tsv
+            ' <<<"$successful_recoveries")
             candidate_id=""
             candidate_attempt=""
             while IFS=$'\t' read -r run_id run_attempt; do
-              [[ -n "$run_id" ]] || continue
-              recovery_title="Recovery for Terraform run $run_id"
-              if jq -e --arg title "$recovery_title" \
-                '[.[].workflow_runs[]] | any(.display_title == $title)' \
-                <<<"$successful_recoveries" >/dev/null; then
+              [[ -n "$run_id" && -n "$run_attempt" ]] || continue
+              marker_name="development-cleanup-complete-$run_id-$run_attempt"
+              if grep -Fqx "$marker_name" "$completed_markers"; then
                 continue
               fi
               run_jobs=$(gh api --paginate --slurp \
-                "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?filter=all")
+                "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/attempts/$run_attempt/jobs?per_page=100")
               if jq -e '
                 [.[].jobs[]] as $jobs
                 | any($jobs[]; .name == "static" and .conclusion == "success")
@@ -87,17 +104,19 @@ jobs:
             fi
 
             source_static=false
-            while IFS= read -r source_run_id; do
-              [[ -n "$source_run_id" ]] || continue
+            while IFS=$'\t' read -r source_run_id source_run_attempt; do
+              [[ -n "$source_run_id" && -n "$source_run_attempt" ]] || continue
               source_jobs=$(gh api --paginate --slurp \
-                "repos/$GITHUB_REPOSITORY/actions/runs/$source_run_id/jobs?filter=all")
+                "repos/$GITHUB_REPOSITORY/actions/runs/$source_run_id/attempts/$source_run_attempt/jobs?per_page=100")
               if jq -e '[.[].jobs[]] | any(.name == "static" and .conclusion == "success")' \
                 <<<"$source_jobs" >/dev/null; then
                 source_static=true
                 break
               fi
             done < <(jq -r --arg source_sha "$RECOVERY_SOURCE_SHA" '
-              [.[].workflow_runs[] | select(.head_sha == $source_sha)] | .[].id
+              [.[].workflow_runs[]
+                | select(.head_sha == $source_sha and .head_branch == "main")]
+              | .[] | [.id, .run_attempt] | @tsv
             ' <<<"$terraform_runs")
             if [[ "$source_static" != true ]]; then
               printf 'FAIL: scheduled janitor source lacks exact successful static proof\n' >&2
@@ -109,6 +128,8 @@ jobs:
             printf 'lifecycle_run_id=janitor-%s-%s-%s-%s\n' \
               "$candidate_id" "$candidate_attempt" \
               "$RECOVERY_RUN_ID" "$RECOVERY_RUN_ATTEMPT" >>"$GITHUB_OUTPUT"
+            printf 'marker_id=%s-%s\n' \
+              "$candidate_id" "$candidate_attempt" >>"$GITHUB_OUTPUT"
             printf 'PASS: scheduled janitor selected abandoned lifecycle %s attempt %s at reviewed source %s\n' \
               "$candidate_id" "$candidate_attempt" "$RECOVERY_SOURCE_SHA"
             exit 0
@@ -118,7 +139,7 @@ jobs:
             exit 0
           fi
           jobs=$(gh api --paginate --slurp \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$TRIGGER_RUN_ID/jobs?filter=all")
+            "repos/$GITHUB_REPOSITORY/actions/runs/$TRIGGER_RUN_ID/attempts/$TRIGGER_RUN_ATTEMPT/jobs?per_page=100")
           if jq -e '
             [.[].jobs[]] as $jobs
             | any($jobs[]; .name == "static" and .conclusion == "success")
@@ -131,6 +152,8 @@ jobs:
             printf 'recover=true\n' >>"$GITHUB_OUTPUT"
             printf 'source_ref=%s\n' "$TRIGGER_HEAD_SHA" >>"$GITHUB_OUTPUT"
             printf 'lifecycle_run_id=%s-%s\n' \
+              "$TRIGGER_RUN_ID" "$TRIGGER_RUN_ATTEMPT" >>"$GITHUB_OUTPUT"
+            printf 'marker_id=%s-%s\n' \
               "$TRIGGER_RUN_ID" "$TRIGGER_RUN_ATTEMPT" >>"$GITHUB_OUTPUT"
           fi
 
@@ -161,6 +184,7 @@ jobs:
         run: infra/tests/development-platform-prepare-cleanup.sh
 
   platform-cleanup:
+    name: development-cleanup-complete-${{ needs.authorize.outputs.marker_id }}
     needs: [authorize, artifact-cleanup]
     if: >-
       always() &&

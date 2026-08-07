@@ -373,7 +373,7 @@ rg --fixed-strings --quiet 'workflows: [Terraform]' \
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet 'cron: "43 9 * * *"' \
   .github/workflows/development-platform-recovery.yml
-rg --fixed-strings --quiet 'Recovery for Terraform run {0}' \
+rg --fixed-strings --quiet 'Recovery for Terraform run {0} attempt {1}' \
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet 'PASS: scheduled janitor found no abandoned protected lifecycle marker' \
   .github/workflows/development-platform-recovery.yml
@@ -381,6 +381,28 @@ rg --fixed-strings --quiet 'FAIL: scheduled janitor source lacks exact successfu
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet 'development-platform-recovery.yml/runs?status=success' \
   .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet \
+  'development-cleanup-complete-${{ needs.authorize.outputs.marker_id }}' \
+  .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet 'marker_id=%s-%s' \
+  .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet \
+  'runs/$run_id/attempts/$run_attempt/jobs?per_page=100' \
+  .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet \
+  'runs/$TRIGGER_RUN_ID/attempts/$TRIGGER_RUN_ATTEMPT/jobs?per_page=100' \
+  .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet \
+  'runs/$source_run_id/attempts/$source_run_attempt/jobs?per_page=100' \
+  .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet \
+  'runs/$recovery_run_id/attempts/$recovery_run_attempt/jobs?per_page=100' \
+  .github/workflows/development-platform-recovery.yml
+if rg --fixed-strings --quiet 'jobs?filter=all' \
+  .github/workflows/development-platform-recovery.yml; then
+  printf 'recovery authorization must never combine jobs across run attempts\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet '.name == "development-cleanup" and .conclusion == "success"' \
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet \
