@@ -327,6 +327,48 @@ rg --fixed-strings --quiet 'resource "google_service_account" "development_quali
   infra/roots/foundation/main.tf
 rg --fixed-strings --quiet 'resource "google_service_account_iam_member" "development_platform_probe_act_as"' \
   infra/roots/foundation/main.tf
+runtime_pubsub_role=$(sed -n \
+  '/resource "google_project_iam_custom_role" "development_runtime_pubsub_policy_manager"/,/^}/p' \
+  infra/roots/foundation/main.tf)
+for permission in \
+  pubsub.subscriptions.get \
+  pubsub.subscriptions.getIamPolicy \
+  pubsub.subscriptions.setIamPolicy \
+  pubsub.topics.get \
+  pubsub.topics.getIamPolicy \
+  pubsub.topics.setIamPolicy; do
+  grep -Fq "\"$permission\"" <<<"$runtime_pubsub_role"
+done
+if [[ $(grep -Ec '^    "pubsub[.][^"]+",$' <<<"$runtime_pubsub_role") != 6 ]]; then
+  printf 'runtime Pub/Sub policy role must contain only the six provider-required permissions\n' >&2
+  exit 1
+fi
+if rg --fixed-strings --quiet \
+  'resource "google_project_iam_member" "development_runtime_pubsub_policy"' \
+  infra/roots/foundation/main.tf; then
+  printf 'runtime Pub/Sub policy authority must not use an ineffective project condition\n' >&2
+  exit 1
+fi
+runtime_topic_policy_binding=$(sed -n \
+  '/resource "google_pubsub_topic_iam_member" "runtime_deployer_policy_manager"/,/^}/p' \
+  "$root/main.tf")
+runtime_subscription_policy_binding=$(sed -n \
+  '/resource "google_pubsub_subscription_iam_member" "runtime_deployer_policy_manager"/,/^}/p' \
+  "$root/main.tf")
+for exact_runtime_deployer_binding in \
+  'count   = var.enable_managed_platform ? 1 : 0' \
+  'topic   = module.command_buffer.topic_id' \
+  'role    = var.runtime_pubsub_policy_manager_role' \
+  'member  = "serviceAccount:${var.runtime_terraform_service_account_email}"'; do
+  grep -Fq "$exact_runtime_deployer_binding" <<<"$runtime_topic_policy_binding"
+done
+for exact_runtime_deployer_binding in \
+  'count        = var.enable_managed_platform ? 1 : 0' \
+  'subscription = module.command_buffer.subscription_id' \
+  'role         = var.runtime_pubsub_policy_manager_role' \
+  'member       = "serviceAccount:${var.runtime_terraform_service_account_email}"'; do
+  grep -Fq "$exact_runtime_deployer_binding" <<<"$runtime_subscription_policy_binding"
+done
 rg --fixed-strings --quiet '"roles/cloudsql.client"' infra/roots/foundation/main.tf
 rg --fixed-strings --quiet '"roles/cloudsql.instanceUser"' infra/roots/foundation/main.tf
 rg --fixed-strings --quiet '/versions/' infra/roots/foundation/main.tf
@@ -605,9 +647,13 @@ rg --fixed-strings --quiet 'infra/tests/development-platform-prepare-cleanup.sh'
 
 jq -e '
   . as $config
-  | ($config.runtime_service_accounts | keys) == [
+  | ($config.runtime_terraform_service_account_email
+    == "\($config.name_prefix)-runtime-tf@\($config.project_id).iam.gserviceaccount.com")
+  and ($config.runtime_pubsub_policy_manager_role
+    == "projects/\($config.project_id)/roles/osfoRuntimePubSubPolicyManager")
+  and (($config.runtime_service_accounts | keys) == [
     "agentrun", "relay", "temporal", "transport"
-  ]
+  ])
   and all($config.runtime_service_accounts | to_entries[];
     .value == "\($config.name_prefix)-\(.key)@\($config.project_id).iam.gserviceaccount.com")
 ' "$root/development.tfvars.json" >/dev/null

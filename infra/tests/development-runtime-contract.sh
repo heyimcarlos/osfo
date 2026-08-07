@@ -38,6 +38,12 @@ rg --fixed-strings --quiet 'OSFO_AGENT_RUN_CANCELLATION_POLL_INTERVAL_MS' "$root
 rg --fixed-strings --quiet 'OSFO_AGENT_RUN_CANCELLATION_GRACE_MS' "$root/main.tf"
 rg --fixed-strings --quiet 'OSFO_AGENT_RUN_TERMINATION_DEADLINE_MS' "$root/main.tf"
 rg --fixed-strings --quiet 'OSFO_DATABASE_POOL_MAX' "$root/main.tf"
+rg --fixed-strings --quiet \
+  'common_proxy_args         = ["--auto-iam-authn", "--private-ip", "--address=0.0.0.0", "--port=5432", local.cloud_sql_connection_name]' \
+  "$root/main.tf"
+rg --fixed-strings --quiet \
+  'database_urls             = { for identity, user in local.database_users : identity => "postgresql://${user}@127.0.0.1:5432/osfo?sslmode=disable" }' \
+  "$root/main.tf"
 rg --fixed-strings --quiet 'production_candidate = "unqualified"' "$root/main.tf"
 rg --fixed-strings --quiet 'six_worker_candidate_qualified = false' "$root/main.tf"
 rg --fixed-strings --quiet 'production_qualification       = "MISSING"' "$root/main.tf"
@@ -83,6 +89,12 @@ rg --fixed-strings --quiet 'Ordered subscription backlog age' "$root/main.tf"
 rg --fixed-strings --quiet 'PostgreSQL connections' "$root/main.tf"
 rg --fixed-strings --quiet 'Runtime CPU utilization' "$root/main.tf"
 rg --fixed-strings --quiet 'Runtime dependency, lease, fence, cancellation, and rollout logs' "$root/main.tf"
+tile_positions=$(awk '/xPos[[:space:]]*=/{ x = $3 } /yPos[[:space:]]*=/{ print x "," $3 }' \
+  "$root/main.tf")
+if [[ "$tile_positions" != $'0,0\n0,2\n6,2\n0,6\n6,6\n0,10' ]]; then
+  printf 'runtime dashboard tiles must use the reviewed non-overlapping mosaic positions\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet 'OSFO_CURSOR_SECRET' "$root/main.tf"
 rg --fixed-strings --quiet 'value_source {' "$root/main.tf"
 rg --quiet 'model_adapter_secret_name\s+= "\$\{var\.name_prefix\}-model-adapter"' "$root/main.tf"

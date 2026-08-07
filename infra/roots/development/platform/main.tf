@@ -61,6 +61,22 @@ module "command_buffer" {
   labels                     = local.labels
 }
 
+resource "google_pubsub_topic_iam_member" "runtime_deployer_policy_manager" {
+  count   = var.enable_managed_platform ? 1 : 0
+  project = var.project_id
+  topic   = module.command_buffer.topic_id
+  role    = var.runtime_pubsub_policy_manager_role
+  member  = "serviceAccount:${var.runtime_terraform_service_account_email}"
+}
+
+resource "google_pubsub_subscription_iam_member" "runtime_deployer_policy_manager" {
+  count        = var.enable_managed_platform ? 1 : 0
+  project      = var.project_id
+  subscription = module.command_buffer.subscription_id
+  role         = var.runtime_pubsub_policy_manager_role
+  member       = "serviceAccount:${var.runtime_terraform_service_account_email}"
+}
+
 module "qualification_probe" {
   source = "../../../modules/qualification-probe"
 
