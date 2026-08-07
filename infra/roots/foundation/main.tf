@@ -1,0 +1,420 @@
+locals {
+  environments = toset(["foundation", "development", "production"])
+
+  root_identities = {
+    foundation = {
+      account_id         = "osfo-foundation-tf"
+      environment        = "foundation"
+      github_environment = "foundation"
+      plan_prefix        = "roots/foundation/"
+      state_prefix       = "roots/foundation/"
+    }
+    development-platform = {
+      account_id         = "osfo-dev-platform-tf"
+      environment        = "development"
+      github_environment = "development-platform"
+      plan_prefix        = "roots/development/platform/"
+      state_prefix       = "roots/development/platform/"
+    }
+    development-runtime = {
+      account_id         = "osfo-dev-runtime-tf"
+      environment        = "development"
+      github_environment = "development-runtime"
+      plan_prefix        = "roots/development/runtime/"
+      state_prefix       = "roots/development/runtime/"
+    }
+    production-platform = {
+      account_id         = "osfo-prod-platform-tf"
+      environment        = "production"
+      github_environment = "production-platform"
+      plan_prefix        = "roots/production/platform/"
+      state_prefix       = "roots/production/platform/"
+    }
+    production-runtime = {
+      account_id         = "osfo-prod-runtime-tf"
+      environment        = "production"
+      github_environment = "production-runtime"
+      plan_prefix        = "roots/production/runtime/"
+      state_prefix       = "roots/production/runtime/"
+    }
+  }
+
+  project_services = {
+    for pair in setproduct(local.environments, toset([
+      "cloudresourcemanager.googleapis.com",
+      "iam.googleapis.com",
+      "iamcredentials.googleapis.com",
+      "logging.googleapis.com",
+      "orgpolicy.googleapis.com",
+      "serviceusage.googleapis.com",
+      "sts.googleapis.com",
+      "storage.googleapis.com",
+      ])) : "${pair[0]}/${pair[1]}" => {
+      environment = pair[0]
+      service     = pair[1]
+    }
+  }
+
+  non_foundation_project_roles = toset([
+    "roles/iam.serviceAccountAdmin",
+    "roles/logging.configWriter",
+    "roles/orgpolicy.policyAdmin",
+    "roles/resourcemanager.projectIamAdmin",
+    "roles/serviceusage.serviceUsageAdmin",
+  ])
+
+  foundation_project_roles = {
+    foundation = toset([
+      "roles/iam.roleAdmin",
+      "roles/iam.serviceAccountAdmin",
+      "roles/iam.workloadIdentityPoolAdmin",
+      "roles/logging.configWriter",
+      "roles/orgpolicy.policyAdmin",
+      "roles/resourcemanager.projectIamAdmin",
+      "roles/serviceusage.serviceUsageAdmin",
+    ])
+    development = local.non_foundation_project_roles
+    production  = local.non_foundation_project_roles
+  }
+
+  foundation_role_bindings = {
+    for binding in flatten([
+      for environment, roles in local.foundation_project_roles : [
+        for role in roles : {
+          environment = environment
+          role        = role
+        }
+      ]
+    ]) : "${binding.environment}/${binding.role}" => binding
+  }
+
+  security_constraints = {
+    for pair in setproduct(local.environments, toset([
+      "iam.automaticIamGrantsForDefaultServiceAccounts",
+      "iam.disableServiceAccountKeyCreation",
+      "iam.disableServiceAccountKeyUpload",
+      ])) : "${pair[0]}/${pair[1]}" => {
+      environment = pair[0]
+      constraint  = pair[1]
+    }
+  }
+}
+
+resource "google_project" "environment" {
+  for_each = local.environments
+
+  project_id          = var.project_ids[each.key]
+  name                = "osfo-${each.key}"
+  org_id              = var.organization_id
+  billing_account     = var.billing_account
+  auto_create_network = false
+  deletion_policy     = "PREVENT"
+
+  labels = {
+    environment = each.key
+    managed_by  = "terraform"
+    system      = "osfo"
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "google_project_service" "required" {
+  for_each = local.project_services
+
+  project                    = google_project.environment[each.value.environment].project_id
+  service                    = each.value.service
+  disable_dependent_services = false
+  disable_on_destroy         = false
+}
+
+resource "google_org_policy_policy" "security" {
+  for_each = local.security_constraints
+
+  parent = "projects/${google_project.environment[each.value.environment].number}"
+  name   = "projects/${google_project.environment[each.value.environment].number}/policies/${each.value.constraint}"
+
+  spec {
+    rules {
+      enforce = "TRUE"
+    }
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_storage_bucket" "state" {
+  for_each = local.environments
+
+  name                        = var.state_bucket_names[each.key]
+  project                     = google_project.environment["foundation"].project_id
+  location                    = "US"
+  storage_class               = "STANDARD"
+  force_destroy               = false
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  labels = {
+    environment = each.key
+    managed_by  = "terraform"
+    purpose     = "terraform-state"
+    system      = "osfo"
+  }
+
+  versioning {
+    enabled = true
+  }
+
+  soft_delete_policy {
+    retention_duration_seconds = 2592000
+  }
+
+  retention_policy {
+    is_locked        = true
+    retention_period = 2592000
+  }
+
+  lifecycle_rule {
+    action {
+      type = "Delete"
+    }
+    condition {
+      days_since_noncurrent_time = 90
+    }
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_storage_bucket" "saved_plans" {
+  name                        = var.saved_plan_bucket_name
+  project                     = google_project.environment["foundation"].project_id
+  location                    = "US"
+  storage_class               = "STANDARD"
+  force_destroy               = false
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  labels = {
+    environment = "foundation"
+    managed_by  = "terraform"
+    purpose     = "terraform-saved-plans"
+    system      = "osfo"
+  }
+
+  versioning {
+    enabled = true
+  }
+
+  soft_delete_policy {
+    retention_duration_seconds = 0
+  }
+
+  lifecycle_rule {
+    action {
+      type = "Delete"
+    }
+    condition {
+      age = 1
+    }
+  }
+
+  lifecycle_rule {
+    action {
+      type = "Delete"
+    }
+    condition {
+      days_since_noncurrent_time = 1
+    }
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_service_account" "terraform" {
+  for_each = local.root_identities
+
+  project      = google_project.environment[each.value.environment].project_id
+  account_id   = each.value.account_id
+  display_name = "Osfo ${title(each.key)} Terraform root"
+  description  = "Keyless identity for the isolated ${each.key} Terraform root."
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_iam_workload_identity_pool" "github" {
+  project                   = google_project.environment["foundation"].project_id
+  workload_identity_pool_id = "github-actions"
+  display_name              = "GitHub Actions"
+  description               = "Keyless GitHub Actions identities for ${var.github_repository}."
+  disabled                  = false
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_iam_workload_identity_pool_provider" "github" {
+  project                            = google_project.environment["foundation"].project_id
+  workload_identity_pool_id          = google_iam_workload_identity_pool.github.workload_identity_pool_id
+  workload_identity_pool_provider_id = "github-oidc"
+  display_name                       = "GitHub OIDC"
+  description                        = "Trusts only the immutable Osfo repository and owner identities."
+
+  attribute_mapping = {
+    "google.subject"             = "assertion.sub"
+    "attribute.ref"              = "assertion.ref"
+    "attribute.repository"       = "assertion.repository"
+    "attribute.repository_id"    = "assertion.repository_id"
+    "attribute.repository_owner" = "assertion.repository_owner"
+  }
+
+  attribute_condition = "assertion.repository_owner_id == '${var.github_repository_owner_id}' && assertion.repository_id == '${var.github_repository_id}'"
+
+  oidc {
+    issuer_uri = "https://token.actions.githubusercontent.com"
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "google_service_account_iam_member" "github_workload_identity" {
+  for_each = local.root_identities
+
+  service_account_id = google_service_account.terraform[each.key].name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject/repo:${var.github_repository}:environment:${each.value.github_environment}"
+}
+
+resource "google_storage_bucket_iam_member" "state" {
+  for_each = local.root_identities
+
+  bucket = google_storage_bucket.state[each.value.environment].name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.terraform[each.key].email}"
+
+  condition {
+    title       = "${replace(each.key, "-", "_")}_state_prefix"
+    description = "Restricts this root identity to its own Terraform state prefix."
+    expression  = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.state[each.value.environment].name}/objects/${each.value.state_prefix}')"
+  }
+}
+
+resource "google_project_iam_custom_role" "state_object_lister" {
+  project     = google_project.environment["foundation"].project_id
+  role_id     = "osfoStateObjectLister"
+  title       = "Osfo state object lister"
+  description = "Lists backend object names without granting object payload access."
+  permissions = ["storage.objects.list"]
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "google_project_iam_custom_role" "saved_plan_object_access" {
+  project     = google_project.environment["foundation"].project_id
+  role_id     = "osfoSavedPlanObjectAccess"
+  title       = "Osfo saved plan object access"
+  description = "Creates and reads immutable saved plans without list, update, or delete access."
+  permissions = [
+    "storage.objects.create",
+    "storage.objects.get",
+  ]
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "google_storage_bucket_iam_member" "state_list" {
+  for_each = local.root_identities
+
+  bucket = google_storage_bucket.state[each.value.environment].name
+  role   = google_project_iam_custom_role.state_object_lister.name
+  member = "serviceAccount:${google_service_account.terraform[each.key].email}"
+}
+
+resource "google_storage_bucket_iam_member" "saved_plans" {
+  for_each = local.root_identities
+
+  bucket = google_storage_bucket.saved_plans.name
+  role   = google_project_iam_custom_role.saved_plan_object_access.name
+  member = "serviceAccount:${google_service_account.terraform[each.key].email}"
+
+  condition {
+    title       = "${replace(each.key, "-", "_")}_saved_plan_prefix"
+    description = "Restricts this root identity to its own saved-plan prefix."
+    expression  = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.saved_plans.name}/objects/${each.value.plan_prefix}')"
+  }
+}
+
+resource "google_project_iam_custom_role" "state_bucket_admin" {
+  project     = google_project.environment["foundation"].project_id
+  role_id     = "osfoStateBucketAdmin"
+  title       = "Osfo state bucket administrator"
+  description = "Manages state bucket metadata and IAM without granting state object access."
+  permissions = [
+    "storage.buckets.create",
+    "storage.buckets.get",
+    "storage.buckets.getIamPolicy",
+    "storage.buckets.list",
+    "storage.buckets.setIamPolicy",
+    "storage.buckets.update",
+  ]
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "google_project_iam_member" "foundation_state_bucket_admin" {
+  project = google_project.environment["foundation"].project_id
+  role    = google_project_iam_custom_role.state_bucket_admin.name
+  member  = "serviceAccount:${google_service_account.terraform["foundation"].email}"
+}
+
+resource "google_project_iam_member" "foundation" {
+  for_each = local.foundation_role_bindings
+
+  project = google_project.environment[each.value.environment].project_id
+  role    = each.value.role
+  member  = "serviceAccount:${google_service_account.terraform["foundation"].email}"
+}
+
+resource "google_project_iam_audit_config" "all_services" {
+  for_each = local.environments
+
+  project = google_project.environment[each.key].project_id
+  service = "allServices"
+
+  audit_log_config {
+    log_type = "ADMIN_READ"
+  }
+
+  audit_log_config {
+    log_type = "DATA_READ"
+  }
+
+  audit_log_config {
+    log_type = "DATA_WRITE"
+  }
+}

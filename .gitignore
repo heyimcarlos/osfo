@@ -12,3 +12,13 @@ dist/
 coverage/
 .typescript/
 *.tsbuildinfo
+
+# Terraform working data and generated plans. Provider lock files stay tracked.
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.manifest.json
+*.auto.tfvars
+infra/roots/foundation/foundation.tfvars.json
+gha-creds-*.json

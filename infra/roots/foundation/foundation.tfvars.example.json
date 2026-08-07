@@ -1,0 +1,19 @@
+{
+  "organization_id": null,
+  "billing_account": "000000-000000-000000",
+  "project_ids": {
+    "foundation": "osfo-foundation-unique",
+    "development": "osfo-development-unique",
+    "production": "osfo-production-unique"
+  },
+  "state_bucket_names": {
+    "foundation": "osfo-foundation-tfstate-unique",
+    "development": "osfo-development-tfstate-unique",
+    "production": "osfo-production-tfstate-unique"
+  },
+  "saved_plan_bucket_name": "osfo-terraform-plans-unique",
+  "github_repository": "owner/osfo",
+  "github_repository_id": "123456789",
+  "github_repository_owner_id": "1234567",
+  "region": "us-east4"
+}

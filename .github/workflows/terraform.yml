@@ -1,0 +1,316 @@
+name: Terraform
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/terraform.yml"
+      - ".terraform-version"
+      - "bun.lock"
+      - "infra/**"
+      - "package.json"
+      - "tsconfig.infra.json"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/terraform.yml"
+      - ".terraform-version"
+      - "bun.lock"
+      - "infra/**"
+      - "package.json"
+      - "tsconfig.infra.json"
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Workflow task
+        required: true
+        type: choice
+        options:
+          - development-proof
+          - root-plan
+          - root-apply
+      root:
+        description: Root used by the root-plan task
+        required: true
+        type: choice
+        options:
+          - foundation
+          - development-platform
+          - development-runtime
+          - production-platform
+          - production-runtime
+      binding_sha256:
+        description: Saved-plan binding used by the root-apply task
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: terraform-static-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.14
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Check formatting
+        run: infra/scripts/terraform-ci.sh fmt -check -recursive infra
+      - name: Check repository policies
+        shell: bash
+        run: bun run infra:test
+        env:
+          TERRAFORM_BIN: ${{ github.workspace }}/infra/scripts/terraform-ci.sh
+      - name: Validate every root
+        shell: bash
+        run: |
+          while IFS= read -r root; do
+            infra/scripts/terraform-ci.sh -chdir="$root" init -backend=false -input=false -lockfile=readonly
+            infra/scripts/terraform-ci.sh -chdir="$root" validate
+          done < <(find infra/roots -mindepth 1 -type f -name versions.tf -exec dirname {} \; | sort)
+
+  development-lifecycle:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.task == 'development-proof' &&
+      github.ref == 'refs/heads/main' &&
+      vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' &&
+      vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT != '' &&
+      vars.GCP_DEVELOPMENT_STATE_BUCKET != '' &&
+      vars.GCP_SAVED_PLAN_BUCKET != ''
+    needs: static
+    runs-on: ubuntu-24.04
+    environment: development-platform
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: terraform-development-platform
+      cancel-in-progress: false
+    env:
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+      TF_VARSET_FILE: ${{ github.workspace }}/infra/roots/development/platform/development.tfvars.json
+      TF_IMAGE_DIGESTS_FILE: ${{ github.workspace }}/infra/roots/development/platform/image-digests.json
+      TERRAFORM_BIN: ${{ github.workspace }}/infra/scripts/terraform-ci.sh
+      SAVED_PLAN_BUCKET: ${{ vars.GCP_SAVED_PLAN_BUCKET }}
+      DEVELOPMENT_STATE_BUCKET: ${{ vars.GCP_DEVELOPMENT_STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT }}
+      - name: Initialize isolated development state
+        run: |
+          infra/scripts/terraform-ci.sh -chdir=infra/roots/development/platform init -input=false \
+            -backend-config="bucket=$DEVELOPMENT_STATE_BUCKET" \
+            -backend-config="prefix=roots/development/platform"
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Apply, drift-check, and destroy the disposable proof
+        shell: bash
+        run: |
+          infra/scripts/create-plan.sh development infra/roots/development/platform .plans/development-create.tfplan
+          infra/scripts/store-plan.sh "$SAVED_PLAN_BUCKET" .plans/development-create.tfplan
+          infra/scripts/apply-plan.sh development infra/roots/development/platform .plans/development-create.tfplan
+          infra/scripts/create-plan.sh development infra/roots/development/platform .plans/development-drift.tfplan -refresh-only -detailed-exitcode
+          infra/scripts/store-plan.sh "$SAVED_PLAN_BUCKET" .plans/development-drift.tfplan
+          infra/scripts/apply-plan.sh development infra/roots/development/platform .plans/development-drift.tfplan
+          infra/scripts/create-plan.sh development infra/roots/development/platform .plans/development-destroy.tfplan -destroy
+          infra/scripts/store-plan.sh "$SAVED_PLAN_BUCKET" .plans/development-destroy.tfplan
+          infra/scripts/apply-plan.sh development infra/roots/development/platform .plans/development-destroy.tfplan
+
+  root-workflow:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      (inputs.task == 'root-plan' || inputs.task == 'root-apply')
+    needs: static
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.root }}
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: terraform-${{ inputs.root }}
+      cancel-in-progress: false
+    env:
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+      TERRAFORM_BIN: ${{ github.workspace }}/infra/scripts/terraform-ci.sh
+      FOUNDATION_SERVICE_ACCOUNT: ${{ vars.GCP_FOUNDATION_TERRAFORM_SERVICE_ACCOUNT }}
+      DEVELOPMENT_PLATFORM_SERVICE_ACCOUNT: ${{ vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT }}
+      DEVELOPMENT_RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_DEVELOPMENT_RUNTIME_TERRAFORM_SERVICE_ACCOUNT }}
+      PRODUCTION_PLATFORM_SERVICE_ACCOUNT: ${{ vars.GCP_PRODUCTION_PLATFORM_TERRAFORM_SERVICE_ACCOUNT }}
+      PRODUCTION_RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_PRODUCTION_RUNTIME_TERRAFORM_SERVICE_ACCOUNT }}
+      FOUNDATION_STATE_BUCKET: ${{ vars.GCP_FOUNDATION_STATE_BUCKET }}
+      DEVELOPMENT_STATE_BUCKET: ${{ vars.GCP_DEVELOPMENT_STATE_BUCKET }}
+      PRODUCTION_STATE_BUCKET: ${{ vars.GCP_PRODUCTION_STATE_BUCKET }}
+      FOUNDATION_VARSET_JSON: ${{ vars.GCP_FOUNDATION_VARSET_JSON }}
+      SAVED_PLAN_BUCKET: ${{ vars.GCP_SAVED_PLAN_BUCKET }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Select the isolated root
+        id: select-root
+        shell: bash
+        run: |
+          case "${{ inputs.root }}" in
+            foundation)
+              root_directory=infra/roots/foundation
+              environment=foundation
+              backend_bucket=$FOUNDATION_STATE_BUCKET
+              backend_prefix=roots/foundation
+              service_account=$FOUNDATION_SERVICE_ACCOUNT
+              mkdir -p .plans
+              printf '%s' "$FOUNDATION_VARSET_JSON" >.plans/foundation.tfvars.json
+              variable_set_file=$GITHUB_WORKSPACE/.plans/foundation.tfvars.json
+              ;;
+            development-platform)
+              root_directory=infra/roots/development/platform
+              environment=development
+              backend_bucket=$DEVELOPMENT_STATE_BUCKET
+              backend_prefix=roots/development/platform
+              service_account=$DEVELOPMENT_PLATFORM_SERVICE_ACCOUNT
+              variable_set_file=$GITHUB_WORKSPACE/$root_directory/development.tfvars.json
+              ;;
+            development-runtime)
+              root_directory=infra/roots/development/runtime
+              environment=development
+              backend_bucket=$DEVELOPMENT_STATE_BUCKET
+              backend_prefix=roots/development/runtime
+              service_account=$DEVELOPMENT_RUNTIME_SERVICE_ACCOUNT
+              variable_set_file=$GITHUB_WORKSPACE/$root_directory/development.tfvars.json
+              ;;
+            production-platform)
+              root_directory=infra/roots/production/platform
+              environment=production
+              backend_bucket=$PRODUCTION_STATE_BUCKET
+              backend_prefix=roots/production/platform
+              service_account=$PRODUCTION_PLATFORM_SERVICE_ACCOUNT
+              variable_set_file=$GITHUB_WORKSPACE/$root_directory/production.tfvars.json
+              ;;
+            production-runtime)
+              root_directory=infra/roots/production/runtime
+              environment=production
+              backend_bucket=$PRODUCTION_STATE_BUCKET
+              backend_prefix=roots/production/runtime
+              service_account=$PRODUCTION_RUNTIME_SERVICE_ACCOUNT
+              variable_set_file=$GITHUB_WORKSPACE/$root_directory/production.tfvars.json
+              ;;
+          esac
+
+          for required_value in "$backend_bucket" "$service_account" "$variable_set_file" "$SAVED_PLAN_BUCKET"; do
+            if [[ -z "$required_value" ]]; then
+              printf 'required protected root configuration is missing\n' >&2
+              exit 1
+            fi
+          done
+
+          {
+            printf 'ROOT_DIRECTORY=%s\n' "$root_directory"
+            printf 'ROOT_NAME=%s\n' "$(jq -r '.root_name' "$root_directory/root.contract.json")"
+            printf 'ROOT_ENVIRONMENT=%s\n' "$environment"
+            printf 'BACKEND_BUCKET=%s\n' "$backend_bucket"
+            printf 'BACKEND_PREFIX=%s\n' "$backend_prefix"
+            printf 'TERRAFORM_SERVICE_ACCOUNT=%s\n' "$service_account"
+            printf 'TF_VARSET_FILE=%s\n' "$variable_set_file"
+            printf 'TF_IMAGE_DIGESTS_FILE=%s/%s/image-digests.json\n' "$GITHUB_WORKSPACE" "$root_directory"
+          } >>"$GITHUB_ENV"
+          printf 'service_account=%s\n' "$service_account" >>"$GITHUB_OUTPUT"
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ steps.select-root.outputs.service_account }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Initialize isolated state
+        shell: bash
+        run: |
+          infra/scripts/terraform-ci.sh -chdir="$ROOT_DIRECTORY" init -input=false \
+            -backend-config="bucket=$BACKEND_BUCKET" \
+            -backend-config="prefix=$BACKEND_PREFIX"
+      - name: Create and retain the fresh bound plan
+        if: inputs.task == 'root-plan'
+        shell: bash
+        run: |
+          plan_file=".plans/${{ inputs.root }}.tfplan"
+          status=0
+          infra/scripts/create-plan.sh "$ROOT_ENVIRONMENT" "$ROOT_DIRECTORY" \
+            "$plan_file" -detailed-exitcode || status=$?
+          if ((status != 0 && status != 2)); then
+            exit "$status"
+          fi
+          infra/scripts/store-plan.sh "$SAVED_PLAN_BUCKET" "$plan_file"
+      - name: Apply the exact approved bound plan
+        if: inputs.task == 'root-apply'
+        shell: bash
+        env:
+          PLAN_BINDING_SHA256: ${{ inputs.binding_sha256 }}
+        run: |
+          binding_sha256=$PLAN_BINDING_SHA256
+          if [[ ! "$binding_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+            printf 'root-apply requires a 64-character binding_sha256\n' >&2
+            exit 1
+          fi
+          plan_file=$(infra/scripts/fetch-plan.sh \
+            "$SAVED_PLAN_BUCKET" "$ROOT_NAME" "$binding_sha256")
+          infra/scripts/apply-plan.sh "$ROOT_ENVIRONMENT" "$ROOT_DIRECTORY" "$plan_file"
+
+  development-drift:
+    if: >-
+      github.event_name == 'schedule' &&
+      vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' &&
+      vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT != '' &&
+      vars.GCP_DEVELOPMENT_STATE_BUCKET != '' &&
+      vars.GCP_SAVED_PLAN_BUCKET != ''
+    runs-on: ubuntu-24.04
+    environment: development-platform
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: terraform-development-platform
+      cancel-in-progress: false
+    env:
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+      TF_VARSET_FILE: ${{ github.workspace }}/infra/roots/development/platform/development.tfvars.json
+      TF_IMAGE_DIGESTS_FILE: ${{ github.workspace }}/infra/roots/development/platform/image-digests.json
+      TERRAFORM_BIN: ${{ github.workspace }}/infra/scripts/terraform-ci.sh
+      SAVED_PLAN_BUCKET: ${{ vars.GCP_SAVED_PLAN_BUCKET }}
+      DEVELOPMENT_STATE_BUCKET: ${{ vars.GCP_DEVELOPMENT_STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT }}
+      - name: Initialize isolated development state
+        run: |
+          infra/scripts/terraform-ci.sh -chdir=infra/roots/development/platform init -input=false \
+            -backend-config="bucket=$DEVELOPMENT_STATE_BUCKET" \
+            -backend-config="prefix=roots/development/platform"
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Detect drift without applying
+        shell: bash
+        run: |
+          status=0
+          infra/scripts/create-plan.sh development infra/roots/development/platform \
+            .plans/development-drift.tfplan -refresh-only -detailed-exitcode || status=$?
+          if ((status != 0 && status != 2)); then
+            exit "$status"
+          fi
+          infra/scripts/store-plan.sh "$SAVED_PLAN_BUCKET" .plans/development-drift.tfplan
+          exit "$status"

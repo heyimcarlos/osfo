@@ -1,0 +1,2 @@
+bucket = "osfo-production-tfstate-unique"
+prefix = "roots/production/platform"
