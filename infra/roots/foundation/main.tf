@@ -632,7 +632,7 @@ resource "google_project_iam_member" "development_secret_access" {
   condition {
     title       = "${replace(each.key, "_", "-")}-secret"
     description = "Restricts the retained identity to one reviewed disposable secret."
-    expression  = "resource.name.startsWith('projects/${google_project.environment["development"].number}/secrets/${var.development_environment_baseline.name_prefix}-${each.value.secret}')"
+    expression  = "resource.name.startsWith('projects/${google_project.environment["development"].number}/secrets/${var.development_environment_baseline.name_prefix}-${each.value.secret}/versions/')"
   }
 }
 

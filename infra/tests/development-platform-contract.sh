@@ -113,6 +113,7 @@ rg --fixed-strings --quiet 'resource "google_service_account_iam_member" "develo
   infra/roots/foundation/main.tf
 rg --fixed-strings --quiet '"roles/cloudsql.client"' infra/roots/foundation/main.tf
 rg --fixed-strings --quiet '"roles/cloudsql.instanceUser"' infra/roots/foundation/main.tf
+rg --fixed-strings --quiet '/versions/' infra/roots/foundation/main.tf
 if rg --quiet 'resource "google_(project|service_account)_iam_member"' \
   infra/modules/data-authority/main.tf; then
   printf 'disposable platform root must not mutate project or service-account IAM\n' >&2
