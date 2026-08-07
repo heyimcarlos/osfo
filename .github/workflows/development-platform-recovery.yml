@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: terraform-development-platform
-  cancel-in-progress: false
+  queue: max
 
 jobs:
   authorize:
@@ -35,7 +35,12 @@ jobs:
           fi
           jobs=$(gh api --paginate --slurp \
             "repos/$GITHUB_REPOSITORY/actions/runs/$TRIGGER_RUN_ID/jobs?filter=all")
-          if jq -e '[.[].jobs[]] | any(.name == "development-authorization" and .conclusion == "success")' \
+          if jq -e '
+            [.[].jobs[]] as $jobs
+            | any($jobs[]; .name == "static" and .conclusion == "success")
+            and any($jobs[];
+              .name == "development-authorization" and .conclusion == "success")
+          ' \
             <<<"$jobs" >/dev/null; then
             printf 'recover=true\n' >>"$GITHUB_OUTPUT"
           fi

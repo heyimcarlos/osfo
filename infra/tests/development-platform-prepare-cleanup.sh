@@ -48,8 +48,15 @@ while IFS= read -r object_uri; do
   gcloud storage rm "$object_uri" >/dev/null
 done <"$scratch/objects"
 
-if gcloud storage ls --all-versions --recursive "gs://$artifact_bucket/**" \
-  | grep -F 'gs://' >/dev/null; then
+remaining_status=0
+gcloud storage ls --all-versions --recursive "gs://$artifact_bucket/**" \
+  >"$scratch/remaining" 2>"$scratch/remaining.error" || remaining_status=$?
+if ((remaining_status != 0)); then
+  printf 'FAIL: final artifact object listing failed closed\n' >&2
+  cat "$scratch/remaining.error" >&2
+  exit 1
+fi
+if grep -F 'gs://' "$scratch/remaining" >/dev/null; then
   printf 'FAIL: artifact cleanup left objects behind\n' >&2
   exit 1
 fi

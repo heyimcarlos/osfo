@@ -209,7 +209,7 @@ jq -n \
     managed_ordered_subscription_configuration: "PASS",
     ordered_pubsub_round_trip: "PASS",
     artifact_precondition_round_trip: "PASS",
-    artifact_precondition_rejected_second_generation: "PASS",
+    artifact_unconditional_overwrite_denied_by_iam: "PASS",
     artifact_immutability_enforced_by_iam: "PASS",
     authorized_secret_version_access: "MISSING",
     exact_permission_denied_secret_payload_access: "PASS",

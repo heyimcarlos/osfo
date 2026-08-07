@@ -49,6 +49,13 @@ rg --fixed-strings --quiet "grep -Fq 'secretmanager.versions.access'" \
   infra/modules/qualification-probe/main.tf
 rg --fixed-strings --quiet 'artifact_immutability_enforced_by_iam: "PASS"' \
   infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet 'artifact_unconditional_overwrite_denied_by_iam: "PASS"' \
+  infra/tests/development-platform-smoke.sh
+if rg --fixed-strings --quiet 'artifact_precondition_rejected_second_generation' \
+  infra/tests/development-platform-smoke.sh; then
+  printf 'unconditional IAM rejection must not be mislabeled as a precondition check\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet "grep -Fq 'storage.objects.delete'" \
   infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'probe_toolchain_determinism: "MISSING"' \
@@ -262,7 +269,18 @@ rg --fixed-strings --quiet "needs.static.result == 'success'" .github/workflows/
 rg --fixed-strings --quiet "'terraform-development-platform'" .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'group: terraform-development-platform' \
   .github/workflows/development-platform-recovery.yml
+if [[ $(rg --fixed-strings 'queue: max' \
+  .github/workflows/terraform.yml .github/workflows/development-platform-recovery.yml | wc -l) != 2 ]]; then
+  printf 'development state workflows must preserve every pending recovery run\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet 'workflows: [Terraform]' \
+  .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet \
+  '.name == "static" and .conclusion == "success"' \
+  .github/workflows/development-platform-recovery.yml
+rg --fixed-strings --quiet \
+  '.name == "development-authorization" and .conclusion == "success"' \
   .github/workflows/development-platform-recovery.yml
 if [[ $(rg --fixed-strings 'ref: ${{ github.event.workflow_run.head_sha }}' \
   .github/workflows/development-platform-recovery.yml | wc -l) != 2 ]]; then

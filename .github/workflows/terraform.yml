@@ -50,7 +50,7 @@ permissions:
 
 concurrency:
   group: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.task == 'development-proof' || inputs.root == 'development-platform'))) && 'terraform-development-platform' || (github.event_name == 'workflow_dispatch' && (inputs.task == 'root-plan' || inputs.task == 'root-apply')) && format('terraform-{0}', inputs.root) || format('terraform-run-{0}', github.run_id) }}
-  cancel-in-progress: false
+  queue: max
 
 jobs:
   static:
