@@ -1043,18 +1043,33 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const rows = yield* sql<{
-          readonly state: string;
-          readonly claimEpoch: string;
           readonly attempts: string;
+          readonly claimEpoch: string;
+          readonly globalReserved: number;
           readonly outputs: string;
+          readonly principalReserved: number;
           readonly reservationState: string;
+          readonly startedAttempts: string;
+          readonly state: string;
+          readonly terminalEvents: string;
         }>`SELECT
           run.state,
           run.claim_epoch::text AS "claimEpoch",
           (SELECT count(*) FROM model_call_attempts
             WHERE agent_run_id = run.agent_run_id)::text AS attempts,
+          (SELECT count(*) FROM model_call_attempts
+            WHERE agent_run_id = run.agent_run_id AND state = 'started')::text
+            AS "startedAttempts",
           (SELECT count(*) FROM assistant_outputs
             WHERE agent_run_id = run.agent_run_id)::text AS outputs,
+          (SELECT count(*) FROM thread_events
+            WHERE agent_run_id = run.agent_run_id
+              AND event_type IN ('AgentRunSucceeded', 'AgentRunFailed', 'AgentRunCanceled'))::text
+            AS "terminalEvents",
+          (SELECT reserved_count FROM admission_global_capacity WHERE singleton = true)
+            AS "globalReserved",
+          (SELECT reserved_count FROM admission_principal_capacity
+            WHERE principal_id = run.principal_id) AS "principalReserved",
           reservation.state AS "reservationState"
         FROM agent_runs run
         JOIN agent_run_capacity_reservations reservation USING (agent_run_id)
@@ -1066,8 +1081,12 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       state: "succeeded",
       claimEpoch: "2",
       attempts: "1",
+      globalReserved: 0,
       outputs: "1",
+      principalReserved: 0,
       reservationState: "released",
+      startedAttempts: "0",
+      terminalEvents: "1",
     });
   });
 

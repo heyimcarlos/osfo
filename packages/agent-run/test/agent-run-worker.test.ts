@@ -770,6 +770,71 @@ describe("AgentRun worker", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("does not start executor cancellation after the cleanup deadline has expired", () => {
+    const repository = makeRepository();
+    let cancellationCalls = 0;
+    let cleanup: AgentRunCleanupResult | undefined;
+    let terminationCalls = 0;
+    const cancellation = {
+      ...repository.service,
+      appendModelOutput: () => Effect.fail(new AgentRunCancellationObserved()),
+      loadCancellation: () =>
+        Effect.succeed({
+          cleanupDeadlineAtEpochMs: -1,
+          startedModelCallAttemptIds: [attempt.modelCallAttemptId],
+        }),
+      commitCancellation: (_fence, result: AgentRunCleanupResult) =>
+        Effect.sync(() => {
+          cleanup = result;
+          return result;
+        }),
+    } satisfies AgentRunRepositoryService;
+    const layer = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v1",
+      workerId: "worker-a",
+      leaseDurationMs: 30_000,
+      leaseRenewalIntervalMs: 10_000,
+      cancellationPollIntervalMs: 5,
+    }).pipe(
+      Layer.provide(Layer.succeed(AgentRunRepository)(cancellation)),
+      Layer.provide(
+        Layer.succeed(ModelCallExecutor)(
+          makeExecutor({
+            execute: () => Stream.make({ fragmentIndex: 0, text: "must not commit" }),
+            cancel: () =>
+              Effect.sync(() => {
+                cancellationCalls += 1;
+                return { type: "confirmedStopped" as const };
+              }),
+            terminate: () =>
+              Effect.sync(() => {
+                terminationCalls += 1;
+              }),
+          }),
+        ),
+      ),
+      Layer.provide(
+        makeDeterministicAgentRuntimeLayer({
+          executionProfileRef: "oz.deterministic.v1",
+          modelBinding: "oz.deterministic.echo.v1",
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      expect(yield* AgentRunWorker.use((worker) => worker.handle(delivery))).toEqual({
+        type: "acknowledge",
+        outcome: "canceled",
+      });
+      expect(cancellationCalls).toBe(0);
+      expect(terminationCalls).toBe(1);
+      expect(cleanup).toEqual({
+        cleanupDisposition: { type: "deadlineExceeded" },
+        externalWorkMayContinue: true,
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
   it.live(
     "commits deadline-exceeded when executor cleanup cannot confirm before its deadline",
     () =>

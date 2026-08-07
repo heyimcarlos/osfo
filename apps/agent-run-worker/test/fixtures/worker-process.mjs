@@ -1,13 +1,13 @@
 import { NodeRuntime } from "@effect/platform-node";
-import {
-  ModelCallExecutor,
-  makeAgentRunWorkerLayer,
-  makeDeterministicModelCallExecutorLayer,
-} from "@osfo/agent-run";
+import { makeAgentRunWorkerLayer } from "@osfo/agent-run";
 import { makeDeterministicAgentRuntimeLayer } from "@osfo/agent-runtime";
 import { makeAgentRunRepositoryLayer } from "@osfo/db";
-import { Deferred, Effect, Layer, Stream } from "effect";
+import { Deferred, Effect, Layer } from "effect";
 import { runStreamingPullWorker, StreamingPullSource } from "../../dist/streaming-pull.js";
+import {
+  deterministicModelCallWorkerSource,
+  makeWorkerThreadModelCallExecutorLayer,
+} from "../../dist/worker-thread-model-call-executor.js";
 
 const required = (name) => {
   const value = process.env[name];
@@ -35,19 +35,22 @@ const sourceLayer = Layer.succeed(
     close: () => Effect.void,
   }),
 );
-const executorLayer =
-  behavior === "lost"
-    ? Layer.succeed(
-        ModelCallExecutor,
-        ModelCallExecutor.of({
-          execute: () =>
-            Stream.make({ fragmentIndex: 0, text: "partial before process loss" }).pipe(
-              Stream.concat(Stream.fromEffect(Effect.never)),
-            ),
-          cancel: () => Effect.uninterruptible(Effect.never),
-        }),
-      )
-    : makeDeterministicModelCallExecutorLayer();
+const lostModelCallWorkerSource = String.raw`
+  const { parentPort, workerData } = require("node:worker_threads");
+  const modelCallAttemptId = workerData.attempt.modelCallAttemptId;
+  parentPort.postMessage({
+    type: "observation",
+    modelCallAttemptId,
+    fragmentIndex: 0,
+    text: "partial before process loss",
+  });
+  while (true) {}
+`;
+const executorLayer = makeWorkerThreadModelCallExecutorLayer({
+  cancellationGraceMs: 25,
+  source: behavior === "lost" ? lostModelCallWorkerSource : deterministicModelCallWorkerSource,
+  terminationDeadlineMs: 250,
+});
 const repositoryLayer = makeAgentRunRepositoryLayer({
   databaseUrl: required("OSFO_DATABASE_URL"),
   maxConnections: 2,
@@ -70,7 +73,7 @@ const workerLayer = makeAgentRunWorkerLayer({
 );
 
 const program = Effect.raceFirst(
-  runStreamingPullWorker({ executionSlots: 1 }),
+  runStreamingPullWorker({ drainTimeoutMs: 250, executionSlots: 1 }),
   Deferred.await(completed).pipe(Effect.tap((outcome) => Effect.logInfo(`FIXTURE:${outcome}`))),
 ).pipe(Effect.asVoid, Effect.provide(workerLayer), Effect.provide(sourceLayer));
 

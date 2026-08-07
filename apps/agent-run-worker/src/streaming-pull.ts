@@ -276,8 +276,16 @@ export const runStreamingPullWorker = (
               Effect.timeoutOption(config.drainTimeoutMs),
             );
             if (Option.isNone(drained)) {
-              yield* FiberMap.clear(fibers);
-              yield* FiberMap.awaitEmpty(fibers);
+              const forced = yield* FiberMap.clear(fibers).pipe(
+                Effect.andThen(FiberMap.awaitEmpty(fibers)),
+                Effect.timeoutOption(config.drainTimeoutMs),
+              );
+              if (Option.isNone(forced)) {
+                return yield* new StreamingPullSourceUnavailable({
+                  cause: "AgentRun delivery drain did not settle after forced interruption",
+                  operation: "stop",
+                });
+              }
             }
             yield* source
               .close()

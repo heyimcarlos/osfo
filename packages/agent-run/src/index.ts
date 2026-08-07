@@ -606,12 +606,15 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
         });
         const canceled = body.pipe(
           Effect.catchTag("AgentRunCancellationObserved", () =>
-            commitCancellation(fence, activeAttempt, activeExecution).pipe(
-              Effect.as({
+            Effect.gen(function* () {
+              yield* commitCancellation(fence, activeAttempt, activeExecution);
+              activeAttempt = undefined;
+              activeExecution = undefined;
+              return {
                 type: "acknowledge" as const,
                 outcome: "canceled" as const,
-              }),
-            ),
+              };
+            }),
           ),
         );
         return yield* Effect.scoped(

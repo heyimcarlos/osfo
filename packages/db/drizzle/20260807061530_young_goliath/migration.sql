@@ -2,11 +2,13 @@ ALTER TABLE "thread_events" DROP CONSTRAINT "thread_events_event_version_check",
         ("event_type" = 'AssistantOutputInterrupted' AND "event_version" IN (1, 2))
         OR ("event_type" <> 'AssistantOutputInterrupted' AND "event_version" = 1)
       ));--> statement-breakpoint
+ALTER TABLE "thread_events" DISABLE TRIGGER "thread_events_immutable";--> statement-breakpoint
 UPDATE "thread_events"
 SET "event_version" = 2
 WHERE "event_type" = 'AssistantOutputInterrupted'
   AND "event_version" = 1
   AND "payload" ->> 'cause' = 'agentRunCanceled';--> statement-breakpoint
+ALTER TABLE "thread_events" ENABLE TRIGGER "thread_events_immutable";--> statement-breakpoint
 ALTER TABLE "thread_events" DROP CONSTRAINT "thread_events_payload_shape_check", ADD CONSTRAINT "thread_events_payload_shape_check" CHECK (CASE "event_type"
         WHEN 'UserMessageAppended' THEN
           "payload" = jsonb_build_object(
