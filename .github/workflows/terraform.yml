@@ -141,7 +141,7 @@ jobs:
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
         with:
           version: 569.0.0
-      - name: Verify exact artifact recovery authority before apply
+      - name: Verify exact artifact recovery and immutable storage authority before apply
         shell: bash
         run: infra/tests/development-platform-recovery-preflight.sh
 
