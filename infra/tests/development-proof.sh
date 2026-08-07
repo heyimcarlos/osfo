@@ -18,6 +18,10 @@ rm -rf "$scratch/root/.terraform"
 # configuration can prove plan binding without cloud credentials.
 sed -i '/backend "gcs" {}/d' "$scratch/root/versions.tf"
 sed -i 's#../../../modules/#../modules/#g' "$scratch/root/main.tf"
+# The disabled offline topology performs no Google API calls. Supplying a
+# non-secret placeholder prevents provider initialization from requiring ADC.
+sed -i '/provider "google" {/a\  access_token = "offline-lifecycle-proof"' \
+  "$scratch/root/main.tf"
 cd "$scratch/root"
 
 export TERRAFORM_BIN="$terraform_bin"
