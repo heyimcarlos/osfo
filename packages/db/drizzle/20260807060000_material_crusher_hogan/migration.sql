@@ -66,7 +66,7 @@ ALTER TABLE "thread_events" DROP CONSTRAINT "thread_events_event_version_check",
         ("event_type" = 'AssistantOutputInterrupted' AND "event_version" IN (1, 2))
         OR ("event_type" <> 'AssistantOutputInterrupted' AND "event_version" = 1)
       ));--> statement-breakpoint
-ALTER TABLE "thread_events" DROP CONSTRAINT "thread_events_payload_shape_check", ADD CONSTRAINT "thread_events_payload_shape_check" CHECK (CASE "event_type"
+ALTER TABLE "thread_events" DROP CONSTRAINT "thread_events_payload_shape_check", ADD CONSTRAINT "thread_events_payload_shape_check" CHECK ((CASE "event_type"
         WHEN 'UserMessageAppended' THEN
           "payload" = jsonb_build_object(
             'userMessageId', "payload" ->> 'userMessageId',
@@ -116,4 +116,4 @@ ALTER TABLE "thread_events" DROP CONSTRAINT "thread_events_payload_shape_check",
             'cause', 'modelCallFailed'
           )
         ELSE false
-      END);
+      END) IS TRUE);

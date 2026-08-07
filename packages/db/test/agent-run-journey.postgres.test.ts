@@ -845,6 +845,86 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     });
   });
 
+  it("rejects SQL-unknown ThreadEvent and cleanup evidence", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "reject SQL unknown evidence" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const claimed = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(delivery, {
+          workerId: "constraint-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    const attempt = await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const modelCall = yield* repository.ensureModelCall(claimed.fence, {
+            type: "startModelCall",
+            modelBinding: "oz.deterministic.echo.v1",
+            prompt: "reject SQL unknown evidence",
+          });
+          return yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(claimed.fence, modelCall),
+          );
+        }),
+      ),
+    );
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`INSERT INTO thread_events (
+              thread_id, position, event_id, principal_id, user_message_id,
+              agent_run_id, event_type, event_version, payload, occurred_at
+            ) SELECT
+              run.thread_id,
+              9999,
+              ${randomUUID()}::uuid,
+              run.principal_id,
+              run.user_message_id,
+              run.agent_run_id,
+              'AssistantOutputInterrupted',
+              1,
+              ${JSON.stringify({
+                assistantOutputId: attempt.assistantOutputId,
+                agentRunId: receipt.agentRunId,
+                cause: null,
+              })}::jsonb,
+              transaction_timestamp()
+            FROM agent_runs run
+            WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
+        }),
+      ),
+    ).rejects.toBeDefined();
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE model_call_attempts
+            SET cleanup_disposition = NULL,
+                external_work_may_continue = true
+            WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid`;
+        }),
+      ),
+    ).rejects.toBeDefined();
+  });
+
   it("rejects malformed non-null publication evidence", async () => {
     const accepted = await run(
       MessageAdmission.use((admission) =>

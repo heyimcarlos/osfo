@@ -345,7 +345,7 @@ export const threadEvents = pgTable(
     ),
     check(
       "thread_events_payload_shape_check",
-      sql`CASE ${table.eventType}
+      sql`(CASE ${table.eventType}
         WHEN 'UserMessageAppended' THEN
           ${table.payload} = jsonb_build_object(
             'userMessageId', ${table.payload} ->> 'userMessageId',
@@ -395,7 +395,7 @@ export const threadEvents = pgTable(
             'cause', 'modelCallFailed'
           )
         ELSE false
-      END`,
+      END) IS TRUE`,
     ),
     check(
       "thread_events_payload_content_check",
@@ -720,11 +720,11 @@ export const modelCallAttempts = pgTable(
     ),
     check(
       "model_call_attempts_cleanup_check",
-      sql`((${table.cleanupDisposition} IS NULL AND ${table.externalWorkMayContinue} IS NULL)
+      sql`(((${table.cleanupDisposition} IS NULL AND ${table.externalWorkMayContinue} IS NULL)
         OR (
           ${table.cleanupDisposition} IN ('completed', 'deadlineExceeded')
           AND ${table.externalWorkMayContinue} IS NOT NULL
-        ))`,
+        ))) IS TRUE`,
     ),
   ],
 );
