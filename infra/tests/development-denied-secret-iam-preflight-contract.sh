@@ -152,6 +152,9 @@ printf '%s\n' \
   'if [[ "${MOCK_SELECTOR_FAILURE:-0}" == 1 && "$*" == *"def directly_effective"* ]]; then' \
   '  exit 47' \
   'fi' \
+  'if [[ "${MOCK_ROLE_PERMISSION_FAILURE:-0}" == 1 && "$*" == *"index(\"secretmanager.versions.access\") != null"* ]]; then' \
+  '  exit 48' \
+  'fi' \
   'exec "$REAL_JQ" "$@"' >"$mock_bin/jq"
 chmod +x "$mock_bin/jq"
 
@@ -196,6 +199,7 @@ run_preflight() {
     MOCK_ACCESSOR_ROLE="$scratch/accessor-role.json" \
     MOCK_WIDENED_ROLE="$scratch/widened-role.json" \
     MOCK_SELECTOR_FAILURE="${MOCK_SELECTOR_FAILURE:-0}" \
+    MOCK_ROLE_PERMISSION_FAILURE="${MOCK_ROLE_PERMISSION_FAILURE:-0}" \
     MOCK_TERRAFORM_SCAN_FAILURE="${MOCK_TERRAFORM_SCAN_FAILURE:-0}" \
     REAL_JQ="$real_jq" \
     REAL_GREP="$real_grep" \
@@ -300,6 +304,10 @@ MOCK_SELECTOR_FAILURE=1 expect_preflight_fails \
   selector-failure target-secret "$scratch/varset.json" \
   "$scratch/project-policy.json" "$scratch/secret-policy.json" \
   'FAIL: unable to select potentially effective denied-secret role bindings'
+MOCK_ROLE_PERMISSION_FAILURE=1 expect_preflight_fails \
+  role-permission-evaluator-failure project "$scratch/varset.json" \
+  "$scratch/project-policy-accessor.json" "$scratch/secret-policy.json" \
+  'FAIL: unable to evaluate a potentially effective role for secretmanager.versions.access'
 MOCK_TERRAFORM_SCAN_FAILURE=1 expect_preflight_fails \
   terraform-scan-failure project "$scratch/varset.json" \
   "$scratch/project-policy.json" "$scratch/secret-policy.json" \

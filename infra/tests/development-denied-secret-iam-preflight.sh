@@ -141,7 +141,7 @@ role_grants_payload_access() {
   jq -e '
     .includedPermissions
     | index("secretmanager.versions.access") != null
-  ' "$role_file" >/dev/null
+  ' "$role_file" >/dev/null 2>"$scratch/role-$role_index-permission.error"
 }
 
 check_policy_for_payload_access() {
@@ -149,6 +149,7 @@ check_policy_for_payload_access() {
   local label=$2
   local bound_role
   local principal_scope
+  local role_permission_status
   local selected_bindings=$scratch/$label-selected-bindings.tsv
 
   validate_policy "$policy" "$label"
@@ -176,12 +177,21 @@ check_policy_for_payload_access() {
   fi
 
   while IFS=$'\t' read -r bound_role principal_scope; do
-    if role_grants_payload_access "$bound_role"; then
-      if [[ "$principal_scope" == aggregate ]]; then
-        fail 'aggregate principal inheritance cannot be excluded for a role granting secretmanager.versions.access'
-      fi
-      fail 'denied qualification identity has a role granting secretmanager.versions.access'
-    fi
+    role_permission_status=0
+    set +e
+    role_grants_payload_access "$bound_role"
+    role_permission_status=$?
+    set -e
+    case "$role_permission_status" in
+      0)
+        if [[ "$principal_scope" == aggregate ]]; then
+          fail 'aggregate principal inheritance cannot be excluded for a role granting secretmanager.versions.access'
+        fi
+        fail 'denied qualification identity has a role granting secretmanager.versions.access'
+        ;;
+      1) ;;
+      *) fail 'unable to evaluate a potentially effective role for secretmanager.versions.access' ;;
+    esac
   done <"$selected_bindings"
 }
 
