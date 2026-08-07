@@ -61,6 +61,14 @@ bun run start:agent-run-worker
 
 Build them first with `bun run build`.
 
+## Qualification observability
+
+The root `observability` module imports sealed qualification evidence into a
+pinned Prometheus and Grafana presentation stack. It is operational tooling,
+not a reusable package or an Agent Application. See
+[`observability/README.md`](observability/README.md) for its one-command
+walkthrough and evidence contract.
+
 The ingress process requires `OSFO_DATABASE_URL`,
 `OSFO_EXECUTION_PROFILE_REF`, `OSFO_GLOBAL_NON_TERMINAL_LIMIT`, and
 `OSFO_PRINCIPAL_NON_TERMINAL_LIMIT`. Snapshot size, replay retention, stream

@@ -1,0 +1,306 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "title": "100k DAU Scorecard",
+      "type": "link",
+      "url": "/d/openpoke-100k-scorecard",
+      "includeVars": true
+    },
+    {
+      "title": "Capacity and PostgreSQL",
+      "type": "link",
+      "url": "/d/openpoke-capacity-postgres",
+      "includeVars": true
+    },
+    {
+      "title": "Durability and Recovery",
+      "type": "link",
+      "url": "/d/openpoke-durability-recovery",
+      "includeVars": true
+    },
+    {
+      "title": "Multi-device Streams",
+      "type": "link",
+      "url": "/d/openpoke-multi-device",
+      "includeVars": true
+    },
+    {
+      "title": "Topology Evolution",
+      "type": "link",
+      "url": "/d/openpoke-topology-evolution",
+      "includeVars": true
+    }
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Multi-device contract",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "content": "> **Derived presentation view.** Grafana is not evidence authority. The importer verifies the sealed bundle first. Provenance is limited to the selected bundle slug and checksum-manifest hash. Missing evidence stays **MISSING**.\n\nOne canonical Thread is durable in PostgreSQL. Every authenticated device owns an independent cursor, resumes by cursor, and converges on the same ordered ThreadEvent projection. The selected run controls whether the sealed multi-device gate and its requirements are PASS, FAIL, or MISSING.",
+        "mode": "markdown"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Multi-device qualification",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "FAIL"
+                },
+                "1": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "PASS"
+                },
+                "-1": {
+                  "color": "gray",
+                  "index": 2,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "gray",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "openpoke_gate_status{run=\"$run\",gate=\"multi_device\"}",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Required stream evidence",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "description": "Connections, cursor positions, gaps, duplicates, ordering, replay latency, and convergence stay MISSING until the real harness emits them.",
+      "gridPos": {
+        "x": 6,
+        "y": 4,
+        "w": 18,
+        "h": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "FAIL"
+                },
+                "1": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "PASS"
+                },
+                "-1": {
+                  "color": "gray",
+                  "index": 2,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "openpoke_requirement_status{run=\"$run\",view=\"multi_device\"}",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Per-device resume path",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 7
+      },
+      "options": {
+        "content": "```text\nDevice A closes mid-response\n  -> durable ThreadEvents continue committing\n  -> Device B authenticates and sends its last ThreadCursor\n  -> bounded replay starts after that ThreadPosition\n  -> replay-to-live cut preserves order\n  -> Devices B, C, and D independently advance their own cursors\n  -> every projection converges on canonical PostgreSQL history\n```",
+        "mode": "markdown"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Evidence provenance: bundle slug and checksum-manifest hash",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "description": "The source bundle is never mutated. source_hash is SHA-256 of the verified checksum manifest. Filesystem paths are intentionally excluded.",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "openpoke_run_info{run=\"$run\"}",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 42,
+  "tags": ["openpoke", "sealed-evidence", "issue-87"],
+  "templating": {
+    "list": [
+      {
+        "name": "run",
+        "label": "Sealed evidence run",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "openpoke-prometheus"
+        },
+        "definition": "label_values(openpoke_run_info, run)",
+        "query": {
+          "query": "label_values(openpoke_run_info, run)",
+          "refId": "OpenPokeRunVariable"
+        },
+        "refresh": 1,
+        "sort": 1,
+        "current": {},
+        "options": [],
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "hidden": false
+  },
+  "timezone": "utc",
+  "title": "OpenPoke Multi-device Streams",
+  "uid": "openpoke-multi-device",
+  "version": 1,
+  "weekStart": "monday"
+}

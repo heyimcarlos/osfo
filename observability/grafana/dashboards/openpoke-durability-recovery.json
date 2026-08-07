@@ -1,0 +1,559 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "title": "100k DAU Scorecard",
+      "type": "link",
+      "url": "/d/openpoke-100k-scorecard",
+      "includeVars": true
+    },
+    {
+      "title": "Capacity and PostgreSQL",
+      "type": "link",
+      "url": "/d/openpoke-capacity-postgres",
+      "includeVars": true
+    },
+    {
+      "title": "Durability and Recovery",
+      "type": "link",
+      "url": "/d/openpoke-durability-recovery",
+      "includeVars": true
+    },
+    {
+      "title": "Multi-device Streams",
+      "type": "link",
+      "url": "/d/openpoke-multi-device",
+      "includeVars": true
+    },
+    {
+      "title": "Topology Evolution",
+      "type": "link",
+      "url": "/d/openpoke-topology-evolution",
+      "includeVars": true
+    }
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Durability hierarchy",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "content": "> **Derived presentation view.** Grafana is not evidence authority. The importer verifies the sealed bundle first. Provenance is limited to the selected bundle slug and checksum-manifest hash. Missing evidence stays **MISSING**.\n\nProcess cuts, dependency outage, redelivery, fencing, recovery rate, and drain time require their own sealed scenarios. Exact steady-run reconciliation does not automatically certify recovery.",
+        "mode": "markdown"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Exact accepted-work reconciliation",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "FAIL"
+                },
+                "1": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "PASS"
+                },
+                "-1": {
+                  "color": "gray",
+                  "index": 2,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "gray",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "openpoke_gate_status{run=\"$run\",gate=\"reconciliation\"}",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Recovery qualification",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "FAIL"
+                },
+                "1": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "PASS"
+                },
+                "-1": {
+                  "color": "gray",
+                  "index": 2,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "gray",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "openpoke_gate_status{run=\"$run\",gate=\"recovery\"}",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Duplicate terminal commits",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "openpoke_integrity_violations{run=\"$run\",kind=\"duplicate_terminal_commits\"}",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Unfinished attempts",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(openpoke_integrity_violations{run=\"$run\",kind=~\"unfinished_.*\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Integrity counters",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "description": "Zero values support exactness only for the selected sealed run.",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "openpoke_integrity_violations{run=\"$run\"}",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Recovery evidence still required",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "description": "MISSING is intentional until process-cut and dependency-outage bundles provide bounded recovery evidence.",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "FAIL"
+                },
+                "1": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "PASS"
+                },
+                "-1": {
+                  "color": "gray",
+                  "index": 2,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "openpoke_requirement_status{run=\"$run\",view=\"recovery\"}",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Recovery call graph",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 6
+      },
+      "options": {
+        "content": "```text\nprocess cut or outage\n  -> Pub/Sub redelivery or durable backlog\n  -> fixed StreamingPull workers reclaim with a new epoch\n  -> stale attempt is fenced\n  -> authoritative terminal commit\n  -> backlog slope turns negative\n  -> exact PostgreSQL reconciliation\n```",
+        "mode": "markdown"
+      }
+    },
+    {
+      "id": 9,
+      "title": "Evidence provenance: bundle slug and checksum-manifest hash",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "description": "The source bundle is never mutated. source_hash is SHA-256 of the verified checksum manifest. Filesystem paths are intentionally excluded.",
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 24,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "openpoke_run_info{run=\"$run\"}",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 42,
+  "tags": ["openpoke", "sealed-evidence", "issue-87"],
+  "templating": {
+    "list": [
+      {
+        "name": "run",
+        "label": "Sealed evidence run",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "openpoke-prometheus"
+        },
+        "definition": "label_values(openpoke_run_info, run)",
+        "query": {
+          "query": "label_values(openpoke_run_info, run)",
+          "refId": "OpenPokeRunVariable"
+        },
+        "refresh": 1,
+        "sort": 1,
+        "current": {},
+        "options": [],
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "hidden": false
+  },
+  "timezone": "utc",
+  "title": "OpenPoke Durability and Recovery",
+  "uid": "openpoke-durability-recovery",
+  "version": 1,
+  "weekStart": "monday"
+}
