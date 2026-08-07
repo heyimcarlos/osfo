@@ -47,7 +47,6 @@ describe("AgentRun worker process role", () => {
             OSFO_AGENT_RUN_WORKER_ID: "process-test-worker",
             OSFO_DATABASE_URL: databaseUrl,
             OSFO_EXECUTION_PROFILE_REF: "oz.deterministic.v1",
-            OSFO_MODEL_BINDING: "oz.deterministic.echo.v1",
             OSFO_PUBSUB_PROJECT_ID: "osfo-test",
             OSFO_PUBSUB_SUBSCRIPTION_ID: "agent-runs-test",
             PUBSUB_EMULATOR_HOST: `127.0.0.1:${address.port}`,

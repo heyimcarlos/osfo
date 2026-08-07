@@ -46,18 +46,30 @@ const attempt = {
 } as const;
 
 const cancelConfirmed = () => Effect.succeed({ type: "confirmedStopped" as const });
+const unknownAttemptOutcome = {
+  dispatchEvidence: { type: "confirmed" as const },
+  usage: { type: "unknown" as const },
+};
 
 const makeExecutor = (
   service: Pick<ModelCallExecutor["Service"], "cancel"> & {
     readonly execute: (
       attempt: ModelCallAttempt,
     ) => Stream.Stream<ModelCallObservation, ModelCallExecutionError>;
+    readonly outcome?: ModelCallExecutor["Service"]["outcome"];
     readonly terminate?: ModelCallExecutor["Service"]["terminate"];
   },
 ) =>
   ModelCallExecutor.of({
     cancel: service.cancel,
     execute: (attempt) => Effect.succeed(service.execute(attempt)),
+    outcome:
+      service.outcome ??
+      (() =>
+        Effect.succeed({
+          dispatchEvidence: { type: "confirmed" as const },
+          usage: { type: "unknown" as const },
+        })),
     terminate: service.terminate ?? (() => Effect.void),
   });
 
@@ -144,6 +156,68 @@ const makeRepository = () => {
 };
 
 describe("AgentRun worker", () => {
+  it.effect("applies the profile attempt limit and commits normalized attempt evidence", () => {
+    const repository = makeRepository();
+    let observedAttemptLimit: number | undefined;
+    let observedOutcome: unknown;
+    const accountable = {
+      ...repository.service,
+      beginModelCallAttempt: (_fence, _modelCall, attemptLimit?: number) => {
+        observedAttemptLimit = attemptLimit;
+        return Effect.succeed({ type: "started" as const, attempt });
+      },
+      completeModelCall: (activeFence, activeAttempt, outcome) =>
+        Effect.sync(() => {
+          observedOutcome = outcome;
+        }).pipe(
+          Effect.andThen(
+            repository.service.completeModelCall(activeFence, activeAttempt, unknownAttemptOutcome),
+          ),
+        ),
+    } satisfies AgentRunRepositoryService;
+    const executor = makeExecutor({
+      cancel: cancelConfirmed,
+      execute: () => Stream.empty,
+      outcome: () =>
+        Effect.succeed({
+          dispatchEvidence: {
+            type: "confirmed" as const,
+            providerRequestId: "resp_accountable",
+          },
+          usage: { type: "reported" as const, inputUnits: 3, outputUnits: 2 },
+        }),
+    });
+    const layer = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v1",
+      modelCallAttemptLimit: 1,
+      workerId: "worker-a",
+      leaseDurationMs: 30_000,
+      leaseRenewalIntervalMs: 10_000,
+      cancellationPollIntervalMs: 5,
+    }).pipe(
+      Layer.provide(Layer.succeed(AgentRunRepository)(accountable)),
+      Layer.provide(Layer.succeed(ModelCallExecutor)(executor)),
+      Layer.provide(
+        makeDeterministicAgentRuntimeLayer({
+          executionProfileRef: "oz.deterministic.v1",
+          modelBinding: "oz.deterministic.echo.v1",
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      expect(yield* AgentRunWorker.use((worker) => worker.handle(delivery))).toEqual({
+        type: "acknowledge",
+        outcome: "succeeded",
+      });
+      expect(observedAttemptLimit).toBe(1);
+      expect(observedOutcome).toEqual({
+        dispatchEvidence: { type: "confirmed", providerRequestId: "resp_accountable" },
+        usage: { type: "reported", inputUnits: 3, outputUnits: 2 },
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect(
     "carries one delivery identity through committed output to one terminal outcome",
     () => {
@@ -262,7 +336,13 @@ describe("AgentRun worker", () => {
       execute: () =>
         Stream.make({ fragmentIndex: 0, text: "Partial" }).pipe(
           Stream.concat(
-            Stream.fail(new ModelCallExecutionError({ cause: "provider unavailable" })),
+            Stream.fail(
+              new ModelCallExecutionError({
+                cause: "provider unavailable",
+                dispatchEvidence: { type: "uncertain" },
+                usage: { type: "unknown" },
+              }),
+            ),
           ),
         ),
     });

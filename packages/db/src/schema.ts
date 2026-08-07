@@ -669,6 +669,9 @@ export const modelCallAttempts = pgTable(
     assistantOutputId: uuid("assistant_output_id").notNull(),
     attemptNumber: integer("attempt_number").notNull(),
     claimEpoch: bigint("claim_epoch", { mode: "bigint" }).notNull(),
+    modelBinding: text("model_binding").notNull(),
+    dispatchState: text("dispatch_state").notNull().default("prepared"),
+    providerRequestId: text("provider_request_id"),
     state: text("state").notNull(),
     usageType: text("usage_type").notNull().default("unknown"),
     inputUnits: integer("input_units"),
@@ -697,6 +700,17 @@ export const modelCallAttempts = pgTable(
     check("model_call_attempts_number_check", sql`${table.attemptNumber} > 0`),
     check("model_call_attempts_epoch_check", sql`${table.claimEpoch} > 0`),
     check(
+      "model_call_attempts_binding_check",
+      sql`length(${table.modelBinding}) BETWEEN 1 AND 255`,
+    ),
+    check(
+      "model_call_attempts_dispatch_check",
+      sql`((${table.dispatchState} IN ('prepared', 'confirmed', 'not_dispatched', 'uncertain')
+        AND (${table.providerRequestId} IS NULL OR ${table.dispatchState} = 'confirmed')
+        AND (${table.providerRequestId} IS NULL OR length(${table.providerRequestId}) BETWEEN 1 AND 255)
+      )) IS TRUE`,
+    ),
+    check(
       "model_call_attempts_state_check",
       sql`${table.state} IN ('started', 'succeeded', 'failed', 'canceled')`,
     ),
@@ -716,6 +730,13 @@ export const modelCallAttempts = pgTable(
       sql`((
         (${table.state} = 'started' AND ${table.finishedAt} IS NULL)
         OR (${table.state} <> 'started' AND ${table.finishedAt} IS NOT NULL)
+      )) IS TRUE`,
+    ),
+    check(
+      "model_call_attempts_terminal_dispatch_check",
+      sql`((${table.state} = 'started'
+        OR (${table.state} = 'succeeded' AND ${table.dispatchState} = 'confirmed')
+        OR (${table.state} IN ('failed', 'canceled') AND ${table.dispatchState} <> 'prepared')
       )) IS TRUE`,
     ),
     check(

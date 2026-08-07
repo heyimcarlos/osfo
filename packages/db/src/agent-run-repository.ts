@@ -7,6 +7,7 @@ import {
   AgentRunRepositoryUnavailable,
   type AgentRunFence,
   type AgentRunRepositoryService,
+  type ModelCallAttemptOutcome,
   type PreparedModelCall,
 } from "@osfo/agent-run";
 import {
@@ -71,6 +72,20 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
     AgentRunRepository,
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
+
+      const attemptOutcomeColumns = (outcome: ModelCallAttemptOutcome) => ({
+        dispatchState:
+          outcome.dispatchEvidence.type === "notDispatched"
+            ? "not_dispatched"
+            : outcome.dispatchEvidence.type,
+        providerRequestId:
+          outcome.dispatchEvidence.type === "confirmed"
+            ? (outcome.dispatchEvidence.providerRequestId ?? null)
+            : null,
+        usageType: outcome.usage.type,
+        inputUnits: outcome.usage.type === "unknown" ? null : outcome.usage.inputUnits,
+        outputUnits: outcome.usage.type === "unknown" ? null : outcome.usage.outputUnits,
+      });
 
       const isFenceRejected = Predicate.isTagged("AgentRunFenceRejected");
       const isCancellationObserved = Predicate.isTagged("AgentRunCancellationObserved");
@@ -730,7 +745,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
 
       const beginModelCallAttempt: AgentRunRepositoryService["beginModelCallAttempt"] = Effect.fn(
         "AgentRunRepository.beginModelCallAttempt",
-      )(function* (fence, modelCall) {
+      )(function* (fence, modelCall, attemptLimit) {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
@@ -791,7 +806,15 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                 (previous) => previous.externalWorkMayContinue === true,
               );
               yield* sql`UPDATE model_call_attempts
-                  SET state = 'failed', finished_at = transaction_timestamp()
+                  SET state = 'failed',
+                      dispatch_state = CASE
+                        WHEN EXISTS (
+                          SELECT 1 FROM model_call_fragments fragment
+                          WHERE fragment.model_call_attempt_id = model_call_attempts.model_call_attempt_id
+                        ) THEN 'confirmed'
+                        ELSE 'uncertain'
+                      END,
+                      finished_at = transaction_timestamp()
                   WHERE model_call_id = ${modelCall.modelCallId}::uuid
                     AND agent_run_id = ${fence.agentRunId}::uuid
                     AND state = 'started'
@@ -812,7 +835,12 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   }),
                 );
               }
-              if (uncertain) {
+              const nextAttemptNumber =
+                abandoned.reduce(
+                  (maximum, previous) => Math.max(maximum, previous.attemptNumber),
+                  0,
+                ) + 1;
+              if (uncertain || nextAttemptNumber > (attemptLimit ?? Number.MAX_SAFE_INTEGER)) {
                 const failed = yield* sql`UPDATE model_calls
                   SET state = 'failed',
                       failure_cause = 'modelCallFailed',
@@ -847,7 +875,8 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                 readonly modelCallAttemptId: string;
               }>`INSERT INTO model_call_attempts (
                     model_call_attempt_id, model_call_id, agent_run_id,
-                    assistant_output_id, attempt_number, claim_epoch, state, started_at
+                    assistant_output_id, attempt_number, claim_epoch, model_binding,
+                    dispatch_state, state, started_at
                   )
                   SELECT
                     ${modelCallAttemptId}::uuid,
@@ -856,6 +885,8 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     ${assistantOutputId}::uuid,
                     ${attemptNumber},
                     ${fence.claimEpoch}::bigint,
+                    model_binding,
+                    'prepared',
                     'started',
                     transaction_timestamp()
                   FROM model_calls
@@ -983,10 +1014,11 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
 
       const completeModelCall: AgentRunRepositoryService["completeModelCall"] = Effect.fn(
         "AgentRunRepository.completeModelCall",
-      )(function* (fence, attempt) {
+      )(function* (fence, attempt, outcome) {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
+              const evidence = attemptOutcomeColumns(outcome);
               const authority = yield* requireOpenFence(fence);
               const completed = yield* sql<{ readonly modelCallId: string }>`UPDATE model_calls
                   SET state = 'succeeded', completed_at = transaction_timestamp()
@@ -998,7 +1030,13 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               const completedAttempt = yield* sql<{
                 readonly modelCallAttemptId: string;
               }>`UPDATE model_call_attempts
-                  SET state = 'succeeded', finished_at = transaction_timestamp()
+                  SET state = 'succeeded',
+                      dispatch_state = ${evidence.dispatchState},
+                      provider_request_id = ${evidence.providerRequestId},
+                      usage_type = ${evidence.usageType},
+                      input_units = ${evidence.inputUnits},
+                      output_units = ${evidence.outputUnits},
+                      finished_at = transaction_timestamp()
                   WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
                     AND model_call_id = ${attempt.modelCallId}::uuid
                     AND assistant_output_id = ${attempt.assistantOutputId}::uuid
@@ -1029,10 +1067,11 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
 
       const interruptModelCall: AgentRunRepositoryService["interruptModelCall"] = Effect.fn(
         "AgentRunRepository.interruptModelCall",
-      )(function* (fence, attempt, cause) {
+      )(function* (fence, attempt, cause, outcome) {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
+              const evidence = attemptOutcomeColumns(outcome);
               const authority = yield* requireOpenFence(fence);
               const interrupted = yield* sql<{ readonly modelCallId: string }>`UPDATE model_calls
                   SET state = 'failed',
@@ -1046,7 +1085,13 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               const interruptedAttempt = yield* sql<{
                 readonly modelCallAttemptId: string;
               }>`UPDATE model_call_attempts
-                  SET state = 'failed', finished_at = transaction_timestamp()
+                  SET state = 'failed',
+                      dispatch_state = ${evidence.dispatchState},
+                      provider_request_id = ${evidence.providerRequestId},
+                      usage_type = ${evidence.usageType},
+                      input_units = ${evidence.inputUnits},
+                      output_units = ${evidence.outputUnits},
+                      finished_at = transaction_timestamp()
                   WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
                     AND model_call_id = ${attempt.modelCallId}::uuid
                     AND assistant_output_id = ${attempt.assistantOutputId}::uuid
@@ -1193,7 +1238,15 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     AND external_work_may_continue IS NULL`;
               }
               yield* sql`UPDATE model_call_attempts
-                SET state = 'canceled', finished_at = transaction_timestamp()
+                SET state = 'canceled',
+                    dispatch_state = CASE
+                      WHEN EXISTS (
+                        SELECT 1 FROM model_call_fragments fragment
+                        WHERE fragment.model_call_attempt_id = model_call_attempts.model_call_attempt_id
+                      ) THEN 'confirmed'
+                      ELSE 'uncertain'
+                    END,
+                    finished_at = transaction_timestamp()
                 WHERE agent_run_id = ${fence.agentRunId}::uuid
                   AND state = 'started'`;
               yield* appendThreadEvent(authority, (base) =>

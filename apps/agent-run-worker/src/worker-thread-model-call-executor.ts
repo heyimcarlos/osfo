@@ -54,7 +54,12 @@ export interface WorkerThreadModelCallExecutorConfig {
   readonly onActiveSessionCountChange?: (activeSessionCount: number) => void;
 }
 
-const executionError = (cause: unknown) => new ModelCallExecutionError({ cause });
+const executionError = (cause: unknown) =>
+  new ModelCallExecutionError({
+    cause,
+    dispatchEvidence: { type: "uncertain" },
+    usage: { type: "unknown" },
+  });
 
 const defaultFailStop = (cause: unknown): Effect.Effect<never> =>
   Effect.logFatal("ModelCall worker isolation failed; stopping process", cause).pipe(
@@ -233,6 +238,11 @@ const workerThreadModelCallExecutorLayer = (config: WorkerThreadModelCallExecuto
             return Option.isSome(acknowledged) && Option.isSome(acknowledged.value)
               ? acknowledged.value.value
               : ({ type: "mayContinue" } as const);
+          }),
+        outcome: () =>
+          Effect.succeed({
+            dispatchEvidence: { type: "confirmed" },
+            usage: { type: "unknown" },
           }),
         terminate,
       });

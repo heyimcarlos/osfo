@@ -53,6 +53,11 @@ if (databaseUrl === undefined) {
   throw new Error("OSFO_TEST_DATABASE_URL is required for PostgreSQL integration tests");
 }
 
+const unknownAttemptOutcome = {
+  dispatchEvidence: { type: "confirmed" as const },
+  usage: { type: "unknown" as const },
+};
+
 const principalId = "b3ef0861-2df7-4d2a-a195-fbc5ed75bc81";
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
 const authenticationToken = "alice-test-session-token";
@@ -92,6 +97,15 @@ const publisherLayer = Layer.succeed(RunnableDeliveryPublisher)(
 const workerLayer = makeAgentRunWorkerLayer({
   executionProfileRef: "oz.deterministic.v1",
   workerId: "replacement-worker",
+  leaseDurationMs: 30_000,
+  leaseRenewalIntervalMs: 10_000,
+  cancellationPollIntervalMs: 5,
+}).pipe(Layer.provide(repositoryLayer), Layer.provide(runtimeLayer), Layer.provide(executorLayer));
+
+const oneAttemptWorkerLayer = makeAgentRunWorkerLayer({
+  executionProfileRef: "oz.deterministic.v1",
+  modelCallAttemptLimit: 1,
+  workerId: "one-attempt-replacement-worker",
   leaseDurationMs: 30_000,
   leaseRenewalIntervalMs: 10_000,
   cancellationPollIntervalMs: 5,
@@ -1387,6 +1401,11 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             ).pipe(Stream.map(() => ({ fragmentIndex: 0, text: "slow but healthy" }))),
           ),
         cancel: () => Effect.succeed({ type: "confirmedStopped" }),
+        outcome: () =>
+          Effect.succeed({
+            dispatchEvidence: { type: "confirmed" },
+            usage: { type: "unknown" },
+          }),
         terminate: () => Effect.void,
       }),
     );
@@ -1537,7 +1556,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
               repository.beginModelCallAttempt(abandoned.fence, modelCall),
             );
             if (cut === "completedOutput") {
-              yield* repository.completeModelCall(abandoned.fence, attempt);
+              yield* repository.completeModelCall(abandoned.fence, attempt, unknownAttemptOutcome);
             }
           }),
         ),
@@ -1734,6 +1753,96 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     ]);
   });
 
+  it("honors a one-attempt profile after a confirmed-stopped worker replacement", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "one logical model attempt" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const abandoned = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(delivery, {
+          workerId: "one-attempt-abandoned-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+
+    await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const modelCall = yield* repository.ensureModelCall(abandoned.fence, {
+            type: "startModelCall",
+            modelBinding: "openai.responses.gpt-4.1-mini-2025-04-14.v1",
+            prompt: "one logical model attempt",
+          });
+          const attempt = yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(abandoned.fence, modelCall, 1),
+          );
+          yield* repository.recordModelCallCleanup(abandoned.fence, attempt, {
+            cleanupDisposition: { type: "completed" },
+            externalWorkMayContinue: false,
+          });
+        }),
+      ),
+    );
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE agent_runs
+          SET lease_expires_at = clock_timestamp() - interval '1 millisecond'
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+      }),
+    );
+
+    const replacement = await Effect.runPromise(
+      AgentRunWorker.use((worker) => worker.handle(delivery)).pipe(
+        Effect.provide(oneAttemptWorkerLayer),
+      ),
+    );
+    expect(replacement).toEqual({ type: "acknowledge", outcome: "failed" });
+
+    const authority = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly attempts: string;
+          readonly attemptBinding: string;
+          readonly attemptState: string;
+          readonly dispatchState: string;
+          readonly runState: string;
+        }>`SELECT
+          run.state AS "runState",
+          (SELECT count(*) FROM model_call_attempts
+            WHERE agent_run_id = run.agent_run_id)::text AS attempts,
+          attempt.model_binding AS "attemptBinding",
+          attempt.state AS "attemptState",
+          attempt.dispatch_state AS "dispatchState"
+        FROM agent_runs run
+        JOIN model_call_attempts attempt USING (agent_run_id)
+        WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
+        return rows[0];
+      }),
+    );
+    expect(authority).toEqual({
+      attempts: "1",
+      attemptBinding: "openai.responses.gpt-4.1-mini-2025-04-14.v1",
+      attemptState: "failed",
+      dispatchState: "uncertain",
+      runState: "failed",
+    });
+  });
+
   it("recovers relay, output, and terminal-ack crash cuts without duplicate authority", async () => {
     const command = {
       protocolVersion: 1,
@@ -1839,6 +1948,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
           readonly activePublicationTasks: string;
           readonly publicationAttemptStates: ReadonlyArray<string>;
           readonly startedAttempts: string;
+          readonly attemptBindings: ReadonlyArray<string>;
+          readonly dispatchStates: ReadonlyArray<string>;
+          readonly providerRequestIds: ReadonlyArray<string | null>;
           readonly usageTypes: ReadonlyArray<string>;
         }>`SELECT
           run.state AS "runState",
@@ -1871,6 +1983,15 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
           (SELECT count(*) FROM model_call_attempts
             WHERE agent_run_id = ${receipt.agentRunId}::uuid
               AND state = 'started')::text AS "startedAttempts",
+          ARRAY(SELECT model_binding FROM model_call_attempts
+            WHERE agent_run_id = ${receipt.agentRunId}::uuid
+            ORDER BY attempt_number) AS "attemptBindings",
+          ARRAY(SELECT dispatch_state FROM model_call_attempts
+            WHERE agent_run_id = ${receipt.agentRunId}::uuid
+            ORDER BY attempt_number) AS "dispatchStates",
+          ARRAY(SELECT provider_request_id FROM model_call_attempts
+            WHERE agent_run_id = ${receipt.agentRunId}::uuid
+            ORDER BY attempt_number) AS "providerRequestIds",
           ARRAY(SELECT usage_type FROM model_call_attempts
             WHERE agent_run_id = ${receipt.agentRunId}::uuid
             ORDER BY attempt_number) AS "usageTypes"
@@ -1907,6 +2028,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       activePublicationTasks: "0",
       publicationAttemptStates: ["expired", "confirmed"],
       startedAttempts: "0",
+      attemptBindings: ["oz.deterministic.echo.v1", "oz.deterministic.echo.v1"],
+      dispatchStates: ["confirmed", "confirmed"],
+      providerRequestIds: [null, null],
       usageTypes: ["unknown", "unknown"],
     });
     expect(authority.events).toEqual([
@@ -2192,8 +2316,13 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
               fragmentIndex: 1,
               text: "stale output",
             }),
-            repository.completeModelCall(abandoned.fence, abandonedAttempt),
-            repository.interruptModelCall(abandoned.fence, abandonedAttempt, "modelCallFailed"),
+            repository.completeModelCall(abandoned.fence, abandonedAttempt, unknownAttemptOutcome),
+            repository.interruptModelCall(
+              abandoned.fence,
+              abandonedAttempt,
+              "modelCallFailed",
+              unknownAttemptOutcome,
+            ),
             repository.recordModelCallCleanup(abandoned.fence, abandonedAttempt, {
               cleanupDisposition: { type: "completed" },
               externalWorkMayContinue: false,
@@ -2473,8 +2602,13 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       const wrongAttempt = { ...attempt, modelCallAttemptId: randomUUID() };
       const transition = AgentRunRepository.use((repository) =>
         operation === "complete"
-          ? repository.completeModelCall(claimed.fence, wrongAttempt)
-          : repository.interruptModelCall(claimed.fence, wrongAttempt, "modelCallFailed"),
+          ? repository.completeModelCall(claimed.fence, wrongAttempt, unknownAttemptOutcome)
+          : repository.interruptModelCall(
+              claimed.fence,
+              wrongAttempt,
+              "modelCallFailed",
+              unknownAttemptOutcome,
+            ),
       );
 
       const error = await run(Effect.flip(transition));
