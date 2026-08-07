@@ -58,7 +58,6 @@ locals {
   non_foundation_project_roles = toset([
     "roles/iam.serviceAccountAdmin",
     "roles/logging.configWriter",
-    "roles/orgpolicy.policyAdmin",
     "roles/resourcemanager.projectIamAdmin",
     "roles/serviceusage.serviceUsageAdmin",
   ])
@@ -69,7 +68,6 @@ locals {
       "roles/iam.serviceAccountAdmin",
       "roles/iam.workloadIdentityPoolAdmin",
       "roles/logging.configWriter",
-      "roles/orgpolicy.policyAdmin",
       "roles/resourcemanager.projectIamAdmin",
       "roles/serviceusage.serviceUsageAdmin",
     ])
@@ -88,7 +86,7 @@ locals {
     ]) : "${binding.environment}/${binding.role}" => binding
   }
 
-  security_constraints = {
+  security_constraints = var.organization_id == null ? {} : {
     for pair in setproduct(local.environments, toset([
       "iam.automaticIamGrantsForDefaultServiceAccounts",
       "iam.disableServiceAccountKeyCreation",
@@ -142,7 +140,10 @@ resource "google_org_policy_policy" "security" {
     }
   }
 
-  depends_on = [google_project_service.required]
+  depends_on = [
+    google_organization_iam_member.foundation_org_policy_admin,
+    google_project_service.required,
+  ]
 }
 
 resource "google_storage_bucket" "state" {
@@ -398,6 +399,14 @@ resource "google_project_iam_member" "foundation" {
   project = google_project.environment[each.value.environment].project_id
   role    = each.value.role
   member  = "serviceAccount:${google_service_account.terraform["foundation"].email}"
+}
+
+resource "google_organization_iam_member" "foundation_org_policy_admin" {
+  count = var.organization_id == null ? 0 : 1
+
+  org_id = var.organization_id
+  role   = "roles/orgpolicy.policyAdmin"
+  member = "serviceAccount:${google_service_account.terraform["foundation"].email}"
 }
 
 resource "google_project_iam_audit_config" "all_services" {

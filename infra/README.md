@@ -58,7 +58,10 @@ Production environments require protected approval.
    bootstrap administrator needs project creation, billing attachment, project
    policy, IAM, and state bucket object authority. Set `organization_id` to a
    numeric ID when an organization owns the projects, otherwise leave it null.
-   Never create a service-account key.
+   Organization policy administration can only be granted at organization
+   scope. When `organization_id` is null, the root omits organization policy
+   resources and their IAM grant. Record key-policy enforcement as MISSING for
+   that environment. Never create a service-account key.
 4. Record the following command session and its result in approved audit
    evidence. Replace the values first. If an organization owns the project, add
    `--organization=ORGANIZATION_ID` to `gcloud projects create` and use the same
@@ -92,14 +95,21 @@ Production environments require protected approval.
      --lifecycle-file=infra/bootstrap/state-bucket-lifecycle.json
 
    gcloud storage buckets update "gs://$FOUNDATION_STATE_BUCKET" \
-     --versioning --lock-retention-period \
+     --versioning \
      --update-labels=environment=foundation,managed_by=terraform,purpose=terraform-state,system=osfo
    gcloud storage buckets update "gs://$DEVELOPMENT_STATE_BUCKET" \
-     --versioning --lock-retention-period \
+     --versioning \
      --update-labels=environment=development,managed_by=terraform,purpose=terraform-state,system=osfo
    gcloud storage buckets update "gs://$PRODUCTION_STATE_BUCKET" \
-     --versioning --lock-retention-period \
+     --versioning \
      --update-labels=environment=production,managed_by=terraform,purpose=terraform-state,system=osfo
+
+   printf 'y\n' | gcloud storage buckets update \
+     "gs://$FOUNDATION_STATE_BUCKET" --lock-retention-period
+   printf 'y\n' | gcloud storage buckets update \
+     "gs://$DEVELOPMENT_STATE_BUCKET" --lock-retention-period
+   printf 'y\n' | gcloud storage buckets update \
+     "gs://$PRODUCTION_STATE_BUCKET" --lock-retention-period
    ```
 
    Admin Activity audit logs record the project, billing, service, bucket, and
@@ -128,8 +138,9 @@ Production environments require protected approval.
    bucket does not exist yet. The exact saved plan imports the four bootstrap
    resources, then creates the remaining two projects, the protected saved-plan
    bucket, WIF provider, root identities, IAM, project security policies, and
-   audit configuration. Run a post-import no-change gate. Exit 2 is a failure
-   that must be reconciled before bootstrap is complete.
+   audit configuration. Project security policies are created only when the
+   variable set supplies an organization ID. Run a post-import no-change gate.
+   Exit 2 is a failure that must be reconciled before bootstrap is complete.
 
    ```sh
    infra/scripts/create-plan.sh foundation infra/roots/foundation \

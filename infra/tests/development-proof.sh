@@ -10,6 +10,8 @@ scratch=$(mktemp -d "$repo_root/tmp/terraform-proof.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 
 cp -R "$root_directory/." "$scratch/root"
+# A prior live init leaves backend metadata that must not enter the offline copy.
+rm -rf "$scratch/root/.terraform"
 # The committed root uses its isolated GCS backend. The offline lifecycle proof
 # removes only the backend declaration from its disposable copy so the same
 # configuration can prove plan binding without cloud credentials.

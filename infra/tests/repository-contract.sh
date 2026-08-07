@@ -77,6 +77,24 @@ rg --fixed-strings --quiet 'from "@effect/vitest"' infra/test/terraform-foundati
 rg --fixed-strings --quiet 'google_project_iam_custom_role.state_object_lister.name' \
   infra/roots/foundation/main.tf
 rg --fixed-strings --quiet 'saved_plan_bucket_name' infra/roots/foundation/main.tf
+if rg --fixed-strings --quiet \
+  '"roles/orgpolicy.policyAdmin",' \
+  infra/roots/foundation/main.tf; then
+  printf 'organization policy administrator must not be bound at project scope\n' >&2
+  exit 1
+fi
+rg --fixed-strings --quiet \
+  'resource "google_organization_iam_member" "foundation_org_policy_admin"' \
+  infra/roots/foundation/main.tf
+rg --fixed-strings --quiet \
+  'security_constraints = var.organization_id == null ? {} :' \
+  infra/roots/foundation/main.tf
+[[ "$(rg --fixed-strings --count \
+  'project                     = google_project.environment["foundation"].project_id' \
+  infra/roots/foundation/main.tf)" == 2 ]]
+rg --fixed-strings --quiet \
+  'id = "${var.project_ids.foundation}/${each.value}"' \
+  infra/roots/foundation/imports.tf
 if rg --fixed-strings --quiet 'storage.buckets.delete' infra/roots/foundation/main.tf; then
   printf 'routine foundation identity must not receive bucket deletion authority\n' >&2
   exit 1
