@@ -125,12 +125,16 @@ if rg --quiet 'OSFO_OPENROUTER_MODEL|OPENAI_API_KEY' .env.example; then
   exit 1
 fi
 rg --fixed-strings --quiet 'gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.22.0@sha256:' "$root/image-digests.json"
+rg --fixed-strings --quiet \
+  'us-east4-docker.pkg.dev/osfo-development-318708913/osfo/application@sha256:5c0779a0b6ce57817f6d2e05c062236c6d586e0f12ec7dc07292216d4fa4bb84' \
+  "$root/image-digests.json"
 
 jq -e '
-  .platform_ready == false
+  .platform_ready == true
   and .serving_enabled == false
   and .public_hostname == null
-  and .model_adapter_secret_version == null
+  and .cursor_secret_version == "1"
+  and .model_adapter_secret_version == "1"
   and .execution_profile_ref == "oz.openrouter.minimax.minimax-m3.chat-completions.v1"
   and (has("execution_profiles") | not)
   and .operating_contract.relay_worker_count == 1
