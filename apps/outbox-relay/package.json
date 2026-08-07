@@ -1,21 +1,18 @@
 {
-  "name": "@osfo/agent-run-worker",
+  "name": "@osfo/outbox-relay",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
-    "dev": "node --import tsx src/main.ts",
+    "dev": "node --conditions=development --import tsx src/main.ts",
     "start": "node dist/main.js",
-    "test": "vitest run --exclude '**/*.postgres.test.ts' --exclude '**/.typescript/**' --exclude '**/dist/**'",
-    "test:postgres": "vitest run test/*.postgres.test.ts",
+    "test": "vitest run --exclude '**/.typescript/**' --exclude '**/dist/**'",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
-    "@google-cloud/pubsub": "6.0.0",
     "@osfo/agent-run": "workspace:*",
-    "@osfo/agent-runtime": "workspace:*",
     "@osfo/db": "workspace:*",
     "effect": "catalog:"
   },

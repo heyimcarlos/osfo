@@ -32,6 +32,8 @@
   },
   "dependencies": {
     "@effect/sql-pg": "catalog:",
+    "@osfo/agent-run": "workspace:*",
+    "@osfo/agent-runtime": "workspace:*",
     "@osfo/api": "workspace:*",
     "@osfo/session": "workspace:*",
     "drizzle-orm": "catalog:",

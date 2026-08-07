@@ -25,12 +25,14 @@
     "infra:test": "vitest run infra/test/terraform-foundation.test.ts",
     "lint": "oxlint --deny-warnings .",
     "start:agent-run-worker": "bun run --cwd apps/agent-run-worker start",
+    "start:outbox-relay": "bun run --cwd apps/outbox-relay start",
     "start:ingress": "bun run --cwd apps/ingress start",
     "test": "bun run infra:test && turbo run test",
     "typecheck": "tsc --project tsconfig.scripts.json && tsc --project tsconfig.infra.json && turbo run typecheck"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
+    "@effect/sql-pg": "catalog:",
     "@osfo/db": "workspace:*",
     "effect": "catalog:"
   },

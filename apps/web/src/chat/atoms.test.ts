@@ -152,6 +152,8 @@ describe("Thread chat atoms", () => {
 
     expect(registry.get(chat.messages)).toEqual([
       {
+        type: "userMessage",
+        messageId: receipt.userMessageId,
         agentRunId: receipt.agentRunId,
         content: "Hello from canonical authority",
         eventId: event.eventId,

@@ -11,7 +11,7 @@ import {
   type SubmitMessageCommand,
 } from "@osfo/api";
 import { makeUserMessageAppended } from "@osfo/session";
-import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import * as PgDrizzle from "drizzle-orm/effect-postgres";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -26,6 +26,8 @@ import {
   agentRuns,
   authenticationSessions,
   outboxObligations,
+  relayPrincipals,
+  relayThreads,
   threadEvents,
   threads,
   userMessages,
@@ -204,6 +206,16 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
             const agentRunId = randomUUID();
             const eventId = randomUUID();
             const outboxId = randomUUID();
+            const [predecessor] = yield* tx
+              .select({ outboxId: outboxObligations.outboxId })
+              .from(outboxObligations)
+              .innerJoin(
+                acceptanceReceipts,
+                eq(acceptanceReceipts.agentRunId, outboxObligations.agentRunId),
+              )
+              .where(eq(acceptanceReceipts.threadId, command.threadId))
+              .orderBy(desc(acceptanceReceipts.threadPosition))
+              .limit(1);
             const event = yield* makeUserMessageAppended({
               eventId,
               threadId: command.threadId,
@@ -253,10 +265,16 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
               agentRunId,
               threadId: command.threadId,
               principalId,
+              predecessorOutboxId: predecessor?.outboxId,
               kind: "AgentRunPending",
               version: 1,
               createdAt: acceptedAt,
             });
+            yield* tx.insert(relayPrincipals).values({ principalId }).onConflictDoNothing();
+            yield* tx
+              .insert(relayThreads)
+              .values({ threadId: command.threadId, principalId })
+              .onConflictDoNothing();
 
             const [receipt] = yield* tx
               .insert(acceptanceReceipts)

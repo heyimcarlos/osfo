@@ -1,18 +1,18 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
-import { verifyDatabaseMigrations } from "@osfo/db";
+import { migrateDatabase } from "@osfo/db";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 
-const verifyMigrationBaseline = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
+const applyMigrations = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
   Effect.flatMap((databaseUrl) =>
-    verifyDatabaseMigrations({
+    migrateDatabase({
       applicationName: "osfo-migration-verification",
       databaseUrl,
     }),
   ),
 );
 
-verifyMigrationBaseline.pipe(
-  Effect.tap((baseline) => Effect.logInfo("Migration baseline verified", baseline)),
+applyMigrations.pipe(
+  Effect.tap(() => Effect.logInfo("Database migrations applied")),
   NodeRuntime.runMain,
 );

@@ -1,5 +1,9 @@
 # Mistakes
 
+- 2026-08-06: Do not interpolate issue numbers through an unquoted heredoc when
+  the Markdown body contains backticks. Create the literal body with a quoted
+  heredoc, then add dynamic dependency references through a separate tracker
+  operation and re-read the rendered body before continuing.
 - 2026-08-06: Do not hand-roll HTTP JSON decoding with `isRecord`, exact-key
   checks, regular expressions, and casts. Declare the contract once with Effect
   Schema, then derive request decoding, response encoding, typed clients, and
