@@ -12,9 +12,6 @@ locals {
     observed_egress_ip=$(curl --fail --silent --show-error --retry 6 https://api.ipify.org)
     test "$${observed_egress_ip}" = "$${STATIC_EGRESS_IP}"
 
-    gcloud secrets versions access latest \
-      --secret="$${MODEL_SECRET}" --project="$${PROJECT_ID}" >/dev/null
-
     access_token=$(curl --fail --silent --show-error \
       -H 'Metadata-Flavor: Google' \
       'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \
@@ -23,14 +20,7 @@ locals {
       "host=/cloudsql/$${DB_CONNECTION} dbname=osfo user=$${DB_USER} sslmode=disable" \
       --no-psqlrc --tuples-only --command='select 1' | grep -q 1
 
-    printf 'PASS direct_vpc_database_dns_nat_and_secret\n'
-  SCRIPT
-
-  temporal_secret_probe_script = <<-SCRIPT
-    set -euo pipefail
-    gcloud secrets versions access latest \
-      --secret="$${TEMPORAL_SECRET}" --project="$${PROJECT_ID}" >/dev/null
-    printf 'PASS temporal_secret_accessor\n'
+    printf 'PASS direct_vpc_database_dns_nat\n'
   SCRIPT
 
   denied_secret_probe_script = <<-SCRIPT
@@ -108,11 +98,6 @@ resource "google_cloud_run_v2_job" "network" {
           name  = "DB_USER"
           value = trimsuffix(var.qualification_service_accounts["network"], ".gserviceaccount.com")
         }
-        env {
-          name  = "MODEL_SECRET"
-          value = var.secret_names["model-adapter"]
-        }
-
         volume_mounts {
           name       = "cloudsql"
           mount_path = "/cloudsql"
@@ -138,37 +123,6 @@ resource "google_cloud_run_v2_job" "network" {
   }
 
   depends_on = [google_dns_record_set.database]
-}
-
-resource "google_cloud_run_v2_job" "temporal_secret" {
-  count = var.enabled ? 1 : 0
-
-  project             = var.project_id
-  location            = var.region
-  name                = "${var.name_prefix}-temporal-secret-probe"
-  deletion_protection = false
-  labels              = var.labels
-
-  template {
-    template {
-      service_account = var.qualification_service_accounts["temporal_secret"]
-      timeout         = "300s"
-      max_retries     = 0
-      containers {
-        image   = var.probe_image
-        command = ["/bin/bash", "-c"]
-        args    = [local.temporal_secret_probe_script]
-        env {
-          name  = "PROJECT_ID"
-          value = var.project_id
-        }
-        env {
-          name  = "TEMPORAL_SECRET"
-          value = var.secret_names["temporal-cloud"]
-        }
-      }
-    }
-  }
 }
 
 resource "google_cloud_run_v2_job" "denied_secret" {
@@ -204,9 +158,8 @@ resource "google_cloud_run_v2_job" "denied_secret" {
 
 output "job_names" {
   value = {
-    network         = try(google_cloud_run_v2_job.network[0].name, null)
-    temporal_secret = try(google_cloud_run_v2_job.temporal_secret[0].name, null)
-    denied_secret   = try(google_cloud_run_v2_job.denied_secret[0].name, null)
+    network       = try(google_cloud_run_v2_job.network[0].name, null)
+    denied_secret = try(google_cloud_run_v2_job.denied_secret[0].name, null)
   }
 }
 

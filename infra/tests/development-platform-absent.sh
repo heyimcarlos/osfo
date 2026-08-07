@@ -30,6 +30,24 @@ assert_absent() {
   fi
 }
 
+assert_absent_prefix() {
+  local label=$1
+  local prefix=$2
+  shift 2
+  local listing_file="$scratch/$label.list"
+
+  if ! "$@" >"$listing_file" 2>"$scratch/$label.error"; then
+    printf 'FAIL: provider lookup for %s failed closed\n' "$label" >&2
+    cat "$scratch/$label.error" >&2
+    return 1
+  fi
+  if sed 's#.*/##' "$listing_file" | grep -F -- "$prefix" >/dev/null; then
+    printf 'FAIL: provider lookup found disposable %s with prefix %s\n' \
+      "$label" "$prefix" >&2
+    return 1
+  fi
+}
+
 assert_present() {
   local label=$1
   local needle=$2
@@ -54,6 +72,8 @@ export CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB="https://$region-pubsub.googleapis
 assert_absent pubsub_topic "$name_prefix-agentruns" \
   gcloud pubsub topics list --project="$project_id" --format='value(name)'
 assert_absent pubsub_subscription "$name_prefix-agentruns" \
+  gcloud pubsub subscriptions list --project="$project_id" --format='value(name)'
+assert_absent_prefix qualification_subscription "$name_prefix-ordering-" \
   gcloud pubsub subscriptions list --project="$project_id" --format='value(name)'
 unset CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB
 
@@ -94,6 +114,7 @@ jq -n --arg project_id "$project_id" --arg region "$region" '{
   checks: {
     cloud_sql: "PASS",
     pubsub_topic_and_subscription: "PASS",
+    qualification_subscriptions: "PASS",
     retained_runtime_service_accounts: "PASS",
     retained_qualification_service_accounts: "PASS",
     secrets: "PASS",

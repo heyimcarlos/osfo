@@ -32,7 +32,8 @@ rg --fixed-strings --quiet 'gcloud sql instances describe' infra/tests/developme
 rg --fixed-strings --quiet 'gcloud pubsub topics publish' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'gcloud storage cp --if-generation-match=0' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'temporal_private_service_connect' infra/tests/development-platform-smoke.sh
-rg --fixed-strings --quiet 'authorized_secret_version_access' infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet 'authorized_secret_version_access: "MISSING"' \
+  infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'google_cloud_run_v2_job' infra/modules/qualification-probe/main.tf
 rg --fixed-strings --quiet 'egress = "ALL_TRAFFIC"' infra/modules/qualification-probe/main.tf
 rg --fixed-strings --quiet 'private_database_connection_from_direct_vpc: "PASS"' infra/tests/development-platform-smoke.sh
@@ -48,6 +49,8 @@ rg --fixed-strings --quiet 'probe_toolchain_determinism: "MISSING"' \
   infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'development-platform-absent.sh' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'development-platform-audit.sh' infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'qualification_subscription "$name_prefix-ordering-"' \
+  infra/tests/development-platform-absent.sh
 rg --fixed-strings --quiet 'diff-index --quiet HEAD --' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'state_status=$?' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'destroy_plan_bindings: $destroy_plan_bindings' \
@@ -57,6 +60,17 @@ if rg --fixed-strings --quiet 'state-list.error' infra/tests/development-platfor
   exit 1
 fi
 rg --fixed-strings --quiet 'exact_disposable_destroy: "PASS"' infra/tests/development-platform-live.sh
+# The literal shell variable references are part of the implementation contract.
+# shellcheck disable=SC2016
+for retained_lookup in \
+  'addresses describe "$name_prefix-egress"' \
+  'routers describe "$name_prefix-router"' \
+  'firewall-rules describe "$name_prefix-deny-ingress"' \
+  'firewall-rules describe "$name_prefix-allow-egress"' \
+  'addresses describe "$name_prefix-private-services"' \
+  'services vpc-peerings list'; do
+  rg --fixed-strings --quiet "$retained_lookup" infra/tests/development-platform-live.sh
+done
 rg --fixed-strings --quiet 'trap cleanup_on_exit EXIT' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet "exit 130' INT TERM" infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'quota_requirement static_external_ipv4_addresses' infra/tests/development-platform-preflight.sh
@@ -121,9 +135,25 @@ if rg --quiet 'resource "google_(project|service_account)_iam_member"' \
 fi
 platform_roles=$(sed -n '/platform_project_roles =/,/platform_role_bindings =/p' \
   infra/roots/foundation/main.tf)
+if ! grep -Fq 'roles/iam.serviceAccountViewer' <<<"$platform_roles"; then
+  printf 'platform identity must be able to verify retained service accounts\n' >&2
+  exit 1
+fi
 if grep -Eq 'roles/(iam.serviceAccountAdmin|resourcemanager.projectIamAdmin|serviceusage.serviceUsageConsumer)' \
   <<<"$platform_roles"; then
   printf 'platform identity must not administer project or service-account IAM\n' >&2
+  exit 1
+fi
+secret_access=$(sed -n \
+  '/resource "google_project_iam_member" "development_secret_access"/,/resource "google_service_account" "development_runtime"/p' \
+  infra/roots/foundation/main.tf)
+if grep -Fq 'development_qualification' <<<"$secret_access"; then
+  printf 'qualification identities must not receive secret payload access\n' >&2
+  exit 1
+fi
+if rg --fixed-strings --quiet 'development_platform_job_act_as' \
+  infra/roots/foundation/main.tf; then
+  printf 'platform identity must not impersonate secret-bearing runtime identities\n' >&2
   exit 1
 fi
 platform_custom_roles=$(sed -n \
@@ -150,7 +180,7 @@ jq -e '
 jq -e '
   . as $config
   | ($config.qualification_service_accounts | keys) == [
-    "denied_secret", "network", "temporal_secret"
+    "denied_secret", "network"
   ]
   and all($config.qualification_service_accounts | to_entries[];
     .value | startswith("\($config.name_prefix)-qual-")

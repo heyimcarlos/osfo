@@ -86,7 +86,6 @@ locals {
     "roles/compute.networkAdmin",
     "roles/compute.securityAdmin",
     "roles/dns.admin",
-    "roles/iam.serviceAccountViewer",
     "roles/iam.roleAdmin",
     "roles/servicenetworking.networksAdmin",
   ]))
@@ -121,6 +120,7 @@ locals {
     "roles/cloudquotas.viewer",
     "roles/compute.networkAdmin",
     "roles/dns.admin",
+    "roles/iam.serviceAccountViewer",
     "roles/logging.viewer",
     "roles/pubsub.admin",
     "roles/run.admin",
@@ -153,31 +153,18 @@ locals {
   }
 
   development_qualification_identities = {
-    denied_secret   = "qual-denied"
-    network         = "qual-network"
-    temporal_secret = "qual-temporal"
+    denied_secret = "qual-denied"
+    network       = "qual-network"
   }
 
   development_secret_access_bindings = {
     runtime_agentrun = {
-      identity_kind = "runtime"
-      identity      = "agentrun"
-      secret        = "model-adapter"
+      identity = "agentrun"
+      secret   = "model-adapter"
     }
     runtime_temporal = {
-      identity_kind = "runtime"
-      identity      = "temporal"
-      secret        = "temporal-cloud"
-    }
-    qualification_network = {
-      identity_kind = "qualification"
-      identity      = "network"
-      secret        = "model-adapter"
-    }
-    qualification_temporal = {
-      identity_kind = "qualification"
-      identity      = "temporal_secret"
-      secret        = "temporal-cloud"
+      identity = "temporal"
+      secret   = "temporal-cloud"
     }
   }
 
@@ -625,9 +612,7 @@ resource "google_project_iam_member" "development_secret_access" {
 
   project = google_project.environment["development"].project_id
   role    = "roles/secretmanager.secretAccessor"
-  member = "serviceAccount:${each.value.identity_kind == "runtime" ?
-    google_service_account.development_runtime[each.value.identity].email :
-  google_service_account.development_qualification[each.value.identity].email}"
+  member  = "serviceAccount:${google_service_account.development_runtime[each.value.identity].email}"
 
   condition {
     title       = "${replace(each.key, "_", "-")}-secret"

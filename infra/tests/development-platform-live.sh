@@ -103,8 +103,32 @@ destroy_platform() {
   gcloud compute networks describe "$name_prefix-vpc" --project="$project_id" >/dev/null
   gcloud compute networks subnets describe "$name_prefix-us-east4" \
     --region="$region" --project="$project_id" >/dev/null
+  gcloud compute addresses describe "$name_prefix-egress" \
+    --region="$region" --project="$project_id" >/dev/null
+  gcloud compute routers describe "$name_prefix-router" \
+    --region="$region" --project="$project_id" >/dev/null
   gcloud compute routers nats describe "$name_prefix-nat" --router="$name_prefix-router" \
     --region="$region" --project="$project_id" >/dev/null
+  gcloud compute firewall-rules describe "$name_prefix-deny-ingress" \
+    --project="$project_id" >/dev/null
+  gcloud compute firewall-rules describe "$name_prefix-allow-egress" \
+    --project="$project_id" >/dev/null
+  gcloud compute addresses describe "$name_prefix-private-services" \
+    --global --project="$project_id" >/dev/null
+  local service_connection_output
+  service_connection_output=$(gcloud services vpc-peerings list \
+    --network="$name_prefix-vpc" --service=servicenetworking.googleapis.com \
+    --project="$project_id" --format=json)
+  if ! jq -e --arg network "/networks/$name_prefix-vpc" \
+    --arg allocation "$name_prefix-private-services" \
+    'any(.[];
+      (.network | endswith($network))
+      and .service == "services/servicenetworking.googleapis.com"
+      and (.reservedPeeringRanges | index($allocation) != null))' \
+    <<<"$service_connection_output" >/dev/null; then
+    printf 'FAIL: exact retained Service Networking connection is absent\n' >&2
+    return 1
+  fi
   gcloud dns managed-zones describe "$name_prefix-private" --project="$project_id" >/dev/null
 }
 

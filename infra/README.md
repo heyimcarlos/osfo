@@ -11,8 +11,8 @@ development-only `us-east4` VPC, Direct VPC egress subnet, static Cloud NAT,
 private services access, private DNS, firewall rules, and an optional Temporal
 Cloud Private Service Connect endpoint. The `development/platform` root reads
 those provider resources by their reviewed names. Foundation also retains the
-six runtime service-account identities, three qualification-only identities,
-the exact Cloud SQL and conditional secret-access roles, and three probe-only
+six runtime service-account identities, two qualification-only identities,
+the exact Cloud SQL and conditional secret-access roles, and two probe-only
 `actAs` grants. Data authority owns zonal private-IP Cloud SQL PostgreSQL with
 IAM database authentication, Secret Manager containers, immutable Artifact Registry tags,
 and the disposable content-addressed artifact bucket. Command buffer owns the
@@ -57,13 +57,14 @@ available, the report records Temporal PSC as `MISSING`, never `PASS`.
 The platform smoke uses a digest-pinned base image for disposable Cloud Run
 Jobs with Direct VPC egress. It proves private-only Cloud SQL connectivity with
 an IAM database login, private DNS resolution, and observed public egress
-through the retained static NAT address. Foundation-owned qualification-only
-identities read known non-secret versions, and a third identity must fail with
-the exact `secretmanager.versions.access` permission denial. Runtime identities
-are never impersonable by the platform identity. The platform may create
-versions and manage containers, but it cannot change secret IAM, access version
-payloads, or mint runtime credentials. Package installation inside the pinned
-base image is still mutable, so full probe toolchain determinism is `MISSING`.
+through the retained static NAT address. No qualification identity has secret
+access, and runtime identities are never impersonable by the platform identity.
+The denied probe must fail with the exact `secretmanager.versions.access`
+permission denial. The platform may create versions and manage containers, but
+it cannot change secret IAM, access version payloads, or mint runtime
+credentials. Authorized secret-version access therefore remains `MISSING` in
+this preparatory PR. Package installation inside the pinned base image is still
+mutable, so full probe toolchain determinism is also `MISSING`.
 
 The ordered Pub/Sub proof first validates the Terraform-managed subscription's
 topic, ordering, retention, and acknowledgement configuration. Its behavioral
@@ -293,7 +294,7 @@ infra/scripts/apply-plan.sh production infra/roots/production/platform \
 ```
 
 The manual development workflow creates the full disposable development
-platform and the three qualification jobs, exercises live managed services,
+platform and the two qualification jobs, exercises live managed services,
 then destroys that complete disposable set. It does not destroy the retained
 foundation network baseline. Its remote state remains versioned and
 recoverable. A remaining acceptance gap, including unavailable Temporal PSC,

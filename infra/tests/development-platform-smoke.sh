@@ -32,7 +32,6 @@ artifact_bucket=$(jq -r '.artifact_bucket_name' "$scratch/platform.json")
 network_id=$(jq -r '.network_id' "$scratch/platform.json")
 static_egress_ip=$(jq -r '.static_egress_ip' "$scratch/platform.json")
 network_probe_job=$(jq -r '.qualification_probe_jobs.network' "$scratch/platform.json")
-temporal_secret_probe_job=$(jq -r '.qualification_probe_jobs.temporal_secret' "$scratch/platform.json")
 denied_secret_probe_job=$(jq -r '.qualification_probe_jobs.denied_secret' "$scratch/platform.json")
 
 gcloud sql instances describe "$sql_instance" --project="$project_id" --format=json >"$scratch/sql.json"
@@ -125,8 +124,6 @@ done
 
 gcloud run jobs execute "$network_probe_job" --project="$project_id" \
   --region="$region" --wait --format=json >"$scratch/network-execution.json"
-gcloud run jobs execute "$temporal_secret_probe_job" --project="$project_id" \
-  --region="$region" --wait --format=json >"$scratch/temporal-secret-execution.json"
 gcloud run jobs execute "$denied_secret_probe_job" --project="$project_id" \
   --region="$region" --wait --format=json >"$scratch/denied-secret-execution.json"
 
@@ -187,7 +184,6 @@ jq -n \
   --arg private_dns_record "$private_dns_record_status" \
   --slurpfile quota_preflight "$preflight_report" \
   --slurpfile network_execution "$scratch/network-execution.json" \
-  --slurpfile temporal_secret_execution "$scratch/temporal-secret-execution.json" \
   --slurpfile denied_secret_execution "$scratch/denied-secret-execution.json" \
   '{schema_version: 1, qualification: $qualification, project_id: $project_id, region: $region, checks: {
     private_cloud_sql_configuration_and_iam_users: "PASS",
@@ -197,7 +193,7 @@ jq -n \
     artifact_precondition_round_trip: "PASS",
     artifact_precondition_rejected_second_generation: "PASS",
     artifact_immutability_enforced_by_iam: "MISSING",
-    authorized_secret_version_access: "PASS",
+    authorized_secret_version_access: "MISSING",
     exact_permission_denied_secret_payload_access: "PASS",
     probe_base_image_digest: "PASS",
     probe_toolchain_determinism: "MISSING",
@@ -210,7 +206,6 @@ jq -n \
   }, artifact_sha256: $artifact_sha256, pubsub_endpoint: $pubsub_endpoint,
   qualification_executions: {
     network: $network_execution[0].metadata.name,
-    temporal_secret: $temporal_secret_execution[0].metadata.name,
     denied_secret: $denied_secret_execution[0].metadata.name
   },
   temporal_service_attachment: $temporal_service_attachment}' >"$scratch/report.json"
