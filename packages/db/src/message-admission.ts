@@ -510,7 +510,7 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
               agentRunCapacityReservations,
               eq(agentRunCapacityReservations.agentRunId, agentRuns.agentRunId),
             )
-            .where(sql`${agentRuns.state} NOT IN ('succeeded', 'failed', 'canceled')`)
+            .where(inArray(agentRuns.state, ["pending", "running"]))
             .limit(reconciliationBatchSize + 1);
           if (activeRuns.length > reconciliationBatchSize) {
             return yield* new AdmissionUnavailable();
@@ -518,7 +518,7 @@ const messageAdmissionLayer = (config: MessageAdmissionDatabaseConfig) => {
 
           const terminalHeldCondition = and(
             eq(agentRunCapacityReservations.state, "held"),
-            inArray(agentRuns.state, ["succeeded", "failed", "canceled"]),
+            inArray(agentRuns.state, ["waiting", "succeeded", "failed", "canceled"]),
           );
           const terminalHeldCandidates = yield* db
             .select({ agentRunId: agentRunCapacityReservations.agentRunId })

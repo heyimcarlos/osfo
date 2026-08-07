@@ -339,6 +339,17 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
         );
       }),
     );
+    expect(await run(MessageAdmission.use((admission) => admission.reconcileCapacity()))).toEqual({
+      expectedNonTerminalCount: 0,
+      globalReservedBefore: 0,
+      globalReservedAfter: 0,
+      principalMismatchCountBefore: 0,
+      principalMismatchCountAfter: 0,
+      reservationMismatchCountBefore: 0,
+      reservationMismatchCountAfter: 0,
+      repaired: false,
+      sweepComplete: true,
+    });
 
     const canceled = await run(
       AgentRunCancellation.use((cancellation) =>
