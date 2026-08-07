@@ -67,14 +67,17 @@ describe("UserMessageAppended", () => {
   it("folds an accepted message into the complete client projection", () => {
     const event = Effect.runSync(makeUserMessageAppended(eventInput));
     const snapshot = Effect.runSync(
-      makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "cursor-origin" }),
+      makeEmptyThreadSnapshot({
+        threadId: eventInput.threadId,
+        throughCursor: "cursor-origin",
+      }),
     );
 
     expect(
       Effect.runSync(applyThreadEvent(snapshot, { ...event, cursor: "cursor-position-1" })),
     ).toEqual({
       projection: "nativeThread",
-      schemaVersion: 3,
+      schemaVersion: 4,
       threadId: eventInput.threadId,
       throughPosition: "1",
       throughCursor: "cursor-position-1",
@@ -156,10 +159,16 @@ describe("UserMessageAppended", () => {
     const result = events.reduce(
       (snapshot, event, index) =>
         Effect.runSync(
-          applyThreadEvent(snapshot, { ...event, cursor: `cursor-position-${index + 1}` }),
+          applyThreadEvent(snapshot, {
+            ...event,
+            cursor: `cursor-position-${index + 1}`,
+          }),
         ),
       Effect.runSync(
-        makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+        makeEmptyThreadSnapshot({
+          threadId: eventInput.threadId,
+          throughCursor: "origin",
+        }),
       ),
     );
 
@@ -227,10 +236,16 @@ describe("UserMessageAppended", () => {
     const result = events.reduce(
       (snapshot, event, index) =>
         Effect.runSync(
-          applyThreadEvent(snapshot, { ...event, cursor: `cursor-position-${index + 1}` }),
+          applyThreadEvent(snapshot, {
+            ...event,
+            cursor: `cursor-position-${index + 1}`,
+          }),
         ),
       Effect.runSync(
-        makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+        makeEmptyThreadSnapshot({
+          threadId: eventInput.threadId,
+          throughCursor: "origin",
+        }),
       ),
     );
 
@@ -266,10 +281,16 @@ describe("UserMessageAppended", () => {
     const result = events.reduce(
       (snapshot, event, index) =>
         Effect.runSync(
-          applyThreadEvent(snapshot, { ...event, cursor: `cursor-position-${index + 1}` }),
+          applyThreadEvent(snapshot, {
+            ...event,
+            cursor: `cursor-position-${index + 1}`,
+          }),
         ),
       Effect.runSync(
-        makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+        makeEmptyThreadSnapshot({
+          threadId: eventInput.threadId,
+          throughCursor: "origin",
+        }),
       ),
     );
 
@@ -306,14 +327,22 @@ describe("UserMessageAppended", () => {
     const snapshot = Effect.runSync(
       applyThreadEvent(
         Effect.runSync(
-          makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+          makeEmptyThreadSnapshot({
+            threadId: eventInput.threadId,
+            throughCursor: "origin",
+          }),
         ),
         { ...first, cursor: "cursor-position-1" },
       ),
     );
 
     const error = Effect.runSync(
-      Effect.flip(applyThreadEvent(snapshot, { ...conflicting, cursor: "cursor-position-2" })),
+      Effect.flip(
+        applyThreadEvent(snapshot, {
+          ...conflicting,
+          cursor: "cursor-position-2",
+        }),
+      ),
     );
 
     expect(error).toBeInstanceOf(InvalidThreadProjection);
@@ -343,14 +372,22 @@ describe("UserMessageAppended", () => {
     const snapshot = Effect.runSync(
       applyThreadEvent(
         Effect.runSync(
-          makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+          makeEmptyThreadSnapshot({
+            threadId: eventInput.threadId,
+            throughCursor: "origin",
+          }),
         ),
         { ...first, cursor: "cursor-position-1" },
       ),
     );
 
     const error = Effect.runSync(
-      Effect.flip(applyThreadEvent(snapshot, { ...conflicting, cursor: "cursor-position-2" })),
+      Effect.flip(
+        applyThreadEvent(snapshot, {
+          ...conflicting,
+          cursor: "cursor-position-2",
+        }),
+      ),
     );
 
     expect(error).toBeInstanceOf(InvalidThreadProjection);
@@ -366,7 +403,10 @@ describe("UserMessageAppended", () => {
       }),
     );
     const empty = Effect.runSync(
-      makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+      makeEmptyThreadSnapshot({
+        threadId: eventInput.threadId,
+        throughCursor: "origin",
+      }),
     );
     const unknown = Effect.runSync(
       Effect.flip(applyThreadEvent(empty, { ...terminal, cursor: "cursor-position-1" })),
@@ -405,14 +445,22 @@ describe("UserMessageAppended", () => {
     const snapshot = Effect.runSync(
       applyThreadEvent(
         Effect.runSync(
-          makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+          makeEmptyThreadSnapshot({
+            threadId: eventInput.threadId,
+            throughCursor: "origin",
+          }),
         ),
         { ...event, cursor: "cursor-position-1" },
       ),
     );
 
     expect(
-      Effect.runSync(applyThreadEvent(snapshot, { ...event, cursor: "fresh-duplicate-cursor" })),
+      Effect.runSync(
+        applyThreadEvent(snapshot, {
+          ...event,
+          cursor: "fresh-duplicate-cursor",
+        }),
+      ),
     ).toBe(snapshot);
   });
 
@@ -452,7 +500,10 @@ describe("UserMessageAppended", () => {
   it("fails closed when replay contains a gap", () => {
     const event = Effect.runSync(makeUserMessageAppended({ ...eventInput, threadPosition: "2" }));
     const snapshot = Effect.runSync(
-      makeEmptyThreadSnapshot({ threadId: eventInput.threadId, throughCursor: "origin" }),
+      makeEmptyThreadSnapshot({
+        threadId: eventInput.threadId,
+        throughCursor: "origin",
+      }),
     );
 
     const error = Effect.runSync(

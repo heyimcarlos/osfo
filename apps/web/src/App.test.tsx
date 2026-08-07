@@ -145,6 +145,59 @@ describe("browser reference client", () => {
     expect(html).toContain("Canonical at position 2");
   });
 
+  it("renders a client-safe Action receipt from the canonical projection", () => {
+    const chat = makeTestChat();
+    const toolCallId = "tool_4ad4707e-a960-448b-ab7b-6edcc7ae213f";
+    const html = renderToStaticMarkup(
+      <RegistryProvider
+        initialValues={[
+          [
+            chat.messages,
+            [
+              {
+                type: "actionReceipt",
+                messageId: toolCallId,
+                toolCallId,
+                agentRunId: receipt.agentRunId,
+                approval: {
+                  type: "approved",
+                  approvalRequestId: "32e520b0-224a-4ab4-aa49-b7d2defb43f0",
+                },
+                content: [
+                  "Send demo email",
+                  "Destination: Controlled development inbox",
+                  "Subject: Development Action proof",
+                  "Outcome: applied",
+                  "Boundary: controlled sink stored one message with the Action stable Message-ID",
+                  "Does not prove: delivery to a real recipient",
+                ].join("\n"),
+                eventId: "b399f65c-0274-40b4-aa4d-e7b80f8c531c",
+                occurredAt: receipt.acceptedAt,
+                outcome: "applied",
+                successBoundary: {
+                  name: "mailpitMessageStored",
+                  version: 1,
+                  appliedMeans:
+                    "controlled sink stored one message with the Action stable Message-ID",
+                  doesNotProve: "delivery to a real recipient",
+                },
+                threadPosition: "3",
+              },
+            ],
+          ],
+        ]}
+      >
+        <App chat={chat} threadId={threadId} />
+      </RegistryProvider>,
+    );
+
+    expect(html).toContain("Outcome: applied");
+    expect(html).toContain("Controlled development inbox");
+    expect(html).toContain("Does not prove: delivery to a real recipient");
+    expect(html).toContain(toolCallId);
+    expect(html).not.toContain("osfo-demo-recipient@example.invalid");
+  });
+
   it("resumes committed assistant output through the API and renders it reactively", async () => {
     const assistantOutputId = "86290831-b9ca-414a-abf1-4055b5347133";
     const eventInput = {

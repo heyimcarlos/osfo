@@ -42,6 +42,10 @@ type AssistantOutputStatus = Extract<
   ThreadSnapshot["timeline"][number],
   { readonly type: "assistantOutput" }
 >["status"];
+type ActionReceiptItem = Extract<
+  ThreadSnapshot["timeline"][number],
+  { readonly type: "actionReceipt" }
+>;
 
 export type CanonicalThreadMessage =
   | {
@@ -64,31 +68,65 @@ export type CanonicalThreadMessage =
       readonly occurredAt: string;
       readonly threadPosition: string;
       readonly status: AssistantOutputStatus;
+    }
+  | {
+      readonly type: "actionReceipt";
+      readonly messageId: string;
+      readonly agentRunId: string;
+      readonly approval: ActionReceiptItem["approval"];
+      readonly content: string;
+      readonly eventId: string;
+      readonly occurredAt: string;
+      readonly outcome: ActionReceiptItem["outcome"];
+      readonly successBoundary: ActionReceiptItem["successBoundary"];
+      readonly threadPosition: string;
+      readonly toolCallId: string;
     };
 
 const messagesFromSnapshot = (snapshot: ThreadSnapshot): ReadonlyArray<CanonicalThreadMessage> =>
   snapshot.timeline.map((item): CanonicalThreadMessage => {
-    const source = {
+    const canonical = {
       agentRunId: item.agentRunId,
-      content: item.content.map((block) => block.text).join(""),
       eventId: item.source.firstEventId,
       occurredAt: item.source.firstOccurredAt,
       threadPosition: item.source.firstPosition,
     };
-    return item.type === "userMessage"
-      ? {
-          ...source,
+    switch (item.type) {
+      case "userMessage":
+        return {
+          ...canonical,
+          content: item.content.map((block) => block.text).join(""),
           type: "userMessage",
           messageId: item.userMessageId,
           userMessageId: item.userMessageId,
-        }
-      : {
-          ...source,
+        };
+      case "assistantOutput":
+        return {
+          ...canonical,
+          content: item.content.map((block) => block.text).join(""),
           type: "assistantOutput",
           messageId: item.assistantOutputId,
           assistantOutputId: item.assistantOutputId,
           status: item.status,
         };
+      case "actionReceipt":
+        return {
+          ...canonical,
+          approval: item.approval,
+          content: [
+            item.presentation.title,
+            ...item.presentation.fields.map((field) => `${field.label}: ${field.value}`),
+            `Outcome: ${item.outcome}`,
+            `Boundary: ${item.successBoundary.appliedMeans}`,
+            `Does not prove: ${item.successBoundary.doesNotProve}`,
+          ].join("\n"),
+          messageId: item.toolCallId,
+          outcome: item.outcome,
+          successBoundary: item.successBoundary,
+          toolCallId: item.toolCallId,
+          type: "actionReceipt",
+        };
+    }
   });
 
 const makeApiResumeTransport = (options: ThreadChatOptions): ThreadResumeTransport => ({

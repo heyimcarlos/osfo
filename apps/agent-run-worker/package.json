@@ -16,7 +16,7 @@
     "qualify:openrouter-live": "node --conditions=development --import tsx scripts/qualify-openrouter-live.ts",
     "start": "node dist/main.js",
     "test": "vitest run --exclude '**/*.postgres.test.ts' --exclude '**/.typescript/**' --exclude '**/dist/**'",
-    "test:postgres": "vitest run test/*.postgres.test.ts",
+    "test:postgres": "vitest run --no-file-parallelism test/*.postgres.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

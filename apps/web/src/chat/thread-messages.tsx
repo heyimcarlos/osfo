@@ -87,11 +87,19 @@ function CanonicalMessage({
               <dl className="mt-2 grid gap-1 rounded-lg border bg-background p-3 text-left font-mono text-[11px] leading-5 shadow-sm">
                 <CanonicalField label="Event" value={message.eventId} />
                 <CanonicalField
-                  label={message.type === "userMessage" ? "Message" : "Output"}
+                  label={
+                    message.type === "userMessage"
+                      ? "Message"
+                      : message.type === "assistantOutput"
+                        ? "Output"
+                        : "Action"
+                  }
                   value={
                     message.type === "userMessage"
                       ? message.userMessageId
-                      : message.assistantOutputId
+                      : message.type === "assistantOutput"
+                        ? message.assistantOutputId
+                        : message.toolCallId
                   }
                 />
                 <CanonicalField label="AgentRun" value={message.agentRunId} />

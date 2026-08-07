@@ -10,6 +10,7 @@ export {
   makeAgentRunRepositoryLayer,
   type AgentRunRepositoryDatabaseConfig,
 } from "./agent-run-repository.js";
+export { makeActionRepositoryLayer } from "./action-repository.js";
 export {
   bootstrapDatabaseAccess,
   DatabaseAccessOwnerUnavailable,
