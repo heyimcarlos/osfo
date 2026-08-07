@@ -1,0 +1,583 @@
+{
+  "schemaVersion": 1,
+  "packet": "openpoke-v1-demo",
+  "artifacts": [
+    {
+      "id": "packet-readme",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "README.md",
+      "sha256": "02c32db5299e00bb69dabbd90a1322ee9ac4545ccff9ba80b42f77bba052e4c5",
+      "description": "Packet entry point."
+    },
+    {
+      "id": "current-architecture",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "architecture.md",
+      "sha256": "181c8693c88123d39939f46812e3740dbb54e2197825b8fd297f7324cb85c1fd",
+      "description": "Current data, trust, singleton, and horizontal-scale boundaries."
+    },
+    {
+      "id": "evidence-matrix",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "MISSING",
+      "path": "evidence.md",
+      "sha256": "552d9f0b9ad238fa1345a8d1cfeb2b88b671645b625403bbf30872645440c044",
+      "description": "Complete matrix whose overall production gate remains MISSING."
+    },
+    {
+      "id": "three-part-walkthrough",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "walkthrough.md",
+      "sha256": "c333fc59cce10c494cb4fdd834facbc23e17034f7e8510c4e34be67f51049070",
+      "description": "Built, skipped or failed, and next-improvements walkthrough."
+    },
+    {
+      "id": "receipt-slo-derivation",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/receipt-slo.json",
+      "sha256": "14254f6c8b5e8925b9b7a9d91833d3a234fdabe27913363cfe66e045d229ad86",
+      "description": "Exact late-receipt counts for both sustained repetitions."
+    },
+    {
+      "id": "grafana-v16-source-manifest",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/grafana/SOURCE-SEALED-SHA256SUMS",
+      "sha256": "11060dd0949afa53038db8b38e1ac16826e2502d805bb0d6e2ea4de058743077",
+      "description": "Copied seal for the complete temporary v16 capture."
+    },
+    {
+      "id": "grafana-v16-import-report",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "MISSING",
+      "path": "assets/grafana/import-report.json",
+      "sha256": "ca27408a9f6974f4ea379c45d14b0120636b1dd6b907f1fa501397df3102f48b",
+      "description": "Derived v16 run report, including explicit MISSING gates.",
+      "sourceManifestSha256": "11060dd0949afa53038db8b38e1ac16826e2502d805bb0d6e2ea4de058743077"
+    },
+    {
+      "id": "grafana-100k-scorecard",
+      "kind": "dashboard-view",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/grafana/openpoke-100k-scorecard.png",
+      "sha256": "c33e1f4b9f11ac631e8c03f7f80bf3751140befb1fec0070b1295d07cdfdd2b4",
+      "description": "100k DAU arithmetic and qualification scorecard.",
+      "sourceManifestSha256": "11060dd0949afa53038db8b38e1ac16826e2502d805bb0d6e2ea4de058743077"
+    },
+    {
+      "id": "grafana-capacity-postgres",
+      "kind": "dashboard-view",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "MISSING",
+      "path": "assets/grafana/openpoke-capacity-postgres.png",
+      "sha256": "27a09e7b26afd690a2b6742d30c1cece42bde0c864ef8b4b031de444ebd51890",
+      "description": "Capacity view that preserves missing production saturation fields.",
+      "sourceManifestSha256": "11060dd0949afa53038db8b38e1ac16826e2502d805bb0d6e2ea4de058743077"
+    },
+    {
+      "id": "grafana-durability-recovery",
+      "kind": "dashboard-view",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "MISSING",
+      "path": "assets/grafana/openpoke-durability-recovery.png",
+      "sha256": "9e0fa2dbf8cde848d2e8f212da6b70c5b35c04501999950b41c0cc151390755e",
+      "description": "Durability view that preserves missing full-recovery gates.",
+      "sourceManifestSha256": "11060dd0949afa53038db8b38e1ac16826e2502d805bb0d6e2ea4de058743077"
+    },
+    {
+      "id": "grafana-multi-device",
+      "kind": "dashboard-view",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "MISSING",
+      "path": "assets/grafana/openpoke-multi-device.png",
+      "sha256": "09b4cd5fa95b3b9365d2f02d96af6e6ebc126c61a34cb316489884a23f8a8dec",
+      "description": "Multi-device view that preserves all missing stream requirements.",
+      "sourceManifestSha256": "11060dd0949afa53038db8b38e1ac16826e2502d805bb0d6e2ea4de058743077"
+    },
+    {
+      "id": "grafana-topology-evolution",
+      "kind": "dashboard-view",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/grafana/openpoke-topology-evolution.png",
+      "sha256": "c0d597ff4100b583584411a221c90f4cd543c758d34e2c30b1901fb6f0646b7f",
+      "description": "Current StreamingPull selection and rejected historical topologies.",
+      "sourceManifestSha256": "11060dd0949afa53038db8b38e1ac16826e2502d805bb0d6e2ea4de058743077"
+    },
+    {
+      "id": "short-target-source-manifest",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/short-target-232/SOURCE-SHA256SUMS",
+      "sha256": "59e6d7d008acfed93d27ffe48c2e4c4448a21544af661da8c9722e6f06f04766",
+      "description": "Original complete-bundle seal for the short target lane."
+    },
+    {
+      "id": "short-target-scenario",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/short-target-232/scenario.json",
+      "sha256": "30ef720b427d499a4ec97c55993cf95f13cf2ab0cbd561a3de884996e0ae8a46",
+      "description": "64-stripe 232 commands/s control declaration.",
+      "sourceManifestSha256": "59e6d7d008acfed93d27ffe48c2e4c4448a21544af661da8c9722e6f06f04766"
+    },
+    {
+      "id": "short-target-audit",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/short-target-232/audit.json",
+      "sha256": "7fde2db931a616992adc3e30271f1cd4a0a06ee5132e6863451f7e686243228c",
+      "description": "Exact short-target reconciliation and latency audit.",
+      "sourceManifestSha256": "59e6d7d008acfed93d27ffe48c2e4c4448a21544af661da8c9722e6f06f04766"
+    },
+    {
+      "id": "short-target-caller-summary",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/short-target-232/caller-summary.json",
+      "sha256": "53a3eb87e80c76c361285ecf7fa52f89e3bdcb242adc4487ab1d353a24e54226",
+      "description": "Short-target caller outcomes and receipt distribution.",
+      "sourceManifestSha256": "59e6d7d008acfed93d27ffe48c2e4c4448a21544af661da8c9722e6f06f04766"
+    },
+    {
+      "id": "sustained-rep1-source-manifest",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/sustained-target-232-rep1/SOURCE-SHA256SUMS",
+      "sha256": "4792118da09a034d1e2e696f670939cfb3daef3accb3e692714f97f9ec516054",
+      "description": "Original complete-bundle seal for sustained repetition 1."
+    },
+    {
+      "id": "sustained-rep1-scenario",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/sustained-target-232-rep1/scenario.json",
+      "sha256": "c9ba0e6e40901e1eb8e679cef11f125f85dbd306a81a510e727679984c0db6fe",
+      "description": "Thirty-minute target repetition 1 declaration.",
+      "sourceManifestSha256": "4792118da09a034d1e2e696f670939cfb3daef3accb3e692714f97f9ec516054"
+    },
+    {
+      "id": "sustained-rep1-audit",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/sustained-target-232-rep1/audit.json",
+      "sha256": "7ad230b807595dd5cee26738a5451340a7cac99649a8f21b7f811ddccda96a2f",
+      "description": "Repetition 1 exact accepted-work reconciliation.",
+      "sourceManifestSha256": "4792118da09a034d1e2e696f670939cfb3daef3accb3e692714f97f9ec516054"
+    },
+    {
+      "id": "sustained-rep1-caller-summary",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/sustained-target-232-rep1/caller-summary.json",
+      "sha256": "443e89205ee2ec3119964386b5083f1f8a860ea4731918bfa60e9d3e44185773",
+      "description": "Repetition 1 caller outcomes and receipt distribution.",
+      "sourceManifestSha256": "4792118da09a034d1e2e696f670939cfb3daef3accb3e692714f97f9ec516054"
+    },
+    {
+      "id": "sustained-rep2-source-manifest",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/runs/sustained-target-232-rep2/SOURCE-SHA256SUMS",
+      "sha256": "9d52fdaab3b5e6f123ec935c9732748b21d16298cac001fba6b9502fb493caa7",
+      "description": "Original complete-bundle seal for failed sustained repetition 2."
+    },
+    {
+      "id": "sustained-rep2-scenario",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/runs/sustained-target-232-rep2/scenario.json",
+      "sha256": "95c0bceba500c5f46bdcd3c54c0a9405472ad89612e0edb904e6d025056e31f5",
+      "description": "Thirty-minute target repetition 2 declaration.",
+      "sourceManifestSha256": "9d52fdaab3b5e6f123ec935c9732748b21d16298cac001fba6b9502fb493caa7"
+    },
+    {
+      "id": "sustained-rep2-audit",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/runs/sustained-target-232-rep2/audit.json",
+      "sha256": "15288c630fef97398dbab6c7d1e1434b2ee42aa79db847d37435c57f7ece5a88",
+      "description": "Repetition 2 reconciliation with failed receipt latency.",
+      "sourceManifestSha256": "9d52fdaab3b5e6f123ec935c9732748b21d16298cac001fba6b9502fb493caa7"
+    },
+    {
+      "id": "sustained-rep2-caller-summary",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/runs/sustained-target-232-rep2/caller-summary.json",
+      "sha256": "6f9caf9676a5ac7771a52acebd5e013466f1081c84ebe778c85df3c8cb42dce0",
+      "description": "Repetition 2 caller outcomes and receipt distribution.",
+      "sourceManifestSha256": "9d52fdaab3b5e6f123ec935c9732748b21d16298cac001fba6b9502fb493caa7"
+    },
+    {
+      "id": "pre-admitted-source-manifest",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/pre-admitted-348/SOURCE-SHA256SUMS",
+      "sha256": "991046723fec902667cc526311b9d6a44849e3d40c2b6a2fe2a9e0b5640bac7b",
+      "description": "Original complete-bundle seal for the pre-admitted control."
+    },
+    {
+      "id": "pre-admitted-scenario",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/pre-admitted-348/scenario.json",
+      "sha256": "75a5110e329bbe4bc2e634480c6278da034c521e60fd54daac2e8ae7914204b8",
+      "description": "348 AgentRuns/s pre-admitted delivery declaration.",
+      "sourceManifestSha256": "991046723fec902667cc526311b9d6a44849e3d40c2b6a2fe2a9e0b5640bac7b"
+    },
+    {
+      "id": "pre-admitted-audit",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/pre-admitted-348/audit.json",
+      "sha256": "02592bf55f83e1e1c56bc4cf7845692d2907a88bddd561c8975cd7f03ce0ad70",
+      "description": "20,880 / 20,880 exact pre-admitted completions.",
+      "sourceManifestSha256": "991046723fec902667cc526311b9d6a44849e3d40c2b6a2fe2a9e0b5640bac7b"
+    },
+    {
+      "id": "recovery-4-source-manifest",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/recovery-rate-609-workers-4/SOURCE-SHA256SUMS",
+      "sha256": "377ab4f3bb2fa6fd6876207236ad7f6772669944b8c88304e68643a1830c0a41",
+      "description": "Original seal for the four-worker recovery-rate screen."
+    },
+    {
+      "id": "recovery-4-scenario",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/recovery-rate-609-workers-4/scenario.json",
+      "sha256": "09e3bdffa03b5d89ffbcb2edc4ede92e4fde1a3ca7dd972814a28d765b8fdf7c",
+      "description": "Four-worker 609 AgentRuns/s recovery-rate declaration.",
+      "sourceManifestSha256": "377ab4f3bb2fa6fd6876207236ad7f6772669944b8c88304e68643a1830c0a41"
+    },
+    {
+      "id": "recovery-4-audit",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/recovery-rate-609-workers-4/audit.json",
+      "sha256": "22a0f2130869a11a3275265374106363b56a952df7c8607242170374785c66aa",
+      "description": "Four-worker exact drain with inadequate tail headroom.",
+      "sourceManifestSha256": "377ab4f3bb2fa6fd6876207236ad7f6772669944b8c88304e68643a1830c0a41"
+    },
+    {
+      "id": "recovery-6-source-manifest",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/recovery-rate-609-workers-6/SOURCE-SHA256SUMS",
+      "sha256": "d83579518b8a3c014252e2f477a378ae6e7f0549e5e1cae6f4ce7408e0ffe231",
+      "description": "Original seal for the selected six-worker recovery-rate screen."
+    },
+    {
+      "id": "recovery-6-scenario",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/recovery-rate-609-workers-6/scenario.json",
+      "sha256": "ccb4348dddd82470b6d2ff47694eb9a70f471627c1e2e0d802f7f14c9efcd6c7",
+      "description": "Selected six-worker 609 AgentRuns/s declaration.",
+      "sourceManifestSha256": "d83579518b8a3c014252e2f477a378ae6e7f0549e5e1cae6f4ce7408e0ffe231"
+    },
+    {
+      "id": "recovery-6-audit",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/recovery-rate-609-workers-6/audit.json",
+      "sha256": "1578429ea29bd59b704aebed603990b266cdccb896b8a472ecdfb676aa64148f",
+      "description": "Six-worker exact drain and 30.548 ms claim p99.",
+      "sourceManifestSha256": "d83579518b8a3c014252e2f477a378ae6e7f0549e5e1cae6f4ce7408e0ffe231"
+    },
+    {
+      "id": "recovery-8-source-manifest",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/recovery-rate-609-workers-8/SOURCE-SHA256SUMS",
+      "sha256": "b2f7f77dc430c550096236420d49b528719470b545f959dabd631660cb6ad548",
+      "description": "Original seal for the eight-worker recovery-rate screen."
+    },
+    {
+      "id": "recovery-8-scenario",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/recovery-rate-609-workers-8/scenario.json",
+      "sha256": "1e2cce25063b4ca8828ae5067ed52cea89d51e7e2a395fa2f44ef903d1c1cabf",
+      "description": "Eight-worker 609 AgentRuns/s declaration.",
+      "sourceManifestSha256": "b2f7f77dc430c550096236420d49b528719470b545f959dabd631660cb6ad548"
+    },
+    {
+      "id": "recovery-8-audit",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/recovery-rate-609-workers-8/audit.json",
+      "sha256": "bfae1dc4f60e121915119ff0d34cc9101b250ad1e1628c46bbee5d4bc849526e",
+      "description": "Eight-worker exact drain without a measured tail improvement.",
+      "sourceManifestSha256": "b2f7f77dc430c550096236420d49b528719470b545f959dabd631660cb6ad548"
+    },
+    {
+      "id": "worker-loss-before-source-manifest",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/worker-loss-before-claim/SOURCE-SHA256SUMS",
+      "sha256": "7c3687fcdf7b3f07b62d14716ac71af4d8b221686099dbe9e2424eae8b5180f0",
+      "description": "Original seal for the before-claim process cut."
+    },
+    {
+      "id": "worker-loss-before-scenario",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/worker-loss-before-claim/scenario.json",
+      "sha256": "28af98696009b201499d5685868365568083b49a144f5576aff2d8f674eb336f",
+      "description": "Before-claim process-loss declaration.",
+      "sourceManifestSha256": "7c3687fcdf7b3f07b62d14716ac71af4d8b221686099dbe9e2424eae8b5180f0"
+    },
+    {
+      "id": "worker-loss-before-audit",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/worker-loss-before-claim/audit.json",
+      "sha256": "c574f23c2f56252afee287995e988acfa90df307680e629758bdbd8e1af379ad",
+      "description": "Before-claim zero-loss and harmless-redelivery audit.",
+      "sourceManifestSha256": "7c3687fcdf7b3f07b62d14716ac71af4d8b221686099dbe9e2424eae8b5180f0"
+    },
+    {
+      "id": "worker-loss-after-source-manifest",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/worker-loss-after-claim/SOURCE-SHA256SUMS",
+      "sha256": "9e90a9b03cf645e1b04e53cd49b4116fa886afbbaf705f5f32bc09c56f24e74a",
+      "description": "Original seal for the after-claim process cut."
+    },
+    {
+      "id": "worker-loss-after-scenario",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/worker-loss-after-claim/scenario.json",
+      "sha256": "576993a34d9192c7432adac3d5a231553b8cdb046ab3529be2af865f961fb586",
+      "description": "After-claim process-loss declaration.",
+      "sourceManifestSha256": "9e90a9b03cf645e1b04e53cd49b4116fa886afbbaf705f5f32bc09c56f24e74a"
+    },
+    {
+      "id": "worker-loss-after-audit",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/runs/worker-loss-after-claim/audit.json",
+      "sha256": "b103dd23b8d946c28e570168c9c2a33010d2e8044f6c71d38e4be6ffe0c0a0f2",
+      "description": "After-claim epoch-2 recovery and exact reconciliation audit.",
+      "sourceManifestSha256": "9e90a9b03cf645e1b04e53cd49b4116fa886afbbaf705f5f32bc09c56f24e74a"
+    },
+    {
+      "id": "final-issue-87-matrix-summary",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/final-us-east4-matrix-summary.json",
+      "sha256": "d2b144e2ffdab1a644f38f9b00dcb21ed30b13bd79d72f29a5fc333597f4bf5a",
+      "description": "Verified stable A/B/C/D summary: all cells fail admission, accepted work reconciles, and full production qualification remains MISSING.",
+      "source": "https://github.com/heyimcarlos/osfo/issues/87#issuecomment-5213382073"
+    },
+    {
+      "id": "matrix-a-clean-current-wal-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No dedicated final matrix cell A recording exists."
+    },
+    {
+      "id": "matrix-b-clean-larger-wal-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No dedicated final matrix cell B recording exists."
+    },
+    {
+      "id": "matrix-c-preloaded-current-wal-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No dedicated final matrix cell C recording exists."
+    },
+    {
+      "id": "matrix-d-preloaded-larger-wal-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No dedicated final matrix cell D recording exists."
+    },
+    {
+      "id": "short-target-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No dedicated short-target recording exists."
+    },
+    {
+      "id": "sustained-rep1-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No dedicated sustained repetition 1 recording exists."
+    },
+    {
+      "id": "sustained-rep2-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No dedicated failed repetition 2 recording exists."
+    },
+    {
+      "id": "pre-admitted-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No dedicated pre-admitted delivery recording exists."
+    },
+    {
+      "id": "recovery-rate-workers-4-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No dedicated four-worker recovery-rate recording exists."
+    },
+    {
+      "id": "recovery-rate-workers-6-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No dedicated six-worker recovery-rate recording exists."
+    },
+    {
+      "id": "recovery-rate-workers-8-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No dedicated eight-worker recovery-rate recording exists."
+    },
+    {
+      "id": "worker-loss-before-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No dedicated before-claim process-loss recording exists."
+    },
+    {
+      "id": "worker-loss-after-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No dedicated after-claim process-loss recording exists."
+    },
+    {
+      "id": "authenticated-three-tab-recording",
+      "kind": "recording",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No authenticated Chrome tabs A, B, and C disconnect and resume recording exists."
+    },
+    {
+      "id": "production-saturation-bundle",
+      "kind": "sealed-run",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No complete selected production CPU, memory, connections, queue, and database saturation bundle exists."
+    },
+    {
+      "id": "full-outage-recovery-bundle",
+      "kind": "sealed-run",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No sealed 15-minute outage and 20-minute full-drain proof exists."
+    },
+    {
+      "id": "production-external-action-proof",
+      "kind": "sealed-run",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No production provider ActionReceipt retry proof exists."
+    },
+    {
+      "id": "complete-production-cost",
+      "kind": "document",
+      "artifactStatus": "MISSING",
+      "evidenceStatus": "MISSING",
+      "path": null,
+      "sha256": null,
+      "description": "No complete measured cost for the selected production topology exists."
+    }
+  ]
+}
