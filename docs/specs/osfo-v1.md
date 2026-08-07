@@ -1,6 +1,6 @@
 # Osfo v1 architecture and Oz reference journey
 
-Status: architecture synthesis for review, production qualification incomplete
+Status: architecture synthesis for review; production qualification: MISSING
 
 Authority precedence:
 
@@ -9,9 +9,9 @@ Authority precedence:
 3. GitHub issues own active work, evidence status, and gate ownership.
 4. This document connects those authorities into one implementation journey.
 
-Source map: GitHub issue #1
+Source map: [GitHub issue #1](https://github.com/heyimcarlos/osfo/issues/1)
 
-Architecture ticket: GitHub issue #55
+Architecture ticket: [GitHub issue #55](https://github.com/heyimcarlos/osfo/issues/55)
 
 ## Purpose
 
@@ -542,19 +542,20 @@ ADR 0001 owns the selected transactional-outbox and StreamingPull architecture.
 Architecture selection is not production qualification. GitHub owns the live
 status of each evidence gate:
 
-| Required evidence                                                | Live owner |
-| ---------------------------------------------------------------- | ---------- |
-| `us-east4` target admission, healthy ceiling, and breaking point | #79        |
-| 400,000-AgentRun outage reserve and full drain                   | #80        |
-| Retained corpora and complete cost                               | #81        |
-| Complete deployed Oz composition                                 | #78        |
-| Protected production promotion                                   | #92        |
-| Final production acceptance                                      | #76        |
+| Required evidence                                                | Live owner                                           |
+| ---------------------------------------------------------------- | ---------------------------------------------------- |
+| `us-east4` target admission, healthy ceiling, and breaking point | [#79](https://github.com/heyimcarlos/osfo/issues/79) |
+| 400,000-AgentRun outage reserve and full drain                   | [#80](https://github.com/heyimcarlos/osfo/issues/80) |
+| Retained corpora and complete cost                               | [#81](https://github.com/heyimcarlos/osfo/issues/81) |
+| Complete deployed Oz composition                                 | [#78](https://github.com/heyimcarlos/osfo/issues/78) |
+| Protected production promotion                                   | [#92](https://github.com/heyimcarlos/osfo/issues/92) |
+| Final production acceptance                                      | [#76](https://github.com/heyimcarlos/osfo/issues/76) |
 
-At review time, the complete production result is not PASS. Implementers must
-read the linked issues for current PASS, FAIL, or MISSING evidence rather than
-copying a status from this synthesis. No runtime, dashboard, demonstration, or
-historical result may promote production without the owned qualification.
+Production qualification is MISSING. Individual prerequisite gates may be FAIL
+or MISSING. Implementers must read the linked issues for current evidence rather
+than copying a status from this synthesis. No runtime, dashboard,
+demonstration, or historical result may promote production without the owned
+qualification.
 
 ## Implementation ticket graph
 
@@ -591,6 +592,28 @@ The live GitHub dependency edges and issue state are authoritative. This graph
 records intended direction, not current completion. Before production approval,
 #76 must reconcile the complete composed journey, and #92 must promote the same
 qualified digest through the protected path.
+
+Issue index:
+
+- foundation: [#55](https://github.com/heyimcarlos/osfo/issues/55),
+  [#147](https://github.com/heyimcarlos/osfo/issues/147),
+  [#67](https://github.com/heyimcarlos/osfo/issues/67),
+  [#68](https://github.com/heyimcarlos/osfo/issues/68),
+  [#69](https://github.com/heyimcarlos/osfo/issues/69),
+  [#70](https://github.com/heyimcarlos/osfo/issues/70),
+  [#71](https://github.com/heyimcarlos/osfo/issues/71),
+  [#72](https://github.com/heyimcarlos/osfo/issues/72),
+  [#73](https://github.com/heyimcarlos/osfo/issues/73), and
+  [#74](https://github.com/heyimcarlos/osfo/issues/74);
+- qualification: [#79](https://github.com/heyimcarlos/osfo/issues/79),
+  [#80](https://github.com/heyimcarlos/osfo/issues/80),
+  [#81](https://github.com/heyimcarlos/osfo/issues/81), and
+  [#100](https://github.com/heyimcarlos/osfo/issues/100);
+- composition and promotion:
+  [#76](https://github.com/heyimcarlos/osfo/issues/76),
+  [#78](https://github.com/heyimcarlos/osfo/issues/78),
+  [#91](https://github.com/heyimcarlos/osfo/issues/91), and
+  [#92](https://github.com/heyimcarlos/osfo/issues/92).
 
 Each PR remains focused, reviewed for specification fit and standards, verified
 proportionately, and merged before its actual dependants are unblocked. A
