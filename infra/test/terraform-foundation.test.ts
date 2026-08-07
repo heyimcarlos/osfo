@@ -44,6 +44,13 @@ describe("Terraform foundation", () => {
     ),
   );
 
+  it.effect("enforces development failure diagnostics and teardown independence", () =>
+    expectCheckPasses(
+      "infra/tests/development-platform-repair-contract.sh",
+      "development failure diagnostics",
+    ),
+  );
+
   it.effect(
     "proves a bound disposable development lifecycle",
     () => expectCheckPasses("infra/tests/development-proof.sh", "recoverable state"),

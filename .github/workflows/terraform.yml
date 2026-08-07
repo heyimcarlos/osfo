@@ -119,11 +119,38 @@ jobs:
           fi
           printf 'PASS: authorized protected main lifecycle\n'
 
-  development-lifecycle:
+  development-recovery-preflight:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.task == 'development-proof'
     needs: [static, development-authorization, development-configuration]
+    runs-on: ubuntu-24.04
+    environment: foundation
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_VARSET_FILE: ${{ github.workspace }}/infra/roots/development/platform/development.tfvars.json
+      FOUNDATION_SERVICE_ACCOUNT: ${{ vars.GCP_FOUNDATION_TERRAFORM_SERVICE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_FOUNDATION_TERRAFORM_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Verify exact artifact recovery authority before apply
+        shell: bash
+        run: infra/tests/development-platform-recovery-preflight.sh
+
+  development-lifecycle:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.task == 'development-proof'
+    needs:
+      [static, development-authorization, development-configuration, development-recovery-preflight]
     runs-on: ubuntu-24.04
     environment: development-platform
     permissions:
@@ -169,8 +196,16 @@ jobs:
       inputs.task == 'development-proof' &&
       needs.static.result == 'success' &&
       needs.development-authorization.result == 'success' &&
-      needs.development-configuration.result == 'success'
-    needs: [static, development-lifecycle, development-authorization, development-configuration]
+      needs.development-configuration.result == 'success' &&
+      needs.development-recovery-preflight.result == 'success'
+    needs:
+      [
+        static,
+        development-lifecycle,
+        development-authorization,
+        development-configuration,
+        development-recovery-preflight,
+      ]
     runs-on: ubuntu-24.04
     environment: foundation
     permissions:
@@ -197,8 +232,17 @@ jobs:
       always() &&
       github.event_name == 'workflow_dispatch' &&
       inputs.task == 'development-proof' &&
-      needs.development-artifact-cleanup.result == 'success'
-    needs: [development-lifecycle, development-artifact-cleanup]
+      needs.development-authorization.result == 'success' &&
+      needs.development-configuration.result == 'success' &&
+      needs.development-recovery-preflight.result == 'success'
+    needs:
+      [
+        development-lifecycle,
+        development-artifact-cleanup,
+        development-authorization,
+        development-configuration,
+        development-recovery-preflight,
+      ]
     runs-on: ubuntu-24.04
     environment: development-platform
     permissions:

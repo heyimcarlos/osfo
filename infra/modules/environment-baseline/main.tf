@@ -162,3 +162,4 @@ output "subnetwork_id" { value = try(google_compute_subnetwork.platform[0].id, n
 output "static_egress_ip" { value = try(google_compute_address.egress[0].address, null) }
 output "temporal_endpoint_ip" { value = try(google_compute_address.temporal[0].address, null) }
 output "private_service_connection" { value = try(google_service_networking_connection.private_services[0].id, null) }
+output "private_dns_managed_zone_id" { value = try(google_dns_managed_zone.private[0].managed_zone_id, null) }

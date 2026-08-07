@@ -74,7 +74,7 @@ resource "google_storage_bucket" "artifacts" {
   name                        = var.artifact_bucket_name
   location                    = var.region
   storage_class               = "STANDARD"
-  force_destroy               = true
+  force_destroy               = false
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
   labels                      = merge(var.labels, { purpose = "artifacts" })

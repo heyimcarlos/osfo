@@ -34,6 +34,11 @@ fi
 
 if ! gcloud storage ls --all-versions --recursive "gs://$artifact_bucket/**" \
   >"$scratch/objects" 2>"$scratch/objects.error"; then
+  if grep -Eqi 'matched no objects|no URLs matched|matched no URLs' \
+    "$scratch/objects.error"; then
+    printf 'PASS: disposable artifact bucket is empty\n'
+    exit 0
+  fi
   printf 'FAIL: artifact object listing failed closed\n' >&2
   cat "$scratch/objects.error" >&2
   exit 1
@@ -51,6 +56,13 @@ done <"$scratch/objects"
 remaining_status=0
 gcloud storage ls --all-versions --recursive "gs://$artifact_bucket/**" \
   >"$scratch/remaining" 2>"$scratch/remaining.error" || remaining_status=$?
+if ((remaining_status != 0)); then
+  if grep -Eqi 'matched no objects|no URLs matched|matched no URLs' \
+    "$scratch/remaining.error"; then
+    : >"$scratch/remaining"
+    remaining_status=0
+  fi
+fi
 if ((remaining_status != 0)); then
   printf 'FAIL: final artifact object listing failed closed\n' >&2
   cat "$scratch/remaining.error" >&2

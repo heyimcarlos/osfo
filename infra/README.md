@@ -49,14 +49,18 @@ payloads and Secret Manager versions remain outside Terraform.
 
 Qualification evidence is written by content digest to the foundation-owned,
 versioned evidence bucket. That bucket has a 396-day retention policy and is
-not part of development destroy. The development artifact bucket uses
-`force_destroy` only after the foundation recovery step has removed its smoke
-artifact. The platform identity can create and read objects but has no
+not part of development destroy. The development artifact bucket disables
+`force_destroy`, so Terraform cannot remove objects as a side effect of bucket
+teardown. The platform identity can create and read objects but has no
 `storage.objects.delete`, so it cannot overwrite an existing object generation.
 Project-level storage authority is limited to bucket creation. Bucket reads,
 deletion, and object creation are conditionally scoped to the exact reviewed
 artifact bucket, and the platform has no bucket-update authority with which to
 install a deletion lifecycle rule.
+The development platform receives create and read access only under
+`roots/development/platform/` in the evidence bucket. Object-name listing is a
+separate bucket-scoped permission because Cloud Storage cannot prefix-condition
+`storage.objects.list`; it grants no payload, update, or delete authority.
 
 Temporal Cloud must publish and authorize a same-region service attachment.
 Foundation alone accepts its non-secret `us-east4` URI and DNS name. The
@@ -75,8 +79,16 @@ it cannot change secret IAM, access version payloads, or mint runtime
 credentials. Authorized secret-version access therefore remains `MISSING` in
 this preparatory PR. Package installation inside the pinned base image is still
 mutable, so full probe toolchain determinism is also `MISSING`.
-The retained private zone grants the platform only a custom record role for
-`database.temporal.internal.` A, not project-wide DNS administration.
+Project IAM grants the platform only a custom record role conditioned on the
+retained zone's numeric ID and the exact `database.temporal.internal.` A path,
+not project-wide DNS administration. Non-record prerequisite checks pass
+through the condition, but the custom role contains no zone create, update, or
+delete permission. A temporary zone-level binding used for incident recovery is
+not represented as durable Terraform state. After the project-level conditioned
+binding is applied and verified, a privileged operator must remove that
+temporary binding and record the empty zone policy in the recovery evidence.
+Foundation receives no managed-zone IAM mutation permission for this one-off
+reconciliation.
 
 The ordered Pub/Sub proof first validates the Terraform-managed subscription's
 topic, ordering, retention, and acknowledgement configuration. Its behavioral
@@ -104,8 +116,10 @@ SAVED_PLAN_BUCKET="$GCP_SAVED_PLAN_BUCKET" \
 
 The proof refuses a dirty tree and binds evidence to the exact commit, reviewed
 variable and image files, and create and no-change plan manifests. It runs
-quota preflight, exact saved-plan apply, an empty second plan, and managed-service
-smoke checks. Before cleanup it stores an immutable lifecycle envelope keyed by
+quota preflight, verifies that the exact foundation artifact-recovery role and
+binding are already applied, performs an exact saved-plan apply, produces an
+empty second plan, and runs stage-labelled managed-service smoke checks. Before
+cleanup it stores an immutable lifecycle envelope keyed by
 the workflow run and content digest. Cleanup evidence links that envelope, or
 records the link as `MISSING` when cancellation happened before it was stored.
 The proof always reports the current acceptance result as partial while any
@@ -114,10 +128,15 @@ required gate is `MISSING`. For a manual run, choose a new
 its cleanup invocation.
 
 Cleanup is a separate two-authority workflow. Its foundation job removes only
-reviewed content-addressed artifact objects, then its platform job creates,
-stores, and applies a bound destroy plan, fails closed on state reads, performs
-negative provider lookups, and queries retained audit history when it removed
-Terraform-owned resources. A default-branch `workflow_run` recovery starts
+reviewed content-addressed artifact objects and treats a confirmed existing,
+empty bucket as successful preparation. Its platform job is scheduled with
+`always()` after that attempt, even when preparation fails, so a permission
+failure cannot skip Terraform destroy. The failed artifact job still makes the
+workflow fail. With `force_destroy` disabled, a nonempty bucket cannot be
+deleted before the reviewed foundation object cleanup succeeds. The platform
+job stores and applies a bound destroy plan, fails closed on state reads,
+performs negative provider lookups, and queries retained audit history when it
+removed Terraform-owned resources. A default-branch `workflow_run` recovery starts
 after every completed protected lifecycle dispatch, including cancellation of
 the original run. A scheduled default-branch janitor uses the same serialized
 cleanup path only when GitHub run history contains an abandoned protected
