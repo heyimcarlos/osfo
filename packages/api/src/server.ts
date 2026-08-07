@@ -4,6 +4,10 @@ import { HttpApiBuilder, HttpApiMiddleware } from "effect/unstable/httpapi";
 import { OsfoApi } from "./api.js";
 import { MessageAdmission, ThreadResume } from "./services.js";
 import {
+  ThreadStreamLifecycle,
+  threadStreamConnectionRetryAfterSeconds,
+} from "./thread-stream-lifecycle.js";
+import {
   Authentication,
   AuthenticationRejected,
   AuthenticationToken,
@@ -70,11 +74,13 @@ export const ThreadsHandlers = HttpApiBuilder.group(OsfoApi, "threads", (handler
         const authenticationToken = yield* AuthenticationToken;
         const resume = yield* ThreadResume;
         if (query.after !== undefined) {
-          return yield* resume.stream({
+          const source = yield* resume.stream({
             after: query.after,
             authenticationToken,
             threadId: params.threadId,
           });
+          const lifecycle = yield* ThreadStreamLifecycle;
+          return yield* lifecycle.open(source);
         }
         return yield* resume.history({
           afterPosition: query.afterPosition ?? "0",
@@ -94,7 +100,19 @@ const ApiRoutes = HttpApiBuilder.layer(OsfoApi, {
 }).pipe(Layer.provide(ThreadsHandlers));
 
 const hardenResponse = (response: HttpServerResponse.HttpServerResponse) => {
-  const noStore = HttpServerResponse.setHeaders(response, {
+  const authenticated =
+    response.status === 401
+      ? HttpServerResponse.setHeader(response, "www-authenticate", "Bearer")
+      : response;
+  const guided =
+    response.status === 429
+      ? HttpServerResponse.setHeader(
+          authenticated,
+          "retry-after",
+          String(threadStreamConnectionRetryAfterSeconds),
+        )
+      : authenticated;
+  const noStore = HttpServerResponse.setHeaders(guided, {
     "cache-control": "private, no-store",
     "x-content-type-options": "nosniff",
   });

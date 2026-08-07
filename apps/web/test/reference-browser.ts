@@ -403,6 +403,15 @@ class CdpConnection {
       const status = this.#eventResponses.get(request.requestId);
       return status === undefined ? undefined : { status, url: request.url };
     });
+  successfulEventResponseAfter = (index: number) =>
+    Effect.sync(() => {
+      for (const request of this.#eventRequests.slice(index)) {
+        if (this.#eventResponses.get(request.requestId) === 200) {
+          return { status: 200, url: request.url };
+        }
+      }
+      return undefined;
+    });
 
   close = Effect.sync(() => this.socket.close());
 }
@@ -641,6 +650,12 @@ class ChromeTab {
     waitForDefined(
       `wait for tab ${this.label} resumed event response`,
       this.connection.eventResponseAt(count),
+    );
+
+  waitForSuccessfulEventResponseAfter = (count: number) =>
+    waitForDefined(
+      `wait for tab ${this.label} successful resumed event response`,
+      this.connection.successfulEventResponseAfter(count),
     );
 }
 

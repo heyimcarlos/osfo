@@ -2,8 +2,10 @@ import { createHmac } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import { afterAll, beforeEach, describe, expect, it } from "@effect/vitest";
 import {
+  AuthenticationRejected,
   CursorOutsideRetention,
   MessageAdmission,
+  ThreadNotFound,
   ThreadResume,
   type SubmitMessageCommand,
 } from "@osfo/api";
@@ -19,7 +21,20 @@ if (databaseUrl === undefined) {
 const principalId = "b3ef0861-2df7-4d2a-a195-fbc5ed75bc81";
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
 const authenticationToken = "thread-resume-session";
+const otherPrincipalId = "b70f0fdc-59ef-4d45-97cd-d832b9eb8838";
+const otherThreadId = "bced01fd-1810-4c22-aac4-3586018966e3";
+const otherAuthenticationToken = "other-thread-resume-session";
 const cursorSecret = "test-only-cursor-secret-with-at-least-32-bytes";
+
+const resumeConfig = {
+  cursorSecret,
+  databaseUrl,
+  maxConnections: 12,
+  pollIntervalMs: 10,
+  replayEventLimit: 2,
+  replayGuaranteedForMs: 30_000,
+  snapshotTimelineLimit: 2,
+};
 
 const databaseLayer = PgClient.layer({
   applicationName: "osfo-thread-resume-test",
@@ -36,15 +51,7 @@ const runtime = ManagedRuntime.make(
       maxConnections: 12,
       principalNonTerminalLimit: 20,
     }),
-    makeThreadResumeLayer({
-      cursorSecret,
-      databaseUrl,
-      maxConnections: 12,
-      pollIntervalMs: 10,
-      replayEventLimit: 2,
-      replayGuaranteedForMs: 30_000,
-      snapshotTimelineLimit: 2,
-    }),
+    makeThreadResumeLayer(resumeConfig),
     databaseLayer,
   ),
 );
@@ -93,7 +100,14 @@ const expireCursor = (cursor: string) => {
 beforeEach(() =>
   Effect.runPromise(
     prepareMessageAdmissionFixture(databaseUrl, {
-      principals: [{ principalId, authenticationToken, threadIds: [threadId] }],
+      principals: [
+        { principalId, authenticationToken, threadIds: [threadId] },
+        {
+          principalId: otherPrincipalId,
+          authenticationToken: otherAuthenticationToken,
+          threadIds: [otherThreadId],
+        },
+      ],
     }),
   ),
 );
@@ -238,25 +252,110 @@ describe("PostgreSQL Thread resume", () => {
     expect(second).toMatchObject({ throughPosition: "2", hasMore: false });
   });
 
-  it("replays strictly after the cursor, cuts over, then observes live commits", async () => {
-    await accept("Replay");
-    const origin = await run(
-      ThreadResume.use((resume) => resume.history({ ...access, afterPosition: "0", limit: 1 })),
-    );
+  it("reconciles notification loss across the replay-to-live cut without gaps", async () => {
+    const origin = (await run(ThreadResume.use((resume) => resume.snapshot(access)))).throughCursor;
+    await accept("Replay one");
+    await accept("Replay two");
     const replayStream = await run(
-      ThreadResume.use((resume) => resume.stream({ ...access, after: origin.events[0]!.cursor })),
+      ThreadResume.use((resume) => resume.stream({ ...access, after: origin })),
     );
 
-    await accept("Live");
-    const delivered = await run(replayStream.pipe(Stream.take(2), Stream.runCollect));
+    await accept("Live three");
+    await accept("Live four");
+    await accept("Live five");
+    const delivered = Array.from(await run(replayStream.pipe(Stream.take(6), Stream.runCollect)));
 
-    expect(Array.from(delivered)).toMatchObject([
-      { event: "caught_up", data: { throughPosition: "1" } },
-      {
-        event: "thread_event",
-        data: { threadPosition: "2", payload: { content: [{ type: "text", text: "Live" }] } },
-      },
+    expect(delivered.map((message) => message.event)).toEqual([
+      "thread_event",
+      "thread_event",
+      "caught_up",
+      "thread_event",
+      "thread_event",
+      "thread_event",
     ]);
+    expect(
+      delivered.flatMap((message) =>
+        message.event === "thread_event" ? [message.data.threadPosition] : [],
+      ),
+    ).toEqual(["1", "2", "3", "4", "5"]);
+    expect(delivered[2]).toMatchObject({
+      event: "caught_up",
+      data: { throughPosition: "2" },
+    });
+  });
+
+  it("keeps unknown and unauthorized Threads indistinguishable", async () => {
+    const unauthorized = await run(
+      Effect.flip(
+        ThreadResume.use((resume) =>
+          resume.snapshot({ authenticationToken, threadId: otherThreadId }),
+        ),
+      ),
+    );
+    const unknown = await run(
+      Effect.flip(
+        ThreadResume.use((resume) =>
+          resume.snapshot({
+            authenticationToken,
+            threadId: "a297d198-0412-45fe-9252-0a03add1cc40",
+          }),
+        ),
+      ),
+    );
+
+    expect(unauthorized).toEqual(new ThreadNotFound());
+    expect(unknown).toEqual(unauthorized);
+  });
+
+  it("rejects expired and revoked Authentication Sessions without resource disclosure", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`UPDATE authentication_sessions
+          SET expires_at = now() - interval '1 second'
+          WHERE principal_id = ${principalId}::uuid`;
+      }).pipe(Effect.provide(databaseLayer)),
+    );
+    const expired = await run(Effect.flip(ThreadResume.use((resume) => resume.snapshot(access))));
+    expect(expired).toEqual(new AuthenticationRejected());
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`UPDATE authentication_sessions
+          SET expires_at = now() + interval '1 hour', revoked_at = now()
+          WHERE principal_id = ${principalId}::uuid`;
+      }).pipe(Effect.provide(databaseLayer)),
+    );
+    const revoked = await run(
+      Effect.flip(
+        ThreadResume.use((resume) => resume.history({ ...access, afterPosition: "0", limit: 1 })),
+      ),
+    );
+    expect(revoked).toEqual(expired);
+  });
+
+  it("resumes a durable cursor after the Osfo API runtime is replaced", async () => {
+    await accept("Before replacement");
+    const snapshot = await run(ThreadResume.use((resume) => resume.snapshot(access)));
+    await accept("During replacement");
+
+    const replacement = ManagedRuntime.make(makeThreadResumeLayer(resumeConfig));
+    try {
+      const stream = await replacement.runPromise(
+        ThreadResume.use((resume) => resume.stream({ ...access, after: snapshot.throughCursor })),
+      );
+      const delivered = Array.from(
+        await replacement.runPromise(stream.pipe(Stream.take(2), Stream.runCollect)),
+      );
+
+      expect(delivered).toMatchObject([
+        { event: "thread_event", data: { threadPosition: "2" } },
+        { event: "caught_up", data: { throughPosition: "2" } },
+      ]);
+    } finally {
+      await replacement.dispose();
+    }
   });
 
   it("honors the replay time guarantee beyond the normal event-count bound", async () => {

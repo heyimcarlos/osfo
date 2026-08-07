@@ -11,6 +11,12 @@ export interface CompiledIngressOptions {
   readonly databaseUrl: string;
   readonly executionProfileRef?: string;
   readonly globalNonTerminalLimit?: number;
+  readonly maxStreamBufferedAgeMs?: number;
+  readonly maxStreamBufferedBytes?: number;
+  readonly maxStreamBufferedEvents?: number;
+  readonly maxStreamConnectionLifetimeMs?: number;
+  readonly maxStreamConnections?: number;
+  readonly port?: number;
   readonly principalNonTerminalLimit?: number;
   readonly streamPollIntervalMs?: number;
 }
@@ -20,6 +26,10 @@ export class CompiledIngressStartError extends Data.TaggedError("CompiledIngress
   readonly output: string;
   readonly exitCode?: number;
   readonly cause?: unknown;
+}> {}
+
+export class CompiledIngressStopError extends Data.TaggedError("CompiledIngressStopError")<{
+  readonly cause: unknown;
 }> {}
 
 const parseReadyPort = (line: string) => {
@@ -82,10 +92,17 @@ export const startCompiledIngress = (options: CompiledIngressOptions) =>
         OSFO_ADMISSION_CAPACITY_RECONCILIATION_INTERVAL_MS: String(
           options.admissionCapacityReconciliationIntervalMs ?? 30_000,
         ),
-        OSFO_INGRESS_PORT: "0",
+        OSFO_INGRESS_PORT: String(options.port ?? 0),
         OSFO_DATABASE_URL: options.databaseUrl,
         OSFO_EXECUTION_PROFILE_REF: options.executionProfileRef ?? "oz.process-test.v1",
         OSFO_GLOBAL_NON_TERMINAL_LIMIT: String(options.globalNonTerminalLimit ?? 8),
+        OSFO_MAX_STREAM_BUFFERED_AGE_MS: String(options.maxStreamBufferedAgeMs ?? 5_000),
+        OSFO_MAX_STREAM_BUFFERED_BYTES: String(options.maxStreamBufferedBytes ?? 1_048_576),
+        OSFO_MAX_STREAM_BUFFERED_EVENTS: String(options.maxStreamBufferedEvents ?? 64),
+        OSFO_MAX_STREAM_CONNECTION_LIFETIME_MS: String(
+          options.maxStreamConnectionLifetimeMs ?? 1_800_000,
+        ),
+        OSFO_MAX_STREAM_CONNECTIONS: String(options.maxStreamConnections ?? 64),
         OSFO_PRINCIPAL_NON_TERMINAL_LIMIT: String(options.principalNonTerminalLimit ?? 4),
         OSFO_STREAM_POLL_INTERVAL_MS: String(options.streamPollIntervalMs ?? 250),
       },
@@ -98,5 +115,13 @@ export const startCompiledIngress = (options: CompiledIngressOptions) =>
       ),
     );
     const port = yield* waitForReady(handle);
-    return { origin: `http://127.0.0.1:${port}` };
+    const terminate = handle.isRunning.pipe(
+      Effect.flatMap((running) =>
+        running ? handle.kill({ killSignal: "SIGTERM", forceKillAfter: "3 seconds" }) : Effect.void,
+      ),
+      Effect.andThen(handle.exitCode),
+      Effect.asVoid,
+      Effect.mapError((cause) => new CompiledIngressStopError({ cause })),
+    );
+    return { origin: `http://127.0.0.1:${port}`, port, terminate };
   }).pipe(Effect.provide(NodeServices.layer));

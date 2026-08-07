@@ -1,8 +1,8 @@
 import { PgClient } from "@effect/sql-pg";
 import { AcceptanceReceipt } from "@osfo/api";
 import { CommitUnknown, submitThreadMessage } from "@osfo/api/client";
-import { prepareMessageAdmissionFixture, readMessageAuthorityCounts } from "@osfo/db/testing";
 import { seedReferenceClientAuthority } from "@osfo/db/reference-client";
+import { prepareMessageAdmissionFixture, readMessageAuthorityCounts } from "@osfo/db/testing";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import {

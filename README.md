@@ -78,10 +78,12 @@ to four connections each and are capped at eight through
 `OSFO_ADMISSION_DATABASE_POOL_MAX` and `OSFO_RESUME_DATABASE_POOL_MAX`.
 Admission capacity is repaired at startup and every 30 seconds by default. Set
 `OSFO_ADMISSION_CAPACITY_RECONCILIATION_INTERVAL_MS` to change that interval.
-Snapshot size, replay retention, stream
-polling, and cursor signing have bounded local defaults. Production deployments
-set `OSFO_CURSOR_SECRET` explicitly. Set `OSFO_INGRESS_PORT` to override its
-default port, 3000.
+Thread streams also have bounded local defaults for connection count, lifetime,
+and unsent event count, bytes, and age. Configure them through the
+`OSFO_MAX_STREAM_*` variables in `.env.example`. Snapshot size, replay
+retention, stream polling, and cursor signing have bounded local defaults.
+Production deployments set `OSFO_CURSOR_SECRET` explicitly. Set
+`OSFO_INGRESS_PORT` to override its default port, 3000.
 
 The outbox relay uses one dedicated PostgreSQL notification connection, a
 database pool of four connections by default, one Principal-first selector, a

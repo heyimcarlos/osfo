@@ -2,7 +2,9 @@ import {
   AcceptanceReceipt,
   AdmissionUnavailable,
   MessageAdmission,
+  ThreadNotFound,
   ThreadResume,
+  ThreadStreamLifecycle,
   type ThreadResumeService,
   type MessageAdmissionError,
   type SubmitMessageCommand,
@@ -25,8 +27,10 @@ import {
   HttpRouter,
   HttpServer,
 } from "effect/unstable/http";
+import { makeTestThreadStreamLifecycle } from "./thread-stream-lifecycle-harness.js";
 
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
+const otherThreadId = "81373af4-ace8-47d1-a084-1e83bc3b6077";
 const event = Effect.runSync(
   makeUserMessageAppended({
     eventId: "34dc8a78-a94d-4050-8c5b-e3bf21077c40",
@@ -65,14 +69,20 @@ const makeHarness = (resume: ThreadResumeService) => {
     reconcile: () => Effect.succeed(receipt),
     reconcileCapacity: () => Effect.fail(new AdmissionUnavailable()),
   });
+  const testLifecycle = makeTestThreadStreamLifecycle(1);
+  const lifecycle = testLifecycle.lifecycle;
   const web = HttpRouter.toWebHandler(
     OsfoApiLive.pipe(
       Layer.provide(Layer.succeed(MessageAdmission)(admission)),
       Layer.provide(Layer.succeed(ThreadResume)(resume)),
+      Layer.provide(Layer.succeed(ThreadStreamLifecycle)(lifecycle)),
       Layer.provideMerge(HttpServer.layerServices),
     ),
   );
-  const context = Context.make(MessageAdmission, admission).pipe(Context.add(ThreadResume, resume));
+  const context = Context.make(MessageAdmission, admission).pipe(
+    Context.add(ThreadResume, resume),
+    Context.add(ThreadStreamLifecycle, lifecycle),
+  );
   const handler = (request: Request) => web.handler(request, context);
   const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
     HttpClient.make((request, _url, signal) =>
@@ -90,7 +100,14 @@ const makeHarness = (resume: ThreadResumeService) => {
       ),
     ),
   );
-  return { dispose: web.dispose, handler, httpClientLayer };
+  return {
+    dispose: async () => {
+      await web.dispose();
+      await testLifecycle.dispose();
+    },
+    handler,
+    httpClientLayer,
+  };
 };
 
 const resume = ThreadResume.of({
@@ -220,6 +237,59 @@ describe("Thread resume API", () => {
         throughPosition: "1",
         throughCursor: envelope.cursor,
       });
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("keeps resource non-disclosure ahead of typed connection-limit rejection", async () => {
+    const heldResume = ThreadResume.of({
+      ...resume,
+      stream: ({ threadId: requestedThreadId }) =>
+        requestedThreadId === threadId
+          ? Effect.succeed(
+              Stream.make({
+                event: "caught_up" as const,
+                data: { throughPosition: "1", throughCursor: envelope.cursor },
+              }).pipe(Stream.concat(Stream.never)),
+            )
+          : Effect.fail(new ThreadNotFound()),
+    });
+    const harness = makeHarness(heldResume);
+    try {
+      const first = await harness.handler(
+        authorized(
+          `http://osfo.test/v1/threads/${threadId}/events?after=cursor-origin`,
+          "text/event-stream",
+        ),
+      );
+      expect(first.status).toBe(200);
+      const reader = first.body!.getReader();
+      await reader.read();
+
+      const hidden = await harness.handler(
+        authorized(
+          `http://osfo.test/v1/threads/${otherThreadId}/events?after=cursor-origin`,
+          "text/event-stream",
+        ),
+      );
+      expect(hidden.status).toBe(404);
+      expect(await hidden.json()).toEqual({ _tag: "ThreadNotFound" });
+
+      const limited = await harness.handler(
+        authorized(
+          `http://osfo.test/v1/threads/${threadId}/events?after=cursor-origin`,
+          "text/event-stream",
+        ),
+      );
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get("retry-after")).toBe("5");
+      expect(await limited.json()).toEqual({
+        _tag: "ConnectionLimitExceeded",
+        retryAfterSeconds: 5,
+      });
+
+      await reader.cancel();
     } finally {
       await harness.dispose();
     }

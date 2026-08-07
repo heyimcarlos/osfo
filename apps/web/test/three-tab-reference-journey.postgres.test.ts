@@ -6,7 +6,7 @@ import {
 import { runStreamingPullWorker, StreamingPullSource } from "@osfo/agent-run-worker";
 import { makeDeterministicAgentRuntimeLayer } from "@osfo/agent-runtime";
 import type { AcceptanceReceipt } from "@osfo/api";
-import { getThreadSnapshot } from "@osfo/api/client";
+import { getThreadSnapshot, submitThreadMessage } from "@osfo/api/client";
 import { makeAgentRunRepositoryLayer } from "@osfo/db";
 import {
   referenceClientPrincipalId,
@@ -30,7 +30,12 @@ if (databaseUrl === undefined) {
 }
 
 const authenticationToken = "oz-three-tab-reference-session";
-const contents = ["First from Oz", "Second from Oz", "Third from Oz"] as const;
+const contents = [
+  "First from Oz",
+  "Second from Oz",
+  "Third from Oz",
+  "Accepted during ingress replacement",
+] as const;
 const executionProfileRef = "oz.reference-journey.v1";
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
 
@@ -77,7 +82,7 @@ const waitForPublicationDrain = () =>
 
 describe("three-tab Oz Reference Journey", () => {
   it.live(
-    "replays three independent Chrome tabs through the composed durable path",
+    "replays three Chrome tabs through drain and compiled ingress replacement",
     () =>
       Effect.gen(function* () {
         yield* prepareMessageAdmissionFixture(databaseUrl, { principals: [] });
@@ -246,12 +251,59 @@ describe("three-tab Oz Reference Journey", () => {
           toPosition: replayedA.throughPosition,
         });
 
-        const finalProjections = yield* Effect.all([
+        const beforeReplacement = yield* Effect.all([
           Effect.succeed(replayedA),
           tabB.waitForProjection(threadId, "15"),
           tabC.waitForProjection(threadId, "15"),
         ]);
-        const authoritativeProjection = canonicalProjection(throughFifteen);
+        expect(beforeReplacement.map(canonicalProjection)).toEqual(
+          Array.from({ length: 3 }, () => canonicalProjection(throughFifteen)),
+        );
+        const requestCounts = yield* Effect.all([
+          tabA.eventRequestCount(),
+          tabB.eventRequestCount(),
+          tabC.eventRequestCount(),
+        ]);
+        yield* ingress.terminate;
+        const alternateIngress = yield* startCompiledIngress({
+          databaseUrl,
+          executionProfileRef,
+          streamPollIntervalMs: 10,
+        });
+        const replacementReceipt = yield* submitThreadMessage({
+          authenticationToken,
+          baseUrl: alternateIngress.origin,
+          idempotencyKey: crypto.randomUUID(),
+          message: { content: contents[3] },
+          threadId,
+        });
+        receipts.push(replacementReceipt);
+        expect(replacementReceipt.threadPosition).toBe("16");
+        expect(yield* pubsub.waitForSettlement(3)).toBe("acknowledged");
+        const throughTwenty = yield* waitForAuthorityPosition(alternateIngress.origin, "20");
+        yield* alternateIngress.terminate;
+        yield* startCompiledIngress({
+          databaseUrl,
+          executionProfileRef,
+          port: ingress.port,
+          streamPollIntervalMs: 10,
+        });
+        const resumedResponses = yield* Effect.all(
+          [tabA, tabB, tabC].map((tab, index) =>
+            tab.waitForSuccessfulEventResponseAfter(requestCounts[index]!),
+          ),
+        );
+        expect(resumedResponses.map((response) => response.status)).toEqual([200, 200, 200]);
+        expect(resumedResponses.map((response) => resumedCursor(response.url))).toEqual(
+          beforeReplacement.map((projection) => projection.throughCursor),
+        );
+
+        const finalProjections = yield* Effect.all([
+          tabA.waitForProjection(threadId, "20"),
+          tabB.waitForProjection(threadId, "20"),
+          tabC.waitForProjection(threadId, "20"),
+        ]);
+        const authoritativeProjection = canonicalProjection(throughTwenty);
         expect(finalProjections.map(canonicalProjection)).toEqual([
           authoritativeProjection,
           authoritativeProjection,
@@ -262,15 +314,13 @@ describe("three-tab Oz Reference Journey", () => {
             yield* tab.waitForText(content);
             yield* tab.waitForText(`Echo: ${content}`);
           }
-          yield* tab.waitForText("Synchronized through 15");
+          yield* tab.waitForText("Synchronized through 20");
         }
 
-        expect(pubsub.publications).toHaveLength(3);
-        expect(pubsub.publications.map((publication) => publication.orderingKey)).toEqual([
-          threadId,
-          threadId,
-          threadId,
-        ]);
+        expect(pubsub.publications).toHaveLength(contents.length);
+        expect(pubsub.publications.map((publication) => publication.orderingKey)).toEqual(
+          contents.map(() => threadId),
+        );
 
         const authority = yield* waitForPublicationDrain();
         expect(authority.principals).toEqual([{ principalId: referenceClientPrincipalId }]);
@@ -290,7 +340,7 @@ describe("three-tab Oz Reference Journey", () => {
             userMessageId: receipt.userMessageId,
           })),
         );
-        expect(authority.userMessages).toHaveLength(3);
+        expect(authority.userMessages).toHaveLength(contents.length);
         expect(authority.userMessages).toEqual(
           expect.arrayContaining(
             receipts.map((receipt, index) => ({
@@ -301,7 +351,7 @@ describe("three-tab Oz Reference Journey", () => {
             })),
           ),
         );
-        expect(authority.agentRuns).toHaveLength(3);
+        expect(authority.agentRuns).toHaveLength(contents.length);
         expect(authority.agentRuns).toEqual(
           expect.arrayContaining(
             receipts.map((receipt) => ({
@@ -314,7 +364,7 @@ describe("three-tab Oz Reference Journey", () => {
             })),
           ),
         );
-        expect(authority.reservations).toHaveLength(3);
+        expect(authority.reservations).toHaveLength(contents.length);
         expect(authority.reservations).toEqual(
           expect.arrayContaining(
             receipts.map((receipt) => ({
@@ -324,7 +374,7 @@ describe("three-tab Oz Reference Journey", () => {
             })),
           ),
         );
-        expect(authority.assistantOutputs).toHaveLength(3);
+        expect(authority.assistantOutputs).toHaveLength(contents.length);
         expect(
           authority.assistantOutputs.map(({ agentRunId, state }) => ({ agentRunId, state })),
         ).toEqual(
@@ -332,7 +382,7 @@ describe("three-tab Oz Reference Journey", () => {
             receipts.map((receipt) => ({ agentRunId: receipt.agentRunId, state: "completed" })),
           ),
         );
-        expect(authority.modelCalls).toHaveLength(3);
+        expect(authority.modelCalls).toHaveLength(contents.length);
         expect(
           authority.modelCalls.map(({ agentRunId, state }) => ({ agentRunId, state })),
         ).toEqual(
@@ -340,7 +390,7 @@ describe("three-tab Oz Reference Journey", () => {
             receipts.map((receipt) => ({ agentRunId: receipt.agentRunId, state: "succeeded" })),
           ),
         );
-        expect(authority.modelCallAttempts).toHaveLength(3);
+        expect(authority.modelCallAttempts).toHaveLength(contents.length);
         expect(
           authority.modelCallAttempts.map(({ agentRunId, attemptNumber, claimEpoch, state }) => ({
             agentRunId,
@@ -358,7 +408,7 @@ describe("three-tab Oz Reference Journey", () => {
             })),
           ),
         );
-        expect(authority.modelCallFragments).toHaveLength(6);
+        expect(authority.modelCallFragments).toHaveLength(contents.length * 2);
         expect(
           authority.modelCallFragments.map(({ agentRunId, fragmentIndex, text }) => ({
             agentRunId,
@@ -403,8 +453,10 @@ describe("three-tab Oz Reference Journey", () => {
         expect(authority.events.map(({ eventId: _eventId, ...event }) => event)).toEqual(
           expectedEvents,
         );
-        expect(new Set(authority.events.map((event) => event.eventId)).size).toBe(15);
-        expect(authority.outbox).toHaveLength(3);
+        expect(new Set(authority.events.map((event) => event.eventId)).size).toBe(
+          contents.length * 5,
+        );
+        expect(authority.outbox).toHaveLength(contents.length);
         expect(
           authority.outbox.map(({ outboxId: _outboxId, ...obligation }) => obligation),
         ).toEqual(
@@ -421,8 +473,10 @@ describe("three-tab Oz Reference Journey", () => {
             })),
           ),
         );
-        expect(new Set(authority.outbox.map((obligation) => obligation.outboxId)).size).toBe(3);
-        expect(authority.relayPublicationAttempts).toHaveLength(3);
+        expect(new Set(authority.outbox.map((obligation) => obligation.outboxId)).size).toBe(
+          contents.length,
+        );
+        expect(authority.relayPublicationAttempts).toHaveLength(contents.length);
         expect(
           authority.relayPublicationAttempts.map(
             ({ providerMessageId, publicationEpoch, publicationOwner, state }) => ({
@@ -447,8 +501,8 @@ describe("three-tab Oz Reference Journey", () => {
         ).toEqual(new Set(authority.outbox.map((obligation) => obligation.outboxId)));
         expect(throughFive.throughPosition).toBe("5");
         expect(throughTen.throughPosition).toBe("10");
-        expect(throughFifteen.activeState).toEqual([]);
-        yield* evidenceCapture.mark("all-projections-reconciled", { toPosition: "15" });
+        expect(throughTwenty.activeState).toEqual([]);
+        yield* evidenceCapture.mark("all-projections-reconciled", { toPosition: "20" });
         yield* evidenceCapture.stop;
       }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer)),
     90_000,

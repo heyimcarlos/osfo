@@ -1,8 +1,8 @@
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
-import { MessageAdmission } from "@osfo/api";
+import { MessageAdmission, ThreadStreamLifecycle, makeThreadStreamLifecycleLayer } from "@osfo/api";
 import { OsfoApiLive } from "@osfo/api/server";
 import { makeMessageAdmissionLayer, makeThreadResumeLayer } from "@osfo/db";
-import { Config, Effect, Layer, Schema } from "effect";
+import { Config, Context, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { createServer } from "node:http";
 
@@ -28,6 +28,22 @@ const IngressConfig = Config.all({
     "OSFO_EXECUTION_PROFILE_REF",
   ),
   globalNonTerminalLimit: Config.schema(AdmissionLimit, "OSFO_GLOBAL_NON_TERMINAL_LIMIT"),
+  maxStreamBufferedAgeMs: Config.schema(PositiveInteger, "OSFO_MAX_STREAM_BUFFERED_AGE_MS").pipe(
+    Config.withDefault(5_000),
+  ),
+  maxStreamBufferedBytes: Config.schema(PositiveInteger, "OSFO_MAX_STREAM_BUFFERED_BYTES").pipe(
+    Config.withDefault(1_048_576),
+  ),
+  maxStreamBufferedEvents: Config.schema(PositiveInteger, "OSFO_MAX_STREAM_BUFFERED_EVENTS").pipe(
+    Config.withDefault(64),
+  ),
+  maxStreamConnectionLifetimeMs: Config.schema(
+    PositiveInteger,
+    "OSFO_MAX_STREAM_CONNECTION_LIFETIME_MS",
+  ).pipe(Config.withDefault(1_800_000)),
+  maxStreamConnections: Config.schema(PositiveInteger, "OSFO_MAX_STREAM_CONNECTIONS").pipe(
+    Config.withDefault(64),
+  ),
   principalNonTerminalLimit: Config.schema(AdmissionLimit, "OSFO_PRINCIPAL_NON_TERMINAL_LIMIT"),
   resumeDatabasePoolMax: Config.schema(DatabasePoolMax, "OSFO_RESUME_DATABASE_POOL_MAX").pipe(
     Config.withDefault(4),
@@ -82,6 +98,13 @@ const ServerLive = Layer.unwrap(
           );
         }),
       ).pipe(Layer.provide(AdmissionLive));
+      const ThreadStreamLifecycleLive = makeThreadStreamLifecycleLayer({
+        maxBufferedAgeMs: config.maxStreamBufferedAgeMs,
+        maxBufferedBytes: config.maxStreamBufferedBytes,
+        maxBufferedEvents: config.maxStreamBufferedEvents,
+        maxConnectionLifetimeMs: config.maxStreamConnectionLifetimeMs,
+        maxConnections: config.maxStreamConnections,
+      });
       const RunningApi = HttpRouter.serve(OsfoApiLive).pipe(
         Layer.provide(
           Layer.merge(
@@ -97,6 +120,7 @@ const ServerLive = Layer.unwrap(
             }),
           ),
         ),
+        Layer.provideMerge(ThreadStreamLifecycleLive),
       );
       const RunningWithRecovery = Layer.merge(RunningApi, CapacityRecovery);
 
@@ -108,4 +132,13 @@ const ServerLive = Layer.unwrap(
   ),
 );
 
-NodeRuntime.runMain(Layer.launch(ServerLive));
+const program = Effect.scoped(
+  Effect.gen(function* () {
+    const services = yield* Layer.build(ServerLive);
+    const lifecycle = Context.get(services, ThreadStreamLifecycle);
+    yield* Effect.addFinalizer(() => lifecycle.drain);
+    return yield* Effect.never;
+  }),
+);
+
+NodeRuntime.runMain(program);

@@ -1,5 +1,13 @@
 export { OsfoApi } from "./api.js";
 export {
+  InvalidThreadStreamLifecycleConfig,
+  ThreadStreamLifecycle,
+  ThreadStreamLifecycleConfigSchema,
+  makeThreadStreamLifecycleLayer,
+  type ThreadStreamLifecycleConfig,
+  type ThreadStreamLifecycleStatus,
+} from "./thread-stream-lifecycle.js";
+export {
   AdmissionCapacityReconciliationSchema,
   MessageAdmission,
   ThreadResume,
@@ -23,6 +31,7 @@ export {
   AdmissionUnavailable,
   AuthenticationRejected,
   CapacityRejected,
+  ConnectionLimitExceeded,
   CursorOutsideRetention,
   IdempotencyConflict,
   InvalidCursor,
