@@ -105,6 +105,7 @@ for _ in {1..12}; do
   fi
   sleep 5
 done
+
 jq -e 'length >= 2 and ([.[0:2][].message.data | @base64d] == ["first", "second"])' \
   "$scratch/messages.json" >/dev/null
 smoke_stage=pubsub-regional-persistence
@@ -137,6 +138,9 @@ if [[ "$effective_account" != "$terraform_service_account" ]]; then
     "$terraform_service_account" "$effective_account" >&2
   exit 1
 fi
+smoke_stage=authorized-secret-proof
+"$repo_root/infra/tests/development-authorized-secret-live.sh" \
+  "$scratch/platform.json" "$scratch/authorized-secret-report.json"
 smoke_stage="secret-version-add"
 for secret_key in model-adapter temporal-cloud; do
   secret=$(jq -r --arg secret_key "$secret_key" '.secret_names[$secret_key]' "$scratch/platform.json")
@@ -209,7 +213,7 @@ fi
 smoke_stage=qualification-report
 test -f "$preflight_report"
 artifact_immutability=PASS
-authorized_secret_version_access=MISSING
+authorized_secret_version_access=PASS
 probe_toolchain_determinism=MISSING
 required_qualification_statuses=(
   "$artifact_immutability"
@@ -235,6 +239,7 @@ jq -n \
   --slurpfile quota_preflight "$preflight_report" \
   --slurpfile network_execution "$scratch/network-execution.json" \
   --slurpfile denied_secret_execution "$scratch/denied-secret-execution.json" \
+  --slurpfile authorized_secret_report "$scratch/authorized-secret-report.json" \
   '{schema_version: 1, qualification: $qualification, project_id: $project_id, region: $region, checks: {
     private_cloud_sql_configuration_and_iam_users: "PASS",
     private_database_connection_from_direct_vpc: "PASS",
@@ -243,7 +248,7 @@ jq -n \
     artifact_precondition_round_trip: "PASS",
     artifact_unconditional_overwrite_denied_by_iam: "PASS",
     artifact_immutability_enforced_by_iam: "PASS",
-    authorized_secret_version_access: "MISSING",
+    authorized_secret_version_access: "PASS",
     exact_permission_denied_secret_payload_access: "PASS",
     probe_base_image_digest: "PASS",
     probe_toolchain_determinism: "MISSING",
@@ -255,8 +260,13 @@ jq -n \
     quota_preflight: $quota_preflight[0]
   }, artifact_sha256: $artifact_sha256, pubsub_endpoint: $pubsub_endpoint,
   qualification_executions: {
+    authorized_secret: $authorized_secret_report[0].execution_name,
     network: $network_execution[0].metadata.name,
     denied_secret: $denied_secret_execution[0].metadata.name
+  },
+  authorized_secret_evidence: {
+    expected_payload_length: $authorized_secret_report[0].expected_payload_length,
+    payload_sha256_match: $authorized_secret_report[0].payload_sha256_match
   },
   temporal_service_attachment: $temporal_service_attachment}' >"$scratch/report.json"
 

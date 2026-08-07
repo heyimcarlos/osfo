@@ -247,6 +247,15 @@ if [[ "${DEVELOPMENT_PLATFORM_CLEANUP_ONLY:-0}" == 1 ]]; then
       printf 'FAIL: managed smoke report does not match lifecycle envelope digest\n' >&2
       exit 1
     fi
+    if ! jq -e '
+      .checks.authorized_secret_version_access == "PASS"
+      and .checks.exact_permission_denied_secret_payload_access == "PASS"
+      and .authorized_secret_evidence.payload_sha256_match == true
+      and (.authorized_secret_evidence.expected_payload_length | type == "number" and . > 0)
+    ' "$plan_dir/managed-report.json" >/dev/null; then
+      printf 'FAIL: managed report does not preserve both secret-boundary proofs\n' >&2
+      exit 1
+    fi
     lifecycle_envelope_status=PASS
   elif grep -Eqi '404|not found|does not exist' "$lifecycle_lookup_error"; then
     printf 'MISSING: lifecycle ended before its evidence envelope was stored\n' >&2

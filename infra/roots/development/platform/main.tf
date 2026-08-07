@@ -113,6 +113,7 @@ output "platform" {
     runtime_service_accounts       = module.data_authority.runtime_service_accounts
     qualification_service_accounts = var.qualification_service_accounts
     qualification_probe_jobs       = module.qualification_probe.job_names
+    qualification_secret_name      = module.qualification_probe.authorized_secret_name
     qualification_database_dns     = module.qualification_probe.database_dns_name
   }
 }

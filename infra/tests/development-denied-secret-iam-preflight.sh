@@ -215,16 +215,24 @@ if [[ "$scope" == project ]]; then
   check_policy_for_payload_access "$scratch/project-policy.json" project
 
   terraform_scan_status=0
+  terraform_scan_output=$scratch/terraform-scan.out
   set +e
   grep -ER --include='*.tf' \
     'resource[[:space:]]+"google_secret_manager_secret_iam_(member|binding|policy)"|secretmanager[.]secrets[.]setIamPolicy' \
     "$repo_root/infra/roots/development/platform" "$repo_root/infra/modules" \
-    >/dev/null 2>"$scratch/terraform-scan.error"
+    >"$terraform_scan_output" 2>"$scratch/terraform-scan.error"
   terraform_scan_status=$?
   set -e
   case "$terraform_scan_status" in
-    0) fail 'disposable platform declares secret-level IAM authority' ;;
-    1) ;;
+    0)
+      if [[ $(wc -l <"$terraform_scan_output") != 1 ]] \
+        || ! grep -Fqx \
+          "$repo_root/infra/modules/qualification-probe/main.tf:resource \"google_secret_manager_secret_iam_member\" \"authorized_secret\" {" \
+          "$terraform_scan_output"; then
+        fail 'disposable platform declares secret-level IAM authority outside the reviewed qualification target'
+      fi
+      ;;
+    1) fail 'disposable platform is missing the reviewed qualification-secret IAM binding' ;;
     *) fail 'unable to scan disposable platform Terraform for secret-level IAM authority' ;;
   esac
   printf 'PASS: denied qualification identity has no project payload access role\n'

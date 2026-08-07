@@ -58,7 +58,7 @@ rg --fixed-strings --quiet 'temporal_private_service_connect' infra/tests/develo
 rg --fixed-strings --quiet 'temporal_lookup_status=$?' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'FAIL: Temporal PSC forwarding rule lookup failed closed' \
   infra/tests/development-platform-smoke.sh
-rg --fixed-strings --quiet 'authorized_secret_version_access: "MISSING"' \
+rg --fixed-strings --quiet 'authorized_secret_version_access: "PASS"' \
   infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'google_cloud_run_v2_job' infra/modules/qualification-probe/main.tf
 rg --fixed-strings --quiet 'egress = "ALL_TRAFFIC"' infra/modules/qualification-probe/main.tf
@@ -98,11 +98,63 @@ if rg --quiet 'PERMISSION_DENIED|HTTPError|denial wording' \
   printf 'denied-secret proof must not parse human-readable gcloud errors\n' >&2
   exit 1
 fi
-if rg --quiet 'resource "google_secret_manager_secret_iam_' \
-  "$root" infra/modules; then
-  printf 'disposable platform must not create secret-level IAM bindings\n' >&2
+secret_iam_resources=$(rg 'resource "google_secret_manager_secret_iam_' \
+  "$root" infra/modules || true)
+if [[ $(wc -l <<<"$secret_iam_resources") != 1 ]] \
+  || ! grep -Fq 'resource "google_secret_manager_secret_iam_member" "authorized_secret"' \
+    <<<"$secret_iam_resources"; then
+  printf 'disposable platform may bind only the dedicated authorized-secret identity\n' >&2
   exit 1
 fi
+for authorized_secret_contract in \
+  'resource "google_secret_manager_secret" "authorized_secret"' \
+  'resource "google_secret_manager_secret_iam_member" "authorized_secret"' \
+  'role      = "roles/secretmanager.secretAccessor"' \
+  'member    = "serviceAccount:${var.qualification_service_accounts["authorized_secret"]}"' \
+  'resource "google_cloud_run_v2_job" "authorized_secret"' \
+  'service_account = var.qualification_service_accounts["authorized_secret"]' \
+  'max_retries     = 0' \
+  'resource.name.startsWith('\''projects/${data.google_project.current[0].number}/secrets/${google_secret_manager_secret.authorized_secret[0].secret_id}/versions/'\'')' \
+  'file("${path.module}/authorized-secret-proof.sh")'; do
+  rg --fixed-strings --quiet "$authorized_secret_contract" \
+    infra/modules/qualification-probe/main.tf
+done
+if rg --quiet 'model-adapter|temporal-cloud' \
+  infra/modules/qualification-probe/authorized-secret-proof.sh; then
+  printf 'positive read proof must not target a runtime secret\n' >&2
+  exit 1
+fi
+for authorized_secret_live_contract in \
+  'openssl rand -hex 32' \
+  'gcloud secrets versions add "$secret"' \
+  '--data-file=-' \
+  'gcloud run jobs execute "$job"' \
+  '--update-env-vars="QUALIFICATION_VERSION=$version"' \
+  'gcloud logging read "$log_filter"' \
+  'evaluate-authorized-secret-proof.sh' \
+  'PASS: managed authorized secret read produced sanitized evidence'; do
+  rg --fixed-strings --quiet -- "$authorized_secret_live_contract" \
+    infra/tests/development-authorized-secret-live.sh
+done
+if rg --quiet -- '--retry|--log-http|cat .*error' \
+  infra/tests/development-authorized-secret-live.sh \
+  infra/modules/qualification-probe/authorized-secret-proof.sh; then
+  printf 'authorized-secret proof must not retry or expose payload/provider diagnostics\n' >&2
+  exit 1
+fi
+for authorized_secret_evidence_contract in \
+  'expected_payload_length: $authorized_secret_report[0].expected_payload_length' \
+  'payload_sha256_match: $authorized_secret_report[0].payload_sha256_match' \
+  'authorized_secret_version_access: "PASS"'; do
+  rg --fixed-strings --quiet "$authorized_secret_evidence_contract" \
+    infra/tests/development-platform-smoke.sh
+done
+rg --fixed-strings --quiet \
+  '.checks.authorized_secret_version_access == "PASS"' \
+  infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet \
+  '.checks.exact_permission_denied_secret_payload_access == "PASS"' \
+  infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'artifact_immutability_enforced_by_iam: "PASS"' \
   infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'artifact_unconditional_overwrite_denied_by_iam: "PASS"' \
@@ -319,10 +371,24 @@ if grep -Fq 'resourcemanager.projects.setIamPolicy' <<<"$platform_custom_roles";
   printf 'platform identity must not mutate project IAM\n' >&2
   exit 1
 fi
-if grep -Fq 'secretmanager.secrets.setIamPolicy' <<<"$platform_custom_roles"; then
-  printf 'platform identity must not mutate secret IAM\n' >&2
+qualification_iam_role=$(sed -n \
+  '/resource "google_project_iam_custom_role" "platform_qualification_secret_iam"/,/^}/p' \
+  infra/roots/foundation/main.tf)
+if [[ $(grep -Fc 'secretmanager.secrets.setIamPolicy' <<<"$platform_custom_roles") != 1 ]] \
+  || ! grep -Fq 'secretmanager.secrets.getIamPolicy' <<<"$qualification_iam_role" \
+  || ! grep -Fq 'secretmanager.secrets.setIamPolicy' <<<"$qualification_iam_role"; then
+  printf 'platform secret IAM mutation must use only the qualification-secret role\n' >&2
   exit 1
 fi
+qualification_iam_binding=$(sed -n \
+  '/resource "google_project_iam_member" "platform_qualification_secret_iam"/,/^}/p' \
+  infra/roots/foundation/main.tf)
+for exact_qualification_binding in \
+  'role    = google_project_iam_custom_role.platform_qualification_secret_iam.name' \
+  'member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"' \
+  'resource.name == '\''projects/${google_project.environment["development"].number}/secrets/${local.development_authorized_secret_name}'\'''; do
+  grep -Fq "$exact_qualification_binding" <<<"$qualification_iam_binding"
+done
 if grep -Fq 'iam.serviceAccounts.actAs' <<<"$platform_custom_roles"; then
   printf 'platform custom roles must not permit service-account impersonation\n' >&2
   exit 1
@@ -526,7 +592,7 @@ jq -e '
 jq -e '
   . as $config
   | ($config.qualification_service_accounts | keys) == [
-    "denied_secret", "network"
+    "authorized_secret", "denied_secret", "network"
   ]
   and all($config.qualification_service_accounts | to_entries[];
     .value | startswith("\($config.name_prefix)-qual-")

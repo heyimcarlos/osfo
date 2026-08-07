@@ -58,6 +58,13 @@ describe("Terraform foundation", () => {
     ),
   );
 
+  it.effect("proves authorized secret access with sanitized evidence", () =>
+    expectCheckPasses(
+      "infra/tests/development-authorized-secret-proof-contract.sh",
+      "development authorized-secret proof assertions",
+    ),
+  );
+
   it.effect("proves denied secret IAM authority is absent", () =>
     expectCheckPasses(
       "infra/tests/development-denied-secret-iam-preflight-contract.sh",
