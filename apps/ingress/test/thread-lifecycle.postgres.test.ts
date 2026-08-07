@@ -1,4 +1,9 @@
-import { AuthenticationRejected, ConnectionLimitExceeded, ThreadNotFound } from "@osfo/api";
+import {
+  AuthenticationRejected,
+  ConnectionLimitExceeded,
+  ThreadNotFound,
+  ThreadResumeUnavailable,
+} from "@osfo/api";
 import { getThreadSnapshot, streamThreadEvents, submitThreadMessage } from "@osfo/api/client";
 import { prepareMessageAdmissionFixture, setAuthenticationSessionState } from "@osfo/db/testing";
 import { describe, expect, it } from "@effect/vitest";
@@ -92,7 +97,11 @@ describe("compiled ingress Thread stream lifecycle", () => {
         authenticationToken,
         state: "expired",
       });
-      yield* Fiber.join(expiringStream).pipe(Effect.timeout("2 seconds"));
+      const expiredStreamFailure = yield* Fiber.join(expiringStream).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.flip,
+      );
+      expect(expiredStreamFailure).toEqual(new ThreadResumeUnavailable());
       const expired = yield* getThreadSnapshot({ ...clientOptions, threadId }).pipe(Effect.flip);
       expect(expired).toEqual(new AuthenticationRejected());
 
@@ -105,7 +114,11 @@ describe("compiled ingress Thread stream lifecycle", () => {
         authenticationToken,
         state: "revoked",
       });
-      yield* Fiber.join(revokedStream).pipe(Effect.timeout("2 seconds"));
+      const revokedStreamFailure = yield* Fiber.join(revokedStream).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.flip,
+      );
+      expect(revokedStreamFailure).toEqual(new ThreadResumeUnavailable());
       const revoked = yield* getThreadSnapshot({ ...clientOptions, threadId }).pipe(Effect.flip);
       expect(revoked).toEqual(new AuthenticationRejected());
     }),
