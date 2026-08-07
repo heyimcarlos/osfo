@@ -18,6 +18,7 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+export * from "./action.js";
 export * from "./tool-call.js";
 
 const Identity = Schema.String.check(Schema.isUUID());

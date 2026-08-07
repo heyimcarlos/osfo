@@ -1,4 +1,6 @@
 import {
+  type ActionPresentation,
+  type ActionSuccessBoundary,
   modelCallObservationTextMaxLength,
   toolCallBatchSizeMax,
   toolCallProgressTextMaxLength,
@@ -340,7 +342,9 @@ export const threadEvents = pgTable(
         'AgentRunCancellationRequested',
         'AgentRunCanceled',
         'AgentRunSucceeded',
-        'AgentRunFailed'
+        'AgentRunFailed',
+        'ActionApprovalRequested',
+        'ActionReceiptRecorded'
       )`,
     ),
     check(
@@ -405,6 +409,107 @@ export const threadEvents = pgTable(
           ${table.payload} = jsonb_build_object(
             'agentRunId', ${table.payload} ->> 'agentRunId',
             'cause', 'modelCallFailed'
+          )
+        WHEN 'ActionApprovalRequested' THEN
+          ${table.payload} = jsonb_build_object(
+            'approvalRequestId', ${table.payload} ->> 'approvalRequestId',
+            'toolCallId', ${table.payload} ->> 'toolCallId',
+            'agentRunId', ${table.payload} ->> 'agentRunId',
+            'expiresAt', ${table.payload} ->> 'expiresAt',
+            'actionDefinition', ${table.payload} -> 'actionDefinition',
+            'presentation', ${table.payload} -> 'presentation'
+          )
+          AND (${table.payload} ->> 'approvalRequestId')::uuid IS NOT NULL
+          AND (${table.payload} ->> 'expiresAt')::timestamptz IS NOT NULL
+          AND ${table.payload} ->> 'toolCallId' ~ '^tool_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          AND ${table.payload} -> 'actionDefinition' = jsonb_build_object(
+            'name', 'sendDemoEmail', 'version', 1
+          )
+          AND ${table.payload} -> 'presentation' = jsonb_build_object(
+            'version', 1,
+            'title', ${table.payload} -> 'presentation' ->> 'title',
+            'description', ${table.payload} -> 'presentation' ->> 'description',
+            'fields', jsonb_build_array(
+              jsonb_build_object('label', 'Destination', 'value', 'Controlled development inbox'),
+              jsonb_build_object(
+                'label', 'Subject',
+                'value', ${table.payload} -> 'presentation' -> 'fields' -> 1 ->> 'value'
+              )
+            )
+          )
+          AND length(${table.payload} -> 'presentation' ->> 'title') BETWEEN 1 AND 256
+          AND length(${table.payload} -> 'presentation' ->> 'description') BETWEEN 1 AND 256
+          AND length(${table.payload} -> 'presentation' -> 'fields' -> 1 ->> 'value') BETWEEN 1 AND 256
+        WHEN 'ActionReceiptRecorded' THEN
+          ${table.payload} = jsonb_build_object(
+            'toolCallId', ${table.payload} ->> 'toolCallId',
+            'agentRunId', ${table.payload} ->> 'agentRunId',
+            'approval', ${table.payload} -> 'approval',
+            'actionDefinition', ${table.payload} -> 'actionDefinition',
+            'presentation', ${table.payload} -> 'presentation',
+            'successBoundary', ${table.payload} -> 'successBoundary',
+            'outcome', ${table.payload} ->> 'outcome'
+          )
+          AND ${table.payload} ->> 'toolCallId' ~ '^tool_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          AND ${table.payload} ->> 'outcome' IN ('applied', 'notApplied', 'unresolved')
+          AND ${table.payload} -> 'actionDefinition' = jsonb_build_object(
+            'name', 'sendDemoEmail', 'version', 1
+          )
+          AND ${table.payload} -> 'presentation' = jsonb_build_object(
+            'version', 1,
+            'title', ${table.payload} -> 'presentation' ->> 'title',
+            'description', ${table.payload} -> 'presentation' ->> 'description',
+            'fields', jsonb_build_array(
+              jsonb_build_object('label', 'Destination', 'value', 'Controlled development inbox'),
+              jsonb_build_object(
+                'label', 'Subject',
+                'value', ${table.payload} -> 'presentation' -> 'fields' -> 1 ->> 'value'
+              )
+            )
+          )
+          AND length(${table.payload} -> 'presentation' ->> 'title') BETWEEN 1 AND 256
+          AND length(${table.payload} -> 'presentation' ->> 'description') BETWEEN 1 AND 256
+          AND length(${table.payload} -> 'presentation' -> 'fields' -> 1 ->> 'value') BETWEEN 1 AND 256
+          AND ${table.payload} -> 'successBoundary' = jsonb_build_object(
+            'name', 'mailpitMessageStored',
+            'version', 1,
+            'appliedMeans', 'controlled sink stored one message with the Action stable Message-ID',
+            'doesNotProve', 'delivery to a real recipient'
+          )
+          AND (
+            ${table.payload} -> 'approval' = jsonb_build_object('type', 'notRequired')
+            OR ${table.payload} -> 'approval' = jsonb_build_object(
+              'type', 'approved',
+              'approvalRequestId', ${table.payload} -> 'approval' ->> 'approvalRequestId'
+            )
+            OR (
+              ${table.payload} -> 'approval' = jsonb_build_object(
+                'type', 'notApproved',
+                'approvalRequestId', ${table.payload} -> 'approval' ->> 'approvalRequestId',
+                'reason', ${table.payload} -> 'approval' ->> 'reason'
+              )
+              AND ${table.payload} -> 'approval' ->> 'reason' IN ('denied', 'expired', 'canceled')
+            )
+            OR (
+              ${table.payload} -> 'approval' = jsonb_build_object(
+                'type', 'approvalNotAuthorized',
+                'approvalRequestId', ${table.payload} -> 'approval' ->> 'approvalRequestId',
+                'reason', 'currentAuthorizationDenied'
+              )
+            )
+            OR (
+              ${table.payload} -> 'approval' = jsonb_build_object(
+                'type', 'notAuthorized',
+                'reason', ${table.payload} -> 'approval' ->> 'reason'
+              )
+              AND ${table.payload} -> 'approval' ->> 'reason' IN (
+                'operationGateDenied', 'currentAuthorizationDenied'
+              )
+            )
+          )
+          AND (
+            NOT (${table.payload} -> 'approval' ? 'approvalRequestId')
+            OR (${table.payload} -> 'approval' ->> 'approvalRequestId')::uuid IS NOT NULL
           )
         ELSE false
       END) IS TRUE`,
@@ -867,7 +972,10 @@ export const toolCalls = pgTable(
       sql`${table.toolCallId} ~ '^tool_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`,
     ),
     check("tool_calls_member_index_check", sql`${table.memberIndex} >= 0`),
-    check("tool_calls_execution_mode_check", sql`${table.executionMode} = 'nonAction'`),
+    check(
+      "tool_calls_execution_mode_check",
+      sql`${table.executionMode} IN ('nonAction', 'action')`,
+    ),
     check("tool_calls_name_check", sql`length(${table.toolName}) BETWEEN 1 AND 128`),
     check("tool_calls_attempt_limit_check", sql`${table.attemptLimit} BETWEEN 1 AND 5`),
     check(
@@ -1000,6 +1108,180 @@ export const toolCallProgressEvents = pgTable(
     check(
       "tool_call_progress_events_message_check",
       sql`length(${table.message}) BETWEEN 1 AND ${toolCallProgressTextMaxLengthSql}`,
+    ),
+  ],
+);
+
+export const actions = pgTable(
+  "actions",
+  {
+    toolCallId: text("tool_call_id")
+      .primaryKey()
+      .references(() => toolCalls.toolCallId),
+    agentRunId: uuid("agent_run_id").notNull(),
+    actionDefinitionRef: text("action_definition_ref").notNull(),
+    actionDigest: text("action_digest").notNull(),
+    subject: text("subject").notNull(),
+    presentation: jsonb("presentation").$type<ActionPresentation>().notNull(),
+    successBoundary: jsonb("success_boundary").$type<ActionSuccessBoundary>().notNull(),
+    effectiveGate: text("effective_gate").notNull(),
+    state: text("state").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+    terminalAt: timestamp("terminal_at", { withTimezone: true, mode: "string" }),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.toolCallId, table.agentRunId],
+      foreignColumns: [toolCalls.toolCallId, toolCalls.agentRunId],
+    }),
+    unique("actions_call_run_unique").on(table.toolCallId, table.agentRunId),
+    unique("actions_call_digest_unique").on(table.toolCallId, table.actionDigest),
+    check("actions_definition_check", sql`${table.actionDefinitionRef} = 'sendDemoEmail.v1'`),
+    check("actions_digest_check", sql`${table.actionDigest} ~ '^[0-9a-f]{64}$'`),
+    check("actions_subject_check", sql`length(${table.subject}) BETWEEN 1 AND 120`),
+    check(
+      "actions_presentation_check",
+      sql`${table.presentation} = jsonb_build_object(
+        'version', 1,
+        'title', ${table.presentation} ->> 'title',
+        'description', ${table.presentation} ->> 'description',
+        'fields', jsonb_build_array(
+          jsonb_build_object('label', 'Destination', 'value', 'Controlled development inbox'),
+          jsonb_build_object(
+            'label', 'Subject', 'value', ${table.presentation} -> 'fields' -> 1 ->> 'value'
+          )
+        )
+      )
+      AND ${table.presentation} ->> 'title' = 'Send demo email'
+      AND ${table.presentation} ->> 'description' =
+        'Send one fixed-body message to the controlled development inbox.'
+      AND ${table.presentation} -> 'fields' -> 1 ->> 'value' = ${table.subject}`,
+    ),
+    check(
+      "actions_success_boundary_check",
+      sql`${table.successBoundary} = jsonb_build_object(
+        'ref', 'mailpitMessageStored.v1',
+        'description',
+        'Applied means the controlled sink stored one message with this Action''s stable Message-ID. It does not prove delivery to a real recipient.'
+      )`,
+    ),
+    check(
+      "actions_gate_check",
+      sql`${table.effectiveGate} IN ('deny', 'requireApproval', 'permit')`,
+    ),
+    check(
+      "actions_state_check",
+      sql`${table.state} IN (
+        'waitingApproval', 'ready', 'dispatching', 'reconcileRequired',
+        'applied', 'notApplied', 'unresolved'
+      )`,
+    ),
+    check(
+      "actions_terminal_check",
+      sql`((${table.state} IN ('applied', 'notApplied', 'unresolved')) =
+        (${table.terminalAt} IS NOT NULL))`,
+    ),
+  ],
+);
+
+export const actionApprovalRequests = pgTable(
+  "action_approval_requests",
+  {
+    approvalRequestId: uuid("approval_request_id").primaryKey(),
+    toolCallId: text("tool_call_id")
+      .notNull()
+      .unique()
+      .references(() => actions.toolCallId),
+    actionDigest: text("action_digest").notNull(),
+    state: text("state").notNull(),
+    decisionId: uuid("decision_id").unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true, mode: "string" }).notNull(),
+    decidedAt: timestamp("decided_at", { withTimezone: true, mode: "string" }),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+  },
+  (table) => [
+    check("action_approval_requests_digest_check", sql`${table.actionDigest} ~ '^[0-9a-f]{64}$'`),
+    foreignKey({
+      columns: [table.toolCallId, table.actionDigest],
+      foreignColumns: [actions.toolCallId, actions.actionDigest],
+    }),
+    check(
+      "action_approval_requests_state_check",
+      sql`${table.state} IN ('pending', 'approved', 'denied', 'expired', 'canceled')`,
+    ),
+    check(
+      "action_approval_requests_decision_check",
+      sql`((${table.state} = 'pending'
+          AND ${table.decisionId} IS NULL
+          AND ${table.decidedAt} IS NULL)
+        OR (${table.state} IN ('approved', 'denied')
+          AND ${table.decisionId} IS NOT NULL
+          AND ${table.decidedAt} IS NOT NULL)
+        OR (${table.state} IN ('expired', 'canceled')
+          AND ${table.decisionId} IS NULL
+          AND ${table.decidedAt} IS NOT NULL))`,
+    ),
+  ],
+);
+
+export const actionAttempts = pgTable(
+  "action_attempts",
+  {
+    actionAttemptId: uuid("action_attempt_id").primaryKey(),
+    toolCallId: text("tool_call_id").notNull(),
+    agentRunId: uuid("agent_run_id").notNull(),
+    attemptNumber: integer("attempt_number").notNull(),
+    claimEpoch: bigint("claim_epoch", { mode: "bigint" }).notNull(),
+    authorizationRevision: text("authorization_revision").notNull(),
+    state: text("state").notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true, mode: "string" }).notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true, mode: "string" }),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.toolCallId, table.agentRunId],
+      foreignColumns: [actions.toolCallId, actions.agentRunId],
+    }),
+    unique("action_attempts_call_number_unique").on(table.toolCallId, table.attemptNumber),
+    index("action_attempts_active_run_epoch_idx")
+      .on(table.agentRunId, table.claimEpoch)
+      .where(sql`${table.state} IN ('dispatching', 'uncertain')`),
+    check("action_attempts_number_check", sql`${table.attemptNumber} > 0`),
+    check("action_attempts_epoch_check", sql`${table.claimEpoch} > 0`),
+    check(
+      "action_attempts_authorization_check",
+      sql`length(${table.authorizationRevision}) BETWEEN 1 AND 128`,
+    ),
+    check(
+      "action_attempts_state_check",
+      sql`${table.state} IN ('dispatching', 'uncertain', 'applied', 'notApplied')`,
+    ),
+    check(
+      "action_attempts_finished_check",
+      sql`((${table.state} = 'dispatching' AND ${table.finishedAt} IS NULL)
+        OR (${table.state} <> 'dispatching' AND ${table.finishedAt} IS NOT NULL))`,
+    ),
+  ],
+);
+
+export const actionReceipts = pgTable(
+  "action_receipts",
+  {
+    toolCallId: text("tool_call_id")
+      .primaryKey()
+      .references(() => actions.toolCallId),
+    agentRunId: uuid("agent_run_id").notNull(),
+    outcome: text("outcome").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true, mode: "string" }).notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.toolCallId, table.agentRunId],
+      foreignColumns: [actions.toolCallId, actions.agentRunId],
+    }),
+    check(
+      "action_receipts_outcome_check",
+      sql`${table.outcome} IN ('applied', 'notApplied', 'unresolved')`,
     ),
   ],
 );

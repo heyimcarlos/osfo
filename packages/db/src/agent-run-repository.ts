@@ -1199,6 +1199,12 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               ) {
                 return yield* new AgentRunFenceRejected();
               }
+              const openActions = yield* sql`SELECT tool_call_id
+                FROM actions
+                WHERE agent_run_id = ${fence.agentRunId}::uuid
+                  AND state NOT IN ('applied', 'notApplied', 'unresolved')
+                FOR UPDATE`;
+              if (openActions.length !== 0) return yield* new AgentRunFenceRejected();
               const openOutputs = yield* sql<{
                 readonly assistantOutputId: string;
               }>`SELECT
@@ -1340,6 +1346,12 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               if (authority.cancellationRequestedAt !== null) {
                 return yield* new AgentRunCancellationObserved();
               }
+              const openActions = yield* sql`SELECT tool_call_id
+                FROM actions
+                WHERE agent_run_id = ${fence.agentRunId}::uuid
+                  AND state NOT IN ('applied', 'notApplied', 'unresolved')
+                FOR UPDATE`;
+              if (openActions.length !== 0) return yield* new AgentRunFenceRejected();
               const expectedCallState = decision.type === "succeed" ? "succeeded" : "failed";
               const expectedOutputState = decision.type === "succeed" ? "completed" : "interrupted";
               const terminalState = decision.type === "succeed" ? "succeeded" : "failed";

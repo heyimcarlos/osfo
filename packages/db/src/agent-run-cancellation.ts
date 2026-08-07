@@ -8,7 +8,12 @@ import {
   ThreadNotFound,
   type CancelAgentRunCommand,
 } from "@osfo/api";
-import { makeAgentRunCanceled, makeAgentRunCancellationRequested } from "@osfo/session";
+import type { ActionPresentation } from "@osfo/agent-run";
+import {
+  makeActionReceiptRecorded,
+  makeAgentRunCanceled,
+  makeAgentRunCancellationRequested,
+} from "@osfo/session";
 import { Data, Effect, Layer, Redacted, Schema } from "effect";
 import { ADMISSION_CAPACITY_LOCK_KEY } from "./admission-capacity.js";
 
@@ -40,7 +45,32 @@ type CancellationEvent =
   | {
       readonly type: "canceled";
       readonly cleanupDisposition: "completed" | "deadlineExceeded";
+    }
+  | {
+      readonly type: "actionReceipt";
+      readonly action: CancelableAction;
+      readonly approval: Parameters<typeof makeActionReceiptRecorded>[0]["approval"];
     };
+
+interface CancelableAction {
+  readonly actionDigest: string;
+  readonly presentation: ActionPresentation;
+  readonly state: "waitingApproval" | "ready" | "dispatching" | "reconcileRequired";
+  readonly toolCallId: string;
+}
+
+interface ActionApproval {
+  readonly approvalRequestId: string;
+  readonly state: "pending" | "approved" | "denied" | "expired" | "canceled";
+}
+
+const actionDefinition = { name: "sendDemoEmail", version: 1 } as const;
+const actionSuccessBoundary = {
+  appliedMeans: "controlled sink stored one message with the Action stable Message-ID",
+  doesNotProve: "delivery to a real recipient",
+  name: "mailpitMessageStored",
+  version: 1,
+} as const;
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -81,14 +111,30 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
           occurredAt: new Date(timestamp.occurredAt).toISOString(),
           agentRunId: authority.agentRunId,
         };
-        const event =
-          eventInput.type === "requested"
-            ? yield* makeAgentRunCancellationRequested(base)
-            : yield* makeAgentRunCanceled({
+        const event = yield* (() => {
+          switch (eventInput.type) {
+            case "requested":
+              return makeAgentRunCancellationRequested(base);
+            case "canceled":
+              return makeAgentRunCanceled({
                 ...base,
                 cleanupDisposition: { type: eventInput.cleanupDisposition },
                 externalWorkMayContinue: false,
               });
+            case "actionReceipt":
+              return makeActionReceiptRecorded({
+                ...base,
+                actionDefinition,
+                approval: eventInput.approval,
+                outcome: "notApplied",
+                presentation: eventInput.action.presentation as Parameters<
+                  typeof makeActionReceiptRecorded
+                >[0]["presentation"],
+                successBoundary: actionSuccessBoundary,
+                toolCallId: eventInput.action.toolCallId,
+              });
+          }
+        })();
         yield* sql`INSERT INTO thread_events (
             thread_id, position, event_id, principal_id, user_message_id,
             agent_run_id, event_type, event_version, payload, occurred_at
@@ -104,6 +150,82 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
             ${JSON.stringify(event.payload)}::jsonb,
             ${event.occurredAt}::timestamptz
           )`;
+      });
+
+      const settleUncontactedActions = Effect.fn(
+        "DatabaseAgentRunCancellation.settleUncontactedActions",
+      )(function* (authority: AgentRunAuthority) {
+        const actions = yield* sql<CancelableAction>`SELECT
+            tool_call_id AS "toolCallId", action_digest AS "actionDigest",
+            presentation, state
+          FROM actions
+          WHERE agent_run_id = ${authority.agentRunId}::uuid
+            AND state NOT IN ('applied', 'notApplied', 'unresolved')
+          ORDER BY tool_call_id
+          FOR UPDATE`;
+        for (const action of actions) {
+          const attempts = yield* sql<{ readonly count: number }>`SELECT count(*)::int AS count
+            FROM action_attempts WHERE tool_call_id = ${action.toolCallId}`;
+          if (
+            action.state === "dispatching" ||
+            action.state === "reconcileRequired" ||
+            attempts[0]?.count !== 0
+          ) {
+            continue;
+          }
+          const approvals = yield* sql<ActionApproval>`SELECT
+              approval_request_id::text AS "approvalRequestId", state
+            FROM action_approval_requests
+            WHERE tool_call_id = ${action.toolCallId}
+            FOR UPDATE`;
+          const approval = approvals[0];
+          if (approval?.state === "pending") {
+            yield* sql`UPDATE action_approval_requests
+              SET state = 'canceled', decided_at = transaction_timestamp()
+              WHERE approval_request_id = ${approval.approvalRequestId}::uuid`;
+          }
+          const publicApproval =
+            approval === undefined
+              ? ({ type: "notRequired" } as const)
+              : approval.state === "approved"
+                ? ({
+                    approvalRequestId: approval.approvalRequestId,
+                    type: "approved",
+                  } as const)
+                : ({
+                    approvalRequestId: approval.approvalRequestId,
+                    reason: approval.state === "pending" ? "canceled" : approval.state,
+                    type: "notApproved",
+                  } as const);
+          yield* sql`UPDATE actions
+            SET state = 'notApplied', terminal_at = transaction_timestamp()
+            WHERE tool_call_id = ${action.toolCallId}`;
+          yield* sql`INSERT INTO action_receipts (
+              tool_call_id, agent_run_id, outcome, recorded_at
+            ) VALUES (
+              ${action.toolCallId}, ${authority.agentRunId}::uuid,
+              'notApplied', transaction_timestamp()
+            )`;
+          const toolOutcome = {
+            result: { text: "ActionReceipt:notApplied", type: "text" },
+            type: "succeeded",
+          } as const;
+          yield* sql`UPDATE tool_calls
+            SET state = 'succeeded', outcome = ${JSON.stringify(toolOutcome)}::jsonb,
+                completed_at = transaction_timestamp()
+            WHERE tool_call_id = ${action.toolCallId}`;
+          yield* sql`UPDATE tool_call_batches b
+            SET state = 'succeeded', completed_count = 1,
+                completed_at = transaction_timestamp()
+            FROM tool_calls c
+            WHERE c.tool_call_id = ${action.toolCallId}
+              AND b.tool_call_batch_id = c.tool_call_batch_id`;
+          yield* appendEvent(authority, {
+            action,
+            approval: publicApproval,
+            type: "actionReceipt",
+          });
+        }
       });
 
       const settleCapacity = Effect.fn("DatabaseAgentRunCancellation.settleCapacity")(function* (
@@ -217,6 +339,7 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
                 outcome: "cancellationRequested",
               });
             }
+            yield* settleUncontactedActions(authority);
             const requested = yield* sql`UPDATE agent_runs
               SET cancellation_requested_at = transaction_timestamp(),
                   cleanup_deadline_at = clock_timestamp()

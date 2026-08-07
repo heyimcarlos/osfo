@@ -9,7 +9,18 @@ const Identity = Schema.String.pipe(Schema.check(Schema.isPattern(uuidPattern)))
 const ThreadPosition = Schema.String.pipe(Schema.check(Schema.isPattern(/^[1-9]\d*$/u)));
 const UtcTimestamp = Schema.String.pipe(Schema.check(Schema.isPattern(utcTimestampPattern)));
 const ThreadCursor = Schema.String.pipe(Schema.check(Schema.isNonEmpty()));
+const ToolCallIdentity = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(
+      /^tool_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu,
+    ),
+  ),
+);
 const AssistantOutputInterruptionCause = Schema.Literals(["modelCallFailed", "agentRunCanceled"]);
+const ClientSafeText = Schema.String.pipe(
+  Schema.check(Schema.isNonEmpty()),
+  Schema.check(Schema.isMaxLength(512)),
+);
 
 export const TextBlockSchema = Schema.Struct({
   type: Schema.Literal("text"),
@@ -112,7 +123,94 @@ export const AgentRunSucceededSchema = Schema.Struct({
 export const AgentRunFailedSchema = Schema.Struct({
   ...eventFields,
   eventType: Schema.Literal("AgentRunFailed"),
-  payload: Schema.Struct({ agentRunId: Identity, cause: Schema.Literal("modelCallFailed") }),
+  payload: Schema.Struct({
+    agentRunId: Identity,
+    cause: Schema.Literal("modelCallFailed"),
+  }),
+});
+
+export const ActionDefinitionRefSchema = Schema.Struct({
+  name: Schema.Literal("sendDemoEmail"),
+  version: Schema.Literal(1),
+});
+
+export const ActionPresentationSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  title: ClientSafeText,
+  description: ClientSafeText,
+  fields: Schema.Tuple([
+    Schema.Struct({
+      label: Schema.Literal("Destination"),
+      value: Schema.Literal("Controlled development inbox"),
+    }),
+    Schema.Struct({
+      label: Schema.Literal("Subject"),
+      value: Schema.String.pipe(
+        Schema.check(Schema.isNonEmpty()),
+        Schema.check(Schema.isMaxLength(256)),
+      ),
+    }),
+  ]),
+});
+
+export const ActionSuccessBoundaryRefSchema = Schema.Struct({
+  name: Schema.Literal("mailpitMessageStored"),
+  version: Schema.Literal(1),
+  appliedMeans: Schema.Literal(
+    "controlled sink stored one message with the Action stable Message-ID",
+  ),
+  doesNotProve: Schema.Literal("delivery to a real recipient"),
+});
+
+export const ActionReceiptOutcomeSchema = Schema.Literals(["applied", "notApplied", "unresolved"]);
+
+export const ActionReceiptApprovalSchema = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("approved"),
+    approvalRequestId: Identity,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("notApproved"),
+    approvalRequestId: Identity,
+    reason: Schema.Literals(["denied", "expired", "canceled"]),
+  }),
+  Schema.Struct({ type: Schema.Literal("notRequired") }),
+  Schema.Struct({
+    type: Schema.Literal("approvalNotAuthorized"),
+    approvalRequestId: Identity,
+    reason: Schema.Literal("currentAuthorizationDenied"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("notAuthorized"),
+    reason: Schema.Literals(["operationGateDenied", "currentAuthorizationDenied"]),
+  }),
+]);
+
+export const ActionApprovalRequestedSchema = Schema.Struct({
+  ...eventFields,
+  eventType: Schema.Literal("ActionApprovalRequested"),
+  payload: Schema.Struct({
+    approvalRequestId: Identity,
+    toolCallId: ToolCallIdentity,
+    agentRunId: Identity,
+    expiresAt: UtcTimestamp,
+    actionDefinition: ActionDefinitionRefSchema,
+    presentation: ActionPresentationSchema,
+  }),
+});
+
+export const ActionReceiptRecordedSchema = Schema.Struct({
+  ...eventFields,
+  eventType: Schema.Literal("ActionReceiptRecorded"),
+  payload: Schema.Struct({
+    toolCallId: ToolCallIdentity,
+    agentRunId: Identity,
+    approval: ActionReceiptApprovalSchema,
+    actionDefinition: ActionDefinitionRefSchema,
+    presentation: ActionPresentationSchema,
+    successBoundary: ActionSuccessBoundaryRefSchema,
+    outcome: ActionReceiptOutcomeSchema,
+  }),
 });
 
 export const ThreadEventSchema = Schema.Union([
@@ -125,6 +223,8 @@ export const ThreadEventSchema = Schema.Union([
   AgentRunCanceledSchema,
   AgentRunSucceededSchema,
   AgentRunFailedSchema,
+  ActionApprovalRequestedSchema,
+  ActionReceiptRecordedSchema,
 ]);
 
 export type UserMessageAppended = typeof UserMessageAppendedSchema.Type;
@@ -135,6 +235,8 @@ export type AgentRunCancellationRequested = typeof AgentRunCancellationRequested
 export type AgentRunCanceled = typeof AgentRunCanceledSchema.Type;
 export type AgentRunSucceeded = typeof AgentRunSucceededSchema.Type;
 export type AgentRunFailed = typeof AgentRunFailedSchema.Type;
+export type ActionApprovalRequested = typeof ActionApprovalRequestedSchema.Type;
+export type ActionReceiptRecorded = typeof ActionReceiptRecordedSchema.Type;
 export type ThreadEvent = typeof ThreadEventSchema.Type;
 
 export interface UserMessageAppendedInput {
@@ -174,6 +276,23 @@ export interface AgentRunCanceledInput extends AgentRunEventInput {
 
 export interface AgentRunFailedInput extends AgentRunEventInput {
   readonly cause: "modelCallFailed";
+}
+
+interface ActionEventInput extends AgentRunEventInput {
+  readonly toolCallId: string;
+  readonly actionDefinition: typeof ActionDefinitionRefSchema.Type;
+  readonly presentation: typeof ActionPresentationSchema.Type;
+}
+
+export interface ActionApprovalRequestedInput extends ActionEventInput {
+  readonly approvalRequestId: string;
+  readonly expiresAt: string;
+}
+
+export interface ActionReceiptRecordedInput extends ActionEventInput {
+  readonly approval: typeof ActionReceiptApprovalSchema.Type;
+  readonly successBoundary: typeof ActionSuccessBoundaryRefSchema.Type;
+  readonly outcome: typeof ActionReceiptOutcomeSchema.Type;
 }
 
 export class InvalidUserMessageAppended extends Data.TaggedError("InvalidUserMessageAppended")<{
@@ -291,6 +410,47 @@ export const makeAgentRunFailed = (input: AgentRunFailedInput) =>
     payload: { agentRunId: input.agentRunId, cause: input.cause },
   }).pipe(Effect.mapError((cause) => new InvalidThreadEvent({ cause })));
 
+export const makeActionApprovalRequested = (input: ActionApprovalRequestedInput) =>
+  Schema.decodeUnknownEffect(ActionApprovalRequestedSchema, {
+    onExcessProperty: "error",
+  })({
+    eventId: input.eventId,
+    eventType: "ActionApprovalRequested",
+    eventVersion: 1,
+    threadId: input.threadId,
+    threadPosition: input.threadPosition,
+    occurredAt: input.occurredAt,
+    payload: {
+      approvalRequestId: input.approvalRequestId,
+      toolCallId: input.toolCallId,
+      agentRunId: input.agentRunId,
+      expiresAt: input.expiresAt,
+      actionDefinition: input.actionDefinition,
+      presentation: input.presentation,
+    },
+  }).pipe(Effect.mapError((cause) => new InvalidThreadEvent({ cause })));
+
+export const makeActionReceiptRecorded = (input: ActionReceiptRecordedInput) =>
+  Schema.decodeUnknownEffect(ActionReceiptRecordedSchema, {
+    onExcessProperty: "error",
+  })({
+    eventId: input.eventId,
+    eventType: "ActionReceiptRecorded",
+    eventVersion: 1,
+    threadId: input.threadId,
+    threadPosition: input.threadPosition,
+    occurredAt: input.occurredAt,
+    payload: {
+      toolCallId: input.toolCallId,
+      agentRunId: input.agentRunId,
+      approval: input.approval,
+      actionDefinition: input.actionDefinition,
+      presentation: input.presentation,
+      successBoundary: input.successBoundary,
+      outcome: input.outcome,
+    },
+  }).pipe(Effect.mapError((cause) => new InvalidThreadEvent({ cause })));
+
 const withCursor = <A extends Schema.Struct.Fields>(fields: A) =>
   Schema.Struct({ ...fields, cursor: ThreadCursor });
 
@@ -304,6 +464,8 @@ export const ThreadEventEnvelopeSchema = Schema.Union([
   withCursor(AgentRunCanceledSchema.fields),
   withCursor(AgentRunSucceededSchema.fields),
   withCursor(AgentRunFailedSchema.fields),
+  withCursor(ActionApprovalRequestedSchema.fields),
+  withCursor(ActionReceiptRecordedSchema.fields),
 ]);
 
 export type ThreadEventEnvelope = typeof ThreadEventEnvelopeSchema.Type;
@@ -340,26 +502,54 @@ export const AssistantOutputTimelineItemSchema = Schema.Struct({
   status: Schema.Union([
     Schema.Struct({ type: Schema.Literal("streaming") }),
     Schema.Struct({ type: Schema.Literal("completed") }),
-    Schema.Struct({ type: Schema.Literal("interrupted"), cause: AssistantOutputInterruptionCause }),
+    Schema.Struct({
+      type: Schema.Literal("interrupted"),
+      cause: AssistantOutputInterruptionCause,
+    }),
   ]),
+});
+
+export const ActionReceiptTimelineItemSchema = Schema.Struct({
+  type: Schema.Literal("actionReceipt"),
+  toolCallId: ToolCallIdentity,
+  agentRunId: Identity,
+  approval: ActionReceiptApprovalSchema,
+  source: SourceRangeSchema,
+  actionDefinition: ActionDefinitionRefSchema,
+  presentation: ActionPresentationSchema,
+  successBoundary: ActionSuccessBoundaryRefSchema,
+  outcome: ActionReceiptOutcomeSchema,
 });
 
 export const ActiveAgentRunSchema = Schema.Struct({
   type: Schema.Literal("activeAgentRun"),
   agentRunId: Identity,
   introducedBy: SourcePointSchema,
-  phase: Schema.Struct({ type: Schema.Literals(["pending", "running", "waiting"]) }),
+  phase: Schema.Struct({
+    type: Schema.Literals(["pending", "running", "waiting"]),
+  }),
   cancellation: Schema.Union([
     Schema.Struct({ type: Schema.Literal("none") }),
     Schema.Struct({ type: Schema.Literal("requested") }),
   ]),
 });
 
+export const ActiveActionApprovalSchema = Schema.Struct({
+  type: Schema.Literal("activeActionApproval"),
+  approvalRequestId: Identity,
+  toolCallId: ToolCallIdentity,
+  agentRunId: Identity,
+  introducedBy: SourcePointSchema,
+  expiresAt: UtcTimestamp,
+  actionDefinition: ActionDefinitionRefSchema,
+  presentation: ActionPresentationSchema,
+});
+
 const NonNegativePosition = Schema.String.pipe(Schema.check(Schema.isPattern(/^\d+$/u)));
 
 export const ThreadSnapshotSchema = Schema.Struct({
   projection: Schema.Literal("nativeThread"),
-  schemaVersion: Schema.Literal(3),
+  schemaVersion: Schema.Literal(4),
   threadId: Identity,
   throughPosition: NonNegativePosition,
   throughCursor: ThreadCursor,
@@ -369,9 +559,13 @@ export const ThreadSnapshotSchema = Schema.Struct({
   timelineLimit: Schema.Int.pipe(Schema.check(Schema.isGreaterThan(0))),
   historyBeforePosition: NonNegativePosition,
   timeline: Schema.Array(
-    Schema.Union([UserMessageTimelineItemSchema, AssistantOutputTimelineItemSchema]),
+    Schema.Union([
+      UserMessageTimelineItemSchema,
+      AssistantOutputTimelineItemSchema,
+      ActionReceiptTimelineItemSchema,
+    ]),
   ),
-  activeState: Schema.Array(ActiveAgentRunSchema),
+  activeState: Schema.Array(Schema.Union([ActiveAgentRunSchema, ActiveActionApprovalSchema])),
 });
 
 export type ThreadSnapshot = typeof ThreadSnapshotSchema.Type;
@@ -380,10 +574,31 @@ type AssistantOutputTimelineItem = Extract<
   ThreadTimelineItem,
   { readonly type: "assistantOutput" }
 >;
+type ActiveThreadState = ThreadSnapshot["activeState"][number];
+type ActiveAgentRun = Extract<ActiveThreadState, { readonly type: "activeAgentRun" }>;
+type ActiveActionApproval = Extract<ActiveThreadState, { readonly type: "activeActionApproval" }>;
 
 const isAssistantOutputTimelineItem = (
   item: ThreadTimelineItem,
 ): item is AssistantOutputTimelineItem => item.type === "assistantOutput";
+
+const isActiveAgentRun = (state: ActiveThreadState): state is ActiveAgentRun =>
+  state.type === "activeAgentRun";
+
+const isActiveActionApproval = (state: ActiveThreadState): state is ActiveActionApproval =>
+  state.type === "activeActionApproval";
+
+const hasSameActionPresentation = (
+  left: ActiveActionApproval["presentation"],
+  right: ActiveActionApproval["presentation"],
+) =>
+  left.version === right.version &&
+  left.title === right.title &&
+  left.description === right.description &&
+  left.fields[0].label === right.fields[0].label &&
+  left.fields[0].value === right.fields[0].value &&
+  left.fields[1].label === right.fields[1].label &&
+  left.fields[1].value === right.fields[1].value;
 
 export class InvalidThreadSnapshot extends Data.TaggedError("InvalidThreadSnapshot")<{
   readonly cause: unknown;
@@ -403,7 +618,7 @@ export interface EmptyThreadSnapshotInput {
 export const makeEmptyThreadSnapshot = (input: EmptyThreadSnapshotInput) =>
   Schema.decodeUnknownEffect(ThreadSnapshotSchema)({
     projection: "nativeThread",
-    schemaVersion: 3,
+    schemaVersion: 4,
     threadId: input.threadId,
     throughPosition: "0",
     throughCursor: input.throughCursor,
@@ -473,8 +688,11 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
       break;
     }
     case "AssistantOutputAppended": {
-      const activeRun = activeState.find((run) => run.agentRunId === event.payload.agentRunId);
-      if (activeRun?.cancellation.type === "requested") {
+      const activeRun = activeState.find(
+        (state): state is ActiveAgentRun =>
+          isActiveAgentRun(state) && state.agentRunId === event.payload.agentRunId,
+      );
+      if (activeRun?.cancellation.type === "requested" || activeRun?.phase.type === "waiting") {
         return yield* failAuthorityConflict();
       }
       const existing = timeline.find(
@@ -510,22 +728,26 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
                   }
                 : item,
             );
-      activeState = activeState.map((run) =>
-        run.agentRunId === event.payload.agentRunId
-          ? { ...run, phase: { type: "running" as const } }
-          : run,
+      activeState = activeState.map((state) =>
+        isActiveAgentRun(state) && state.agentRunId === event.payload.agentRunId
+          ? { ...state, phase: { type: "running" as const } }
+          : state,
       );
       break;
     }
     case "AssistantOutputCompleted":
     case "AssistantOutputInterrupted": {
-      const activeRun = activeState.find((run) => run.agentRunId === event.payload.agentRunId);
+      const activeRun = activeState.find(
+        (state): state is ActiveAgentRun =>
+          isActiveAgentRun(state) && state.agentRunId === event.payload.agentRunId,
+      );
       const isCancellationInterruption =
         event.eventType === "AssistantOutputInterrupted" &&
         event.payload.cause === "agentRunCanceled";
       if (
         (isCancellationInterruption && activeRun?.cancellation.type !== "requested") ||
-        (!isCancellationInterruption && activeRun?.cancellation.type === "requested")
+        (!isCancellationInterruption && activeRun?.cancellation.type === "requested") ||
+        activeRun?.phase.type === "waiting"
       ) {
         return yield* failAuthorityConflict();
       }
@@ -559,30 +781,49 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
             ]
           : timeline.map((item) =>
               item === existing
-                ? { ...existing, source: advanceSource(existing.source, event), status }
+                ? {
+                    ...existing,
+                    source: advanceSource(existing.source, event),
+                    status,
+                  }
                 : item,
             );
-      activeState = activeState.map((run) =>
-        run.agentRunId === event.payload.agentRunId
-          ? { ...run, phase: { type: "running" as const } }
-          : run,
+      activeState = activeState.map((state) =>
+        isActiveAgentRun(state) && state.agentRunId === event.payload.agentRunId
+          ? { ...state, phase: { type: "running" as const } }
+          : state,
       );
       break;
     }
     case "AgentRunCancellationRequested": {
-      const activeRun = activeState.find((run) => run.agentRunId === event.payload.agentRunId);
+      const activeRun = activeState.find(
+        (state): state is ActiveAgentRun =>
+          isActiveAgentRun(state) && state.agentRunId === event.payload.agentRunId,
+      );
       if (activeRun === undefined || activeRun.cancellation.type === "requested") {
         return yield* failAuthorityConflict();
       }
-      activeState = activeState.map((run) =>
-        run === activeRun ? { ...run, cancellation: { type: "requested" as const } } : run,
+      activeState = activeState.map((state) =>
+        state === activeRun
+          ? { ...activeRun, cancellation: { type: "requested" as const } }
+          : state,
       );
       break;
     }
     case "AgentRunSucceeded":
     case "AgentRunFailed": {
-      const activeRun = activeState.find((run) => run.agentRunId === event.payload.agentRunId);
-      if (activeRun === undefined || activeRun.cancellation.type === "requested") {
+      const activeRun = activeState.find(
+        (state): state is ActiveAgentRun =>
+          isActiveAgentRun(state) && state.agentRunId === event.payload.agentRunId,
+      );
+      const openApproval = activeState.find(
+        (state) => isActiveActionApproval(state) && state.agentRunId === event.payload.agentRunId,
+      );
+      if (
+        activeRun === undefined ||
+        activeRun.cancellation.type === "requested" ||
+        openApproval !== undefined
+      ) {
         return yield* failAuthorityConflict();
       }
       const openOutput = timeline.find(
@@ -592,12 +833,22 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
           item.status.type === "streaming",
       );
       if (openOutput !== undefined) return yield* failAuthorityConflict();
-      activeState = activeState.filter((run) => run.agentRunId !== event.payload.agentRunId);
+      activeState = activeState.filter((state) => state.agentRunId !== event.payload.agentRunId);
       break;
     }
     case "AgentRunCanceled": {
-      const activeRun = activeState.find((run) => run.agentRunId === event.payload.agentRunId);
-      if (activeRun === undefined || activeRun.cancellation.type !== "requested") {
+      const activeRun = activeState.find(
+        (state): state is ActiveAgentRun =>
+          isActiveAgentRun(state) && state.agentRunId === event.payload.agentRunId,
+      );
+      const openApproval = activeState.find(
+        (state) => isActiveActionApproval(state) && state.agentRunId === event.payload.agentRunId,
+      );
+      if (
+        activeRun === undefined ||
+        activeRun.cancellation.type !== "requested" ||
+        openApproval !== undefined
+      ) {
         return yield* failAuthorityConflict();
       }
       const openOutput = timeline.find(
@@ -607,7 +858,110 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
           item.status.type === "streaming",
       );
       if (openOutput !== undefined) return yield* failAuthorityConflict();
-      activeState = activeState.filter((run) => run.agentRunId !== event.payload.agentRunId);
+      activeState = activeState.filter((state) => state.agentRunId !== event.payload.agentRunId);
+      break;
+    }
+    case "ActionApprovalRequested": {
+      const activeRun = activeState.find(
+        (state): state is ActiveAgentRun =>
+          isActiveAgentRun(state) && state.agentRunId === event.payload.agentRunId,
+      );
+      const duplicateApproval = activeState.find(
+        (state) =>
+          isActiveActionApproval(state) &&
+          (state.approvalRequestId === event.payload.approvalRequestId ||
+            state.toolCallId === event.payload.toolCallId),
+      );
+      const existingReceipt = timeline.find(
+        (item) => item.type === "actionReceipt" && item.toolCallId === event.payload.toolCallId,
+      );
+      if (
+        activeRun === undefined ||
+        activeRun.cancellation.type === "requested" ||
+        activeRun.phase.type === "waiting" ||
+        duplicateApproval !== undefined ||
+        existingReceipt !== undefined ||
+        event.payload.expiresAt <= event.occurredAt
+      ) {
+        return yield* failAuthorityConflict();
+      }
+      activeState = [
+        ...activeState,
+        {
+          type: "activeActionApproval" as const,
+          approvalRequestId: event.payload.approvalRequestId,
+          toolCallId: event.payload.toolCallId,
+          agentRunId: event.payload.agentRunId,
+          introducedBy: sourcePoint(event),
+          expiresAt: event.payload.expiresAt,
+          actionDefinition: event.payload.actionDefinition,
+          presentation: event.payload.presentation,
+        },
+      ];
+      break;
+    }
+    case "ActionReceiptRecorded": {
+      const activeRun = activeState.find(
+        (state): state is ActiveAgentRun =>
+          isActiveAgentRun(state) && state.agentRunId === event.payload.agentRunId,
+      );
+      const approvalRequestId =
+        event.payload.approval.type === "approved" ||
+        event.payload.approval.type === "notApproved" ||
+        event.payload.approval.type === "approvalNotAuthorized"
+          ? event.payload.approval.approvalRequestId
+          : undefined;
+      const approval = activeState.find(
+        (state): state is ActiveActionApproval =>
+          isActiveActionApproval(state) && state.approvalRequestId === approvalRequestId,
+      );
+      const approvalForToolCall = activeState.find(
+        (state) => isActiveActionApproval(state) && state.toolCallId === event.payload.toolCallId,
+      );
+      const existingReceipt = timeline.find(
+        (item) => item.type === "actionReceipt" && item.toolCallId === event.payload.toolCallId,
+      );
+      if (
+        activeRun === undefined ||
+        existingReceipt !== undefined ||
+        (approvalRequestId === undefined && approvalForToolCall !== undefined) ||
+        (approvalRequestId !== undefined &&
+          (approval === undefined ||
+            approval.toolCallId !== event.payload.toolCallId ||
+            approval.agentRunId !== event.payload.agentRunId ||
+            approval.actionDefinition.name !== event.payload.actionDefinition.name ||
+            approval.actionDefinition.version !== event.payload.actionDefinition.version ||
+            !hasSameActionPresentation(approval.presentation, event.payload.presentation))) ||
+        ((event.payload.approval.type === "notApproved" ||
+          event.payload.approval.type === "approvalNotAuthorized" ||
+          event.payload.approval.type === "notAuthorized") &&
+          event.payload.outcome !== "notApplied")
+      ) {
+        return yield* failAuthorityConflict();
+      }
+      timeline = [
+        ...timeline,
+        {
+          type: "actionReceipt" as const,
+          toolCallId: event.payload.toolCallId,
+          agentRunId: event.payload.agentRunId,
+          approval: event.payload.approval,
+          source: sourceRange(event),
+          actionDefinition: event.payload.actionDefinition,
+          presentation: event.payload.presentation,
+          successBoundary: event.payload.successBoundary,
+          outcome: event.payload.outcome,
+        },
+      ];
+      const withoutApproval = activeState.filter((state) => state !== approval);
+      const hasRemainingApproval = withoutApproval.some(
+        (state) => isActiveActionApproval(state) && state.agentRunId === event.payload.agentRunId,
+      );
+      activeState = withoutApproval.map((state) =>
+        state === activeRun && !hasRemainingApproval
+          ? { ...activeRun, phase: { type: "running" as const } }
+          : state,
+      );
       break;
     }
   }

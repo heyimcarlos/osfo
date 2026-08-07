@@ -140,13 +140,18 @@ describe("PostgreSQL Thread resume", () => {
       stateRevision: 3,
       historyBeforePosition: "1",
     });
-    expect(snapshot.timeline.map((item) => item.content[0]?.text)).toEqual(["Second", "Third"]);
+    expect(snapshot.timeline.map((item) => item.type)).toEqual(["userMessage", "userMessage"]);
+    expect(
+      snapshot.timeline.flatMap((item) =>
+        item.type === "userMessage" ? [item.content[0]?.text] : [],
+      ),
+    ).toEqual(["Second", "Third"]);
     expect(snapshot.activeState).toHaveLength(3);
-    expect(snapshot.activeState.map((item) => item.phase.type)).toEqual([
-      "running",
-      "waiting",
-      "pending",
-    ]);
+    expect(
+      snapshot.activeState.flatMap((item) =>
+        item.type === "activeAgentRun" ? [item.phase.type] : [],
+      ),
+    ).toEqual(["running", "waiting", "pending"]);
     expect(snapshot.throughCursor).toEqual(expect.any(String));
   });
 
