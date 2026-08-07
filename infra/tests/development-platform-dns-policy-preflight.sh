@@ -112,13 +112,26 @@ if ! gcloud dns managed-zones describe "$name_prefix-private" \
   cat "$scratch/zone.error" >&2
   exit 1
 fi
+if ! gcloud projects describe "$project_id" --format=json \
+  >"$scratch/project.json" 2>"$scratch/project.error"; then
+  printf 'FAIL: unable to verify development project number\n' >&2
+  cat "$scratch/project.error" >&2
+  exit 1
+fi
+project_number=$(jq -r \
+  '.projectNumber | select(type == "string" and test("^[0-9]+$"))' \
+  "$scratch/project.json")
+if [[ -z "$project_number" ]]; then
+  printf 'FAIL: development project did not expose a numeric projectNumber\n' >&2
+  exit 1
+fi
 zone_id=$(jq -r '.id | select(type == "string" and test("^[0-9]+$"))' \
   "$scratch/zone.json")
 if [[ -z "$zone_id" ]]; then
   printf 'FAIL: retained private zone did not expose its numeric managed-zone ID\n' >&2
   exit 1
 fi
-record_condition="resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/$project_id/managedZones/$zone_id/rrsets/database.temporal.internal./A'"
+record_condition="resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/$project_number/managedZones/$zone_id/rrsets/database.temporal.internal./A'"
 
 if ! gcloud dns managed-zones get-iam-policy "$name_prefix-private" \
   --project="$project_id" --format=json \

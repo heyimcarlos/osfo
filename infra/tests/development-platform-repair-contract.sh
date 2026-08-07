@@ -255,6 +255,8 @@ grep -Fq 'PERMISSION_DENIED: storage.objects.get' \
   "$evidence_permission_output"
 
 project_id=osfo-development-318708913
+# Synthetic fixture, never a live Google Cloud project number.
+project_number=123456789012
 platform_account=osfo-dev-platform-tf@osfo-development-318708913.iam.gserviceaccount.com
 artifact_bucket=osfo-development-artifacts-318708913
 evidence_bucket=osfo-foundation-evidence-318708913
@@ -264,7 +266,7 @@ artifact_condition="resource.name == 'projects/_/buckets/$artifact_bucket' || re
 dns_record_role="projects/$project_id/roles/osfoPlatformDnsRecordManager"
 dns_change_role="projects/$project_id/roles/osfoPlatformDnsChangeManager"
 dns_foundation_role="projects/$project_id/roles/osfoFoundationDnsZoneIamManager"
-dns_condition="resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/$project_id/managedZones/$zone_id/rrsets/database.temporal.internal./A'"
+dns_condition="resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/$project_number/managedZones/$zone_id/rrsets/database.temporal.internal./A'"
 evidence_object_role=projects/osfo-foundation-318708913/roles/osfoSavedPlanObjectAccess
 evidence_list_role=projects/osfo-foundation-318708913/roles/osfoStateObjectLister
 evidence_condition="resource.name.startsWith('projects/_/buckets/$evidence_bucket/objects/roots/development/platform/')"
@@ -294,6 +296,10 @@ jq -n \
       members: [$foundation_member]
     }
   ]}' >"$scratch/preflight-project-policy.json"
+jq -n --arg project_number "$project_number" \
+  '{projectNumber: $project_number}' >"$scratch/preflight-project.json"
+jq -n '{projectNumber: "osfo-development-318708913"}' \
+  >"$scratch/preflight-project-invalid.json"
 jq -n '{
   includedPermissions: [
     "dns.resourceRecordSets.create",
@@ -335,6 +341,11 @@ jq -n \
       members: [$platform_member]
     }
   ]}' >"$scratch/preflight-zone-policy.json"
+jq \
+  --arg stale_condition "resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/$project_id/managedZones/$zone_id/rrsets/database.temporal.internal./A'" \
+  '(.bindings[] | select(.role | endswith("/osfoPlatformDnsRecordManager")) | .condition.expression) = $stale_condition' \
+  "$scratch/preflight-zone-policy.json" \
+  >"$scratch/preflight-zone-policy-project-id.json"
 jq -n '{bindings: []}' >"$scratch/preflight-zone-policy-empty.json"
 jq '.bindings += [{role: "roles/dns.admin", members: ["serviceAccount:unexpected@example.com"]}]' \
   "$scratch/preflight-zone-policy.json" \
@@ -380,6 +391,11 @@ printf '%s\n' \
   '    exit 93' \
   '    ;;' \
   '  "projects get-iam-policy osfo-development-318708913 --format=json") cat "$MOCK_PREFLIGHT_PROJECT_POLICY" ;;' \
+  '  "projects describe osfo-development-318708913 --format=json") cat "$MOCK_PREFLIGHT_PROJECT" ;;' \
+  '  "projects describe"*)' \
+  '    printf "project lookup requires the exact project and JSON format: %s\n" "$*" >&2' \
+  '    exit 96' \
+  '    ;;' \
   '  "projects get-iam-policy"*)' \
   '    printf "project policy lookup requires the exact project and JSON format: %s\n" "$*" >&2' \
   '    exit 95' \
@@ -439,6 +455,7 @@ PATH="$mock_bin:$PATH" \
   MOCK_PREFLIGHT_DNS_RECORD_ROLE="$scratch/preflight-dns-record-role.json" \
   MOCK_PREFLIGHT_DNS_CHANGE_ROLE="$scratch/preflight-dns-change-role.json" \
   MOCK_PREFLIGHT_DNS_FOUNDATION_ROLE="$scratch/preflight-dns-foundation-role.json" \
+  MOCK_PREFLIGHT_PROJECT="$scratch/preflight-project.json" \
   MOCK_PREFLIGHT_PROJECT_POLICY="$scratch/preflight-project-policy.json" \
   MOCK_PREFLIGHT_ZONE="$scratch/preflight-zone.json" \
   MOCK_PREFLIGHT_ZONE_POLICY="$scratch/preflight-zone-policy.json" \
@@ -448,6 +465,30 @@ PATH="$mock_bin:$PATH" \
 grep -Fq 'PASS: exact foundation bootstrap and managed-zone DNS policy are applied' \
   "$dns_policy_output"
 
+dns_policy_invalid_project_output=$scratch/dns-policy-invalid-project-output
+if PATH="$mock_bin:$PATH" \
+  CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=$foundation_account \
+  FOUNDATION_SERVICE_ACCOUNT=$foundation_account \
+  MOCK_PREFLIGHT_DNS_RECORD_ROLE="$scratch/preflight-dns-record-role.json" \
+  MOCK_PREFLIGHT_DNS_CHANGE_ROLE="$scratch/preflight-dns-change-role.json" \
+  MOCK_PREFLIGHT_DNS_FOUNDATION_ROLE="$scratch/preflight-dns-foundation-role.json" \
+  MOCK_PREFLIGHT_PROJECT="$scratch/preflight-project-invalid.json" \
+  MOCK_PREFLIGHT_PROJECT_POLICY="$scratch/preflight-project-policy.json" \
+  MOCK_PREFLIGHT_ZONE="$scratch/preflight-zone.json" \
+  MOCK_PREFLIGHT_ZONE_POLICY="$scratch/preflight-zone-policy.json" \
+  TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
+  infra/tests/development-platform-dns-policy-preflight.sh \
+  >"$dns_policy_invalid_project_output" 2>&1; then
+  printf 'nonnumeric projectNumber must fail DNS policy preflight\n' >&2
+  exit 1
+fi
+grep -Fq 'FAIL: development project did not expose a numeric projectNumber' \
+  "$dns_policy_invalid_project_output"
+if grep -Fq 'PASS:' "$dns_policy_invalid_project_output"; then
+  printf 'nonnumeric projectNumber must not report PASS\n' >&2
+  exit 1
+fi
+
 dns_policy_missing_zone_output=$scratch/dns-policy-missing-zone-output
 if PATH="$mock_bin:$PATH" \
   CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=$foundation_account \
@@ -455,6 +496,7 @@ if PATH="$mock_bin:$PATH" \
   MOCK_PREFLIGHT_DNS_RECORD_ROLE="$scratch/preflight-dns-record-role.json" \
   MOCK_PREFLIGHT_DNS_CHANGE_ROLE="$scratch/preflight-dns-change-role.json" \
   MOCK_PREFLIGHT_DNS_FOUNDATION_ROLE="$scratch/preflight-dns-foundation-role.json" \
+  MOCK_PREFLIGHT_PROJECT="$scratch/preflight-project.json" \
   MOCK_PREFLIGHT_PROJECT_POLICY="$scratch/preflight-project-policy.json" \
   MOCK_PREFLIGHT_ZONE="$scratch/preflight-zone.json" \
   MOCK_PREFLIGHT_ZONE_POLICY="$scratch/preflight-zone-policy-empty.json" \
@@ -471,12 +513,14 @@ if grep -Fq 'PASS:' "$dns_policy_missing_zone_output"; then
   exit 1
 fi
 
-for invalid_dns_policy in extra-zone stale-project; do
+for invalid_dns_policy in extra-zone stale-project project-id-condition; do
   invalid_dns_policy_output="$scratch/dns-policy-$invalid_dns_policy-output"
   zone_policy=$scratch/preflight-zone-policy.json
   project_policy=$scratch/preflight-project-policy.json
   if [[ "$invalid_dns_policy" == extra-zone ]]; then
     zone_policy=$scratch/preflight-zone-policy-extra.json
+  elif [[ "$invalid_dns_policy" == project-id-condition ]]; then
+    zone_policy=$scratch/preflight-zone-policy-project-id.json
   else
     project_policy=$scratch/preflight-project-policy-stale-dns.json
   fi
@@ -486,6 +530,7 @@ for invalid_dns_policy in extra-zone stale-project; do
     MOCK_PREFLIGHT_DNS_RECORD_ROLE="$scratch/preflight-dns-record-role.json" \
     MOCK_PREFLIGHT_DNS_CHANGE_ROLE="$scratch/preflight-dns-change-role.json" \
     MOCK_PREFLIGHT_DNS_FOUNDATION_ROLE="$scratch/preflight-dns-foundation-role.json" \
+    MOCK_PREFLIGHT_PROJECT="$scratch/preflight-project.json" \
     MOCK_PREFLIGHT_PROJECT_POLICY="$project_policy" \
     MOCK_PREFLIGHT_ZONE="$scratch/preflight-zone.json" \
     MOCK_PREFLIGHT_ZONE_POLICY="$zone_policy" \

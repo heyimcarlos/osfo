@@ -725,7 +725,7 @@ resource "google_dns_managed_zone_iam_member" "development_platform_database_rec
   condition {
     title       = "exact_development_database_a_record"
     description = "Restricts the disposable platform to database.temporal.internal. A in the retained private zone."
-    expression  = "resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/${google_project.environment["development"].project_id}/managedZones/${module.development_environment_baseline.private_dns_managed_zone_id}/rrsets/database.temporal.internal./A'"
+    expression  = "resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/${google_project.environment["development"].number}/managedZones/${module.development_environment_baseline.private_dns_managed_zone_id}/rrsets/database.temporal.internal./A'"
   }
 
   depends_on = [google_project_iam_member.foundation_development_dns_zone_iam_manager]
