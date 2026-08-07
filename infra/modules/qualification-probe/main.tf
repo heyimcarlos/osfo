@@ -23,23 +23,7 @@ locals {
     printf 'PASS direct_vpc_database_dns_nat\n'
   SCRIPT
 
-  denied_secret_probe_script = <<-SCRIPT
-    set -euo pipefail
-    denial_file=$(mktemp)
-    set +e
-    gcloud secrets versions access latest \
-      --secret="$${MODEL_SECRET}" --project="$${PROJECT_ID}" \
-      >/dev/null 2>"$${denial_file}"
-    denial_status=$?
-    set -e
-    if ((denial_status == 0)); then
-      printf 'FAIL unintended_secret_accessor\n' >&2
-      exit 1
-    fi
-    grep -Fq 'PERMISSION_DENIED' "$${denial_file}"
-    grep -Fq 'secretmanager.versions.access' "$${denial_file}"
-    printf 'PASS unintended_secret_accessor_denied\n'
-  SCRIPT
+  denied_secret_probe_script = file("${path.module}/denied-secret-proof.sh")
 }
 
 resource "google_dns_record_set" "database" {

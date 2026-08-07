@@ -73,12 +73,20 @@ Jobs with Direct VPC egress. It proves private-only Cloud SQL connectivity with
 an IAM database login, private DNS resolution, and observed public egress
 through the retained static NAT address. No qualification identity has secret
 access, and runtime identities are never impersonable by the platform identity.
-The denied probe must fail with the exact `secretmanager.versions.access`
-permission denial. The platform may create versions and manage containers, but
-it cannot change secret IAM, access version payloads, or mint runtime
-credentials. Authorized secret-version access therefore remains `MISSING` in
-this preparatory PR. Package installation inside the pinned base image is still
-mutable, so full probe toolchain determinism is also `MISSING`.
+The denied probe requires a nonzero secret-version access result with an empty
+payload, independently of human-readable `gcloud` errors. A foundation preflight
+validates the exact live denied identity, requires project-only ancestry, and
+resolves project roles for exact, public, and aggregate principals that could
+include that identity. It fails closed for any parent hierarchy or unresolved
+aggregate authority that could grant secret payload access. After apply, the
+existing platform read authority performs the matching structural check against
+the exact live target-secret policy before the runtime probe. The source
+contract also rejects secret-level IAM resources in the disposable platform
+definition. The platform may create versions and manage containers, but it
+cannot change secret IAM, access version payloads, or mint runtime credentials.
+Authorized secret-version access therefore remains `MISSING` in this preparatory PR.
+Package installation inside the pinned base image is still mutable, so full
+probe toolchain determinism is also `MISSING`.
 The retained private zone owns two narrow platform bindings. The conditional
 record role uses Cloud DNS's numeric project and managed-zone identifiers to
 match the full `database.temporal.internal.` A resource name exactly. A
@@ -122,6 +130,7 @@ terraform -chdir=infra/roots/development/platform init -input=false \
   -backend-config="bucket=$GCP_DEVELOPMENT_STATE_BUCKET" \
   -backend-config="prefix=roots/development/platform"
 export DEVELOPMENT_LIFECYCLE_RUN_ID=manual-20260807-01
+export PLATFORM_SERVICE_ACCOUNT="$GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT"
 SAVED_PLAN_BUCKET="$GCP_SAVED_PLAN_BUCKET" \
   infra/tests/development-platform-live.sh
 ```
