@@ -2789,7 +2789,7 @@
       "table": "agent_runs"
     },
     {
-      "value": "((\n        (\"state\" = 'canceled'\n          AND \"cancellation_requested_at\" IS NOT NULL\n          AND \"cleanup_deadline_at\" IS NOT NULL\n          AND \"cleanup_disposition\" IN ('completed', 'deadlineExceeded')\n          AND \"external_work_may_continue\" IS NOT NULL)\n        OR (\"state\" <> 'canceled'\n          AND \"cleanup_disposition\" IS NULL\n          AND \"external_work_may_continue\" IS NULL)\n      )) IS TRUE",
+      "value": "((\n        (\"state\" = 'canceled'\n          AND \"cancellation_requested_at\" IS NOT NULL\n          AND \"cleanup_deadline_at\" IS NOT NULL\n          AND (\n            \"cleanup_disposition\" IN ('completed', 'deadlineExceeded')\n            OR (\n              \"cleanup_disposition\" = 'unknown'\n              AND \"external_work_may_continue\" = true\n            )\n          )\n          AND \"external_work_may_continue\" IS NOT NULL)\n        OR (\"state\" <> 'canceled'\n          AND \"cleanup_disposition\" IS NULL\n          AND \"external_work_may_continue\" IS NULL)\n      )) IS TRUE",
       "name": "agent_runs_cleanup_check",
       "entityType": "checks",
       "schema": "public",

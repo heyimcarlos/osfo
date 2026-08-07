@@ -59,25 +59,43 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
           )`;
         yield* sql`INSERT INTO user_messages (
             user_message_id, thread_id, principal_id, content, created_at
-          ) VALUES (
-            '53146ff7-2205-44b0-8de4-685509112ac9'::uuid,
-            '6ef239bd-3f04-4c77-8976-1171e75ea0ab'::uuid,
-            'b3ef0861-2df7-4d2a-a195-fbc5ed75bc81'::uuid,
-            'Upgrade running AgentRun',
-            transaction_timestamp()
-          )`;
+          ) VALUES
+            (
+              '53146ff7-2205-44b0-8de4-685509112ac9'::uuid,
+              '6ef239bd-3f04-4c77-8976-1171e75ea0ab'::uuid,
+              'b3ef0861-2df7-4d2a-a195-fbc5ed75bc81'::uuid,
+              'Upgrade running AgentRun',
+              transaction_timestamp()
+            ),
+            (
+              '63146ff7-2205-44b0-8de4-685509112ac9'::uuid,
+              '6ef239bd-3f04-4c77-8976-1171e75ea0ab'::uuid,
+              'b3ef0861-2df7-4d2a-a195-fbc5ed75bc81'::uuid,
+              'Upgrade historical canceled AgentRun',
+              transaction_timestamp()
+            )`;
         yield* sql`INSERT INTO agent_runs (
             agent_run_id, thread_id, principal_id, user_message_id,
             state, execution_profile_ref, created_at
-          ) VALUES (
-            '96ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
-            '6ef239bd-3f04-4c77-8976-1171e75ea0ab'::uuid,
-            'b3ef0861-2df7-4d2a-a195-fbc5ed75bc81'::uuid,
-            '53146ff7-2205-44b0-8de4-685509112ac9'::uuid,
-            'running',
-            'oz.upgrade-fixture.v1',
-            transaction_timestamp()
-          )`;
+          ) VALUES
+            (
+              '96ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
+              '6ef239bd-3f04-4c77-8976-1171e75ea0ab'::uuid,
+              'b3ef0861-2df7-4d2a-a195-fbc5ed75bc81'::uuid,
+              '53146ff7-2205-44b0-8de4-685509112ac9'::uuid,
+              'running',
+              'oz.upgrade-fixture.v1',
+              transaction_timestamp()
+            ),
+            (
+              '86ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
+              '6ef239bd-3f04-4c77-8976-1171e75ea0ab'::uuid,
+              'b3ef0861-2df7-4d2a-a195-fbc5ed75bc81'::uuid,
+              '63146ff7-2205-44b0-8de4-685509112ac9'::uuid,
+              'canceled',
+              'oz.upgrade-fixture.v1',
+              transaction_timestamp()
+            )`;
       }).pipe(Effect.provide(upgradeLayer));
 
       yield* migrateDatabase({
@@ -108,9 +126,32 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
         ) {
           return yield* Effect.die(new Error("Running AgentRun upgrade fixture was not requeued"));
         }
+
+        const canceledRows = yield* sql<{
+          readonly cleanupDisposition: string | null;
+          readonly externalWorkMayContinue: boolean | null;
+          readonly state: string;
+        }>`SELECT
+            state,
+            cleanup_disposition AS "cleanupDisposition",
+            external_work_may_continue AS "externalWorkMayContinue"
+          FROM agent_runs
+          WHERE agent_run_id = '86ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid`;
+        const canceled = canceledRows[0];
+        if (
+          canceled?.state !== "canceled" ||
+          canceled.cleanupDisposition !== "unknown" ||
+          canceled.externalWorkMayContinue !== true
+        ) {
+          return yield* Effect.die(
+            new Error(
+              "Historical canceled AgentRun upgrade fixture was not preserved conservatively",
+            ),
+          );
+        }
       }).pipe(Effect.provide(upgradeLayer));
 
-      yield* Effect.logInfo("Running AgentRun upgrade-path fixture passed");
+      yield* Effect.logInfo("AgentRun upgrade-path fixtures passed");
       rmSync(migrationsFolder, { force: true, recursive: true });
     }),
   ),

@@ -34,6 +34,13 @@ interface AgentRunAuthority {
   readonly cancellationRequestedAt: string | null;
 }
 
+type CancellationEvent =
+  | { readonly type: "requested" }
+  | {
+      readonly type: "canceled";
+      readonly cleanupDisposition: "completed" | "deadlineExceeded";
+    };
+
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
 const isCancellationError = Schema.is(
@@ -53,7 +60,7 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
 
       const appendEvent = Effect.fn("DatabaseAgentRunCancellation.appendEvent")(function* (
         authority: AgentRunAuthority,
-        type: "requested" | "canceled",
+        eventInput: CancellationEvent,
       ) {
         const positions = yield* sql<{ readonly position: string }>`UPDATE threads
           SET next_position = next_position + 1,
@@ -74,11 +81,11 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
           agentRunId: authority.agentRunId,
         };
         const event =
-          type === "requested"
+          eventInput.type === "requested"
             ? yield* makeAgentRunCancellationRequested(base)
             : yield* makeAgentRunCanceled({
                 ...base,
-                cleanupDisposition: { type: "completed" },
+                cleanupDisposition: { type: eventInput.cleanupDisposition },
                 externalWorkMayContinue: false,
               });
         yield* sql`INSERT INTO thread_events (
@@ -142,6 +149,17 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
               WHERE thread_id = ${command.threadId}::uuid
                 AND principal_id = ${session.principalId}::uuid`;
             if (owned[0] === undefined) return yield* new ThreadNotFound();
+            const globalCapacity = yield* sql`SELECT reserved_count
+              FROM admission_global_capacity
+              WHERE singleton = true
+              FOR UPDATE`;
+            const principalCapacity = yield* sql`SELECT reserved_count
+              FROM admission_principal_capacity
+              WHERE principal_id = ${session.principalId}::uuid
+              FOR UPDATE`;
+            if (globalCapacity.length !== 1 || principalCapacity.length !== 1) {
+              return yield* new AgentRunCancellationUnavailable();
+            }
             const rows = yield* sql<AgentRunAuthority>`SELECT
                 agent_run_id::text AS "agentRunId",
                 thread_id::text AS "threadId",
@@ -183,7 +201,7 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
                 AND cancellation_requested_at IS NULL
               RETURNING agent_run_id`;
             if (requested.length !== 1) return yield* new AgentRunCancellationUnavailable();
-            yield* appendEvent(authority, "requested");
+            yield* appendEvent(authority, { type: "requested" });
             if (authority.state === "running") {
               return new AgentRunCancellationReceipt({
                 protocolVersion: 1,
@@ -191,18 +209,27 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
                 outcome: "cancellationRequested",
               });
             }
-            const canceled = yield* sql`UPDATE agent_runs
+            const canceled = yield* sql<{
+              readonly cleanupDisposition: "completed" | "deadlineExceeded";
+            }>`UPDATE agent_runs
               SET state = 'canceled',
                   claim_owner = NULL,
                   lease_expires_at = NULL,
-                  cleanup_disposition = 'completed',
+                  cleanup_disposition = CASE
+                    WHEN cleanup_deadline_at <= clock_timestamp() THEN 'deadlineExceeded'
+                    ELSE 'completed'
+                  END,
                   external_work_may_continue = false
               WHERE agent_run_id = ${authority.agentRunId}::uuid
                 AND state IN ('pending', 'waiting')
                 AND cancellation_requested_at IS NOT NULL
-              RETURNING agent_run_id`;
-            if (canceled.length !== 1) return yield* new AgentRunCancellationUnavailable();
-            yield* appendEvent(authority, "canceled");
+              RETURNING cleanup_disposition AS "cleanupDisposition"`;
+            const result = canceled[0];
+            if (result === undefined) return yield* new AgentRunCancellationUnavailable();
+            yield* appendEvent(authority, {
+              type: "canceled",
+              cleanupDisposition: result.cleanupDisposition,
+            });
             yield* releaseCapacity(authority);
             return new AgentRunCancellationReceipt({
               protocolVersion: 1,

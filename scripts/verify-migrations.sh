@@ -22,7 +22,7 @@ cleanup() {
 trap cleanup EXIT
 
 bun run db:check
-bun run build --filter=@osfo/ingress
+bun run build --filter=@osfo/ingress --filter=@osfo/agent-run-worker
 
 OSFO_POSTGRES_PORT="$verify_port" \
   docker compose --project-name "$project_name" -f "$compose_file" up -d --wait

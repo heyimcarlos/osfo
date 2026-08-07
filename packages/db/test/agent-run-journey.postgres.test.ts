@@ -6,6 +6,7 @@ import {
   AgentRunFenceRejected,
   AgentRunFenceSchema,
   AgentRunWorker,
+  ModelCallExecutor,
   OutboxRelay,
   RunnableDeliveryPublisher,
   RunnableDeliveryPublisherUnavailable,
@@ -34,6 +35,7 @@ import {
   Option,
   Redacted,
   Schema,
+  Stream,
 } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
@@ -89,6 +91,7 @@ const workerLayer = makeAgentRunWorkerLayer({
   executionProfileRef: "oz.deterministic.v1",
   workerId: "replacement-worker",
   leaseDurationMs: 30_000,
+  leaseRenewalIntervalMs: 10_000,
   cancellationPollIntervalMs: 5,
 }).pipe(Layer.provide(repositoryLayer), Layer.provide(runtimeLayer), Layer.provide(executorLayer));
 
@@ -284,6 +287,80 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     expect(snapshot.throughPosition).toBe("3");
   });
 
+  it("samples the pending cancellation deadline at its terminal update", async () => {
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "cross the pending cleanup deadline" },
+        }),
+      ),
+    );
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE FUNCTION test_delay_pending_cleanup() RETURNS trigger
+          LANGUAGE plpgsql AS $function$
+          BEGIN
+            UPDATE agent_runs
+            SET cleanup_deadline_at = clock_timestamp() + interval '10 milliseconds'
+            WHERE agent_run_id = NEW.agent_run_id;
+            PERFORM pg_sleep(0.05);
+            RETURN NEW;
+          END
+          $function$`;
+        yield* sql`CREATE TRIGGER test_delay_pending_cleanup
+          AFTER INSERT ON thread_events
+          FOR EACH ROW
+          WHEN (NEW.event_type = 'AgentRunCancellationRequested')
+          EXECUTE FUNCTION test_delay_pending_cleanup()`;
+      }),
+    );
+
+    await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`DROP TRIGGER test_delay_pending_cleanup ON thread_events`;
+            yield* sql`DROP FUNCTION test_delay_pending_cleanup()`;
+          }).pipe(Effect.orDie),
+        ),
+      ),
+    );
+
+    const authority = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly cleanupDisposition: string;
+          readonly payloadDisposition: string;
+        }>`SELECT
+          run.cleanup_disposition AS "cleanupDisposition",
+          event.payload -> 'cleanupDisposition' ->> 'type' AS "payloadDisposition"
+        FROM agent_runs run
+        JOIN thread_events event USING (agent_run_id)
+        WHERE run.agent_run_id = ${receipt.agentRunId}::uuid
+          AND event.event_type = 'AgentRunCanceled'`;
+        return rows[0];
+      }),
+    );
+    expect(authority).toEqual({
+      cleanupDisposition: "deadlineExceeded",
+      payloadDisposition: "deadlineExceeded",
+    });
+  });
+
   it("does not disclose whether a requested AgentRun exists outside owned authority", async () => {
     const unknownRun = await run(
       Effect.flip(
@@ -312,6 +389,114 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
 
     expect(unknownRun._tag).toBe("ThreadNotFound");
     expect(unknownThread._tag).toBe("ThreadNotFound");
+  });
+
+  it("serializes concurrent admission and cancellation without a lock-order deadlock", async () => {
+    const canceling = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "cancel concurrently" },
+        }),
+      ),
+    );
+
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE FUNCTION test_delay_capacity_release() RETURNS trigger
+          LANGUAGE plpgsql AS 'BEGIN PERFORM pg_advisory_xact_lock(620062); RETURN NEW; END'`;
+        yield* sql`CREATE TRIGGER test_delay_capacity_release
+          BEFORE UPDATE ON agent_run_capacity_reservations
+          FOR EACH ROW EXECUTE FUNCTION test_delay_capacity_release()`;
+
+        return yield* Effect.gen(function* () {
+          const fibers = yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`SELECT pg_advisory_xact_lock(620062)`;
+              const cancellation = yield* Effect.forkChild(
+                AgentRunCancellation.use((service) =>
+                  service.cancel({
+                    protocolVersion: 1,
+                    authenticationToken,
+                    threadId,
+                    agentRunId: canceling.agentRunId,
+                  }),
+                ),
+              );
+              for (let attempt = 0; attempt < 200; attempt += 1) {
+                const waiting = yield* sql<{ readonly observed: boolean }>`SELECT EXISTS (
+                  SELECT 1 FROM pg_locks
+                  WHERE locktype = 'advisory' AND granted = false
+                ) AS observed`;
+                if (waiting[0]?.observed === true) break;
+                if (attempt === 199) {
+                  return yield* Effect.die("Cancellation did not reach the capacity barrier");
+                }
+                yield* Effect.sleep(10);
+              }
+              const admission = yield* Effect.forkChild(
+                MessageAdmission.use((service) =>
+                  service.accept({
+                    protocolVersion: 1,
+                    authenticationToken,
+                    threadId,
+                    idempotencyKey: randomUUID(),
+                    message: { content: "admit concurrently" },
+                  }),
+                ),
+              );
+              for (let attempt = 0; attempt < 200; attempt += 1) {
+                const waiting = yield* sql<{ readonly observed: boolean }>`SELECT EXISTS (
+                  SELECT 1 FROM pg_locks
+                  WHERE locktype <> 'advisory' AND granted = false
+                ) AS observed`;
+                if (waiting[0]?.observed === true) break;
+                if (attempt === 199) {
+                  return yield* Effect.die("Admission did not contend on cancellation locks");
+                }
+                yield* Effect.sleep(10);
+              }
+              return { admission, cancellation };
+            }),
+          );
+          const canceled = yield* Fiber.join(fibers.cancellation);
+          const accepted = yield* Fiber.join(fibers.admission);
+          return { accepted, canceled };
+        }).pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              yield* sql`DROP TRIGGER test_delay_capacity_release
+                ON agent_run_capacity_reservations`;
+              yield* sql`DROP FUNCTION test_delay_capacity_release()`;
+            }).pipe(Effect.orDie),
+          ),
+        );
+      }),
+    );
+
+    expect(result.canceled.outcome).toBe("canceled");
+    expect(result.accepted.agentRunId).not.toBe(canceling.agentRunId);
+    const capacity = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly globalReserved: number;
+          readonly principalReserved: number;
+        }>`SELECT
+          global_capacity.reserved_count AS "globalReserved",
+          principal_capacity.reserved_count AS "principalReserved"
+        FROM admission_global_capacity global_capacity
+        JOIN admission_principal_capacity principal_capacity
+          ON principal_capacity.principal_id = ${principalId}::uuid
+        WHERE global_capacity.singleton = true`;
+        return rows[0];
+      }),
+    );
+    expect(capacity).toEqual({ globalReserved: 1, principalReserved: 1 });
   });
 
   it("lets cancellation win an active output race and closes ordinary completion", async () => {
@@ -388,14 +573,32 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     await run(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE FUNCTION test_delay_output_cleanup() RETURNS trigger
+          LANGUAGE plpgsql AS 'BEGIN PERFORM pg_sleep(0.05); RETURN NEW; END'`;
+        yield* sql`CREATE TRIGGER test_delay_output_cleanup
+          BEFORE UPDATE ON assistant_outputs
+          FOR EACH ROW EXECUTE FUNCTION test_delay_output_cleanup()`;
         yield* sql`UPDATE agent_runs
-          SET cleanup_deadline_at = clock_timestamp() - interval '1 millisecond'
+          SET cleanup_deadline_at = clock_timestamp() + interval '10 milliseconds'
           WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
       }),
     );
 
     const disposition = await run(
-      AgentRunRepository.use((repository) => repository.commitCancellation(claimed.fence)),
+      AgentRunRepository.use((repository) =>
+        repository.commitCancellation(claimed.fence, {
+          cleanupDisposition: { type: "completed" },
+          externalWorkMayContinue: false,
+        }),
+      ).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`DROP TRIGGER test_delay_output_cleanup ON assistant_outputs`;
+            yield* sql`DROP FUNCTION test_delay_output_cleanup()`;
+          }).pipe(Effect.orDie),
+        ),
+      ),
     );
     expect(disposition).toEqual({
       cleanupDisposition: { type: "deadlineExceeded" },
@@ -749,6 +952,82 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       outputs: "1",
       reservationState: "released",
     });
+  });
+
+  it("renews a healthy long-running claim before its original lease expires", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "slow healthy execution" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const slowExecutor = Layer.succeed(ModelCallExecutor)(
+      ModelCallExecutor.of({
+        execute: () =>
+          Stream.fromEffect(Effect.sleep(120)).pipe(
+            Stream.map(() => ({ fragmentIndex: 0, text: "slow but healthy" })),
+          ),
+        cancel: () => Effect.succeed({ type: "confirmedStopped" }),
+      }),
+    );
+    const slowWorker = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v1",
+      workerId: "slow-worker",
+      leaseDurationMs: 60,
+      leaseRenewalIntervalMs: 10,
+      cancellationPollIntervalMs: 5,
+    }).pipe(
+      Layer.provide(repositoryLayer),
+      Layer.provide(runtimeLayer),
+      Layer.provide(slowExecutor),
+    );
+    const slowRuntime = ManagedRuntime.make(Layer.merge(repositoryLayer, slowWorker));
+
+    try {
+      const result = await slowRuntime.runPromise(
+        Effect.gen(function* () {
+          const running = yield* Effect.forkChild(
+            AgentRunWorker.use((worker) => worker.handle(delivery)),
+          );
+          yield* Effect.sleep(90);
+          const competingClaim = yield* AgentRunRepository.use((repository) =>
+            repository.claimAgentRun(delivery, {
+              workerId: "competing-worker",
+              leaseDurationMs: 60,
+            }),
+          );
+          const completed = yield* Fiber.join(running);
+          return { competingClaim, completed };
+        }),
+      );
+
+      expect(result.competingClaim).toEqual({ type: "busy" });
+      expect(result.completed).toEqual({ type: "acknowledge", outcome: "succeeded" });
+    } finally {
+      await slowRuntime.dispose();
+    }
+
+    const authority = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{ readonly state: string; readonly claimEpoch: string }>`SELECT
+          state,
+          claim_epoch::text AS "claimEpoch"
+        FROM agent_runs
+        WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+        return rows[0];
+      }),
+    );
+    expect(authority).toEqual({ state: "succeeded", claimEpoch: "1" });
   });
 
   it.each([
@@ -1335,7 +1614,10 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             repository.completeModelCall(abandoned.fence, abandonedAttempt),
             repository.interruptModelCall(abandoned.fence, abandonedAttempt, "modelCallFailed"),
             repository.commitTerminal(abandoned.fence, { type: "succeed" }),
-            repository.commitCancellation(abandoned.fence),
+            repository.commitCancellation(abandoned.fence, {
+              cleanupDisposition: { type: "completed" },
+              externalWorkMayContinue: true,
+            }),
           ],
           Effect.flip,
         ),

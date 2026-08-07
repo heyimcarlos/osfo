@@ -5,15 +5,21 @@ ALTER TABLE "agent_runs" ADD COLUMN "external_work_may_continue" boolean;--> sta
 UPDATE "agent_runs"
 SET "cancellation_requested_at" = "created_at",
     "cleanup_deadline_at" = "created_at",
-    "cleanup_disposition" = 'completed',
-    "external_work_may_continue" = false
+    "cleanup_disposition" = 'unknown',
+    "external_work_may_continue" = true
 WHERE "state" = 'canceled';--> statement-breakpoint
 ALTER TABLE "agent_runs" ADD CONSTRAINT "agent_runs_cancellation_request_check" CHECK ((("cancellation_requested_at" IS NULL) = ("cleanup_deadline_at" IS NULL)));--> statement-breakpoint
 ALTER TABLE "agent_runs" ADD CONSTRAINT "agent_runs_cleanup_check" CHECK (((
         ("state" = 'canceled'
           AND "cancellation_requested_at" IS NOT NULL
           AND "cleanup_deadline_at" IS NOT NULL
-          AND "cleanup_disposition" IN ('completed', 'deadlineExceeded')
+          AND (
+            "cleanup_disposition" IN ('completed', 'deadlineExceeded')
+            OR (
+              "cleanup_disposition" = 'unknown'
+              AND "external_work_may_continue" = true
+            )
+          )
           AND "external_work_may_continue" IS NOT NULL)
         OR ("state" <> 'canceled'
           AND "cleanup_disposition" IS NULL

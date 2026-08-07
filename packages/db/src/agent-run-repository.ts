@@ -41,7 +41,6 @@ interface AgentRunAuthority {
   readonly userMessageId: string;
   readonly cancellationRequestedAt: string | null;
   readonly cleanupDeadlineAt: string | null;
-  readonly cleanupDeadlineExceeded: boolean;
 }
 
 interface RecordedStateRow extends AgentRunAuthority {
@@ -95,8 +94,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
             principal_id::text AS "principalId",
             user_message_id::text AS "userMessageId",
             cancellation_requested_at::text AS "cancellationRequestedAt",
-            cleanup_deadline_at::text AS "cleanupDeadlineAt",
-            coalesce(cleanup_deadline_at <= clock_timestamp(), false) AS "cleanupDeadlineExceeded"
+            cleanup_deadline_at::text AS "cleanupDeadlineAt"
           FROM agent_runs
           WHERE agent_run_id = ${fence.agentRunId}::uuid
             AND state = 'running'
@@ -108,6 +106,33 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         if (authority === undefined) return yield* new AgentRunFenceRejected();
         return authority;
       });
+
+      const lockCapacityBeforeFence = Effect.fn("AgentRunRepository.lockCapacityBeforeFence")(
+        function* (fence: AgentRunFence) {
+          const hints = yield* sql<{ readonly principalId: string }>`SELECT
+            principal_id::text AS "principalId"
+          FROM agent_runs
+          WHERE agent_run_id = ${fence.agentRunId}::uuid`;
+          const hint = hints[0];
+          if (hint === undefined) return yield* new AgentRunFenceRejected();
+          const global = yield* sql`SELECT reserved_count
+          FROM admission_global_capacity
+          WHERE singleton = true
+          FOR UPDATE`;
+          const principal = yield* sql`SELECT reserved_count
+          FROM admission_principal_capacity
+          WHERE principal_id = ${hint.principalId}::uuid
+          FOR UPDATE`;
+          if (global.length !== 1 || principal.length !== 1) {
+            return yield* new AgentRunFenceRejected();
+          }
+          const authority = yield* requireFence(fence);
+          if (authority.principalId !== hint.principalId) {
+            return yield* new AgentRunFenceRejected();
+          }
+          return authority;
+        },
+      );
 
       const requireOpenFence = Effect.fn("AgentRunRepository.requireOpenFence")(function* (
         fence: AgentRunFence,
@@ -161,6 +186,33 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
             ${event.occurredAt}::timestamptz
           )`;
         return event;
+      });
+
+      const releaseCapacity = Effect.fn("AgentRunRepository.releaseCapacity")(function* (
+        authority: AgentRunAuthority,
+      ) {
+        const released = yield* sql<{ readonly principalId: string }>`UPDATE
+            agent_run_capacity_reservations
+          SET state = 'released', released_at = transaction_timestamp()
+          WHERE agent_run_id = ${authority.agentRunId}::uuid
+            AND state = 'held'
+          RETURNING principal_id::text AS "principalId"`;
+        if (released[0]?.principalId !== authority.principalId) {
+          return yield* new AgentRunFenceRejected();
+        }
+        const global = yield* sql`UPDATE admission_global_capacity
+          SET reserved_count = reserved_count - 1,
+              revision = revision + 1
+          WHERE singleton = true AND reserved_count > 0
+          RETURNING reserved_count`;
+        const principal = yield* sql`UPDATE admission_principal_capacity
+          SET reserved_count = reserved_count - 1
+          WHERE principal_id = ${authority.principalId}::uuid
+            AND reserved_count > 0
+          RETURNING reserved_count`;
+        if (global.length !== 1 || principal.length !== 1) {
+          return yield* new AgentRunFenceRejected();
+        }
       });
 
       const selectPublication: AgentRunRepositoryService["selectPublication"] = Effect.fn(
@@ -559,6 +611,66 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         );
       });
 
+      const renewLease: AgentRunRepositoryService["renewLease"] = Effect.fn(
+        "AgentRunRepository.renewLease",
+      )(function* (fence, leaseDurationMs) {
+        return yield* protect(
+          sql.withTransaction(
+            Effect.gen(function* () {
+              yield* requireOpenFence(fence);
+              const renewed = yield* sql`UPDATE agent_runs
+                SET lease_expires_at = clock_timestamp()
+                  + ${leaseDurationMs} * interval '1 millisecond'
+                WHERE agent_run_id = ${fence.agentRunId}::uuid
+                  AND state = 'running'
+                  AND claim_owner = ${fence.workerId}
+                  AND claim_epoch = ${fence.claimEpoch}::bigint
+                  AND lease_expires_at > clock_timestamp()
+                  AND cancellation_requested_at IS NULL
+                RETURNING agent_run_id`;
+              if (renewed.length !== 1) return yield* new AgentRunFenceRejected();
+            }),
+          ),
+        );
+      });
+
+      const loadCancellation: AgentRunRepositoryService["loadCancellation"] = Effect.fn(
+        "AgentRunRepository.loadCancellation",
+      )(function* (fence) {
+        return yield* protect(
+          sql.withTransaction(
+            Effect.gen(function* () {
+              const authority = yield* requireFence(fence);
+              if (
+                authority.cancellationRequestedAt === null ||
+                authority.cleanupDeadlineAt === null
+              ) {
+                return yield* new AgentRunFenceRejected();
+              }
+              yield* sql`UPDATE agent_runs
+                SET lease_expires_at = greatest(
+                  lease_expires_at,
+                  cleanup_deadline_at + interval '1 second'
+                )
+                WHERE agent_run_id = ${fence.agentRunId}::uuid
+                  AND state = 'running'
+                  AND claim_owner = ${fence.workerId}
+                  AND claim_epoch = ${fence.claimEpoch}::bigint`;
+              const attempts = yield* sql<{ readonly modelCallAttemptId: string }>`SELECT
+                  model_call_attempt_id::text AS "modelCallAttemptId"
+                FROM model_call_attempts
+                WHERE agent_run_id = ${fence.agentRunId}::uuid
+                  AND state = 'started'
+                ORDER BY attempt_number`;
+              return {
+                cleanupDeadlineAtEpochMs: new Date(authority.cleanupDeadlineAt).getTime(),
+                startedModelCallAttemptIds: attempts.map((attempt) => attempt.modelCallAttemptId),
+              };
+            }),
+          ),
+        );
+      });
+
       const ensureModelCall: AgentRunRepositoryService["ensureModelCall"] = Effect.fn(
         "AgentRunRepository.ensureModelCall",
       )(function* (fence, decision) {
@@ -841,11 +953,11 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
 
       const commitCancellation: AgentRunRepositoryService["commitCancellation"] = Effect.fn(
         "AgentRunRepository.commitCancellation",
-      )(function* (fence) {
+      )(function* (fence, cleanup) {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              const authority = yield* requireFence(fence);
+              const authority = yield* lockCapacityBeforeFence(fence);
               if (
                 authority.cancellationRequestedAt === null ||
                 authority.cleanupDeadlineAt === null
@@ -854,10 +966,8 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               }
               const openOutputs = yield* sql<{
                 readonly assistantOutputId: string;
-                readonly claimEpoch: string;
               }>`SELECT
-                  output.assistant_output_id::text AS "assistantOutputId",
-                  attempt.claim_epoch::text AS "claimEpoch"
+                  output.assistant_output_id::text AS "assistantOutputId"
                 FROM assistant_outputs output
                 JOIN model_call_attempts attempt
                   USING (assistant_output_id, agent_run_id)
@@ -894,18 +1004,18 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   }),
                 );
               }
-              const staleExternalWork = openOutputs.some(
-                (output) => output.claimEpoch !== fence.claimEpoch,
-              );
-              const cleanupDisposition = authority.cleanupDeadlineExceeded
-                ? ("deadlineExceeded" as const)
-                : ("completed" as const);
-              const terminal = yield* sql`UPDATE agent_runs
+              const terminal = yield* sql<{
+                readonly cleanupDisposition: "completed" | "deadlineExceeded";
+                readonly externalWorkMayContinue: boolean;
+              }>`UPDATE agent_runs
                 SET state = 'canceled',
                     claim_owner = NULL,
                     lease_expires_at = NULL,
-                    cleanup_disposition = ${cleanupDisposition},
-                    external_work_may_continue = ${staleExternalWork}
+                    cleanup_disposition = CASE
+                      WHEN cleanup_deadline_at <= clock_timestamp() THEN 'deadlineExceeded'
+                      ELSE ${cleanup.cleanupDisposition.type}
+                    END,
+                    external_work_may_continue = ${cleanup.externalWorkMayContinue}
                 WHERE agent_run_id = ${fence.agentRunId}::uuid
                   AND state = 'running'
                   AND claim_owner = ${fence.workerId}
@@ -913,38 +1023,22 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   AND lease_expires_at > clock_timestamp()
                   AND cancellation_requested_at IS NOT NULL
                   AND cleanup_deadline_at IS NOT NULL
-                RETURNING agent_run_id`;
-              if (terminal.length !== 1) return yield* new AgentRunFenceRejected();
+                RETURNING
+                  cleanup_disposition AS "cleanupDisposition",
+                  external_work_may_continue AS "externalWorkMayContinue"`;
+              const result = terminal[0];
+              if (result === undefined) return yield* new AgentRunFenceRejected();
               yield* appendThreadEvent(authority, (base) =>
                 makeAgentRunCanceled({
                   ...base,
-                  cleanupDisposition: { type: cleanupDisposition },
-                  externalWorkMayContinue: staleExternalWork,
+                  cleanupDisposition: { type: result.cleanupDisposition },
+                  externalWorkMayContinue: result.externalWorkMayContinue,
                 }),
               );
-              const released = yield* sql<{ readonly principalId: string }>`UPDATE
-                    agent_run_capacity_reservations
-                  SET state = 'released', released_at = transaction_timestamp()
-                  WHERE agent_run_id = ${fence.agentRunId}::uuid
-                    AND state = 'held'
-                  RETURNING principal_id::text AS "principalId"`;
-              const reservation = released[0];
-              if (reservation === undefined) return yield* new AgentRunFenceRejected();
-              const global = yield* sql`UPDATE admission_global_capacity
-                SET reserved_count = reserved_count - 1
-                WHERE singleton = true AND reserved_count > 0
-                RETURNING reserved_count`;
-              const principal = yield* sql`UPDATE admission_principal_capacity
-                SET reserved_count = reserved_count - 1
-                WHERE principal_id = ${reservation.principalId}::uuid
-                  AND reserved_count > 0
-                RETURNING reserved_count`;
-              if (global.length !== 1 || principal.length !== 1) {
-                return yield* new AgentRunFenceRejected();
-              }
+              yield* releaseCapacity(authority);
               return {
-                cleanupDisposition: { type: cleanupDisposition },
-                externalWorkMayContinue: staleExternalWork,
+                cleanupDisposition: { type: result.cleanupDisposition },
+                externalWorkMayContinue: result.externalWorkMayContinue,
               };
             }),
           ),
@@ -957,10 +1051,10 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              yield* sql`SELECT pg_advisory_xact_lock(
-                hashtextextended(${ADMISSION_CAPACITY_LOCK_KEY}, 0)
-              )`;
-              const authority = yield* requireOpenFence(fence);
+              const authority = yield* lockCapacityBeforeFence(fence);
+              if (authority.cancellationRequestedAt !== null) {
+                return yield* new AgentRunCancellationObserved();
+              }
               const expectedCallState = decision.type === "succeed" ? "succeeded" : "failed";
               const expectedOutputState = decision.type === "succeed" ? "completed" : "interrupted";
               const terminalState = decision.type === "succeed" ? "succeeded" : "failed";
@@ -996,28 +1090,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   makeAgentRunFailed({ ...base, cause: decision.cause }),
                 );
               }
-              const released = yield* sql<{ readonly principalId: string }>`UPDATE
-                    agent_run_capacity_reservations
-                  SET state = 'released', released_at = transaction_timestamp()
-                  WHERE agent_run_id = ${fence.agentRunId}::uuid
-                    AND state = 'held'
-                  RETURNING principal_id::text AS "principalId"`;
-              const reservation = released[0];
-              if (reservation === undefined) return yield* new AgentRunFenceRejected();
-              const globalCapacity = yield* sql<{ readonly singleton: boolean }>`UPDATE
-                    admission_global_capacity
-                  SET reserved_count = reserved_count - 1,
-                      revision = revision + 1
-                  WHERE singleton = true AND reserved_count > 0
-                  RETURNING singleton`;
-              if (globalCapacity[0] === undefined) return yield* new AgentRunFenceRejected();
-              const principalCapacity = yield* sql<{ readonly principalId: string }>`UPDATE
-                    admission_principal_capacity
-                  SET reserved_count = reserved_count - 1
-                  WHERE principal_id = ${reservation.principalId}::uuid
-                    AND reserved_count > 0
-                  RETURNING principal_id::text AS "principalId"`;
-              if (principalCapacity[0] === undefined) return yield* new AgentRunFenceRejected();
+              yield* releaseCapacity(authority);
             }),
           ),
         );
@@ -1029,6 +1102,8 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         confirmPublication,
         claimAgentRun,
         loadRecordedState,
+        renewLease,
+        loadCancellation,
         ensureModelCall,
         beginModelCallAttempt,
         appendModelOutput,

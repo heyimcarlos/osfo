@@ -20,6 +20,10 @@ const WorkerConfig = Config.all({
   leaseDurationMs: Config.schema(PositiveInteger, "OSFO_AGENT_RUN_LEASE_DURATION_MS").pipe(
     Config.withDefault(30_000),
   ),
+  leaseRenewalIntervalMs: Config.schema(
+    PositiveInteger,
+    "OSFO_AGENT_RUN_LEASE_RENEWAL_INTERVAL_MS",
+  ).pipe(Config.withDefault(10_000)),
   cancellationPollIntervalMs: Config.schema(
     PositiveInteger,
     "OSFO_AGENT_RUN_CANCELLATION_POLL_INTERVAL_MS",
@@ -43,6 +47,7 @@ const program = WorkerConfig.pipe(
       executionProfileRef: config.executionProfileRef,
       workerId: config.workerId,
       leaseDurationMs: config.leaseDurationMs,
+      leaseRenewalIntervalMs: config.leaseRenewalIntervalMs,
       cancellationPollIntervalMs: config.cancellationPollIntervalMs,
     }).pipe(
       Layer.provide(repositoryLayer),

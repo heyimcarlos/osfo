@@ -258,7 +258,13 @@ export const agentRuns = pgTable(
         (${table.state} = 'canceled'
           AND ${table.cancellationRequestedAt} IS NOT NULL
           AND ${table.cleanupDeadlineAt} IS NOT NULL
-          AND ${table.cleanupDisposition} IN ('completed', 'deadlineExceeded')
+          AND (
+            ${table.cleanupDisposition} IN ('completed', 'deadlineExceeded')
+            OR (
+              ${table.cleanupDisposition} = 'unknown'
+              AND ${table.externalWorkMayContinue} = true
+            )
+          )
           AND ${table.externalWorkMayContinue} IS NOT NULL)
         OR (${table.state} <> 'canceled'
           AND ${table.cleanupDisposition} IS NULL
