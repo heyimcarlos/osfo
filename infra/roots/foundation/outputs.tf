@@ -46,10 +46,11 @@ output "region" {
 output "development_environment_baseline" {
   description = "Retained development network identifiers consumed by disposable platform and runtime roots."
   value = {
-    network_id                  = module.development_environment_baseline.network_id
-    subnetwork_id               = module.development_environment_baseline.subnetwork_id
-    static_egress_ip            = module.development_environment_baseline.static_egress_ip
-    temporal_endpoint_ip        = module.development_environment_baseline.temporal_endpoint_ip
-    private_dns_managed_zone_id = module.development_environment_baseline.private_dns_managed_zone_id
+    network_id                    = module.development_environment_baseline.network_id
+    subnetwork_id                 = module.development_environment_baseline.subnetwork_id
+    static_egress_ip              = module.development_environment_baseline.static_egress_ip
+    temporal_endpoint_ip          = module.development_environment_baseline.temporal_endpoint_ip
+    private_dns_managed_zone_id   = module.development_environment_baseline.private_dns_managed_zone_id
+    private_dns_managed_zone_name = module.development_environment_baseline.private_dns_managed_zone_name
   }
 }

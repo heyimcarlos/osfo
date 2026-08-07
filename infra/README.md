@@ -79,16 +79,18 @@ it cannot change secret IAM, access version payloads, or mint runtime
 credentials. Authorized secret-version access therefore remains `MISSING` in
 this preparatory PR. Package installation inside the pinned base image is still
 mutable, so full probe toolchain determinism is also `MISSING`.
-Project IAM grants the platform only a custom record role conditioned on the
-retained zone's numeric ID and the exact `database.temporal.internal.` A path,
-not project-wide DNS administration. Non-record prerequisite checks pass
-through the condition, but the custom role contains no zone create, update, or
-delete permission. A temporary zone-level binding used for incident recovery is
-not represented as durable Terraform state. After the project-level conditioned
-binding is applied and verified, a privileged operator must remove that
-temporary binding and record the empty zone policy in the recovery evidence.
-Foundation receives no managed-zone IAM mutation permission for this one-off
-reconciliation.
+The retained private zone owns two narrow platform bindings. The conditional
+record role applies only to the zone's numeric ID and the exact
+`database.temporal.internal.` A path. A separate unconditional role on that
+same zone supplies only the change, zone-read, and record-list prerequisites
+required by Cloud DNS. Neither role can create, update, or delete a managed
+zone, and the platform cannot change zone IAM. Foundation owns the two durable
+zone bindings through a custom IAM-policy role restricted to that exact zone.
+Before any disposable platform apply, the platform identity must create, read,
+update, and delete a documentation-range A value at the exact reviewed record;
+it refuses to replace an existing record and its failure path cleans up only
+that probe target. The foundation preflight separately verifies the deployed
+custom roles and managed-zone policy.
 
 The ordered Pub/Sub proof first validates the Terraform-managed subscription's
 topic, ordering, retention, and acknowledgement configuration. Its behavioral

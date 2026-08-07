@@ -20,7 +20,10 @@ evidence_member="serviceAccount:$platform_account"
 evidence_object_role="projects/$foundation_project_id/roles/osfoSavedPlanObjectAccess"
 evidence_list_role="projects/$foundation_project_id/roles/osfoStateObjectLister"
 evidence_condition="resource.name.startsWith('projects/_/buckets/$evidence_bucket/objects/roots/development/platform/')"
-dns_role="projects/$project_id/roles/osfoPlatformDnsRecordManager"
+dns_record_role_id=osfoPlatformDnsRecordManager
+dns_record_role="projects/$project_id/roles/$dns_record_role_id"
+dns_change_role_id=osfoPlatformDnsChangeManager
+dns_change_role="projects/$project_id/roles/$dns_change_role_id"
 dns_member="serviceAccount:$platform_account"
 
 if [[ "$effective_account" != "$expected_account" ]]; then
@@ -83,14 +86,65 @@ if [[ -z "$zone_id" ]]; then
   printf 'FAIL: retained private zone did not expose its numeric managed-zone ID\n' >&2
   exit 1
 fi
-dns_condition="(resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/$project_id/managedZones/$zone_id/rrsets/database.temporal.internal./A') || resource.type != 'dns.googleapis.com/ResourceRecordSet'"
-jq -e --arg role "$dns_role" --arg member "$dns_member" --arg condition "$dns_condition" '
+dns_condition="resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/$project_id/managedZones/$zone_id/rrsets/database.temporal.internal./A'"
+
+for dns_role_id in "$dns_record_role_id" "$dns_change_role_id"; do
+  if ! gcloud iam roles describe "$dns_role_id" --project="$project_id" --format=json \
+    >"$scratch/$dns_role_id.json" 2>"$scratch/$dns_role_id.error"; then
+    printf 'FAIL: reviewed managed-zone DNS role %s is not applied\n' \
+      "$dns_role_id" >&2
+    cat "$scratch/$dns_role_id.error" >&2
+    exit 1
+  fi
+done
+jq -e '
+  (.includedPermissions | sort) == [
+    "dns.resourceRecordSets.create",
+    "dns.resourceRecordSets.delete",
+    "dns.resourceRecordSets.get",
+    "dns.resourceRecordSets.update"
+  ]
+  and .deleted != true
+' "$scratch/$dns_record_role_id.json" >/dev/null || {
+  printf 'FAIL: applied managed-zone DNS record role does not have the exact reviewed permissions\n' >&2
+  exit 1
+}
+jq -e '
+  (.includedPermissions | sort) == [
+    "dns.changes.create",
+    "dns.changes.get",
+    "dns.managedZones.get",
+    "dns.resourceRecordSets.list"
+  ]
+  and .deleted != true
+' "$scratch/$dns_change_role_id.json" >/dev/null || {
+  printf 'FAIL: applied managed-zone DNS prerequisite role does not have the exact reviewed permissions\n' >&2
+  exit 1
+}
+
+if ! gcloud dns managed-zones get-iam-policy "$name_prefix-private" \
+  --project="$project_id" --format=json \
+  >"$scratch/zone-policy.json" 2>"$scratch/zone-policy.error"; then
+  printf 'FAIL: unable to verify retained private zone IAM policy\n' >&2
+  cat "$scratch/zone-policy.error" >&2
+  exit 1
+fi
+jq -e --arg role "$dns_record_role" --arg member "$dns_member" --arg condition "$dns_condition" '
   any(.bindings[];
     .role == $role
     and (.members | index($member) != null)
     and .condition.expression == $condition)
-' "$scratch/policy.json" >/dev/null || {
-  printf 'FAIL: exact project-level DNS record binding is not applied\n' >&2
+' "$scratch/zone-policy.json" >/dev/null || {
+  printf 'FAIL: exact managed-zone DNS record binding is not applied\n' >&2
+  exit 1
+}
+jq -e --arg role "$dns_change_role" --arg member "$dns_member" '
+  any(.bindings[];
+    .role == $role
+    and (.members | index($member) != null)
+    and (.condition == null))
+' "$scratch/zone-policy.json" >/dev/null || {
+  printf 'FAIL: unconditional managed-zone DNS prerequisite binding is not applied\n' >&2
   exit 1
 }
 
@@ -118,4 +172,4 @@ jq -e \
   exit 1
 }
 
-printf 'PASS: exact artifact recovery, DNS record, and evidence bindings are applied\n'
+printf 'PASS: exact artifact recovery, managed-zone DNS, and evidence bindings are applied\n'

@@ -261,8 +261,9 @@ evidence_bucket=osfo-foundation-evidence-318708913
 zone_id=123456789
 artifact_role="projects/$project_id/roles/osfoDevelopmentArtifactCleaner"
 artifact_condition="resource.name == 'projects/_/buckets/$artifact_bucket' || resource.name.startsWith('projects/_/buckets/$artifact_bucket/objects/')"
-dns_role="projects/$project_id/roles/osfoPlatformDnsRecordManager"
-dns_condition="(resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/$project_id/managedZones/$zone_id/rrsets/database.temporal.internal./A') || resource.type != 'dns.googleapis.com/ResourceRecordSet'"
+dns_record_role="projects/$project_id/roles/osfoPlatformDnsRecordManager"
+dns_change_role="projects/$project_id/roles/osfoPlatformDnsChangeManager"
+dns_condition="resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/$project_id/managedZones/$zone_id/rrsets/database.temporal.internal./A'"
 evidence_object_role=projects/osfo-foundation-318708913/roles/osfoSavedPlanObjectAccess
 evidence_list_role=projects/osfo-foundation-318708913/roles/osfoStateObjectLister
 evidence_condition="resource.name.startsWith('projects/_/buckets/$evidence_bucket/objects/roots/development/platform/')"
@@ -280,21 +281,48 @@ jq -n \
   --arg artifact_role "$artifact_role" \
   --arg foundation_member "serviceAccount:$foundation_account" \
   --arg artifact_condition "$artifact_condition" \
-  --arg dns_role "$dns_role" \
-  --arg platform_member "serviceAccount:$platform_account" \
-  --arg dns_condition "$dns_condition" \
   '{bindings: [
     {
       role: $artifact_role,
       members: [$foundation_member],
       condition: {expression: $artifact_condition}
-    },
-    {
-      role: $dns_role,
-      members: [$platform_member],
-      condition: {expression: $dns_condition}
     }
   ]}' >"$scratch/preflight-project-policy.json"
+jq -n '{
+  includedPermissions: [
+    "dns.resourceRecordSets.create",
+    "dns.resourceRecordSets.delete",
+    "dns.resourceRecordSets.get",
+    "dns.resourceRecordSets.update"
+  ],
+  deleted: false
+}' >"$scratch/preflight-dns-record-role.json"
+jq -n '{
+  includedPermissions: [
+    "dns.changes.create",
+    "dns.changes.get",
+    "dns.managedZones.get",
+    "dns.resourceRecordSets.list"
+  ],
+  deleted: false
+}' >"$scratch/preflight-dns-change-role.json"
+jq -n \
+  --arg dns_record_role "$dns_record_role" \
+  --arg dns_change_role "$dns_change_role" \
+  --arg platform_member "serviceAccount:$platform_account" \
+  --arg dns_condition "$dns_condition" \
+  '{bindings: [
+    {
+      role: $dns_record_role,
+      members: [$platform_member],
+      condition: {expression: $dns_condition}
+    },
+    {
+      role: $dns_change_role,
+      members: [$platform_member]
+    }
+  ]}' >"$scratch/preflight-zone-policy.json"
+jq -n '{bindings: []}' >"$scratch/preflight-zone-policy-empty.json"
 jq -n --arg id "$zone_id" '{id: $id}' >"$scratch/preflight-zone.json"
 jq -n \
   --arg object_role "$evidence_object_role" \
@@ -324,12 +352,19 @@ printf '%s\n' \
   'set -euo pipefail' \
   'case "$*" in' \
   '  "iam roles describe osfoDevelopmentArtifactCleaner --project=osfo-development-318708913 --format=json") cat "$MOCK_PREFLIGHT_ROLE" ;;' \
+  '  "iam roles describe osfoPlatformDnsRecordManager --project=osfo-development-318708913 --format=json") cat "$MOCK_PREFLIGHT_DNS_RECORD_ROLE" ;;' \
+  '  "iam roles describe osfoPlatformDnsChangeManager --project=osfo-development-318708913 --format=json") cat "$MOCK_PREFLIGHT_DNS_CHANGE_ROLE" ;;' \
   '  "iam roles describe"*)' \
-  '    printf "artifact role lookup requires exact ID, project, and JSON format: %s\n" "$*" >&2' \
+  '    printf "role lookup requires exact ID, project, and JSON format: %s\n" "$*" >&2' \
   '    exit 93' \
   '    ;;' \
   '  "projects get-iam-policy"*) cat "$MOCK_PREFLIGHT_PROJECT_POLICY" ;;' \
-  '  "dns managed-zones describe"*) cat "$MOCK_PREFLIGHT_ZONE" ;;' \
+  '  "dns managed-zones describe osfo-dev-private --project=osfo-development-318708913 --format=json") cat "$MOCK_PREFLIGHT_ZONE" ;;' \
+  '  "dns managed-zones get-iam-policy osfo-dev-private --project=osfo-development-318708913 --format=json") cat "$MOCK_PREFLIGHT_ZONE_POLICY" ;;' \
+  '  "dns managed-zones"*)' \
+  '    printf "zone lookup requires the exact zone, project, and JSON format: %s\n" "$*" >&2' \
+  '    exit 94' \
+  '    ;;' \
   '  storage\ buckets\ get-iam-policy*--format=json) cat "$MOCK_PREFLIGHT_EVIDENCE_POLICY" ;;' \
   '  storage\ buckets\ get-iam-policy*)' \
   '    printf "evidence policy lookup requires --format=json\n" >&2' \
@@ -344,13 +379,16 @@ PATH="$mock_bin:$PATH" \
   CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=$foundation_account \
   FOUNDATION_SERVICE_ACCOUNT=$foundation_account \
   MOCK_PREFLIGHT_ROLE="$scratch/preflight-role.json" \
+  MOCK_PREFLIGHT_DNS_RECORD_ROLE="$scratch/preflight-dns-record-role.json" \
+  MOCK_PREFLIGHT_DNS_CHANGE_ROLE="$scratch/preflight-dns-change-role.json" \
   MOCK_PREFLIGHT_PROJECT_POLICY="$scratch/preflight-project-policy.json" \
   MOCK_PREFLIGHT_ZONE="$scratch/preflight-zone.json" \
+  MOCK_PREFLIGHT_ZONE_POLICY="$scratch/preflight-zone-policy.json" \
   MOCK_PREFLIGHT_EVIDENCE_POLICY="$scratch/preflight-evidence-policy.json" \
   TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
   infra/tests/development-platform-recovery-preflight.sh \
   >"$preflight_output" 2>&1
-grep -Fq 'PASS: exact artifact recovery, DNS record, and evidence bindings are applied' \
+grep -Fq 'PASS: exact artifact recovery, managed-zone DNS, and evidence bindings are applied' \
   "$preflight_output"
 
 preflight_missing_list_output=$scratch/preflight-missing-list-output
@@ -358,8 +396,11 @@ if PATH="$mock_bin:$PATH" \
   CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=$foundation_account \
   FOUNDATION_SERVICE_ACCOUNT=$foundation_account \
   MOCK_PREFLIGHT_ROLE="$scratch/preflight-role.json" \
+  MOCK_PREFLIGHT_DNS_RECORD_ROLE="$scratch/preflight-dns-record-role.json" \
+  MOCK_PREFLIGHT_DNS_CHANGE_ROLE="$scratch/preflight-dns-change-role.json" \
   MOCK_PREFLIGHT_PROJECT_POLICY="$scratch/preflight-project-policy.json" \
   MOCK_PREFLIGHT_ZONE="$scratch/preflight-zone.json" \
+  MOCK_PREFLIGHT_ZONE_POLICY="$scratch/preflight-zone-policy.json" \
   MOCK_PREFLIGHT_EVIDENCE_POLICY="$scratch/preflight-evidence-policy-missing-list.json" \
   TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
   infra/tests/development-platform-recovery-preflight.sh \
@@ -371,6 +412,115 @@ grep -Fq 'FAIL: exact development evidence writer, reader, and lister bindings a
   "$preflight_missing_list_output"
 if grep -Fq 'PASS:' "$preflight_missing_list_output"; then
   printf 'missing evidence list authority must not report PASS\n' >&2
+  exit 1
+fi
+
+preflight_missing_zone_binding_output=$scratch/preflight-missing-zone-binding-output
+if PATH="$mock_bin:$PATH" \
+  CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=$foundation_account \
+  FOUNDATION_SERVICE_ACCOUNT=$foundation_account \
+  MOCK_PREFLIGHT_ROLE="$scratch/preflight-role.json" \
+  MOCK_PREFLIGHT_DNS_RECORD_ROLE="$scratch/preflight-dns-record-role.json" \
+  MOCK_PREFLIGHT_DNS_CHANGE_ROLE="$scratch/preflight-dns-change-role.json" \
+  MOCK_PREFLIGHT_PROJECT_POLICY="$scratch/preflight-project-policy.json" \
+  MOCK_PREFLIGHT_ZONE="$scratch/preflight-zone.json" \
+  MOCK_PREFLIGHT_ZONE_POLICY="$scratch/preflight-zone-policy-empty.json" \
+  MOCK_PREFLIGHT_EVIDENCE_POLICY="$scratch/preflight-evidence-policy.json" \
+  TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
+  infra/tests/development-platform-recovery-preflight.sh \
+  >"$preflight_missing_zone_binding_output" 2>&1; then
+  printf 'empty managed-zone policy must fail recovery preflight\n' >&2
+  exit 1
+fi
+grep -Fq 'FAIL: exact managed-zone DNS record binding is not applied' \
+  "$preflight_missing_zone_binding_output"
+if grep -Fq 'PASS:' "$preflight_missing_zone_binding_output"; then
+  printf 'empty managed-zone policy must not report PASS\n' >&2
+  exit 1
+fi
+
+# The single-quoted lines are the source of the generated mock, not expressions
+# for this contract process.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'case "$*" in' \
+  '  "dns managed-zones describe osfo-dev-private --project=osfo-development-318708913 --format=json") printf "%s\n" "{\"name\":\"osfo-dev-private\"}" ;;' \
+  '  "dns record-sets list --zone=osfo-dev-private --project=osfo-development-318708913 --filter=name=database.temporal.internal. AND type=A --format=json")' \
+  '    if [[ "${MOCK_DNS_MODE:-success}" == existing ]] || [[ -f "$MOCK_DNS_STATE" ]]; then' \
+  '      address=192.0.2.89' \
+  '      [[ ! -f "$MOCK_DNS_STATE" ]] || address=$(<"$MOCK_DNS_STATE")' \
+  '      printf "[{\"name\":\"database.temporal.internal.\",\"type\":\"A\",\"ttl\":30,\"rrdatas\":[\"%s\"]}]\n" "$address"' \
+  '    else' \
+  '      printf "%s\n" "[]"' \
+  '    fi' \
+  '    ;;' \
+  '  "dns record-sets create database.temporal.internal. --zone=osfo-dev-private --project=osfo-development-318708913 --type=A --ttl=30 --rrdatas=192.0.2.89 --quiet")' \
+  '    if [[ "${MOCK_DNS_MODE:-success}" == deny-create ]]; then' \
+  '      printf "PERMISSION_DENIED: dns.resourceRecordSets.create\n" >&2' \
+  '      exit 1' \
+  '    fi' \
+  '    printf "%s\n" 192.0.2.89 >"$MOCK_DNS_STATE"' \
+  '    ;;' \
+  '  "dns record-sets describe database.temporal.internal. --zone=osfo-dev-private --project=osfo-development-318708913 --type=A --format=json")' \
+  '    address=$(<"$MOCK_DNS_STATE")' \
+  '    printf "{\"name\":\"database.temporal.internal.\",\"type\":\"A\",\"ttl\":30,\"rrdatas\":[\"%s\"]}\n" "$address"' \
+  '    ;;' \
+  '  "dns record-sets update database.temporal.internal. --zone=osfo-dev-private --project=osfo-development-318708913 --type=A --ttl=30 --rrdatas=192.0.2.90 --quiet") printf "%s\n" 192.0.2.90 >"$MOCK_DNS_STATE" ;;' \
+  '  "dns record-sets delete database.temporal.internal. --zone=osfo-dev-private --project=osfo-development-318708913 --type=A --quiet") rm -f "$MOCK_DNS_STATE" ;;' \
+  '  *) printf "unexpected DNS permission preflight invocation: %s\n" "$*" >&2; exit 90 ;;' \
+  'esac' >"$mock_bin/gcloud"
+chmod +x "$mock_bin/gcloud"
+
+dns_state=$scratch/dns-state
+dns_preflight_output=$scratch/dns-preflight-output
+PATH="$mock_bin:$PATH" \
+  CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=$platform_account \
+  MOCK_DNS_STATE=$dns_state \
+  TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
+  infra/tests/development-platform-dns-permission-preflight.sh \
+  >"$dns_preflight_output" 2>&1
+grep -Fq 'PASS: platform identity created, read, updated, and deleted only the exact DNS probe record' \
+  "$dns_preflight_output"
+if [[ -e "$dns_state" ]]; then
+  printf 'successful DNS permission preflight must remove its exact probe record\n' >&2
+  exit 1
+fi
+
+dns_denied_output=$scratch/dns-denied-output
+if PATH="$mock_bin:$PATH" \
+  CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=$platform_account \
+  MOCK_DNS_MODE=deny-create \
+  MOCK_DNS_STATE=$dns_state \
+  TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
+  infra/tests/development-platform-dns-permission-preflight.sh \
+  >"$dns_denied_output" 2>&1; then
+  printf 'denied exact DNS record creation must fail the live permission preflight\n' >&2
+  exit 1
+fi
+grep -Fq 'FAIL: DNS permission preflight stage create failed' "$dns_denied_output"
+grep -Fq 'PERMISSION_DENIED: dns.resourceRecordSets.create' "$dns_denied_output"
+if grep -Fq 'PASS:' "$dns_denied_output"; then
+  printf 'denied DNS permission preflight must not report PASS\n' >&2
+  exit 1
+fi
+
+dns_existing_output=$scratch/dns-existing-output
+if PATH="$mock_bin:$PATH" \
+  CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=$platform_account \
+  MOCK_DNS_MODE=existing \
+  MOCK_DNS_STATE=$dns_state \
+  TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
+  infra/tests/development-platform-dns-permission-preflight.sh \
+  >"$dns_existing_output" 2>&1; then
+  printf 'existing exact DNS record must fail without mutation\n' >&2
+  exit 1
+fi
+grep -Fq 'FAIL: DNS permission preflight refuses to replace an existing exact probe record' \
+  "$dns_existing_output"
+if [[ -e "$dns_state" ]] || grep -Fq 'PASS:' "$dns_existing_output"; then
+  printf 'existing-record rejection must not mutate or report PASS\n' >&2
   exit 1
 fi
 
@@ -389,17 +539,44 @@ for workflow in \
   fi
 done
 
+lifecycle_needs=$(yq -r '.jobs."development-lifecycle".needs' \
+  .github/workflows/terraform.yml)
+jq -e 'index("development-dns-permission-preflight") != null' \
+  <<<"$lifecycle_needs" >/dev/null
+for cleanup_job in development-artifact-cleanup development-cleanup; do
+  cleanup_needs=$(yq -r ".jobs.\"$cleanup_job\".needs" \
+    .github/workflows/terraform.yml)
+  jq -e 'index("development-dns-permission-preflight") != null' \
+    <<<"$cleanup_needs" >/dev/null
+  cleanup_condition=$(yq -r ".jobs.\"$cleanup_job\".if" \
+    .github/workflows/terraform.yml)
+  if grep -Fq "development-dns-permission-preflight.result == 'success'" \
+    <<<"$cleanup_condition"; then
+    printf 'cleanup must remain independent after DNS permission preflight failure\n' >&2
+    exit 1
+  fi
+done
+
 rg --quiet 'force_destroy\s*=\s*false' infra/modules/data-authority/main.tf
 test -f infra/tests/development-platform-recovery-preflight.sh
+test -x infra/tests/development-platform-dns-permission-preflight.sh
 rg --fixed-strings --quiet 'development-recovery-preflight' .github/workflows/terraform.yml
 rg --fixed-strings --quiet \
-  'resource "google_project_iam_member" "development_platform_database_record"' \
+  'resource "google_dns_managed_zone_iam_member" "development_platform_database_record"' \
   infra/roots/foundation/main.tf
-if rg --fixed-strings --quiet 'google_dns_managed_zone_iam_' infra/roots/foundation/main.tf \
-  || rg --fixed-strings --quiet 'dns.managedZones.setIamPolicy' infra/roots/foundation/main.tf; then
-  printf 'one-off zone IAM reconciliation must not become durable foundation authority\n' >&2
+rg --fixed-strings --quiet \
+  'resource "google_dns_managed_zone_iam_member" "development_platform_database_changes"' \
+  infra/roots/foundation/main.tf
+if rg --fixed-strings --quiet \
+  'resource "google_project_iam_member" "development_platform_database_record"' \
+  infra/roots/foundation/main.tf; then
+  printf 'ineffective project-level DNS record authority must not remain\n' >&2
   exit 1
 fi
+rg --fixed-strings --quiet 'development-dns-permission-preflight' \
+  .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'development-platform-dns-permission-preflight.sh' \
+  .github/workflows/terraform.yml
 rg --fixed-strings --quiet \
   'resource "google_storage_bucket_iam_member" "development_evidence_list"' \
   infra/roots/foundation/main.tf

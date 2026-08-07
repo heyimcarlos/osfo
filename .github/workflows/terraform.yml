@@ -145,12 +145,44 @@ jobs:
         shell: bash
         run: infra/tests/development-platform-recovery-preflight.sh
 
-  development-lifecycle:
+  development-dns-permission-preflight:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.task == 'development-proof'
     needs:
       [static, development-authorization, development-configuration, development-recovery-preflight]
+    runs-on: ubuntu-24.04
+    environment: development-platform
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_VARSET_FILE: ${{ github.workspace }}/infra/roots/development/platform/development.tfvars.json
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Prove exact managed-zone DNS authority before platform apply
+        shell: bash
+        run: infra/tests/development-platform-dns-permission-preflight.sh
+
+  development-lifecycle:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.task == 'development-proof'
+    needs:
+      [
+        static,
+        development-authorization,
+        development-configuration,
+        development-recovery-preflight,
+        development-dns-permission-preflight,
+      ]
     runs-on: ubuntu-24.04
     environment: development-platform
     permissions:
@@ -202,6 +234,7 @@ jobs:
       [
         static,
         development-lifecycle,
+        development-dns-permission-preflight,
         development-authorization,
         development-configuration,
         development-recovery-preflight,
@@ -239,6 +272,7 @@ jobs:
       [
         development-lifecycle,
         development-artifact-cleanup,
+        development-dns-permission-preflight,
         development-authorization,
         development-configuration,
         development-recovery-preflight,
