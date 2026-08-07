@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-07T18:02:00Z",
+  "authority": "contextual-external",
+  "sealed": false,
+  "source": "https://github.com/heyimcarlos/osfo/issues",
+  "limitations": "Public issue state and concise evidence dispositions are contextual. They cannot establish sealed qualification authority.",
+  "issues": [
+    {
+      "number": 55,
+      "title": "Specify the Osfo v1 architecture and Oz reference journey",
+      "state": "OPEN",
+      "updatedAt": "2026-08-06T23:34:23Z",
+      "url": "https://github.com/heyimcarlos/osfo/issues/55",
+      "status": "MISSING",
+      "disposition": "Umbrella architecture remains open. Production qualification gates remain incomplete."
+    },
+    {
+      "number": 67,
+      "title": "Execute bounded non-Action ToolCalls",
+      "state": "OPEN",
+      "updatedAt": "2026-08-07T17:59:43Z",
+      "url": "https://github.com/heyimcarlos/osfo/issues/67",
+      "status": "PASS",
+      "disposition": "PR #140 merged the durable non-Action ToolCall foundation. Model and worker integration, public ToolCall events, a bounded concrete executor, and deployed development and production qualification remain MISSING.",
+      "publicPullRequest": "https://github.com/heyimcarlos/osfo/pull/140",
+      "qualificationScope": "current-foundation-only"
+    },
+    {
+      "number": 68,
+      "title": "Approve and reconcile one external Action",
+      "state": "OPEN",
+      "updatedAt": "2026-08-07T18:54:16Z",
+      "url": "https://github.com/heyimcarlos/osfo/issues/68",
+      "status": "PASS",
+      "disposition": "PR #141 merged the local controlled Action foundation: immutable policy, approval, and reconciliation records; pinned Mailpit lost-acknowledgement reconciliation; a public sanitized receipt fold; and cancellation guards. Real provider, authenticated approval UI and API, model-selected routing, full AgentRun wait and wake, authorized content references, load, interactive browser, development deployment, and production qualification remain MISSING.",
+      "publicPullRequest": "https://github.com/heyimcarlos/osfo/pull/141",
+      "qualificationScope": "current-local-foundation-only"
+    },
+    {
+      "number": 87,
+      "title": "Requalify StreamingPull as the AgentRun delivery seam",
+      "state": "CLOSED",
+      "updatedAt": "2026-08-07T16:07:15Z",
+      "url": "https://github.com/heyimcarlos/osfo/issues/87",
+      "status": "FAIL",
+      "disposition": "StreamingPull and a fixed six-worker development candidate were selected. The final us-east4 admission matrix failed, so production qualification remains MISSING."
+    },
+    {
+      "number": 89,
+      "title": "Provision the disposable us-east4 development platform",
+      "state": "CLOSED",
+      "updatedAt": "2026-08-07T17:24:34Z",
+      "url": "https://github.com/heyimcarlos/osfo/issues/89",
+      "status": "PASS",
+      "disposition": "The disposable platform lifecycle passed for development demo scope. Temporal PSC and the deterministic probe toolchain remain MISSING and production topology is not qualified."
+    },
+    {
+      "number": 90,
+      "title": "Deploy the OpenRouter transport, relay, and AgentRun path",
+      "state": "CLOSED",
+      "updatedAt": "2026-08-07T17:44:23Z",
+      "url": "https://github.com/heyimcarlos/osfo/issues/90",
+      "status": "PASS",
+      "disposition": "The deployed development path passed its bounded demo checks. Forced replacement, rollback, final drain, teardown, and production qualification remain MISSING."
+    },
+    {
+      "number": 99,
+      "title": "Package the OpenPoke v1 demo evidence and walkthrough",
+      "state": "CLOSED",
+      "updatedAt": "2026-08-07T16:12:08Z",
+      "url": "https://github.com/heyimcarlos/osfo/issues/99",
+      "status": "PASS",
+      "disposition": "The development demo packet is complete. Production saturation, full outage recovery, production ActionReceipt proof, and complete cost remain MISSING."
+    },
+    {
+      "number": 100,
+      "title": "Qualify aggregate authenticated SSE and multi-device correctness under load",
+      "state": "OPEN",
+      "updatedAt": "2026-08-07T17:44:24Z",
+      "url": "https://github.com/heyimcarlos/osfo/issues/100",
+      "status": "MISSING",
+      "disposition": "The bounded development lane passed after an interrupted attempt and a failed convergence attempt. Ceiling, breaking point, fault cuts, several-account load, and production qualification remain MISSING."
+    }
+  ]
+}

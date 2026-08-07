@@ -8,7 +8,7 @@
       "artifactStatus": "PASS",
       "evidenceStatus": "PASS",
       "path": "README.md",
-      "sha256": "4b1b4b917b9adbf5ebfd242a520ce0fc6b691fbe122c9713d81bbfc54c75ae50",
+      "sha256": "d689dc48e1daea55b898ff4639326bfba9681b17a55496ee2ca9cdbaf89718f4",
       "description": "Packet entry point."
     },
     {
@@ -26,7 +26,7 @@
       "artifactStatus": "PASS",
       "evidenceStatus": "MISSING",
       "path": "evidence.md",
-      "sha256": "46d0b98ae7630adfc6ea1e27c997993bbdd3fb4769deb0454dd29ddf81700950",
+      "sha256": "9bdd607e19641671de5bf7cc8e4151584907612ffb5c24ccc717e39670285159",
       "description": "Complete matrix whose overall production gate remains MISSING."
     },
     {
@@ -35,8 +35,79 @@
       "artifactStatus": "PASS",
       "evidenceStatus": "PASS",
       "path": "walkthrough.md",
-      "sha256": "b887c2600dd5d4fa287aca551e699146fb028117ad43c3d1cf62993c4892dd49",
+      "sha256": "8a0ed651bb62bfbe40f7ece5c53bfe8641b36cdadfc1b506c2550364a65301f0",
       "description": "Built, skipped or failed, and next-improvements walkthrough."
+    },
+    {
+      "id": "development-runtime-disposition",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "MISSING",
+      "path": "development-runtime.md",
+      "sha256": "5b685e8a12fc67139e33fc532cd767debbe834bc373478ff0e22bb0c1caed344",
+      "description": "Development runtime gates and operating procedure. Production qualification remains MISSING."
+    },
+    {
+      "id": "development-sse-qualification",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "MISSING",
+      "path": "development-sse-demo-qualification.md",
+      "sha256": "1e319b12d2b1d90f8511762ff48831b6f737fb8c917fb391d3714272f4f25a91",
+      "description": "Bounded development SSE qualification contract whose broader issue and production gates remain MISSING."
+    },
+    {
+      "id": "catalog-snapshot-source-manifest",
+      "kind": "source-manifest",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/catalog/CATALOG-SNAPSHOT-SHA256SUMS",
+      "sha256": "6683f33b76096d2fd7baa110141217a607e1fc612b2462f2b0a7e9125f8dd9bc",
+      "description": "Packet seal for four sanitized contextual evidence snapshots."
+    },
+    {
+      "id": "catalog-github-issues-snapshot",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "MISSING",
+      "path": "evidence/catalog/github-issues.json",
+      "sha256": "90e338003957a1beea0e8050a2a7cc83a56f3e3eb72910facec3e9254a6a364d",
+      "sourceManifestSha256": "6683f33b76096d2fd7baa110141217a607e1fc612b2462f2b0a7e9125f8dd9bc",
+      "sourceManifestPath": "./github-issues.json",
+      "description": "Reproducible public GitHub issue dispositions. Contextual external authority cannot establish sealed qualification."
+    },
+    {
+      "id": "catalog-development-runtime-snapshot",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "evidence/catalog/development-runtime.json",
+      "sha256": "722904922bd4dd4b032b7607354757ef11feac5ea688ca49ea6e6b4a64a1fed9",
+      "sourceManifestSha256": "6683f33b76096d2fd7baa110141217a607e1fc612b2462f2b0a7e9125f8dd9bc",
+      "sourceManifestPath": "./development-runtime.json",
+      "description": "Sanitized current development runtime PASS at development-demo scope. Production qualification remains MISSING."
+    },
+    {
+      "id": "catalog-development-sse-attempts-snapshot",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "MISSING",
+      "path": "evidence/catalog/development-sse-attempts.json",
+      "sha256": "14109675237adf63533f0404385155e10077adbb21fdaac3f8e7a339f049fc36",
+      "sourceManifestSha256": "6683f33b76096d2fd7baa110141217a607e1fc612b2462f2b0a7e9125f8dd9bc",
+      "sourceManifestPath": "./development-sse-attempts.json",
+      "description": "Sanitized bounded development SSE attempts, including a failed convergence attempt and broader MISSING gates."
+    },
+    {
+      "id": "catalog-development-cloud-metadata-snapshot",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "MISSING",
+      "path": "evidence/catalog/development-cloud-metadata.json",
+      "sha256": "70f61c8587659a2a293d5ce79745cb577c4fd78bd58afc8cb60286c00bdc087e",
+      "sourceManifestSha256": "6683f33b76096d2fd7baa110141217a607e1fc612b2462f2b0a7e9125f8dd9bc",
+      "sourceManifestPath": "./development-cloud-metadata.json",
+      "description": "Whitelisted read-only development metadata with incomplete resource windows preserved as MISSING."
     },
     {
       "id": "receipt-slo-derivation",
@@ -737,6 +808,103 @@
       "sourceManifestSha256": "2f6c099379d344abb9d4d48b02c0134c3fdb19ed9c236948d4d36e47cbb4858e",
       "sourceManifestPath": "./authenticated-three-tab-resume.mp4",
       "description": "Local PostgreSQL Chrome proof of authenticated independent observer-tab disconnect and cursor resume. Sender-close-mid-response is not exercised."
+    },
+    {
+      "id": "grafana-cockpit-source-manifest",
+      "kind": "source-manifest",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/grafana/COCKPIT-SHA256SUMS",
+      "sha256": "4ab89ba67fb1a7f31bb1a4561d065fff55502e68dedb7ee4e269ef23558525a6",
+      "description": "Seal for the eight visually accepted 1920x1080 evidence cockpit captures."
+    },
+    {
+      "id": "grafana-cockpit-executive-summary",
+      "kind": "dashboard-view",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/grafana/cockpit-openpoke-executive-summary.png",
+      "sha256": "ed2a12a302a8362348a36ac946acd826bcac59d3303a242338fa53dc716945cd",
+      "sourceManifestSha256": "4ab89ba67fb1a7f31bb1a4561d065fff55502e68dedb7ee4e269ef23558525a6",
+      "sourceManifestPath": "./cockpit-openpoke-executive-summary.png",
+      "description": "Readable executive status, qualification map, and source coverage."
+    },
+    {
+      "id": "grafana-cockpit-development-runtime",
+      "kind": "dashboard-view",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/grafana/cockpit-openpoke-development-runtime.png",
+      "sha256": "4f4f68c68a7bae9c02e6d1d6b05942b3e64e7e9dcbe954fa7145be22fb623349",
+      "sourceManifestSha256": "4ab89ba67fb1a7f31bb1a4561d065fff55502e68dedb7ee4e269ef23558525a6",
+      "sourceManifestPath": "./cockpit-openpoke-development-runtime.png",
+      "description": "Development-only runtime, provider, PostgreSQL, SSE, and topology status."
+    },
+    {
+      "id": "grafana-cockpit-load-admission",
+      "kind": "dashboard-view",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "assets/grafana/cockpit-openpoke-load-admission.png",
+      "sha256": "d72d610a5f3f4356ffc54d6e44f014514412c4b7e92ad81da0fed12dc36a922e",
+      "sourceManifestSha256": "4ab89ba67fb1a7f31bb1a4561d065fff55502e68dedb7ee4e269ef23558525a6",
+      "sourceManifestPath": "./cockpit-openpoke-load-admission.png",
+      "description": "Authoritative A/B/C/D admission failure, receipt SLO, reconciliation, and exact demand view."
+    },
+    {
+      "id": "grafana-cockpit-postgres-capacity",
+      "kind": "dashboard-view",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "assets/grafana/cockpit-openpoke-postgres-capacity.png",
+      "sha256": "c507d33342ecc2b769ca90dd035134167f44a9b80e9a9e3bb195ca07eb2579f5",
+      "sourceManifestSha256": "4ab89ba67fb1a7f31bb1a4561d065fff55502e68dedb7ee4e269ef23558525a6",
+      "sourceManifestPath": "./cockpit-openpoke-postgres-capacity.png",
+      "description": "PostgreSQL matrix comparison with missing saturation proof preserved."
+    },
+    {
+      "id": "grafana-cockpit-durability-recovery",
+      "kind": "dashboard-view",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "MISSING",
+      "path": "assets/grafana/cockpit-openpoke-durability-recovery.png",
+      "sha256": "79cf7f131a78d2f848cc79208e37ba570cf7569eadf1c2736bd8438fa7399434",
+      "sourceManifestSha256": "4ab89ba67fb1a7f31bb1a4561d065fff55502e68dedb7ee4e269ef23558525a6",
+      "sourceManifestPath": "./cockpit-openpoke-durability-recovery.png",
+      "description": "4, 6, and 8 worker comparison with scoped process-loss proof and missing outage qualification."
+    },
+    {
+      "id": "grafana-cockpit-multi-device-streaming",
+      "kind": "dashboard-view",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "MISSING",
+      "path": "assets/grafana/cockpit-openpoke-multi-device-streaming.png",
+      "sha256": "e941a718677e0bee053ccc367596f6a678eabffbee8fd697c6d80d0f9b4d1262",
+      "sourceManifestSha256": "4ab89ba67fb1a7f31bb1a4561d065fff55502e68dedb7ee4e269ef23558525a6",
+      "sourceManifestPath": "./cockpit-openpoke-multi-device-streaming.png",
+      "description": "Local, development, historical, and missing production streaming evidence kept distinct."
+    },
+    {
+      "id": "grafana-cockpit-toolcalls-actions",
+      "kind": "dashboard-view",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "MISSING",
+      "path": "assets/grafana/cockpit-openpoke-toolcalls-actions.png",
+      "sha256": "20f5fd9d45ffd2da3cb77172d238a356816ceafd95696b5444e5ac569dd8218b",
+      "sourceManifestSha256": "4ab89ba67fb1a7f31bb1a4561d065fff55502e68dedb7ee4e269ef23558525a6",
+      "sourceManifestPath": "./cockpit-openpoke-toolcalls-actions.png",
+      "description": "ToolCall foundation, in-progress Action slice, historical Mailpit proof, and outstanding qualification."
+    },
+    {
+      "id": "grafana-cockpit-evidence-catalog",
+      "kind": "dashboard-view",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/grafana/cockpit-openpoke-evidence-catalog.png",
+      "sha256": "c28a7881211a8aad7a5ac1786b762d1387950f0545959cd49260ac4c040c4bc4",
+      "sourceManifestSha256": "4ab89ba67fb1a7f31bb1a4561d065fff55502e68dedb7ee4e269ef23558525a6",
+      "sourceManifestPath": "./cockpit-openpoke-evidence-catalog.png",
+      "description": "Coverage, disposition, integrity, filters, exclusions, and provenance view."
     },
     {
       "id": "production-saturation-bundle",

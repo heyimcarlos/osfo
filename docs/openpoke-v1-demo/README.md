@@ -6,6 +6,8 @@ Current overall qualification is `MISSING`, not `PASS`.
 - [Current architecture](architecture.md)
 - [Exact evidence matrix](evidence.md)
 - [Development runtime demo disposition](development-runtime.md)
+- [Development SSE demo qualification](development-sse-demo-qualification.md)
+- [Evidence catalog snapshots](evidence/catalog/)
 - [Three-part walkthrough](walkthrough.md)
 - [Fail-closed artifact index](artifact-index.json)
 
@@ -62,3 +64,20 @@ Full `us-east4` production qualification, selected-topology saturation, full
 outage drain, production ActionReceipt proof, and complete production cost
 remain `MISSING`. The four artifact-index placeholders remain explicit and no
 local or historical evidence is promoted to those production scopes.
+
+## Evidence cockpit catalog
+
+The cockpit discovers the 13 packet run directories and reads the copied final
+A/B/C/D summary as the matrix authority. It also presents four sanitized,
+checksum-sealed snapshots: the current development runtime, all three bounded
+development SSE attempts including the failed attempt, read-only development
+cloud metadata, and public GitHub issue dispositions. The snapshot seal is
+[`evidence/catalog/CATALOG-SNAPSHOT-SHA256SUMS`](evidence/catalog/CATALOG-SNAPSHOT-SHA256SUMS).
+
+These snapshots make the presentation reproducible without runtime GitHub or
+cloud scraping. Their authority stays limited to the scope recorded inside
+each file. GitHub is contextual and external. Development evidence cannot
+qualify production. Historical prototype results retain their date, region,
+topology, and superseded classification. Generated normalized catalog and
+coverage outputs are derived presentation data, so they are deliberately not
+listed in the packet artifact index.

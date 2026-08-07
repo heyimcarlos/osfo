@@ -42,6 +42,14 @@ Grafana views, 13 deterministic post-run cards, a local authenticated
 three-tab recording, and a verifier that fails closed on absent or changed
 artifacts. Every gate stays `PASS`, `FAIL`, or `MISSING` at its measured scope.
 
+The evidence cockpit adds a readable catalog over those authorities. It
+discovers all 13 packet runs, uses the copied final matrix summary for A/B/C/D,
+and includes checksum-sealed sanitized snapshots of the current development
+runtime, three bounded SSE attempts, read-only cloud metadata, and GitHub issue
+dispositions. Selected historical 464/s, process-loss, four-device replay, and
+Mailpit Action results remain visible as historical or contextual evidence.
+They never become current production qualification.
+
 ## Part 2: What failed or was skipped, and how to test it
 
 The second 30-minute Montreal repetition accepted and reconciled all work, but
@@ -103,6 +111,13 @@ They are deterministic post-run renders from sealed records, not in-run screen
 captures. Each card exposes its run ID, timestamps, workload, exact scoped
 verdict, and original source-manifest hash. They improve reviewability without
 changing any load result or production qualification.
+
+The catalog keeps source disposition explicit. Structured sealed JSON is the
+authority for measured results. `evidence.md` supplies coverage and narrative,
+not replacement measurements. GitHub snapshots are external context. Sanitized
+development snapshots are limited to development scope. Unsealed, malformed,
+checksum-mismatched, prototype-only, or unrelated sources remain linked or
+excluded with a reason instead of silently disappearing.
 
 ## Part 3: OpenPoke architecture and next improvements
 
