@@ -21,6 +21,7 @@ region=$(jq -r '.region' "$varset")
 name_prefix=$(jq -r '.name_prefix' "$varset")
 cost_owner=$(jq -r '.cost_owner' "$varset")
 evidence_bucket=$(jq -r '.evidence_archive_bucket_name' "$varset")
+terraform_service_account=$(jq -r '.terraform_service_account_email' "$varset")
 preflight_report=${PREFLIGHT_REPORT_FILE:-${TMPDIR:-/tmp}/osfo-development-platform-preflight.json}
 scratch=$(mktemp -d)
 smoke_subscription=""
@@ -121,27 +122,15 @@ printf 'osfo development artifact smoke\n' >"$scratch/artifact"
 artifact_sha=$(sha256sum "$scratch/artifact" | cut -d' ' -f1)
 artifact_uri="gs://$artifact_bucket/sha256/$artifact_sha"
 gcloud storage cp --if-generation-match=0 "$scratch/artifact" "$artifact_uri" >/dev/null
-smoke_stage=artifact-overwrite-denial
-if gcloud storage cp "$scratch/artifact" "$artifact_uri" \
-  >"$scratch/artifact-overwrite.out" 2>&1; then
-  printf 'FAIL: IAM allowed an unconditional content-addressed artifact overwrite\n' >&2
-  exit 1
-fi
-grep -Eq 'HTTPError 403|PERMISSION_DENIED' "$scratch/artifact-overwrite.out"
-grep -Fq 'storage.objects.delete' "$scratch/artifact-overwrite.out"
-smoke_stage=artifact-generation-count
-generation_count=$(gcloud storage ls --all-versions "$artifact_uri" | wc -l | tr -d ' ')
-if [[ "$generation_count" != 1 ]]; then
-  printf 'FAIL: content-addressed artifact has %s generations\n' "$generation_count" >&2
-  exit 1
-fi
+smoke_stage=artifact-overwrite-proof
+"$repo_root/infra/tests/development-artifact-overwrite-proof.sh" \
+  "$scratch/artifact" "$artifact_uri"
 smoke_stage=artifact-readback
 gcloud storage cp "$artifact_uri" "$scratch/artifact.read" >/dev/null
 cmp "$scratch/artifact" "$scratch/artifact.read"
 
 smoke_stage="secret-writer-identity"
 printf 'osfo non-secret authorization smoke\n' >"$scratch/secret-payload"
-terraform_service_account=$(jq -r '.terraform_service_account_email' "$varset")
 effective_account=${CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT:-$(gcloud auth list --filter=status:ACTIVE --format='value(account)')}
 if [[ "$effective_account" != "$terraform_service_account" ]]; then
   printf 'FAIL: live proof must run as CI platform identity %s, got %s\n' \

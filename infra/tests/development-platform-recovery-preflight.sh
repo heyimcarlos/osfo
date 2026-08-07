@@ -14,6 +14,9 @@ role_id=osfoDevelopmentArtifactCleaner
 role="projects/$project_id/roles/$role_id"
 member="serviceAccount:$expected_account"
 condition="resource.name == 'projects/_/buckets/$artifact_bucket' || resource.name.startsWith('projects/_/buckets/$artifact_bucket/objects/')"
+platform_role_id=osfoPlatformStorageManager
+platform_role="projects/$project_id/roles/$platform_role_id"
+platform_member="serviceAccount:$platform_account"
 foundation_project_id="osfo-foundation-${project_id##*-}"
 evidence_member="serviceAccount:$platform_account"
 evidence_object_role="projects/$foundation_project_id/roles/osfoSavedPlanObjectAccess"
@@ -51,6 +54,27 @@ jq -e '
   exit 1
 }
 
+if ! gcloud iam roles describe "$platform_role_id" \
+  --project="$project_id" --format=json \
+  >"$scratch/platform-role.json" 2>"$scratch/platform-role.error"; then
+  printf 'FAIL: reviewed platform storage role is not applied\n' >&2
+  cat "$scratch/platform-role.error" >&2
+  exit 1
+fi
+jq -e '
+  (.includedPermissions | sort) == [
+    "storage.buckets.delete",
+    "storage.buckets.get",
+    "storage.objects.create",
+    "storage.objects.get",
+    "storage.objects.list"
+  ]
+  and .deleted != true
+' "$scratch/platform-role.json" >/dev/null || {
+  printf 'FAIL: applied platform storage role exceeds exact immutable-object authority\n' >&2
+  exit 1
+}
+
 if ! gcloud projects get-iam-policy "$project_id" --format=json \
   >"$scratch/policy.json" 2>"$scratch/policy.error"; then
   printf 'FAIL: unable to verify applied artifact recovery binding\n' >&2
@@ -64,6 +88,24 @@ jq -e --arg role "$role" --arg member "$member" --arg condition "$condition" '
     and .condition.expression == $condition)
 ' "$scratch/policy.json" >/dev/null || {
   printf 'FAIL: exact foundation artifact recovery binding is not applied\n' >&2
+  exit 1
+}
+jq -e \
+  --arg role "$platform_role" \
+  --arg member "$platform_member" \
+  --arg condition "$condition" '
+  ([.bindings[] | select(.role == $role)]) as $storage_bindings
+  | ($storage_bindings | length) == 1
+  and $storage_bindings[0].members == [$member]
+  and $storage_bindings[0].condition.title == "exact_development_artifact_bucket"
+  and $storage_bindings[0].condition.expression == $condition
+  and ([
+    .bindings[]
+    | select(any(.members[]?; . == $member))
+    | select(.role | startswith("roles/storage."))
+  ] | length) == 0
+' "$scratch/policy.json" >/dev/null || {
+  printf 'FAIL: applied platform storage binding exceeds exact artifact bucket authority\n' >&2
   exit 1
 }
 
@@ -91,4 +133,4 @@ jq -e \
   exit 1
 }
 
-printf 'PASS: exact artifact recovery and evidence bindings are applied\n'
+printf 'PASS: exact artifact recovery, immutable platform storage, and evidence bindings are applied\n'

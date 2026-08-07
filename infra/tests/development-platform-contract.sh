@@ -33,8 +33,27 @@ rg --fixed-strings --quiet 'google_compute_firewall' infra/modules/environment-b
 rg --fixed-strings --quiet 'gcloud sql instances describe' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'gcloud pubsub topics publish' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'gcloud storage cp --if-generation-match=0' infra/tests/development-platform-smoke.sh
-rg --fixed-strings --quiet 'gcloud storage cp "$scratch/artifact" "$artifact_uri"' \
+rg --fixed-strings --quiet 'development-artifact-overwrite-proof.sh' \
   infra/tests/development-platform-smoke.sh
+for structured_artifact_proof in \
+  "--format='json(generation,md5_hash,crc32c_hash,size)'" \
+  "gcloud storage ls --all-versions --json \"\$artifact_uri\"" \
+  'artifact source must be a readable regular file'; do
+  rg --fixed-strings --quiet -- "$structured_artifact_proof" \
+    infra/tests/development-artifact-overwrite-proof.sh
+done
+for structured_storage_policy_proof in \
+  "gcloud iam roles describe \"\$platform_role_id\"" \
+  "gcloud projects get-iam-policy \"\$project_id\"" \
+  'applied platform storage binding exceeds exact artifact bucket authority'; do
+  rg --fixed-strings --quiet -- "$structured_storage_policy_proof" \
+    infra/tests/development-platform-recovery-preflight.sh
+done
+if rg --quiet 'HTTPError|PERMISSION_DENIED|artifact-overwrite[.]out|storage ls .*--format' \
+  infra/tests/development-artifact-overwrite-proof.sh; then
+  printf 'artifact overwrite proof must use supported structured output without parsing gcloud errors\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet 'temporal_private_service_connect' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'temporal_lookup_status=$?' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'FAIL: Temporal PSC forwarding rule lookup failed closed' \
@@ -59,8 +78,6 @@ if rg --fixed-strings --quiet 'artifact_precondition_rejected_second_generation'
   printf 'unconditional IAM rejection must not be mislabeled as a precondition check\n' >&2
   exit 1
 fi
-rg --fixed-strings --quiet "grep -Fq 'storage.objects.delete'" \
-  infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'probe_toolchain_determinism: "MISSING"' \
   infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'development-platform-absent.sh' infra/tests/development-platform-live.sh

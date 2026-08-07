@@ -262,6 +262,7 @@ artifact_bucket=osfo-development-artifacts-318708913
 evidence_bucket=osfo-foundation-evidence-318708913
 zone_id=123456789
 artifact_role="projects/$project_id/roles/osfoDevelopmentArtifactCleaner"
+platform_storage_role="projects/$project_id/roles/osfoPlatformStorageManager"
 artifact_condition="resource.name == 'projects/_/buckets/$artifact_bucket' || resource.name.startsWith('projects/_/buckets/$artifact_bucket/objects/')"
 dns_record_role="projects/$project_id/roles/osfoPlatformDnsRecordManager"
 dns_change_role="projects/$project_id/roles/osfoPlatformDnsChangeManager"
@@ -280,9 +281,24 @@ jq -n '{
   ],
   deleted: false
 }' >"$scratch/preflight-role.json"
+jq -n '{
+  includedPermissions: [
+    "storage.buckets.delete",
+    "storage.buckets.get",
+    "storage.objects.create",
+    "storage.objects.get",
+    "storage.objects.list"
+  ],
+  deleted: false
+}' >"$scratch/preflight-platform-storage-role.json"
+jq '.includedPermissions += ["storage.objects.delete"]' \
+  "$scratch/preflight-platform-storage-role.json" \
+  >"$scratch/preflight-platform-storage-role-widened.json"
 jq -n \
   --arg artifact_role "$artifact_role" \
+  --arg platform_storage_role "$platform_storage_role" \
   --arg foundation_member "serviceAccount:$foundation_account" \
+  --arg platform_member "serviceAccount:$platform_account" \
   --arg artifact_condition "$artifact_condition" \
   --arg dns_foundation_role "$dns_foundation_role" \
   '{bindings: [
@@ -290,6 +306,14 @@ jq -n \
       role: $artifact_role,
       members: [$foundation_member],
       condition: {expression: $artifact_condition}
+    },
+    {
+      role: $platform_storage_role,
+      members: [$platform_member],
+      condition: {
+        title: "exact_development_artifact_bucket",
+        expression: $artifact_condition
+      }
     },
     {
       role: $dns_foundation_role,
@@ -383,6 +407,7 @@ printf '%s\n' \
   'set -euo pipefail' \
   'case "$*" in' \
   '  "iam roles describe osfoDevelopmentArtifactCleaner --project=osfo-development-318708913 --format=json") cat "$MOCK_PREFLIGHT_ROLE" ;;' \
+  '  "iam roles describe osfoPlatformStorageManager --project=osfo-development-318708913 --format=json") cat "$MOCK_PREFLIGHT_PLATFORM_STORAGE_ROLE" ;;' \
   '  "iam roles describe osfoPlatformDnsRecordManager --project=osfo-development-318708913 --format=json") cat "$MOCK_PREFLIGHT_DNS_RECORD_ROLE" ;;' \
   '  "iam roles describe osfoPlatformDnsChangeManager --project=osfo-development-318708913 --format=json") cat "$MOCK_PREFLIGHT_DNS_CHANGE_ROLE" ;;' \
   '  "iam roles describe osfoFoundationDnsZoneIamManager --project=osfo-development-318708913 --format=json") cat "$MOCK_PREFLIGHT_DNS_FOUNDATION_ROLE" ;;' \
@@ -420,19 +445,42 @@ PATH="$mock_bin:$PATH" \
   CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=$foundation_account \
   FOUNDATION_SERVICE_ACCOUNT=$foundation_account \
   MOCK_PREFLIGHT_ROLE="$scratch/preflight-role.json" \
+  MOCK_PREFLIGHT_PLATFORM_STORAGE_ROLE="$scratch/preflight-platform-storage-role.json" \
   MOCK_PREFLIGHT_PROJECT_POLICY="$scratch/preflight-project-policy.json" \
   MOCK_PREFLIGHT_EVIDENCE_POLICY="$scratch/preflight-evidence-policy.json" \
   TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
   infra/tests/development-platform-recovery-preflight.sh \
   >"$preflight_output" 2>&1
-grep -Fq 'PASS: exact artifact recovery and evidence bindings are applied' \
+grep -Fq 'PASS: exact artifact recovery, immutable platform storage, and evidence bindings are applied' \
   "$preflight_output"
+
+preflight_widened_storage_output=$scratch/preflight-widened-storage-output
+if PATH="$mock_bin:$PATH" \
+  CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=$foundation_account \
+  FOUNDATION_SERVICE_ACCOUNT=$foundation_account \
+  MOCK_PREFLIGHT_ROLE="$scratch/preflight-role.json" \
+  MOCK_PREFLIGHT_PLATFORM_STORAGE_ROLE="$scratch/preflight-platform-storage-role-widened.json" \
+  MOCK_PREFLIGHT_PROJECT_POLICY="$scratch/preflight-project-policy.json" \
+  MOCK_PREFLIGHT_EVIDENCE_POLICY="$scratch/preflight-evidence-policy.json" \
+  TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
+  infra/tests/development-platform-recovery-preflight.sh \
+  >"$preflight_widened_storage_output" 2>&1; then
+  printf 'widened platform storage role must fail recovery preflight\n' >&2
+  exit 1
+fi
+grep -Fq 'FAIL: applied platform storage role exceeds exact immutable-object authority' \
+  "$preflight_widened_storage_output"
+if grep -Fq 'PASS:' "$preflight_widened_storage_output"; then
+  printf 'widened platform storage role must not report PASS\n' >&2
+  exit 1
+fi
 
 preflight_missing_list_output=$scratch/preflight-missing-list-output
 if PATH="$mock_bin:$PATH" \
   CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT=$foundation_account \
   FOUNDATION_SERVICE_ACCOUNT=$foundation_account \
   MOCK_PREFLIGHT_ROLE="$scratch/preflight-role.json" \
+  MOCK_PREFLIGHT_PLATFORM_STORAGE_ROLE="$scratch/preflight-platform-storage-role.json" \
   MOCK_PREFLIGHT_PROJECT_POLICY="$scratch/preflight-project-policy.json" \
   MOCK_PREFLIGHT_EVIDENCE_POLICY="$scratch/preflight-evidence-policy-missing-list.json" \
   TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \

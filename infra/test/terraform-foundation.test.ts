@@ -44,6 +44,13 @@ describe("Terraform foundation", () => {
     ),
   );
 
+  it.effect("proves artifact overwrite verification fails closed", () =>
+    expectCheckPasses(
+      "infra/tests/development-artifact-overwrite-proof-contract.sh",
+      "development artifact overwrite proof assertions",
+    ),
+  );
+
   it.effect("enforces development failure diagnostics and teardown independence", () =>
     expectCheckPasses(
       "infra/tests/development-platform-repair-contract.sh",
