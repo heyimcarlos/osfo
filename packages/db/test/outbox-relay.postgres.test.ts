@@ -326,6 +326,61 @@ describe("concurrent Principal-first publication", () => {
     );
   });
 
+  it("bounds cross-transaction notification bursts while a consumer is stalled", async () => {
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connected = yield* Deferred.make<void>();
+          const releaseConsumer = yield* Deferred.make<void>();
+          const firstNotification = yield* Deferred.make<void>();
+          const unexpectedNotification = yield* Deferred.make<void>();
+          let notificationCount = 0;
+          const listener = yield* Effect.forkChild(
+            OutboxRelayWake.use((wake) =>
+              Stream.runForEach(wake.events, (event) =>
+                event.type === "connected"
+                  ? Deferred.succeed(connected, undefined).pipe(
+                      Effect.andThen(Deferred.await(releaseConsumer)),
+                    )
+                  : Effect.sync(() => {
+                      notificationCount += 1;
+                      if (notificationCount === 1) {
+                        Deferred.doneUnsafe(firstNotification, Effect.void);
+                      } else {
+                        Deferred.doneUnsafe(unexpectedNotification, Effect.void);
+                      }
+                    }),
+              ),
+            ),
+          );
+          yield* Deferred.await(connected);
+
+          const sql = yield* SqlClient.SqlClient;
+          yield* Effect.forEach(
+            Array.from({ length: 64 }, (_, index) => index),
+            (index) =>
+              sql.withTransaction(
+                sql`SELECT pg_notify('osfo_outbox_relay_wake', ${`burst-${index}`})`,
+              ),
+            { concurrency: 1, discard: true },
+          );
+          yield* Effect.sleep(50);
+          yield* Deferred.succeed(releaseConsumer, undefined);
+
+          const observed = yield* Deferred.await(firstNotification).pipe(Effect.timeoutOption(500));
+          const overflow = yield* Deferred.await(unexpectedNotification).pipe(
+            Effect.timeoutOption(100),
+          );
+          yield* Fiber.interrupt(listener);
+
+          expect(Option.isSome(observed)).toBe(true);
+          expect(Option.isNone(overflow)).toBe(true);
+          expect(notificationCount).toBe(1);
+        }),
+      ),
+    );
+  });
+
   it("releases the global selector lock before broker publication", async () => {
     await accept(noisyAuthenticationToken, noisyThreadIds[0], "lock-scoped publication");
     await run(OutboxRelay.use((relay) => relay.selectOnce()));

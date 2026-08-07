@@ -1,6 +1,7 @@
 import { OutboxRelay, type RunnableAgentRunDelivery } from "@osfo/agent-run";
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer, Metric, Option, PubSub, Stream } from "effect";
+import { Deferred, Effect, Fiber, Layer, Metric, PubSub, Stream } from "effect";
+import { TestClock } from "effect/testing";
 import { outboxRelayMetrics, runOutboxRelay } from "../src/relay.js";
 
 const delivery: RunnableAgentRunDelivery = {
@@ -12,7 +13,7 @@ const delivery: RunnableAgentRunDelivery = {
 };
 
 describe("outbox relay process", () => {
-  it.live("responds to a database wake without waiting for the safety drain", () =>
+  it.effect("responds to a database wake without waiting for the safety drain", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const wakes = yield* PubSub.sliding<string>({ capacity: 1, replay: 1 });
@@ -56,23 +57,16 @@ describe("outbox relay process", () => {
           ),
         );
 
-        const initialized = yield* Effect.all([
-          Deferred.await(initialCheck),
-          Deferred.await(publishersIdle),
-        ]).pipe(Effect.timeoutOption(500));
-        expect({ initialized: Option.isSome(initialized), idlePublisherCount }).toEqual({
-          initialized: true,
-          idlePublisherCount: 4,
-        });
+        yield* Effect.all([Deferred.await(initialCheck), Deferred.await(publishersIdle)]);
+        expect(idlePublisherCount).toBe(4);
         ready = true;
         yield* PubSub.publish(wakes, "wake");
-        const observed = yield* Deferred.await(publication).pipe(Effect.timeoutOption(500));
+        yield* Deferred.await(publication);
         const notificationsAfter = yield* Metric.value(outboxRelayMetrics.notifications);
         const emptyChecksAfter = yield* Metric.value(outboxRelayMetrics.emptySelectorChecks);
         const batchesAfter = yield* Metric.value(outboxRelayMetrics.nonEmptySelectionBatches);
         yield* Fiber.interrupt(process);
 
-        expect(Option.isSome(observed)).toBe(true);
         expect(notificationsAfter.count).toBeGreaterThan(notificationsBefore.count);
         expect(emptyChecksAfter.count).toBeGreaterThan(emptyChecksBefore.count);
         expect(batchesAfter.count).toBeGreaterThan(batchesBefore.count);
@@ -80,7 +74,7 @@ describe("outbox relay process", () => {
     ),
   );
 
-  it.live("runs no more than the configured number of asynchronous publishers", () =>
+  it.effect("runs no more than the configured number of asynchronous publishers", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const wakes = yield* PubSub.sliding<string>({ capacity: 1, replay: 1 });
@@ -136,30 +130,22 @@ describe("outbox relay process", () => {
           ),
         );
 
-        const initialized = yield* Effect.all([
-          Deferred.await(initialCheck),
-          Deferred.await(publishersIdle),
-        ]).pipe(Effect.timeoutOption(500));
-        expect({ initialized: Option.isSome(initialized), idlePublisherCount }).toEqual({
-          initialized: true,
-          idlePublisherCount: 4,
-        });
+        yield* Effect.all([Deferred.await(initialCheck), Deferred.await(publishersIdle)]);
+        expect(idlePublisherCount).toBe(4);
         ready = true;
         yield* PubSub.publish(wakes, "wake");
-        const started = yield* Deferred.await(fourStarted).pipe(Effect.timeoutOption(500));
-        expect(Option.isSome(started)).toBe(true);
+        yield* Deferred.await(fourStarted);
         expect(maximumActivePublishers).toBe(4);
         yield* Deferred.succeed(release, undefined);
-        const completed = yield* Deferred.await(allPublished).pipe(Effect.timeoutOption(500));
+        yield* Deferred.await(allPublished);
         yield* Fiber.interrupt(process);
 
-        expect(Option.isSome(completed)).toBe(true);
         expect(maximumActivePublishers).toBe(4);
       }),
     ),
   );
 
-  it.live("recovers work when a database wake is lost", () =>
+  it.effect("recovers work when a database wake is lost", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const initialCheck = yield* Deferred.make<void>();
@@ -196,20 +182,16 @@ describe("outbox relay process", () => {
             Effect.provide(Layer.succeed(OutboxRelay)(relay)),
           ),
         );
-        const initialized = yield* Effect.all([
-          Deferred.await(initialCheck),
-          Deferred.await(publishersIdle),
-        ]).pipe(Effect.timeoutOption(500));
-        expect(Option.isSome(initialized)).toBe(true);
+        yield* Effect.all([Deferred.await(initialCheck), Deferred.await(publishersIdle)]);
 
-        yield* Effect.sleep(20);
+        yield* TestClock.adjust(50);
         const safetyEventsBefore = yield* Metric.value(outboxRelayMetrics.safetyEvents);
         ready = true;
-        const recovered = yield* Deferred.await(publication).pipe(Effect.timeoutOption(500));
+        yield* TestClock.adjust(50);
+        yield* Deferred.await(publication);
         const safetyEventsAfter = yield* Metric.value(outboxRelayMetrics.safetyEvents);
         yield* Fiber.interrupt(process);
 
-        expect(Option.isSome(recovered)).toBe(true);
         expect(safetyEventsAfter.count).toBeGreaterThan(safetyEventsBefore.count);
       }),
     ),
