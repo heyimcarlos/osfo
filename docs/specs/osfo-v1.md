@@ -288,7 +288,8 @@ production-qualified promises. Metric-driven worker autoscaling remains absent.
 
 `packages/db` owns Drizzle schema, reviewed generated SQL migrations,
 connection logic, repositories, and integration-test support. Production never
-uses `drizzle-kit push`.
+uses schema synchronization. It applies only reviewed generated SQL migrations
+through `bun run db:migrate`.
 
 Database administration is not an application and is not deployed as Cloud Run
 Jobs. `apps/database-jobs` and the database bootstrap, migration, seed, and
