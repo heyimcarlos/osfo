@@ -2024,10 +2024,26 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
           const attempt = yield* expectStartedAttempt(
             repository.beginModelCallAttempt(abandoned.fence, modelCall, 1),
           );
-          yield* repository.recordModelCallCleanup(abandoned.fence, attempt, {
-            cleanupDisposition: { type: "completed" },
-            externalWorkMayContinue: false,
-          });
+          yield* repository.recordModelCallCleanup(
+            abandoned.fence,
+            attempt,
+            {
+              cleanupDisposition: { type: "completed" },
+              externalWorkMayContinue: false,
+            },
+            {
+              dispatchEvidence: {
+                type: "confirmed",
+                providerRequestId: "gen-abandoned-reasoning",
+              },
+              usage: {
+                type: "reported",
+                inputUnits: 4,
+                outputUnits: 5,
+                reasoningUnits: 7,
+              },
+            },
+          );
         }),
       ),
     );
@@ -2055,14 +2071,24 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
           readonly attemptBinding: string;
           readonly attemptState: string;
           readonly dispatchState: string;
+          readonly inputUnits: number;
+          readonly outputUnits: number;
+          readonly providerRequestId: string;
+          readonly reasoningUnits: number;
           readonly runState: string;
+          readonly usageType: string;
         }>`SELECT
           run.state AS "runState",
           (SELECT count(*) FROM model_call_attempts
             WHERE agent_run_id = run.agent_run_id)::text AS attempts,
           attempt.model_binding AS "attemptBinding",
           attempt.state AS "attemptState",
-          attempt.dispatch_state AS "dispatchState"
+          attempt.dispatch_state AS "dispatchState",
+          attempt.provider_request_id AS "providerRequestId",
+          attempt.usage_type AS "usageType",
+          attempt.input_units AS "inputUnits",
+          attempt.output_units AS "outputUnits",
+          attempt.reasoning_units AS "reasoningUnits"
         FROM agent_runs run
         JOIN model_call_attempts attempt USING (agent_run_id)
         WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
@@ -2073,7 +2099,12 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       attempts: "1",
       attemptBinding: "openrouter.chat-completions.minimax.minimax-m3.v1",
       attemptState: "failed",
-      dispatchState: "uncertain",
+      dispatchState: "confirmed",
+      providerRequestId: "gen-abandoned-reasoning",
+      usageType: "reported",
+      inputUnits: 4,
+      outputUnits: 5,
+      reasoningUnits: 7,
       runState: "failed",
     });
   });

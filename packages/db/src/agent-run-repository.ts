@@ -811,6 +811,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               yield* sql`UPDATE model_call_attempts
                   SET state = 'failed',
                       dispatch_state = CASE
+                        WHEN dispatch_state <> 'prepared' THEN dispatch_state
                         WHEN EXISTS (
                           SELECT 1 FROM model_call_fragments fragment
                           WHERE fragment.model_call_attempt_id = model_call_attempts.model_call_attempt_id
