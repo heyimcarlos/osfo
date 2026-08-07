@@ -1,6 +1,13 @@
 # Osfo v1 architecture and Oz reference journey
 
-Status: implementation baseline, production qualification incomplete
+Status: architecture synthesis for review, production qualification incomplete
+
+Authority precedence:
+
+1. [`CONTEXT.md`](../../CONTEXT.md) owns product language and domain truth.
+2. [`docs/adr/`](../adr/) owns accepted durable architecture decisions.
+3. GitHub issues own active work, evidence status, and gate ownership.
+4. This document connects those authorities into one implementation journey.
 
 Source map: GitHub issue #1
 
@@ -18,10 +25,12 @@ The v1 destination is a fully working Oz application deployed on the approved
 production topology. A successful development demonstration is useful evidence,
 but it is not the product boundary and does not qualify production.
 
-This specification freezes the contracts implementation tickets must preserve.
-It reconciles the selected StreamingPull delivery seam, the approved `us-east4`
-GCP structure, and the operator-owned database administration boundary. Numeric
-production values remain candidates until their required evidence passes.
+This specification is a navigable synthesis of contracts implementation
+tickets must preserve. If it conflicts with the authorities above, those
+sources win and issue #55 must reconcile this document. It connects the selected
+StreamingPull delivery seam, the approved `us-east4` GCP structure, and the
+operator-owned database administration boundary. Numeric production values
+remain candidates until their required evidence passes.
 
 ## Architectural thesis
 
@@ -34,7 +43,7 @@ Osfo separates five kinds of authority:
 4. Concrete executors translate committed operations into external protocols.
 5. PostgreSQL owns canonical Thread and AgentRun truth.
 
-The central execution loop is:
+ADR 0002 owns this separation. The central execution loop is:
 
 ```text
 recorded AgentRun state
@@ -86,6 +95,45 @@ must remain replaceable through the same Osfo-owned executor contract.
 
 The deterministic ModelCall executor is a conformance and fault-injection
 fixture. It is not the deployed Oz default and cannot qualify a live provider.
+
+### Oz authentication and single-Thread bootstrap
+
+Authentication lifecycle is an Oz product boundary, not part of the Native
+Thread Transport. Oz v1 uses one configured OpenID Connect issuer with
+Authorization Code and PKCE. The browser never receives an Osfo bearer for
+manual copying. After the external identity response is validated against the
+pinned issuer, audience, redirect URI, nonce, and PKCE verifier, Oz performs one
+transaction that:
+
+- resolves `(issuer, subject)` to one immutable Principal;
+- creates the Principal on first login when product policy permits;
+- creates exactly one canonical Thread for a new Principal or returns the
+  existing Thread;
+- creates one independently revocable Authentication Session;
+- stores only a hash of the opaque Osfo session credential;
+- returns the established ThreadId, the bounded session expiry, and the opaque
+  Osfo bearer exactly once.
+
+The product bootstrap surface is separate from the four Osfo transport routes:
+
+```text
+POST   /v1/oz/session/exchange
+GET    /v1/oz/bootstrap
+DELETE /v1/oz/session
+```
+
+The exchange response is `Cache-Control: private, no-store`. The browser keeps
+the Osfo bearer in memory only and supplies the required `Authorization` header;
+it does not display it as a configuration value or persist it in local or
+session storage. External tokens, authorization codes, session credentials, and
+raw identity claims never enter URLs, logs, Terraform, canonical ThreadEvents,
+or evidence. Logout revokes the current Authentication Session. A page reload
+or another device performs a new OIDC exchange, resolves the same Principal and
+Thread, and receives a separate Authentication Session and cursor state.
+
+The current development access-code bootstrap remains available only until this
+flow is deployed and browser-proven. It is then removed from application code,
+runtime configuration, and Secret Manager under a focused cleanup ticket.
 
 ## Deep modules and dependency direction
 
@@ -220,13 +268,73 @@ PostgreSQL retains complete immutable canonical Thread history and receipts for
 live v1 Threads. ThreadPosition defines order. ThreadCursor is an opaque replay
 coordinate and never a history pagination token.
 
-The Native Thread Transport provides:
+The Native Thread Transport exposes exactly four resource endpoints:
+
+```text
+POST /v1/threads/{thread_id}/messages
+POST /v1/agent-runs/{agent_run_id}/cancel
+GET  /v1/threads/{thread_id}/snapshot
+GET  /v1/threads/{thread_id}/events
+```
+
+It does not create, list, discover, share, transfer, or delete Threads. Oz
+bootstrap supplies the authorized established ThreadId. Each endpoint resolves
+the current Authentication Session and Principal. Unknown and unauthorized
+resources return indistinguishable `404` responses.
+
+The protocol provides:
 
 - authenticated HTTP commands with stable idempotency keys;
 - immutable Acceptance Receipts;
 - a bounded complete ThreadSnapshot;
 - finite keyset-paginated canonical history;
 - cursor-based SSE replay followed by a fixed replay-to-live cut.
+
+Message and cancellation admission require `Idempotency-Key`. An identical
+retry returns the original immutable receipt even during overload. Conflicting
+reuse returns `409 idempotency_conflict`. A transaction whose commit remains
+uncertain after reconciliation returns `503 commit_outcome_unknown` and can be
+retried only as the exact same stable operation.
+
+Message input is a closed JSON object containing one ordered, non-empty
+`content` array. Text is the only v1 block type. The server preserves decoded
+text and block order exactly and rejects unknown fields, empty text, unsupported
+blocks, invalid Unicode, and oversized input. The request contains no role,
+model, provider options, arbitrary metadata, cursor, or client timestamp.
+Cancellation accepts no body and records `user_requested`. Its immutable receipt
+means the cancellation request won, not that physical cleanup completed.
+
+A message Acceptance Receipt identifies the receipt, Thread, UserMessage,
+UserMessageAppended event and position, AgentRun, and acceptance time. It never
+contains a ThreadCursor because HTTP receipt does not prove client application.
+Receipt replay returns the same body and may add `Idempotency-Replayed: true`.
+
+`GET /events` uses `Accept: application/json` for finite position-paginated
+history and `Accept: text/event-stream` for cursor replay and live delivery.
+History freezes one `through_position` across every page. SSE requires the last
+successfully applied cursor and performs this cut:
+
+```text
+validate retained cursor A
+  -> capture committed head C
+  -> offer every event where A < position <= C
+  -> caught_up(C)
+  -> offer committed events after C as live delivery
+```
+
+Malformed, foreign-Thread, or future cursors return `400 invalid_cursor`. A
+cursor outside retention returns `410 cursor_outside_retention` and requires a
+fresh snapshot. Lost notification, replica replacement, and stream reconnect
+reconcile from canonical PostgreSQL position. A server closes instead of
+dropping, merging, or reordering an event.
+
+Typed errors use `application/problem+json` with stable status, Osfo code, and
+retry semantics. The closed error set distinguishes invalid requests and
+cursors, authentication, indistinguishable not-found, representation and media
+type errors, idempotency conflict, terminal AgentRun cancellation, retention,
+payload bounds, overload, uncertain commit, snapshot unavailability, and
+sanitized internal failure. Retryable `429` and `503` responses provide bounded
+guidance and create no Acceptance Receipt before durable acceptance.
 
 The protocol is closed and versioned. Unsupported fields, versions, event
 families, gaps, and conflicting identities fail closed. Unknown and unauthorized
@@ -269,9 +377,10 @@ authenticated command
 ```
 
 The relay uses PostgreSQL `LISTEN/NOTIFY` only as a wake hint and retains a
-one-second safety drain. One Principal-first selector creates bounded durable
-publication ownership. Four recoverable publishers are the current selected
-structure. PostgreSQL remains publication and lifecycle authority.
+one-second safety drain. One fixed relay process runs one Principal-first
+selector and four recoverable publisher fibers. The selector creates bounded
+durable publication ownership. PostgreSQL remains publication and lifecycle
+authority.
 
 Pub/Sub ordering does not replace PostgreSQL per-Thread sequencing. Duplicate,
 out-of-order, and redelivered identities are expected. Workers point-claim
@@ -315,7 +424,9 @@ Database repair is forward-only through corrective migrations.
 
 ## Deployment contract
 
-Development and production run in separate GCP projects in `us-east4`.
+The GCP boundary uses three projects: `osfo-foundation`, `osfo-development`, and
+`osfo-production`. Development and production run in `us-east4`, colocated with
+Temporal Cloud `gcp-us-east4` through same-region Private Service Connect.
 Production Cloud SQL is regional HA. Development is zonal. V1 does not claim
 cross-region continuity.
 
@@ -335,12 +446,25 @@ runtime role has a separate service account, database budget, secret access,
 release responsibility, and failure boundary. Provider traffic uses controlled
 egress. Default service accounts and service-account keys are prohibited.
 
-Terraform uses exact versions and separate foundation, development platform,
-development runtime, production platform, and production runtime roots. State
-is separated and versioned in protected GCS buckets. Production uses a fresh
-saved plan bound to source, image digests, inputs, tool versions, lock files,
-and state lineage. Daily drift detection is read-only. Production destruction
-is prohibited.
+ThreadEvent live delivery uses PostgreSQL authority plus `LISTEN/NOTIFY` wake
+hints to transport replicas. It does not use Pub/Sub. Each transport instance
+holds one dedicated listener connection. SSE buffers, connection count, memory,
+and database use are bounded so streams cannot consume the capacity reserved for
+command admission. Lost hints are repaired by durable position checks.
+
+Terraform uses exact versions and three one-way ownership layers:
+
+```text
+foundation -> platform -> runtime
+```
+
+There are no reverse dependencies and no `terraform_remote_state`. Foundation,
+development, and production use separate protected, versioned GCS state buckets
+with native locking and GitHub concurrency. Development and production each
+have independent platform and runtime roots. Production uses a fresh saved plan
+bound to source, image digests, inputs, tool versions, lock files, and state
+lineage. Daily drift detection is read-only. Production destruction is
+prohibited.
 
 Images are immutable and deployed by digest. Production promotion uses the
 same qualified digest, protected approval, provenance, SBOM, vulnerability
@@ -401,7 +525,7 @@ pass cannot compensate for a lower-level correctness failure. Historical,
 prototype, local, development, and contextual evidence retains its real scope
 and can never promote production qualification.
 
-## Production workload and gates
+## Production workload and qualification ownership
 
 The Production Workload Envelope is 232 incoming messages per second sustained.
 The 464 incoming-message per second lane characterizes stress and safe overload.
@@ -414,68 +538,72 @@ Production correctness has zero tolerance for lost or ghost AgentRuns, stale
 commits, duplicate terminal outcomes, ordering gaps, unfinished attempts, or
 capacity-accounting mismatch.
 
-The latest `us-east4` A/B/C/D matrix reconciled accepted work exactly but failed
-complete admission and the one-second receipt gate in every cell. Retained
-history amplification is supported. WAL tuning reduced checkpoint pressure but
-did not qualify admission. Therefore:
+ADR 0001 owns the selected transactional-outbox and StreamingPull architecture.
+Architecture selection is not production qualification. GitHub owns the live
+status of each evidence gate:
 
-| Gate                                           | Current status             | Owner            |
-| ---------------------------------------------- | -------------------------- | ---------------- |
-| Selected StreamingPull seam                    | PASS as architecture       | #87 and ADR 0001 |
-| Fixed six-worker candidate                     | PASS as measured candidate | #87              |
-| `us-east4` target admission                    | FAIL                       | #79              |
-| Current healthy ceiling                        | MISSING                    | #79              |
-| Current breaking point                         | MISSING                    | #79              |
-| 400,000-AgentRun outage reserve and full drain | MISSING                    | #80              |
-| Retained corpora and complete cost             | MISSING                    | #81              |
-| Protected production promotion                 | MISSING                    | #92              |
-| Complete deployed Oz composition               | MISSING                    | #78              |
-| Production acceptance                          | MISSING                    | #76              |
+| Required evidence                                                | Live owner |
+| ---------------------------------------------------------------- | ---------- |
+| `us-east4` target admission, healthy ceiling, and breaking point | #79        |
+| 400,000-AgentRun outage reserve and full drain                   | #80        |
+| Retained corpora and complete cost                               | #81        |
+| Complete deployed Oz composition                                 | #78        |
+| Protected production promotion                                   | #92        |
+| Final production acceptance                                      | #76        |
 
-No runtime, dashboard, demo, or historical result may convert these statuses to
-PASS without the owned qualification.
+At review time, the complete production result is not PASS. Implementers must
+read the linked issues for current PASS, FAIL, or MISSING evidence rather than
+copying a status from this synthesis. No runtime, dashboard, demonstration, or
+historical result may promote production without the owned qualification.
 
-## Implementation order
+## Implementation ticket graph
 
-Implementation continues as dependency-ordered permanent vertical slices:
+Settled feature slices and production qualification are parallel lanes.
+Qualification failures block production approval, not unrelated semantic
+implementation. A ticket may run concurrently only when it does not edit the
+same authority boundary or depend on unsettled output.
 
-1. Reconcile this specification and package boundaries.
-2. Repair target admission scaling against exact retained history.
-3. Complete the bounded ToolCall integration without provider-specific durable
-   types.
-4. Complete Action external-effect integration and uncertainty recovery.
-5. Add Child AgentRuns and ChildJoin.
-6. Add awaited and detached WorkflowInstances behind Temporal interfaces.
-7. Add RunCode and immutable artifacts.
-8. Add snapshots and context compaction without changing canonical authority.
-9. Qualify target, overload, recovery, retained corpora, cost, and SSE.
-10. Deploy the complete Oz composition, exercise the Reference Journey, and
-    promote the same qualified digest through the protected production path.
+```text
+#55 architecture synthesis
+  -> #147 Oz OIDC login and single-Thread bootstrap
+  -> #67 bounded ToolCalls
+       -> #68 external Actions
+       -> #69 Child AgentRuns and ChildJoin
+       -> #70 awaited WorkflowInstances
+            -> #71 detached WorkflowInstances
+            -> #72 RunCode and artifacts
+  -> #73 snapshots and hot replay
+       -> #74 context compaction
 
-Independent tickets may run concurrently only when they do not edit the same
-authority boundary or depend on unsettled output. Each PR remains focused,
-reviewed for specification fit and standards, verified proportionately, and
-merged before its dependants are unblocked.
+#79 target and overload qualification
+#80 recovery and teardown qualification
+#81 retained corpora and complete cost
+#100 deployed SSE qualification
+  -> #76 production acceptance
 
-## Demo shortcut disposition
+feature slices + qualification prerequisites
+  -> #78 complete deployed Oz composition
+  -> #91 Workflow and RunCode deployment
+  -> #92 protected production promotion
+```
 
-Demo work is not reverted wholesale. Each shortcut receives one explicit
-disposition:
+The live GitHub dependency edges and issue state are authoritative. This graph
+records intended direction, not current completion. Before production approval,
+#76 must reconcile the complete composed journey, and #92 must promote the same
+qualified digest through the protected path.
 
-- retain reusable durable semantics, conformance tests, development deployment,
-  and honest evidence tooling;
-- migrate development-only bootstrap and seed behavior behind explicit
-  environment authority;
-- replace access-code session minting with the real Oz authentication and
-  onboarding flow before removing it;
-- keep demo evidence as historical development evidence, never product truth;
-- remove manual secrets, fixed demo bindings, and demo-only UI only after their
-  production replacement is deployed and verified;
-- preserve unfinished worktrees until their changes are either migrated into a
-  reviewed ticket or explicitly discarded.
+Each PR remains focused, reviewed for specification fit and standards, verified
+proportionately, and merged before its actual dependants are unblocked. A
+production load failure creates or updates a qualification or capacity ticket;
+it does not silently weaken a semantic contract.
 
-Rollback means replacing temporary authority with the correct owner. It never
-means deleting a working safety boundary before its replacement exists.
+## Development-only mechanisms
+
+Development bootstrap, reference seeds, qualification controls, and evidence
+presentation remain explicitly development-only. They cannot enter production
+composition or qualify production. A temporary mechanism is removed only after
+its product replacement is deployed and verified, so rollback never deletes a
+working safety boundary before the correct owner exists.
 
 ## Deferred scope
 

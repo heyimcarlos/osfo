@@ -7,9 +7,10 @@ application entrypoints run on Node 24.
 
 [`CONTEXT.md`](CONTEXT.md) defines the domain language. The
 [`Osfo v1 architecture and Oz reference journey`](docs/specs/osfo-v1.md) is the
-implementation baseline. It keeps Osfo as the reusable reliable agent
-foundation, makes Oz the long-lived Reference Agent Application, and keeps
-OpenRouter and other providers behind the Osfo-owned Model Adapter seam.
+reviewable synthesis for issue #55. Accepted durable boundaries live in
+[`docs/adr/`](docs/adr/), including the separation between Osfo, Oz, and Model
+Adapters in
+[`ADR 0002`](docs/adr/0002-separate-osfo-semantics-from-agent-applications-and-adapters.md).
 
 The current comparable study is
 [`docs/research/osfo-agent-platform-comparables-20260807.md`](docs/research/osfo-agent-platform-comparables-20260807.md).

@@ -2,9 +2,11 @@
 
 Research date: 2026-08-07
 
-Decision: keep Osfo's durable semantic core, make Oz the explicit application
+Recommendation: keep Osfo's durable semantic core, make Oz the explicit application
 composition, and keep every model provider behind the Osfo-owned
 `ModelCallExecutor` seam.
+
+Accepted authority: [ADR 0002](../adr/0002-separate-osfo-semantics-from-agent-applications-and-adapters.md)
 
 ## Question
 
@@ -217,7 +219,7 @@ ModelCall execution, ToolCall execution, Action external effects, persistence,
 transport, and Agent Application composition. File count and domain nouns do
 not by themselves earn modules.
 
-## Target architecture
+## Recommended architecture mapping
 
 ```text
 Oz Agent Application
