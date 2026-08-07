@@ -1,5 +1,7 @@
 variable "project_id" { type = string }
 variable "terraform_service_account_email" { type = string }
+variable "runtime_terraform_service_account_email" { type = string }
+variable "runtime_pubsub_policy_manager_role" { type = string }
 variable "runtime_service_accounts" {
   type = map(string)
 

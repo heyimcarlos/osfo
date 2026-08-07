@@ -358,23 +358,17 @@ runtime_subscription_policy_binding=$(sed -n \
 for exact_runtime_deployer_binding in \
   'count   = var.enable_managed_platform ? 1 : 0' \
   'topic   = module.command_buffer.topic_id' \
-  'role    = local.runtime_pubsub_policy_manager_role' \
-  'member  = "serviceAccount:${local.runtime_terraform_service_account_email}"'; do
+  'role    = var.runtime_pubsub_policy_manager_role' \
+  'member  = "serviceAccount:${var.runtime_terraform_service_account_email}"'; do
   grep -Fq "$exact_runtime_deployer_binding" <<<"$runtime_topic_policy_binding"
 done
 for exact_runtime_deployer_binding in \
   'count        = var.enable_managed_platform ? 1 : 0' \
   'subscription = module.command_buffer.subscription_id' \
-  'role         = local.runtime_pubsub_policy_manager_role' \
-  'member       = "serviceAccount:${local.runtime_terraform_service_account_email}"'; do
+  'role         = var.runtime_pubsub_policy_manager_role' \
+  'member       = "serviceAccount:${var.runtime_terraform_service_account_email}"'; do
   grep -Fq "$exact_runtime_deployer_binding" <<<"$runtime_subscription_policy_binding"
 done
-rg --fixed-strings --quiet \
-  'runtime_pubsub_policy_manager_role      = "projects/${var.project_id}/roles/osfoRuntimePubSubPolicyManager"' \
-  "$root/main.tf"
-rg --fixed-strings --quiet \
-  'runtime_terraform_service_account_email = "${var.name_prefix}-runtime-tf@${var.project_id}.iam.gserviceaccount.com"' \
-  "$root/main.tf"
 rg --fixed-strings --quiet '"roles/cloudsql.client"' infra/roots/foundation/main.tf
 rg --fixed-strings --quiet '"roles/cloudsql.instanceUser"' infra/roots/foundation/main.tf
 rg --fixed-strings --quiet '/versions/' infra/roots/foundation/main.tf
@@ -653,9 +647,13 @@ rg --fixed-strings --quiet 'infra/tests/development-platform-prepare-cleanup.sh'
 
 jq -e '
   . as $config
-  | ($config.runtime_service_accounts | keys) == [
+  | ($config.runtime_terraform_service_account_email
+    == "\($config.name_prefix)-runtime-tf@\($config.project_id).iam.gserviceaccount.com")
+  and ($config.runtime_pubsub_policy_manager_role
+    == "projects/\($config.project_id)/roles/osfoRuntimePubSubPolicyManager")
+  and (($config.runtime_service_accounts | keys) == [
     "agentrun", "relay", "temporal", "transport"
-  ]
+  ])
   and all($config.runtime_service_accounts | to_entries[];
     .value == "\($config.name_prefix)-\(.key)@\($config.project_id).iam.gserviceaccount.com")
 ' "$root/development.tfvars.json" >/dev/null

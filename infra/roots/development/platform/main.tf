@@ -65,16 +65,16 @@ resource "google_pubsub_topic_iam_member" "runtime_deployer_policy_manager" {
   count   = var.enable_managed_platform ? 1 : 0
   project = var.project_id
   topic   = module.command_buffer.topic_id
-  role    = local.runtime_pubsub_policy_manager_role
-  member  = "serviceAccount:${local.runtime_terraform_service_account_email}"
+  role    = var.runtime_pubsub_policy_manager_role
+  member  = "serviceAccount:${var.runtime_terraform_service_account_email}"
 }
 
 resource "google_pubsub_subscription_iam_member" "runtime_deployer_policy_manager" {
   count        = var.enable_managed_platform ? 1 : 0
   project      = var.project_id
   subscription = module.command_buffer.subscription_id
-  role         = local.runtime_pubsub_policy_manager_role
-  member       = "serviceAccount:${local.runtime_terraform_service_account_email}"
+  role         = var.runtime_pubsub_policy_manager_role
+  member       = "serviceAccount:${var.runtime_terraform_service_account_email}"
 }
 
 module "qualification_probe" {
@@ -104,8 +104,6 @@ resource "terraform_data" "disposable_proof" {
 }
 
 locals {
-  runtime_pubsub_policy_manager_role      = "projects/${var.project_id}/roles/osfoRuntimePubSubPolicyManager"
-  runtime_terraform_service_account_email = "${var.name_prefix}-runtime-tf@${var.project_id}.iam.gserviceaccount.com"
   labels = {
     environment = "development"
     managed_by  = "terraform"
