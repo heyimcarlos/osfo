@@ -77,13 +77,21 @@ for denied_secret_runtime_proof in \
     infra/modules/qualification-probe/denied-secret-proof.sh
 done
 for denied_secret_policy_proof in \
+  'gcloud projects get-ancestors "$project_id" --format=json' \
   'gcloud projects get-iam-policy "$project_id" --format=json' \
+  'gcloud secrets get-iam-policy "$target_secret"' \
   'gcloud iam roles describe "$bound_role" --format=json' \
   'google_secret_manager_secret_iam_(member|binding|policy)' \
   'secretmanager.versions.access'; do
   rg --fixed-strings --quiet -- "$denied_secret_policy_proof" \
     infra/tests/development-denied-secret-iam-preflight.sh
 done
+rg --fixed-strings --quiet \
+  'DENIED_SECRET_IAM_SCOPE=target-secret' \
+  infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet \
+  'PLATFORM_SERVICE_ACCOUNT: ${{ vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT }}' \
+  .github/workflows/terraform.yml
 if rg --quiet 'PERMISSION_DENIED|HTTPError|denial wording' \
   infra/modules/qualification-probe/denied-secret-proof.sh \
   infra/tests/development-denied-secret-iam-preflight.sh; then

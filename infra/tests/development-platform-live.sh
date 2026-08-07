@@ -318,6 +318,9 @@ create_plan="$plan_dir/create.tfplan"
 create_binding=$(jq -r '.binding_sha256' "$create_plan.manifest.json")
 "$repo_root/infra/scripts/apply-plan.sh" development "$root" "$create_plan"
 
+DENIED_SECRET_IAM_SCOPE=target-secret \
+  "$repo_root/infra/tests/development-denied-secret-iam-preflight.sh"
+
 second_plan="$plan_dir/second.tfplan"
 "$repo_root/infra/scripts/create-plan.sh" development "$root" "$second_plan" -detailed-exitcode
 "$repo_root/infra/scripts/store-plan.sh" "$SAVED_PLAN_BUCKET" "$second_plan"

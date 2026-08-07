@@ -233,6 +233,7 @@ jobs:
       TERRAFORM_BIN: ${{ github.workspace }}/infra/scripts/terraform-ci.sh
       SAVED_PLAN_BUCKET: ${{ vars.GCP_SAVED_PLAN_BUCKET }}
       DEVELOPMENT_STATE_BUCKET: ${{ vars.GCP_DEVELOPMENT_STATE_BUCKET }}
+      PLATFORM_SERVICE_ACCOUNT: ${{ vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT }}
       DEVELOPMENT_LIFECYCLE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
