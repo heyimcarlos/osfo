@@ -1,6 +1,7 @@
 import type { ThreadSnapshot } from "@osfo/session";
 import { Context, Schema, type Effect, type Stream } from "effect";
 import {
+  AgentRunCancellationUnavailable,
   AuthenticationRejected,
   CursorOutsideRetention,
   InvalidCursor,
@@ -12,7 +13,9 @@ import type {
   AcceptanceReceipt,
   AdmissionCommitUnknown,
   AdmissionNotAccepted,
+  AgentRunCancellationReceipt,
   AdmissionUnavailable,
+  CancelAgentRunPayload,
   CapacityRejected,
   IdempotencyConflict,
   SubmitMessagePayload,
@@ -70,6 +73,28 @@ export class MessageAdmission extends Context.Service<
     >;
   }
 >()("@osfo/api/MessageAdmission") {}
+
+export interface CancelAgentRunCommand extends CancelAgentRunPayload {
+  readonly authenticationToken: string;
+  readonly threadId: string;
+  readonly agentRunId: string;
+}
+
+export type AgentRunCancellationError =
+  | AuthenticationRejected
+  | ThreadNotFound
+  | AgentRunCancellationUnavailable;
+
+export interface AgentRunCancellationService {
+  readonly cancel: (
+    command: CancelAgentRunCommand,
+  ) => Effect.Effect<AgentRunCancellationReceipt, AgentRunCancellationError>;
+}
+
+export class AgentRunCancellation extends Context.Service<
+  AgentRunCancellation,
+  AgentRunCancellationService
+>()("@osfo/api/AgentRunCancellation") {}
 
 export interface ThreadAccess {
   readonly authenticationToken: string;

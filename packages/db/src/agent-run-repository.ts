@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import {
+  AgentRunCancellationObserved,
   AgentRunFenceRejected,
   AgentRunRepository,
   AgentRunRepositoryUnavailable,
@@ -9,6 +10,7 @@ import {
   type PreparedModelCall,
 } from "@osfo/agent-run";
 import {
+  makeAgentRunCanceled,
   makeAgentRunFailed,
   makeAgentRunSucceeded,
   makeAssistantOutputAppended,
@@ -37,6 +39,9 @@ interface AgentRunAuthority {
   readonly threadId: string;
   readonly principalId: string;
   readonly userMessageId: string;
+  readonly cancellationRequestedAt: string | null;
+  readonly cleanupDeadlineAt: string | null;
+  readonly cleanupDeadlineExceeded: boolean;
 }
 
 interface RecordedStateRow extends AgentRunAuthority {
@@ -69,12 +74,15 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
       const sql = yield* PgClient.PgClient;
 
       const isFenceRejected = Predicate.isTagged("AgentRunFenceRejected");
+      const isCancellationObserved = Predicate.isTagged("AgentRunCancellationObserved");
       const protect = <A, E>(effect: Effect.Effect<A, E>) =>
         effect.pipe(
           Effect.mapError((cause) =>
             isFenceRejected(cause)
               ? new AgentRunFenceRejected()
-              : new AgentRunRepositoryUnavailable({ cause }),
+              : isCancellationObserved(cause)
+                ? new AgentRunCancellationObserved()
+                : new AgentRunRepositoryUnavailable({ cause }),
           ),
         );
 
@@ -85,7 +93,10 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
             agent_run_id::text AS "agentRunId",
             thread_id::text AS "threadId",
             principal_id::text AS "principalId",
-            user_message_id::text AS "userMessageId"
+            user_message_id::text AS "userMessageId",
+            cancellation_requested_at::text AS "cancellationRequestedAt",
+            cleanup_deadline_at::text AS "cleanupDeadlineAt",
+            coalesce(cleanup_deadline_at <= clock_timestamp(), false) AS "cleanupDeadlineExceeded"
           FROM agent_runs
           WHERE agent_run_id = ${fence.agentRunId}::uuid
             AND state = 'running'
@@ -95,6 +106,16 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
           FOR UPDATE`;
         const authority = rows[0];
         if (authority === undefined) return yield* new AgentRunFenceRejected();
+        return authority;
+      });
+
+      const requireOpenFence = Effect.fn("AgentRunRepository.requireOpenFence")(function* (
+        fence: AgentRunFence,
+      ) {
+        const authority = yield* requireFence(fence);
+        if (authority.cancellationRequestedAt !== null) {
+          return yield* new AgentRunCancellationObserved();
+        }
         return authority;
       });
 
@@ -474,7 +495,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              yield* requireFence(fence);
+              yield* requireOpenFence(fence);
               const rows = yield* sql<RecordedStateRow>`SELECT
                     run.agent_run_id::text AS "agentRunId",
                     run.thread_id::text AS "threadId",
@@ -544,7 +565,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              const authority = yield* requireFence(fence);
+              const authority = yield* requireOpenFence(fence);
               const existing = yield* sql<PreparedModelCall>`SELECT
                     model_call_id::text AS "modelCallId",
                     model_binding AS "modelBinding",
@@ -598,7 +619,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              const authority = yield* requireFence(fence);
+              const authority = yield* requireOpenFence(fence);
               const abandoned = yield* sql<{ readonly assistantOutputId: string }>`SELECT
                     assistant_output_id::text AS "assistantOutputId"
                   FROM model_call_attempts
@@ -685,7 +706,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              const authority = yield* requireFence(fence);
+              const authority = yield* requireOpenFence(fence);
               const existing = yield* sql<{ readonly text: string }>`SELECT text
                   FROM model_call_fragments
                   WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
@@ -727,7 +748,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              const authority = yield* requireFence(fence);
+              const authority = yield* requireOpenFence(fence);
               const completed = yield* sql<{ readonly modelCallId: string }>`UPDATE model_calls
                   SET state = 'succeeded', completed_at = transaction_timestamp()
                   WHERE model_call_id = ${attempt.modelCallId}::uuid
@@ -773,7 +794,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              const authority = yield* requireFence(fence);
+              const authority = yield* requireOpenFence(fence);
               const interrupted = yield* sql<{ readonly modelCallId: string }>`UPDATE model_calls
                   SET state = 'failed',
                       failure_cause = ${cause},
@@ -818,6 +839,118 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         );
       });
 
+      const commitCancellation: AgentRunRepositoryService["commitCancellation"] = Effect.fn(
+        "AgentRunRepository.commitCancellation",
+      )(function* (fence) {
+        return yield* protect(
+          sql.withTransaction(
+            Effect.gen(function* () {
+              const authority = yield* requireFence(fence);
+              if (
+                authority.cancellationRequestedAt === null ||
+                authority.cleanupDeadlineAt === null
+              ) {
+                return yield* new AgentRunFenceRejected();
+              }
+              const openOutputs = yield* sql<{
+                readonly assistantOutputId: string;
+                readonly claimEpoch: string;
+              }>`SELECT
+                  output.assistant_output_id::text AS "assistantOutputId",
+                  attempt.claim_epoch::text AS "claimEpoch"
+                FROM assistant_outputs output
+                JOIN model_call_attempts attempt
+                  USING (assistant_output_id, agent_run_id)
+                WHERE output.agent_run_id = ${fence.agentRunId}::uuid
+                  AND output.state = 'open'
+                  AND attempt.state = 'started'
+                ORDER BY attempt.attempt_number
+                FOR UPDATE OF output, attempt`;
+              yield* sql`UPDATE model_calls
+                SET state = 'canceled',
+                    failure_cause = NULL,
+                    completed_at = transaction_timestamp()
+                WHERE agent_run_id = ${fence.agentRunId}::uuid
+                  AND state = 'pending'`;
+              yield* sql`UPDATE model_call_attempts
+                SET state = 'canceled', finished_at = transaction_timestamp()
+                WHERE agent_run_id = ${fence.agentRunId}::uuid
+                  AND state = 'started'`;
+              for (const output of openOutputs) {
+                const interrupted = yield* sql`UPDATE assistant_outputs
+                  SET state = 'interrupted',
+                      interruption_cause = 'agentRunCanceled',
+                      terminated_at = transaction_timestamp()
+                  WHERE assistant_output_id = ${output.assistantOutputId}::uuid
+                    AND agent_run_id = ${fence.agentRunId}::uuid
+                    AND state = 'open'
+                  RETURNING assistant_output_id`;
+                if (interrupted.length !== 1) return yield* new AgentRunFenceRejected();
+                yield* appendThreadEvent(authority, (base) =>
+                  makeAssistantOutputInterrupted({
+                    ...base,
+                    assistantOutputId: output.assistantOutputId,
+                    cause: "agentRunCanceled",
+                  }),
+                );
+              }
+              const staleExternalWork = openOutputs.some(
+                (output) => output.claimEpoch !== fence.claimEpoch,
+              );
+              const cleanupDisposition = authority.cleanupDeadlineExceeded
+                ? ("deadlineExceeded" as const)
+                : ("completed" as const);
+              const terminal = yield* sql`UPDATE agent_runs
+                SET state = 'canceled',
+                    claim_owner = NULL,
+                    lease_expires_at = NULL,
+                    cleanup_disposition = ${cleanupDisposition},
+                    external_work_may_continue = ${staleExternalWork}
+                WHERE agent_run_id = ${fence.agentRunId}::uuid
+                  AND state = 'running'
+                  AND claim_owner = ${fence.workerId}
+                  AND claim_epoch = ${fence.claimEpoch}::bigint
+                  AND lease_expires_at > clock_timestamp()
+                  AND cancellation_requested_at IS NOT NULL
+                  AND cleanup_deadline_at IS NOT NULL
+                RETURNING agent_run_id`;
+              if (terminal.length !== 1) return yield* new AgentRunFenceRejected();
+              yield* appendThreadEvent(authority, (base) =>
+                makeAgentRunCanceled({
+                  ...base,
+                  cleanupDisposition: { type: cleanupDisposition },
+                  externalWorkMayContinue: staleExternalWork,
+                }),
+              );
+              const released = yield* sql<{ readonly principalId: string }>`UPDATE
+                    agent_run_capacity_reservations
+                  SET state = 'released', released_at = transaction_timestamp()
+                  WHERE agent_run_id = ${fence.agentRunId}::uuid
+                    AND state = 'held'
+                  RETURNING principal_id::text AS "principalId"`;
+              const reservation = released[0];
+              if (reservation === undefined) return yield* new AgentRunFenceRejected();
+              const global = yield* sql`UPDATE admission_global_capacity
+                SET reserved_count = reserved_count - 1
+                WHERE singleton = true AND reserved_count > 0
+                RETURNING reserved_count`;
+              const principal = yield* sql`UPDATE admission_principal_capacity
+                SET reserved_count = reserved_count - 1
+                WHERE principal_id = ${reservation.principalId}::uuid
+                  AND reserved_count > 0
+                RETURNING reserved_count`;
+              if (global.length !== 1 || principal.length !== 1) {
+                return yield* new AgentRunFenceRejected();
+              }
+              return {
+                cleanupDisposition: { type: cleanupDisposition },
+                externalWorkMayContinue: staleExternalWork,
+              };
+            }),
+          ),
+        );
+      });
+
       const commitTerminal: AgentRunRepositoryService["commitTerminal"] = Effect.fn(
         "AgentRunRepository.commitTerminal",
       )(function* (fence, decision) {
@@ -827,7 +960,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               yield* sql`SELECT pg_advisory_xact_lock(
                 hashtextextended(${ADMISSION_CAPACITY_LOCK_KEY}, 0)
               )`;
-              const authority = yield* requireFence(fence);
+              const authority = yield* requireOpenFence(fence);
               const expectedCallState = decision.type === "succeed" ? "succeeded" : "failed";
               const expectedOutputState = decision.type === "succeed" ? "completed" : "interrupted";
               const terminalState = decision.type === "succeed" ? "succeeded" : "failed";
@@ -901,6 +1034,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         appendModelOutput,
         completeModelCall,
         interruptModelCall,
+        commitCancellation,
         commitTerminal,
       });
     }),

@@ -38,6 +38,11 @@ export interface SubmitThreadChatMessage {
   readonly idempotencyKey: string;
 }
 
+type AssistantOutputStatus = Extract<
+  ThreadSnapshot["timeline"][number],
+  { readonly type: "assistantOutput" }
+>["status"];
+
 export type CanonicalThreadMessage =
   | {
       readonly type: "userMessage";
@@ -58,10 +63,7 @@ export type CanonicalThreadMessage =
       readonly eventId: string;
       readonly occurredAt: string;
       readonly threadPosition: string;
-      readonly status:
-        | { readonly type: "streaming" }
-        | { readonly type: "completed" }
-        | { readonly type: "interrupted"; readonly cause: "modelCallFailed" };
+      readonly status: AssistantOutputStatus;
     };
 
 const messagesFromSnapshot = (snapshot: ThreadSnapshot): ReadonlyArray<CanonicalThreadMessage> =>

@@ -74,7 +74,7 @@ describe("UserMessageAppended", () => {
       Effect.runSync(applyThreadEvent(snapshot, { ...event, cursor: "cursor-position-1" })),
     ).toEqual({
       projection: "nativeThread",
-      schemaVersion: 2,
+      schemaVersion: 3,
       threadId: eventInput.threadId,
       throughPosition: "1",
       throughCursor: "cursor-position-1",
@@ -109,6 +109,7 @@ describe("UserMessageAppended", () => {
             occurredAt: eventInput.occurredAt,
           },
           phase: { type: "pending" },
+          cancellation: { type: "none" },
         },
       ],
     });

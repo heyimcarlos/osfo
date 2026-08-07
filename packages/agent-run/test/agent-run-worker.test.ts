@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { makeDeterministicAgentRuntimeLayer } from "@osfo/agent-runtime";
 import { Effect, Layer, Stream } from "effect";
 import {
+  AgentRunCancellationObserved,
   AgentRunRepository,
   AgentRunRepositoryUnavailable,
   AgentRunWorker,
@@ -102,6 +103,14 @@ const makeRepository = () => {
       Effect.sync(() => {
         calls.push(`run:${decision.type === "succeed" ? "succeeded" : "failed"}`);
       }),
+    commitCancellation: () =>
+      Effect.sync(() => {
+        calls.push("run:canceled");
+        return {
+          cleanupDisposition: { type: "completed" as const },
+          externalWorkMayContinue: false,
+        };
+      }),
     selectPublication: () => Effect.succeed({ type: "none" as const }),
     claimPublication: () => Effect.succeed({ type: "none" as const }),
     confirmPublication: () => Effect.void,
@@ -125,6 +134,7 @@ describe("AgentRun worker", () => {
         executionProfileRef: "oz.deterministic.v1",
         workerId: "worker-a",
         leaseDurationMs: 30_000,
+        cancellationPollIntervalMs: 5,
       }).pipe(
         Layer.provide(Layer.succeed(AgentRunRepository)(repository.service)),
         Layer.provide(Layer.succeed(ModelCallExecutor)(executor)),
@@ -165,6 +175,7 @@ describe("AgentRun worker", () => {
       executionProfileRef: "oz.deterministic.v1",
       workerId: "worker-b",
       leaseDurationMs: 30_000,
+      cancellationPollIntervalMs: 5,
     }).pipe(
       Layer.provide(Layer.succeed(AgentRunRepository)(busy)),
       Layer.provide(
@@ -190,6 +201,7 @@ describe("AgentRun worker", () => {
       executionProfileRef: "oz.deterministic.v2",
       workerId: "worker-b",
       leaseDurationMs: 30_000,
+      cancellationPollIntervalMs: 5,
     }).pipe(
       Layer.provide(Layer.succeed(AgentRunRepository)(repository.service)),
       Layer.provide(
@@ -224,6 +236,7 @@ describe("AgentRun worker", () => {
       executionProfileRef: "oz.deterministic.v1",
       workerId: "worker-a",
       leaseDurationMs: 30_000,
+      cancellationPollIntervalMs: 5,
     }).pipe(
       Layer.provide(Layer.succeed(AgentRunRepository)(repository.service)),
       Layer.provide(Layer.succeed(ModelCallExecutor)(executor)),
@@ -263,6 +276,7 @@ describe("AgentRun worker", () => {
       executionProfileRef: "oz.deterministic.v1",
       workerId: "worker-a",
       leaseDurationMs: 30_000,
+      cancellationPollIntervalMs: 5,
     }).pipe(
       Layer.provide(Layer.succeed(AgentRunRepository)(unavailable)),
       Layer.provide(
@@ -284,6 +298,104 @@ describe("AgentRun worker", () => {
       const disposition = yield* AgentRunWorker.use((worker) => worker.handle(delivery));
       expect(disposition).toEqual({ type: "retry" });
       expect(repository.calls).toEqual(["claim", "load", "intent", "attempt"]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("stops ordinary output and completes cleanup when cancellation wins", () => {
+    const repository = makeRepository();
+    const cancellation = {
+      ...repository.service,
+      appendModelOutput: (_fence, _attempt, observation) =>
+        observation.fragmentIndex === 0
+          ? Effect.sync(() => repository.calls.push("fragment:0:Partial"))
+          : Effect.fail(new AgentRunCancellationObserved()),
+    } satisfies AgentRunRepositoryService;
+    const layer = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v1",
+      workerId: "worker-a",
+      leaseDurationMs: 30_000,
+      cancellationPollIntervalMs: 5,
+    }).pipe(
+      Layer.provide(Layer.succeed(AgentRunRepository)(cancellation)),
+      Layer.provide(
+        Layer.succeed(ModelCallExecutor)(
+          ModelCallExecutor.of({
+            execute: () =>
+              Stream.make(
+                { fragmentIndex: 0, text: "Partial" },
+                { fragmentIndex: 1, text: "must not commit" },
+              ),
+          }),
+        ),
+      ),
+      Layer.provide(
+        makeDeterministicAgentRuntimeLayer({
+          executionProfileRef: "oz.deterministic.v1",
+          modelBinding: "oz.deterministic.echo.v1",
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const disposition = yield* AgentRunWorker.use((worker) => worker.handle(delivery));
+
+      expect(disposition).toEqual({ type: "acknowledge", outcome: "canceled" });
+      expect(repository.calls).toEqual([
+        "claim",
+        "load",
+        "intent",
+        "attempt",
+        "fragment:0:Partial",
+        "run:canceled",
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("interrupts a silent executor when fenced cancellation is observed", () => {
+    const repository = makeRepository();
+    let loads = 0;
+    const cancellation = {
+      ...repository.service,
+      loadRecordedState: (activeFence) => {
+        loads += 1;
+        return loads === 1
+          ? repository.service.loadRecordedState(activeFence)
+          : Effect.gen(function* () {
+              repository.calls.push("poll:canceled");
+              return yield* new AgentRunCancellationObserved();
+            });
+      },
+    } satisfies AgentRunRepositoryService;
+    const layer = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v1",
+      workerId: "worker-a",
+      leaseDurationMs: 30_000,
+      cancellationPollIntervalMs: 1,
+    }).pipe(
+      Layer.provide(Layer.succeed(AgentRunRepository)(cancellation)),
+      Layer.provide(
+        Layer.succeed(ModelCallExecutor)(ModelCallExecutor.of({ execute: () => Stream.never })),
+      ),
+      Layer.provide(
+        makeDeterministicAgentRuntimeLayer({
+          executionProfileRef: "oz.deterministic.v1",
+          modelBinding: "oz.deterministic.echo.v1",
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const disposition = yield* AgentRunWorker.use((worker) => worker.handle(delivery));
+
+      expect(disposition).toEqual({ type: "acknowledge", outcome: "canceled" });
+      expect(repository.calls).toEqual([
+        "claim",
+        "load",
+        "intent",
+        "attempt",
+        "poll:canceled",
+        "run:canceled",
+      ]);
     }).pipe(Effect.provide(layer));
   });
 });

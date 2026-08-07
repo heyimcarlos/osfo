@@ -47,12 +47,16 @@ describe("Osfo ingress composition", () => {
       );
 
       expect(response.status).toBe(200);
-      expect(yield* response.json).toMatchObject({
+      const acceptedBody = yield* response.json;
+      expect(acceptedBody).toMatchObject({
         protocolVersion: 1,
         idempotencyKey,
         threadId,
         threadPosition: "1",
       });
+      const accepted = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ agentRunId: Schema.String.check(Schema.isUUID()) }),
+      )(acceptedBody);
 
       const reconciled = yield* readMessageAuthorityCounts(databaseUrl);
       expect(reconciled).toEqual({ receipts: "1", messages: "1", runs: "1", outbox: "1" });
@@ -71,6 +75,32 @@ describe("Osfo ingress composition", () => {
             content: [{ type: "text", text: "Hello through HTTP" }],
           },
         ],
+      });
+
+      const cancellationResponse = yield* client.execute(
+        HttpClientRequest.post(
+          `${ingress.origin}/v1/threads/${threadId}/agent-runs/${accepted.agentRunId}/cancellation`,
+        ).pipe(
+          HttpClientRequest.bearerToken(authenticationToken),
+          HttpClientRequest.bodyJsonUnsafe({ protocolVersion: 1 }),
+        ),
+      );
+      expect(cancellationResponse.status).toBe(200);
+      expect(yield* cancellationResponse.json).toEqual({
+        protocolVersion: 1,
+        agentRunId: accepted.agentRunId,
+        outcome: "canceled",
+      });
+
+      const canceledSnapshotResponse = yield* client.execute(
+        HttpClientRequest.get(`${ingress.origin}/v1/threads/${threadId}/snapshot`).pipe(
+          HttpClientRequest.bearerToken(authenticationToken),
+        ),
+      );
+      expect(canceledSnapshotResponse.status).toBe(200);
+      expect(yield* canceledSnapshotResponse.json).toMatchObject({
+        throughPosition: "3",
+        activeState: [],
       });
     }).pipe(Effect.provide(FetchHttpClient.layer)),
   );

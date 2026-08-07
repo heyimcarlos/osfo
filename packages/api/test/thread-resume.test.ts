@@ -1,6 +1,8 @@
 import {
   AcceptanceReceipt,
   AdmissionUnavailable,
+  AgentRunCancellation,
+  AgentRunCancellationUnavailable,
   MessageAdmission,
   ThreadNotFound,
   ThreadResume,
@@ -72,15 +74,20 @@ const makeHarness = (resume: ThreadResumeService) => {
   });
   const testLifecycle = makeTestThreadStreamLifecycle(1);
   const lifecycle = testLifecycle.lifecycle;
+  const cancellation = AgentRunCancellation.of({
+    cancel: () => Effect.fail(new AgentRunCancellationUnavailable()),
+  });
   const web = HttpRouter.toWebHandler(
     OsfoApiLive.pipe(
+      Layer.provide(Layer.succeed(AgentRunCancellation)(cancellation)),
       Layer.provide(Layer.succeed(MessageAdmission)(admission)),
       Layer.provide(Layer.succeed(ThreadResume)(resume)),
       Layer.provide(Layer.succeed(ThreadStreamLifecycle)(lifecycle)),
       Layer.provideMerge(HttpServer.layerServices),
     ),
   );
-  const context = Context.make(MessageAdmission, admission).pipe(
+  const context = Context.make(AgentRunCancellation, cancellation).pipe(
+    Context.add(MessageAdmission, admission),
     Context.add(ThreadResume, resume),
     Context.add(ThreadStreamLifecycle, lifecycle),
   );

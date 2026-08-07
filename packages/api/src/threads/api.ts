@@ -27,6 +27,12 @@ export const SubmitMessagePayload = Schema.Struct({
 
 export type SubmitMessagePayload = typeof SubmitMessagePayload.Type;
 
+export const CancelAgentRunPayload = Schema.Struct({
+  protocolVersion: Schema.Literal(1),
+}).annotate(strict);
+
+export type CancelAgentRunPayload = typeof CancelAgentRunPayload.Type;
+
 export class AcceptanceReceipt extends Schema.Class<AcceptanceReceipt>("AcceptanceReceipt")(
   {
     protocolVersion: Schema.Literal(1),
@@ -37,6 +43,17 @@ export class AcceptanceReceipt extends Schema.Class<AcceptanceReceipt>("Acceptan
     agentRunId: Uuid,
     threadPosition: Schema.String.check(Schema.isPattern(/^[1-9]\d*$/u)),
     acceptedAt: IsoTimestamp,
+  },
+  strict,
+) {}
+
+export class AgentRunCancellationReceipt extends Schema.Class<AgentRunCancellationReceipt>(
+  "AgentRunCancellationReceipt",
+)(
+  {
+    protocolVersion: Schema.Literal(1),
+    agentRunId: Uuid,
+    outcome: Schema.Literals(["cancellationRequested", "canceled", "alreadyTerminal"]),
   },
   strict,
 ) {}
@@ -83,12 +100,17 @@ export class AdmissionCommitUnknown extends Schema.TaggedErrorClass<AdmissionCom
   { httpApiStatus: 503 },
 ) {}
 
+export class AgentRunCancellationUnavailable extends Schema.TaggedErrorClass<AgentRunCancellationUnavailable>()(
+  "AgentRunCancellationUnavailable",
+  {},
+  { httpApiStatus: 503 },
+) {}
+
 export class AdmissionNotAccepted extends Schema.TaggedErrorClass<AdmissionNotAccepted>()(
   "AdmissionNotAccepted",
   {},
   { httpApiStatus: 404 },
 ) {}
-
 export class InvalidCursor extends Schema.TaggedErrorClass<InvalidCursor>()(
   "InvalidCursor",
   {},
@@ -201,6 +223,18 @@ export const ThreadsApi = HttpApiGroup.make("threads")
       success: AcceptanceReceipt,
       error: [ThreadNotFound, IdempotencyConflict, AdmissionNotAccepted, AdmissionCommitUnknown],
     }),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "cancelAgentRun",
+      "/v1/threads/:threadId/agent-runs/:agentRunId/cancellation",
+      {
+        params: { threadId: Uuid, agentRunId: Uuid },
+        payload: CancelAgentRunPayload,
+        success: AgentRunCancellationReceipt,
+        error: [AuthenticationRejected, ThreadNotFound, AgentRunCancellationUnavailable],
+      },
+    ),
   )
   .add(
     HttpApiEndpoint.get("getSnapshot", "/v1/threads/:threadId/snapshot", {

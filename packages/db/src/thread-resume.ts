@@ -96,6 +96,7 @@ interface ActiveRunRow {
   readonly occurredAt: string;
   readonly position: string;
   readonly state: "pending" | "running" | "waiting";
+  readonly cancellationRequested: boolean;
 }
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -354,6 +355,19 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
                         AND retained.identity_id = event.payload ->> 'assistantOutputId'
                     )
                   )
+                  OR (
+                    event.event_type IN (
+                      'AgentRunCancellationRequested',
+                      'AgentRunSucceeded',
+                      'AgentRunFailed',
+                      'AgentRunCanceled'
+                    )
+                    AND EXISTS (
+                      SELECT 1 FROM retained_identities retained
+                      WHERE retained.identity_type = 'userMessage'
+                        AND retained.identity_id = event.user_message_id::text
+                    )
+                  )
                 )
               ORDER BY event.position ASC`;
             const events = yield* Effect.forEach(rows, toEnvelope);
@@ -362,7 +376,8 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
                 event.event_id::text AS "eventId",
                 event.position::text AS position,
                 event.occurred_at::text AS "occurredAt",
-                run.state
+                run.state,
+                (run.cancellation_requested_at IS NOT NULL) AS "cancellationRequested"
               FROM agent_runs run
               JOIN thread_events event
                 ON event.agent_run_id = run.agent_run_id
@@ -425,6 +440,7 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
                   occurredAt: new Date(run.occurredAt).toISOString(),
                 },
                 phase: { type: run.state },
+                cancellation: { type: run.cancellationRequested ? "requested" : "none" },
               })),
             }).pipe(Effect.mapError(() => new SnapshotUnavailable()));
           }),

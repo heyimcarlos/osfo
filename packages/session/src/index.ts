@@ -9,7 +9,7 @@ const Identity = Schema.String.pipe(Schema.check(Schema.isPattern(uuidPattern)))
 const ThreadPosition = Schema.String.pipe(Schema.check(Schema.isPattern(/^[1-9]\d*$/u)));
 const UtcTimestamp = Schema.String.pipe(Schema.check(Schema.isPattern(utcTimestampPattern)));
 const ThreadCursor = Schema.String.pipe(Schema.check(Schema.isNonEmpty()));
-const ModelCallFailureCause = Schema.Literal("modelCallFailed");
+const AssistantOutputInterruptionCause = Schema.Literals(["modelCallFailed", "agentRunCanceled"]);
 
 export const TextBlockSchema = Schema.Struct({
   type: Schema.Literal("text"),
@@ -61,7 +61,28 @@ export const AssistantOutputInterruptedSchema = Schema.Struct({
   payload: Schema.Struct({
     assistantOutputId: Identity,
     agentRunId: Identity,
-    cause: ModelCallFailureCause,
+    cause: AssistantOutputInterruptionCause,
+  }),
+});
+
+export const AgentRunCancellationRequestedSchema = Schema.Struct({
+  ...eventFields,
+  eventType: Schema.Literal("AgentRunCancellationRequested"),
+  payload: Schema.Struct({ agentRunId: Identity }),
+});
+
+export const CleanupDispositionSchema = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("completed") }),
+  Schema.Struct({ type: Schema.Literal("deadlineExceeded") }),
+]);
+
+export const AgentRunCanceledSchema = Schema.Struct({
+  ...eventFields,
+  eventType: Schema.Literal("AgentRunCanceled"),
+  payload: Schema.Struct({
+    agentRunId: Identity,
+    cleanupDisposition: CleanupDispositionSchema,
+    externalWorkMayContinue: Schema.Boolean,
   }),
 });
 
@@ -74,7 +95,7 @@ export const AgentRunSucceededSchema = Schema.Struct({
 export const AgentRunFailedSchema = Schema.Struct({
   ...eventFields,
   eventType: Schema.Literal("AgentRunFailed"),
-  payload: Schema.Struct({ agentRunId: Identity, cause: ModelCallFailureCause }),
+  payload: Schema.Struct({ agentRunId: Identity, cause: Schema.Literal("modelCallFailed") }),
 });
 
 export const ThreadEventSchema = Schema.Union([
@@ -82,6 +103,8 @@ export const ThreadEventSchema = Schema.Union([
   AssistantOutputAppendedSchema,
   AssistantOutputCompletedSchema,
   AssistantOutputInterruptedSchema,
+  AgentRunCancellationRequestedSchema,
+  AgentRunCanceledSchema,
   AgentRunSucceededSchema,
   AgentRunFailedSchema,
 ]);
@@ -90,6 +113,8 @@ export type UserMessageAppended = typeof UserMessageAppendedSchema.Type;
 export type AssistantOutputAppended = typeof AssistantOutputAppendedSchema.Type;
 export type AssistantOutputCompleted = typeof AssistantOutputCompletedSchema.Type;
 export type AssistantOutputInterrupted = typeof AssistantOutputInterruptedSchema.Type;
+export type AgentRunCancellationRequested = typeof AgentRunCancellationRequestedSchema.Type;
+export type AgentRunCanceled = typeof AgentRunCanceledSchema.Type;
 export type AgentRunSucceeded = typeof AgentRunSucceededSchema.Type;
 export type AgentRunFailed = typeof AgentRunFailedSchema.Type;
 export type ThreadEvent = typeof ThreadEventSchema.Type;
@@ -121,7 +146,12 @@ export interface AssistantOutputAppendedInput extends AssistantOutputEventInput 
 }
 
 export interface AssistantOutputInterruptedInput extends AssistantOutputEventInput {
-  readonly cause: "modelCallFailed";
+  readonly cause: "modelCallFailed" | "agentRunCanceled";
+}
+
+export interface AgentRunCanceledInput extends AgentRunEventInput {
+  readonly cleanupDisposition: typeof CleanupDispositionSchema.Type;
+  readonly externalWorkMayContinue: boolean;
 }
 
 export interface AgentRunFailedInput extends AgentRunEventInput {
@@ -206,6 +236,32 @@ export const makeAgentRunSucceeded = (input: AgentRunEventInput) =>
     payload: { agentRunId: input.agentRunId },
   }).pipe(Effect.mapError((cause) => new InvalidThreadEvent({ cause })));
 
+export const makeAgentRunCancellationRequested = (input: AgentRunEventInput) =>
+  Schema.decodeUnknownEffect(AgentRunCancellationRequestedSchema)({
+    eventId: input.eventId,
+    eventType: "AgentRunCancellationRequested",
+    eventVersion: 1,
+    threadId: input.threadId,
+    threadPosition: input.threadPosition,
+    occurredAt: input.occurredAt,
+    payload: { agentRunId: input.agentRunId },
+  }).pipe(Effect.mapError((cause) => new InvalidThreadEvent({ cause })));
+
+export const makeAgentRunCanceled = (input: AgentRunCanceledInput) =>
+  Schema.decodeUnknownEffect(AgentRunCanceledSchema)({
+    eventId: input.eventId,
+    eventType: "AgentRunCanceled",
+    eventVersion: 1,
+    threadId: input.threadId,
+    threadPosition: input.threadPosition,
+    occurredAt: input.occurredAt,
+    payload: {
+      agentRunId: input.agentRunId,
+      cleanupDisposition: input.cleanupDisposition,
+      externalWorkMayContinue: input.externalWorkMayContinue,
+    },
+  }).pipe(Effect.mapError((cause) => new InvalidThreadEvent({ cause })));
+
 export const makeAgentRunFailed = (input: AgentRunFailedInput) =>
   Schema.decodeUnknownEffect(AgentRunFailedSchema)({
     eventId: input.eventId,
@@ -225,6 +281,8 @@ export const ThreadEventEnvelopeSchema = Schema.Union([
   withCursor(AssistantOutputAppendedSchema.fields),
   withCursor(AssistantOutputCompletedSchema.fields),
   withCursor(AssistantOutputInterruptedSchema.fields),
+  withCursor(AgentRunCancellationRequestedSchema.fields),
+  withCursor(AgentRunCanceledSchema.fields),
   withCursor(AgentRunSucceededSchema.fields),
   withCursor(AgentRunFailedSchema.fields),
 ]);
@@ -263,7 +321,7 @@ export const AssistantOutputTimelineItemSchema = Schema.Struct({
   status: Schema.Union([
     Schema.Struct({ type: Schema.Literal("streaming") }),
     Schema.Struct({ type: Schema.Literal("completed") }),
-    Schema.Struct({ type: Schema.Literal("interrupted"), cause: ModelCallFailureCause }),
+    Schema.Struct({ type: Schema.Literal("interrupted"), cause: AssistantOutputInterruptionCause }),
   ]),
 });
 
@@ -272,13 +330,17 @@ export const ActiveAgentRunSchema = Schema.Struct({
   agentRunId: Identity,
   introducedBy: SourcePointSchema,
   phase: Schema.Struct({ type: Schema.Literals(["pending", "running", "waiting"]) }),
+  cancellation: Schema.Union([
+    Schema.Struct({ type: Schema.Literal("none") }),
+    Schema.Struct({ type: Schema.Literal("requested") }),
+  ]),
 });
 
 const NonNegativePosition = Schema.String.pipe(Schema.check(Schema.isPattern(/^\d+$/u)));
 
 export const ThreadSnapshotSchema = Schema.Struct({
   projection: Schema.Literal("nativeThread"),
-  schemaVersion: Schema.Literal(2),
+  schemaVersion: Schema.Literal(3),
   threadId: Identity,
   throughPosition: NonNegativePosition,
   throughCursor: ThreadCursor,
@@ -322,7 +384,7 @@ export interface EmptyThreadSnapshotInput {
 export const makeEmptyThreadSnapshot = (input: EmptyThreadSnapshotInput) =>
   Schema.decodeUnknownEffect(ThreadSnapshotSchema)({
     projection: "nativeThread",
-    schemaVersion: 2,
+    schemaVersion: 3,
     threadId: input.threadId,
     throughPosition: "0",
     throughCursor: input.throughCursor,
@@ -386,11 +448,16 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
           agentRunId: event.payload.agentRunId,
           introducedBy: sourcePoint(event),
           phase: { type: "pending" as const },
+          cancellation: { type: "none" as const },
         },
       ];
       break;
     }
     case "AssistantOutputAppended": {
+      const activeRun = activeState.find((run) => run.agentRunId === event.payload.agentRunId);
+      if (activeRun?.cancellation.type === "requested") {
+        return yield* failAuthorityConflict();
+      }
       const existing = timeline.find(
         (item): item is AssistantOutputTimelineItem =>
           isAssistantOutputTimelineItem(item) &&
@@ -433,6 +500,16 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
     }
     case "AssistantOutputCompleted":
     case "AssistantOutputInterrupted": {
+      const activeRun = activeState.find((run) => run.agentRunId === event.payload.agentRunId);
+      const isCancellationInterruption =
+        event.eventType === "AssistantOutputInterrupted" &&
+        event.payload.cause === "agentRunCanceled";
+      if (
+        (isCancellationInterruption && activeRun?.cancellation.type !== "requested") ||
+        (!isCancellationInterruption && activeRun?.cancellation.type === "requested")
+      ) {
+        return yield* failAuthorityConflict();
+      }
       const existing = timeline.find(
         (item): item is AssistantOutputTimelineItem =>
           isAssistantOutputTimelineItem(item) &&
@@ -473,10 +550,37 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
       );
       break;
     }
+    case "AgentRunCancellationRequested": {
+      const activeRun = activeState.find((run) => run.agentRunId === event.payload.agentRunId);
+      if (activeRun === undefined || activeRun.cancellation.type === "requested") {
+        return yield* failAuthorityConflict();
+      }
+      activeState = activeState.map((run) =>
+        run === activeRun ? { ...run, cancellation: { type: "requested" as const } } : run,
+      );
+      break;
+    }
     case "AgentRunSucceeded":
     case "AgentRunFailed": {
       const activeRun = activeState.find((run) => run.agentRunId === event.payload.agentRunId);
-      if (activeRun === undefined) return yield* failAuthorityConflict();
+      if (activeRun === undefined || activeRun.cancellation.type === "requested") {
+        return yield* failAuthorityConflict();
+      }
+      const openOutput = timeline.find(
+        (item) =>
+          item.type === "assistantOutput" &&
+          item.agentRunId === event.payload.agentRunId &&
+          item.status.type === "streaming",
+      );
+      if (openOutput !== undefined) return yield* failAuthorityConflict();
+      activeState = activeState.filter((run) => run.agentRunId !== event.payload.agentRunId);
+      break;
+    }
+    case "AgentRunCanceled": {
+      const activeRun = activeState.find((run) => run.agentRunId === event.payload.agentRunId);
+      if (activeRun === undefined || activeRun.cancellation.type !== "requested") {
+        return yield* failAuthorityConflict();
+      }
       const openOutput = timeline.find(
         (item) =>
           item.type === "assistantOutput" &&

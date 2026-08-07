@@ -121,7 +121,24 @@ export class AgentRunRepositoryUnavailable extends Data.TaggedError(
 
 export class AgentRunFenceRejected extends Data.TaggedError("AgentRunFenceRejected") {}
 
-export type AgentRunRepositoryError = AgentRunRepositoryUnavailable | AgentRunFenceRejected;
+export class AgentRunCancellationObserved extends Data.TaggedError(
+  "AgentRunCancellationObserved",
+) {}
+
+export type AgentRunRepositoryError =
+  | AgentRunRepositoryUnavailable
+  | AgentRunFenceRejected
+  | AgentRunCancellationObserved;
+
+export const AgentRunCleanupResultSchema = Schema.Struct({
+  cleanupDisposition: Schema.Union([
+    Schema.Struct({ type: Schema.Literal("completed") }),
+    Schema.Struct({ type: Schema.Literal("deadlineExceeded") }),
+  ]),
+  externalWorkMayContinue: Schema.Boolean,
+});
+
+export type AgentRunCleanupResult = typeof AgentRunCleanupResultSchema.Type;
 
 type ModelCallDecision = Extract<
   RuntimeDecision,
@@ -170,6 +187,9 @@ export interface AgentRunRepositoryService {
     attempt: ModelCallAttempt,
     cause: "modelCallFailed",
   ) => Effect.Effect<void, AgentRunRepositoryError>;
+  readonly commitCancellation: (
+    fence: AgentRunFence,
+  ) => Effect.Effect<AgentRunCleanupResult, AgentRunRepositoryError>;
   readonly commitTerminal: (
     fence: AgentRunFence,
     decision: TerminalDecision,
@@ -223,6 +243,7 @@ export const AgentRunWorkerConfigSchema = Schema.Struct({
   executionProfileRef: NonEmptyText,
   workerId: NonEmptyText,
   leaseDurationMs: PositiveInteger,
+  cancellationPollIntervalMs: PositiveInteger,
 });
 
 export type AgentRunWorkerConfig = typeof AgentRunWorkerConfigSchema.Type;
@@ -250,7 +271,7 @@ export const makeAgentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
 
           const modelCall = yield* repository.ensureModelCall(fence, decision);
           const attempt = yield* repository.beginModelCallAttempt(fence, modelCall);
-          const execution = yield* Stream.runForEach(executor.execute(attempt), (observation) =>
+          const execution = Stream.runForEach(executor.execute(attempt), (observation) =>
             repository.appendModelOutput(fence, attempt, observation),
           ).pipe(
             Effect.as("completed" as const),
@@ -258,7 +279,13 @@ export const makeAgentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
               Effect.succeed("interrupted" as const),
             ),
           );
-          if (execution === "interrupted") {
+          const cancellation = Effect.forever(
+            repository
+              .loadRecordedState(fence)
+              .pipe(Effect.asVoid, Effect.andThen(Effect.sleep(config.cancellationPollIntervalMs))),
+          );
+          const executionResult = yield* Effect.raceFirst(execution, cancellation);
+          if (executionResult === "interrupted") {
             yield* repository.interruptModelCall(fence, attempt, "modelCallFailed");
             continue;
           }
@@ -283,11 +310,21 @@ export const makeAgentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
                 outcome: "alreadyTerminal" as const,
               };
             case "claimed":
-              return yield* driveClaim(claim.fence);
+              return yield* driveClaim(claim.fence).pipe(
+                Effect.catchTag("AgentRunCancellationObserved", () =>
+                  repository.commitCancellation(claim.fence).pipe(
+                    Effect.as({
+                      type: "acknowledge" as const,
+                      outcome: "canceled" as const,
+                    }),
+                  ),
+                ),
+              );
           }
         });
         return yield* handled.pipe(
           Effect.catchTags({
+            AgentRunCancellationObserved: () => Effect.succeed({ type: "retry" as const }),
             AgentRunFenceRejected: () => Effect.succeed({ type: "retry" as const }),
             AgentRunRepositoryUnavailable: () => Effect.succeed({ type: "retry" as const }),
             UnsupportedExecutionProfile: () => Effect.succeed({ type: "retry" as const }),

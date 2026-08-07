@@ -112,6 +112,25 @@ export const submitThreadMessage = Effect.fn("OsfoApiClient.submitThreadMessage"
   );
 });
 
+export interface CancelThreadAgentRun extends ApiClientOptions {
+  readonly threadId: string;
+  readonly agentRunId: string;
+}
+
+export const cancelThreadAgentRun = Effect.fn("OsfoApiClient.cancelThreadAgentRun")(function* (
+  command: CancelThreadAgentRun,
+) {
+  const client = yield* makeApiClient(command);
+  const receipt = yield* client.threads
+    .cancelAgentRun({
+      params: { threadId: command.threadId, agentRunId: command.agentRunId },
+      payload: { protocolVersion: 1 },
+    })
+    .pipe(Effect.catchIf(isAmbiguousClientFailure, () => Effect.fail(new CommitUnknown())));
+  if (receipt.agentRunId !== command.agentRunId) return yield* new CommitUnknown();
+  return receipt;
+});
+
 export interface GetThreadSnapshot extends ApiClientOptions {
   readonly threadId: string;
 }
