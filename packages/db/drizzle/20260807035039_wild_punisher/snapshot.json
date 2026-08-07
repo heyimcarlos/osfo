@@ -2849,7 +2849,7 @@
       "table": "outbox_obligations"
     },
     {
-      "value": "\"publication_evidence\" IS NULL\n        OR \"publication_evidence\" = CASE \"publication_evidence\" ->> 'type'\n          WHEN 'pubsub' THEN jsonb_build_object(\n            'type', 'pubsub',\n            'providerMessageId', \"publication_evidence\" ->> 'providerMessageId'\n          )\n          WHEN 'legacyUnavailable' THEN jsonb_build_object('type', 'legacyUnavailable')\n          ELSE NULL\n        END",
+      "value": "((\n        \"publication_evidence\" IS NULL\n        OR \"publication_evidence\" = CASE \"publication_evidence\" ->> 'type'\n            WHEN 'pubsub' THEN jsonb_build_object(\n              'type', 'pubsub',\n              'providerMessageId', \"publication_evidence\" ->> 'providerMessageId'\n            )\n            WHEN 'legacyUnavailable' THEN jsonb_build_object('type', 'legacyUnavailable')\n            ELSE NULL\n          END\n      )) IS TRUE",
       "name": "outbox_obligations_publication_evidence_check",
       "entityType": "checks",
       "schema": "public",

@@ -67,6 +67,17 @@ ALTER TABLE "outbox_obligations" DROP CONSTRAINT "outbox_obligations_publication
         ("publication_evidence" IS NULL AND "published_at" IS NULL)
         OR ("publication_evidence" IS NOT NULL AND "published_at" IS NOT NULL)
       )) IS TRUE);--> statement-breakpoint
+ALTER TABLE "outbox_obligations" DROP CONSTRAINT "outbox_obligations_publication_evidence_check", ADD CONSTRAINT "outbox_obligations_publication_evidence_check" CHECK (((
+        "publication_evidence" IS NULL
+        OR "publication_evidence" = CASE "publication_evidence" ->> 'type'
+            WHEN 'pubsub' THEN jsonb_build_object(
+              'type', 'pubsub',
+              'providerMessageId', "publication_evidence" ->> 'providerMessageId'
+            )
+            WHEN 'legacyUnavailable' THEN jsonb_build_object('type', 'legacyUnavailable')
+            ELSE NULL
+          END
+      )) IS TRUE);--> statement-breakpoint
 ALTER TABLE "relay_publication_attempts" DROP CONSTRAINT "relay_publication_attempts_outcome_check", ADD CONSTRAINT "relay_publication_attempts_outcome_check" CHECK (((
         ("state" = 'started'
           AND "provider_message_id" IS NULL

@@ -169,6 +169,32 @@ beforeEach(async () => {
 afterAll(() => runtime.dispose());
 
 describe("deterministic PostgreSQL AgentRun journey", () => {
+  it("rejects malformed non-null publication evidence", async () => {
+    const accepted = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "invalid publication evidence" },
+        }),
+      ),
+    );
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE outbox_obligations
+            SET publication_evidence = ${JSON.stringify({ type: "unknown" })}::jsonb,
+                published_at = now()
+            WHERE agent_run_id = ${accepted.agentRunId}::uuid`;
+        }),
+      ),
+    ).rejects.toBeDefined();
+  });
+
   it("publishes same-Thread work in authoritative ThreadPosition order", async () => {
     failFirstPublication = false;
     const accept = (content: string) =>

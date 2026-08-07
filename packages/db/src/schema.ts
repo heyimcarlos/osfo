@@ -399,15 +399,17 @@ export const outboxObligations = pgTable(
     ),
     check(
       "outbox_obligations_publication_evidence_check",
-      sql`${table.publicationEvidence} IS NULL
+      sql`((
+        ${table.publicationEvidence} IS NULL
         OR ${table.publicationEvidence} = CASE ${table.publicationEvidence} ->> 'type'
-          WHEN 'pubsub' THEN jsonb_build_object(
-            'type', 'pubsub',
-            'providerMessageId', ${table.publicationEvidence} ->> 'providerMessageId'
-          )
-          WHEN 'legacyUnavailable' THEN jsonb_build_object('type', 'legacyUnavailable')
-          ELSE NULL
-        END`,
+            WHEN 'pubsub' THEN jsonb_build_object(
+              'type', 'pubsub',
+              'providerMessageId', ${table.publicationEvidence} ->> 'providerMessageId'
+            )
+            WHEN 'legacyUnavailable' THEN jsonb_build_object('type', 'legacyUnavailable')
+            ELSE NULL
+          END
+      )) IS TRUE`,
     ),
     index("outbox_obligations_created_idx").on(table.createdAt, table.outboxId),
     index("outbox_obligations_unpublished_idx")
