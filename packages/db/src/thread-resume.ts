@@ -442,7 +442,6 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
               throughCursor,
               lastEventId: head.eventId,
               stateRevision: head.stateRevision,
-              historyBeforePosition,
               activeState: activeRuns.map((run) => ({
                 type: "activeAgentRun",
                 agentRunId: run.agentRunId,

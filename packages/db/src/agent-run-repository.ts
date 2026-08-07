@@ -735,6 +735,24 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
           sql.withTransaction(
             Effect.gen(function* () {
               const authority = yield* requireOpenFence(fence);
+              const preparedCalls = yield* sql<{
+                readonly modelBinding: string;
+                readonly prompt: string;
+                readonly state: "pending" | "succeeded" | "failed" | "canceled";
+              }>`SELECT model_binding AS "modelBinding", prompt, state
+                  FROM model_calls
+                  WHERE model_call_id = ${modelCall.modelCallId}::uuid
+                    AND agent_run_id = ${fence.agentRunId}::uuid
+                  FOR UPDATE`;
+              const preparedCall = preparedCalls[0];
+              if (
+                preparedCall === undefined ||
+                preparedCall.modelBinding !== modelCall.modelBinding ||
+                preparedCall.prompt !== modelCall.prompt ||
+                preparedCall.state !== "pending"
+              ) {
+                return yield* new AgentRunFenceRejected();
+              }
               const abandoned = yield* sql<{
                 readonly assistantOutputId: string;
                 readonly attemptNumber: number;
@@ -749,6 +767,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     model_call_attempt_id::text AS "modelCallAttemptId"
                   FROM model_call_attempts
                   WHERE model_call_id = ${modelCall.modelCallId}::uuid
+                    AND agent_run_id = ${fence.agentRunId}::uuid
                     AND state = 'started'
                     AND claim_epoch < ${fence.claimEpoch}::bigint
                   ORDER BY attempt_number
@@ -774,6 +793,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               yield* sql`UPDATE model_call_attempts
                   SET state = 'failed', finished_at = transaction_timestamp()
                   WHERE model_call_id = ${modelCall.modelCallId}::uuid
+                    AND agent_run_id = ${fence.agentRunId}::uuid
                     AND state = 'started'
                     AND claim_epoch < ${fence.claimEpoch}::bigint`;
               for (const previous of abandoned) {
@@ -782,6 +802,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                         interruption_cause = 'modelCallFailed',
                         terminated_at = transaction_timestamp()
                     WHERE assistant_output_id = ${previous.assistantOutputId}::uuid
+                      AND agent_run_id = ${fence.agentRunId}::uuid
                       AND state = 'open'`;
                 yield* appendThreadEvent(authority, (base) =>
                   makeAssistantOutputInterrupted({
@@ -806,7 +827,8 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               const numbers = yield* sql<{ readonly attemptNumber: number }>`SELECT
                     (coalesce(max(attempt_number), 0) + 1)::integer AS "attemptNumber"
                   FROM model_call_attempts
-                  WHERE model_call_id = ${modelCall.modelCallId}::uuid`;
+                  WHERE model_call_id = ${modelCall.modelCallId}::uuid
+                    AND agent_run_id = ${fence.agentRunId}::uuid`;
               const attemptNumber = numbers[0]?.attemptNumber;
               if (attemptNumber === undefined) {
                 return yield* new AgentRunRepositoryUnavailable({ cause: "Attempt unavailable" });

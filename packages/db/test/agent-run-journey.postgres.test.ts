@@ -2330,6 +2330,103 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     expect(error).toBeInstanceOf(AgentRunFenceRejected);
   });
 
+  it("rejects another AgentRun's abandoned ModelCall before requesting cleanup", async () => {
+    failFirstPublication = false;
+    const source = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "source abandoned call" },
+        }),
+      ),
+    );
+    const targetThreadId = randomUUID();
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO threads (thread_id, principal_id)
+          VALUES (${targetThreadId}::uuid, ${principalId}::uuid)`;
+      }),
+    );
+    const target = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId: targetThreadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "target fenced run" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const sourceDelivery = published.find((delivery) => delivery.agentRunId === source.agentRunId)!;
+    const targetDelivery = published.find((delivery) => delivery.agentRunId === target.agentRunId)!;
+    const sourceClaim = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(sourceDelivery, {
+          workerId: "source-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    const sourceModelCall = await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const modelCall = yield* repository.ensureModelCall(sourceClaim.fence, {
+            type: "startModelCall",
+            modelBinding: "oz.deterministic.echo.v1",
+            prompt: "source abandoned call",
+          });
+          yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(sourceClaim.fence, modelCall),
+          );
+          return modelCall;
+        }),
+      ),
+    );
+    const firstTargetClaim = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(targetDelivery, {
+          workerId: "first-target-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE agent_runs
+          SET lease_expires_at = clock_timestamp() - interval '1 millisecond'
+          WHERE agent_run_id = ${firstTargetClaim.fence.agentRunId}::uuid`;
+      }),
+    );
+    const targetClaim = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(targetDelivery, {
+          workerId: "replacement-target-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+
+    const error = await run(
+      Effect.flip(
+        AgentRunRepository.use((repository) =>
+          repository.beginModelCallAttempt(targetClaim.fence, sourceModelCall),
+        ),
+      ),
+    );
+
+    expect(error).toBeInstanceOf(AgentRunFenceRejected);
+  });
+
   it.each(["complete", "interrupt"] as const)(
     "rejects %s unless every attempt transition affects exactly one row",
     async (operation) => {

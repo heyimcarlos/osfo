@@ -335,6 +335,7 @@ describe("PostgreSQL Thread resume", () => {
       }),
     ]);
     expect(snapshot.activeState).toEqual([]);
+    expect(snapshot.historyBeforePosition).toBe("1");
     expect(snapshot.throughPosition).toBe("5");
   });
 
