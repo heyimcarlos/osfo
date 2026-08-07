@@ -75,15 +75,21 @@ printf '%s\n' \
     '      printf "PERMISSION_DENIED: storage.objects.list\n" >&2' \
     '      exit 1' \
     '    fi' \
-    '    if [[ "${MOCK_STORAGE_MODE:-empty}" == populated ]]; then' \
+    '    if [[ "${MOCK_STORAGE_MODE:-empty}" == empty ]]; then' \
+    '      printf "%s\n" "[{\"url\":\"gs://osfo-development-artifacts-318708913\",\"type\":\"unknown\"}]"' \
+    '    elif [[ "${MOCK_STORAGE_MODE:-empty}" == populated ]]; then' \
     '      list_count=0' \
     '      [[ ! -f "$MOCK_STORAGE_CALLS" ]] || list_count=$(<"$MOCK_STORAGE_CALLS")' \
     '      printf "%s\n" "$((list_count + 1))" >"$MOCK_STORAGE_CALLS"' \
     '      if ((list_count == 0)); then' \
-    '        printf "%s\n" "[{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#100\",\"type\":\"object\",\"metadata\":{}},{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#101\",\"type\":\"object\",\"metadata\":{}}]"' \
+    '        printf "%s\n" "[{\"url\":\"gs://osfo-development-artifacts-318708913\",\"type\":\"unknown\"},{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/\",\"type\":\"prefix\"},{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#100\",\"type\":\"cloud_object\"},{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#101\",\"type\":\"cloud_object\"}]"' \
+    '      else' \
+    '        printf "%s\n" "[{\"url\":\"gs://osfo-development-artifacts-318708913\",\"type\":\"unknown\"}]"' \
     '      fi' \
     '    elif [[ "${MOCK_STORAGE_MODE:-empty}" == header-like-object ]]; then' \
-    '      printf "%s\n" "[{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:\",\"type\":\"object\",\"metadata\":{}}]"' \
+    '      printf "%s\n" "[{\"url\":\"gs://osfo-development-artifacts-318708913\",\"type\":\"unknown\"},{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/\",\"type\":\"prefix\"},{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:\",\"type\":\"cloud_object\"}]"' \
+    '    elif [[ "${MOCK_STORAGE_MODE:-empty}" == unexpected-type ]]; then' \
+    '      printf "%s\n" "[{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/\",\"type\":\"directory\"}]"' \
     '    fi' \
     '    ;;' \
   '  "storage ls"*)' \
@@ -142,6 +148,22 @@ fi
 grep -Fq 'FAIL: refusing unexpected artifact object' "$header_like_output"
 if grep -Fq 'PASS:' "$header_like_output"; then
   printf 'header-like object rejection must not report PASS\n' >&2
+  exit 1
+fi
+
+unexpected_type_output=$scratch/unexpected-type-output
+if PATH="$mock_bin:$PATH" \
+  FOUNDATION_SERVICE_ACCOUNT=$foundation_account \
+  MOCK_STORAGE_MODE=unexpected-type \
+  TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
+  infra/tests/development-platform-prepare-cleanup.sh >"$unexpected_type_output" 2>&1; then
+  printf 'unexpected structured listing type must fail closed\n' >&2
+  exit 1
+fi
+grep -Fq 'FAIL: artifact object listing was not valid structured object metadata' \
+  "$unexpected_type_output"
+if grep -Fq 'PASS:' "$unexpected_type_output"; then
+  printf 'unexpected structured listing type must not report PASS\n' >&2
   exit 1
 fi
 

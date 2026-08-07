@@ -29,14 +29,21 @@ normalize_listing() {
   if ! grep -q '[^[:space:]]' "$source_file"; then
     return 0
   fi
-  if ! jq -e '
+  if ! jq -e \
+    --arg bucket_root "gs://$artifact_bucket" \
+    --arg bucket_prefix "gs://$artifact_bucket/" '
     type == "array"
-    and all(.[]; .type == "object" and (.url | type == "string"))
+    and all(.[];
+      (.type == "cloud_object" and (.url | type == "string"))
+      or (.type == "unknown" and (.url == $bucket_root or .url == ($bucket_root + "/")))
+      or (.type == "prefix" and (.url | type == "string") and (.url | startswith($bucket_prefix)))
+    )
   ' "$source_file" >/dev/null; then
     printf 'FAIL: artifact object listing was not valid structured object metadata\n' >&2
     return 1
   fi
-  jq -r '.[].url' "$source_file" >"$destination_file"
+  jq -r '.[] | select(.type == "cloud_object") | .url' \
+    "$source_file" >"$destination_file"
 }
 
 if ! gcloud storage buckets describe "gs://$artifact_bucket" --project="$project_id" \
