@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-07T17:55:00Z",
+  "environment": "development",
+  "region": "us-east4",
+  "authority": "read-only-cloud-metadata-snapshot",
+  "classification": "current-development-context",
+  "qualificationScope": "development-demo",
+  "productionCandidate": "unqualified",
+  "status": "PASS",
+  "services": [
+    {
+      "alias": "Native Thread Transport",
+      "platform": "Cloud Run",
+      "readiness": "ready",
+      "minimumInstances": 1,
+      "maximumInstances": 1,
+      "trafficPercent": 100,
+      "revisionAlias": "revision-00003"
+    },
+    {
+      "alias": "N1 relay",
+      "platform": "Cloud Run worker pool",
+      "readiness": "ready",
+      "manualInstances": 1,
+      "revisionAlias": "revision-00004"
+    },
+    {
+      "alias": "AgentRun StreamingPull fleet",
+      "platform": "Cloud Run worker pool",
+      "readiness": "ready",
+      "manualInstances": 6,
+      "revisionAlias": "revision-00004"
+    }
+  ],
+  "database": {
+    "engine": "PostgreSQL 17.10",
+    "location": "us-east4-c",
+    "state": "RUNNABLE",
+    "availability": "zonal",
+    "edition": "Enterprise",
+    "machineClass": "db-custom-2-7680",
+    "storageGiB": 20,
+    "automaticStorageIncrease": true,
+    "privateConnectivityOnly": true,
+    "backupsEnabled": true,
+    "pointInTimeRecoveryEnabled": true
+  },
+  "subscription": {
+    "state": "ACTIVE",
+    "orderedDelivery": true,
+    "ackDeadlineSeconds": 10,
+    "retentionDays": 7,
+    "minimumBackoffSeconds": 10,
+    "maximumBackoffSeconds": 600
+  },
+  "monitoring": {
+    "dashboardTitle": "Osfo development runtime, unqualified candidate",
+    "requestedMetricFiles": 8,
+    "metricFilesWithPoints": 2,
+    "resourceMeasurements": "MISSING",
+    "limitations": "Only Pub/Sub oldest-unacked and Cloud Run request-count snapshots contained points. Empty monitoring windows are MISSING, not zero."
+  },
+  "integrity": {
+    "method": "Whitelisted read-only metadata fields captured from the live development project and cross-checked against the final checksum-sealed SSE topology snapshot.",
+    "sealedSource": "development-sse-20260807t174217z"
+  },
+  "limitations": "Revision aliases are shortened and resource identities, service accounts, secret references, private network details, certificate metadata, database connection material, and raw provider responses are excluded. This snapshot cannot qualify production."
+}

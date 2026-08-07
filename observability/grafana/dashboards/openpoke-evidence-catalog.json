@@ -84,8 +84,8 @@
     },
     {
       "id": 2,
-      "title": "Full outage recovery",
-      "description": "Reserve sizing is present, the declared outage and drain are not.",
+      "title": "Discovered",
+      "description": "All discovered evidence entries.",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -94,50 +94,22 @@
       "gridPos": {
         "x": 0,
         "y": 3,
-        "w": 6,
+        "w": 4,
         "h": 4
       },
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "fixedColor": "blue",
+            "mode": "fixed"
           },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 1,
-                  "text": "FAIL"
-                },
-                "1": {
-                  "color": "green",
-                  "index": 0,
-                  "text": "PASS"
-                },
-                "-1": {
-                  "color": "gray",
-                  "index": 2,
-                  "text": "MISSING"
-                }
-              }
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "gray",
+                "color": "blue",
                 "value": null
-              },
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 1
               }
             ]
           },
@@ -146,7 +118,7 @@
         "overrides": []
       },
       "options": {
-        "colorMode": "background",
+        "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "center",
         "orientation": "horizontal",
@@ -165,7 +137,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "max(openpoke_catalog_status{environment=\"production\",gate=\"full_outage_recovery\"}) or on() vector(-1)",
+          "expr": "sum(openpoke_catalog_source_info)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -175,60 +147,32 @@
     },
     {
       "id": 3,
-      "title": "Before-claim loss",
-      "description": "Focused non-production process cut.",
+      "title": "Represented",
+      "description": "Imported, linked, or explicitly represented.",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
         "uid": "openpoke-prometheus"
       },
       "gridPos": {
-        "x": 6,
+        "x": 4,
         "y": 3,
-        "w": 6,
+        "w": 4,
         "h": 4
       },
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "fixedColor": "blue",
+            "mode": "fixed"
           },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 1,
-                  "text": "FAIL"
-                },
-                "1": {
-                  "color": "green",
-                  "index": 0,
-                  "text": "PASS"
-                },
-                "-1": {
-                  "color": "gray",
-                  "index": 2,
-                  "text": "MISSING"
-                }
-              }
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "gray",
+                "color": "blue",
                 "value": null
-              },
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 1
               }
             ]
           },
@@ -237,7 +181,7 @@
         "overrides": []
       },
       "options": {
-        "colorMode": "background",
+        "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "center",
         "orientation": "horizontal",
@@ -256,7 +200,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "max(openpoke_catalog_status{gate=\"before_claim_loss\"}) or on() vector(-1)",
+          "expr": "sum(openpoke_catalog_source_info{disposition=~\"imported|linked|represented\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -266,60 +210,32 @@
     },
     {
       "id": 4,
-      "title": "After-claim loss",
-      "description": "Focused non-production fencing proof.",
+      "title": "Imported",
+      "description": "Structured entries imported into the normalized catalog.",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
         "uid": "openpoke-prometheus"
       },
       "gridPos": {
-        "x": 12,
+        "x": 8,
         "y": 3,
-        "w": 6,
+        "w": 4,
         "h": 4
       },
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "fixedColor": "blue",
+            "mode": "fixed"
           },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 1,
-                  "text": "FAIL"
-                },
-                "1": {
-                  "color": "green",
-                  "index": 0,
-                  "text": "PASS"
-                },
-                "-1": {
-                  "color": "gray",
-                  "index": 2,
-                  "text": "MISSING"
-                }
-              }
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "gray",
+                "color": "blue",
                 "value": null
-              },
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 1
               }
             ]
           },
@@ -328,7 +244,7 @@
         "overrides": []
       },
       "options": {
-        "colorMode": "background",
+        "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "center",
         "orientation": "horizontal",
@@ -347,7 +263,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "max(openpoke_catalog_status{gate=\"after_claim_loss\"}) or on() vector(-1)",
+          "expr": "sum(openpoke_catalog_source_info{disposition=\"imported\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -357,17 +273,80 @@
     },
     {
       "id": 5,
-      "title": "Historical process loss",
-      "description": "PASS is historical context, not current production qualification.",
+      "title": "Excluded",
+      "description": "Every exclusion requires an explicit reason.",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
         "uid": "openpoke-prometheus"
       },
       "gridPos": {
-        "x": 18,
+        "x": 12,
         "y": 3,
-        "w": 6,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(openpoke_catalog_source_info{disposition=\"excluded\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Catalog integrity",
+      "description": "Duplicate identifiers and checksum mismatches fail closed.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 3,
+        "w": 4,
         "h": 4
       },
       "fieldConfig": {
@@ -438,7 +417,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "max(openpoke_catalog_status{classification=\"historical\",gate=\"process_loss_under_load\"}) or on() vector(-1)",
+          "expr": "max(openpoke_catalog_status{gate=\"catalog_integrity\"}) or on() vector(-1)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -447,14 +426,105 @@
       ]
     },
     {
-      "id": 6,
-      "title": "Recovery fleet screen: 4, 6, and 8 workers",
+      "id": 7,
+      "title": "Production proof",
+      "description": "Catalog completeness does not imply product qualification.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openpoke-prometheus"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 3,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "FAIL"
+                },
+                "1": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "PASS"
+                },
+                "-1": {
+                  "color": "gray",
+                  "index": 2,
+                  "text": "MISSING"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "gray",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openpoke-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(openpoke_catalog_status{environment=\"production\",gate=\"production_qualification\"}) or on() vector(-1)",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Coverage by source",
       "type": "table",
       "datasource": {
         "type": "prometheus",
         "uid": "openpoke-prometheus"
       },
-      "description": "The four-worker claim tail identifies why six workers remain the selected candidate. This is not a full outage test.",
+      "description": "Repository paths are sanitized and relative. Public URLs are links, never scraped at runtime.",
       "gridPos": {
         "x": 0,
         "y": 7,
@@ -580,7 +650,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_catalog_fact{record=~\"run-recovery-rate-609-workers-[468]\",fact=~\"fleet.worker_instances|workload.offered|outcome.completed_agent_runs|latency.delivery_to_claim_p99_ms\"}",
+          "expr": "openpoke_catalog_source_info",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -598,17 +668,17 @@
               "__name__": true,
               "acceptance_ratio": true,
               "accepted": true,
-              "alias": false,
+              "alias": true,
               "authority": true,
               "budget_release": true,
-              "category": true,
+              "category": false,
               "claim_p99_ms": true,
               "classification": true,
               "commands": true,
               "completed": true,
               "convergence": true,
               "checksum": true,
-              "disposition": true,
+              "disposition": false,
               "devices": true,
               "drain": true,
               "duplicates": true,
@@ -618,12 +688,12 @@
               "explanation": true,
               "execution_profile": true,
               "fact": true,
-              "fact_alias": false,
+              "fact_alias": true,
               "gate": true,
               "gate_alias": true,
               "gaps": true,
               "image_digest": true,
-              "integrity": true,
+              "integrity": false,
               "integrity_provenance": true,
               "instance": true,
               "issue": true,
@@ -647,18 +717,18 @@
               "resumes": true,
               "run": true,
               "run_id": true,
-              "scope": true,
-              "seal": true,
-              "source": true,
+              "scope": false,
+              "seal": false,
+              "source": false,
               "source_alias": true,
               "source_hash": true,
               "status": true,
-              "structure": true,
+              "structure": false,
               "topology": true,
               "topology_alias": true,
               "terminal": true,
               "terminal_unique": true,
-              "unit": false,
+              "unit": true,
               "unknown_outcomes": true,
               "unfinished_attempts": true,
               "utc": true,
@@ -666,22 +736,30 @@
               "stranded_work": true
             },
             "indexByName": {
-              "alias": 0,
-              "fact_alias": 1,
-              "unit": 2
+              "source": 0,
+              "category": 1,
+              "scope": 2,
+              "disposition": 3,
+              "seal": 4,
+              "structure": 5,
+              "integrity": 6
             },
             "renameByName": {
-              "alias": "Fleet",
-              "fact_alias": "Metric",
-              "unit": "Unit",
-              "Value": "Measured value"
+              "category": "Category",
+              "disposition": "Disposition",
+              "integrity": "Integrity",
+              "scope": "Scope",
+              "seal": "Seal",
+              "source": "Source",
+              "structure": "Structure",
+              "Value": "Count"
             }
           }
         }
       ]
     },
     {
-      "id": 7,
+      "id": 9,
       "title": "What this means",
       "type": "text",
       "gridPos": {
@@ -691,25 +769,25 @@
         "h": 4
       },
       "options": {
-        "content": "Focused cuts prove reclaim and fencing at their measured scope. Production still needs sustained traffic during a declared outage, visible progress within 5 minutes, full drain within 20 minutes, and exact reconciliation.",
+        "content": "Coverage is complete only when every relevant source has a disposition. Exclusions remain first-class catalog rows. Unsealed GitHub context can explain a requirement but can never become sealed authority.",
         "mode": "markdown"
       },
       "transparent": false
     },
     {
-      "id": 8,
-      "title": "Process-loss evidence",
+      "id": 10,
+      "title": "Evidence catalog",
       "type": "table",
       "datasource": {
         "type": "prometheus",
         "uid": "openpoke-prometheus"
       },
-      "description": "Focused cuts expose duplicate commits, terminal uniqueness, unfinished work, stranded work, and capacity release. Historical gaps remain MISSING.",
+      "description": "Use the filters above to move beyond the development default. Human aliases replace full identifiers in this table.",
       "gridPos": {
         "x": 0,
         "y": 22,
         "w": 24,
-        "h": 9
+        "h": 10
       },
       "fieldConfig": {
         "defaults": {},
@@ -830,7 +908,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_catalog_status{gate=~\"before_claim_loss|after_claim_loss|process_loss_under_load\"}",
+          "expr": "openpoke_catalog_status{environment=~\"$environment\",classification=~\"$classification\",qualification_scope=~\"$qualification_scope\",topology=~\"$topology\",region=~\"$region\",issue=~\"$issue\",run=~\"$run\",status=~\"$status\"}",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -849,9 +927,9 @@
               "acceptance_ratio": true,
               "accepted": true,
               "alias": false,
-              "authority": true,
-              "budget_release": false,
-              "category": true,
+              "authority": false,
+              "budget_release": true,
+              "category": false,
               "claim_p99_ms": true,
               "classification": false,
               "commands": true,
@@ -861,8 +939,8 @@
               "disposition": true,
               "devices": true,
               "drain": true,
-              "duplicates": false,
-              "environment": true,
+              "duplicates": true,
+              "environment": false,
               "evidence_id": true,
               "exclusion_reason": true,
               "explanation": true,
@@ -870,7 +948,7 @@
               "fact": true,
               "fact_alias": true,
               "gate": true,
-              "gate_alias": true,
+              "gate_alias": false,
               "gaps": true,
               "image_digest": true,
               "integrity": true,
@@ -878,15 +956,15 @@
               "instance": true,
               "issue": true,
               "issue_or_requirement": true,
-              "limitation": true,
+              "limitation": false,
               "model_binding": true,
-              "nonterminal_runs": false,
+              "nonterminal_runs": true,
               "offered": true,
               "ordering": true,
               "job": true,
               "link_kind": true,
-              "public_url": true,
-              "qualification_scope": true,
+              "public_url": false,
+              "qualification_scope": false,
               "record": true,
               "receipt_p95_ms": true,
               "receipt_p99_ms": true,
@@ -907,54 +985,58 @@
               "topology": true,
               "topology_alias": true,
               "terminal": true,
-              "terminal_unique": false,
+              "terminal_unique": true,
               "unit": true,
               "unknown_outcomes": true,
-              "unfinished_attempts": false,
-              "utc": true,
+              "unfinished_attempts": true,
+              "utc": false,
               "workers": true,
-              "stranded_work": false
+              "stranded_work": true
             },
             "indexByName": {
               "alias": 0,
-              "classification": 1,
-              "duplicates": 2,
-              "terminal_unique": 3,
-              "unfinished_attempts": 4,
-              "nonterminal_runs": 5,
-              "stranded_work": 6,
-              "budget_release": 7,
-              "status": 8
+              "category": 1,
+              "utc": 2,
+              "environment": 3,
+              "classification": 4,
+              "qualification_scope": 5,
+              "gate_alias": 6,
+              "status": 7,
+              "authority": 8,
+              "limitation": 9,
+              "public_url": 10
             },
             "renameByName": {
               "alias": "Evidence",
-              "budget_release": "Budget released",
+              "authority": "Authority",
+              "category": "Category",
               "classification": "Class",
-              "duplicates": "Duplicate commits",
-              "nonterminal_runs": "Nonterminal",
-              "stranded_work": "Stranded",
+              "environment": "Environment",
+              "gate_alias": "Gate",
+              "limitation": "Limitation",
+              "public_url": "Link",
+              "qualification_scope": "Scope",
               "status": "Status",
-              "terminal_unique": "Terminal unique",
-              "unfinished_attempts": "Unfinished"
+              "utc": "UTC"
             }
           }
         }
       ]
     },
     {
-      "id": 9,
-      "title": "Outstanding recovery requirements",
+      "id": 11,
+      "title": "Explicit exclusions",
       "type": "table",
       "datasource": {
         "type": "prometheus",
         "uid": "openpoke-prometheus"
       },
-      "description": "MISSING stays visible for every unexecuted production requirement.",
+      "description": "Exclusions cannot disappear from coverage and must state why they are unsafe or irrelevant.",
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 32,
         "w": 24,
-        "h": 8
+        "h": 7
       },
       "fieldConfig": {
         "defaults": {},
@@ -1075,7 +1157,7 @@
             "uid": "openpoke-prometheus"
           },
           "editorMode": "code",
-          "expr": "openpoke_catalog_requirement_status{issue=~\"$issue\",requirement=~\".*recovery.*|.*outage.*|.*drain.*|.*process.*\"}",
+          "expr": "openpoke_catalog_source_info{disposition=\"excluded\"}",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -1089,28 +1171,28 @@
           "options": {
             "excludeByName": {
               "Time": true,
-              "Value": true,
+              "Value": false,
               "__name__": true,
               "acceptance_ratio": true,
               "accepted": true,
               "alias": true,
               "authority": true,
               "budget_release": true,
-              "category": true,
+              "category": false,
               "claim_p99_ms": true,
               "classification": true,
               "commands": true,
               "completed": true,
               "convergence": true,
               "checksum": true,
-              "disposition": true,
+              "disposition": false,
               "devices": true,
               "drain": true,
               "duplicates": true,
               "environment": true,
               "evidence_id": true,
               "exclusion_reason": true,
-              "explanation": false,
+              "explanation": true,
               "execution_profile": true,
               "fact": true,
               "fact_alias": true,
@@ -1118,7 +1200,7 @@
               "gate_alias": true,
               "gaps": true,
               "image_digest": true,
-              "integrity": true,
+              "integrity": false,
               "integrity_provenance": true,
               "instance": true,
               "issue": true,
@@ -1131,24 +1213,24 @@
               "job": true,
               "link_kind": true,
               "public_url": true,
-              "qualification_scope": false,
+              "qualification_scope": true,
               "record": true,
               "receipt_p95_ms": true,
               "receipt_p99_ms": true,
               "region": true,
               "repo_path": true,
               "requirement": true,
-              "requirement_alias": false,
+              "requirement_alias": true,
               "resumes": true,
               "run": true,
               "run_id": true,
-              "scope": true,
-              "seal": true,
-              "source": true,
+              "scope": false,
+              "seal": false,
+              "source": false,
               "source_alias": true,
               "source_hash": true,
-              "status": false,
-              "structure": true,
+              "status": true,
+              "structure": false,
               "topology": true,
               "topology_alias": true,
               "terminal": true,
@@ -1161,23 +1243,30 @@
               "stranded_work": true
             },
             "indexByName": {
-              "requirement_alias": 0,
-              "qualification_scope": 1,
-              "status": 2,
-              "explanation": 3
+              "source": 0,
+              "category": 1,
+              "scope": 2,
+              "disposition": 3,
+              "seal": 4,
+              "structure": 5,
+              "integrity": 6
             },
             "renameByName": {
-              "explanation": "Explanation",
-              "qualification_scope": "Scope",
-              "requirement_alias": "Requirement",
-              "status": "Status"
+              "category": "Category",
+              "disposition": "Disposition",
+              "integrity": "Integrity",
+              "scope": "Scope",
+              "seal": "Seal",
+              "source": "Source",
+              "structure": "Structure",
+              "Value": "Count"
             }
           }
         }
       ]
     },
     {
-      "id": 10,
+      "id": 12,
       "title": "Raw provenance, below fold",
       "type": "table",
       "datasource": {
@@ -1187,7 +1276,7 @@
       "description": "Full identifiers and checksum provenance are intentionally confined below the first viewport.",
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 39,
         "w": 24,
         "h": 6
       },
@@ -1571,8 +1660,8 @@
     "hidden": false
   },
   "timezone": "utc",
-  "title": "OpenPoke Durability and Recovery",
-  "uid": "openpoke-durability-recovery",
+  "title": "OpenPoke Evidence Catalog and Provenance",
+  "uid": "openpoke-evidence-catalog",
   "version": 1,
   "weekStart": "monday"
 }

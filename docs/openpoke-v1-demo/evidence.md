@@ -70,6 +70,33 @@ These are configuration inputs, not saturation evidence:
 | Selected-region durable reserve | 400,000 AgentRuns, candidate exercised by the final admission matrix; outage qualification still `MISSING` |
 | Historical Montreal reserve | 4,096 AgentRuns, superseded and rejected for the full outage contract |
 
+## Evidence catalog disposition
+
+The cockpit catalog covers every row above and resolves narrative links to the
+structured JSON that owns the measured fact. It discovers all 13 packet runs:
+four final matrix cells, short target, two sustained repetitions, pre-admitted
+delivery, recovery fleets 4/6/8, and before/after-claim worker loss. The copied
+[`final-us-east4-matrix-summary.json`](evidence/final-us-east4-matrix-summary.json)
+is authoritative for A/B/C/D admission, PostgreSQL, WAL, checkpoint, and
+accepted-work reconciliation facts. Presence never overrides its four failed
+admission verdicts.
+
+The checksum-sealed snapshots in [`evidence/catalog/`](evidence/catalog/) add
+current development runtime facts, all bounded development SSE attempts, and
+read-only development cloud metadata. They remain development evidence and
+keep production qualification `MISSING`. The GitHub issue snapshot records
+issue dispositions and outstanding requirements as contextual external
+authority. It cannot establish a sealed measurement.
+
+Selected historical sources remain visible for the superseded Toronto 464/s
+break, process loss under load, four-device replay, and the Mailpit Action
+control. Other prototype, local, historical, malformed, unsealed, or
+checksum-mismatched sources are linked or explicitly excluded with reasons.
+None can fill the four production placeholders: selected-topology saturation,
+full outage recovery and drain, production ActionReceipt proof, or complete
+production cost. Generated normalized catalog and coverage reports are derived
+views and are intentionally absent from `artifact-index.json`.
+
 ## Integrity
 
 Every copied artifact is listed in [`artifact-index.json`](artifact-index.json).

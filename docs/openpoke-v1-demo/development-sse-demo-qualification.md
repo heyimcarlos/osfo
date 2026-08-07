@@ -55,3 +55,20 @@ This lane cannot close issue #100. It always reports the healthy concurrent-stre
 ceiling, breaking point, several-account matrix, deployed fault cuts, production
 topology, and production qualification as `MISSING`. Local lifecycle tests remain
 useful supporting evidence, but they do not replace deployed failure injection.
+
+## Evidence cockpit snapshot
+
+[`evidence/catalog/development-sse-attempts.json`](evidence/catalog/development-sse-attempts.json)
+preserves all three bounded development attempts in order: an initial partial
+`PASS`, a `FAIL` caused by device convergence, and the final bounded `PASS`.
+The final attempt proves its recorded four-device and canonical reconciliation
+scope, but resource measurement windows and a capture recording remain
+`MISSING`. Healthy ceiling, breaking point, several-account load, deployed
+fault cuts, broker return to steady state, production topology, and production
+qualification also remain `MISSING`.
+
+The snapshot contains sanitized normalized facts and the original bundle seal
+digests. It excludes bearer values, database URLs, provider payloads, model
+content, raw request identities, and private paths. The packet catalog snapshot
+manifest seals the copied snapshot bytes. It does not promote the development
+lane into production evidence.

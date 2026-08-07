@@ -31,6 +31,22 @@ the six-worker candidate for production.
 | Production qualification | MISSING | The development slice has not completed production qualification. |
 | Final `us-east4` A/B/C/D admission matrix | FAIL | The admission matrix failed. This development demo cannot override it. |
 
+## Evidence cockpit snapshot
+
+[`evidence/catalog/development-runtime.json`](evidence/catalog/development-runtime.json)
+is the sanitized current development snapshot used by the cockpit. It records
+the exact immutable execution profile and binding, scoped provider and runtime
+facts, two failed prior reconciliation attempts, limitations, and production
+qualification `MISSING`. Its smoke digest matches the public issue #90
+disposition, but it is still development evidence, not a production seal.
+
+[`evidence/catalog/development-cloud-metadata.json`](evidence/catalog/development-cloud-metadata.json)
+contains only whitelisted read-only metadata. Empty monitoring windows remain
+`MISSING`, never zero. Resource identities, service accounts, secret
+references, private network details, database connection material, raw
+provider responses, and model content are excluded. Both snapshots are sealed
+by the packet catalog snapshot manifest for reproducible presentation.
+
 ## Scoped web evidence
 
 The user-visible authority screen was verified before publication with:
