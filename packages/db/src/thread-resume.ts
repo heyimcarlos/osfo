@@ -23,12 +23,26 @@ import {
   makeEmptyThreadSnapshot,
   type ThreadEventEnvelope,
 } from "@osfo/session";
-import { Data, Effect, Layer, Option, PubSub, Redacted, Schedule, Schema, Stream } from "effect";
+import {
+  Data,
+  Deferred,
+  Effect,
+  Layer,
+  Option,
+  PubSub,
+  Redacted,
+  Ref,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const threadEventsNotificationChannel = "osfo_thread_events";
 const notificationListenerLivenessIntervalMs = 1_000;
 const notificationListenerReconnectDelayMs = 100;
+const notificationListenerHeartbeatTimeoutMs = 1_000;
+const notificationListenerHeartbeatPrefix = "__osfo_listener_heartbeat__:";
 
 export const ThreadResumeDatabaseConfigSchema = Schema.Struct({
   databaseUrl: Schema.NonEmptyString,
@@ -119,6 +133,12 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
       const notificationHints = yield* PubSub.sliding<string>(1_024);
+      const pendingHeartbeat = yield* Ref.make<
+        Option.Option<{
+          readonly observed: Deferred.Deferred<void>;
+          readonly token: string;
+        }>
+      >(Option.none());
       const readListenerBackend = sql<{ readonly pid: string }>`SELECT pid::text AS pid
         FROM pg_stat_activity
         WHERE application_name = ${applicationName}
@@ -128,27 +148,43 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
         Effect.gen(function* () {
           yield* sql.listen(threadEventsNotificationChannel).pipe(
             Stream.runForEach((notifiedThreadId) =>
-              hooks.dropNotificationHint(notifiedThreadId).pipe(
-                Effect.flatMap((drop) =>
-                  drop ? Effect.void : PubSub.publish(notificationHints, notifiedThreadId),
+              Ref.get(pendingHeartbeat).pipe(
+                Effect.flatMap((heartbeat) =>
+                  Option.isSome(heartbeat) && heartbeat.value.token === notifiedThreadId
+                    ? Deferred.succeed(heartbeat.value.observed, undefined)
+                    : notifiedThreadId.startsWith(notificationListenerHeartbeatPrefix)
+                      ? Effect.void
+                      : hooks
+                          .dropNotificationHint(notifiedThreadId)
+                          .pipe(
+                            Effect.flatMap((drop) =>
+                              drop
+                                ? Effect.void
+                                : PubSub.publish(notificationHints, notifiedThreadId),
+                            ),
+                          ),
                 ),
                 Effect.asVoid,
               ),
             ),
             Effect.forkScoped,
           );
-          const backendPid = yield* readListenerBackend.pipe(
+          yield* readListenerBackend.pipe(
             Effect.flatMap((rows) =>
-              rows[0] === undefined
-                ? Effect.fail(new ThreadResumeUnavailable())
-                : Effect.succeed(rows[0].pid),
+              rows[0] === undefined ? Effect.fail(new ThreadResumeUnavailable()) : Effect.void,
             ),
             Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 200 }),
           );
           while (true) {
             yield* Effect.sleep(notificationListenerLivenessIntervalMs);
-            const alive = (yield* readListenerBackend).some((row) => row.pid === backendPid);
-            if (!alive) return yield* new ThreadResumeUnavailable();
+            const observed = yield* Deferred.make<void>();
+            const token = `${notificationListenerHeartbeatPrefix}${randomUUID()}`;
+            yield* Ref.set(pendingHeartbeat, Option.some({ observed, token }));
+            yield* sql.notify(threadEventsNotificationChannel, token);
+            yield* Deferred.await(observed).pipe(
+              Effect.timeout(notificationListenerHeartbeatTimeoutMs),
+            );
+            yield* Ref.set(pendingHeartbeat, Option.none());
           }
         }),
       ).pipe(
