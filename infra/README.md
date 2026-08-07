@@ -169,11 +169,13 @@ bytes. `apply-plan.sh` revalidates every binding, including the production
 environment argument, and applies only that exact plan.
 
 After bootstrap, `store-plan.sh` writes the plan and manifest to their root's
-conditioned prefix in the private foundation saved-plan bucket. GCS encrypts
-the objects with Google-managed encryption. Current and noncurrent objects have
-a one-day lifecycle, and the manifest makes every plan unusable after exactly
-24 hours even if asynchronous GCS cleanup has not run yet. Plans are never
-uploaded as ordinary GitHub artifacts.
+conditioned prefix in the private foundation saved-plan bucket. It uses exact
+GCS object inserts with a zero-generation precondition, so routine identities
+need object creation permission but no bucket-wide listing permission. GCS
+encrypts the objects with Google-managed encryption. Current and noncurrent
+objects have a one-day lifecycle, and the manifest makes every plan unusable
+after exactly 24 hours even if asynchronous GCS cleanup has not run yet. Plans
+are never uploaded as ordinary GitHub artifacts.
 
 The manual `root-plan` and `root-apply` tasks cover all five roots under one
 root-specific GitHub concurrency group. Production uses its protected GitHub

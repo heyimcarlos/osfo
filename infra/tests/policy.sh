@@ -236,18 +236,30 @@ cat >"$scratch/development.tfplan.manifest.json" <<'JSON'
 JSON
 cat >"$scratch/gcloud" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$GCLOUD_CALLS"
+[[ "$*" == 'auth print-access-token' ]]
+printf 'test-access-token\n'
 SH
 chmod +x "$scratch/gcloud"
-export GCLOUD_CALLS="$scratch/gcloud.calls"
+cat >"$scratch/curl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$CURL_CALLS"
+SH
+chmod +x "$scratch/curl"
+export CURL_CALLS="$scratch/curl.calls"
 expect_pass "saved plans use their conditioned foundation prefix" \
-  env GCLOUD_BIN="$scratch/gcloud" GCLOUD_CALLS="$GCLOUD_CALLS" \
+  env GCLOUD_BIN="$scratch/gcloud" CURL_BIN="$scratch/curl" CURL_CALLS="$CURL_CALLS" \
   "$store_plan" osfo-plans "$scratch/development.tfplan"
-[[ "$(wc -l <"$GCLOUD_CALLS")" == 2 ]]
+[[ "$(wc -l <"$CURL_CALLS")" == 2 ]]
 rg --fixed-strings --quiet \
-  'gs://osfo-plans/roots/development/platform/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tfplan' \
-  "$GCLOUD_CALLS"
-rg --fixed-strings --quiet -- '--if-generation-match=0' "$GCLOUD_CALLS"
+  'https://storage.googleapis.com/upload/storage/v1/b/osfo-plans/o?uploadType=media&name=roots%2Fdevelopment%2Fplatform%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tfplan&ifGenerationMatch=0' \
+  "$CURL_CALLS"
+rg --fixed-strings --quiet \
+  'name=roots%2Fdevelopment%2Fplatform%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tfplan.manifest.json&ifGenerationMatch=0' \
+  "$CURL_CALLS"
+if rg --fixed-strings --quiet 'storage cp' "$CURL_CALLS"; then
+  printf 'saved-plan upload must not require bucket object listing\n' >&2
+  exit 1
+fi
 
 cat >"$scratch/gcloud-fetch" <<'SH'
 #!/usr/bin/env bash
