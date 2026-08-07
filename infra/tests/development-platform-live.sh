@@ -24,7 +24,7 @@ source_commit=$(git -C "$repo_root" rev-parse HEAD)
 varset_sha=$(sha256sum "$varset" | cut -d' ' -f1)
 image_digests_sha=$(sha256sum "$image_digests" | cut -d' ' -f1)
 lifecycle_started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-destroy_binding=""
+destroy_bindings_json='[]'
 
 export TF_VARSET_FILE=$varset
 export TF_IMAGE_DIGESTS_FILE=$image_digests
@@ -36,10 +36,37 @@ destroy_platform() {
   local attempt
   for attempt in {1..12}; do
     local destroy_plan="$plan_dir/destroy-$attempt.tfplan"
-    if "$repo_root/infra/scripts/create-plan.sh" development "$root" "$destroy_plan" -destroy \
-      && "$repo_root/infra/scripts/store-plan.sh" "$SAVED_PLAN_BUCKET" "$destroy_plan" \
-      && "$repo_root/infra/scripts/apply-plan.sh" development "$root" "$destroy_plan"; then
-      destroy_binding=$(jq -r '.binding_sha256' "$destroy_plan.manifest.json")
+    if ! "$repo_root/infra/scripts/create-plan.sh" development "$root" "$destroy_plan" -destroy; then
+      if ((attempt < 12)); then
+        sleep 30
+      fi
+      continue
+    fi
+
+    local destroy_binding
+    destroy_binding=$(jq -r '.binding_sha256' "$destroy_plan.manifest.json")
+    if ! "$repo_root/infra/scripts/store-plan.sh" "$SAVED_PLAN_BUCKET" "$destroy_plan"; then
+      destroy_bindings_json=$(jq -c \
+        --argjson attempt "$attempt" --arg binding "$destroy_binding" \
+        '. + [{attempt: $attempt, binding_sha256: $binding, status: "store_failed"}]' \
+        <<<"$destroy_bindings_json")
+      if ((attempt < 12)); then
+        sleep 30
+      fi
+      continue
+    fi
+
+    local apply_status
+    set +e
+    "$repo_root/infra/scripts/apply-plan.sh" development "$root" "$destroy_plan"
+    apply_status=$?
+    set -e
+    destroy_bindings_json=$(jq -c \
+      --argjson attempt "$attempt" --arg binding "$destroy_binding" \
+      --arg status "$([[ $apply_status == 0 ]] && printf applied || printf apply_failed)" \
+      '. + [{attempt: $attempt, binding_sha256: $binding, status: $status}]' \
+      <<<"$destroy_bindings_json")
+    if ((apply_status == 0)); then
       destroyed=true
       break
     fi
@@ -55,15 +82,19 @@ destroy_platform() {
 
   local state_output
   local state_status
+  local state_error
+  state_error=$(mktemp)
   set +e
-  state_output=$("$terraform_bin" -chdir="$root" state list 2>"$plan_dir/state-list.error")
+  state_output=$("$terraform_bin" -chdir="$root" state list 2>"$state_error")
   state_status=$?
   set -e
   if ((state_status != 0)); then
     printf 'FAIL: unable to verify empty development platform state\n' >&2
-    cat "$plan_dir/state-list.error" >&2
+    cat "$state_error" >&2
+    rm -f "$state_error"
     return 1
   fi
+  rm -f "$state_error"
   if [[ -n "$state_output" ]]; then
     printf 'FAIL: development platform state still contains disposable resources\n' >&2
     return 1
@@ -133,7 +164,7 @@ jq -n \
   --arg image_digests_sha256 "$image_digests_sha" \
   --arg create_plan_binding_sha256 "$create_binding" \
   --arg second_plan_binding_sha256 "$second_binding" \
-  --arg destroy_plan_binding_sha256 "$destroy_binding" \
+  --argjson destroy_plan_bindings "$destroy_bindings_json" \
   --arg managed_report_sha256 "$managed_report_sha" \
   --arg absence_report_sha256 "$absence_report_sha" \
   --arg audit_report_sha256 "$audit_report_sha" \
@@ -144,7 +175,7 @@ jq -n \
     image_digests_sha256: $image_digests_sha256,
     create_plan_binding_sha256: $create_plan_binding_sha256,
     second_plan_binding_sha256: $second_plan_binding_sha256,
-    destroy_plan_binding_sha256: $destroy_plan_binding_sha256
+    destroy_plan_bindings: $destroy_plan_bindings
   }, checks: {
     empty_second_plan: "PASS",
     exact_disposable_destroy: "PASS",

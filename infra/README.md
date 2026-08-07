@@ -63,8 +63,11 @@ containers and policy, but its custom role cannot access version payloads or
 mint runtime identity tokens. Its narrowly scoped `actAs` bindings exist only
 to configure the three reviewed qualification jobs.
 
-The ordered Pub/Sub round trip uses an isolated disposable subscription and the
-`us-east4` regional API endpoint, so it cannot acknowledge runtime messages.
+The ordered Pub/Sub proof first validates the Terraform-managed subscription's
+topic, ordering, retention, and acknowledgement configuration. Its behavioral
+round trip then uses an isolated disposable subscription and the `us-east4`
+regional API endpoint, so qualification cannot lease or acknowledge runtime
+messages.
 The artifact proof creates one content-addressed object, rejects a second
 generation with a zero-generation precondition, and verifies that only one
 generation exists.
@@ -81,7 +84,8 @@ SAVED_PLAN_BUCKET="$GCP_SAVED_PLAN_BUCKET" \
 ```
 
 The proof refuses a dirty tree and binds evidence to the exact commit, reviewed
-variable and image files, and create, no-change, and destroy plan manifests. It
+variable and image files, and create, no-change, and every attempted destroy
+plan manifest. It
 runs quota preflight, exact saved-plan apply, an empty second plan,
 managed-service smoke checks, immutable evidence upload, and exact destroy. The
 post-destroy gate fails closed if Terraform state cannot be read, then performs

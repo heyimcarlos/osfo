@@ -57,10 +57,10 @@ assert_absent pubsub_subscription "$name_prefix-agentruns" \
   gcloud pubsub subscriptions list --project="$project_id" --format='value(name)'
 unset CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB
 
-for identity in transport relay agentrun temporal migration reconciliation; do
-  assert_present "service_account_$identity" "$name_prefix-$identity@$project_id.iam.gserviceaccount.com" \
+while IFS=$'\t' read -r identity email; do
+  assert_present "service_account_$identity" "$email" \
     gcloud iam service-accounts list --project="$project_id" --format='value(email)'
-done
+done < <(jq -r '.runtime_service_accounts | to_entries[] | [.key, .value] | @tsv' "$varset")
 
 for secret in model-adapter temporal-cloud; do
   assert_absent "secret_${secret//-/_}" "$name_prefix-$secret" \

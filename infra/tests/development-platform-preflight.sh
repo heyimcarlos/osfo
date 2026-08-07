@@ -13,6 +13,7 @@ cloudquotas.googleapis.com
 compute.googleapis.com
 dns.googleapis.com
 pubsub.googleapis.com
+run.googleapis.com
 secretmanager.googleapis.com
 servicedirectory.googleapis.com
 servicenetworking.googleapis.com

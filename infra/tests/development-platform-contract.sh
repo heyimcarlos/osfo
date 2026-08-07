@@ -43,10 +43,21 @@ rg --fixed-strings --quiet 'development-platform-absent.sh' infra/tests/developm
 rg --fixed-strings --quiet 'development-platform-audit.sh' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'diff-index --quiet HEAD --' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'state_status=$?' infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'destroy_plan_bindings: $destroy_plan_bindings' \
+  infra/tests/development-platform-live.sh
+if rg --fixed-strings --quiet 'state-list.error' infra/tests/development-platform-live.sh; then
+  printf 'state-list diagnostics must not dirty the reviewed source tree\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet 'exact_disposable_destroy: "PASS"' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'trap cleanup_on_exit EXIT' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'quota_requirement static_external_ipv4_addresses' infra/tests/development-platform-preflight.sh
 rg --fixed-strings --quiet 'quota_requirement pubsub_publisher_kb_per_minute' infra/tests/development-platform-preflight.sh
+rg --fixed-strings --quiet 'run.googleapis.com' infra/tests/development-platform-preflight.sh
+rg --fixed-strings --quiet 'managed_ordered_subscription_configuration: "PASS"' \
+  infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet 'gcloud pubsub subscriptions describe "$subscription"' \
+  infra/tests/development-platform-smoke.sh
 
 jq -e '
   .project_id != null
@@ -113,14 +124,12 @@ if grep -Fq 'resourcemanager.projects.setIamPolicy' <<<"$platform_custom_roles";
 fi
 
 jq -e '
-  .runtime_service_accounts == {
-    agentrun: "osfo-dev-agentrun@osfo-development-318708913.iam.gserviceaccount.com",
-    migration: "osfo-dev-migration@osfo-development-318708913.iam.gserviceaccount.com",
-    reconciliation: "osfo-dev-reconciliation@osfo-development-318708913.iam.gserviceaccount.com",
-    relay: "osfo-dev-relay@osfo-development-318708913.iam.gserviceaccount.com",
-    temporal: "osfo-dev-temporal@osfo-development-318708913.iam.gserviceaccount.com",
-    transport: "osfo-dev-transport@osfo-development-318708913.iam.gserviceaccount.com"
-  }
+  . as $config
+  | ($config.runtime_service_accounts | keys) == [
+    "agentrun", "migration", "reconciliation", "relay", "temporal", "transport"
+  ]
+  and all($config.runtime_service_accounts | to_entries[];
+    .value == "\($config.name_prefix)-\(.key)@\($config.project_id).iam.gserviceaccount.com")
 ' "$root/development.tfvars.json" >/dev/null
 
 rg --fixed-strings --quiet 'foundation-drift' .github/workflows/terraform.yml

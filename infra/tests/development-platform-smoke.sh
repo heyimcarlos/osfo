@@ -27,6 +27,7 @@ trap cleanup_smoke EXIT
 "$terraform_bin" -chdir="$root" output -json platform >"$scratch/platform.json"
 sql_instance=$(jq -r '.cloud_sql_connection_name | split(":")[-1]' "$scratch/platform.json")
 topic=$(jq -r '.pubsub_topic_id' "$scratch/platform.json")
+subscription=$(jq -r '.pubsub_subscription_id' "$scratch/platform.json")
 artifact_bucket=$(jq -r '.artifact_bucket_name' "$scratch/platform.json")
 network_id=$(jq -r '.network_id' "$scratch/platform.json")
 static_egress_ip=$(jq -r '.static_egress_ip' "$scratch/platform.json")
@@ -53,6 +54,16 @@ jq -r '.runtime_service_accounts[] | sub("[.]gserviceaccount[.]com$"; "")' "$scr
 ordering_key="smoke-$(date -u +%Y%m%dT%H%M%SZ)"
 smoke_subscription="$name_prefix-ordering-$RANDOM"
 export CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB="https://$region-pubsub.googleapis.com/"
+gcloud pubsub subscriptions describe "$subscription" --project="$project_id" \
+  --format=json >"$scratch/managed-subscription.json"
+jq -e --arg topic "$topic" --arg retention "$(jq -r '.pubsub_message_retention_duration' "$varset")" '
+  .topic == $topic
+  and .enableMessageOrdering == true
+  and .messageRetentionDuration == $retention
+  and .retainAckedMessages == false
+' "$scratch/managed-subscription.json" >/dev/null
+# Delivery uses an isolated subscriber so qualification cannot lease or acknowledge
+# messages owned by a runtime consumer of the Terraform-managed subscription.
 gcloud pubsub subscriptions create "$smoke_subscription" --project="$project_id" \
   --topic="$topic" --enable-message-ordering --expiration-period=1d >/dev/null
 gcloud pubsub topics publish "$topic" --project="$project_id" \
@@ -189,6 +200,7 @@ jq -n \
   '{schema_version: 1, qualification: "MISSING", project_id: $project_id, region: $region, checks: {
     private_cloud_sql_configuration_and_iam_users: "PASS",
     private_database_connection_from_direct_vpc: "PASS",
+    managed_ordered_subscription_configuration: "PASS",
     ordered_pubsub_round_trip: "PASS",
     immutable_artifact_round_trip: "PASS",
     artifact_overwrite_rejected: "PASS",
