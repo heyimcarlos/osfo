@@ -35,7 +35,7 @@ export const liveOpenRouterExecutionProfile = frozen({
     modelCallAttempts: 1,
   }),
   request: frozen({
-    maxTokens: 256,
+    maxTokens: 1_024,
     temperature: 0,
     stream: true,
     reasoning: frozen({

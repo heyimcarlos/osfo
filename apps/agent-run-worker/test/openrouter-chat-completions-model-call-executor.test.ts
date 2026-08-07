@@ -135,7 +135,7 @@ describe("OpenRouter Chat Completions ModelCall executor", () => {
         messages: [{ role: "user", content: "Say hello" }],
         model: "minimax/minimax-m3",
         stream: true,
-        max_tokens: 256,
+        max_tokens: 1_024,
         temperature: 0,
         reasoning: { enabled: true, exclude: true },
         provider: {
