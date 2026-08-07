@@ -162,8 +162,21 @@ rg --fixed-strings --quiet 'type="password"' apps/web/src/configuration-required
 rg --fixed-strings --quiet 'USER node' Containerfile
 rg --line-regexp --quiet '\.env' .dockerignore
 [[ $(rg --fixed-strings --count '@sha256:' Containerfile) == 3 ]]
+rg --fixed-strings --quiet 'docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f' .github/workflows/development-runtime-image.yml
+rg --fixed-strings --quiet 'driver: docker-container' .github/workflows/development-runtime-image.yml
 rg --fixed-strings --quiet 'docker buildx build' .github/workflows/development-runtime-image.yml
+buildx_setup_line=$(rg --fixed-strings --line-number 'docker/setup-buildx-action@' .github/workflows/development-runtime-image.yml | cut -d: -f1)
+build_command_line=$(rg --fixed-strings --line-number 'docker buildx build' .github/workflows/development-runtime-image.yml | cut -d: -f1)
+if ((buildx_setup_line >= build_command_line)); then
+  printf 'docker-container Buildx setup must precede the image build\n' >&2
+  exit 1
+fi
+rg --fixed-strings --quiet -- '--provenance=true' .github/workflows/development-runtime-image.yml
+rg --fixed-strings --quiet -- '--sbom=true' .github/workflows/development-runtime-image.yml
+rg --fixed-strings --quiet -- '--push' .github/workflows/development-runtime-image.yml
 rg --fixed-strings --quiet 'containerimage.digest' .github/workflows/development-runtime-image.yml
+rg --fixed-strings --quiet 'sha256:[0-9a-f]{64}' .github/workflows/development-runtime-image.yml
+rg --fixed-strings --quiet 'docker buildx imagetools inspect' .github/workflows/development-runtime-image.yml
 rg --fixed-strings --quiet 'github.ref == '\''refs/heads/main'\''' .github/workflows/development-runtime-image.yml
 rg --fixed-strings --quiet '"cursor-signing"' infra/modules/data-authority/main.tf
 rg --fixed-strings --quiet '"reference-client-auth"' infra/modules/data-authority/main.tf
