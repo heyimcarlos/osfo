@@ -13,3 +13,16 @@ export const ReferenceClientConfig = Schema.Struct({
 export type ReferenceClientConfig = typeof ReferenceClientConfig.Type;
 
 export const decodeReferenceClientConfig = Schema.decodeUnknownExit(ReferenceClientConfig);
+
+export const referenceClientAuthorityStorageKey = "osfo.reference-client.authority.v1";
+
+const StoredReferenceClientAuthority = Schema.fromJsonString(
+  Schema.Struct({
+    authenticationToken: Schema.NonEmptyString,
+    threadId: Uuid,
+  }),
+);
+
+export const decodeStoredReferenceClientAuthority = Schema.decodeUnknownExit(
+  StoredReferenceClientAuthority,
+);

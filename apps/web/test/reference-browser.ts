@@ -244,19 +244,13 @@ const waitForProcessOutput = (
 };
 
 export interface ProductionReferenceClientOptions {
-  readonly authenticationToken: string;
   readonly ingressOrigin: string;
-  readonly threadId: string;
 }
 
 export const startProductionReferenceClient = (options: ProductionReferenceClientOptions) =>
   Effect.gen(function* () {
     yield* runCommand("bun", ["run", "build"], {
       cwd: webDirectory,
-      env: {
-        VITE_OSFO_AUTHENTICATION_TOKEN: options.authenticationToken,
-        VITE_OSFO_THREAD_ID: options.threadId,
-      },
     });
     const port = yield* availablePort;
     const origin = `http://127.0.0.1:${port}`;
@@ -722,7 +716,12 @@ const waitForDevToolsActivePort = (userDataDirectory: string) =>
     });
   });
 
-export const startGoogleChrome = () =>
+export interface GoogleChromeOptions {
+  readonly authenticationToken: string;
+  readonly threadId: string;
+}
+
+export const startGoogleChrome = (options: GoogleChromeOptions) =>
   Effect.gen(function* () {
     const userDataDirectory = yield* Effect.tryPromise({
       try: () => mkdtemp(join(tmpdir(), "osfo-reference-chrome-")),
@@ -769,6 +768,15 @@ export const startGoogleChrome = () =>
     const debuggingOrigin = `http://127.0.0.1:${port}`;
     yield* waitForHttp(`${debuggingOrigin}/json/version`);
     const client = yield* HttpClient.HttpClient;
+    const configureReferenceAuthority = `sessionStorage.setItem(
+      "osfo.reference-client.authority.v1",
+      ${JSON.stringify(
+        JSON.stringify({
+          authenticationToken: options.authenticationToken,
+          threadId: options.threadId,
+        }),
+      )}
+    )`;
 
     const openTab = (location: string, label: string) =>
       Effect.gen(function* () {
@@ -789,6 +797,11 @@ export const startGoogleChrome = () =>
         yield* connection.command(
           "Page.addScriptToEvaluateOnNewDocument",
           { source: observeVisibleText },
+          EmptyObject,
+        );
+        yield* connection.command(
+          "Page.addScriptToEvaluateOnNewDocument",
+          { source: configureReferenceAuthority },
           EmptyObject,
         );
         const tab = new ChromeTab(connection, label);

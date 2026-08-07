@@ -94,11 +94,9 @@ describe("three-tab Oz Reference Journey", () => {
           streamPollIntervalMs: 10,
         });
         const client = yield* startProductionReferenceClient({
-          authenticationToken,
           ingressOrigin: ingress.origin,
-          threadId,
         });
-        const chrome = yield* startGoogleChrome();
+        const chrome = yield* startGoogleChrome({ authenticationToken, threadId });
         const tabA = yield* chrome.openTab(client.origin, "A");
         const tabB = yield* chrome.openTab(client.origin, "B");
         const tabC = yield* chrome.openTab(client.origin, "C");

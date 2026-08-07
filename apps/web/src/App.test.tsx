@@ -265,7 +265,10 @@ describe("browser reference client", () => {
   it("explains the explicit configuration when browser authority is missing", () => {
     const html = renderToStaticMarkup(<ConfigurationRequired />);
 
-    expect(html).toContain("VITE_OSFO_THREAD_ID");
-    expect(html).toContain("db:seed:reference");
+    expect(html).toContain('type="password"');
+    expect(html).toContain("Authentication token");
+    expect(html).toContain("Thread ID");
+    expect(html).toContain("Connect this tab");
+    expect(html).not.toContain("VITE_OSFO_AUTHENTICATION_TOKEN");
   });
 });
