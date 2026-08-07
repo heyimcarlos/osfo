@@ -12,6 +12,18 @@ import { type liveOpenAIExecutionProfile } from "./execution-profile.js";
 
 const NonEmptyText = Schema.String.check(Schema.isNonEmpty());
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const FirstOutputIndex = Schema.Literal(0);
+
+const OutputContentPartSchema = Schema.Struct({
+  type: NonEmptyText,
+  text: Schema.optional(Schema.String),
+});
+
+const OutputItemSchema = Schema.Struct({
+  id: NonEmptyText,
+  type: NonEmptyText,
+  content: Schema.optional(Schema.Array(OutputContentPartSchema)),
+});
 
 const CreatedEventSchema = Schema.Struct({
   type: Schema.Literal("response.created"),
@@ -21,8 +33,8 @@ const CreatedEventSchema = Schema.Struct({
 const OutputTextDeltaEventSchema = Schema.Struct({
   type: Schema.Literal("response.output_text.delta"),
   item_id: NonEmptyText,
-  output_index: NonNegativeInt,
-  content_index: NonNegativeInt,
+  output_index: FirstOutputIndex,
+  content_index: FirstOutputIndex,
   delta: Schema.String,
 });
 
@@ -33,6 +45,7 @@ const CompletedEventSchema = Schema.Struct({
     status: Schema.Literal("completed"),
     model: NonEmptyText,
     store: Schema.Literal(false),
+    output: Schema.Array(OutputItemSchema),
     usage: Schema.Struct({
       input_tokens: NonNegativeInt,
       output_tokens: NonNegativeInt,
@@ -46,37 +59,23 @@ const ProviderFailureEventSchema = Schema.Struct({
 
 const OutputItemEventSchema = Schema.Struct({
   type: Schema.Literals(["response.output_item.added", "response.output_item.done"]),
-  output_index: NonNegativeInt,
-  item: Schema.Struct({
-    id: NonEmptyText,
-    type: NonEmptyText,
-    content: Schema.optional(
-      Schema.Array(
-        Schema.Struct({
-          type: NonEmptyText,
-          text: Schema.optional(Schema.String),
-        }),
-      ),
-    ),
-  }),
+  output_index: FirstOutputIndex,
+  item: OutputItemSchema,
 });
 
 const ContentPartEventSchema = Schema.Struct({
   type: Schema.Literals(["response.content_part.added", "response.content_part.done"]),
   item_id: NonEmptyText,
-  output_index: NonNegativeInt,
-  content_index: NonNegativeInt,
-  part: Schema.Struct({
-    type: NonEmptyText,
-    text: Schema.optional(Schema.String),
-  }),
+  output_index: FirstOutputIndex,
+  content_index: FirstOutputIndex,
+  part: OutputContentPartSchema,
 });
 
 const OutputTextDoneEventSchema = Schema.Struct({
   type: Schema.Literal("response.output_text.done"),
   item_id: NonEmptyText,
-  output_index: NonNegativeInt,
-  content_index: NonNegativeInt,
+  output_index: FirstOutputIndex,
+  content_index: FirstOutputIndex,
   text: Schema.String,
 });
 
@@ -242,6 +241,22 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
                   return yield* executionError(
                     session,
                     "Provider completed before finalizing text output",
+                  );
+                }
+                const [terminalOutput] = event.response.output;
+                const terminalContent = terminalOutput?.content;
+                if (
+                  event.response.output.length !== 1 ||
+                  terminalOutput?.type !== "message" ||
+                  !matchesOutputItem(outputItem, terminalOutput.id, 0) ||
+                  terminalContent === undefined ||
+                  terminalContent.length !== 1 ||
+                  terminalContent[0]?.type !== "output_text" ||
+                  terminalContent[0].text !== textPart.streamedText
+                ) {
+                  return yield* executionError(
+                    session,
+                    "Provider completed with inconsistent output",
                   );
                 }
                 completed = true;

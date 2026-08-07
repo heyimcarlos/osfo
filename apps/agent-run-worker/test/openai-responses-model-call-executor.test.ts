@@ -49,7 +49,7 @@ describe("OpenAI Responses ModelCall executor", () => {
         "",
         'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_123","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello world","annotations":[]}]},"sequence_number":7}',
         "",
-        'data: {"type":"response.completed","response":{"id":"resp_123","status":"completed","model":"gpt-4.1-mini-2025-04-14","store":false,"usage":{"input_tokens":4,"output_tokens":2}}}',
+        'data: {"type":"response.completed","response":{"id":"resp_123","status":"completed","model":"gpt-4.1-mini-2025-04-14","store":false,"output":[{"id":"msg_123","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello world","annotations":[]}]}],"usage":{"input_tokens":4,"output_tokens":2}}}',
         "",
       ].join("\n");
       const http = HttpClient.make((request) => {
@@ -150,7 +150,7 @@ describe("OpenAI Responses ModelCall executor", () => {
         "",
         'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_first","type":"message","status":"in_progress","role":"assistant","content":[]},"sequence_number":1}',
         "",
-        'data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_second","type":"message","status":"in_progress","role":"assistant","content":[]},"sequence_number":2}',
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_second","type":"message","status":"in_progress","role":"assistant","content":[]},"sequence_number":2}',
         "",
       ].join("\n");
       const http = HttpClient.make((request) =>
@@ -189,12 +189,204 @@ describe("OpenAI Responses ModelCall executor", () => {
     }),
   );
 
+  it.effect("rejects a text delta whose output identity changed", () =>
+    Effect.gen(function* () {
+      const sse = [
+        'data: {"type":"response.created","response":{"id":"resp_identity"}}',
+        "",
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_identity","type":"message","status":"in_progress","role":"assistant","content":[]},"sequence_number":1}',
+        "",
+        'data: {"type":"response.content_part.added","item_id":"msg_identity","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]},"sequence_number":2}',
+        "",
+        'data: {"type":"response.output_text.delta","item_id":"msg_other","output_index":0,"content_index":0,"delta":"Hello","sequence_number":3}',
+        "",
+      ].join("\n");
+      const http = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(sse, {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          ),
+        ),
+      );
+      const result = yield* ModelCallExecutor.use((executor) =>
+        Stream.runDrain(execute(executor)),
+      ).pipe(
+        Effect.provide(layer),
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.exit,
+      );
+
+      expect(Exit.isFailure(result)).toBe(true);
+      if (Exit.isFailure(result)) {
+        expect(result.cause.reasons).toContainEqual(
+          expect.objectContaining({
+            _tag: "Fail",
+            error: expect.objectContaining({
+              _tag: "ModelCallExecutionError",
+              cause: "Provider emitted text delta for an unknown or finalized content part",
+              dispatchEvidence: { type: "confirmed", providerRequestId: "resp_identity" },
+            }),
+          }),
+        );
+      }
+    }),
+  );
+
+  it.effect("rejects multiple text content parts", () =>
+    Effect.gen(function* () {
+      const sse = [
+        'data: {"type":"response.created","response":{"id":"resp_parts"}}',
+        "",
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_parts","type":"message","status":"in_progress","role":"assistant","content":[]},"sequence_number":1}',
+        "",
+        'data: {"type":"response.content_part.added","item_id":"msg_parts","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]},"sequence_number":2}',
+        "",
+        'data: {"type":"response.content_part.added","item_id":"msg_parts","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]},"sequence_number":3}',
+        "",
+      ].join("\n");
+      const http = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(sse, {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          ),
+        ),
+      );
+      const result = yield* ModelCallExecutor.use((executor) =>
+        Stream.runDrain(execute(executor)),
+      ).pipe(
+        Effect.provide(layer),
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.exit,
+      );
+
+      expect(Exit.isFailure(result)).toBe(true);
+      if (Exit.isFailure(result)) {
+        expect(result.cause.reasons).toContainEqual(
+          expect.objectContaining({
+            _tag: "Fail",
+            error: expect.objectContaining({
+              _tag: "ModelCallExecutionError",
+              cause: "Provider emitted multiple text content parts",
+              dispatchEvidence: { type: "confirmed", providerRequestId: "resp_parts" },
+            }),
+          }),
+        );
+      }
+    }),
+  );
+
+  it.effect("rejects a text lifecycle that starts at nonzero indexes", () =>
+    Effect.gen(function* () {
+      const sse = [
+        'data: {"type":"response.created","response":{"id":"resp_index"}}',
+        "",
+        'data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_index","type":"message","status":"in_progress","role":"assistant","content":[]},"sequence_number":1}',
+        "",
+        'data: {"type":"response.content_part.added","item_id":"msg_index","output_index":1,"content_index":1,"part":{"type":"output_text","text":"","annotations":[]},"sequence_number":2}',
+        "",
+        'data: {"type":"response.output_text.delta","item_id":"msg_index","output_index":1,"content_index":1,"delta":"Hello","sequence_number":3}',
+        "",
+        'data: {"type":"response.output_text.done","item_id":"msg_index","output_index":1,"content_index":1,"text":"Hello","sequence_number":4}',
+        "",
+        'data: {"type":"response.content_part.done","item_id":"msg_index","output_index":1,"content_index":1,"part":{"type":"output_text","text":"Hello","annotations":[]},"sequence_number":5}',
+        "",
+        'data: {"type":"response.output_item.done","output_index":1,"item":{"id":"msg_index","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello","annotations":[]}]} ,"sequence_number":6}',
+        "",
+        'data: {"type":"response.completed","response":{"id":"resp_index","status":"completed","model":"gpt-4.1-mini-2025-04-14","store":false,"output":[{"id":"msg_index","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello","annotations":[]}]}],"usage":{"input_tokens":4,"output_tokens":1}}}',
+        "",
+      ].join("\n");
+      const http = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(sse, {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          ),
+        ),
+      );
+      const result = yield* ModelCallExecutor.use((executor) =>
+        Stream.runDrain(execute(executor)),
+      ).pipe(
+        Effect.provide(layer),
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.exit,
+      );
+
+      expect(Exit.isFailure(result)).toBe(true);
+    }),
+  );
+
+  it.effect("rejects terminal output that differs from the streamed message", () =>
+    Effect.gen(function* () {
+      const sse = [
+        'data: {"type":"response.created","response":{"id":"resp_terminal"}}',
+        "",
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_terminal","type":"message","status":"in_progress","role":"assistant","content":[]},"sequence_number":1}',
+        "",
+        'data: {"type":"response.content_part.added","item_id":"msg_terminal","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]},"sequence_number":2}',
+        "",
+        'data: {"type":"response.output_text.delta","item_id":"msg_terminal","output_index":0,"content_index":0,"delta":"Hello","sequence_number":3}',
+        "",
+        'data: {"type":"response.output_text.done","item_id":"msg_terminal","output_index":0,"content_index":0,"text":"Hello","sequence_number":4}',
+        "",
+        'data: {"type":"response.content_part.done","item_id":"msg_terminal","output_index":0,"content_index":0,"part":{"type":"output_text","text":"Hello","annotations":[]},"sequence_number":5}',
+        "",
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_terminal","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello","annotations":[]}]} ,"sequence_number":6}',
+        "",
+        'data: {"type":"response.completed","response":{"id":"resp_terminal","status":"completed","model":"gpt-4.1-mini-2025-04-14","store":false,"output":[{"id":"msg_terminal","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Goodbye","annotations":[]}]}],"usage":{"input_tokens":4,"output_tokens":1}}}',
+        "",
+      ].join("\n");
+      const http = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(sse, {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          ),
+        ),
+      );
+      const result = yield* ModelCallExecutor.use((executor) =>
+        Stream.runDrain(execute(executor)),
+      ).pipe(
+        Effect.provide(layer),
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.exit,
+      );
+
+      expect(Exit.isFailure(result)).toBe(true);
+      if (Exit.isFailure(result)) {
+        expect(result.cause.reasons).toContainEqual(
+          expect.objectContaining({
+            _tag: "Fail",
+            error: expect.objectContaining({
+              _tag: "ModelCallExecutionError",
+              cause: "Provider completed with inconsistent output",
+              dispatchEvidence: { type: "confirmed", providerRequestId: "resp_terminal" },
+            }),
+          }),
+        );
+      }
+    }),
+  );
+
   it.effect("rejects a completed response without streamed text output", () =>
     Effect.gen(function* () {
       const sse = [
         'data: {"type":"response.created","response":{"id":"resp_empty"}}',
         "",
-        'data: {"type":"response.completed","response":{"id":"resp_empty","status":"completed","model":"gpt-4.1-mini-2025-04-14","store":false,"usage":{"input_tokens":4,"output_tokens":0}}}',
+        'data: {"type":"response.completed","response":{"id":"resp_empty","status":"completed","model":"gpt-4.1-mini-2025-04-14","store":false,"output":[],"usage":{"input_tokens":4,"output_tokens":0}}}',
         "",
       ].join("\n");
       const http = HttpClient.make((request) =>
