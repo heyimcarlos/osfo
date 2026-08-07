@@ -208,7 +208,8 @@ if [[ "${DEVELOPMENT_PLATFORM_CLEANUP_ONLY:-0}" == 1 ]]; then
       exact_disposable_destroy: "PASS",
       empty_disposable_state: "PASS",
       negative_provider_lookups: "PASS",
-      retained_environment_baseline: "PASS",
+      retained_core_network_and_private_services_baseline: "PASS",
+      retained_temporal_psc_baseline: "MISSING",
       audit_history_retained: $audit_status,
       lifecycle_evidence_linkage: $lifecycle_envelope_status
     }, absence_report_sha256: $absence_report_sha256,

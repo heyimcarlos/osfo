@@ -120,6 +120,11 @@ platform state share the global `terraform-development-platform` concurrency
 group. Cancellation recovery remains an unevidenced `MISSING` gate until a
 post-merge cancellation run proves it.
 
+Cleanup reports the verified retained VPC, NAT, DNS zone, firewall, and private
+services connection separately from Temporal PSC. The Temporal retained-baseline
+check remains `MISSING` until its address, accepted forwarding-rule target, and
+DNS record are configured and verified.
+
 Both scheduled drift jobs are read-only. One refreshes the retained foundation
 baseline, while the other refreshes the empty disposable state and performs the
 same provider absence checks. Neither job applies. Missing protected workflow

@@ -98,6 +98,16 @@ if rg --fixed-strings --quiet 'state-list.error' infra/tests/development-platfor
   exit 1
 fi
 rg --fixed-strings --quiet 'qualification: "PARTIAL"' infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet \
+  'retained_core_network_and_private_services_baseline: "PASS"' \
+  infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'retained_temporal_psc_baseline: "MISSING"' \
+  infra/tests/development-platform-live.sh
+if rg --fixed-strings --quiet 'retained_environment_baseline: "PASS"' \
+  infra/tests/development-platform-live.sh; then
+  printf 'core retained-baseline proof must not imply unverified Temporal PSC\n' >&2
+  exit 1
+fi
 # The literal shell variable references are part of the implementation contract.
 # shellcheck disable=SC2016
 for retained_lookup in \
