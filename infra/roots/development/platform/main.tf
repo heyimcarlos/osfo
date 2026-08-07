@@ -35,7 +35,7 @@ module "data_authority" {
   project_id                      = var.project_id
   region                          = var.region
   name_prefix                     = var.name_prefix
-  terraform_service_account_email = var.terraform_service_account_email
+  runtime_service_accounts        = var.runtime_service_accounts
   network_id                      = try(data.google_compute_network.environment_baseline[0].id, null)
   cloud_sql_tier                  = var.cloud_sql_tier
   cloud_sql_disk_size_gb          = var.cloud_sql_disk_size_gb

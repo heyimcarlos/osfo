@@ -1,41 +1,8 @@
 locals {
-  runtime_identities = toset(["transport", "relay", "agentrun", "temporal", "migration", "reconciliation"])
   secret_accessors = var.enabled ? merge(var.secret_accessors, {
-    model-adapter  = ["serviceAccount:${google_service_account.runtime["agentrun"].email}"]
-    temporal-cloud = ["serviceAccount:${google_service_account.runtime["temporal"].email}"]
+    model-adapter  = ["serviceAccount:${var.runtime_service_accounts["agentrun"]}"]
+    temporal-cloud = ["serviceAccount:${var.runtime_service_accounts["temporal"]}"]
   }) : {}
-}
-
-resource "google_service_account" "runtime" {
-  for_each     = var.enabled ? local.runtime_identities : toset([])
-  project      = var.project_id
-  account_id   = "${var.name_prefix}-${each.key}"
-  display_name = "Osfo development ${each.key}"
-}
-
-resource "google_project_iam_member" "cloud_sql_client" {
-  for_each = google_service_account.runtime
-  project  = var.project_id
-  role     = "roles/cloudsql.client"
-  member   = "serviceAccount:${each.value.email}"
-}
-
-resource "google_project_iam_member" "cloud_sql_instance_user" {
-  for_each = google_service_account.runtime
-  project  = var.project_id
-  role     = "roles/cloudsql.instanceUser"
-  member   = "serviceAccount:${each.value.email}"
-}
-
-resource "google_service_account_iam_member" "terraform_job_act_as" {
-  for_each = {
-    for key, account in google_service_account.runtime : key => account
-    if contains(["agentrun", "temporal", "reconciliation"], key)
-  }
-
-  service_account_id = each.value.name
-  role               = "roles/iam.serviceAccountUser"
-  member             = "serviceAccount:${var.terraform_service_account_email}"
 }
 
 resource "google_sql_database_instance" "authority" {
@@ -96,10 +63,10 @@ resource "google_sql_database" "osfo" {
 }
 
 resource "google_sql_user" "runtime" {
-  for_each = google_service_account.runtime
+  for_each = var.enabled ? var.runtime_service_accounts : {}
   project  = var.project_id
   instance = google_sql_database_instance.authority[0].name
-  name     = trimsuffix(each.value.email, ".gserviceaccount.com")
+  name     = trimsuffix(each.value, ".gserviceaccount.com")
   type     = "CLOUD_IAM_SERVICE_ACCOUNT"
 }
 
@@ -165,4 +132,4 @@ output "artifact_registry_repository" { value = try(google_artifact_registry_rep
 output "artifact_bucket_name" { value = try(google_storage_bucket.artifacts[0].name, null) }
 output "evidence_archive_bucket_name" { value = var.evidence_archive_bucket_name }
 output "secret_names" { value = { for key, secret in google_secret_manager_secret.container : key => secret.name } }
-output "runtime_service_accounts" { value = { for key, account in google_service_account.runtime : key => account.email } }
+output "runtime_service_accounts" { value = var.enabled ? var.runtime_service_accounts : {} }

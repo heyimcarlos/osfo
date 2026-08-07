@@ -2,7 +2,7 @@ variable "enabled" { type = bool }
 variable "project_id" { type = string }
 variable "region" { type = string }
 variable "name_prefix" { type = string }
-variable "terraform_service_account_email" { type = string }
+variable "runtime_service_accounts" { type = map(string) }
 variable "network_id" {
   type     = string
   nullable = true

@@ -1,5 +1,20 @@
 variable "project_id" { type = string }
 variable "terraform_service_account_email" { type = string }
+variable "runtime_service_accounts" {
+  type = map(string)
+
+  validation {
+    condition = toset(keys(var.runtime_service_accounts)) == toset([
+      "agentrun",
+      "migration",
+      "reconciliation",
+      "relay",
+      "temporal",
+      "transport",
+    ])
+    error_message = "runtime_service_accounts must contain exactly the six reviewed development identities."
+  }
+}
 variable "region" {
   type    = string
   default = "us-east4"

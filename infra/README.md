@@ -10,9 +10,10 @@ Foundation composes the environment baseline module, which owns the retained,
 development-only `us-east4` VPC, Direct VPC egress subnet, static Cloud NAT,
 private services access, private DNS, firewall rules, and an optional Temporal
 Cloud Private Service Connect endpoint. The `development/platform` root reads
-those provider resources by their reviewed names. Data authority owns zonal private-IP
-Cloud SQL PostgreSQL with IAM database authentication, runtime identities,
-Secret Manager containers and per-secret IAM, immutable Artifact Registry tags,
+those provider resources by their reviewed names. Foundation also retains the six
+runtime service-account identities, their two exact Cloud SQL roles, and three
+qualification-job `actAs` grants. Data authority owns zonal private-IP Cloud SQL
+PostgreSQL with IAM database authentication, Secret Manager containers and per-secret IAM, immutable Artifact Registry tags,
 and the disposable content-addressed artifact bucket. Command buffer owns the
 single ordered Pub/Sub topic and StreamingPull subscription.
 
@@ -28,9 +29,11 @@ subnet, static external address, Cloud NAT, router, private DNS zone, firewall,
 and private services access allocation continue to exist and may continue to
 incur cost after a platform destroy. They are not shared with production and
 the scheduled foundation refresh-only plan owns their drift. The disposable
-root creates and destroys Cloud SQL, Pub/Sub, runtime service accounts, secret
-containers and policy, Artifact Registry, the artifact bucket, qualification
-jobs, and its private database DNS record.
+root creates and destroys Cloud SQL, Pub/Sub, secret containers and policy,
+Artifact Registry, the artifact bucket, qualification jobs, and its private
+database DNS record. Retaining the named runtime identities avoids tombstoned
+IAM principals across repeated platform recreation while granting them no
+payload access beyond the explicit disposable secret policies.
 
 The reviewed variable set exposes database size and retention, storage names,
 quota expectations, process connection pools, concurrency, fixed worker counts,

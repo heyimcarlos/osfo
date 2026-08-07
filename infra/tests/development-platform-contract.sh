@@ -79,6 +79,50 @@ if rg --fixed-strings --quiet 'roles/iam.serviceAccountTokenCreator' infra/modul
   exit 1
 fi
 
+rg --fixed-strings --quiet 'resource "google_project_iam_custom_role" "platform_service_consumer"' \
+  infra/roots/foundation/main.tf
+rg --fixed-strings --quiet '"serviceusage.services.use"' infra/roots/foundation/main.tf
+rg --fixed-strings --quiet 'resource "google_service_account" "development_runtime"' \
+  infra/roots/foundation/main.tf
+rg --fixed-strings --quiet 'output "development_runtime_service_accounts"' \
+  infra/roots/foundation/outputs.tf
+rg --fixed-strings --quiet 'resource "google_project_iam_member" "development_runtime_cloud_sql"' \
+  infra/roots/foundation/main.tf
+rg --fixed-strings --quiet 'resource "google_service_account_iam_member" "development_platform_job_act_as"' \
+  infra/roots/foundation/main.tf
+rg --fixed-strings --quiet '"roles/cloudsql.client"' infra/roots/foundation/main.tf
+rg --fixed-strings --quiet '"roles/cloudsql.instanceUser"' infra/roots/foundation/main.tf
+if rg --quiet 'resource "google_(project|service_account)_iam_member"' \
+  infra/modules/data-authority/main.tf; then
+  printf 'disposable platform root must not mutate project or service-account IAM\n' >&2
+  exit 1
+fi
+platform_roles=$(sed -n '/platform_project_roles =/,/platform_role_bindings =/p' \
+  infra/roots/foundation/main.tf)
+if grep -Eq 'roles/(iam.serviceAccountAdmin|resourcemanager.projectIamAdmin|serviceusage.serviceUsageConsumer)' \
+  <<<"$platform_roles"; then
+  printf 'platform identity must not administer project or service-account IAM\n' >&2
+  exit 1
+fi
+platform_custom_roles=$(sed -n \
+  '/resource "google_project_iam_custom_role" "platform_secret_manager"/,/resource "google_project" "environment"/p' \
+  infra/roots/foundation/main.tf)
+if grep -Fq 'resourcemanager.projects.setIamPolicy' <<<"$platform_custom_roles"; then
+  printf 'platform identity must not mutate project IAM\n' >&2
+  exit 1
+fi
+
+jq -e '
+  .runtime_service_accounts == {
+    agentrun: "osfo-dev-agentrun@osfo-development-318708913.iam.gserviceaccount.com",
+    migration: "osfo-dev-migration@osfo-development-318708913.iam.gserviceaccount.com",
+    reconciliation: "osfo-dev-reconciliation@osfo-development-318708913.iam.gserviceaccount.com",
+    relay: "osfo-dev-relay@osfo-development-318708913.iam.gserviceaccount.com",
+    temporal: "osfo-dev-temporal@osfo-development-318708913.iam.gserviceaccount.com",
+    transport: "osfo-dev-transport@osfo-development-318708913.iam.gserviceaccount.com"
+  }
+' "$root/development.tfvars.json" >/dev/null
+
 rg --fixed-strings --quiet 'foundation-drift' .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'development-platform-absent.sh' .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'Report missing protected configuration' .github/workflows/terraform.yml

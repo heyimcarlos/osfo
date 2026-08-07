@@ -120,19 +120,35 @@ locals {
     "roles/cloudquotas.viewer",
     "roles/compute.networkAdmin",
     "roles/dns.admin",
-    "roles/iam.serviceAccountAdmin",
     "roles/logging.viewer",
     "roles/pubsub.admin",
-    "roles/resourcemanager.projectIamAdmin",
     "roles/run.admin",
     "roles/servicenetworking.networksAdmin",
-    "roles/serviceusage.serviceUsageConsumer",
     "roles/serviceusage.serviceUsageViewer",
     "roles/storage.admin",
   ])
 
   platform_role_bindings = {
     for role in local.platform_project_roles : role => { environment = "development", role = role }
+  }
+
+  development_runtime_identities = toset([
+    "agentrun",
+    "migration",
+    "reconciliation",
+    "relay",
+    "temporal",
+    "transport",
+  ])
+
+  development_runtime_cloud_sql_bindings = {
+    for binding in setproduct(local.development_runtime_identities, toset([
+      "roles/cloudsql.client",
+      "roles/cloudsql.instanceUser",
+      ])) : "${binding[0]}/${binding[1]}" => {
+      identity = binding[0]
+      role     = binding[1]
+    }
   }
 
   security_constraints = var.organization_id == null ? {} : {
@@ -165,6 +181,18 @@ resource "google_project_iam_custom_role" "platform_secret_manager" {
     "secretmanager.secrets.update",
     "secretmanager.versions.add",
   ]
+
+  lifecycle { prevent_destroy = true }
+
+  depends_on = [google_project_service.required, google_project_iam_member.foundation]
+}
+
+resource "google_project_iam_custom_role" "platform_service_consumer" {
+  project     = google_project.environment["development"].project_id
+  role_id     = "osfoPlatformServiceConsumer"
+  title       = "Osfo platform service consumer"
+  description = "Uses enabled project services without changing service configuration."
+  permissions = ["serviceusage.services.use"]
 
   lifecycle { prevent_destroy = true }
 
@@ -535,6 +563,46 @@ resource "google_project_iam_member" "platform_secret_manager" {
   project = google_project.environment["development"].project_id
   role    = google_project_iam_custom_role.platform_secret_manager.name
   member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+}
+
+resource "google_project_iam_member" "platform_service_consumer" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.platform_service_consumer.name
+  member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+}
+
+resource "google_project_iam_member" "development_runtime_cloud_sql" {
+  for_each = local.development_runtime_cloud_sql_bindings
+
+  project = google_project.environment["development"].project_id
+  role    = each.value.role
+  member  = "serviceAccount:${google_service_account.development_runtime[each.value.identity].email}"
+}
+
+resource "google_service_account" "development_runtime" {
+  for_each = local.development_runtime_identities
+
+  project      = google_project.environment["development"].project_id
+  account_id   = "${var.development_environment_baseline.name_prefix}-${each.key}"
+  display_name = "Osfo development ${each.key}"
+  description  = "Retained identity for repeatable disposable development platform lifecycles."
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_service_account_iam_member" "development_platform_job_act_as" {
+  for_each = {
+    for key, account in google_service_account.development_runtime : key => account
+    if contains(["agentrun", "temporal", "reconciliation"], key)
+  }
+
+  service_account_id = each.value.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
 }
 
 resource "google_storage_bucket_iam_member" "development_evidence" {
