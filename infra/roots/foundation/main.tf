@@ -852,18 +852,6 @@ resource "google_project_iam_member" "development_runtime_service_consumer" {
   member  = "serviceAccount:${google_service_account.terraform["development-runtime"].email}"
 }
 
-resource "google_project_iam_member" "development_runtime_pubsub_policy" {
-  project = google_project.environment["development"].project_id
-  role    = google_project_iam_custom_role.development_runtime_pubsub_policy_manager.name
-  member  = "serviceAccount:${google_service_account.terraform["development-runtime"].email}"
-
-  condition {
-    title       = "exact_development_agentrun_buffer"
-    description = "Restricts runtime IAM changes to the reviewed topic and subscription."
-    expression  = "resource.name == 'projects/${google_project.environment["development"].project_id}/topics/${var.development_environment_baseline.name_prefix}-agentruns' || resource.name == 'projects/${google_project.environment["development"].project_id}/subscriptions/${var.development_environment_baseline.name_prefix}-agentruns'"
-  }
-}
-
 resource "google_compute_subnetwork_iam_member" "development_runtime_network_user" {
   project    = google_project.environment["development"].project_id
   region     = var.region

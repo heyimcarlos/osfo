@@ -25,7 +25,7 @@ locals {
   subscription_name         = "${var.name_prefix}-agentruns"
   cursor_secret_name        = "${var.name_prefix}-cursor-signing"
   model_adapter_secret_name = "${var.name_prefix}-model-adapter"
-  common_proxy_args         = ["--auto-iam-authn", "--private-ip", "--address=127.0.0.1", "--port=5432", local.cloud_sql_connection_name]
+  common_proxy_args         = ["--auto-iam-authn", "--private-ip", "--address=0.0.0.0", "--port=5432", local.cloud_sql_connection_name]
   labels = {
     environment          = "development"
     managed_by           = "terraform"
@@ -445,11 +445,15 @@ resource "google_monitoring_dashboard" "runtime" {
       columns = 12
       tiles = [
         {
+          xPos   = 0
+          yPos   = 0
           width  = 12
           height = 2
           widget = { text = { content = "# Development demo only\nFixed-one relay and six-worker candidate. Production qualification: MISSING. Final us-east4 A/B/C/D admission matrix: FAIL.", format = "MARKDOWN" } }
         },
         {
+          xPos   = 0
+          yPos   = 2
           width  = 6
           height = 4
           widget = {
@@ -474,6 +478,8 @@ resource "google_monitoring_dashboard" "runtime" {
           }
         },
         {
+          xPos   = 6
+          yPos   = 2
           width  = 6
           height = 4
           widget = {
@@ -496,6 +502,8 @@ resource "google_monitoring_dashboard" "runtime" {
           }
         },
         {
+          xPos   = 0
+          yPos   = 6
           width  = 6
           height = 4
           widget = {
@@ -518,6 +526,8 @@ resource "google_monitoring_dashboard" "runtime" {
           }
         },
         {
+          xPos   = 6
+          yPos   = 6
           width  = 6
           height = 4
           widget = {
@@ -542,6 +552,8 @@ resource "google_monitoring_dashboard" "runtime" {
           }
         },
         {
+          xPos   = 0
+          yPos   = 10
           width  = 12
           height = 5
           widget = {
