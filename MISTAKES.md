@@ -253,3 +253,10 @@ a temporary path even though no copy was needed. The copy was deleted without
 being printed or consumed. Pass the original environment file directly to the
 one process that needs it, and inspect credential availability only through
 boolean presence checks that never emit values.
+
+## 2026-08-07: Setting an unsupported timeout on a serverless NEG
+
+The development HTTPS edge configured `timeout_sec` on a backend service whose
+backend is a serverless network endpoint group. Google rejects that field for
+serverless NEG backends. Leave it unset and enforce the provider boundary in the
+runtime contract.

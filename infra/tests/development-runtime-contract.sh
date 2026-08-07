@@ -124,7 +124,10 @@ done
 rg --fixed-strings --quiet \
   'infra/scripts/terraform-ci.sh -chdir=infra/roots/development/runtime test' \
   .github/workflows/terraform.yml
-rg --fixed-strings --quiet 'timeout_sec           = 3600' "$root/main.tf"
+if rg --quiet '^\s*timeout_sec\s*=' "$root/main.tf"; then
+  printf 'serverless NEG backend services must not configure timeout_sec\n' >&2
+  exit 1
+fi
 if rg --ignore-case --quiet 'OSFO_MODEL_BINDING|OSFO_OPENROUTER_MODEL|OSFO_DETERMINISTIC_MODEL_DELAY_MS|openai' "$root"; then
   printf 'runtime must use only the immutable OpenRouter MiniMax profile\n' >&2
   exit 1
