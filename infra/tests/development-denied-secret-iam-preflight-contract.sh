@@ -123,8 +123,37 @@ jq -n --arg project_id "$project_id" \
   '[{id: $project_id, type: "project"}, {id: "123456789012", type: "organization"}]' \
   >"$scratch/ancestors-with-parent.json"
 jq -n \
+  --arg project_id "$project_id" \
+  --arg project_number "$project_number" \
+  '{projectId: $project_id, projectNumber: $project_number}' \
+  >"$scratch/project.json"
+jq -n '[]' >"$scratch/project-malformed.json"
+jq -n \
+  --arg project_number "$project_number" \
+  '{projectId: "wrong-project", projectNumber: $project_number}' \
+  >"$scratch/project-wrong-id.json"
+jq -n \
+  --arg project_id "$project_id" \
+  '{projectId: $project_id, projectNumber: "not-numeric"}' \
+  >"$scratch/project-nonnumeric-number.json"
+jq -n \
+  --arg project_id "$project_id" \
+  --arg project_number "$project_number" \
+  '{projectId: $project_id, projectNumber: ($project_number + "\n")}' \
+  >"$scratch/project-number-trailing-lf.json"
+jq -n '[]' >"$scratch/project-concatenated-invalid-valid.json"
+jq -n \
+  --arg project_id "$project_id" \
+  --arg project_number "$project_number" \
+  '{projectId: $project_id, projectNumber: $project_number}' \
+  >>"$scratch/project-concatenated-invalid-valid.json"
+jq -n \
   --arg name "projects/$project_number/secrets/$target_secret" \
   '{name: $name}' >"$scratch/secret.json"
+jq -n '[]' >"$scratch/secret-concatenated-invalid-valid.json"
+jq -n \
+  --arg name "projects/$project_number/secrets/$target_secret" \
+  '{name: $name}' >>"$scratch/secret-concatenated-invalid-valid.json"
 jq -n \
   --arg name "projects/$project_id/secrets/$target_secret" \
   '{name: $name}' >"$scratch/secret-text-project.json"
@@ -134,6 +163,24 @@ jq -n \
 jq -n \
   --arg name "projects//secrets/$target_secret" \
   '{name: $name}' >"$scratch/secret-empty-project.json"
+jq -n \
+  --arg project_number "$project_number" \
+  --arg target_secret "$target_secret" \
+  '{name: ("projects/" + $project_number + "\n/secrets/" + $target_secret)}' \
+  >"$scratch/secret-project-trailing-lf.json"
+jq -n \
+  --arg project_number "$project_number" \
+  --arg target_secret "$target_secret" \
+  '{name: ("projects/" + $project_number + "\r/secrets/" + $target_secret)}' \
+  >"$scratch/secret-project-trailing-cr.json"
+jq -n \
+  --arg project_number "$project_number" \
+  --arg target_secret "$target_secret" \
+  '{name: ("projects/" + $project_number + " /secrets/" + $target_secret)}' \
+  >"$scratch/secret-project-trailing-space.json"
+jq -n \
+  --arg name "projects/999999999999/secrets/$target_secret" \
+  '{name: $name}' >"$scratch/secret-wrong-numeric-project.json"
 jq -n \
   --arg name "projects/$project_number/secrets/wrong-secret" \
   '{name: $name}' >"$scratch/secret-wrong-id.json"
@@ -212,6 +259,10 @@ printf '%s\n' \
   '    ;;' \
   '  "projects get-ancestors osfo-development-123456789 --format=json") cat "$MOCK_ANCESTORS" ;;' \
   '  "projects get-iam-policy osfo-development-123456789 --format=json") cat "$MOCK_PROJECT_POLICY" ;;' \
+  '  "projects describe osfo-development-123456789 --format=json")' \
+  '    [[ "${MOCK_PROJECT_MODE:-present}" != absent ]] || exit 1' \
+  '    cat "$MOCK_PROJECT"' \
+  '    ;;' \
   '  "secrets describe osfo-dev-model-adapter --project=osfo-development-123456789 --format=json") cat "$MOCK_SECRET" ;;' \
   '  "secrets get-iam-policy osfo-dev-model-adapter --project=osfo-development-123456789 --format=json") cat "$MOCK_SECRET_POLICY" ;;' \
   '  "iam roles describe roles/secretmanager.secretAccessor --format=json") cat "$MOCK_ACCESSOR_ROLE" ;;' \
@@ -257,6 +308,8 @@ run_preflight() {
   local identity_mode=${7:-present}
   local ancestors=${8:-$scratch/ancestors.json}
   local secret=${9:-$scratch/secret.json}
+  local project=${10:-$scratch/project.json}
+  local project_mode=${11:-present}
   local expected_account=$foundation_account
   if [[ "$scope" == target-secret ]]; then
     expected_account=$platform_account
@@ -271,6 +324,8 @@ run_preflight() {
     MOCK_IDENTITY="$identity" \
     MOCK_IDENTITY_MODE="$identity_mode" \
     MOCK_ANCESTORS="$ancestors" \
+    MOCK_PROJECT="$project" \
+    MOCK_PROJECT_MODE="$project_mode" \
     MOCK_PROJECT_POLICY="$project_policy" \
     MOCK_SECRET="$secret" \
     MOCK_SECRET_POLICY="$secret_policy" \
@@ -372,8 +427,13 @@ expect_secret_record_fails() {
 
 expect_secret_record_fails textual-project-secret "$scratch/secret-text-project.json"
 for malformed_secret in \
+  concatenated-invalid-valid \
   nonnumeric-project \
   empty-project \
+  project-trailing-lf \
+  project-trailing-cr \
+  project-trailing-space \
+  wrong-numeric-project \
   wrong-id \
   extra-segment \
   missing-segment \
@@ -383,6 +443,43 @@ for malformed_secret in \
   expect_secret_record_fails \
     "malformed-target-secret-$malformed_secret" \
     "$scratch/secret-$malformed_secret.json"
+done
+
+expect_project_record_fails() {
+  local scenario=$1
+  local project=$2
+  local project_mode=$3
+  local expected_failure=$4
+  local output=$scratch/$scenario-output
+
+  if run_preflight \
+    target-secret "$scratch/varset.json" "$scratch/project-policy.json" \
+    "$scratch/secret-policy.json" "$output" \
+    "$scratch/identity.json" present "$scratch/ancestors.json" \
+    "$scratch/secret.json" "$project" "$project_mode"; then
+    printf '%s denied-secret IAM preflight must fail closed\n' "$scenario" >&2
+    exit 1
+  fi
+  grep -Fxq "$expected_failure" "$output"
+  if grep -Fq 'PASS:' "$output"; then
+    printf '%s denied-secret IAM preflight must not report PASS\n' "$scenario" >&2
+    exit 1
+  fi
+}
+
+expect_project_record_fails \
+  absent-live-project "$scratch/project.json" absent \
+  'FAIL: development project does not exist or is unreadable'
+for malformed_project in \
+  malformed \
+  wrong-id \
+  nonnumeric-number \
+  number-trailing-lf \
+  concatenated-invalid-valid; do
+  expect_project_record_fails \
+    "malformed-live-project-$malformed_project" \
+    "$scratch/project-$malformed_project.json" present \
+    'FAIL: development project live record is malformed or does not match configuration'
 done
 
 expect_preflight_fails \
