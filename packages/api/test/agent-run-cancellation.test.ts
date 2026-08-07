@@ -6,12 +6,14 @@ import {
   AgentRunCancellationReceipt,
   MessageAdmission,
   ThreadResume,
+  ThreadStreamLifecycle,
   type AgentRunCancellationService,
   type MessageAdmissionError,
   type SubmitMessageCommand,
   type ThreadResumeService,
 } from "../src/index.js";
 import { OsfoApiLive } from "../src/server.js";
+import { makeTestThreadStreamLifecycle } from "./thread-stream-lifecycle-harness.js";
 
 const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
 const agentRunId = "96ae49eb-b1ab-41cb-a468-b68893ec82c3";
@@ -41,17 +43,22 @@ describe("AgentRun cancellation API", () => {
       history: (): ReturnType<ThreadResumeService["history"]> => Effect.never,
       stream: (): ReturnType<ThreadResumeService["stream"]> => Effect.never,
     });
+    const testLifecycle = makeTestThreadStreamLifecycle(1);
+    const lifecycle = testLifecycle.lifecycle;
     const web = HttpRouter.toWebHandler(
       OsfoApiLive.pipe(
         Layer.provide(Layer.succeed(AgentRunCancellation)(cancellation)),
         Layer.provide(Layer.succeed(MessageAdmission)(admission)),
         Layer.provide(Layer.succeed(ThreadResume)(resume)),
+        Layer.provide(Layer.succeed(ThreadStreamLifecycle)(lifecycle)),
         Layer.provideMerge(HttpServer.layerServices),
       ),
     );
-    const context = Context.make(AgentRunCancellation, cancellation)
-      .pipe(Context.add(MessageAdmission, admission))
-      .pipe(Context.add(ThreadResume, resume));
+    const context = Context.make(AgentRunCancellation, cancellation).pipe(
+      Context.add(MessageAdmission, admission),
+      Context.add(ThreadResume, resume),
+      Context.add(ThreadStreamLifecycle, lifecycle),
+    );
 
     try {
       const response = await web.handler(
@@ -85,6 +92,7 @@ describe("AgentRun cancellation API", () => {
       ]);
     } finally {
       await web.dispose();
+      await testLifecycle.dispose();
     }
   });
 });

@@ -19,6 +19,7 @@ const fixedPointMigrations = [
   "20260807045646_warm_wolf_cub",
   "20260807050822_dazzling_mojo",
   "20260807053832_sticky_guardian",
+  "20260807064812_thread_event_notifications",
 ] as const;
 
 const sourceMigrations = fileURLToPath(new URL("../packages/db/drizzle", import.meta.url));
