@@ -83,6 +83,98 @@ describe("OpenAI Responses ModelCall executor", () => {
     }),
   );
 
+  it.effect("rejects a completed response without streamed text output", () =>
+    Effect.gen(function* () {
+      const sse = [
+        'data: {"type":"response.created","response":{"id":"resp_empty"}}',
+        "",
+        'data: {"type":"response.completed","response":{"id":"resp_empty","status":"completed","model":"gpt-4.1-mini-2025-04-14","store":false,"usage":{"input_tokens":4,"output_tokens":0}}}',
+        "",
+      ].join("\n");
+      const http = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(sse, {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          ),
+        ),
+      );
+      const result = yield* ModelCallExecutor.use((executor) =>
+        Stream.runDrain(execute(executor)),
+      ).pipe(
+        Effect.provide(layer),
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.exit,
+      );
+
+      expect(Exit.isFailure(result)).toBe(true);
+      if (Exit.isFailure(result)) {
+        expect(result.cause.reasons).toContainEqual(
+          expect.objectContaining({
+            _tag: "Fail",
+            error: expect.objectContaining({
+              _tag: "ModelCallExecutionError",
+              cause: "Provider completed without text output",
+              dispatchEvidence: { type: "confirmed", providerRequestId: "resp_empty" },
+              usage: { type: "unknown" },
+            }),
+          }),
+        );
+      }
+    }),
+  );
+
+  it.effect("rejects non-text-only output item events", () =>
+    Effect.gen(function* () {
+      const sse = [
+        'data: {"type":"response.created","response":{"id":"resp_tool"}}',
+        "",
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_123","type":"function_call","status":"in_progress","call_id":"call_123","name":"lookup","arguments":""},"sequence_number":1}',
+        "",
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_123","type":"function_call","status":"completed","call_id":"call_123","name":"lookup","arguments":"{}"},"sequence_number":2}',
+        "",
+        'data: {"type":"response.completed","response":{"id":"resp_tool","status":"completed","model":"gpt-4.1-mini-2025-04-14","store":false,"usage":{"input_tokens":4,"output_tokens":2}}}',
+        "",
+      ].join("\n");
+      const http = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(sse, {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          ),
+        ),
+      );
+      const result = yield* ModelCallExecutor.use((executor) =>
+        Stream.runDrain(execute(executor)),
+      ).pipe(
+        Effect.provide(layer),
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.exit,
+      );
+
+      expect(Exit.isFailure(result)).toBe(true);
+      if (Exit.isFailure(result)) {
+        expect(result.cause.reasons).toContainEqual(
+          expect.objectContaining({
+            _tag: "Fail",
+            error: expect.objectContaining({
+              _tag: "ModelCallExecutionError",
+              cause: "Provider emitted unsupported output item function_call",
+              dispatchEvidence: { type: "confirmed", providerRequestId: "resp_tool" },
+              usage: { type: "unknown" },
+            }),
+          }),
+        );
+      }
+    }),
+  );
+
   it.effect("makes one request and reports confirmed dispatch on an HTTP failure", () =>
     Effect.gen(function* () {
       let requestCount = 0;

@@ -40,16 +40,35 @@ const ProviderFailureEventSchema = Schema.Struct({
   type: Schema.Literals(["error", "response.failed", "response.incomplete"]),
 });
 
+const OutputItemEventSchema = Schema.Struct({
+  type: Schema.Literals(["response.output_item.added", "response.output_item.done"]),
+  item: Schema.Struct({
+    type: NonEmptyText,
+    content: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          type: NonEmptyText,
+        }),
+      ),
+    ),
+  }),
+});
+
+const ContentPartEventSchema = Schema.Struct({
+  type: Schema.Literals(["response.content_part.added", "response.content_part.done"]),
+  part: Schema.Struct({
+    type: NonEmptyText,
+    text: Schema.optional(Schema.String),
+  }),
+});
+
+const OutputTextDoneEventSchema = Schema.Struct({
+  type: Schema.Literal("response.output_text.done"),
+  text: Schema.String,
+});
+
 const IgnoredEventSchema = Schema.Struct({
-  type: Schema.Literals([
-    "response.queued",
-    "response.in_progress",
-    "response.output_item.added",
-    "response.output_item.done",
-    "response.content_part.added",
-    "response.content_part.done",
-    "response.output_text.done",
-  ]),
+  type: Schema.Literals(["response.queued", "response.in_progress"]),
 });
 
 const ResponsesEventSchema = Schema.Union([
@@ -57,6 +76,9 @@ const ResponsesEventSchema = Schema.Union([
   OutputTextDeltaEventSchema,
   CompletedEventSchema,
   ProviderFailureEventSchema,
+  OutputItemEventSchema,
+  ContentPartEventSchema,
+  OutputTextDoneEventSchema,
   IgnoredEventSchema,
 ]);
 
@@ -104,6 +126,7 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
         let fragmentIndex = 0;
         let pendingDeltas: Array<string> = [];
         let providerRequestId: string | undefined;
+        let textOutputObserved = false;
 
         const flush = (): ReadonlyArray<ModelCallObservation> => {
           if (pendingDeltas.length === 0) return [];
@@ -131,6 +154,7 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
                   return yield* executionError(session, "Output arrived after response.completed");
                 }
                 if (event.delta.length === 0) return [];
+                textOutputObserved = true;
                 pendingDeltas.push(event.delta);
                 return pendingDeltas.length >=
                   config.profile.permittedAdaptations.coalesceUpToDeltas
@@ -146,12 +170,15 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
                 if (providerRequestId !== undefined && providerRequestId !== event.response.id) {
                   return yield* executionError(session, "Provider response identity changed");
                 }
-                completed = true;
                 providerRequestId = event.response.id;
                 session.dispatchEvidence = {
                   type: "confirmed",
                   providerRequestId,
                 };
+                if (!textOutputObserved) {
+                  return yield* executionError(session, "Provider completed without text output");
+                }
+                completed = true;
                 const outcome = {
                   dispatchEvidence: session.dispatchEvidence,
                   usage: {
@@ -167,6 +194,35 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
               case "response.failed":
               case "response.incomplete":
                 return yield* executionError(session, `Provider emitted ${event.type}`);
+              case "response.output_item.added":
+              case "response.output_item.done": {
+                if (event.item.type !== "message") {
+                  return yield* executionError(
+                    session,
+                    `Provider emitted unsupported output item ${event.item.type}`,
+                  );
+                }
+                if (event.item.content === undefined) {
+                  return yield* executionError(session, "Provider emitted invalid output message");
+                }
+                const unsupported = event.item.content.find((part) => part.type !== "output_text");
+                return unsupported === undefined
+                  ? []
+                  : yield* executionError(
+                      session,
+                      `Provider emitted unsupported content part ${unsupported.type}`,
+                    );
+              }
+              case "response.content_part.added":
+              case "response.content_part.done":
+                return event.part.type === "output_text" && event.part.text !== undefined
+                  ? []
+                  : yield* executionError(
+                      session,
+                      `Provider emitted unsupported content part ${event.part.type}`,
+                    );
+              case "response.output_text.done":
+                return [];
               default:
                 return [];
             }
