@@ -126,6 +126,8 @@ describe("three-tab Oz Reference Journey", () => {
           executionProfileRef,
           workerId: "reference-worker",
           leaseDurationMs: 30_000,
+          leaseRenewalIntervalMs: 10_000,
+          cancellationPollIntervalMs: 100,
         }).pipe(
           Layer.provide(repositoryLayer),
           Layer.provide(
@@ -137,7 +139,7 @@ describe("three-tab Oz Reference Journey", () => {
           Layer.provide(makeDeterministicModelCallExecutorLayer()),
         );
         yield* Effect.forkScoped(
-          runStreamingPullWorker({ executionSlots: 1 }).pipe(
+          runStreamingPullWorker({ drainTimeoutMs: 1_000, executionSlots: 1 }).pipe(
             Effect.provide(workerLayer),
             Effect.provide(Layer.succeed(StreamingPullSource, pubsub.source)),
           ),

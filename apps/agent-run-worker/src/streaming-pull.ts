@@ -1,10 +1,22 @@
-import { PubSub, type Message, type Subscription } from "@google-cloud/pubsub";
+import { PubSub, type Message } from "@google-cloud/pubsub";
 import { AgentRunWorker, decodeRunnableDeliveryData } from "@osfo/agent-run";
-import { Context, Data, Deferred, Effect, FiberMap, Layer, Schema, Semaphore } from "effect";
+import {
+  Context,
+  Data,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+  Schema,
+  Semaphore,
+} from "effect";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 
 export const GoogleStreamingPullConfigSchema = Schema.Struct({
+  closeTimeoutMs: PositiveInteger,
   projectId: Schema.NonEmptyString,
   subscriptionId: Schema.NonEmptyString,
   streamCount: PositiveInteger,
@@ -83,6 +95,7 @@ const makeGoogleSource = (config: GoogleStreamingPullConfig) =>
       | undefined;
     let intakeStopped = false;
     let closed = false;
+    let subscriptionClose: Promise<unknown> | undefined;
 
     const start = (handlers: StreamingPullHandlers) =>
       Effect.try({
@@ -101,21 +114,31 @@ const makeGoogleSource = (config: GoogleStreamingPullConfig) =>
     const stop = () =>
       Effect.suspend(() => {
         if (intakeStopped) return Effect.void;
-        intakeStopped = true;
-        return Effect.sync(() => {
-          if (activeHandlers !== undefined) {
-            subscription.removeListener("message", activeHandlers.message);
-            subscription.removeListener("error", activeHandlers.error);
-            subscription.removeListener("close", activeHandlers.close);
-          }
+        return Effect.gen(function* () {
+          subscriptionClose = yield* beginStreamingPullSubscriptionClose(subscription);
+          intakeStopped = true;
+          yield* Effect.try({
+            try: () => {
+              if (activeHandlers !== undefined) {
+                subscription.removeListener("message", activeHandlers.message);
+                subscription.removeListener("error", activeHandlers.error);
+                subscription.removeListener("close", activeHandlers.close);
+              }
+            },
+            catch: (cause) => new StreamingPullSourceUnavailable({ cause, operation: "stop" }),
+          });
         });
       });
 
     const close = () =>
       Effect.suspend(() => {
         if (closed) return Effect.void;
-        return stop().pipe(
-          Effect.andThen(closeGoogleClient(subscription, client)),
+        return closeStreamingPullSource(
+          stop(),
+          { close: () => subscriptionClose ?? subscription.close() },
+          client,
+          config.closeTimeoutMs,
+        ).pipe(
           Effect.tap(() =>
             Effect.sync(() => {
               closed = true;
@@ -127,19 +150,95 @@ const makeGoogleSource = (config: GoogleStreamingPullConfig) =>
     return StreamingPullSource.of({ close, start, stop });
   });
 
-const closeGoogleClient = (subscription: Subscription, client: PubSub) =>
-  Effect.tryPromise({
-    try: async () => {
-      await subscription.close();
-      await client.close();
+interface StreamingPullCloseResource {
+  readonly close: () => Promise<unknown>;
+}
+
+export const beginStreamingPullSubscriptionClose = (subscription: StreamingPullCloseResource) =>
+  Effect.try({
+    try: () => {
+      const closePromise = subscription.close();
+      void closePromise.then(undefined, () => undefined);
+      return closePromise;
     },
     catch: (cause) => new StreamingPullSourceUnavailable({ cause, operation: "stop" }),
+  });
+
+const closeStreamingPullResource = (
+  resourceName: "client" | "subscription",
+  resource: StreamingPullCloseResource,
+  timeoutMs: number,
+) =>
+  Effect.tryPromise({
+    try: () => resource.close(),
+    catch: (cause) => new StreamingPullSourceUnavailable({ cause, operation: "stop" }),
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: timeoutMs,
+      orElse: () =>
+        Effect.fail(
+          new StreamingPullSourceUnavailable({
+            cause: `${resourceName} close deadline exceeded`,
+            operation: "stop",
+          }),
+        ),
+    }),
+  );
+
+export const closeStreamingPullResources = (
+  subscription: StreamingPullCloseResource,
+  client: StreamingPullCloseResource,
+  timeoutMs: number,
+) =>
+  Effect.all(
+    [
+      closeStreamingPullResource("subscription", subscription, timeoutMs).pipe(Effect.exit),
+      closeStreamingPullResource("client", client, timeoutMs).pipe(Effect.exit),
+    ],
+    { concurrency: 2 },
+  ).pipe(
+    Effect.flatMap(([subscriptionExit, clientExit]) => {
+      const failures = [
+        ...(Exit.isFailure(subscriptionExit)
+          ? [{ resource: "subscription" as const, cause: subscriptionExit.cause }]
+          : []),
+        ...(Exit.isFailure(clientExit)
+          ? [{ resource: "client" as const, cause: clientExit.cause }]
+          : []),
+      ];
+      return failures.length === 0
+        ? Effect.void
+        : Effect.fail(
+            new StreamingPullSourceUnavailable({
+              cause: { type: "StreamingPullCloseFailures", failures },
+              operation: "stop",
+            }),
+          );
+    }),
+  );
+
+export const closeStreamingPullSource = (
+  stop: Effect.Effect<void, StreamingPullSourceUnavailable>,
+  subscription: StreamingPullCloseResource,
+  client: StreamingPullCloseResource,
+  timeoutMs: number,
+) =>
+  Effect.gen(function* () {
+    const stopExit = yield* Effect.exit(stop);
+    const closeExit = yield* Effect.exit(
+      closeStreamingPullResources(subscription, client, timeoutMs),
+    );
+    if (Exit.isSuccess(stopExit) && Exit.isSuccess(closeExit)) return;
+    return yield* new StreamingPullSourceUnavailable({
+      cause: { type: "StreamingPullSourceCloseFailures", stopExit, closeExit },
+      operation: "stop",
+    });
   });
 
 const googleSourceLayer = (config: GoogleStreamingPullConfig) =>
   Layer.effect(
     StreamingPullSource,
-    Effect.acquireRelease(makeGoogleSource(config), (source) => source.close().pipe(Effect.ignore)),
+    Effect.acquireRelease(makeGoogleSource(config), (source) => source.close().pipe(Effect.orDie)),
   );
 
 export const makeGoogleStreamingPullSourceLayer = (config: GoogleStreamingPullConfig) =>
@@ -151,6 +250,7 @@ export const makeGoogleStreamingPullSourceLayer = (config: GoogleStreamingPullCo
   );
 
 export const StreamingPullWorkerConfigSchema = Schema.Struct({
+  drainTimeoutMs: PositiveInteger,
   executionSlots: PositiveInteger,
 });
 
@@ -198,19 +298,52 @@ const processMessage = (message: StreamingPullMessage) =>
     ),
   );
 
-export const runStreamingPullWorker = (
-  config: StreamingPullWorkerConfig,
-): Effect.Effect<void, StreamingPullSourceUnavailable, AgentRunWorker | StreamingPullSource> =>
-  Effect.scoped(
+export interface StreamingPullWorkerController {
+  readonly failStop: (cause: StreamingPullSourceUnavailable) => Effect.Effect<never>;
+}
+
+export const makeStreamingPullWorker =
+  (controller: StreamingPullWorkerController) =>
+  (
+    config: StreamingPullWorkerConfig,
+  ): Effect.Effect<void, StreamingPullSourceUnavailable, AgentRunWorker | StreamingPullSource> =>
     Effect.gen(function* () {
       const source = yield* StreamingPullSource;
       const execution = yield* Semaphore.make(config.executionSlots);
-      const fibers = yield* FiberMap.make<string, void, never>();
-      const run = yield* FiberMap.runtime(fibers)<AgentRunWorker>();
+      const context = yield* Effect.context<AgentRunWorker>();
+      const run = Effect.runForkWith(context);
+      const fibers = new Map<string, Fiber.Fiber<unknown, unknown>>();
+      let empty = Deferred.makeUnsafe<void>();
+      Deferred.doneUnsafe(empty, Effect.void);
       const sourceFailure = yield* Deferred.make<void, StreamingPullSourceUnavailable>();
       const lanes = new Map<string, OrderingLane>();
       let accepting = true;
       let sequence = 0;
+
+      const awaitEmpty = Effect.suspend(() => Deferred.await(empty));
+      const interruptDeliveries = Effect.sync(() => {
+        for (const fiber of fibers.values()) fiber.interruptUnsafe();
+      });
+      const observeSourceOperation = Effect.fn("StreamingPull.observeSourceOperation")(function* (
+        operation: Effect.Effect<void, StreamingPullSourceUnavailable>,
+        operationName: "close" | "stop",
+      ) {
+        const completed = Deferred.makeUnsafe<void, StreamingPullSourceUnavailable>();
+        run(Effect.exit(operation).pipe(Effect.flatMap((exit) => Deferred.done(completed, exit))));
+        const observed = yield* Deferred.await(completed).pipe(
+          Effect.exit,
+          Effect.timeoutOption(config.drainTimeoutMs),
+        );
+        if (Option.isNone(observed)) {
+          return yield* controller.failStop(
+            new StreamingPullSourceUnavailable({
+              cause: `StreamingPull source ${operationName} deadline exceeded`,
+              operation: "stop",
+            }),
+          );
+        }
+        return observed.value;
+      });
 
       const schedule = (message: StreamingPullMessage) => {
         const key = message.orderingKey ?? message.id;
@@ -231,10 +364,24 @@ export const runStreamingPullWorker = (
             accepting ? processMessage(message) : settleOrLog(message, "nack"),
           ),
         );
-        run(
-          `${message.id}:${sequence}`,
-          lane.semaphore.withPermit(handle).pipe(Effect.ensuring(releaseLane)),
-        );
+        const fiberKey = `${message.id}:${sequence}`;
+        const tracked: Effect.Effect<void, never, AgentRunWorker> = lane.semaphore
+          .withPermit(handle)
+          .pipe(
+            Effect.ensuring(releaseLane),
+            Effect.ensuring(
+              Effect.sync(() => {
+                fibers.delete(fiberKey);
+                if (fibers.size === 0) Deferred.doneUnsafe(empty, Effect.void);
+              }),
+            ),
+          );
+        run<void, never>(tracked, {
+          onFiberStart: (fiber) => {
+            if (fibers.size === 0) empty = Deferred.makeUnsafe();
+            fibers.set(fiberKey, fiber);
+          },
+        });
       };
 
       const handlers: StreamingPullHandlers = {
@@ -256,20 +403,44 @@ export const runStreamingPullWorker = (
         () =>
           Effect.gen(function* () {
             accepting = false;
-            yield* source
-              .stop()
-              .pipe(
-                Effect.catch((cause) => Effect.logError("StreamingPull source stop failed", cause)),
+            const stopExit = yield* observeSourceOperation(source.stop(), "stop");
+            const drained = yield* awaitEmpty.pipe(Effect.timeoutOption(config.drainTimeoutMs));
+            let drainFailure: StreamingPullSourceUnavailable | undefined;
+            if (Option.isNone(drained)) {
+              const forced = yield* interruptDeliveries.pipe(
+                Effect.andThen(awaitEmpty),
+                Effect.timeoutOption(config.drainTimeoutMs),
               );
-            yield* FiberMap.awaitEmpty(fibers);
-            yield* source
-              .close()
-              .pipe(
-                Effect.catch((cause) =>
-                  Effect.logError("StreamingPull source close failed", cause),
-                ),
+              if (Option.isNone(forced)) {
+                drainFailure = new StreamingPullSourceUnavailable({
+                  cause: "AgentRun delivery drain did not settle after forced interruption",
+                  operation: "stop",
+                });
+              }
+            }
+            const closeExit = yield* observeSourceOperation(source.close(), "close");
+            if (drainFailure !== undefined) return yield* controller.failStop(drainFailure);
+            if (Exit.isFailure(stopExit) || Exit.isFailure(closeExit)) {
+              return yield* controller.failStop(
+                new StreamingPullSourceUnavailable({
+                  cause: { type: "StreamingPullShutdownFailure", stopExit, closeExit },
+                  operation: "stop",
+                }),
               );
+            }
           }),
       );
-    }),
-  );
+    });
+
+const productionStreamingPullController: StreamingPullWorkerController = {
+  failStop: (cause) =>
+    Effect.logFatal("StreamingPull shutdown could not release owned resources", cause).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          process.abort();
+        }),
+      ),
+    ),
+};
+
+export const runStreamingPullWorker = makeStreamingPullWorker(productionStreamingPullController);

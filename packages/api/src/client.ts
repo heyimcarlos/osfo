@@ -1,5 +1,10 @@
 import { Data, Effect, Layer, Schema, Stream } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+} from "effect/unstable/http";
 import { HttpApiClient, HttpApiMiddleware } from "effect/unstable/httpapi";
 import { OsfoApi } from "./api.js";
 import {
@@ -57,6 +62,9 @@ const isDefiniteReconciliationResult = Schema.is(
   Schema.Union([AdmissionNotAccepted, IdempotencyConflict, ThreadNotFound]),
 );
 
+const isAmbiguousClientFailure = (error: unknown) =>
+  HttpClientError.isHttpClientError(error) || Schema.isSchemaError(error);
+
 export const submitThreadMessage = Effect.fn("OsfoApiClient.submitThreadMessage")(function* (
   command: SubmitThreadMessage,
 ) {
@@ -110,6 +118,25 @@ export const submitThreadMessage = Effect.fn("OsfoApiClient.submitThreadMessage"
       submit.pipe(Effect.matchEffect({ onFailure: () => reconcile, onSuccess: Effect.succeed })),
     ),
   );
+});
+
+export interface CancelThreadAgentRun extends ApiClientOptions {
+  readonly threadId: string;
+  readonly agentRunId: string;
+}
+
+export const cancelThreadAgentRun = Effect.fn("OsfoApiClient.cancelThreadAgentRun")(function* (
+  command: CancelThreadAgentRun,
+) {
+  const client = yield* makeApiClient(command);
+  const receipt = yield* client.threads
+    .cancelAgentRun({
+      params: { threadId: command.threadId, agentRunId: command.agentRunId },
+      payload: { protocolVersion: 1 },
+    })
+    .pipe(Effect.catchIf(isAmbiguousClientFailure, () => Effect.fail(new CommitUnknown())));
+  if (receipt.agentRunId !== command.agentRunId) return yield* new CommitUnknown();
+  return receipt;
 });
 
 export interface GetThreadSnapshot extends ApiClientOptions {

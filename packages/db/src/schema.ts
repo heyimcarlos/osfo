@@ -202,6 +202,13 @@ export const agentRuns = pgTable(
     claimEpoch: bigint("claim_epoch", { mode: "bigint" }).notNull().default(0n),
     claimOwner: text("claim_owner"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true, mode: "string" }),
+    cancellationRequestedAt: timestamp("cancellation_requested_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    cleanupDeadlineAt: timestamp("cleanup_deadline_at", { withTimezone: true, mode: "string" }),
+    cleanupDisposition: text("cleanup_disposition"),
+    externalWorkMayContinue: boolean("external_work_may_continue"),
     executionProfileRef: text("execution_profile_ref").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
   },
@@ -239,6 +246,29 @@ export const agentRuns = pgTable(
         OR (${table.state} <> 'running'
           AND ${table.claimOwner} IS NULL
           AND ${table.leaseExpiresAt} IS NULL)
+      )) IS TRUE`,
+    ),
+    check(
+      "agent_runs_cancellation_request_check",
+      sql`((${table.cancellationRequestedAt} IS NULL) = (${table.cleanupDeadlineAt} IS NULL))`,
+    ),
+    check(
+      "agent_runs_cleanup_check",
+      sql`((
+        (${table.state} = 'canceled'
+          AND ${table.cancellationRequestedAt} IS NOT NULL
+          AND ${table.cleanupDeadlineAt} IS NOT NULL
+          AND (
+            ${table.cleanupDisposition} IN ('completed', 'deadlineExceeded')
+            OR (
+              ${table.cleanupDisposition} = 'unknown'
+              AND ${table.externalWorkMayContinue} = true
+            )
+          )
+          AND ${table.externalWorkMayContinue} IS NOT NULL)
+        OR (${table.state} <> 'canceled'
+          AND ${table.cleanupDisposition} IS NULL
+          AND ${table.externalWorkMayContinue} IS NULL)
       )) IS TRUE`,
     ),
     index("agent_runs_expired_claim_idx")
@@ -295,11 +325,19 @@ export const threadEvents = pgTable(
         'AssistantOutputAppended',
         'AssistantOutputCompleted',
         'AssistantOutputInterrupted',
+        'AgentRunCancellationRequested',
+        'AgentRunCanceled',
         'AgentRunSucceeded',
         'AgentRunFailed'
       )`,
     ),
-    check("thread_events_event_version_check", sql`${table.eventVersion} = 1`),
+    check(
+      "thread_events_event_version_check",
+      sql`(
+        (${table.eventType} = 'AssistantOutputInterrupted' AND ${table.eventVersion} IN (1, 2))
+        OR (${table.eventType} <> 'AssistantOutputInterrupted' AND ${table.eventVersion} = 1)
+      )`,
+    ),
     check("thread_events_payload_object_check", sql`jsonb_typeof(${table.payload}) = 'object'`),
     check(
       "thread_events_payload_run_check",
@@ -307,7 +345,7 @@ export const threadEvents = pgTable(
     ),
     check(
       "thread_events_payload_shape_check",
-      sql`CASE ${table.eventType}
+      sql`(CASE ${table.eventType}
         WHEN 'UserMessageAppended' THEN
           ${table.payload} = jsonb_build_object(
             'userMessageId', ${table.payload} ->> 'userMessageId',
@@ -330,8 +368,25 @@ export const threadEvents = pgTable(
           ${table.payload} = jsonb_build_object(
             'assistantOutputId', ${table.payload} ->> 'assistantOutputId',
             'agentRunId', ${table.payload} ->> 'agentRunId',
-            'cause', 'modelCallFailed'
+            'cause', ${table.payload} ->> 'cause'
           )
+          AND (
+            (${table.eventVersion} = 1 AND ${table.payload} ->> 'cause' = 'modelCallFailed')
+            OR (${table.eventVersion} = 2 AND ${table.payload} ->> 'cause' = 'agentRunCanceled')
+          )
+        WHEN 'AgentRunCancellationRequested' THEN
+          ${table.payload} = jsonb_build_object('agentRunId', ${table.payload} ->> 'agentRunId')
+        WHEN 'AgentRunCanceled' THEN
+          ${table.payload} = jsonb_build_object(
+            'agentRunId', ${table.payload} ->> 'agentRunId',
+            'cleanupDisposition', ${table.payload} -> 'cleanupDisposition',
+            'externalWorkMayContinue', ${table.payload} -> 'externalWorkMayContinue'
+          )
+          AND ${table.payload} -> 'cleanupDisposition' IN (
+            jsonb_build_object('type', 'completed'),
+            jsonb_build_object('type', 'deadlineExceeded')
+          )
+          AND jsonb_typeof(${table.payload} -> 'externalWorkMayContinue') = 'boolean'
         WHEN 'AgentRunSucceeded' THEN
           ${table.payload} = jsonb_build_object('agentRunId', ${table.payload} ->> 'agentRunId')
         WHEN 'AgentRunFailed' THEN
@@ -340,7 +395,7 @@ export const threadEvents = pgTable(
             'cause', 'modelCallFailed'
           )
         ELSE false
-      END`,
+      END) IS TRUE`,
     ),
     check(
       "thread_events_payload_content_check",
@@ -555,7 +610,7 @@ export const assistantOutputs = pgTable(
           AND ${table.interruptionCause} IS NULL
           AND ${table.terminatedAt} IS NOT NULL)
         OR (${table.state} = 'interrupted'
-          AND ${table.interruptionCause} = 'modelCallFailed'
+          AND ${table.interruptionCause} IN ('modelCallFailed', 'agentRunCanceled')
           AND ${table.terminatedAt} IS NOT NULL)
       )) IS TRUE`,
     ),
@@ -581,7 +636,10 @@ export const modelCalls = pgTable(
     unique("model_calls_call_run_unique").on(table.modelCallId, table.agentRunId),
     check("model_calls_binding_check", sql`length(${table.modelBinding}) BETWEEN 1 AND 255`),
     check("model_calls_prompt_check", sql`length(${table.prompt}) BETWEEN 1 AND 16384`),
-    check("model_calls_state_check", sql`${table.state} IN ('pending', 'succeeded', 'failed')`),
+    check(
+      "model_calls_state_check",
+      sql`${table.state} IN ('pending', 'succeeded', 'failed', 'canceled')`,
+    ),
     check(
       "model_calls_outcome_check",
       sql`((
@@ -593,6 +651,9 @@ export const modelCalls = pgTable(
           AND ${table.completedAt} IS NOT NULL)
         OR (${table.state} = 'failed'
           AND ${table.failureCause} = 'modelCallFailed'
+          AND ${table.completedAt} IS NOT NULL)
+        OR (${table.state} = 'canceled'
+          AND ${table.failureCause} IS NULL
           AND ${table.completedAt} IS NOT NULL)
       )) IS TRUE`,
     ),
@@ -612,6 +673,8 @@ export const modelCallAttempts = pgTable(
     usageType: text("usage_type").notNull().default("unknown"),
     inputUnits: integer("input_units"),
     outputUnits: integer("output_units"),
+    cleanupDisposition: text("cleanup_disposition"),
+    externalWorkMayContinue: boolean("external_work_may_continue"),
     startedAt: timestamp("started_at", { withTimezone: true, mode: "string" }).notNull(),
     finishedAt: timestamp("finished_at", { withTimezone: true, mode: "string" }),
   },
@@ -635,7 +698,7 @@ export const modelCallAttempts = pgTable(
     check("model_call_attempts_epoch_check", sql`${table.claimEpoch} > 0`),
     check(
       "model_call_attempts_state_check",
-      sql`${table.state} IN ('started', 'succeeded', 'failed')`,
+      sql`${table.state} IN ('started', 'succeeded', 'failed', 'canceled')`,
     ),
     check(
       "model_call_attempts_usage_check",
@@ -654,6 +717,14 @@ export const modelCallAttempts = pgTable(
         (${table.state} = 'started' AND ${table.finishedAt} IS NULL)
         OR (${table.state} <> 'started' AND ${table.finishedAt} IS NOT NULL)
       )) IS TRUE`,
+    ),
+    check(
+      "model_call_attempts_cleanup_check",
+      sql`(((${table.cleanupDisposition} IS NULL AND ${table.externalWorkMayContinue} IS NULL)
+        OR (
+          ${table.cleanupDisposition} IN ('completed', 'deadlineExceeded')
+          AND ${table.externalWorkMayContinue} IS NOT NULL
+        ))) IS TRUE`,
     ),
   ],
 );

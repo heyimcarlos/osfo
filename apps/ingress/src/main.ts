@@ -6,7 +6,11 @@ import {
   type ThreadStreamLifecycleService,
 } from "@osfo/api";
 import { OsfoApiLive } from "@osfo/api/server";
-import { makeMessageAdmissionLayer, makeThreadResumeLayer } from "@osfo/db";
+import {
+  makeAgentRunCancellationLayer,
+  makeMessageAdmissionLayer,
+  makeThreadResumeLayer,
+} from "@osfo/db";
 import { Config, Context, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { createServer } from "node:http";
@@ -66,6 +70,10 @@ const IngressConfig = Config.all({
     Config.withDefault(64),
   ),
   principalNonTerminalLimit: Config.schema(AdmissionLimit, "OSFO_PRINCIPAL_NON_TERMINAL_LIMIT"),
+  agentRunCleanupTimeoutMs: Config.schema(
+    PositiveInteger,
+    "OSFO_AGENT_RUN_CLEANUP_TIMEOUT_MS",
+  ).pipe(Config.withDefault(30_000)),
   resumeDatabasePoolMax: Config.schema(DatabasePoolMax, "OSFO_RESUME_DATABASE_POOL_MAX").pipe(
     Config.withDefault(4),
   ),
@@ -138,8 +146,12 @@ const ServerLive = Layer.unwrap(
       });
       const RunningApi = HttpRouter.serve(OsfoApiLive).pipe(
         Layer.provide(
-          Layer.merge(
+          Layer.mergeAll(
             AdmissionLive,
+            makeAgentRunCancellationLayer({
+              databaseUrl: config.databaseUrl,
+              cleanupTimeoutMs: config.agentRunCleanupTimeoutMs,
+            }),
             makeThreadResumeLayer({
               cursorSecret: config.cursorSecret,
               databaseUrl: config.databaseUrl,

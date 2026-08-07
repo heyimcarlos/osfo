@@ -70,9 +70,11 @@ const relayLayer = makeOutboxRelayLayer({
   ),
 );
 const workerLayer = makeAgentRunWorkerLayer({
+  cancellationPollIntervalMs: 100,
   executionProfileRef: "oz.deterministic.v1",
-  workerId: "automatic-drain-worker",
   leaseDurationMs: 30_000,
+  leaseRenewalIntervalMs: 10_000,
+  workerId: "automatic-drain-worker",
 }).pipe(
   Layer.provide(repositoryLayer),
   Layer.provide(

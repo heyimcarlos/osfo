@@ -2,7 +2,7 @@ import { Effect, Layer, Redacted } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder, HttpApiMiddleware } from "effect/unstable/httpapi";
 import { OsfoApi } from "./api.js";
-import { MessageAdmission, ThreadResume } from "./services.js";
+import { AgentRunCancellation, MessageAdmission, ThreadResume } from "./services.js";
 import {
   ThreadStreamLifecycle,
   threadStreamConnectionRetryAfterSeconds,
@@ -54,6 +54,19 @@ export const ThreadsHandlers = HttpApiBuilder.group(OsfoApi, "threads", (handler
           ...payload,
           authenticationToken,
           threadId: params.threadId,
+        });
+      }),
+    )
+    .handle(
+      "cancelAgentRun",
+      Effect.fn("OsfoApi.threads.cancelAgentRun")(function* ({ params, payload }) {
+        const authenticationToken = yield* AuthenticationToken;
+        const cancellation = yield* AgentRunCancellation;
+        return yield* cancellation.cancel({
+          ...payload,
+          authenticationToken,
+          threadId: params.threadId,
+          agentRunId: params.agentRunId,
         });
       }),
     )

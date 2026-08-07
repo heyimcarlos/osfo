@@ -1,21 +1,26 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import {
+  AgentRunCancellationObserved,
   AgentRunRepository,
   AgentRunFenceRejected,
   AgentRunFenceSchema,
   AgentRunWorker,
+  ModelCallExecutor,
   OutboxRelay,
   RunnableDeliveryPublisher,
   RunnableDeliveryPublisherUnavailable,
   makeAgentRunWorkerLayer,
   makeDeterministicModelCallExecutorLayer,
   makeOutboxRelayLayer,
+  type ModelCallAttempt,
+  type ModelCallAttemptStart,
   type RunnableAgentRunDelivery,
 } from "@osfo/agent-run";
 import { makeDeterministicAgentRuntimeLayer } from "@osfo/agent-runtime";
 import {
   CapacityRejected,
+  AgentRunCancellation,
   MessageAdmission,
   ThreadResume,
   type SubmitMessageCommand,
@@ -32,9 +37,11 @@ import {
   Option,
   Redacted,
   Schema,
+  Stream,
 } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
+  makeAgentRunCancellationLayer,
   makeAgentRunRepositoryLayer,
   makeMessageAdmissionLayer,
   makeThreadResumeLayer,
@@ -86,6 +93,8 @@ const workerLayer = makeAgentRunWorkerLayer({
   executionProfileRef: "oz.deterministic.v1",
   workerId: "replacement-worker",
   leaseDurationMs: 30_000,
+  leaseRenewalIntervalMs: 10_000,
+  cancellationPollIntervalMs: 5,
 }).pipe(Layer.provide(repositoryLayer), Layer.provide(runtimeLayer), Layer.provide(executorLayer));
 
 const relayLayer = makeOutboxRelayLayer({
@@ -100,6 +109,7 @@ const runtime = ManagedRuntime.make(
     repositoryLayer,
     workerLayer,
     relayLayer,
+    makeAgentRunCancellationLayer({ databaseUrl, cleanupTimeoutMs: 30_000 }),
     makeMessageAdmissionLayer({
       databaseUrl,
       executionProfileRef: "oz.deterministic.v1",
@@ -120,6 +130,7 @@ const runtime = ManagedRuntime.make(
 );
 
 type TestServices =
+  | AgentRunCancellation
   | AgentRunRepository
   | AgentRunWorker
   | MessageAdmission
@@ -133,6 +144,17 @@ const ClaimedAgentRunSchema = Schema.Struct({
   type: Schema.Literal("claimed"),
   fence: AgentRunFenceSchema,
 });
+
+const expectStartedAttempt = <E, R>(
+  effect: Effect.Effect<ModelCallAttemptStart, E, R>,
+): Effect.Effect<ModelCallAttempt, E, R> =>
+  effect.pipe(
+    Effect.flatMap((start) =>
+      start.type === "started"
+        ? Effect.succeed(start.attempt)
+        : Effect.die("Expected a newly started ModelCallAttempt"),
+    ),
+  );
 
 const seedAuthority = () =>
   run(
@@ -189,6 +211,720 @@ beforeEach(async () => {
 afterAll(() => runtime.dispose());
 
 describe("deterministic PostgreSQL AgentRun journey", () => {
+  it("cancels pending work once and releases its execution capacity", async () => {
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "cancel before claim" },
+        }),
+      ),
+    );
+
+    const canceled = await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ),
+    );
+    const duplicate = await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ),
+    );
+
+    expect(canceled).toMatchObject({ outcome: "canceled" });
+    expect(duplicate).toMatchObject({ outcome: "alreadyTerminal" });
+
+    const authority = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly state: string;
+          readonly cleanupDisposition: string;
+          readonly externalWorkMayContinue: boolean;
+          readonly reservationState: string;
+          readonly globalReserved: number;
+          readonly principalReserved: number;
+        }>`SELECT
+          run.state,
+          run.cleanup_disposition AS "cleanupDisposition",
+          run.external_work_may_continue AS "externalWorkMayContinue",
+          reservation.state AS "reservationState",
+          global_capacity.reserved_count AS "globalReserved",
+          principal_capacity.reserved_count AS "principalReserved"
+        FROM agent_runs run
+        JOIN agent_run_capacity_reservations reservation USING (agent_run_id)
+        CROSS JOIN admission_global_capacity global_capacity
+        JOIN admission_principal_capacity principal_capacity
+          ON principal_capacity.principal_id = run.principal_id
+        WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
+        const events = yield* sql<{ readonly eventType: string }>`SELECT
+          event_type AS "eventType"
+        FROM thread_events
+        WHERE agent_run_id = ${receipt.agentRunId}::uuid
+        ORDER BY position`;
+        return { row: rows[0], events };
+      }),
+    );
+
+    expect(authority.row).toEqual({
+      state: "canceled",
+      cleanupDisposition: "completed",
+      externalWorkMayContinue: false,
+      reservationState: "released",
+      globalReserved: 0,
+      principalReserved: 0,
+    });
+    expect(authority.events).toEqual([
+      { eventType: "UserMessageAppended" },
+      { eventType: "AgentRunCancellationRequested" },
+      { eventType: "AgentRunCanceled" },
+    ]);
+    const snapshot = await run(
+      ThreadResume.use((resume) => resume.snapshot({ authenticationToken, threadId })),
+    );
+    expect(snapshot.activeState).toEqual([]);
+    expect(snapshot.throughPosition).toBe("3");
+  });
+
+  it("cancels waiting work and releases nonterminal admission capacity once", async () => {
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "cancel while waiting" },
+        }),
+      ),
+    );
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`SELECT pg_advisory_xact_lock(
+              hashtextextended(${ADMISSION_CAPACITY_LOCK_KEY}, 0)
+            )`;
+            yield* sql`UPDATE agent_runs
+              SET state = 'waiting'
+              WHERE agent_run_id = ${receipt.agentRunId}::uuid
+                AND state = 'pending'`;
+          }),
+        );
+      }),
+    );
+    expect(await run(MessageAdmission.use((admission) => admission.reconcileCapacity()))).toEqual({
+      expectedNonTerminalCount: 1,
+      globalReservedBefore: 1,
+      globalReservedAfter: 1,
+      principalMismatchCountBefore: 0,
+      principalMismatchCountAfter: 0,
+      reservationMismatchCountBefore: 0,
+      reservationMismatchCountAfter: 0,
+      repaired: false,
+      sweepComplete: true,
+    });
+
+    const canceled = await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ),
+    );
+    const duplicate = await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ),
+    );
+
+    expect(canceled).toMatchObject({ outcome: "canceled" });
+    expect(duplicate).toMatchObject({ outcome: "alreadyTerminal" });
+    const authority = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly state: string;
+          readonly reservationState: string;
+          readonly globalReserved: number;
+          readonly principalReserved: number;
+          readonly canceledEvents: string;
+          readonly globalRevision: string;
+        }>`SELECT
+          run.state,
+          reservation.state AS "reservationState",
+          global_capacity.reserved_count AS "globalReserved",
+          global_capacity.revision::text AS "globalRevision",
+          principal_capacity.reserved_count AS "principalReserved",
+          (SELECT count(*) FROM thread_events event
+            WHERE event.agent_run_id = run.agent_run_id
+              AND event.event_type = 'AgentRunCanceled')::text AS "canceledEvents"
+        FROM agent_runs run
+        JOIN agent_run_capacity_reservations reservation USING (agent_run_id)
+        CROSS JOIN admission_global_capacity global_capacity
+        JOIN admission_principal_capacity principal_capacity
+          ON principal_capacity.principal_id = run.principal_id
+        WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
+        return rows[0];
+      }),
+    );
+    expect(authority).toEqual({
+      state: "canceled",
+      reservationState: "released",
+      globalReserved: 0,
+      globalRevision: "2",
+      principalReserved: 0,
+      canceledEvents: "1",
+    });
+  });
+
+  it("samples the pending cancellation deadline at its terminal update", async () => {
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "cross the pending cleanup deadline" },
+        }),
+      ),
+    );
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE FUNCTION test_delay_pending_cleanup() RETURNS trigger
+          LANGUAGE plpgsql AS $function$
+          BEGIN
+            UPDATE agent_runs
+            SET cleanup_deadline_at = clock_timestamp() + interval '10 milliseconds'
+            WHERE agent_run_id = NEW.agent_run_id;
+            PERFORM pg_sleep(0.05);
+            RETURN NEW;
+          END
+          $function$`;
+        yield* sql`CREATE TRIGGER test_delay_pending_cleanup
+          AFTER INSERT ON thread_events
+          FOR EACH ROW
+          WHEN (NEW.event_type = 'AgentRunCancellationRequested')
+          EXECUTE FUNCTION test_delay_pending_cleanup()`;
+      }),
+    );
+
+    await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`DROP TRIGGER test_delay_pending_cleanup ON thread_events`;
+            yield* sql`DROP FUNCTION test_delay_pending_cleanup()`;
+          }).pipe(Effect.orDie),
+        ),
+      ),
+    );
+
+    const authority = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly cleanupDisposition: string;
+          readonly payloadDisposition: string;
+        }>`SELECT
+          run.cleanup_disposition AS "cleanupDisposition",
+          event.payload -> 'cleanupDisposition' ->> 'type' AS "payloadDisposition"
+        FROM agent_runs run
+        JOIN thread_events event USING (agent_run_id)
+        WHERE run.agent_run_id = ${receipt.agentRunId}::uuid
+          AND event.event_type = 'AgentRunCanceled'`;
+        return rows[0];
+      }),
+    );
+    expect(authority).toEqual({
+      cleanupDisposition: "deadlineExceeded",
+      payloadDisposition: "deadlineExceeded",
+    });
+  });
+
+  it("does not disclose whether a requested AgentRun exists outside owned authority", async () => {
+    const unknownRun = await run(
+      Effect.flip(
+        AgentRunCancellation.use((cancellation) =>
+          cancellation.cancel({
+            protocolVersion: 1,
+            authenticationToken,
+            threadId,
+            agentRunId: randomUUID(),
+          }),
+        ),
+      ),
+    );
+    const unknownThread = await run(
+      Effect.flip(
+        AgentRunCancellation.use((cancellation) =>
+          cancellation.cancel({
+            protocolVersion: 1,
+            authenticationToken,
+            threadId: randomUUID(),
+            agentRunId: randomUUID(),
+          }),
+        ),
+      ),
+    );
+
+    expect(unknownRun._tag).toBe("ThreadNotFound");
+    expect(unknownThread._tag).toBe("ThreadNotFound");
+  });
+
+  it("serializes concurrent admission and cancellation without a lock-order deadlock", async () => {
+    const canceling = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "cancel concurrently" },
+        }),
+      ),
+    );
+
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE FUNCTION test_delay_capacity_release() RETURNS trigger
+          LANGUAGE plpgsql AS 'BEGIN PERFORM pg_advisory_xact_lock(620062); RETURN NEW; END'`;
+        yield* sql`CREATE TRIGGER test_delay_capacity_release
+          BEFORE UPDATE ON agent_run_capacity_reservations
+          FOR EACH ROW EXECUTE FUNCTION test_delay_capacity_release()`;
+
+        return yield* Effect.gen(function* () {
+          const fibers = yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`SELECT pg_advisory_xact_lock(620062)`;
+              const cancellation = yield* Effect.forkChild(
+                AgentRunCancellation.use((service) =>
+                  service.cancel({
+                    protocolVersion: 1,
+                    authenticationToken,
+                    threadId,
+                    agentRunId: canceling.agentRunId,
+                  }),
+                ),
+              );
+              for (let attempt = 0; attempt < 200; attempt += 1) {
+                const waiting = yield* sql<{ readonly observed: boolean }>`SELECT EXISTS (
+                  SELECT 1 FROM pg_locks
+                  WHERE locktype = 'advisory' AND granted = false
+                ) AS observed`;
+                if (waiting[0]?.observed === true) break;
+                if (attempt === 199) {
+                  return yield* Effect.die("Cancellation did not reach the capacity barrier");
+                }
+                yield* Effect.sleep(10);
+              }
+              const admission = yield* Effect.forkChild(
+                MessageAdmission.use((service) =>
+                  service.accept({
+                    protocolVersion: 1,
+                    authenticationToken,
+                    threadId,
+                    idempotencyKey: randomUUID(),
+                    message: { content: "admit concurrently" },
+                  }),
+                ),
+              );
+              for (let attempt = 0; attempt < 200; attempt += 1) {
+                const waiting = yield* sql<{ readonly observed: boolean }>`SELECT EXISTS (
+                  SELECT 1 FROM pg_stat_activity
+                  WHERE application_name = 'osfo-api'
+                    AND wait_event = 'advisory'
+                ) AS observed`;
+                if (waiting[0]?.observed === true) break;
+                if (attempt === 199) {
+                  return yield* Effect.die("Admission did not contend on cancellation locks");
+                }
+                yield* Effect.sleep(10);
+              }
+              return { admission, cancellation };
+            }),
+          );
+          const canceled = yield* Fiber.join(fibers.cancellation);
+          const accepted = yield* Fiber.join(fibers.admission);
+          return { accepted, canceled };
+        }).pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              yield* sql`DROP TRIGGER test_delay_capacity_release
+                ON agent_run_capacity_reservations`;
+              yield* sql`DROP FUNCTION test_delay_capacity_release()`;
+            }).pipe(Effect.orDie),
+          ),
+        );
+      }),
+    );
+
+    expect(result.canceled.outcome).toBe("canceled");
+    expect(result.accepted.agentRunId).not.toBe(canceling.agentRunId);
+    const capacity = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly globalReserved: number;
+          readonly principalReserved: number;
+        }>`SELECT
+          global_capacity.reserved_count AS "globalReserved",
+          principal_capacity.reserved_count AS "principalReserved"
+        FROM admission_global_capacity global_capacity
+        JOIN admission_principal_capacity principal_capacity
+          ON principal_capacity.principal_id = ${principalId}::uuid
+        WHERE global_capacity.singleton = true`;
+        return rows[0];
+      }),
+    );
+    expect(capacity).toEqual({ globalReserved: 1, principalReserved: 1 });
+  });
+
+  it("lets cancellation win an active output race and closes ordinary completion", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "cancel active output" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const claimed = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(delivery, {
+          workerId: "active-cancel-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    const attempt = await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const modelCall = yield* repository.ensureModelCall(claimed.fence, {
+            type: "startModelCall",
+            modelBinding: "oz.deterministic.echo.v1",
+            prompt: "cancel active output",
+          });
+          const started = yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(claimed.fence, modelCall),
+          );
+          yield* repository.appendModelOutput(claimed.fence, started, {
+            fragmentIndex: 0,
+            text: "Partial",
+          });
+          return started;
+        }),
+      ),
+    );
+    await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ),
+    );
+
+    const ordinaryWrite = await run(
+      Effect.flip(
+        AgentRunRepository.use((repository) =>
+          repository.appendModelOutput(claimed.fence, attempt, {
+            fragmentIndex: 1,
+            text: "must not commit",
+          }),
+        ),
+      ),
+    );
+    const ordinaryTerminal = await run(
+      Effect.flip(
+        AgentRunRepository.use((repository) =>
+          repository.commitTerminal(claimed.fence, { type: "succeed" }),
+        ),
+      ),
+    );
+    expect(ordinaryWrite).toBeInstanceOf(AgentRunCancellationObserved);
+    expect(ordinaryTerminal).toBeInstanceOf(AgentRunCancellationObserved);
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE FUNCTION test_delay_output_cleanup() RETURNS trigger
+          LANGUAGE plpgsql AS 'BEGIN PERFORM pg_sleep(0.05); RETURN NEW; END'`;
+        yield* sql`CREATE TRIGGER test_delay_output_cleanup
+          BEFORE UPDATE ON assistant_outputs
+          FOR EACH ROW EXECUTE FUNCTION test_delay_output_cleanup()`;
+        yield* sql`UPDATE agent_runs
+          SET cleanup_deadline_at = clock_timestamp() + interval '10 milliseconds'
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+      }),
+    );
+    await run(
+      AgentRunRepository.use((repository) =>
+        repository.recordModelCallCleanup(claimed.fence, attempt, {
+          cleanupDisposition: { type: "completed" },
+          externalWorkMayContinue: false,
+        }),
+      ),
+    );
+
+    const disposition = await run(
+      AgentRunRepository.use((repository) =>
+        repository.commitCancellation(claimed.fence, {
+          cleanupDisposition: { type: "completed" },
+          externalWorkMayContinue: false,
+        }),
+      ).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`DROP TRIGGER test_delay_output_cleanup ON assistant_outputs`;
+            yield* sql`DROP FUNCTION test_delay_output_cleanup()`;
+          }).pipe(Effect.orDie),
+        ),
+      ),
+    );
+    expect(disposition).toEqual({
+      cleanupDisposition: { type: "deadlineExceeded" },
+      externalWorkMayContinue: true,
+    });
+    const duplicate = await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ),
+    );
+    expect(duplicate).toMatchObject({ outcome: "alreadyTerminal" });
+    expect(await run(AgentRunWorker.use((worker) => worker.handle(delivery)))).toEqual({
+      type: "acknowledge",
+      outcome: "alreadyTerminal",
+    });
+
+    const snapshot = await run(
+      ThreadResume.use((resume) => resume.snapshot({ authenticationToken, threadId })),
+    );
+    expect(snapshot.timeline.at(-1)).toMatchObject({
+      type: "assistantOutput",
+      content: [{ type: "text", text: "Partial" }],
+      status: { type: "interrupted", cause: "agentRunCanceled" },
+    });
+    expect(snapshot.activeState).toEqual([]);
+    expect(snapshot.throughPosition).toBe("5");
+  });
+
+  it("derives AgentRun cancellation truth from durable attempt cleanup", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "durable cleanup truth" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const claimed = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(delivery, {
+          workerId: "durable-cleanup-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    const attempt = await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const modelCall = yield* repository.ensureModelCall(claimed.fence, {
+            type: "startModelCall",
+            modelBinding: "oz.deterministic.echo.v1",
+            prompt: "durable cleanup truth",
+          });
+          return yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(claimed.fence, modelCall),
+          );
+        }),
+      ),
+    );
+    await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ),
+    );
+    await run(
+      AgentRunRepository.use((repository) =>
+        repository.recordModelCallCleanup(claimed.fence, attempt, {
+          cleanupDisposition: { type: "deadlineExceeded" },
+          externalWorkMayContinue: true,
+        }),
+      ),
+    );
+
+    const disposition = await run(
+      AgentRunRepository.use((repository) =>
+        repository.commitCancellation(claimed.fence, {
+          cleanupDisposition: { type: "completed" },
+          externalWorkMayContinue: false,
+        }),
+      ),
+    );
+    expect(disposition).toEqual({
+      cleanupDisposition: { type: "deadlineExceeded" },
+      externalWorkMayContinue: true,
+    });
+    const event = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{ readonly payload: unknown }>`SELECT payload
+          FROM thread_events
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid
+            AND event_type = 'AgentRunCanceled'`;
+        return rows[0];
+      }),
+    );
+    expect(event).toEqual({
+      payload: {
+        agentRunId: receipt.agentRunId,
+        cleanupDisposition: { type: "deadlineExceeded" },
+        externalWorkMayContinue: true,
+      },
+    });
+  });
+
+  it("rejects SQL-unknown ThreadEvent and cleanup evidence", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "reject SQL unknown evidence" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const claimed = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(delivery, {
+          workerId: "constraint-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    const attempt = await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const modelCall = yield* repository.ensureModelCall(claimed.fence, {
+            type: "startModelCall",
+            modelBinding: "oz.deterministic.echo.v1",
+            prompt: "reject SQL unknown evidence",
+          });
+          return yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(claimed.fence, modelCall),
+          );
+        }),
+      ),
+    );
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`INSERT INTO thread_events (
+              thread_id, position, event_id, principal_id, user_message_id,
+              agent_run_id, event_type, event_version, payload, occurred_at
+            ) SELECT
+              run.thread_id,
+              9999,
+              ${randomUUID()}::uuid,
+              run.principal_id,
+              run.user_message_id,
+              run.agent_run_id,
+              'AssistantOutputInterrupted',
+              1,
+              ${JSON.stringify({
+                assistantOutputId: attempt.assistantOutputId,
+                agentRunId: receipt.agentRunId,
+                cause: null,
+              })}::jsonb,
+              transaction_timestamp()
+            FROM agent_runs run
+            WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
+        }),
+      ),
+    ).rejects.toBeDefined();
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE model_call_attempts
+            SET cleanup_disposition = NULL,
+                external_work_may_continue = true
+            WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid`;
+        }),
+      ),
+    ).rejects.toBeDefined();
+  });
+
   it("rejects malformed non-null publication evidence", async () => {
     const accepted = await run(
       MessageAdmission.use((admission) =>
@@ -213,6 +949,96 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
         }),
       ),
     ).rejects.toBeDefined();
+  });
+
+  it("rejects cleanup evidence from a different fenced AgentRun", async () => {
+    failFirstPublication = false;
+    const otherThreadId = randomUUID();
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO threads (thread_id, principal_id)
+          VALUES (${otherThreadId}::uuid, ${principalId}::uuid)`;
+      }),
+    );
+    const accept = (targetThreadId: string, content: string) =>
+      run(
+        MessageAdmission.use((admission) =>
+          admission.accept({
+            protocolVersion: 1,
+            authenticationToken,
+            threadId: targetThreadId,
+            idempotencyKey: randomUUID(),
+            message: { content },
+          }),
+        ),
+      );
+    const first = await accept(threadId, "first fenced cleanup");
+    const second = await accept(otherThreadId, "second fenced cleanup");
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const firstDelivery = published.find((delivery) => delivery.agentRunId === first.agentRunId)!;
+    const secondDelivery = published.find((delivery) => delivery.agentRunId === second.agentRunId)!;
+    const firstClaim = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(firstDelivery, {
+          workerId: "first-cleanup-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    const secondAttempt = await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const secondClaimResult = yield* repository.claimAgentRun(secondDelivery, {
+            workerId: "second-cleanup-worker",
+            leaseDurationMs: 30_000,
+          });
+          const secondClaim =
+            yield* Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(secondClaimResult);
+          const modelCall = yield* repository.ensureModelCall(secondClaim.fence, {
+            type: "startModelCall",
+            modelBinding: "oz.deterministic.echo.v1",
+            prompt: "second fenced cleanup",
+          });
+          return yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(secondClaim.fence, modelCall),
+          );
+        }),
+      ),
+    );
+
+    const mismatch = await run(
+      Effect.flip(
+        AgentRunRepository.use((repository) =>
+          repository.recordModelCallCleanup(firstClaim.fence, secondAttempt, {
+            cleanupDisposition: { type: "completed" },
+            externalWorkMayContinue: false,
+          }),
+        ),
+      ),
+    );
+    expect(mismatch).toBeInstanceOf(AgentRunFenceRejected);
+    const cleanup = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly cleanupDisposition: string | null;
+          readonly externalWorkMayContinue: boolean | null;
+        }>`SELECT
+            cleanup_disposition AS "cleanupDisposition",
+            external_work_may_continue AS "externalWorkMayContinue"
+          FROM model_call_attempts
+          WHERE model_call_attempt_id = ${secondAttempt.modelCallAttemptId}::uuid`;
+        return rows[0];
+      }),
+    );
+    expect(cleanup).toEqual({
+      cleanupDisposition: null,
+      externalWorkMayContinue: null,
+    });
   });
 
   it("publishes same-Thread work in authoritative ThreadPosition order", async () => {
@@ -442,7 +1268,473 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     );
   });
 
-  it("reconciles relay loss, worker replacement, and duplicate delivery", async () => {
+  it("recovers a claim-boundary process loss before external work starts", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "crash after claim" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(delivery, {
+          workerId: "claim-cut-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    );
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE agent_runs
+          SET lease_expires_at = clock_timestamp() - interval '1 millisecond'
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+      }),
+    );
+
+    expect(await run(AgentRunWorker.use((worker) => worker.handle(delivery)))).toEqual({
+      type: "acknowledge",
+      outcome: "succeeded",
+    });
+    const authority = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly attempts: string;
+          readonly claimEpoch: string;
+          readonly globalReserved: number;
+          readonly outputs: string;
+          readonly principalReserved: number;
+          readonly reservationState: string;
+          readonly startedAttempts: string;
+          readonly state: string;
+          readonly terminalEvents: string;
+        }>`SELECT
+          run.state,
+          run.claim_epoch::text AS "claimEpoch",
+          (SELECT count(*) FROM model_call_attempts
+            WHERE agent_run_id = run.agent_run_id)::text AS attempts,
+          (SELECT count(*) FROM model_call_attempts
+            WHERE agent_run_id = run.agent_run_id AND state = 'started')::text
+            AS "startedAttempts",
+          (SELECT count(*) FROM assistant_outputs
+            WHERE agent_run_id = run.agent_run_id)::text AS outputs,
+          (SELECT count(*) FROM thread_events
+            WHERE agent_run_id = run.agent_run_id
+              AND event_type IN ('AgentRunSucceeded', 'AgentRunFailed', 'AgentRunCanceled'))::text
+            AS "terminalEvents",
+          (SELECT reserved_count FROM admission_global_capacity WHERE singleton = true)
+            AS "globalReserved",
+          (SELECT reserved_count FROM admission_principal_capacity
+            WHERE principal_id = run.principal_id) AS "principalReserved",
+          reservation.state AS "reservationState"
+        FROM agent_runs run
+        JOIN agent_run_capacity_reservations reservation USING (agent_run_id)
+        WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
+        return rows[0];
+      }),
+    );
+    expect(authority).toEqual({
+      state: "succeeded",
+      claimEpoch: "2",
+      attempts: "1",
+      globalReserved: 0,
+      outputs: "1",
+      principalReserved: 0,
+      reservationState: "released",
+      startedAttempts: "0",
+      terminalEvents: "1",
+    });
+  });
+
+  it("renews a healthy long-running claim before its original lease expires", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "slow healthy execution" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const executionStarted = Effect.runSync(Deferred.make<void>());
+    const releaseExecution = Effect.runSync(Deferred.make<void>());
+    const postOriginalDeadlineRenewed = Effect.runSync(Deferred.make<void>());
+    let originalDeadlinePassed = false;
+    const slowExecutor = Layer.succeed(ModelCallExecutor)(
+      ModelCallExecutor.of({
+        execute: () =>
+          Effect.succeed(
+            Stream.fromEffect(
+              Deferred.succeed(executionStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseExecution)),
+              ),
+            ).pipe(Stream.map(() => ({ fragmentIndex: 0, text: "slow but healthy" }))),
+          ),
+        cancel: () => Effect.succeed({ type: "confirmedStopped" }),
+        terminate: () => Effect.void,
+      }),
+    );
+    const observingRepositoryLayer = Layer.effect(
+      AgentRunRepository,
+      AgentRunRepository.use((repository) =>
+        Effect.succeed(
+          AgentRunRepository.of({
+            ...repository,
+            renewLease: (fence, leaseDurationMs) =>
+              repository
+                .renewLease(fence, leaseDurationMs)
+                .pipe(
+                  Effect.tap(() =>
+                    originalDeadlinePassed
+                      ? Deferred.succeed(postOriginalDeadlineRenewed, undefined)
+                      : Effect.void,
+                  ),
+                ),
+          }),
+        ),
+      ),
+    ).pipe(Layer.provide(repositoryLayer));
+    const slowWorker = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v1",
+      workerId: "slow-worker",
+      leaseDurationMs: 300,
+      leaseRenewalIntervalMs: 50,
+      cancellationPollIntervalMs: 5,
+    }).pipe(
+      Layer.provide(observingRepositoryLayer),
+      Layer.provide(runtimeLayer),
+      Layer.provide(slowExecutor),
+    );
+    const slowRuntime = ManagedRuntime.make(
+      Layer.mergeAll(databaseLayer, repositoryLayer, slowWorker),
+    );
+
+    try {
+      const result = await slowRuntime.runPromise(
+        Effect.gen(function* () {
+          const running = yield* Effect.forkChild(
+            AgentRunWorker.use((worker) => worker.handle(delivery)),
+          );
+          yield* Deferred.await(executionStarted);
+          const sql = yield* SqlClient.SqlClient;
+          const originalRows = yield* sql<{ readonly leaseExpiresAtEpochMs: number }>`SELECT
+            extract(epoch FROM lease_expires_at) * 1000 AS "leaseExpiresAtEpochMs"
+          FROM agent_runs
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+          const originalLeaseExpiresAt = originalRows[0]!.leaseExpiresAtEpochMs;
+          let observedOriginalDeadline = false;
+          for (let poll = 0; poll < 100; poll += 1) {
+            const rows = yield* sql<{ readonly passed: boolean }>`SELECT
+              extract(epoch FROM clock_timestamp()) * 1000
+                > ${originalLeaseExpiresAt}::float8 AS passed`;
+            if (rows[0]?.passed === true) {
+              observedOriginalDeadline = true;
+              break;
+            }
+            yield* Effect.sleep(10);
+          }
+          if (!observedOriginalDeadline) {
+            return yield* Effect.die("Original AgentRun lease did not pass within test safety");
+          }
+          originalDeadlinePassed = true;
+          yield* Deferred.await(postOriginalDeadlineRenewed).pipe(Effect.timeout("2 seconds"));
+          const competingClaim = yield* AgentRunRepository.use((repository) =>
+            repository.claimAgentRun(delivery, {
+              workerId: "competing-worker",
+              leaseDurationMs: 300,
+            }),
+          );
+          yield* Deferred.succeed(releaseExecution, undefined);
+          const completed = yield* Fiber.join(running);
+          return { competingClaim, completed };
+        }),
+      );
+
+      expect(result.competingClaim).toEqual({ type: "busy" });
+      expect(result.completed).toEqual({ type: "acknowledge", outcome: "succeeded" });
+    } finally {
+      await slowRuntime.dispose();
+    }
+
+    const authority = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{ readonly state: string; readonly claimEpoch: string }>`SELECT
+          state,
+          claim_epoch::text AS "claimEpoch"
+        FROM agent_runs
+        WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+        return rows[0];
+      }),
+    );
+    expect(authority).toEqual({ state: "succeeded", claimEpoch: "1" });
+  });
+
+  it.each([
+    { cut: "intent", expectedAttempts: "1", expectedOutputs: "1", expectedInterrupted: "0" },
+    { cut: "attempt", expectedAttempts: "2", expectedOutputs: "2", expectedInterrupted: "1" },
+    {
+      cut: "completedOutput",
+      expectedAttempts: "1",
+      expectedOutputs: "1",
+      expectedInterrupted: "0",
+    },
+  ] as const)(
+    "recovers the $cut crash cut without duplicate authority or leaked capacity",
+    async ({ cut, expectedAttempts, expectedOutputs, expectedInterrupted }) => {
+      failFirstPublication = false;
+      const receipt = await run(
+        MessageAdmission.use((admission) =>
+          admission.accept({
+            protocolVersion: 1,
+            authenticationToken,
+            threadId,
+            idempotencyKey: randomUUID(),
+            message: { content: `crash after ${cut}` },
+          }),
+        ),
+      );
+      await run(OutboxRelay.use((relay) => relay.selectOnce()));
+      await run(OutboxRelay.use((relay) => relay.publishOnce()));
+      const delivery = published[0]!;
+      const abandoned = await run(
+        AgentRunRepository.use((repository) =>
+          repository.claimAgentRun(delivery, {
+            workerId: `${cut}-cut-worker`,
+            leaseDurationMs: 30_000,
+          }),
+        ),
+      ).then((claim) =>
+        Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)),
+      );
+
+      await run(
+        AgentRunRepository.use((repository) =>
+          Effect.gen(function* () {
+            const modelCall = yield* repository.ensureModelCall(abandoned.fence, {
+              type: "startModelCall",
+              modelBinding: "oz.deterministic.echo.v1",
+              prompt: `crash after ${cut}`,
+            });
+            if (cut === "intent") return;
+            const attempt = yield* expectStartedAttempt(
+              repository.beginModelCallAttempt(abandoned.fence, modelCall),
+            );
+            if (cut === "completedOutput") {
+              yield* repository.completeModelCall(abandoned.fence, attempt);
+            }
+          }),
+        ),
+      );
+      await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE agent_runs
+            SET lease_expires_at = clock_timestamp() - interval '1 millisecond'
+            WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+        }),
+      );
+
+      expect(await run(AgentRunWorker.use((worker) => worker.handle(delivery)))).toEqual({
+        type: "acknowledge",
+        outcome: "succeeded",
+      });
+
+      const authority = await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const rows = yield* sql<{
+            readonly state: string;
+            readonly claimEpoch: string;
+            readonly attempts: string;
+            readonly outputs: string;
+            readonly interruptedOutputs: string;
+            readonly startedAttempts: string;
+            readonly terminalEvents: string;
+            readonly reservationState: string;
+            readonly globalReserved: number;
+            readonly principalReserved: number;
+          }>`SELECT
+            run.state,
+            run.claim_epoch::text AS "claimEpoch",
+            (SELECT count(*) FROM model_call_attempts
+              WHERE agent_run_id = run.agent_run_id)::text AS attempts,
+            (SELECT count(*) FROM assistant_outputs
+              WHERE agent_run_id = run.agent_run_id)::text AS outputs,
+            (SELECT count(*) FROM assistant_outputs
+              WHERE agent_run_id = run.agent_run_id
+                AND state = 'interrupted')::text AS "interruptedOutputs",
+            (SELECT count(*) FROM model_call_attempts
+              WHERE agent_run_id = run.agent_run_id
+                AND state = 'started')::text AS "startedAttempts",
+            (SELECT count(*) FROM thread_events
+              WHERE agent_run_id = run.agent_run_id
+                AND event_type IN ('AgentRunSucceeded', 'AgentRunFailed'))::text
+              AS "terminalEvents",
+            reservation.state AS "reservationState",
+            global_capacity.reserved_count AS "globalReserved",
+            principal_capacity.reserved_count AS "principalReserved"
+          FROM agent_runs run
+          JOIN agent_run_capacity_reservations reservation USING (agent_run_id)
+          CROSS JOIN admission_global_capacity global_capacity
+          JOIN admission_principal_capacity principal_capacity
+            ON principal_capacity.principal_id = run.principal_id
+          WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
+          return rows[0];
+        }),
+      );
+
+      expect(authority).toEqual({
+        state: "succeeded",
+        claimEpoch: "2",
+        attempts: expectedAttempts,
+        outputs: expectedOutputs,
+        interruptedOutputs: expectedInterrupted,
+        startedAttempts: "0",
+        terminalEvents: "1",
+        reservationState: "released",
+        globalReserved: 0,
+        principalReserved: 0,
+      });
+    },
+  );
+
+  it("fails takeover without duplicating external work when cleanup remains uncertain", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "uncertain cleanup takeover" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const abandoned = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(delivery, {
+          workerId: "uncertain-cleanup-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+
+    await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const modelCall = yield* repository.ensureModelCall(abandoned.fence, {
+            type: "startModelCall",
+            modelBinding: "oz.deterministic.echo.v1",
+            prompt: "uncertain cleanup takeover",
+          });
+          const attempt = yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(abandoned.fence, modelCall),
+          );
+          yield* repository.appendModelOutput(abandoned.fence, attempt, {
+            fragmentIndex: 0,
+            text: "Possibly still running",
+          });
+          yield* repository.recordModelCallCleanup(abandoned.fence, attempt, {
+            cleanupDisposition: { type: "deadlineExceeded" },
+            externalWorkMayContinue: true,
+          });
+        }),
+      ),
+    );
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE agent_runs
+          SET lease_expires_at = clock_timestamp() - interval '1 millisecond'
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+      }),
+    );
+
+    expect(await run(AgentRunWorker.use((worker) => worker.handle(delivery)))).toEqual({
+      type: "acknowledge",
+      outcome: "failed",
+    });
+
+    const authority = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly attempts: string;
+          readonly cleanupDisposition: string;
+          readonly externalWorkMayContinue: boolean;
+          readonly globalReserved: number;
+          readonly principalReserved: number;
+          readonly reservationState: string;
+          readonly runState: string;
+          readonly startedAttempts: string;
+        }>`SELECT
+          run.state AS "runState",
+          reservation.state AS "reservationState",
+          global_capacity.reserved_count AS "globalReserved",
+          principal_capacity.reserved_count AS "principalReserved",
+          (SELECT count(*) FROM model_call_attempts
+            WHERE agent_run_id = run.agent_run_id)::text AS attempts,
+          (SELECT count(*) FROM model_call_attempts
+            WHERE agent_run_id = run.agent_run_id AND state = 'started')::text
+            AS "startedAttempts",
+          attempt.cleanup_disposition AS "cleanupDisposition",
+          attempt.external_work_may_continue AS "externalWorkMayContinue"
+        FROM agent_runs run
+        JOIN agent_run_capacity_reservations reservation USING (agent_run_id)
+        CROSS JOIN admission_global_capacity global_capacity
+        JOIN admission_principal_capacity principal_capacity
+          ON principal_capacity.principal_id = run.principal_id
+        JOIN model_call_attempts attempt USING (agent_run_id)
+        WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
+        const events = yield* sql<{ readonly eventType: string }>`SELECT
+          event_type AS "eventType"
+        FROM thread_events
+        WHERE agent_run_id = ${receipt.agentRunId}::uuid
+        ORDER BY position`;
+        return { row: rows[0], events };
+      }),
+    );
+
+    expect(authority.row).toEqual({
+      runState: "failed",
+      reservationState: "released",
+      globalReserved: 0,
+      principalReserved: 0,
+      attempts: "1",
+      startedAttempts: "0",
+      cleanupDisposition: "deadlineExceeded",
+      externalWorkMayContinue: true,
+    });
+    expect(authority.events).toEqual([
+      { eventType: "UserMessageAppended" },
+      { eventType: "AssistantOutputAppended" },
+      { eventType: "AssistantOutputInterrupted" },
+      { eventType: "AgentRunFailed" },
+    ]);
+  });
+
+  it("recovers relay, output, and terminal-ack crash cuts without duplicate authority", async () => {
     const command = {
       protocolVersion: 1,
       authenticationToken,
@@ -498,7 +1790,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             modelBinding: "oz.deterministic.echo.v1",
             prompt: "Hello, Oz",
           });
-          const attempt = yield* repository.beginModelCallAttempt(abandoned.fence, modelCall);
+          const attempt = yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(abandoned.fence, modelCall),
+          );
           yield* repository.appendModelOutput(abandoned.fence, attempt, {
             fragmentIndex: 0,
             text: "Echo: ",
@@ -666,7 +1960,6 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     await run(OutboxRelay.use((relay) => relay.selectOnce()));
     await run(OutboxRelay.use((relay) => relay.publishOnce()));
     const delivery = published[0]!;
-
     await run(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -817,6 +2110,183 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     });
   });
 
+  it("takes over cancellation after process loss and rejects the stale fence", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "cancel after worker loss" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const abandoned = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(delivery, {
+          workerId: "lost-cancel-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    const abandonedAttempt = await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const modelCall = yield* repository.ensureModelCall(abandoned.fence, {
+            type: "startModelCall",
+            modelBinding: "oz.deterministic.echo.v1",
+            prompt: "cancel after worker loss",
+          });
+          const attempt = yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(abandoned.fence, modelCall),
+          );
+          yield* repository.appendModelOutput(abandoned.fence, attempt, {
+            fragmentIndex: 0,
+            text: "Working",
+          });
+          return attempt;
+        }),
+      ),
+    );
+
+    const requested = await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ),
+    );
+    expect(requested).toMatchObject({ outcome: "cancellationRequested" });
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE agent_runs
+          SET lease_expires_at = clock_timestamp() - interval '1 millisecond',
+              cleanup_deadline_at = clock_timestamp() - interval '1 millisecond'
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+      }),
+    );
+    const replacement = await run(AgentRunWorker.use((worker) => worker.handle(delivery)));
+    expect(replacement).toEqual({ type: "acknowledge", outcome: "canceled" });
+
+    const staleErrors = await run(
+      AgentRunRepository.use((repository) =>
+        Effect.forEach(
+          [
+            repository.loadRecordedState(abandoned.fence),
+            repository.ensureModelCall(abandoned.fence, {
+              type: "resumeModelCall",
+              modelCallId: abandonedAttempt.modelCallId,
+              prompt: abandonedAttempt.prompt,
+            }),
+            repository.beginModelCallAttempt(abandoned.fence, abandonedAttempt),
+            repository.appendModelOutput(abandoned.fence, abandonedAttempt, {
+              fragmentIndex: 1,
+              text: "stale output",
+            }),
+            repository.completeModelCall(abandoned.fence, abandonedAttempt),
+            repository.interruptModelCall(abandoned.fence, abandonedAttempt, "modelCallFailed"),
+            repository.recordModelCallCleanup(abandoned.fence, abandonedAttempt, {
+              cleanupDisposition: { type: "completed" },
+              externalWorkMayContinue: false,
+            }),
+            repository.commitTerminal(abandoned.fence, { type: "succeed" }),
+            repository.commitCancellation(abandoned.fence, {
+              cleanupDisposition: { type: "completed" },
+              externalWorkMayContinue: true,
+            }),
+          ],
+          Effect.flip,
+        ),
+      ),
+    );
+    expect(staleErrors.map((error) => error._tag)).toEqual(
+      Array.from({ length: 9 }, () => "AgentRunFenceRejected"),
+    );
+
+    const authority = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly state: string;
+          readonly claimEpoch: string;
+          readonly cleanupDisposition: string;
+          readonly externalWorkMayContinue: boolean;
+          readonly reservationState: string;
+          readonly startedAttempts: string;
+          readonly attemptCleanupDisposition: string;
+          readonly attemptExternalWorkMayContinue: boolean;
+        }>`SELECT
+          run.state,
+          run.claim_epoch::text AS "claimEpoch",
+          run.cleanup_disposition AS "cleanupDisposition",
+          run.external_work_may_continue AS "externalWorkMayContinue",
+          reservation.state AS "reservationState",
+          (SELECT cleanup_disposition FROM model_call_attempts
+            WHERE model_call_attempt_id = ${abandonedAttempt.modelCallAttemptId}::uuid)
+            AS "attemptCleanupDisposition",
+          (SELECT external_work_may_continue FROM model_call_attempts
+            WHERE model_call_attempt_id = ${abandonedAttempt.modelCallAttemptId}::uuid)
+            AS "attemptExternalWorkMayContinue",
+          (SELECT count(*) FROM model_call_attempts
+            WHERE agent_run_id = run.agent_run_id AND state = 'started')::text AS "startedAttempts"
+        FROM agent_runs run
+        JOIN agent_run_capacity_reservations reservation USING (agent_run_id)
+        WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
+        const events = yield* sql<{
+          readonly eventType: string;
+          readonly eventVersion: number;
+          readonly payload: unknown;
+        }>`SELECT event_type AS "eventType", event_version AS "eventVersion", payload
+          FROM thread_events
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid
+          ORDER BY position`;
+        return { row: rows[0], events };
+      }),
+    );
+    expect(authority.row).toEqual({
+      state: "canceled",
+      claimEpoch: "2",
+      cleanupDisposition: "deadlineExceeded",
+      externalWorkMayContinue: true,
+      reservationState: "released",
+      startedAttempts: "0",
+      attemptCleanupDisposition: "deadlineExceeded",
+      attemptExternalWorkMayContinue: true,
+    });
+    expect(authority.events).toEqual([
+      expect.objectContaining({ eventType: "UserMessageAppended", eventVersion: 1 }),
+      expect.objectContaining({ eventType: "AssistantOutputAppended", eventVersion: 1 }),
+      expect.objectContaining({ eventType: "AgentRunCancellationRequested", eventVersion: 1 }),
+      {
+        eventType: "AssistantOutputInterrupted",
+        eventVersion: 2,
+        payload: {
+          assistantOutputId: abandonedAttempt.assistantOutputId,
+          agentRunId: receipt.agentRunId,
+          cause: "agentRunCanceled",
+        },
+      },
+      {
+        eventType: "AgentRunCanceled",
+        eventVersion: 1,
+        payload: {
+          agentRunId: receipt.agentRunId,
+          cleanupDisposition: { type: "deadlineExceeded" },
+          externalWorkMayContinue: true,
+        },
+      },
+    ]);
+  });
+
   it("rejects beginning an attempt unless its ModelCall transition affects exactly one row", async () => {
     failFirstPublication = false;
     const receipt = await run(
@@ -853,6 +2323,103 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             modelBinding: "oz.deterministic.echo.v1",
             prompt: `missing ${receipt.agentRunId}`,
           }),
+        ),
+      ),
+    );
+
+    expect(error).toBeInstanceOf(AgentRunFenceRejected);
+  });
+
+  it("rejects another AgentRun's abandoned ModelCall before requesting cleanup", async () => {
+    failFirstPublication = false;
+    const source = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "source abandoned call" },
+        }),
+      ),
+    );
+    const targetThreadId = randomUUID();
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO threads (thread_id, principal_id)
+          VALUES (${targetThreadId}::uuid, ${principalId}::uuid)`;
+      }),
+    );
+    const target = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId: targetThreadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "target fenced run" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const sourceDelivery = published.find((delivery) => delivery.agentRunId === source.agentRunId)!;
+    const targetDelivery = published.find((delivery) => delivery.agentRunId === target.agentRunId)!;
+    const sourceClaim = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(sourceDelivery, {
+          workerId: "source-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    const sourceModelCall = await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const modelCall = yield* repository.ensureModelCall(sourceClaim.fence, {
+            type: "startModelCall",
+            modelBinding: "oz.deterministic.echo.v1",
+            prompt: "source abandoned call",
+          });
+          yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(sourceClaim.fence, modelCall),
+          );
+          return modelCall;
+        }),
+      ),
+    );
+    const firstTargetClaim = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(targetDelivery, {
+          workerId: "first-target-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE agent_runs
+          SET lease_expires_at = clock_timestamp() - interval '1 millisecond'
+          WHERE agent_run_id = ${firstTargetClaim.fence.agentRunId}::uuid`;
+      }),
+    );
+    const targetClaim = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(targetDelivery, {
+          workerId: "replacement-target-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+
+    const error = await run(
+      Effect.flip(
+        AgentRunRepository.use((repository) =>
+          repository.beginModelCallAttempt(targetClaim.fence, sourceModelCall),
         ),
       ),
     );
@@ -897,7 +2464,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
               modelBinding: "oz.deterministic.echo.v1",
               prompt: `${operation} fence`,
             });
-            return yield* repository.beginModelCallAttempt(claimed.fence, modelCall);
+            return yield* expectStartedAttempt(
+              repository.beginModelCallAttempt(claimed.fence, modelCall),
+            );
           }),
         ),
       );

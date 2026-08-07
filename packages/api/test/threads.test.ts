@@ -2,6 +2,8 @@ import {
   AcceptanceReceipt,
   AdmissionCommitUnknown,
   AdmissionUnavailable,
+  AgentRunCancellation,
+  AgentRunCancellationUnavailable,
   CapacityRejected,
   IdempotencyConflict,
   MessageAdmission,
@@ -58,6 +60,9 @@ const makeHarness = (
     reconcile,
     reconcileCapacity: () => Effect.fail(new AdmissionUnavailable()),
   });
+  const cancellation = AgentRunCancellation.of({
+    cancel: () => Effect.fail(new AgentRunCancellationUnavailable()),
+  });
   const resume = ThreadResume.of({
     snapshot: () => Effect.fail(new SnapshotUnavailable()),
     history: () => Effect.fail(new ThreadResumeUnavailable()),
@@ -67,13 +72,15 @@ const makeHarness = (
   const lifecycle = testLifecycle.lifecycle;
   const web = HttpRouter.toWebHandler(
     OsfoApiLive.pipe(
+      Layer.provide(Layer.succeed(AgentRunCancellation)(cancellation)),
       Layer.provide(Layer.succeed(MessageAdmission)(admission)),
       Layer.provide(Layer.succeed(ThreadResume)(resume)),
       Layer.provide(Layer.succeed(ThreadStreamLifecycle)(lifecycle)),
       Layer.provideMerge(HttpServer.layerServices),
     ),
   );
-  const context = Context.make(MessageAdmission, admission).pipe(
+  const context = Context.make(AgentRunCancellation, cancellation).pipe(
+    Context.add(MessageAdmission, admission),
     Context.add(ThreadResume, resume),
     Context.add(ThreadStreamLifecycle, lifecycle),
   );

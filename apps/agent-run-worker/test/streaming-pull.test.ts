@@ -4,8 +4,13 @@ import {
   type RunnableAgentRunDelivery,
 } from "@osfo/agent-run";
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect";
+import * as TestClock from "effect/testing/TestClock";
 import {
+  beginStreamingPullSubscriptionClose,
+  closeStreamingPullSource,
+  closeStreamingPullResources,
+  makeStreamingPullWorker,
   runStreamingPullWorker,
   StreamingPullSource,
   type StreamingPullHandlers,
@@ -86,7 +91,7 @@ const runWorker = (
   handle: (delivery: RunnableAgentRunDelivery) => Effect.Effect<AgentRunWorkerDisposition>,
   executionSlots: number,
 ) =>
-  runStreamingPullWorker({ executionSlots }).pipe(
+  runStreamingPullWorker({ drainTimeoutMs: 1_000, executionSlots }).pipe(
     Effect.provide(
       Layer.mergeAll(
         Layer.succeed(StreamingPullSource, source),
@@ -96,6 +101,102 @@ const runWorker = (
   );
 
 describe("StreamingPull AgentRun delivery", () => {
+  it.effect("bounds the close promise started before listener removal", () =>
+    Effect.gen(function* () {
+      const closePromise = new Promise<void>(() => undefined);
+      let closeCalls = 0;
+      let listenerRemoved = false;
+      let open = true;
+      const subscription = {
+        close: () => {
+          closeCalls += 1;
+          if (!open) return Promise.resolve();
+          open = false;
+          return closePromise;
+        },
+      };
+      const startedClose = yield* beginStreamingPullSubscriptionClose(subscription);
+      listenerRemoved = true;
+      if (open) void subscription.close();
+      const closing = yield* closeStreamingPullResources(
+        { close: () => startedClose },
+        { close: () => Promise.resolve() },
+        1_000,
+      ).pipe(Effect.exit, Effect.forkChild);
+
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(1_000);
+      const exit = yield* Fiber.join(closing);
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(listenerRemoved).toBe(true);
+      expect(closeCalls).toBe(1);
+    }),
+  );
+
+  it.effect("attempts both closes when subscription stop initiation fails", () =>
+    Effect.gen(function* () {
+      let clientCloseCalls = 0;
+      let subscriptionCloseCalls = 0;
+      const subscription = {
+        close: () => {
+          subscriptionCloseCalls += 1;
+          throw new Error("subscription close start failed");
+        },
+      };
+      const exit = yield* closeStreamingPullSource(
+        beginStreamingPullSubscriptionClose(subscription).pipe(Effect.asVoid),
+        subscription,
+        {
+          close: () => {
+            clientCloseCalls += 1;
+            return Promise.reject(new Error("client close failed"));
+          },
+        },
+        1_000,
+      ).pipe(Effect.exit);
+      const error = Exit.match(exit, {
+        onFailure: (cause) => Option.getOrThrow(Cause.findErrorOption(cause)),
+        onSuccess: () => new Error("StreamingPull source unexpectedly closed successfully"),
+      });
+
+      expect(error).toMatchObject({
+        _tag: "StreamingPullSourceUnavailable",
+        cause: {
+          type: "StreamingPullSourceCloseFailures",
+          stopExit: { _tag: "Failure" },
+          closeExit: { _tag: "Failure" },
+        },
+      });
+      expect(subscriptionCloseCalls).toBe(2);
+      expect(clientCloseCalls).toBe(1);
+    }),
+  );
+
+  it.effect("bounds each Google close and still attempts every resource", () =>
+    Effect.gen(function* () {
+      let clientCloseCalls = 0;
+      const running = yield* closeStreamingPullResources(
+        {
+          close: () => new Promise(() => undefined),
+        },
+        {
+          close: async () => {
+            clientCloseCalls += 1;
+          },
+        },
+        1_000,
+      ).pipe(Effect.exit, Effect.forkChild);
+
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(1_000);
+      const exit = yield* Fiber.join(running);
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(clientCloseCalls).toBe(1);
+    }),
+  );
+
   it.effect("acknowledges durable terminal outcomes and nacks retryable or invalid work", () =>
     Effect.gen(function* () {
       const source = makeSource();
@@ -271,6 +372,66 @@ describe("StreamingPull AgentRun delivery", () => {
       yield* Deferred.await(source.closed);
       expect(source.events).toEqual(["receiving", "receiving-stopped", "client-closed"]);
       expect(calls).toBe(1);
+    }),
+  );
+
+  it.effect("fail-stops when an uninterruptible delivery outlives the forced drain", () =>
+    Effect.gen(function* () {
+      const source = makeSource();
+      const deliveryStarted = yield* Deferred.make<void>();
+      const deliverySettled = yield* Deferred.make<void>();
+      const failStopCalled = yield* Deferred.make<void>();
+      const releaseDelivery = yield* Deferred.make<void>();
+      const message = makeMessage("stuck", deliveries.completed);
+      let activeDeliveries = 0;
+      const controlledWorker = makeStreamingPullWorker({
+        failStop: () =>
+          Deferred.succeed(failStopCalled, undefined).pipe(
+            Effect.andThen(Effect.die("test fail-stop")),
+          ),
+      });
+      const running = yield* controlledWorker({ drainTimeoutMs: 1_000, executionSlots: 1 }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(StreamingPullSource, source.source),
+            Layer.succeed(
+              AgentRunWorker,
+              AgentRunWorker.of({
+                handle: () =>
+                  Effect.sync(() => {
+                    activeDeliveries += 1;
+                  }).pipe(
+                    Effect.andThen(Deferred.succeed(deliveryStarted, undefined)),
+                    Effect.andThen(Deferred.await(releaseDelivery)),
+                    Effect.as({ type: "acknowledge" as const, outcome: "succeeded" as const }),
+                    Effect.uninterruptible,
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        activeDeliveries -= 1;
+                      }).pipe(Effect.andThen(Deferred.succeed(deliverySettled, undefined))),
+                    ),
+                  ),
+              }),
+            ),
+          ),
+        ),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(source.started);
+      yield* source.emit(message.message);
+      yield* Deferred.await(deliveryStarted);
+
+      const shutdown = yield* Fiber.interrupt(running).pipe(Effect.forkChild);
+      yield* Deferred.await(source.stopped);
+      yield* TestClock.adjust(2_000);
+      yield* Deferred.await(failStopCalled);
+
+      expect(yield* Deferred.isDone(source.closed)).toBe(true);
+      expect(activeDeliveries).toBe(1);
+      yield* Deferred.succeed(releaseDelivery, undefined);
+      yield* Deferred.await(deliverySettled);
+      yield* Fiber.join(shutdown);
+      expect(activeDeliveries).toBe(0);
     }),
   );
 

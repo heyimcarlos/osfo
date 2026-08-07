@@ -1,4 +1,10 @@
 export {
+  AgentRunCancellationDatabaseConfigSchema,
+  InvalidAgentRunCancellationDatabaseConfig,
+  makeAgentRunCancellationLayer,
+  type AgentRunCancellationDatabaseConfig,
+} from "./agent-run-cancellation.js";
+export {
   AgentRunRepositoryDatabaseConfigSchema,
   InvalidAgentRunRepositoryDatabaseConfig,
   makeAgentRunRepositoryLayer,

@@ -34,7 +34,9 @@
         "effect": "catalog:",
       },
       "devDependencies": {
+        "@effect/sql-pg": "catalog:",
         "@effect/vitest": "catalog:",
+        "@osfo/api": "workspace:*",
         "@types/node": "catalog:",
         "tsx": "catalog:",
         "typescript": "catalog:",
