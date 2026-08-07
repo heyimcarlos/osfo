@@ -3,8 +3,16 @@ import { fileURLToPath } from "node:url";
 import { Data, Effect, Option, Result, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-const ingressDirectory = fileURLToPath(new URL("../../ingress", import.meta.url));
+const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
 const readyPattern = /^OSFO_INGRESS_READY:(\d+)$/u;
+
+export interface CompiledIngressOptions {
+  readonly databaseUrl: string;
+  readonly executionProfileRef?: string;
+  readonly globalNonTerminalLimit?: number;
+  readonly principalNonTerminalLimit?: number;
+  readonly streamPollIntervalMs?: number;
+}
 
 export class CompiledIngressStartError extends Data.TaggedError("CompiledIngressStartError")<{
   readonly reason: "platform" | "exit" | "timeout" | "invalid-ready-port";
@@ -65,17 +73,17 @@ const waitForReady = (handle: ChildProcessSpawner.ChildProcessHandle) => {
   );
 };
 
-export const startCompiledIngress = (databaseUrl: string) =>
+export const startCompiledIngress = (options: CompiledIngressOptions) =>
   Effect.gen(function* () {
     const handle = yield* ChildProcess.make(process.execPath, ["dist/main.js"], {
-      cwd: ingressDirectory,
+      cwd: packageDirectory,
       env: {
         OSFO_INGRESS_PORT: "0",
-        OSFO_DATABASE_URL: databaseUrl,
-        OSFO_EXECUTION_PROFILE_REF: "oz.reference-journey.v1",
-        OSFO_GLOBAL_NON_TERMINAL_LIMIT: "8",
-        OSFO_PRINCIPAL_NON_TERMINAL_LIMIT: "4",
-        OSFO_STREAM_POLL_INTERVAL_MS: "10",
+        OSFO_DATABASE_URL: options.databaseUrl,
+        OSFO_EXECUTION_PROFILE_REF: options.executionProfileRef ?? "oz.process-test.v1",
+        OSFO_GLOBAL_NON_TERMINAL_LIMIT: String(options.globalNonTerminalLimit ?? 8),
+        OSFO_PRINCIPAL_NON_TERMINAL_LIMIT: String(options.principalNonTerminalLimit ?? 4),
+        OSFO_STREAM_POLL_INTERVAL_MS: String(options.streamPollIntervalMs ?? 250),
       },
       extendEnv: true,
       stdin: "ignore",

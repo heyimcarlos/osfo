@@ -144,28 +144,41 @@ export const makeThreadChat = (options: ThreadChatOptions) => {
   const resumeThread = Effect.fn("ThreadChat.resume")(function* (context: Atom.AtomContext) {
     const store = options.projectionStore ?? (yield* browserProjectionStore(options.threadId));
     const transport = options.resumeTransport ?? makeApiResumeTransport(options);
-    const synchronize = synchronizeThreadOnce({
-      store,
-      transport,
-      onProjection: (snapshot) => {
-        context.set(messages, messagesFromSnapshot(snapshot));
-        context.set(synchronization, {
-          type: "synchronized",
-          throughPosition: snapshot.throughPosition,
-        });
-      },
-    }).pipe(
-      Effect.andThen(Effect.sleep(250)),
-      Effect.catchIf(
-        () => true,
-        (error) =>
-          error instanceof InvalidThreadProjection && error.reason === "authorityConflict"
-            ? Effect.fail(error)
-            : Effect.sync(() => context.set(synchronization, { type: "reconnecting" })).pipe(
-                Effect.andThen(Effect.sleep(250)),
-              ),
-      ),
-    );
+    const synchronize = Effect.suspend(() => {
+      let caughtUp = false;
+      return synchronizeThreadOnce({
+        store,
+        transport,
+        onProjection: (snapshot) => {
+          context.set(messages, messagesFromSnapshot(snapshot));
+          if (caughtUp) {
+            context.set(synchronization, {
+              type: "synchronized",
+              throughPosition: snapshot.throughPosition,
+            });
+          }
+        },
+        onCaughtUp: (checkpoint) => {
+          caughtUp = true;
+          context.set(synchronization, {
+            type: "synchronized",
+            throughPosition: checkpoint.throughPosition,
+          });
+        },
+      }).pipe(
+        Effect.andThen(Effect.sync(() => context.set(synchronization, { type: "reconnecting" }))),
+        Effect.andThen(Effect.sleep(250)),
+        Effect.catchIf(
+          () => true,
+          (error) =>
+            error instanceof InvalidThreadProjection && error.reason === "authorityConflict"
+              ? Effect.fail(error)
+              : Effect.sync(() => context.set(synchronization, { type: "reconnecting" })).pipe(
+                  Effect.andThen(Effect.sleep(250)),
+                ),
+        ),
+      );
+    });
     yield* Effect.forever(synchronize);
   });
 

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
-import { and, eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import * as PgDrizzle from "drizzle-orm/effect-postgres";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -11,8 +11,18 @@ import {
   acceptanceReceipts,
   agentRunCapacityReservations,
   agentRuns,
+  assistantOutputs,
   authenticationSessions,
+  modelCallAttempts,
+  modelCallFragments,
+  modelCalls,
+  outboxObligations,
   principals,
+  relayDispatchCapacity,
+  relayPrincipals,
+  relayPublicationAttempts,
+  relayPublicationTasks,
+  relayThreads,
   threadEvents,
   threads,
   userMessages,
@@ -28,10 +38,6 @@ export interface MessageAdmissionFixture {
 
 export class MessageAuthorityCountsUnavailable extends Data.TaggedError(
   "MessageAuthorityCountsUnavailable",
-) {}
-
-export class ReferenceJourneyAuthorityUnavailable extends Data.TaggedError(
-  "ReferenceJourneyAuthorityUnavailable",
 ) {}
 
 const withTestDatabase = <A, E>(
@@ -117,83 +123,196 @@ export const readMessageAuthorityCounts = (databaseUrl: string) =>
 
 export type MessageAuthorityCounts = Effect.Success<ReturnType<typeof readMessageAuthorityCounts>>;
 
-export interface ReferenceJourneyAuthorityRequest {
-  readonly agentRunId: string;
-  readonly receiptId: string;
-  readonly threadId: string;
-  readonly userMessageId: string;
-}
-
-export const readReferenceJourneyAuthority = (
-  databaseUrl: string,
-  request: ReferenceJourneyAuthorityRequest,
-) =>
+export const readReferenceJourneyAuthority = (databaseUrl: string) =>
   withTestDatabase(
     databaseUrl,
     Effect.gen(function* () {
       const db = yield* PgDrizzle.makeWithDefaults();
-      const [facts] = yield* db
+      const principalRows = yield* db
+        .select({ principalId: principals.principalId })
+        .from(principals)
+        .orderBy(principals.principalId);
+      const threadRows = yield* db
+        .select({ principalId: threads.principalId, threadId: threads.threadId })
+        .from(threads)
+        .orderBy(threads.threadId);
+      const sessionRows = yield* db
+        .select({ principalId: authenticationSessions.principalId })
+        .from(authenticationSessions)
+        .orderBy(authenticationSessions.sessionId);
+      const receiptRows = yield* db
         .select({
-          acceptanceReceipts: sql<string>`(
-            SELECT count(*) FROM ${acceptanceReceipts} receipt
-            WHERE receipt.receipt_id = ${request.receiptId}::uuid
-              AND receipt.agent_run_id = ${request.agentRunId}::uuid
-              AND receipt.user_message_id = ${request.userMessageId}::uuid
-          )::text`,
-          agentRunState: agentRuns.state,
-          agentRuns: sql<string>`(
-            SELECT count(*) FROM ${agentRuns} counted_run
-            WHERE counted_run.agent_run_id = ${request.agentRunId}::uuid
-              AND counted_run.thread_id = ${request.threadId}::uuid
-          )::text`,
-          globalReserved: admissionGlobalCapacity.reservedCount,
+          agentRunId: acceptanceReceipts.agentRunId,
+          idempotencyKey: acceptanceReceipts.idempotencyKey,
+          principalId: acceptanceReceipts.principalId,
+          protocolVersion: acceptanceReceipts.protocolVersion,
+          receiptId: acceptanceReceipts.receiptId,
+          threadId: acceptanceReceipts.threadId,
+          threadPosition: acceptanceReceipts.threadPosition,
+          userMessageId: acceptanceReceipts.userMessageId,
+        })
+        .from(acceptanceReceipts)
+        .orderBy(acceptanceReceipts.threadPosition);
+      const messageRows = yield* db
+        .select({
+          content: userMessages.content,
+          principalId: userMessages.principalId,
+          threadId: userMessages.threadId,
+          userMessageId: userMessages.userMessageId,
+        })
+        .from(userMessages)
+        .orderBy(userMessages.userMessageId);
+      const runRows = yield* db
+        .select({
+          agentRunId: agentRuns.agentRunId,
+          executionProfileRef: agentRuns.executionProfileRef,
           principalId: agentRuns.principalId,
-          principalReserved: admissionPrincipalCapacity.reservedCount,
-          reservationState: agentRunCapacityReservations.state,
-          terminalEvents: sql<string>`(
-            SELECT count(*) FROM ${threadEvents} terminal_event
-            WHERE terminal_event.agent_run_id = ${request.agentRunId}::uuid
-              AND terminal_event.event_type IN ('AgentRunSucceeded', 'AgentRunFailed')
-          )::text`,
-          userMessages: sql<string>`(
-            SELECT count(*) FROM ${userMessages} counted_message
-            WHERE counted_message.user_message_id = ${request.userMessageId}::uuid
-              AND counted_message.thread_id = ${request.threadId}::uuid
-          )::text`,
+          state: agentRuns.state,
+          threadId: agentRuns.threadId,
+          userMessageId: agentRuns.userMessageId,
         })
         .from(agentRuns)
-        .innerJoin(
-          agentRunCapacityReservations,
-          eq(agentRunCapacityReservations.agentRunId, agentRuns.agentRunId),
-        )
-        .innerJoin(
-          admissionPrincipalCapacity,
-          eq(admissionPrincipalCapacity.principalId, agentRuns.principalId),
-        )
-        .innerJoin(admissionGlobalCapacity, eq(admissionGlobalCapacity.singleton, true))
-        .where(
-          and(
-            eq(agentRuns.agentRunId, request.agentRunId),
-            eq(agentRuns.threadId, request.threadId),
-          ),
-        );
-      if (facts === undefined) return yield* new ReferenceJourneyAuthorityUnavailable();
-
-      const events = yield* db
-        .select({ eventType: threadEvents.eventType, position: threadEvents.position })
+        .orderBy(agentRuns.agentRunId);
+      const reservationRows = yield* db
+        .select({
+          agentRunId: agentRunCapacityReservations.agentRunId,
+          principalId: agentRunCapacityReservations.principalId,
+          state: agentRunCapacityReservations.state,
+        })
+        .from(agentRunCapacityReservations)
+        .orderBy(agentRunCapacityReservations.agentRunId);
+      const eventRows = yield* db
+        .select({
+          agentRunId: threadEvents.agentRunId,
+          eventId: threadEvents.eventId,
+          eventType: threadEvents.eventType,
+          position: threadEvents.position,
+          principalId: threadEvents.principalId,
+          threadId: threadEvents.threadId,
+          userMessageId: threadEvents.userMessageId,
+        })
         .from(threadEvents)
-        .where(
-          and(
-            eq(threadEvents.agentRunId, request.agentRunId),
-            eq(threadEvents.threadId, request.threadId),
-          ),
-        )
         .orderBy(threadEvents.position);
+      const outboxRows = yield* db
+        .select({
+          agentRunId: outboxObligations.agentRunId,
+          outboxId: outboxObligations.outboxId,
+          principalId: outboxObligations.principalId,
+          publicationEvidence: outboxObligations.publicationEvidence,
+          publishedAt: outboxObligations.publishedAt,
+          threadId: outboxObligations.threadId,
+        })
+        .from(outboxObligations)
+        .orderBy(outboxObligations.outboxId);
+      const relayPrincipalRows = yield* db
+        .select({ principalId: relayPrincipals.principalId })
+        .from(relayPrincipals)
+        .orderBy(relayPrincipals.principalId);
+      const relayThreadRows = yield* db
+        .select({ principalId: relayThreads.principalId, threadId: relayThreads.threadId })
+        .from(relayThreads)
+        .orderBy(relayThreads.threadId);
+      const relayDispatchCapacityRows = yield* db
+        .select({ activeCount: relayDispatchCapacity.activeCount })
+        .from(relayDispatchCapacity);
+      const relayTaskRows = yield* db
+        .select({ outboxId: relayPublicationTasks.outboxId })
+        .from(relayPublicationTasks)
+        .orderBy(relayPublicationTasks.outboxId);
+      const relayAttemptRows = yield* db
+        .select({
+          outboxId: relayPublicationAttempts.outboxId,
+          providerMessageId: relayPublicationAttempts.providerMessageId,
+          publicationEpoch: relayPublicationAttempts.publicationEpoch,
+          publicationOwner: relayPublicationAttempts.publicationOwner,
+          state: relayPublicationAttempts.state,
+        })
+        .from(relayPublicationAttempts)
+        .orderBy(relayPublicationAttempts.outboxId, relayPublicationAttempts.publicationEpoch);
+      const assistantOutputRows = yield* db
+        .select({
+          agentRunId: assistantOutputs.agentRunId,
+          assistantOutputId: assistantOutputs.assistantOutputId,
+          state: assistantOutputs.state,
+        })
+        .from(assistantOutputs)
+        .orderBy(assistantOutputs.assistantOutputId);
+      const modelCallRows = yield* db
+        .select({
+          agentRunId: modelCalls.agentRunId,
+          modelCallId: modelCalls.modelCallId,
+          state: modelCalls.state,
+        })
+        .from(modelCalls)
+        .orderBy(modelCalls.modelCallId);
+      const modelCallAttemptRows = yield* db
+        .select({
+          agentRunId: modelCallAttempts.agentRunId,
+          assistantOutputId: modelCallAttempts.assistantOutputId,
+          attemptNumber: modelCallAttempts.attemptNumber,
+          claimEpoch: modelCallAttempts.claimEpoch,
+          modelCallAttemptId: modelCallAttempts.modelCallAttemptId,
+          modelCallId: modelCallAttempts.modelCallId,
+          state: modelCallAttempts.state,
+        })
+        .from(modelCallAttempts)
+        .orderBy(modelCallAttempts.modelCallAttemptId);
+      const modelCallFragmentRows = yield* db
+        .select({
+          agentRunId: modelCallFragments.agentRunId,
+          assistantOutputId: modelCallFragments.assistantOutputId,
+          fragmentIndex: modelCallFragments.fragmentIndex,
+          modelCallAttemptId: modelCallFragments.modelCallAttemptId,
+          modelCallId: modelCallFragments.modelCallId,
+          text: modelCallFragments.text,
+          threadEventId: modelCallFragments.threadEventId,
+        })
+        .from(modelCallFragments)
+        .orderBy(modelCallFragments.modelCallAttemptId, modelCallFragments.fragmentIndex);
+      const globalCapacityRows = yield* db
+        .select({ reservedCount: admissionGlobalCapacity.reservedCount })
+        .from(admissionGlobalCapacity);
+      const principalCapacityRows = yield* db
+        .select({
+          principalId: admissionPrincipalCapacity.principalId,
+          reservedCount: admissionPrincipalCapacity.reservedCount,
+        })
+        .from(admissionPrincipalCapacity)
+        .orderBy(admissionPrincipalCapacity.principalId);
 
       return {
-        ...facts,
-        eventTypes: events.map((event) => event.eventType),
-        threadPositions: events.map((event) => String(event.position)),
+        agentRuns: runRows,
+        assistantOutputs: assistantOutputRows,
+        authenticationSessions: sessionRows,
+        events: eventRows.map((event) => ({ ...event, position: String(event.position) })),
+        globalCapacities: globalCapacityRows,
+        modelCallAttempts: modelCallAttemptRows.map((attempt) => ({
+          ...attempt,
+          claimEpoch: String(attempt.claimEpoch),
+        })),
+        modelCallFragments: modelCallFragmentRows,
+        modelCalls: modelCallRows,
+        outbox: outboxRows.map(({ publishedAt, ...obligation }) => ({
+          ...obligation,
+          published: publishedAt !== null,
+        })),
+        principalCapacities: principalCapacityRows,
+        principals: principalRows,
+        relayDispatchCapacities: relayDispatchCapacityRows,
+        relayPrincipals: relayPrincipalRows,
+        relayPublicationAttempts: relayAttemptRows.map((attempt) => ({
+          ...attempt,
+          publicationEpoch: String(attempt.publicationEpoch),
+        })),
+        relayPublicationTasks: relayTaskRows,
+        relayThreads: relayThreadRows,
+        receipts: receiptRows.map((receipt) => ({
+          ...receipt,
+          threadPosition: String(receipt.threadPosition),
+        })),
+        reservations: reservationRows,
+        threads: threadRows,
+        userMessages: messageRows,
       };
     }),
   );

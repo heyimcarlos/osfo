@@ -20,6 +20,9 @@ export interface ThreadResumeTransport {
 }
 
 export interface SynchronizeThreadOptions {
+  readonly onCaughtUp?: (
+    checkpoint: Extract<ThreadStreamEvent, { readonly event: "caught_up" }>["data"],
+  ) => void;
   readonly onProjection?: (snapshot: ThreadSnapshot) => void;
   readonly store: ThreadProjectionStore;
   readonly transport: ThreadResumeTransport;
@@ -35,6 +38,11 @@ export type SynchronizeThreadError =
 
 const notify = (options: SynchronizeThreadOptions, snapshot: ThreadSnapshot) =>
   Effect.sync(() => options.onProjection?.(snapshot));
+
+const notifyCaughtUp = (
+  options: SynchronizeThreadOptions,
+  checkpoint: Extract<ThreadStreamEvent, { readonly event: "caught_up" }>["data"],
+) => Effect.sync(() => options.onCaughtUp?.(checkpoint));
 
 const replaceFromAuthority = Effect.fn("ThreadResume.replaceFromAuthority")(function* (
   options: SynchronizeThreadOptions,
@@ -73,7 +81,7 @@ export const synchronizeThreadOnce = Effect.fn("ThreadResume.synchronizeThreadOn
   yield* events.pipe(
     Stream.runForEach((message) =>
       message.event === "caught_up"
-        ? Effect.void
+        ? notifyCaughtUp(options, message.data)
         : options.store.apply(message.data).pipe(
             Effect.tap((snapshot) => notify(options, snapshot)),
             Effect.asVoid,

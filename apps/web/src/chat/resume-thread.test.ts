@@ -68,6 +68,8 @@ describe("Thread resume coordinator", () => {
   it("bootstraps a lost local projection then applies replay crash-consistently", async () => {
     const store = makeThreadProjectionStore({ storage: new MemoryStorage(), threadId });
     const observed: Array<string> = [];
+    const caughtUp: Array<{ readonly throughCursor: string; readonly throughPosition: string }> =
+      [];
     const transport: ThreadResumeTransport = {
       snapshot: () => Effect.succeed(through1),
       stream: (cursor) => {
@@ -84,9 +86,16 @@ describe("Thread resume coordinator", () => {
       },
     };
 
-    await Effect.runPromise(synchronizeThreadOnce({ store, transport }));
+    await Effect.runPromise(
+      synchronizeThreadOnce({
+        store,
+        transport,
+        onCaughtUp: (checkpoint) => caughtUp.push(checkpoint),
+      }),
+    );
 
     expect(observed).toEqual([event1.cursor]);
+    expect(caughtUp).toEqual([{ throughCursor: event2.cursor, throughPosition: "2" }]);
     expect(Effect.runSync(store.load())).toEqual(through2);
   });
 

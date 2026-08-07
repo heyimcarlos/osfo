@@ -3,6 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "development": "./src/testing.ts",
+      "default": "./dist/testing.js"
+    }
+  },
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "dev": "node --conditions=development --import tsx src/main.ts",

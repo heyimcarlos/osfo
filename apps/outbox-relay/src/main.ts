@@ -1,8 +1,9 @@
 import { NodeHttpClient, NodeRuntime } from "@effect/platform-node";
-import { OutboxRelay, makeOutboxRelayLayer } from "@osfo/agent-run";
+import { makeOutboxRelayLayer } from "@osfo/agent-run";
 import { makeAgentRunRepositoryLayer } from "@osfo/db";
 import { Config, Effect, Layer, Schema } from "effect";
 import { makeGooglePubSubPublisherLayer } from "./pubsub-publisher.js";
+import { runOutboxRelay } from "./relay.js";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 
@@ -45,39 +46,9 @@ const RelayLive = Layer.unwrap(
 
 const program = RelayConfig.pipe(
   Effect.flatMap((config) =>
-    Effect.gen(function* () {
-      yield* Effect.logInfo("OSFO_OUTBOX_RELAY_READY");
-      const relay = yield* OutboxRelay;
-      const selector = Effect.forever(
-        relay.selectOnce().pipe(
-          Effect.flatMap((result) =>
-            result.type === "idle" ? Effect.sleep(config.idlePollIntervalMs) : Effect.yieldNow,
-          ),
-          Effect.catch((cause) =>
-            Effect.logError("Outbox selector iteration failed", cause).pipe(
-              Effect.andThen(Effect.sleep(config.idlePollIntervalMs)),
-            ),
-          ),
-        ),
-      );
-      const publishers = Effect.forEach(
-        Array.from({ length: config.publisherConcurrency }),
-        () =>
-          Effect.forever(
-            relay.publishOnce().pipe(
-              Effect.flatMap((result) =>
-                result.type === "idle" ? Effect.sleep(config.idlePollIntervalMs) : Effect.yieldNow,
-              ),
-              Effect.catch((cause) =>
-                Effect.logError("Outbox publisher iteration failed", cause).pipe(
-                  Effect.andThen(Effect.sleep(config.idlePollIntervalMs)),
-                ),
-              ),
-            ),
-          ),
-        { concurrency: "unbounded", discard: true },
-      );
-      yield* Effect.all([selector, publishers], { concurrency: "unbounded", discard: true });
+    runOutboxRelay({
+      idlePollIntervalMs: config.idlePollIntervalMs,
+      publisherConcurrency: config.publisherConcurrency,
     }),
   ),
   Effect.provide(RelayLive),

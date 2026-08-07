@@ -147,11 +147,13 @@ describe("Thread chat atoms", () => {
     const registry = AtomRegistry.make();
     const unmount = registry.mount(chat.resume);
     const unmountMessages = registry.mount(chat.messages);
+    const unmountSynchronization = registry.mount(chat.synchronization);
 
     expect(AsyncResult.isWaiting(registry.get(chat.resume))).toBe(true);
     await Effect.runPromise(Deferred.await(streamStarted));
 
     expect(Effect.runSync(projectionStore.load())).toEqual(snapshot);
+    expect(registry.get(chat.synchronization)).toEqual({ type: "synchronizing" });
 
     expect(registry.get(chat.messages)).toEqual([
       {
@@ -166,6 +168,7 @@ describe("Thread chat atoms", () => {
       },
     ]);
 
+    unmountSynchronization();
     unmountMessages();
     unmount();
     await Effect.runPromise(Deferred.await(streamInterrupted));

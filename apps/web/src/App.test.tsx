@@ -250,7 +250,7 @@ describe("browser reference client", () => {
       expect(container.innerHTML).toContain("Echo: Hello through resume");
       expect(container.innerHTML).toContain(assistantOutputId);
       expect(container.innerHTML).toContain("Canonical at position 2");
-      expect(container.innerHTML).toContain("Synchronized through 4");
+      expect(container.innerHTML).toContain("Reconnecting");
     } finally {
       await act(async () => root.unmount());
       globalThis.fetch = originalFetch;

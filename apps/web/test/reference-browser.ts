@@ -1,7 +1,7 @@
 import { NodeServices } from "@effect/platform-node";
 import { AcceptanceReceipt } from "@osfo/api";
 import { ThreadSnapshotSchema } from "@osfo/session";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,6 +54,30 @@ const ResponseReceivedSchema = Schema.Struct({
   response: Schema.Struct({ status: Schema.Number }),
 });
 const LoadingFinishedSchema = Schema.Struct({ requestId: Schema.String });
+const observeVisibleText = `(() => {
+  const observed = [];
+  Object.defineProperty(globalThis, "__osfoObservedText", { value: observed });
+  const record = () => {
+    const text = document.body?.textContent;
+    if (text !== undefined && observed.at(-1) !== text) {
+      observed.push(text);
+      if (observed.length > 100) observed.shift();
+    }
+  };
+  const start = () => {
+    record();
+    new MutationObserver(record).observe(document.body, {
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start, { once: true });
+  } else {
+    start();
+  }
+})()`;
 
 export class ReferenceBrowserError extends Data.TaggedError("ReferenceBrowserError")<{
   readonly operation: string;
@@ -212,11 +236,12 @@ interface PendingCommand {
 }
 
 class CdpConnection {
-  readonly #completedMessages: Array<string> = [];
-  readonly #eventRequests: Array<string> = [];
+  readonly #completedMessages: Array<{ readonly requestId: string; readonly status: number }> = [];
+  readonly #eventRequests: Array<{ readonly requestId: string; readonly url: string }> = [];
+  readonly #eventResponses = new Map<string, number>();
   readonly #pending = new Map<number, PendingCommand>();
   readonly #requests = new Map<string, { readonly method: string; readonly url: string }>();
-  readonly #successfulMessageResponses = new Set<string>();
+  readonly #messageResponses = new Map<string, number>();
   #nextId = 1;
 
   private constructor(
@@ -270,26 +295,32 @@ class CdpConnection {
       if (Option.isSome(request)) {
         this.#requests.set(request.value.requestId, request.value.request);
         if (new URL(request.value.request.url).pathname.endsWith("/events")) {
-          this.#eventRequests.push(request.value.request.url);
+          this.#eventRequests.push({
+            requestId: request.value.requestId,
+            url: request.value.request.url,
+          });
         }
       }
     }
     if (message.method === "Network.responseReceived") {
       const response = Schema.decodeUnknownOption(ResponseReceivedSchema)(message.params);
-      if (Option.isSome(response) && response.value.response.status === 200) {
+      if (Option.isSome(response)) {
         const request = this.#requests.get(response.value.requestId);
+        if (request !== undefined && new URL(request.url).pathname.endsWith("/events")) {
+          this.#eventResponses.set(response.value.requestId, response.value.response.status);
+        }
         if (request?.method === "POST" && new URL(request.url).pathname.endsWith("/messages")) {
-          this.#successfulMessageResponses.add(response.value.requestId);
+          this.#messageResponses.set(response.value.requestId, response.value.response.status);
         }
       }
     }
     if (message.method === "Network.loadingFinished") {
       const completed = Schema.decodeUnknownOption(LoadingFinishedSchema)(message.params);
-      if (
-        Option.isSome(completed) &&
-        this.#successfulMessageResponses.has(completed.value.requestId)
-      ) {
-        this.#completedMessages.push(completed.value.requestId);
+      if (Option.isSome(completed) && this.#messageResponses.has(completed.value.requestId)) {
+        this.#completedMessages.push({
+          requestId: completed.value.requestId,
+          status: this.#messageResponses.get(completed.value.requestId)!,
+        });
       }
     }
   }
@@ -315,7 +346,14 @@ class CdpConnection {
 
   takeCompletedMessage = Effect.sync(() => this.#completedMessages.shift());
   eventRequestCount = Effect.sync(() => this.#eventRequests.length);
-  eventRequestAt = (index: number) => Effect.sync(() => this.#eventRequests[index]);
+  eventRequestAt = (index: number) => Effect.sync(() => this.#eventRequests[index]?.url);
+  eventResponseAt = (index: number) =>
+    Effect.sync(() => {
+      const request = this.#eventRequests[index];
+      if (request === undefined) return undefined;
+      const status = this.#eventResponses.get(request.requestId);
+      return status === undefined ? undefined : { status, url: request.url };
+    });
 
   close = Effect.sync(() => this.socket.close());
 }
@@ -382,11 +420,20 @@ class ChromeTab {
   };
 
   waitForText = (text: string) => {
-    return waitFor(
-      `wait for ${JSON.stringify(text)} in tab ${this.label}`,
-      this.evaluate("document.body?.textContent ?? ''", Schema.String),
-      (body) => body.includes(text),
-    ).pipe(Effect.asVoid);
+    return Effect.gen({ self: this }, function* () {
+      let body = "";
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        body = yield* this.evaluate(
+          "(() => { const current = document.body?.textContent ?? ''; const observed = globalThis.__osfoObservedText; return Array.isArray(observed) ? `${current}\\n${observed.join('\\n')}` : current; })()",
+          Schema.String,
+        );
+        if (body.includes(text)) return;
+        yield* Effect.sleep(25);
+      }
+      return yield* new ReferenceBrowserError({
+        operation: `wait for ${JSON.stringify(text)} in tab ${this.label}: ${body}`,
+      });
+    });
   };
 
   readProjection = (threadId: string) =>
@@ -448,17 +495,35 @@ class ChromeTab {
       yield* this.connection
         .command("Input.insertText", { text: content }, EmptyObject)
         .pipe(Effect.asVoid);
-      yield* this.evaluate(
-        "document.querySelector('button[aria-label=\"Send message\"]')?.click()",
-        Schema.Undefined,
+      yield* waitFor(
+        `wait for message submission in tab ${this.label}`,
+        this.evaluate(
+          "document.querySelector('button[aria-label=\"Send message\"]')?.disabled ?? true",
+          Schema.Boolean,
+        ),
+        (disabled) => !disabled,
       );
-      const requestId = yield* waitForDefined(
+      yield* this.connection
+        .command(
+          "Input.dispatchKeyEvent",
+          { code: "Enter", key: "Enter", type: "rawKeyDown", windowsVirtualKeyCode: 13 },
+          EmptyObject,
+        )
+        .pipe(Effect.asVoid);
+      yield* this.connection
+        .command(
+          "Input.dispatchKeyEvent",
+          { code: "Enter", key: "Enter", type: "keyUp", windowsVirtualKeyCode: 13 },
+          EmptyObject,
+        )
+        .pipe(Effect.asVoid);
+      const completed = yield* waitForDefined(
         `wait for Acceptance Receipt in tab ${this.label}`,
         this.connection.takeCompletedMessage,
       );
       const response = yield* this.connection.command(
         "Network.getResponseBody",
-        { requestId },
+        { requestId: completed.requestId },
         ResponseBodySchema,
       );
       if (response.base64Encoded) {
@@ -466,6 +531,19 @@ class ChromeTab {
           operation: `decode base64 Acceptance Receipt in tab ${this.label}`,
         });
       }
+      if (completed.status !== 200) {
+        return yield* new ReferenceBrowserError({
+          operation: `submit message in tab ${this.label} returned ${completed.status}: ${response.body}`,
+        });
+      }
+      yield* waitFor(
+        `wait for message composer to clear in tab ${this.label}`,
+        this.evaluate(
+          "document.querySelector('#thread-message')?.value ?? 'missing'",
+          Schema.String,
+        ),
+        (value) => value.length === 0,
+      );
       return yield* Schema.decodeUnknownEffect(AcceptanceReceiptFromJson)(response.body).pipe(
         Effect.mapError(
           (cause) => new ReferenceBrowserError({ operation: "decode Acceptance Receipt", cause }),
@@ -480,6 +558,12 @@ class ChromeTab {
     waitForDefined(
       `wait for tab ${this.label} to resume its event stream`,
       this.connection.eventRequestAt(count),
+    );
+
+  waitForEventResponseAfter = (count: number) =>
+    waitForDefined(
+      `wait for tab ${this.label} resumed event response`,
+      this.connection.eventResponseAt(count),
     );
 }
 
@@ -523,9 +607,31 @@ const verifyGoogleChrome = (executable: string) =>
     }
   });
 
+const waitForDevToolsActivePort = (userDataDirectory: string) =>
+  Effect.gen(function* () {
+    const path = join(userDataDirectory, "DevToolsActivePort");
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const contents = yield* Effect.tryPromise({
+        try: () => readFile(path, "utf8"),
+        catch: () => undefined,
+      }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+      if (contents !== undefined) {
+        const [encodedPort] = contents.split("\n");
+        const port = Number(encodedPort);
+        if (Number.isSafeInteger(port) && port > 0 && port <= 65_535) return port;
+        return yield* new ReferenceBrowserError({
+          operation: `decode Google Chrome DevToolsActivePort: ${contents.trim()}`,
+        });
+      }
+      yield* Effect.sleep(25);
+    }
+    return yield* new ReferenceBrowserError({
+      operation: "wait for Google Chrome DevToolsActivePort",
+    });
+  });
+
 export const startGoogleChrome = () =>
   Effect.gen(function* () {
-    const port = yield* availablePort;
     const userDataDirectory = yield* Effect.tryPromise({
       try: () => mkdtemp(join(tmpdir(), "osfo-reference-chrome-")),
       catch: (cause) =>
@@ -540,12 +646,12 @@ export const startGoogleChrome = () =>
     );
     const chrome = yield* findChrome;
     yield* verifyGoogleChrome(chrome);
-    yield* ChildProcess.make(
+    const handle = yield* ChildProcess.make(
       chrome,
       [
         "--headless=new",
         "--disable-gpu",
-        `--remote-debugging-port=${port}`,
+        "--remote-debugging-port=0",
         "--remote-allow-origins=*",
         `--user-data-dir=${userDataDirectory}`,
         "about:blank",
@@ -554,6 +660,18 @@ export const startGoogleChrome = () =>
     ).pipe(
       Effect.mapError(
         (cause) => new ReferenceBrowserError({ operation: "start Google Chrome", cause }),
+      ),
+    );
+    const port = yield* Effect.raceFirst(
+      waitForDevToolsActivePort(userDataDirectory),
+      handle.exitCode.pipe(
+        Effect.flatMap((exitCode) =>
+          Effect.fail(
+            new ReferenceBrowserError({
+              operation: `Google Chrome exited before DevTools became ready (${exitCode})`,
+            }),
+          ),
+        ),
       ),
     );
     const debuggingOrigin = `http://127.0.0.1:${port}`;
@@ -576,6 +694,11 @@ export const startGoogleChrome = () =>
         yield* connection.command("Page.enable", {}, EmptyObject);
         yield* connection.command("Runtime.enable", {}, EmptyObject);
         yield* connection.command("Network.enable", {}, EmptyObject);
+        yield* connection.command(
+          "Page.addScriptToEvaluateOnNewDocument",
+          { source: observeVisibleText },
+          EmptyObject,
+        );
         const tab = new ChromeTab(connection, label);
         if (location !== "about:blank") yield* tab.navigate(location);
         return tab;

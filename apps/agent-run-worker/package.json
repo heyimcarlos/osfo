@@ -3,6 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/streaming-pull.d.ts",
+      "development": "./src/streaming-pull.ts",
+      "default": "./dist/streaming-pull.js"
+    }
+  },
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "dev": "node --import tsx src/main.ts",
