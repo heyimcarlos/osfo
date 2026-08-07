@@ -90,6 +90,12 @@ printf '%s\n' \
     '      printf "%s\n" "[{\"url\":\"gs://osfo-development-artifacts-318708913\",\"type\":\"unknown\"},{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/\",\"type\":\"prefix\"},{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:\",\"type\":\"cloud_object\"}]"' \
     '    elif [[ "${MOCK_STORAGE_MODE:-empty}" == unexpected-type ]]; then' \
     '      printf "%s\n" "[{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/\",\"type\":\"directory\"}]"' \
+    '    elif [[ "${MOCK_STORAGE_MODE:-empty}" == blank ]]; then' \
+    '      :' \
+    '    elif [[ "${MOCK_STORAGE_MODE:-empty}" == empty-array ]]; then' \
+    '      printf "%s\n" "[]"' \
+    '    elif [[ "${MOCK_STORAGE_MODE:-empty}" == unversioned-object ]]; then' \
+    '      printf "%s\n" "[{\"url\":\"gs://osfo-development-artifacts-318708913\",\"type\":\"unknown\"},{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/\",\"type\":\"prefix\"},{\"url\":\"gs://osfo-development-artifacts-318708913/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"cloud_object\"}]"' \
     '    fi' \
     '    ;;' \
   '  "storage ls"*)' \
@@ -164,6 +170,41 @@ grep -Fq 'FAIL: artifact object listing was not valid structured object metadata
   "$unexpected_type_output"
 if grep -Fq 'PASS:' "$unexpected_type_output"; then
   printf 'unexpected structured listing type must not report PASS\n' >&2
+  exit 1
+fi
+
+for invalid_empty_mode in blank empty-array; do
+  invalid_empty_output="$scratch/$invalid_empty_mode-output"
+  if PATH="$mock_bin:$PATH" \
+    FOUNDATION_SERVICE_ACCOUNT=$foundation_account \
+    MOCK_STORAGE_MODE=$invalid_empty_mode \
+    TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
+    infra/tests/development-platform-prepare-cleanup.sh \
+    >"$invalid_empty_output" 2>&1; then
+    printf '%s structured listing must fail closed\n' "$invalid_empty_mode" >&2
+    exit 1
+  fi
+  grep -Eq \
+    'FAIL: artifact object listing (omitted the required bucket root metadata|was not valid structured object metadata)' \
+    "$invalid_empty_output"
+  if grep -Fq 'PASS:' "$invalid_empty_output"; then
+    printf '%s structured listing must not report PASS\n' "$invalid_empty_mode" >&2
+    exit 1
+  fi
+done
+
+unversioned_output=$scratch/unversioned-output
+if PATH="$mock_bin:$PATH" \
+  FOUNDATION_SERVICE_ACCOUNT=$foundation_account \
+  MOCK_STORAGE_MODE=unversioned-object \
+  TF_VARSET_FILE=infra/roots/development/platform/development.tfvars.json \
+  infra/tests/development-platform-prepare-cleanup.sh >"$unversioned_output" 2>&1; then
+  printf 'unversioned cloud object must fail exact-generation validation\n' >&2
+  exit 1
+fi
+grep -Fq 'FAIL: refusing unexpected artifact object' "$unversioned_output"
+if grep -Fq 'PASS:' "$unversioned_output"; then
+  printf 'unversioned cloud object rejection must not report PASS\n' >&2
   exit 1
 fi
 

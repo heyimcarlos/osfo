@@ -27,12 +27,14 @@ normalize_listing() {
 
   : >"$destination_file"
   if ! grep -q '[^[:space:]]' "$source_file"; then
-    return 0
+    printf 'FAIL: artifact object listing omitted the required bucket root metadata\n' >&2
+    return 1
   fi
   if ! jq -e \
     --arg bucket_root "gs://$artifact_bucket" \
     --arg bucket_prefix "gs://$artifact_bucket/" '
     type == "array"
+    and ([.[] | select(.type == "unknown")] | length) == 1
     and all(.[];
       (.type == "cloud_object" and (.url | type == "string"))
       or (.type == "unknown" and (.url == $bucket_root or .url == ($bucket_root + "/")))
@@ -66,7 +68,7 @@ fi
 normalize_listing "$scratch/objects" "$scratch/object-uris"
 
 while IFS= read -r object_uri; do
-  if [[ ! "$object_uri" =~ ^gs://$artifact_bucket/sha256/[0-9a-f]{64}(#[0-9]+)?$ ]]; then
+  if [[ ! "$object_uri" =~ ^gs://$artifact_bucket/sha256/[0-9a-f]{64}#[0-9]+$ ]]; then
     printf 'FAIL: refusing unexpected artifact object %s\n' "$object_uri" >&2
     exit 1
   fi
