@@ -7,6 +7,7 @@ const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
 const readyPattern = /^OSFO_INGRESS_READY:(\d+)$/u;
 
 export interface CompiledIngressOptions {
+  readonly admissionCapacityReconciliationIntervalMs?: number;
   readonly databaseUrl: string;
   readonly executionProfileRef?: string;
   readonly globalNonTerminalLimit?: number;
@@ -78,6 +79,9 @@ export const startCompiledIngress = (options: CompiledIngressOptions) =>
     const handle = yield* ChildProcess.make(process.execPath, ["dist/main.js"], {
       cwd: packageDirectory,
       env: {
+        OSFO_ADMISSION_CAPACITY_RECONCILIATION_INTERVAL_MS: String(
+          options.admissionCapacityReconciliationIntervalMs ?? 30_000,
+        ),
         OSFO_INGRESS_PORT: "0",
         OSFO_DATABASE_URL: options.databaseUrl,
         OSFO_EXECUTION_PROFILE_REF: options.executionProfileRef ?? "oz.process-test.v1",

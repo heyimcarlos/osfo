@@ -30,6 +30,7 @@ const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 export const ThreadResumeDatabaseConfigSchema = Schema.Struct({
   databaseUrl: Schema.NonEmptyString,
   cursorSecret: Schema.String.check(Schema.isMinLength(32)),
+  maxConnections: PositiveInteger,
   pollIntervalMs: PositiveInteger,
   replayEventLimit: PositiveInteger,
   replayGuaranteedForMs: PositiveInteger,
@@ -101,6 +102,7 @@ const decodeCursor = Effect.fn("DatabaseThreadResume.decodeCursor")(function* (
 const threadResumeLayer = (config: ThreadResumeDatabaseConfig) => {
   const postgresLayer = PgClient.layer({
     applicationName: "osfo-thread-resume",
+    maxConnections: config.maxConnections,
     url: Redacted.make(config.databaseUrl),
   });
 

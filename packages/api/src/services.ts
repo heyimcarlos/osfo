@@ -10,6 +10,8 @@ import {
 } from "./threads/api.js";
 import type {
   AcceptanceReceipt,
+  AdmissionCommitUnknown,
+  AdmissionNotAccepted,
   AdmissionUnavailable,
   CapacityRejected,
   IdempotencyConflict,
@@ -17,6 +19,20 @@ import type {
   ThreadHistoryPage,
   ThreadStreamEvent,
 } from "./threads/api.js";
+
+export const AdmissionCapacityReconciliationSchema = Schema.Struct({
+  expectedNonTerminalCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  globalReservedBefore: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  globalReservedAfter: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  principalMismatchCountBefore: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  principalMismatchCountAfter: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  reservationMismatchCountBefore: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  reservationMismatchCountAfter: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  repaired: Schema.Boolean,
+  sweepComplete: Schema.Boolean,
+});
+
+export type AdmissionCapacityReconciliation = typeof AdmissionCapacityReconciliationSchema.Type;
 
 export interface SubmitMessageCommand extends SubmitMessagePayload {
   readonly authenticationToken: string;
@@ -28,7 +44,16 @@ export type MessageAdmissionError =
   | ThreadNotFound
   | IdempotencyConflict
   | CapacityRejected
-  | AdmissionUnavailable;
+  | AdmissionNotAccepted
+  | AdmissionUnavailable
+  | AdmissionCommitUnknown;
+
+export type MessageAdmissionReconciliationError =
+  | AuthenticationRejected
+  | ThreadNotFound
+  | IdempotencyConflict
+  | AdmissionNotAccepted
+  | AdmissionCommitUnknown;
 
 export class MessageAdmission extends Context.Service<
   MessageAdmission,
@@ -36,6 +61,13 @@ export class MessageAdmission extends Context.Service<
     readonly accept: (
       command: SubmitMessageCommand,
     ) => Effect.Effect<AcceptanceReceipt, MessageAdmissionError>;
+    readonly reconcile: (
+      command: SubmitMessageCommand,
+    ) => Effect.Effect<AcceptanceReceipt, MessageAdmissionReconciliationError>;
+    readonly reconcileCapacity: () => Effect.Effect<
+      AdmissionCapacityReconciliation,
+      AdmissionUnavailable
+    >;
   }
 >()("@osfo/api/MessageAdmission") {}
 

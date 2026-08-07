@@ -71,7 +71,13 @@ walkthrough and evidence contract.
 
 The ingress process requires `OSFO_DATABASE_URL`,
 `OSFO_EXECUTION_PROFILE_REF`, `OSFO_GLOBAL_NON_TERMINAL_LIMIT`, and
-`OSFO_PRINCIPAL_NON_TERMINAL_LIMIT`. Snapshot size, replay retention, stream
+`OSFO_PRINCIPAL_NON_TERMINAL_LIMIT`. Both admission limits are capped at 256 so
+recovery work stays bounded. Admission and resume database pools default
+to four connections each and are capped at eight through
+`OSFO_ADMISSION_DATABASE_POOL_MAX` and `OSFO_RESUME_DATABASE_POOL_MAX`.
+Admission capacity is repaired at startup and every 30 seconds by default. Set
+`OSFO_ADMISSION_CAPACITY_RECONCILIATION_INTERVAL_MS` to change that interval.
+Snapshot size, replay retention, stream
 polling, and cursor signing have bounded local defaults. Production deployments
 set `OSFO_CURSOR_SECRET` explicitly. Set `OSFO_INGRESS_PORT` to override its
 default port, 3000.

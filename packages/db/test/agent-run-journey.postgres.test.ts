@@ -14,15 +14,32 @@ import {
   type RunnableAgentRunDelivery,
 } from "@osfo/agent-run";
 import { makeDeterministicAgentRuntimeLayer } from "@osfo/agent-runtime";
-import { MessageAdmission, ThreadResume, type SubmitMessageCommand } from "@osfo/api";
+import {
+  CapacityRejected,
+  MessageAdmission,
+  ThreadResume,
+  type SubmitMessageCommand,
+} from "@osfo/api";
 import { afterAll, beforeEach, describe, expect, it } from "@effect/vitest";
-import { Effect, Exit, Layer, ManagedRuntime, Redacted, Schema } from "effect";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Redacted,
+  Schema,
+} from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   makeAgentRunRepositoryLayer,
   makeMessageAdmissionLayer,
   makeThreadResumeLayer,
 } from "../src/index.js";
+import { ADMISSION_CAPACITY_LOCK_KEY } from "../src/admission-capacity.js";
 
 const databaseUrl = process.env.OSFO_TEST_DATABASE_URL;
 if (databaseUrl === undefined) {
@@ -41,11 +58,11 @@ let failFirstPublication = true;
 
 const databaseLayer = PgClient.layer({
   applicationName: "osfo-agent-run-journey-test",
-  maxConnections: 12,
+  maxConnections: 8,
   url: Redacted.make(databaseUrl),
 });
 
-const repositoryLayer = makeAgentRunRepositoryLayer({ databaseUrl });
+const repositoryLayer = makeAgentRunRepositoryLayer({ databaseUrl, maxConnections: 8 });
 const runtimeLayer = makeDeterministicAgentRuntimeLayer({
   executionProfileRef: "oz.deterministic.v1",
   modelBinding: "oz.deterministic.echo.v1",
@@ -87,11 +104,13 @@ const runtime = ManagedRuntime.make(
       databaseUrl,
       executionProfileRef: "oz.deterministic.v1",
       globalNonTerminalLimit: 8,
+      maxConnections: 8,
       principalNonTerminalLimit: 8,
     }),
     makeThreadResumeLayer({
       databaseUrl,
       cursorSecret: "agent-run-journey-test-cursor-secret",
+      maxConnections: 8,
       pollIntervalMs: 5,
       replayEventLimit: 100,
       replayGuaranteedForMs: 30_000,
@@ -128,6 +147,7 @@ const seedAuthority = () =>
         relay_publication_tasks,
         outbox_obligations,
         agent_run_capacity_reservations,
+        admission_rejections,
         acceptance_receipts,
         thread_events,
         user_messages,
@@ -227,6 +247,154 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     await run(OutboxRelay.use((relay) => relay.publishOnce()));
 
     expect(published.map((delivery) => delivery.agentRunId)).toEqual([first.agentRunId]);
+  });
+
+  it("sustains bounded PostgreSQL overload, drains accepted work, and recovers", async () => {
+    failFirstPublication = false;
+    const baselineHeapBytes = process.memoryUsage().heapUsed;
+    const maxima = {
+      admissionRetryVolume: 0,
+      connectionsPerPool: 0,
+      globalReserved: 0,
+      heapGrowthBytes: 0,
+      heldReservations: 0,
+      nonTerminalRuns: 0,
+      oldestWorkAgeMs: 0,
+      principalReserved: 0,
+      workerRetryVolume: 0,
+      totalConnections: 0,
+    };
+    const sample = () =>
+      run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const [row] = yield* sql<{
+            readonly connectionsPerPool: number;
+            readonly globalReserved: number;
+            readonly heldReservations: number;
+            readonly nonTerminalRuns: number;
+            readonly oldestWorkAgeMs: number;
+            readonly principalReserved: number;
+            readonly totalConnections: number;
+          }>`SELECT
+            (SELECT count(*)::int FROM agent_runs
+              WHERE state NOT IN ('succeeded', 'failed', 'canceled')) AS "nonTerminalRuns",
+            (SELECT count(*)::int FROM agent_run_capacity_reservations
+              WHERE state = 'held') AS "heldReservations",
+            (SELECT reserved_count FROM admission_global_capacity
+              WHERE singleton = true) AS "globalReserved",
+            (SELECT coalesce(max(reserved_count), 0)::int
+              FROM admission_principal_capacity) AS "principalReserved",
+            (SELECT coalesce(extract(epoch FROM (
+                clock_timestamp() - min(created_at)
+              )) * 1000, 0)::float8
+              FROM agent_runs
+              WHERE state NOT IN ('succeeded', 'failed', 'canceled')) AS "oldestWorkAgeMs",
+            (SELECT coalesce(max(connection_count), 0)::int FROM (
+              SELECT application_name, count(*)::int AS connection_count
+              FROM pg_stat_activity
+              WHERE datname = current_database()
+                AND application_name LIKE 'osfo-%'
+              GROUP BY application_name
+            ) pools) AS "connectionsPerPool",
+            (SELECT count(*)::int FROM pg_stat_activity
+              WHERE datname = current_database()
+                AND application_name LIKE 'osfo-%') AS "totalConnections"`;
+          return row!;
+        }),
+      );
+    const recordSample = async () => {
+      const observed = await sample();
+      maxima.connectionsPerPool = Math.max(maxima.connectionsPerPool, observed.connectionsPerPool);
+      maxima.globalReserved = Math.max(maxima.globalReserved, observed.globalReserved);
+      maxima.heldReservations = Math.max(maxima.heldReservations, observed.heldReservations);
+      maxima.nonTerminalRuns = Math.max(maxima.nonTerminalRuns, observed.nonTerminalRuns);
+      maxima.oldestWorkAgeMs = Math.max(maxima.oldestWorkAgeMs, observed.oldestWorkAgeMs);
+      maxima.principalReserved = Math.max(maxima.principalReserved, observed.principalReserved);
+      maxima.totalConnections = Math.max(maxima.totalConnections, observed.totalConnections);
+      maxima.heapGrowthBytes = Math.max(
+        maxima.heapGrowthBytes,
+        process.memoryUsage().heapUsed - baselineHeapBytes,
+      );
+    };
+
+    let acceptedCount = 0;
+    let rejectedCount = 0;
+    const offerBurst = (round: number, lane: string) =>
+      Promise.all(
+        Array.from({ length: 16 }, (_, index) =>
+          run(
+            Effect.exit(
+              MessageAdmission.use((admission) =>
+                admission.accept({
+                  protocolVersion: 1,
+                  authenticationToken,
+                  threadId,
+                  idempotencyKey: randomUUID(),
+                  message: { content: `pressure ${round}:${lane}:${index}` },
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+    const recordOutcomes = (outcomes: ReadonlyArray<Exit.Exit<unknown, unknown>>) => {
+      const accepted = outcomes.filter(Exit.isSuccess).length;
+      const rejected = outcomes.filter(Exit.isFailure);
+      acceptedCount += accepted;
+      rejectedCount += rejected.length;
+      for (const outcome of rejected) {
+        const error = Option.getOrThrow(Cause.findErrorOption(outcome.cause));
+        expect(error).toEqual(new CapacityRejected({ scope: "global" }));
+      }
+      return accepted;
+    };
+    const drainAccepted = async (count: number) => {
+      for (let accepted = 0; accepted < count; accepted += 1) {
+        await run(OutboxRelay.use((relay) => relay.selectOnce()));
+        await run(OutboxRelay.use((relay) => relay.publishOnce()));
+        const delivery = published.at(-1)!;
+        const result = await run(AgentRunWorker.use((worker) => worker.handle(delivery)));
+        if (result.type === "retry") maxima.workerRetryVolume += 1;
+        expect(result).toEqual({ type: "acknowledge", outcome: "succeeded" });
+      }
+    };
+    const samplingFiber = Effect.runFork(
+      Effect.forever(Effect.promise(recordSample).pipe(Effect.andThen(Effect.sleep(5)))),
+    );
+    for (let round = 0; round < 8; round += 1) {
+      const initialAccepted = recordOutcomes(await offerBurst(round, "initial"));
+      expect(initialAccepted).toBe(8);
+      const [, duringDrain] = await Promise.all([
+        drainAccepted(initialAccepted),
+        offerBurst(round, "during-drain"),
+      ]);
+      await drainAccepted(recordOutcomes(duringDrain));
+    }
+    await Effect.runPromise(Fiber.interrupt(samplingFiber));
+    await recordSample();
+
+    await Effect.runPromise(Effect.logInfo("bounded overload maxima", maxima));
+    expect(acceptedCount + rejectedCount).toBe(256);
+    expect(acceptedCount).toBeGreaterThanOrEqual(64);
+    expect(rejectedCount).toBeGreaterThan(0);
+    expect(maxima.nonTerminalRuns).toBeLessThanOrEqual(8);
+    expect(maxima.heldReservations).toBeLessThanOrEqual(8);
+    expect(maxima.globalReserved).toBeLessThanOrEqual(8);
+    expect(maxima.principalReserved).toBeLessThanOrEqual(8);
+    expect(maxima.connectionsPerPool).toBeLessThanOrEqual(8);
+    expect(maxima.totalConnections).toBeLessThanOrEqual(32);
+    expect(maxima.heapGrowthBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+    expect(maxima.oldestWorkAgeMs).toBeLessThanOrEqual(30_000);
+    expect(maxima.admissionRetryVolume).toBe(0);
+    expect(maxima.workerRetryVolume).toBe(0);
+    expect(await sample()).toMatchObject({
+      globalReserved: 0,
+      heldReservations: 0,
+      nonTerminalRuns: 0,
+      oldestWorkAgeMs: 0,
+      principalReserved: 0,
+    });
   });
 
   it("publishes one eligible Thread head from the lowest Principal virtual pass", async () => {
@@ -483,6 +651,173 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     ]);
     expect(snapshot.activeState).toEqual([]);
     expect(snapshot.throughPosition).toBe("7");
+  });
+
+  it("rolls back terminal authority when capacity cannot release exactly once", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "recover capacity release" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE admission_principal_capacity
+          SET reserved_count = 0
+          WHERE principal_id = ${principalId}::uuid`;
+      }),
+    );
+
+    const inconsistentRelease = await run(AgentRunWorker.use((worker) => worker.handle(delivery)));
+    expect(inconsistentRelease).toEqual({ type: "retry" });
+    const retained = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* sql<{
+          readonly globalReserved: number;
+          readonly principalReserved: number;
+          readonly reservationState: string;
+          readonly runState: string;
+          readonly terminalEvents: string;
+        }>`SELECT
+          run.state AS "runState",
+          reservation.state AS "reservationState",
+          global_capacity.reserved_count AS "globalReserved",
+          principal_capacity.reserved_count AS "principalReserved",
+          (SELECT count(*) FROM thread_events
+            WHERE agent_run_id = ${receipt.agentRunId}::uuid
+              AND event_type IN ('AgentRunSucceeded', 'AgentRunFailed'))::text AS "terminalEvents"
+        FROM agent_runs run
+        JOIN agent_run_capacity_reservations reservation USING (agent_run_id)
+        CROSS JOIN admission_global_capacity global_capacity
+        JOIN admission_principal_capacity principal_capacity
+          ON principal_capacity.principal_id = run.principal_id
+        WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
+      }),
+    );
+    expect(retained[0]).toEqual({
+      runState: "running",
+      reservationState: "held",
+      globalReserved: 1,
+      principalReserved: 0,
+      terminalEvents: "0",
+    });
+
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE admission_principal_capacity
+          SET reserved_count = 1
+          WHERE principal_id = ${principalId}::uuid`;
+        yield* sql`UPDATE admission_global_capacity SET reserved_count = 2
+          WHERE singleton = true`;
+        yield* sql`UPDATE agent_runs
+          SET lease_expires_at = clock_timestamp() - interval '1 millisecond'
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+      }),
+    );
+
+    const { recovered, reconciliation } = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const releaseLock = yield* Deferred.make<void>();
+        const lockHeld = yield* Deferred.make<void>();
+        const lockFiber = yield* Effect.forkChild(
+          sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`SELECT pg_advisory_xact_lock(
+                hashtextextended(${ADMISSION_CAPACITY_LOCK_KEY}, 0)
+              )`;
+              yield* Deferred.succeed(lockHeld, undefined);
+              yield* Deferred.await(releaseLock);
+            }),
+          ),
+        );
+        yield* Deferred.await(lockHeld);
+
+        const waitForBlockedPool = Effect.fn("waitForBlockedPool")(function* (
+          applicationName: string,
+        ) {
+          let observed = 0;
+          for (let attempt = 0; attempt < 50 && observed === 0; attempt += 1) {
+            const [row] = yield* sql<{ readonly count: number }>`SELECT count(*)::int AS count
+              FROM pg_stat_activity
+              WHERE application_name = ${applicationName}
+                AND wait_event = 'advisory'`;
+            observed = row?.count ?? 0;
+            if (observed === 0) yield* Effect.sleep(10);
+          }
+          expect(observed).toBeGreaterThan(0);
+        });
+
+        const reconciliationFiber = yield* Effect.forkChild(
+          MessageAdmission.use((admission) => admission.reconcileCapacity()),
+        );
+        yield* waitForBlockedPool("osfo-api");
+        const workerFiber = yield* Effect.forkChild(
+          AgentRunWorker.use((worker) => worker.handle(delivery)),
+        );
+        yield* waitForBlockedPool("osfo-agent-run-repository");
+        yield* Deferred.succeed(releaseLock, undefined);
+
+        const reconciliation = yield* Fiber.join(reconciliationFiber);
+        const recovered = yield* Fiber.join(workerFiber);
+        yield* Fiber.join(lockFiber);
+        return { recovered, reconciliation };
+      }),
+    );
+    const duplicate = await run(AgentRunWorker.use((worker) => worker.handle(delivery)));
+    expect(reconciliation).toMatchObject({
+      globalReservedBefore: 2,
+      globalReservedAfter: 1,
+      repaired: true,
+    });
+    expect(recovered).toEqual({ type: "acknowledge", outcome: "succeeded" });
+    expect(duplicate).toEqual({ type: "acknowledge", outcome: "alreadyTerminal" });
+
+    const reconciled = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* sql<{
+          readonly globalReserved: number;
+          readonly principalReserved: number;
+          readonly reservationState: string;
+          readonly runState: string;
+          readonly terminalEvents: string;
+        }>`SELECT
+          run.state AS "runState",
+          reservation.state AS "reservationState",
+          global_capacity.reserved_count AS "globalReserved",
+          principal_capacity.reserved_count AS "principalReserved",
+          (SELECT count(*) FROM thread_events
+            WHERE agent_run_id = ${receipt.agentRunId}::uuid
+              AND event_type IN ('AgentRunSucceeded', 'AgentRunFailed'))::text AS "terminalEvents"
+        FROM agent_runs run
+        JOIN agent_run_capacity_reservations reservation USING (agent_run_id)
+        CROSS JOIN admission_global_capacity global_capacity
+        JOIN admission_principal_capacity principal_capacity
+          ON principal_capacity.principal_id = run.principal_id
+        WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
+      }),
+    );
+    expect(reconciled[0]).toEqual({
+      runState: "succeeded",
+      reservationState: "released",
+      globalReserved: 0,
+      principalReserved: 0,
+      terminalEvents: "1",
+    });
   });
 
   it("rejects beginning an attempt unless its ModelCall transition affects exactly one row", async () => {

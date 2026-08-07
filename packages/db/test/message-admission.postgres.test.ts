@@ -2,11 +2,21 @@ import { createHash } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import { afterAll, beforeEach, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { MessageAdmission, type SubmitMessageCommand } from "@osfo/api";
+import {
+  AdmissionCommitUnknown,
+  AdmissionNotAccepted,
+  IdempotencyConflict,
+  MessageAdmission,
+  type SubmitMessageCommand,
+} from "@osfo/api";
+import { ADMISSION_CAPACITY_LOCK_KEY } from "../src/admission-capacity.js";
 import { makeMessageAdmissionLayer } from "../src/index";
 
 const databaseUrl = process.env.OSFO_TEST_DATABASE_URL;
@@ -36,6 +46,7 @@ const runtime = ManagedRuntime.make(
       databaseUrl,
       executionProfileRef,
       globalNonTerminalLimit: 2,
+      maxConnections: 12,
       principalNonTerminalLimit: 1,
     }),
     databaseLayer,
@@ -54,6 +65,7 @@ const seedAuthority = () =>
       yield* sql`TRUNCATE TABLE
         outbox_obligations,
         agent_run_capacity_reservations,
+        admission_rejections,
         acceptance_receipts,
         thread_events,
         user_messages,
@@ -105,6 +117,9 @@ const accept = (command: SubmitMessageCommand) =>
 
 const reject = (command: SubmitMessageCommand) =>
   run(Effect.flip(MessageAdmission.use((admission) => admission.accept(command))));
+
+const reconcile = (command: SubmitMessageCommand) =>
+  run(MessageAdmission.use((admission) => admission.reconcile(command)));
 
 const authorityCounts = () =>
   run(
@@ -233,6 +248,125 @@ describe("PostgreSQL Thread message admission", () => {
     });
   });
 
+  it("authenticates durable receipt reconciliation and proves definite absence", async () => {
+    const command = messageCommand();
+    const accepted = await accept(command);
+
+    expect(await reconcile(command)).toEqual(accepted);
+    const absentCommand = messageCommand({ idempotencyKey: crypto.randomUUID() });
+    const absent = await run(
+      Effect.flip(MessageAdmission.use((admission) => admission.reconcile(absentCommand))),
+    );
+    expect(absent).toEqual(new AdmissionNotAccepted());
+    expect(await reject(absentCommand)).toEqual(new AdmissionNotAccepted());
+    expect(
+      await reject({ ...absentCommand, message: { content: "changed after rejection" } }),
+    ).toEqual(new IdempotencyConflict());
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM admission_rejections
+            WHERE principal_id = ${alicePrincipalId}::uuid
+              AND idempotency_key = ${absentCommand.idempotencyKey}::uuid`;
+        }),
+      ),
+    ).rejects.toBeDefined();
+  });
+
+  it("keeps an accepted command unknown while its receipt lookup is unavailable", async () => {
+    const command = messageCommand();
+    const accepted = await accept(command);
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`ALTER TABLE acceptance_receipts RENAME TO acceptance_receipts_unavailable`;
+      }),
+    );
+
+    try {
+      const error = await run(
+        Effect.flip(MessageAdmission.use((admission) => admission.accept(command))),
+      );
+      expect(error).toEqual(new AdmissionCommitUnknown());
+    } finally {
+      await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`ALTER TABLE acceptance_receipts_unavailable RENAME TO acceptance_receipts`;
+        }),
+      );
+    }
+
+    expect(await reconcile(command)).toEqual(accepted);
+  });
+
+  it("persists reconciliation before a delayed admission can cross the idempotency lock", async () => {
+    const command = messageCommand();
+    const results = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const releaseLock = yield* Deferred.make<void>();
+        const lockHeld = yield* Deferred.make<void>();
+        const lockFiber = yield* Effect.forkChild(
+          sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`SELECT pg_advisory_xact_lock(
+                hashtextextended(${`${alicePrincipalId}:${command.idempotencyKey}`}, 0)
+              )`;
+              yield* Deferred.succeed(lockHeld, undefined);
+              yield* Deferred.await(releaseLock);
+            }),
+          ),
+        );
+        yield* Deferred.await(lockHeld);
+
+        const waitForQueuedAdmissions = Effect.fn("waitForQueuedAdmissions")(function* (
+          expected: number,
+        ) {
+          let observed = 0;
+          for (let attempt = 0; attempt < 50 && observed < expected; attempt += 1) {
+            const [row] = yield* sql<{ readonly count: number }>`SELECT count(*)::int AS count
+              FROM pg_stat_activity
+              WHERE application_name = 'osfo-api'
+                AND wait_event = 'advisory'`;
+            observed = row?.count ?? 0;
+            if (observed < expected) yield* Effect.sleep(10);
+          }
+          expect(observed).toBeGreaterThanOrEqual(expected);
+        });
+
+        const reconciliationFiber = yield* Effect.forkChild(
+          Effect.flip(MessageAdmission.use((admission) => admission.reconcile(command))),
+        );
+        yield* waitForQueuedAdmissions(1);
+        const admissionFiber = yield* Effect.forkChild(
+          Effect.flip(MessageAdmission.use((admission) => admission.accept(command))),
+        );
+        yield* waitForQueuedAdmissions(2);
+        yield* Deferred.succeed(releaseLock, undefined);
+
+        const rejection = yield* Fiber.join(reconciliationFiber);
+        const delayed = yield* Fiber.join(admissionFiber);
+        yield* Fiber.join(lockFiber);
+        return { delayed, rejection };
+      }),
+    );
+
+    expect(results).toEqual({
+      rejection: new AdmissionNotAccepted(),
+      delayed: new AdmissionNotAccepted(),
+    });
+    expect(await authorityCounts()).toEqual({
+      receipts: "0",
+      messages: "0",
+      events: "0",
+      runs: "0",
+      reservations: "0",
+      outbox: "0",
+    });
+  });
+
   it("rejects changed content under the same idempotency key without changing authority", async () => {
     const idempotencyKey = crypto.randomUUID();
     await accept(messageCommand({ idempotencyKey }));
@@ -328,6 +462,320 @@ describe("PostgreSQL Thread message admission", () => {
       reservations: "2",
       outbox: "2",
     });
+  });
+
+  it("keeps concurrent overload within global and per-Principal bounds", async () => {
+    const commands = Array.from({ length: 24 }, (_, index) =>
+      messageCommand({
+        idempotencyKey: crypto.randomUUID(),
+        threadId: index % 2 === 0 ? aliceThreadId : bobThreadId,
+        token: index % 2 === 0 ? aliceToken : bobToken,
+      }),
+    );
+    const outcomes = await Promise.all(
+      commands.map((command) =>
+        run(Effect.exit(MessageAdmission.use((admission) => admission.accept(command)))),
+      ),
+    );
+
+    expect(outcomes.filter(Exit.isSuccess)).toHaveLength(2);
+    expect(outcomes.filter(Exit.isFailure)).toHaveLength(22);
+    expect(await authorityCounts()).toEqual({
+      receipts: "2",
+      messages: "2",
+      events: "2",
+      runs: "2",
+      reservations: "2",
+      outbox: "2",
+    });
+
+    const capacity = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const [row] = yield* sql<{
+          readonly globalReserved: number;
+          readonly maximumPrincipalReserved: number;
+        }>`SELECT
+          (SELECT reserved_count FROM admission_global_capacity WHERE singleton = true)
+            AS "globalReserved",
+          (SELECT max(reserved_count) FROM admission_principal_capacity)
+            AS "maximumPrincipalReserved"`;
+        return row;
+      }),
+    );
+    expect(capacity).toEqual({ globalReserved: 2, maximumPrincipalReserved: 1 });
+    expect(await run(MessageAdmission.use((admission) => admission.reconcileCapacity()))).toEqual({
+      expectedNonTerminalCount: 2,
+      globalReservedBefore: 2,
+      globalReservedAfter: 2,
+      principalMismatchCountBefore: 0,
+      principalMismatchCountAfter: 0,
+      reservationMismatchCountBefore: 0,
+      reservationMismatchCountAfter: 0,
+      repaired: false,
+      sweepComplete: true,
+    });
+  });
+
+  it("reconciles leaked terminal capacity and restores normal admission", async () => {
+    const receipt = await accept(messageCommand());
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE agent_runs
+          SET state = 'succeeded'
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+        yield* sql`UPDATE admission_global_capacity SET reserved_count = 2`;
+      }),
+    );
+
+    const reconciliation = await run(
+      MessageAdmission.use((admission) => admission.reconcileCapacity()),
+    );
+    expect(reconciliation).toEqual({
+      expectedNonTerminalCount: 0,
+      globalReservedBefore: 2,
+      globalReservedAfter: 0,
+      principalMismatchCountBefore: 1,
+      principalMismatchCountAfter: 0,
+      reservationMismatchCountBefore: 1,
+      reservationMismatchCountAfter: 0,
+      repaired: true,
+      sweepComplete: true,
+    });
+
+    const recovered = await accept(
+      messageCommand({ threadId: aliceSecondThreadId, idempotencyKey: crypto.randomUUID() }),
+    );
+    expect(recovered.threadId).toBe(aliceSecondThreadId);
+  });
+
+  it("counts and repairs a missing Principal capacity row", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM admission_principal_capacity
+          WHERE principal_id = ${bobPrincipalId}::uuid`;
+      }),
+    );
+
+    expect(await run(MessageAdmission.use((admission) => admission.reconcileCapacity()))).toEqual({
+      expectedNonTerminalCount: 0,
+      globalReservedBefore: 0,
+      globalReservedAfter: 0,
+      principalMismatchCountBefore: 1,
+      principalMismatchCountAfter: 0,
+      reservationMismatchCountBefore: 0,
+      reservationMismatchCountAfter: 0,
+      repaired: true,
+      sweepComplete: true,
+    });
+  });
+
+  it("repairs an active missing Principal outside the current keyset page", async () => {
+    const activePrincipalId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    const activeThreadId = "ffffffff-ffff-4fff-8fff-fffffffffffe";
+    const activeToken = "outside-capacity-page-token";
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`WITH inserted AS (
+          INSERT INTO principals (principal_id)
+          SELECT (
+            '00000000-0000-4000-8000-' || lpad(to_hex(value), 12, '0')
+          )::uuid
+          FROM generate_series(1, 300) value
+          RETURNING principal_id
+        )
+        INSERT INTO admission_principal_capacity (principal_id, reserved_count)
+        SELECT principal_id, 0 FROM inserted`;
+        yield* sql`INSERT INTO principals (principal_id) VALUES (${activePrincipalId}::uuid)`;
+        yield* sql`INSERT INTO authentication_sessions (
+            session_id, principal_id, token_sha256, expires_at
+          ) VALUES (
+            ${crypto.randomUUID()}::uuid,
+            ${activePrincipalId}::uuid,
+            ${tokenHash(activeToken)},
+            now() + interval '1 hour'
+          )`;
+        yield* sql`INSERT INTO threads (thread_id, principal_id)
+          VALUES (${activeThreadId}::uuid, ${activePrincipalId}::uuid)`;
+        yield* sql`INSERT INTO admission_principal_capacity (principal_id, reserved_count)
+          VALUES (${activePrincipalId}::uuid, 0)`;
+      }),
+    );
+    const isolatedRuntime = ManagedRuntime.make(
+      makeMessageAdmissionLayer({
+        databaseUrl,
+        executionProfileRef,
+        globalNonTerminalLimit: 2,
+        maxConnections: 2,
+        principalNonTerminalLimit: 1,
+      }),
+    );
+    try {
+      await isolatedRuntime.runPromise(
+        MessageAdmission.use((admission) =>
+          admission.accept(messageCommand({ threadId: activeThreadId, token: activeToken })),
+        ),
+      );
+      await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM admission_principal_capacity
+            WHERE principal_id = ${activePrincipalId}::uuid`;
+        }),
+      );
+
+      expect(
+        await isolatedRuntime.runPromise(
+          MessageAdmission.use((admission) => admission.reconcileCapacity()),
+        ),
+      ).toMatchObject({
+        expectedNonTerminalCount: 1,
+        globalReservedBefore: 1,
+        globalReservedAfter: 1,
+        principalMismatchCountBefore: 1,
+        principalMismatchCountAfter: 0,
+        repaired: true,
+        sweepComplete: false,
+      });
+    } finally {
+      await isolatedRuntime.dispose();
+    }
+  });
+
+  it("recovers more than one stale nonzero Principal batch", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`WITH inserted AS (
+          INSERT INTO principals (principal_id)
+          SELECT (
+            '10000000-0000-4000-8000-' || lpad(to_hex(value), 12, '0')
+          )::uuid
+          FROM generate_series(1, 300) value
+          RETURNING principal_id
+        )
+        INSERT INTO admission_principal_capacity (principal_id, reserved_count)
+        SELECT principal_id, 1 FROM inserted`;
+      }),
+    );
+    const isolatedRuntime = ManagedRuntime.make(
+      makeMessageAdmissionLayer({
+        databaseUrl,
+        executionProfileRef,
+        globalNonTerminalLimit: 2,
+        maxConnections: 2,
+        principalNonTerminalLimit: 1,
+      }),
+    );
+    try {
+      const first = await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const releaseLock = yield* Deferred.make<void>();
+          const lockHeld = yield* Deferred.make<void>();
+          const lockFiber = yield* Effect.forkChild(
+            sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`SELECT pg_advisory_xact_lock(
+                  hashtextextended(${ADMISSION_CAPACITY_LOCK_KEY}, 0)
+                )`;
+                yield* Deferred.succeed(lockHeld, undefined);
+                yield* Deferred.await(releaseLock);
+              }),
+            ),
+          );
+          yield* Deferred.await(lockHeld);
+          const reconciliationFiber = yield* Effect.forkChild(
+            Effect.promise(() =>
+              isolatedRuntime.runPromise(
+                MessageAdmission.use((admission) => admission.reconcileCapacity()),
+              ),
+            ),
+          );
+          let blocked = 0;
+          for (let attempt = 0; attempt < 50 && blocked === 0; attempt += 1) {
+            const [row] = yield* sql<{ readonly count: number }>`SELECT count(*)::int AS count
+              FROM pg_stat_activity
+              WHERE application_name = 'osfo-api'
+                AND wait_event = 'advisory'`;
+            blocked = row?.count ?? 0;
+            if (blocked === 0) yield* Effect.sleep(10);
+          }
+          expect(blocked).toBeGreaterThan(0);
+          yield* sql`UPDATE admission_global_capacity SET revision = revision + 1
+            WHERE singleton = true`;
+          yield* Deferred.succeed(releaseLock, undefined);
+          const first = yield* Fiber.join(reconciliationFiber);
+          yield* Fiber.join(lockFiber);
+          return first;
+        }),
+      );
+      const second = await isolatedRuntime.runPromise(
+        MessageAdmission.use((admission) => admission.reconcileCapacity()),
+      );
+      expect(first).toMatchObject({ principalMismatchCountBefore: 256, repaired: true });
+      expect(first.sweepComplete).toBe(false);
+      expect(second).toMatchObject({
+        principalMismatchCountBefore: 44,
+        repaired: true,
+        sweepComplete: true,
+      });
+      const remaining = await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const [row] = yield* sql<{ readonly count: number }>`SELECT count(*)::int AS count
+            FROM admission_principal_capacity WHERE reserved_count <> 0`;
+          return row?.count;
+        }),
+      );
+      expect(remaining).toBe(0);
+    } finally {
+      await isolatedRuntime.dispose();
+    }
+  });
+
+  it("keeps reconciliation latency independent of retained terminal runs", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`WITH inserted AS (
+          INSERT INTO principals (principal_id)
+          SELECT md5('scale-principal-' || value::text)::uuid
+          FROM generate_series(1, 5000) value
+          RETURNING principal_id
+        )
+        INSERT INTO admission_principal_capacity (principal_id, reserved_count)
+        SELECT principal_id, 0 FROM inserted`;
+        yield* sql`INSERT INTO user_messages (
+            user_message_id, thread_id, principal_id, content, created_at
+          )
+          SELECT gen_random_uuid(), ${aliceThreadId}::uuid, ${alicePrincipalId}::uuid,
+            'retained terminal fixture', transaction_timestamp()
+          FROM generate_series(1, 5000)`;
+        yield* sql`INSERT INTO agent_runs (
+            agent_run_id, thread_id, principal_id, user_message_id,
+            state, execution_profile_ref, created_at
+          )
+          SELECT gen_random_uuid(), ${aliceThreadId}::uuid, ${alicePrincipalId}::uuid,
+            message.user_message_id, 'succeeded', ${executionProfileRef}, message.created_at
+          FROM user_messages message
+          WHERE message.content = 'retained terminal fixture'`;
+      }),
+    );
+
+    const startedAt = performance.now();
+    const [result, admitted] = await Promise.all([
+      run(MessageAdmission.use((admission) => admission.reconcileCapacity())),
+      accept(messageCommand({ threadId: aliceSecondThreadId })),
+    ]);
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(result.repaired).toBe(false);
+    expect(admitted.threadId).toBe(aliceSecondThreadId);
+    expect(elapsedMs).toBeLessThan(2_000);
   });
 
   it("enforces Principal and Thread correlation across the authority graph", async () => {

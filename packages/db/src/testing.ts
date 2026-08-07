@@ -64,6 +64,7 @@ export const prepareMessageAdmissionFixture = (
       yield* db.execute(sql`TRUNCATE TABLE
         outbox_obligations,
         agent_run_capacity_reservations,
+        admission_rejections,
         acceptance_receipts,
         thread_events,
         user_messages,

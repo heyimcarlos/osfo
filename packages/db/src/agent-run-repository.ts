@@ -18,6 +18,7 @@ import {
   type ThreadEvent,
 } from "@osfo/session";
 import { Data, Effect, Layer, Predicate, Redacted, Schema } from "effect";
+import { ADMISSION_CAPACITY_LOCK_KEY } from "./admission-capacity.js";
 
 export const AgentRunRepositoryDatabaseConfigSchema = Schema.Struct({
   databaseUrl: Schema.NonEmptyString,
@@ -785,6 +786,9 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
+              yield* sql`SELECT pg_advisory_xact_lock(
+                hashtextextended(${ADMISSION_CAPACITY_LOCK_KEY}, 0)
+              )`;
               const authority = yield* requireFence(fence);
               const expectedCallState = decision.type === "succeed" ? "succeeded" : "failed";
               const expectedOutputState = decision.type === "succeed" ? "completed" : "interrupted";
@@ -829,13 +833,20 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   RETURNING principal_id::text AS "principalId"`;
               const reservation = released[0];
               if (reservation === undefined) return yield* new AgentRunFenceRejected();
-              yield* sql`UPDATE admission_global_capacity
-                  SET reserved_count = reserved_count - 1
-                  WHERE singleton = true AND reserved_count > 0`;
-              yield* sql`UPDATE admission_principal_capacity
+              const globalCapacity = yield* sql<{ readonly singleton: boolean }>`UPDATE
+                    admission_global_capacity
+                  SET reserved_count = reserved_count - 1,
+                      revision = revision + 1
+                  WHERE singleton = true AND reserved_count > 0
+                  RETURNING singleton`;
+              if (globalCapacity[0] === undefined) return yield* new AgentRunFenceRejected();
+              const principalCapacity = yield* sql<{ readonly principalId: string }>`UPDATE
+                    admission_principal_capacity
                   SET reserved_count = reserved_count - 1
                   WHERE principal_id = ${reservation.principalId}::uuid
-                    AND reserved_count > 0`;
+                    AND reserved_count > 0
+                  RETURNING principal_id::text AS "principalId"`;
+              if (principalCapacity[0] === undefined) return yield* new AgentRunFenceRejected();
             }),
           ),
         );

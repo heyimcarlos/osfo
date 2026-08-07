@@ -127,10 +127,12 @@ export const admissionGlobalCapacity = pgTable(
   {
     singleton: boolean("singleton").primaryKey().default(true),
     reservedCount: integer("reserved_count").notNull(),
+    revision: bigint("revision", { mode: "bigint" }).notNull().default(0n),
   },
   (table) => [
     check("admission_global_capacity_singleton_check", sql`${table.singleton}`),
     check("admission_global_capacity_reserved_count_check", sql`${table.reservedCount} >= 0`),
+    check("admission_global_capacity_revision_check", sql`${table.revision} >= 0`),
   ],
 );
 
@@ -144,6 +146,9 @@ export const admissionPrincipalCapacity = pgTable(
   },
   (table) => [
     check("admission_principal_capacity_reserved_count_check", sql`${table.reservedCount} >= 0`),
+    index("admission_principal_capacity_nonzero_idx")
+      .on(table.principalId)
+      .where(sql`${table.reservedCount} <> 0`),
   ],
 );
 
@@ -227,6 +232,10 @@ export const agentRuns = pgTable(
     index("agent_runs_expired_claim_idx")
       .on(table.leaseExpiresAt)
       .where(sql`${table.state} = 'running'`),
+    index("agent_runs_principal_state_idx").on(table.principalId, table.state, table.agentRunId),
+    index("agent_runs_nonterminal_capacity_idx")
+      .on(table.principalId, table.agentRunId)
+      .where(sql`${table.state} NOT IN ('succeeded', 'failed', 'canceled')`),
   ],
 );
 
@@ -361,6 +370,11 @@ export const agentRunCapacityReservations = pgTable(
         (${table.state} = 'held' AND ${table.releasedAt} IS NULL)
         OR (${table.state} = 'released' AND ${table.releasedAt} IS NOT NULL)
       )) IS TRUE`,
+    ),
+    index("agent_run_capacity_reservations_state_idx").on(
+      table.state,
+      table.principalId,
+      table.agentRunId,
     ),
   ],
 );
@@ -718,8 +732,31 @@ export const acceptanceReceipts = pgTable(
   ],
 );
 
+export const admissionRejections = pgTable(
+  "admission_rejections",
+  {
+    principalId: uuid("principal_id").notNull(),
+    idempotencyKey: uuid("idempotency_key").notNull(),
+    threadId: uuid("thread_id").notNull(),
+    requestFingerprint: text("request_fingerprint").notNull(),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true, mode: "string" }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.principalId, table.idempotencyKey] }),
+    foreignKey({
+      columns: [table.threadId, table.principalId],
+      foreignColumns: [threads.threadId, threads.principalId],
+    }),
+    check(
+      "admission_rejections_fingerprint_check",
+      sql`${table.requestFingerprint} ~ '^[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
 export const databaseSchema = {
   acceptanceReceipts,
+  admissionRejections,
   admissionGlobalCapacity,
   admissionPrincipalCapacity,
   agentRunCapacityReservations,

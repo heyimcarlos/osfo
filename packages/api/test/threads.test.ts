@@ -1,11 +1,14 @@
 import {
   AcceptanceReceipt,
+  AdmissionCommitUnknown,
+  AdmissionUnavailable,
   IdempotencyConflict,
   MessageAdmission,
   SnapshotUnavailable,
   ThreadResume,
   ThreadResumeUnavailable,
   type MessageAdmissionError,
+  type MessageAdmissionReconciliationError,
   type SubmitMessageCommand,
 } from "../src/index";
 import { CommitUnknown, makeApiClient, submitThreadMessage } from "../src/client";
@@ -42,8 +45,16 @@ const makeHarness = (
   accept: (
     command: SubmitMessageCommand,
   ) => Effect.Effect<AcceptanceReceipt, MessageAdmissionError>,
+  reconcile: (
+    command: SubmitMessageCommand,
+  ) => Effect.Effect<AcceptanceReceipt, MessageAdmissionReconciliationError> = () =>
+    Effect.succeed(receipt),
 ) => {
-  const admission = MessageAdmission.of({ accept });
+  const admission = MessageAdmission.of({
+    accept,
+    reconcile,
+    reconcileCapacity: () => Effect.fail(new AdmissionUnavailable()),
+  });
   const resume = ThreadResume.of({
     snapshot: () => Effect.fail(new SnapshotUnavailable()),
     history: () => Effect.fail(new ThreadResumeUnavailable()),
@@ -211,12 +222,140 @@ describe("Osfo Threads API", () => {
     }
   });
 
-  it("classifies a lost or malformed successful response as unknown commit", async () => {
+  it("reconciles a lost successful response with one idempotent retry", async () => {
+    let requests = 0;
     const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
-      HttpClient.make((request) =>
-        Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ accepted: true }))),
-      ),
+      HttpClient.make((request) => {
+        requests += 1;
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            Response.json(requests === 1 ? { accepted: true } : receipt),
+          ),
+        );
+      }),
     );
+    const reconciled = await Effect.runPromise(
+      submitThreadMessage({
+        baseUrl: "http://osfo.test",
+        authenticationToken: "session-token",
+        threadId,
+        idempotencyKey,
+        message: { content: "Hello" },
+        httpClientLayer,
+      }),
+    );
+
+    expect(reconciled).toEqual(receipt);
+    expect(requests).toBe(2);
+  });
+
+  it("returns a typed pre-acceptance rejection without retrying", async () => {
+    let attempts = 0;
+    const harness = makeHarness(() => {
+      attempts += 1;
+      return attempts === 1 ? Effect.fail(new AdmissionUnavailable()) : Effect.succeed(receipt);
+    });
+
+    try {
+      const rejected = await Effect.runPromise(
+        Effect.flip(
+          submitThreadMessage({
+            baseUrl: "http://osfo.test",
+            authenticationToken: "session-token",
+            threadId,
+            idempotencyKey,
+            message: { content: "Hello" },
+            httpClientLayer: harness.httpClientLayer,
+          }),
+        ),
+      );
+
+      expect(rejected).toEqual(new AdmissionUnavailable());
+      expect(attempts).toBe(1);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("resolves repeated ambiguous submissions through the durable receipt operation", async () => {
+    let requests = 0;
+    const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+      HttpClient.make((request) => {
+        requests += 1;
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            Response.json(request.url.endsWith("/reconcile") ? receipt : { accepted: true }),
+          ),
+        );
+      }),
+    );
+    const reconciled = await Effect.runPromise(
+      submitThreadMessage({
+        baseUrl: "http://osfo.test",
+        authenticationToken: "session-token",
+        threadId,
+        idempotencyKey,
+        message: { content: "Hello" },
+        httpClientLayer,
+      }),
+    );
+
+    expect(reconciled).toEqual(receipt);
+    expect(requests).toBe(3);
+  });
+
+  it("preserves unknown state when the authenticated receipt lookup also fails", async () => {
+    let requests = 0;
+    const harness = makeHarness(
+      () => {
+        requests += 1;
+        return Effect.fail(new AdmissionCommitUnknown());
+      },
+      () => {
+        requests += 1;
+        return Effect.fail(new AdmissionCommitUnknown());
+      },
+    );
+
+    try {
+      const error = await Effect.runPromise(
+        Effect.flip(
+          submitThreadMessage({
+            baseUrl: "http://osfo.test",
+            authenticationToken: "session-token",
+            threadId,
+            idempotencyKey,
+            message: { content: "Hello" },
+            httpClientLayer: harness.httpClientLayer,
+          }),
+        ),
+      );
+
+      expect(error).toEqual(new CommitUnknown());
+      expect(requests).toBe(3);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("preserves unknown when authentication prevents reconciliation", async () => {
+    let requests = 0;
+    const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+      HttpClient.make((request) => {
+        requests += 1;
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            request.url.endsWith("/reconcile")
+              ? Response.json({ _tag: "AuthenticationRejected" }, { status: 401 })
+              : Response.json({ accepted: true }),
+          ),
+        );
+      }),
+    );
+
     const error = await Effect.runPromise(
       Effect.flip(
         submitThreadMessage({
@@ -231,6 +370,7 @@ describe("Osfo Threads API", () => {
     );
 
     expect(error).toEqual(new CommitUnknown());
+    expect(requests).toBe(3);
   });
 
   it("serves OpenAPI from the same composed contract", async () => {
@@ -243,6 +383,7 @@ describe("Osfo Threads API", () => {
 
       expect(response.status).toBe(200);
       expect(document.paths).toHaveProperty("/v1/threads/{threadId}/messages");
+      expect(document.paths).toHaveProperty("/v1/threads/{threadId}/messages/reconcile");
     } finally {
       await harness.dispose();
     }
