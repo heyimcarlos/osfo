@@ -78,14 +78,15 @@ validate_policy() {
       and (.members | type == "array" and length > 0)
       and all(.members[]; type == "string" and length > 0)
       and (
-        has("condition") | not
-        or .condition == null
-        or (
-          (.condition | type) == "object"
-          and (.condition.expression | type == "string" and length > 0)
-          and (
-            (.condition | has("title")) | not
-            or (.condition.title | type == "string")
+        (
+          (has("condition") | not)
+          or .condition == null
+          or (
+            (.condition | type) == "object"
+            and (.condition.expression | type == "string" and length > 0)
+            and (
+              ((.condition | has("title") | not) or (.condition.title | type == "string"))
+            )
           )
         )
       )
