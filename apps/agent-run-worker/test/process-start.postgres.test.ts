@@ -73,4 +73,40 @@ describe("AgentRun worker process role", () => {
       yield* handle.kill();
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+
+  it.live("rejects an empty live-provider credential before worker startup", () =>
+    Effect.gen(function* () {
+      const handle = yield* ChildProcess.make(
+        process.execPath,
+        ["--import", "tsx", "src/main.ts"],
+        {
+          cwd: packageDirectory,
+          env: {
+            OPENAI_API_KEY: "",
+            OSFO_AGENT_RUN_WORKER_ID: "empty-credential-worker",
+            OSFO_DATABASE_URL: databaseUrl,
+            OSFO_EXECUTION_PROFILE_REF: "oz.openai.gpt-4.1-mini-2025-04-14.responses.v1",
+            OSFO_PUBSUB_PROJECT_ID: "osfo-test",
+            OSFO_PUBSUB_SUBSCRIPTION_ID: "agent-runs-test",
+            PUBSUB_EMULATOR_HOST: "127.0.0.1:1",
+          },
+          extendEnv: true,
+          stdin: "ignore",
+          forceKillAfter: "1 second",
+        },
+      );
+      const output = yield* handle.all.pipe(
+        Stream.decodeText(),
+        Stream.runFold(
+          () => "",
+          (combined, chunk) => combined + chunk,
+        ),
+        Effect.timeout("5 seconds"),
+        Effect.ensuring(handle.kill().pipe(Effect.ignore)),
+      );
+
+      expect(output).toContain("missingCredential");
+      expect(output).not.toContain("OSFO_AGENT_RUN_WORKER_READY");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });

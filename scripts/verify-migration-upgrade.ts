@@ -120,24 +120,83 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
         yield* sql`INSERT INTO thread_events (
             thread_id, position, event_id, principal_id, user_message_id, agent_run_id,
             event_type, event_version, payload, occurred_at
-          ) VALUES (
-            '6ef239bd-3f04-4c77-8976-1171e75ea0ab'::uuid,
-            1,
-            '8b82a82b-7983-49ca-a054-13b040f9f5da'::uuid,
-            'b3ef0861-2df7-4d2a-a195-fbc5ed75bc81'::uuid,
-            '53146ff7-2205-44b0-8de4-685509112ac9'::uuid,
-            '96ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
-            'AssistantOutputInterrupted',
-            1,
-            jsonb_build_object(
-              'assistantOutputId', '36290831-b9ca-414a-abf1-4055b5347133',
-              'agentRunId', '96ae49eb-b1ab-41cb-a468-b68893ec82c3',
-              'cause', 'modelCallFailed'
+          ) VALUES
+            (
+              '6ef239bd-3f04-4c77-8976-1171e75ea0ab'::uuid,
+              1,
+              '7b82a82b-7983-49ca-a054-13b040f9f5da'::uuid,
+              'b3ef0861-2df7-4d2a-a195-fbc5ed75bc81'::uuid,
+              '53146ff7-2205-44b0-8de4-685509112ac9'::uuid,
+              '96ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
+              'AssistantOutputAppended',
+              1,
+              jsonb_build_object(
+                'assistantOutputId', '36290831-b9ca-414a-abf1-4055b5347133',
+                'agentRunId', '96ae49eb-b1ab-41cb-a468-b68893ec82c3',
+                'content', jsonb_build_array(jsonb_build_object(
+                  'type', 'text', 'text', 'historical fragment'
+                ))
+              ),
+              transaction_timestamp()
             ),
+            (
+              '6ef239bd-3f04-4c77-8976-1171e75ea0ab'::uuid,
+              2,
+              '8b82a82b-7983-49ca-a054-13b040f9f5da'::uuid,
+              'b3ef0861-2df7-4d2a-a195-fbc5ed75bc81'::uuid,
+              '53146ff7-2205-44b0-8de4-685509112ac9'::uuid,
+              '96ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
+              'AssistantOutputInterrupted',
+              1,
+              jsonb_build_object(
+                'assistantOutputId', '36290831-b9ca-414a-abf1-4055b5347133',
+                'agentRunId', '96ae49eb-b1ab-41cb-a468-b68893ec82c3',
+                'cause', 'modelCallFailed'
+              ),
+              transaction_timestamp()
+            )`;
+        yield* sql`INSERT INTO model_calls (
+            model_call_id, agent_run_id, model_binding, prompt,
+            state, failure_cause, created_at, completed_at
+          ) VALUES (
+            '0f60df64-c87c-4878-8340-001f23623491'::uuid,
+            '96ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
+            'oz.upgrade-binding.v1',
+            'Upgrade historical dispatched attempt',
+            'failed',
+            'modelCallFailed',
+            transaction_timestamp(),
+            transaction_timestamp()
+          )`;
+        yield* sql`INSERT INTO model_call_attempts (
+            model_call_attempt_id, model_call_id, agent_run_id, assistant_output_id,
+            attempt_number, claim_epoch, state, started_at, finished_at
+          ) VALUES (
+            'dd0496f6-c20f-4c86-bc69-e3138b699f06'::uuid,
+            '0f60df64-c87c-4878-8340-001f23623491'::uuid,
+            '96ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
+            '36290831-b9ca-414a-abf1-4055b5347133'::uuid,
+            1,
+            1,
+            'failed',
+            transaction_timestamp(),
+            transaction_timestamp()
+          )`;
+        yield* sql`INSERT INTO model_call_fragments (
+            model_call_id, fragment_index, model_call_attempt_id,
+            assistant_output_id, agent_run_id, text, thread_event_id, created_at
+          ) VALUES (
+            '0f60df64-c87c-4878-8340-001f23623491'::uuid,
+            0,
+            'dd0496f6-c20f-4c86-bc69-e3138b699f06'::uuid,
+            '36290831-b9ca-414a-abf1-4055b5347133'::uuid,
+            '96ae49eb-b1ab-41cb-a468-b68893ec82c3'::uuid,
+            'historical fragment',
+            '7b82a82b-7983-49ca-a054-13b040f9f5da'::uuid,
             transaction_timestamp()
           )`;
         yield* sql`UPDATE threads
-          SET next_position = 2
+          SET next_position = 3
           WHERE thread_id = '6ef239bd-3f04-4c77-8976-1171e75ea0ab'::uuid`;
       }).pipe(Effect.provide(upgradeLayer));
 
@@ -203,6 +262,22 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
         if (eventRows[0]?.cause !== "modelCallFailed" || eventRows[0].eventVersion !== 1) {
           return yield* Effect.die(
             new Error("Historical V1 model-call interruption was not preserved"),
+          );
+        }
+        const attemptRows = yield* sql<{
+          readonly dispatchState: string;
+          readonly modelBinding: string;
+        }>`SELECT
+            dispatch_state AS "dispatchState",
+            model_binding AS "modelBinding"
+          FROM model_call_attempts
+          WHERE model_call_attempt_id = 'dd0496f6-c20f-4c86-bc69-e3138b699f06'::uuid`;
+        if (
+          attemptRows[0]?.dispatchState !== "confirmed" ||
+          attemptRows[0].modelBinding !== "oz.upgrade-binding.v1"
+        ) {
+          return yield* Effect.die(
+            new Error("Historical dispatched ModelCall attempt evidence was not preserved"),
           );
         }
       }).pipe(Effect.provide(upgradeLayer));

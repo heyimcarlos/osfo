@@ -4,6 +4,11 @@ ALTER TABLE "model_call_attempts" ADD COLUMN "provider_request_id" text;--> stat
 UPDATE "model_call_attempts" AS attempt
 SET "model_binding" = model_call."model_binding",
     "dispatch_state" = CASE
+      WHEN EXISTS (
+        SELECT 1
+        FROM "model_call_fragments" AS fragment
+        WHERE fragment."model_call_attempt_id" = attempt."model_call_attempt_id"
+      ) THEN 'confirmed'
       WHEN attempt."state" = 'succeeded' THEN 'confirmed'
       WHEN attempt."state" IN ('failed', 'canceled') THEN 'uncertain'
       ELSE 'prepared'
