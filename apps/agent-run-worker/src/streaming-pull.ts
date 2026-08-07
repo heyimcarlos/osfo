@@ -95,6 +95,7 @@ const makeGoogleSource = (config: GoogleStreamingPullConfig) =>
       | undefined;
     let intakeStopped = false;
     let closed = false;
+    let subscriptionClose: Promise<unknown> | undefined;
 
     const start = (handlers: StreamingPullHandlers) =>
       Effect.try({
@@ -113,13 +114,19 @@ const makeGoogleSource = (config: GoogleStreamingPullConfig) =>
     const stop = () =>
       Effect.suspend(() => {
         if (intakeStopped) return Effect.void;
-        intakeStopped = true;
-        return Effect.sync(() => {
-          if (activeHandlers !== undefined) {
-            subscription.removeListener("message", activeHandlers.message);
-            subscription.removeListener("error", activeHandlers.error);
-            subscription.removeListener("close", activeHandlers.close);
-          }
+        return Effect.gen(function* () {
+          subscriptionClose = yield* beginStreamingPullSubscriptionClose(subscription);
+          intakeStopped = true;
+          yield* Effect.try({
+            try: () => {
+              if (activeHandlers !== undefined) {
+                subscription.removeListener("message", activeHandlers.message);
+                subscription.removeListener("error", activeHandlers.error);
+                subscription.removeListener("close", activeHandlers.close);
+              }
+            },
+            catch: (cause) => new StreamingPullSourceUnavailable({ cause, operation: "stop" }),
+          });
         });
       });
 
@@ -127,7 +134,15 @@ const makeGoogleSource = (config: GoogleStreamingPullConfig) =>
       Effect.suspend(() => {
         if (closed) return Effect.void;
         return stop().pipe(
-          Effect.andThen(closeStreamingPullResources(subscription, client, config.closeTimeoutMs)),
+          Effect.andThen(
+            Effect.suspend(() =>
+              closeStreamingPullResources(
+                { close: () => subscriptionClose ?? subscription.close() },
+                client,
+                config.closeTimeoutMs,
+              ),
+            ),
+          ),
           Effect.tap(() =>
             Effect.sync(() => {
               closed = true;
@@ -142,6 +157,16 @@ const makeGoogleSource = (config: GoogleStreamingPullConfig) =>
 interface StreamingPullCloseResource {
   readonly close: () => Promise<unknown>;
 }
+
+export const beginStreamingPullSubscriptionClose = (subscription: StreamingPullCloseResource) =>
+  Effect.try({
+    try: () => {
+      const closePromise = subscription.close();
+      void closePromise.then(undefined, () => undefined);
+      return closePromise;
+    },
+    catch: (cause) => new StreamingPullSourceUnavailable({ cause, operation: "stop" }),
+  });
 
 const closeStreamingPullResource = (
   resourceName: "client" | "subscription",

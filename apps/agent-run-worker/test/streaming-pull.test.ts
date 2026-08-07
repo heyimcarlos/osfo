@@ -7,6 +7,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import {
+  beginStreamingPullSubscriptionClose,
   closeStreamingPullResources,
   makeStreamingPullWorker,
   runStreamingPullWorker,
@@ -99,6 +100,39 @@ const runWorker = (
   );
 
 describe("StreamingPull AgentRun delivery", () => {
+  it.effect("bounds the close promise started before listener removal", () =>
+    Effect.gen(function* () {
+      const closePromise = new Promise<void>(() => undefined);
+      let closeCalls = 0;
+      let listenerRemoved = false;
+      let open = true;
+      const subscription = {
+        close: () => {
+          closeCalls += 1;
+          if (!open) return Promise.resolve();
+          open = false;
+          return closePromise;
+        },
+      };
+      const startedClose = yield* beginStreamingPullSubscriptionClose(subscription);
+      listenerRemoved = true;
+      if (open) void subscription.close();
+      const closing = yield* closeStreamingPullResources(
+        { close: () => startedClose },
+        { close: () => Promise.resolve() },
+        1_000,
+      ).pipe(Effect.exit, Effect.forkChild);
+
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(1_000);
+      const exit = yield* Fiber.join(closing);
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(listenerRemoved).toBe(true);
+      expect(closeCalls).toBe(1);
+    }),
+  );
+
   it.effect("bounds each Google close and still attempts every resource", () =>
     Effect.gen(function* () {
       let clientCloseCalls = 0;

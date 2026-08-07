@@ -574,6 +574,114 @@ describe("AgentRun worker", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("does not repeat provider cleanup when cleanup persistence is fenced", () => {
+    const repository = makeRepository();
+    let cancellationCalls = 0;
+    let cleanupWrites = 0;
+    const fenced = {
+      ...repository.service,
+      appendModelOutput: () => Effect.fail(new AgentRunCancellationObserved()),
+      recordModelCallCleanup: () =>
+        Effect.sync(() => {
+          cleanupWrites += 1;
+        }).pipe(Effect.andThen(Effect.fail(new AgentRunFenceRejected()))),
+    } satisfies AgentRunRepositoryService;
+    const layer = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v1",
+      workerId: "worker-a",
+      leaseDurationMs: 30_000,
+      leaseRenewalIntervalMs: 10_000,
+      cancellationPollIntervalMs: 5,
+    }).pipe(
+      Layer.provide(Layer.succeed(AgentRunRepository)(fenced)),
+      Layer.provide(
+        Layer.succeed(ModelCallExecutor)(
+          makeExecutor({
+            execute: () => Stream.make({ fragmentIndex: 0, text: "cancel" }),
+            cancel: () =>
+              Effect.sync(() => {
+                cancellationCalls += 1;
+                return { type: "confirmedStopped" as const };
+              }),
+          }),
+        ),
+      ),
+      Layer.provide(
+        makeDeterministicAgentRuntimeLayer({
+          executionProfileRef: "oz.deterministic.v1",
+          modelBinding: "oz.deterministic.echo.v1",
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      expect(yield* AgentRunWorker.use((worker) => worker.handle(delivery))).toEqual({
+        type: "retry",
+      });
+      expect(cancellationCalls).toBe(1);
+      expect(cleanupWrites).toBe(1);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("does not repeat provider cleanup when cancellation commit fails", () => {
+    const repository = makeRepository();
+    let cancellationCalls = 0;
+    let cleanupWrites = 0;
+    let terminalCommits = 0;
+    const unavailable = {
+      ...repository.service,
+      appendModelOutput: () => Effect.fail(new AgentRunCancellationObserved()),
+      recordModelCallCleanup: () =>
+        Effect.sync(() => {
+          cleanupWrites += 1;
+        }),
+      commitCancellation: () =>
+        Effect.sync(() => {
+          terminalCommits += 1;
+        }).pipe(
+          Effect.andThen(
+            Effect.fail(new AgentRunRepositoryUnavailable({ cause: "commit unavailable" })),
+          ),
+        ),
+    } satisfies AgentRunRepositoryService;
+    const layer = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v1",
+      workerId: "worker-a",
+      leaseDurationMs: 30_000,
+      leaseRenewalIntervalMs: 10_000,
+      cancellationPollIntervalMs: 5,
+    }).pipe(
+      Layer.provide(Layer.succeed(AgentRunRepository)(unavailable)),
+      Layer.provide(
+        Layer.succeed(ModelCallExecutor)(
+          makeExecutor({
+            execute: () => Stream.make({ fragmentIndex: 0, text: "cancel" }),
+            cancel: () =>
+              Effect.sync(() => {
+                cancellationCalls += 1;
+                return { type: "confirmedStopped" as const };
+              }),
+          }),
+        ),
+      ),
+      Layer.provide(
+        makeDeterministicAgentRuntimeLayer({
+          executionProfileRef: "oz.deterministic.v1",
+          modelBinding: "oz.deterministic.echo.v1",
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      expect(yield* AgentRunWorker.use((worker) => worker.handle(delivery))).toEqual({
+        type: "retry",
+      });
+      expect(cancellationCalls).toBe(1);
+      expect(cleanupWrites).toBe(1);
+      expect(terminalCommits).toBe(1);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("does not retry a permanently fenced cleanup write", () => {
     const repository = makeRepository();
     let cleanupWrites = 0;
@@ -834,7 +942,7 @@ describe("AgentRun worker", () => {
       appendModelOutput: () => Effect.fail(new AgentRunCancellationObserved()),
       loadCancellation: () =>
         Effect.succeed({
-          cleanupDeadlineAtEpochMs: -1,
+          cleanupDeadlineAtEpochMs: 0,
           startedModelCallAttemptIds: [attempt.modelCallAttemptId],
         }),
       commitCancellation: (_fence, result: AgentRunCleanupResult) =>
@@ -1050,22 +1158,33 @@ describe("AgentRun worker", () => {
     }),
   );
 
-  it.live("renews the fenced lease while a healthy model call remains active", () =>
+  it.effect("renews the fenced lease beyond its original deadline", () =>
     Effect.gen(function* () {
       const repository = makeRepository();
-      const renewed = yield* Deferred.make<void>();
+      const executionStarted = yield* Deferred.make<void>();
+      const postOriginalDeadlineRenewed = yield* Deferred.make<void>();
+      let originalLeaseDeadlineAt: number | undefined;
       const renewing = {
         ...repository.service,
-        renewLease: () =>
-          Deferred.succeed(renewed, undefined).pipe(
-            Effect.tap(() => Effect.sync(() => repository.calls.push("lease:renewed"))),
+        renewLease: (_fence, leaseDurationMs) =>
+          Clock.currentTimeMillis.pipe(
+            Effect.flatMap((now) => {
+              repository.calls.push("lease:renewed");
+              if (originalLeaseDeadlineAt === undefined) {
+                originalLeaseDeadlineAt = now + leaseDurationMs;
+                return Effect.void;
+              }
+              return now >= originalLeaseDeadlineAt
+                ? Deferred.succeed(postOriginalDeadlineRenewed, undefined)
+                : Effect.void;
+            }),
           ),
       } satisfies AgentRunRepositoryService;
       const layer = makeAgentRunWorkerLayer({
         executionProfileRef: "oz.deterministic.v1",
         workerId: "worker-a",
-        leaseDurationMs: 30,
-        leaseRenewalIntervalMs: 5,
+        leaseDurationMs: 300,
+        leaseRenewalIntervalMs: 50,
         cancellationPollIntervalMs: 1,
       }).pipe(
         Layer.provide(Layer.succeed(AgentRunRepository)(renewing)),
@@ -1073,9 +1192,11 @@ describe("AgentRun worker", () => {
           Layer.succeed(ModelCallExecutor)(
             makeExecutor({
               execute: () =>
-                Stream.fromEffect(Deferred.await(renewed)).pipe(
-                  Stream.map(() => ({ fragmentIndex: 0, text: "renewed" })),
-                ),
+                Stream.fromEffect(
+                  Deferred.succeed(executionStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(postOriginalDeadlineRenewed)),
+                  ),
+                ).pipe(Stream.map(() => ({ fragmentIndex: 0, text: "renewed" }))),
               cancel: () => Effect.succeed({ type: "confirmedStopped" }),
             }),
           ),
@@ -1092,6 +1213,9 @@ describe("AgentRun worker", () => {
         Effect.provide(layer),
         Effect.forkChild,
       );
+      yield* Deferred.await(executionStarted);
+      yield* TestClock.adjust(300);
+      yield* Deferred.await(postOriginalDeadlineRenewed);
       const completed = yield* Fiber.join(running);
 
       expect(completed).toEqual({ type: "acknowledge", outcome: "succeeded" });

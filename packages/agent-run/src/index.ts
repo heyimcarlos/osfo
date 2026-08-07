@@ -248,6 +248,10 @@ export type ModelCallCancellationDisposition = typeof ModelCallCancellationDispo
 type ModelCallExecutionExit = Exit.Exit<"completed" | "interrupted", AgentRunRepositoryError>;
 type ModelCallExecutionFiber = Fiber.Fiber<ModelCallExecutionExit>;
 
+interface ModelCallCleanupCache {
+  result?: AgentRunCleanupResult;
+}
+
 export class ModelCallExecutor extends Context.Service<
   ModelCallExecutor,
   {
@@ -398,17 +402,33 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
         }
       });
 
+      const observeCachedExecutorCleanup = Effect.fn("AgentRunWorker.observeCachedExecutorCleanup")(
+        function* (
+          attempt: ModelCallAttempt,
+          deadlineAtEpochMs: number,
+          execution: ModelCallExecutionFiber | undefined,
+          cache: ModelCallCleanupCache,
+        ) {
+          if (cache.result !== undefined) return cache.result;
+          const cleanup = yield* observeExecutorCleanup(attempt, deadlineAtEpochMs, execution);
+          cache.result = cleanup;
+          return cleanup;
+        },
+      );
+
       const cleanupMaintenanceFailure = Effect.fn("AgentRunWorker.cleanupMaintenanceFailure")(
         function* (
           fence: AgentRunFence,
           attempt: ModelCallAttempt,
           execution: ModelCallExecutionFiber,
+          cache: ModelCallCleanupCache,
         ) {
           const now = yield* Clock.currentTimeMillis;
-          const cleanup = yield* observeExecutorCleanup(
+          const cleanup = yield* observeCachedExecutorCleanup(
             attempt,
             now + config.leaseRenewalIntervalMs,
             execution,
+            cache,
           );
           yield* recordCleanup(fence, attempt, cleanup, now + config.leaseDurationMs);
         },
@@ -418,6 +438,7 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
         fence: AgentRunFence,
         activeAttempt: ModelCallAttempt | undefined,
         activeExecution: ModelCallExecutionFiber | undefined,
+        cleanupCache: ModelCallCleanupCache,
       ) {
         const cancellation = Effect.gen(function* () {
           const directive = yield* repository.loadCancellation(fence);
@@ -430,10 +451,11 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
           };
 
           if (activeAttempt !== undefined) {
-            const activeCleanup = yield* observeExecutorCleanup(
+            const activeCleanup = yield* observeCachedExecutorCleanup(
               activeAttempt,
               directive.cleanupDeadlineAtEpochMs,
               activeExecution,
+              cleanupCache,
             );
             const persistenceStartedAt = yield* Clock.currentTimeMillis;
             yield* recordCleanup(
@@ -457,6 +479,7 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
       const driveClaim = Effect.fn("AgentRunWorker.driveClaim")(function* (fence: AgentRunFence) {
         let activeAttempt: ModelCallAttempt | undefined;
         let activeExecution: ModelCallExecutionFiber | undefined;
+        let activeCleanup: ModelCallCleanupCache = {};
         const body = Effect.gen(function* () {
           while (true) {
             const state = yield* repository.loadRecordedState(fence);
@@ -490,6 +513,7 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
             if (attemptStart.type === "recoveredInterruption") continue;
             const attempt = attemptStart.attempt;
             activeAttempt = attempt;
+            activeCleanup = {};
             yield* repository.renewLease(fence, config.leaseDurationMs);
             const observationStream = yield* executor
               .execute(attempt)
@@ -556,17 +580,19 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
               if (Exit.isFailure(first.exit)) {
                 const error = Cause.findErrorOption(first.exit.cause);
                 if (Option.isSome(error) && error.value._tag === "AgentRunCancellationObserved") {
-                  yield* commitCancellation(fence, activeAttempt, activeExecution);
+                  yield* commitCancellation(fence, activeAttempt, activeExecution, activeCleanup);
                   activeAttempt = undefined;
                   activeExecution = undefined;
+                  activeCleanup = {};
                   return {
                     type: "acknowledge" as const,
                     outcome: "canceled" as const,
                   };
                 }
-                yield* cleanupMaintenanceFailure(fence, attempt, executionFiber);
+                yield* cleanupMaintenanceFailure(fence, attempt, executionFiber, activeCleanup);
                 activeAttempt = undefined;
                 activeExecution = undefined;
+                activeCleanup = {};
                 if (Option.isSome(error)) return yield* error.value;
               }
               return yield* new AgentRunRepositoryUnavailable({
@@ -582,19 +608,22 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
               yield* repository.interruptModelCall(fence, attempt, "modelCallFailed");
               activeAttempt = undefined;
               activeExecution = undefined;
+              activeCleanup = {};
               continue;
             }
             yield* repository.completeModelCall(fence, attempt);
             activeAttempt = undefined;
             activeExecution = undefined;
+            activeCleanup = {};
           }
         });
         const canceled = body.pipe(
           Effect.catchTag("AgentRunCancellationObserved", () =>
             Effect.gen(function* () {
-              yield* commitCancellation(fence, activeAttempt, activeExecution);
+              yield* commitCancellation(fence, activeAttempt, activeExecution, activeCleanup);
               activeAttempt = undefined;
               activeExecution = undefined;
+              activeCleanup = {};
               return {
                 type: "acknowledge" as const,
                 outcome: "canceled" as const,
@@ -606,21 +635,31 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
           canceled.pipe(
             Effect.catchTags({
               AgentRunFenceRejected: (error) =>
-                activeAttempt !== undefined && activeExecution !== undefined
-                  ? cleanupMaintenanceFailure(fence, activeAttempt, activeExecution).pipe(
-                      Effect.andThen(Effect.fail(error)),
-                    )
+                activeAttempt !== undefined &&
+                activeExecution !== undefined &&
+                activeCleanup.result === undefined
+                  ? cleanupMaintenanceFailure(
+                      fence,
+                      activeAttempt,
+                      activeExecution,
+                      activeCleanup,
+                    ).pipe(Effect.andThen(Effect.fail(error)))
                   : Effect.fail(error),
               AgentRunRepositoryUnavailable: (error) =>
-                activeAttempt !== undefined && activeExecution !== undefined
-                  ? cleanupMaintenanceFailure(fence, activeAttempt, activeExecution).pipe(
-                      Effect.andThen(Effect.fail(error)),
-                    )
+                activeAttempt !== undefined &&
+                activeExecution !== undefined &&
+                activeCleanup.result === undefined
+                  ? cleanupMaintenanceFailure(
+                      fence,
+                      activeAttempt,
+                      activeExecution,
+                      activeCleanup,
+                    ).pipe(Effect.andThen(Effect.fail(error)))
                   : Effect.fail(error),
             }),
             Effect.ensuring(
               Effect.suspend(() =>
-                activeAttempt === undefined
+                activeAttempt === undefined || activeCleanup.result !== undefined
                   ? Effect.void
                   : executor
                       .terminate(activeAttempt)
