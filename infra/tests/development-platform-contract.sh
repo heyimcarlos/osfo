@@ -74,6 +74,15 @@ rg --fixed-strings --quiet 'destroy_plan_bindings: $destroy_plan_bindings' \
 rg --fixed-strings --quiet \
   'DEVELOPMENT_LIFECYCLE_RUN_ID is required and must be unique per lifecycle attempt' \
   infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'FAIL: lifecycle run identifier has already been used' \
+  infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet 'lifecycle_preflight_status=$?' \
+  infra/tests/development-platform-live.sh
+if rg --fixed-strings --quiet 'existing-lifecycle-envelope.json' \
+  infra/tests/development-platform-live.sh; then
+  printf 'create path must never accept a reused lifecycle run identifier\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet 'lifecycle_evidence_linkage: $lifecycle_envelope_status' \
   infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'create_plan_binding_sha256: $create_plan_binding_sha256' \

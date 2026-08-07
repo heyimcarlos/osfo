@@ -226,6 +226,21 @@ if [[ "${DEVELOPMENT_PLATFORM_CLEANUP_ONLY:-0}" == 1 ]]; then
   exit 0
 fi
 
+lifecycle_preflight_error="$plan_dir/lifecycle-preflight.error"
+lifecycle_preflight_status=0
+gcloud storage objects describe "$lifecycle_envelope_uri" \
+  >"$plan_dir/lifecycle-preflight-metadata.json" 2>"$lifecycle_preflight_error" \
+  || lifecycle_preflight_status=$?
+if ((lifecycle_preflight_status == 0)); then
+  printf 'FAIL: lifecycle run identifier has already been used\n' >&2
+  exit 1
+fi
+if ! grep -Eqi '404|not found|does not exist' "$lifecycle_preflight_error"; then
+  printf 'FAIL: lifecycle run identifier preflight failed closed\n' >&2
+  cat "$lifecycle_preflight_error" >&2
+  exit 1
+fi
+
 "$repo_root/infra/tests/development-platform-preflight.sh"
 
 create_plan="$plan_dir/create.tfplan"
@@ -274,23 +289,8 @@ jq -n \
     }}' >"$lifecycle_envelope"
 lifecycle_envelope_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
   "$lifecycle_envelope" "$evidence_bucket")
-lifecycle_locator_error="$plan_dir/lifecycle-locator.error"
-set +e
-gcloud storage objects describe "$lifecycle_envelope_uri" \
-  >"$plan_dir/lifecycle-locator-metadata.json" 2>"$lifecycle_locator_error"
-lifecycle_locator_status=$?
-set -e
-if ((lifecycle_locator_status == 0)); then
-  gcloud storage cp "$lifecycle_envelope_uri" "$plan_dir/existing-lifecycle-envelope.json" >/dev/null
-  cmp "$lifecycle_envelope" "$plan_dir/existing-lifecycle-envelope.json"
-elif grep -Eqi '404|not found|does not exist' "$lifecycle_locator_error"; then
-  gcloud storage cp --if-generation-match=0 \
-    "$lifecycle_envelope" "$lifecycle_envelope_uri" >/dev/null
-else
-  printf 'FAIL: lifecycle envelope locator lookup failed closed\n' >&2
-  cat "$lifecycle_locator_error" >&2
-  exit 1
-fi
+gcloud storage cp --if-generation-match=0 \
+  "$lifecycle_envelope" "$lifecycle_envelope_uri" >/dev/null
 
 printf 'qualification=%s temporal=%s lifecycle=MISSING create_binding=%s second_binding=%s evidence=%s lifecycle_envelope=%s source=%s inputs=%s images=%s\n' \
   "$managed_qualification" "$temporal_qualification" "$create_binding" "$second_binding" \
