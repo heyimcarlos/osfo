@@ -123,8 +123,10 @@ locals {
     "roles/iam.serviceAccountAdmin",
     "roles/logging.viewer",
     "roles/pubsub.admin",
+    "roles/resourcemanager.projectIamAdmin",
     "roles/run.admin",
     "roles/servicenetworking.networksAdmin",
+    "roles/serviceusage.serviceUsageConsumer",
     "roles/serviceusage.serviceUsageViewer",
     "roles/storage.admin",
   ])
