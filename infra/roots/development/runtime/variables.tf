@@ -13,7 +13,7 @@ variable "platform_ready" {
   type        = bool
 }
 variable "serving_enabled" {
-  description = "Creates serving resources only after migration and seed jobs pass."
+  description = "Creates serving resources only after the operator migration, demo seed, and readiness sequence passes."
   type        = bool
 }
 variable "public_hostname" {

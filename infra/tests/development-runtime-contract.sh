@@ -55,8 +55,8 @@ if rg --fixed-strings --quiet 'INGRESS_TRAFFIC_ALL' "$root/main.tf"; then
   exit 1
 fi
 edge_address_block=$(sed -n '/resource "google_compute_global_address" "edge" {/,/^}/p' "$root/main.tf")
-rg --fixed-strings --quiet 'serving_ready              = local.runtime_ready && var.serving_enabled' "$root/main.tf"
-rg --fixed-strings --quiet 'public_edge_ready          = local.serving_ready && var.public_hostname != null' "$root/main.tf"
+rg --quiet 'serving_ready\s+= local.runtime_ready && var.serving_enabled' "$root/main.tf"
+rg --quiet 'public_edge_ready\s+= local.serving_ready && var.public_hostname != null' "$root/main.tf"
 rg --fixed-strings --quiet 'count   = local.serving_ready ? 1 : 0' <<<"$edge_address_block"
 
 for resource in \
@@ -85,7 +85,7 @@ rg --fixed-strings --quiet 'Runtime CPU utilization' "$root/main.tf"
 rg --fixed-strings --quiet 'Runtime dependency, lease, fence, cancellation, and rollout logs' "$root/main.tf"
 rg --fixed-strings --quiet 'OSFO_CURSOR_SECRET' "$root/main.tf"
 rg --fixed-strings --quiet 'value_source {' "$root/main.tf"
-rg --fixed-strings --quiet 'model_adapter_secret_name  = "${var.name_prefix}-model-adapter"' "$root/main.tf"
+rg --quiet 'model_adapter_secret_name\s+= "\$\{var\.name_prefix\}-model-adapter"' "$root/main.tf"
 rg --fixed-strings --quiet 'var.model_adapter_secret_version != null' "$root/main.tf"
 rg --fixed-strings --quiet 'name = "OPENROUTER_API_KEY"' "$root/main.tf"
 rg --fixed-strings --quiet 'secret  = local.model_adapter_secret_name' "$root/main.tf"
@@ -184,15 +184,29 @@ rg --fixed-strings --quiet 'runtime_agentrun' infra/roots/foundation/main.tf
 rg --fixed-strings --quiet 'secret   = "model-adapter"' infra/roots/foundation/main.tf
 rg --fixed-strings --quiet 'development_runtime_act_as' infra/roots/foundation/main.tf
 rg --fixed-strings --quiet 'development_runtime_service_consumer' infra/roots/foundation/main.tf
-for script in development-runtime-database.sh development-runtime-smoke.sh development-runtime-recovery.sh development-runtime-absent.sh; do
+for script in development-runtime-database.sh development-runtime-reconciliation.sh development-runtime-smoke.sh development-runtime-recovery.sh development-runtime-absent.sh; do
   bash -n "infra/tests/$script"
 done
 for operator_script in \
+  scripts/db/approved-database-proxy.ts \
   scripts/db/bootstrap-access.ts \
   scripts/db/seed-demo.ts \
   scripts/db/check-readiness.ts \
   scripts/qualification/reconcile-agent-run.ts; do
   [[ -f "$operator_script" ]]
+done
+for proxy_script in \
+  scripts/db/bootstrap-access.ts \
+  scripts/db/check-readiness.ts \
+  scripts/db/seed-demo.ts \
+  scripts/qualification/reconcile-agent-run.ts; do
+  [[ $(rg --fixed-strings --count 'requireApprovedDatabaseProxy' "$proxy_script") == 2 ]]
+done
+for reconciliation_caller in \
+  infra/tests/development-runtime-smoke.sh \
+  infra/tests/development-runtime-recovery.sh; do
+  rg --fixed-strings --quiet 'infra/tests/development-runtime-reconciliation.sh' \
+    "$reconciliation_caller"
 done
 rg --fixed-strings --quiet 'bun run db:migrate' infra/tests/development-runtime-database.sh
 rg --fixed-strings --quiet '"db:migrate": "drizzle-kit migrate --config=drizzle.config.ts"' \

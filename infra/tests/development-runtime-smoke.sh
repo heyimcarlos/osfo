@@ -39,22 +39,8 @@ EOF
 read_reconciliation() {
   local agent_run_id=$1
   local destination=$2
-  local encoded
-  if ! OSFO_DATABASE_URL="$database_url" \
-    OSFO_RECONCILIATION_AGENT_RUN_ID="$agent_run_id" \
-    OSFO_RECONCILIATION_REQUIRE_PASS=true \
-    node --conditions=development --import tsx \
-      scripts/qualification/reconcile-agent-run.ts \
-      >"$work_directory/reconciliation-output.log" 2>&1; then
-    return 1
-  fi
-  encoded=$(sed -n \
-    's/.*OSFO_RECONCILIATION_EVIDENCE:\([A-Za-z0-9+/=]*\).*/\1/p' \
-    "$work_directory/reconciliation-output.log" | head -1)
-  if [[ -z "$encoded" ]]; then
-    return 1
-  fi
-  printf '%s' "$encoded" | base64 --decode >"$destination"
+  OSFO_DATABASE_URL="$database_url" infra/tests/development-runtime-reconciliation.sh \
+    "$agent_run_id" "$destination"
 }
 
 health_status=$(curl --silent --show-error --output "$work_directory/health.json" \

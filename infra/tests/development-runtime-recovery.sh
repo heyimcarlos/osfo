@@ -27,27 +27,13 @@ agent_run_id=$(jq -er '.agentRunId' "$smoke_evidence")
 thread_id=$(jq -er '.threadId' "$smoke_evidence")
 work_directory=$(mktemp -d)
 trap 'rm -rf "$work_directory"' EXIT
-reconciliation_index=0
 
 read_reconciliation() {
   local destination=$1
-  local encoded
-  reconciliation_index=$((reconciliation_index + 1))
-  if ! OSFO_DATABASE_URL="$database_url" \
-    OSFO_RECONCILIATION_AGENT_RUN_ID="$agent_run_id" \
-    OSFO_RECONCILIATION_REQUIRE_PASS=true \
-    node --conditions=development --import tsx \
-      scripts/qualification/reconcile-agent-run.ts \
-      >"$work_directory/reconciliation-output-$reconciliation_index.log" 2>&1; then
+  if ! OSFO_DATABASE_URL="$database_url" infra/tests/development-runtime-reconciliation.sh \
+    "$agent_run_id" "$destination"; then
     return 1
   fi
-  encoded=$(sed -n \
-    's/.*OSFO_RECONCILIATION_EVIDENCE:\([A-Za-z0-9+/=]*\).*/\1/p' \
-    "$work_directory/reconciliation-output-$reconciliation_index.log" | head -1)
-  if [[ -z "$encoded" ]]; then
-    return 1
-  fi
-  printf '%s' "$encoded" | base64 --decode >"$destination"
   jq -e --arg agent_run_id "$agent_run_id" '
     .verdict == "PASS"
     and .agentRunId == $agent_run_id

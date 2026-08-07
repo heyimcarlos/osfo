@@ -5,13 +5,9 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { requireApprovedDatabaseProxy } from "../db/approved-database-proxy";
+
 const Uuid = Schema.String.check(Schema.isUUID());
-const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
-
-class QualificationRequiresApprovedProxy extends Data.TaggedError(
-  "QualificationRequiresApprovedProxy",
-)<{ readonly hostname: string }> {}
-
 class DeploymentReconciliationFailed extends Data.TaggedError("DeploymentReconciliationFailed")<{
   readonly agentRunId: string;
 }> {}
@@ -24,11 +20,7 @@ const ReconciliationConfig = Config.all({
 
 Effect.gen(function* () {
   const config = yield* ReconciliationConfig;
-  if (!loopbackHosts.has(config.databaseUrl.hostname)) {
-    return yield* new QualificationRequiresApprovedProxy({
-      hostname: config.databaseUrl.hostname,
-    });
-  }
+  yield* requireApprovedDatabaseProxy(config.databaseUrl, "AgentRun reconciliation");
   const evidence = yield* readDevelopmentAgentRunEvidence({
     agentRunId: config.agentRunId,
     databaseUrl: config.databaseUrl.toString(),
