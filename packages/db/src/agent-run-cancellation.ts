@@ -122,18 +122,10 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
         if (reservation?.principalId !== authority.principalId) {
           return yield* new AgentRunCancellationUnavailable();
         }
-        if (authority.state === "waiting") {
-          if (reservation.state !== "released") {
-            return yield* new AgentRunCancellationUnavailable();
-          }
-          const revised = yield* sql`UPDATE admission_global_capacity
-            SET revision = revision + 1
-            WHERE singleton = true
-            RETURNING revision`;
-          if (revised.length !== 1) return yield* new AgentRunCancellationUnavailable();
-          return;
-        }
-        if (authority.state !== "pending" || reservation.state !== "held") {
+        if (
+          (authority.state !== "pending" && authority.state !== "waiting") ||
+          reservation.state !== "held"
+        ) {
           return yield* new AgentRunCancellationUnavailable();
         }
         const released = yield* sql<{ readonly principalId: string }>`UPDATE

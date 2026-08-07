@@ -86,7 +86,7 @@ const runWorker = (
   handle: (delivery: RunnableAgentRunDelivery) => Effect.Effect<AgentRunWorkerDisposition>,
   executionSlots: number,
 ) =>
-  runStreamingPullWorker({ executionSlots }).pipe(
+  runStreamingPullWorker({ drainTimeoutMs: 1_000, executionSlots }).pipe(
     Effect.provide(
       Layer.mergeAll(
         Layer.succeed(StreamingPullSource, source),

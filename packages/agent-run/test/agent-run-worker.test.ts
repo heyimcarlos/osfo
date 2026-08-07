@@ -12,6 +12,8 @@ import {
   makeAgentRunWorkerLayer,
   type AgentRunCleanupResult,
   type AgentRunRepositoryService,
+  type ModelCallAttempt,
+  type ModelCallObservation,
 } from "../src/index.js";
 
 const delivery = {
@@ -43,6 +45,20 @@ const attempt = {
 } as const;
 
 const cancelConfirmed = () => Effect.succeed({ type: "confirmedStopped" as const });
+
+const makeExecutor = (
+  service: Pick<ModelCallExecutor["Service"], "cancel"> & {
+    readonly execute: (
+      attempt: ModelCallAttempt,
+    ) => Stream.Stream<ModelCallObservation, ModelCallExecutionError>;
+    readonly terminate?: ModelCallExecutor["Service"]["terminate"];
+  },
+) =>
+  ModelCallExecutor.of({
+    cancel: service.cancel,
+    execute: (attempt) => Effect.succeed(service.execute(attempt)),
+    terminate: service.terminate ?? (() => Effect.void),
+  });
 
 const makeRepository = () => {
   const calls: Array<string> = [];
@@ -131,7 +147,7 @@ describe("AgentRun worker", () => {
     "carries one delivery identity through committed output to one terminal outcome",
     () => {
       const repository = makeRepository();
-      const executor = ModelCallExecutor.of({
+      const executor = makeExecutor({
         cancel: cancelConfirmed,
         execute: () =>
           Stream.make(
@@ -145,8 +161,6 @@ describe("AgentRun worker", () => {
         leaseDurationMs: 30_000,
         leaseRenewalIntervalMs: 10_000,
         cancellationPollIntervalMs: 5,
-        providerSupervisorAttemptLimit: 1,
-        providerSupervisorDrainTimeoutMs: 10,
       }).pipe(
         Layer.provide(Layer.succeed(AgentRunRepository)(repository.service)),
         Layer.provide(Layer.succeed(ModelCallExecutor)(executor)),
@@ -193,7 +207,7 @@ describe("AgentRun worker", () => {
       Layer.provide(Layer.succeed(AgentRunRepository)(busy)),
       Layer.provide(
         Layer.succeed(ModelCallExecutor)(
-          ModelCallExecutor.of({ cancel: cancelConfirmed, execute: () => Stream.empty }),
+          makeExecutor({ cancel: cancelConfirmed, execute: () => Stream.empty }),
         ),
       ),
       Layer.provide(
@@ -222,7 +236,7 @@ describe("AgentRun worker", () => {
       Layer.provide(Layer.succeed(AgentRunRepository)(repository.service)),
       Layer.provide(
         Layer.succeed(ModelCallExecutor)(
-          ModelCallExecutor.of({ cancel: cancelConfirmed, execute: () => Stream.empty }),
+          makeExecutor({ cancel: cancelConfirmed, execute: () => Stream.empty }),
         ),
       ),
       Layer.provide(
@@ -242,7 +256,7 @@ describe("AgentRun worker", () => {
 
   it.effect("interrupts partial output before committing a failed AgentRun", () => {
     const repository = makeRepository();
-    const executor = ModelCallExecutor.of({
+    const executor = makeExecutor({
       cancel: cancelConfirmed,
       execute: () =>
         Stream.make({ fragmentIndex: 0, text: "Partial" }).pipe(
@@ -302,7 +316,7 @@ describe("AgentRun worker", () => {
       Layer.provide(Layer.succeed(AgentRunRepository)(unavailable)),
       Layer.provide(
         Layer.succeed(ModelCallExecutor)(
-          ModelCallExecutor.of({
+          makeExecutor({
             cancel: cancelConfirmed,
             execute: () => Stream.make({ fragmentIndex: 0, text: "Partial" }),
           }),
@@ -342,7 +356,7 @@ describe("AgentRun worker", () => {
       Layer.provide(Layer.succeed(AgentRunRepository)(cancellation)),
       Layer.provide(
         Layer.succeed(ModelCallExecutor)(
-          ModelCallExecutor.of({
+          makeExecutor({
             cancel: cancelConfirmed,
             execute: () =>
               Stream.make(
@@ -395,7 +409,7 @@ describe("AgentRun worker", () => {
       Layer.provide(Layer.succeed(AgentRunRepository)(cancellation)),
       Layer.provide(
         Layer.succeed(ModelCallExecutor)(
-          ModelCallExecutor.of({ cancel: cancelConfirmed, execute: () => Stream.never }),
+          makeExecutor({ cancel: cancelConfirmed, execute: () => Stream.never }),
         ),
       ),
       Layer.provide(
@@ -421,24 +435,31 @@ describe("AgentRun worker", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.live("returns after maintenance failure while the bounded supervisor tracks cleanup", () =>
+  it.live("returns after maintenance failure only after provider execution settles", () =>
     Effect.gen(function* () {
       const repository = makeRepository();
       const executionStarted = yield* Deferred.make<void>();
-      const finalizerStarted = yield* Deferred.make<void>();
       const finalizerCompleted = yield* Deferred.make<void>();
-      const releaseFinalizer = yield* Deferred.make<void>();
+      const providerStopped = yield* Deferred.make<void>();
       let activeExecutions = 0;
       let cancellationCalls = 0;
+      let renewalCount = 0;
       let recordedCleanup: AgentRunCleanupResult | undefined;
       const unavailable = {
         ...repository.service,
         renewLease: () =>
-          Deferred.await(executionStarted).pipe(
-            Effect.andThen(
-              Effect.fail(new AgentRunRepositoryUnavailable({ cause: "database unavailable" })),
-            ),
-          ),
+          Effect.suspend(() => {
+            renewalCount += 1;
+            return renewalCount === 1
+              ? Effect.void
+              : Deferred.await(executionStarted).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new AgentRunRepositoryUnavailable({ cause: "database unavailable" }),
+                    ),
+                  ),
+                );
+          }),
         recordModelCallCleanup: (_fence, _attempt, cleanup) =>
           Effect.sync(() => {
             recordedCleanup = cleanup;
@@ -450,38 +471,29 @@ describe("AgentRun worker", () => {
         leaseDurationMs: 30_000,
         leaseRenewalIntervalMs: 10_000,
         cancellationPollIntervalMs: 5,
-        providerSupervisorAttemptLimit: 1,
-        providerSupervisorDrainTimeoutMs: 10,
       }).pipe(
         Layer.provide(Layer.succeed(AgentRunRepository)(unavailable)),
         Layer.provide(
           Layer.succeed(ModelCallExecutor)(
-            ModelCallExecutor.of({
-              execute: () =>
-                Stream.fromEffect(
-                  Effect.sync(() => {
-                    activeExecutions += 1;
-                  }).pipe(Effect.andThen(Deferred.succeed(executionStarted, undefined))),
-                ).pipe(
+            makeExecutor({
+              execute: () => {
+                activeExecutions += 1;
+                Deferred.doneUnsafe(executionStarted, Effect.void);
+                return Stream.fromEffect(Deferred.await(providerStopped)).pipe(
                   Stream.drain,
-                  Stream.concat(Stream.never),
                   Stream.ensuring(
-                    Deferred.succeed(finalizerStarted, undefined).pipe(
-                      Effect.andThen(Deferred.await(releaseFinalizer)),
-                      Effect.andThen(
-                        Effect.sync(() => {
-                          activeExecutions -= 1;
-                        }),
-                      ),
-                      Effect.andThen(Deferred.succeed(finalizerCompleted, undefined)),
-                    ),
+                    Effect.sync(() => {
+                      activeExecutions -= 1;
+                    }).pipe(Effect.andThen(Deferred.succeed(finalizerCompleted, undefined))),
                   ),
-                ),
+                );
+              },
               cancel: () =>
                 Effect.sync(() => {
                   cancellationCalls += 1;
                   return { type: "confirmedStopped" as const };
                 }),
+              terminate: () => Deferred.succeed(providerStopped, undefined),
             }),
           ),
         ),
@@ -497,7 +509,6 @@ describe("AgentRun worker", () => {
         Effect.provide(layer),
         Effect.forkChild,
       );
-      yield* Deferred.await(finalizerStarted);
       const disposition = yield* Fiber.join(running);
 
       expect(disposition).toEqual({ type: "retry" });
@@ -506,8 +517,6 @@ describe("AgentRun worker", () => {
         cleanupDisposition: { type: "completed" },
         externalWorkMayContinue: false,
       });
-      expect(activeExecutions).toBe(1);
-      yield* Deferred.succeed(releaseFinalizer, undefined);
       yield* Deferred.await(finalizerCompleted);
       expect(activeExecutions).toBe(0);
     }),
@@ -535,7 +544,7 @@ describe("AgentRun worker", () => {
       Layer.provide(Layer.succeed(AgentRunRepository)(fenced)),
       Layer.provide(
         Layer.succeed(ModelCallExecutor)(
-          ModelCallExecutor.of({
+          makeExecutor({
             cancel: cancelConfirmed,
             execute: () => Stream.make({ fragmentIndex: 0, text: "unavailable" }),
           }),
@@ -557,13 +566,12 @@ describe("AgentRun worker", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.live("returns after cleanup timeout while the bounded supervisor tracks cleanup", () =>
+  it.live("returns after cleanup timeout only after the cancellation effect settles", () =>
     Effect.gen(function* () {
       const repository = makeRepository();
       const cleanupStarted = yield* Deferred.make<void>();
-      const cleanupFinalizerStarted = yield* Deferred.make<void>();
       const cleanupFinalizerCompleted = yield* Deferred.make<void>();
-      const releaseCleanupFinalizer = yield* Deferred.make<void>();
+      const cleanupStopped = yield* Deferred.make<void>();
       const committed = yield* Deferred.make<void>();
       let activeCleanups = 0;
       const cancellation = {
@@ -583,31 +591,28 @@ describe("AgentRun worker", () => {
         leaseDurationMs: 30_000,
         leaseRenewalIntervalMs: 10_000,
         cancellationPollIntervalMs: 5,
-        providerSupervisorAttemptLimit: 1,
-        providerSupervisorDrainTimeoutMs: 10,
       }).pipe(
         Layer.provide(Layer.succeed(AgentRunRepository)(cancellation)),
         Layer.provide(
           Layer.succeed(ModelCallExecutor)(
-            ModelCallExecutor.of({
+            makeExecutor({
               execute: () => Stream.make({ fragmentIndex: 0, text: "cancel" }),
               cancel: () =>
                 Effect.acquireUseRelease(
                   Effect.sync(() => {
                     activeCleanups += 1;
                   }).pipe(Effect.andThen(Deferred.succeed(cleanupStarted, undefined))),
-                  () => Effect.never,
                   () =>
-                    Deferred.succeed(cleanupFinalizerStarted, undefined).pipe(
-                      Effect.andThen(Deferred.await(releaseCleanupFinalizer)),
-                      Effect.andThen(
-                        Effect.sync(() => {
-                          activeCleanups -= 1;
-                        }),
-                      ),
-                      Effect.andThen(Deferred.succeed(cleanupFinalizerCompleted, undefined)),
+                    Deferred.await(cleanupStopped).pipe(
+                      Effect.as({ type: "confirmedStopped" as const }),
+                      Effect.uninterruptible,
                     ),
+                  () =>
+                    Effect.sync(() => {
+                      activeCleanups -= 1;
+                    }).pipe(Effect.andThen(Deferred.succeed(cleanupFinalizerCompleted, undefined))),
                 ),
+              terminate: () => Deferred.succeed(cleanupStopped, undefined),
             }),
           ),
         ),
@@ -625,18 +630,15 @@ describe("AgentRun worker", () => {
       );
       yield* Deferred.await(cleanupStarted);
       yield* Deferred.await(committed);
-      yield* Deferred.await(cleanupFinalizerStarted);
       const disposition = yield* Fiber.join(running);
 
       expect(disposition).toEqual({ type: "acknowledge", outcome: "canceled" });
-      expect(activeCleanups).toBe(1);
-      yield* Deferred.succeed(releaseCleanupFinalizer, undefined);
       yield* Deferred.await(cleanupFinalizerCompleted);
       expect(activeCleanups).toBe(0);
     }),
   );
 
-  it.live("terminalizes cancellation while keeping an uninterruptible executor tracked", () =>
+  it.live("terminalizes cancellation only after an uninterruptible executor settles", () =>
     Effect.gen(function* () {
       const repository = makeRepository();
       const committed = yield* Deferred.make<void>();
@@ -644,12 +646,18 @@ describe("AgentRun worker", () => {
       const executionSettled = yield* Deferred.make<void>();
       const releaseExecution = yield* Deferred.make<void>();
       let activeExecutions = 0;
+      let renewalCount = 0;
       const cancellation = {
         ...repository.service,
         renewLease: () =>
-          Deferred.await(executionStarted).pipe(
-            Effect.andThen(Effect.fail(new AgentRunCancellationObserved())),
-          ),
+          Effect.suspend(() => {
+            renewalCount += 1;
+            return renewalCount === 1
+              ? Effect.void
+              : Deferred.await(executionStarted).pipe(
+                  Effect.andThen(Effect.fail(new AgentRunCancellationObserved())),
+                );
+          }),
         commitCancellation: () =>
           Deferred.succeed(committed, undefined).pipe(
             Effect.as({
@@ -664,23 +672,17 @@ describe("AgentRun worker", () => {
         leaseDurationMs: 30_000,
         leaseRenewalIntervalMs: 10_000,
         cancellationPollIntervalMs: 1,
-        providerSupervisorAttemptLimit: 1,
-        providerSupervisorDrainTimeoutMs: 10,
       }).pipe(
         Layer.provide(Layer.succeed(AgentRunRepository)(cancellation)),
         Layer.provide(
           Layer.succeed(ModelCallExecutor)(
-            ModelCallExecutor.of({
+            makeExecutor({
               cancel: cancelConfirmed,
-              execute: () =>
-                Stream.fromEffect(
-                  Effect.sync(() => {
-                    activeExecutions += 1;
-                  }).pipe(
-                    Effect.andThen(Deferred.succeed(executionStarted, undefined)),
-                    Effect.andThen(Deferred.await(releaseExecution)),
-                    Effect.uninterruptible,
-                  ),
+              execute: () => {
+                activeExecutions += 1;
+                Deferred.doneUnsafe(executionStarted, Effect.void);
+                return Stream.fromEffect(
+                  Deferred.await(releaseExecution).pipe(Effect.uninterruptible),
                 ).pipe(
                   Stream.drain,
                   Stream.ensuring(
@@ -688,7 +690,9 @@ describe("AgentRun worker", () => {
                       activeExecutions -= 1;
                     }).pipe(Effect.andThen(Deferred.succeed(executionSettled, undefined))),
                   ),
-                ),
+                );
+              },
+              terminate: () => Deferred.succeed(releaseExecution, undefined),
             }),
           ),
         ),
@@ -708,8 +712,6 @@ describe("AgentRun worker", () => {
       const disposition = yield* Fiber.join(running);
 
       expect(disposition).toEqual({ type: "acknowledge", outcome: "canceled" });
-      expect(activeExecutions).toBe(1);
-      yield* Deferred.succeed(releaseExecution, undefined);
       yield* Deferred.await(executionSettled);
       expect(activeExecutions).toBe(0);
     }),
@@ -742,7 +744,7 @@ describe("AgentRun worker", () => {
       Layer.provide(Layer.succeed(AgentRunRepository)(cancellation)),
       Layer.provide(
         Layer.succeed(ModelCallExecutor)(
-          ModelCallExecutor.of({
+          makeExecutor({
             execute: () => Stream.make({ fragmentIndex: 0, text: "must not commit" }),
             cancel: () => Effect.succeed({ type: "confirmedStopped" as const }),
           }),
@@ -795,13 +797,11 @@ describe("AgentRun worker", () => {
           leaseDurationMs: 30_000,
           leaseRenewalIntervalMs: 10_000,
           cancellationPollIntervalMs: 5,
-          providerSupervisorAttemptLimit: 1,
-          providerSupervisorDrainTimeoutMs: 10,
         }).pipe(
           Layer.provide(Layer.succeed(AgentRunRepository)(cancellation)),
           Layer.provide(
             Layer.succeed(ModelCallExecutor)(
-              ModelCallExecutor.of({
+              makeExecutor({
                 execute: () => Stream.make({ fragmentIndex: 0, text: "must not commit" }),
                 cancel: () =>
                   Effect.sync(() => {
@@ -817,6 +817,7 @@ describe("AgentRun worker", () => {
                       }).pipe(Effect.andThen(Deferred.succeed(cleanupSettled, undefined))),
                     ),
                   ),
+                terminate: () => Deferred.succeed(releaseCleanup, undefined),
               }),
             ),
           ),
@@ -841,14 +842,12 @@ describe("AgentRun worker", () => {
           externalWorkMayContinue: true,
         });
         expect(disposition).toEqual({ type: "acknowledge", outcome: "canceled" });
-        expect(activeCleanups).toBe(1);
-        yield* Deferred.succeed(releaseCleanup, undefined);
         yield* Deferred.await(cleanupSettled);
         expect(activeCleanups).toBe(0);
       }),
   );
 
-  it.live("bounds surviving provider fibers before starting another attempt", () =>
+  it.live("settles provider execution before a later delivery starts new work", () =>
     Effect.gen(function* () {
       const repository = makeRepository();
       const firstExecutionStarted = yield* Deferred.make<void>();
@@ -858,14 +857,17 @@ describe("AgentRun worker", () => {
       let renewalCount = 0;
       const cancellation = {
         ...repository.service,
-        renewLease: () => {
-          renewalCount += 1;
-          return renewalCount === 1
-            ? Deferred.await(firstExecutionStarted).pipe(
-                Effect.andThen(Effect.fail(new AgentRunCancellationObserved())),
-              )
-            : Effect.void;
-        },
+        renewLease: () =>
+          Effect.suspend(() => {
+            renewalCount += 1;
+            return renewalCount === 1
+              ? Effect.void
+              : renewalCount === 2
+                ? Deferred.await(firstExecutionStarted).pipe(
+                    Effect.andThen(Effect.fail(new AgentRunCancellationObserved())),
+                  )
+                : Effect.void;
+          }),
       } satisfies AgentRunRepositoryService;
       const layer = makeAgentRunWorkerLayer({
         executionProfileRef: "oz.deterministic.v1",
@@ -873,28 +875,26 @@ describe("AgentRun worker", () => {
         leaseDurationMs: 30_000,
         leaseRenewalIntervalMs: 10_000,
         cancellationPollIntervalMs: 5,
-        providerSupervisorAttemptLimit: 1,
-        providerSupervisorDrainTimeoutMs: 10,
       }).pipe(
         Layer.provide(Layer.succeed(AgentRunRepository)(cancellation)),
         Layer.provide(
           Layer.succeed(ModelCallExecutor)(
-            ModelCallExecutor.of({
+            makeExecutor({
               cancel: cancelConfirmed,
               execute: () => {
                 executionCount += 1;
-                return executionCount === 1
-                  ? Stream.fromEffect(
-                      Deferred.succeed(firstExecutionStarted, undefined).pipe(
-                        Effect.andThen(Deferred.await(releaseFirstExecution)),
-                        Effect.uninterruptible,
-                      ),
-                    ).pipe(
-                      Stream.drain,
-                      Stream.ensuring(Deferred.succeed(firstExecutionSettled, undefined)),
-                    )
-                  : Stream.empty;
+                if (executionCount === 1) {
+                  Deferred.doneUnsafe(firstExecutionStarted, Effect.void);
+                  return Stream.fromEffect(
+                    Deferred.await(releaseFirstExecution).pipe(Effect.uninterruptible),
+                  ).pipe(
+                    Stream.drain,
+                    Stream.ensuring(Deferred.succeed(firstExecutionSettled, undefined)),
+                  );
+                }
+                return Stream.empty;
               },
+              terminate: () => Deferred.succeed(releaseFirstExecution, undefined),
             }),
           ),
         ),
@@ -915,15 +915,11 @@ describe("AgentRun worker", () => {
           type: "acknowledge",
           outcome: "canceled",
         });
+        yield* Deferred.await(firstExecutionSettled);
 
         const second = yield* AgentRunWorker.use((worker) => worker.handle(delivery)).pipe(
           Effect.forkChild,
         );
-        yield* Effect.yieldNow;
-        expect(executionCount).toBe(1);
-
-        yield* Deferred.succeed(releaseFirstExecution, undefined);
-        yield* Deferred.await(firstExecutionSettled);
         expect(yield* Fiber.join(second)).toEqual({
           type: "acknowledge",
           outcome: "succeeded",
@@ -954,7 +950,7 @@ describe("AgentRun worker", () => {
         Layer.provide(Layer.succeed(AgentRunRepository)(renewing)),
         Layer.provide(
           Layer.succeed(ModelCallExecutor)(
-            ModelCallExecutor.of({
+            makeExecutor({
               execute: () =>
                 Stream.fromEffect(Deferred.await(renewed)).pipe(
                   Stream.map(() => ({ fragmentIndex: 0, text: "renewed" })),

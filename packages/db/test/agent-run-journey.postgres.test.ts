@@ -300,7 +300,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     expect(snapshot.throughPosition).toBe("3");
   });
 
-  it("cancels waiting work without releasing execution capacity a second time", async () => {
+  it("cancels waiting work and releases nonterminal admission capacity once", async () => {
     const receipt = await run(
       MessageAdmission.use((admission) =>
         admission.accept({
@@ -324,25 +324,14 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
               SET state = 'waiting'
               WHERE agent_run_id = ${receipt.agentRunId}::uuid
                 AND state = 'pending'`;
-            yield* sql`UPDATE agent_run_capacity_reservations
-              SET state = 'released', released_at = transaction_timestamp()
-              WHERE agent_run_id = ${receipt.agentRunId}::uuid
-                AND state = 'held'`;
-            yield* sql`UPDATE admission_global_capacity
-              SET reserved_count = reserved_count - 1,
-                  revision = revision + 1
-              WHERE singleton = true AND reserved_count = 1`;
-            yield* sql`UPDATE admission_principal_capacity
-              SET reserved_count = reserved_count - 1
-              WHERE principal_id = ${principalId}::uuid AND reserved_count = 1`;
           }),
         );
       }),
     );
     expect(await run(MessageAdmission.use((admission) => admission.reconcileCapacity()))).toEqual({
-      expectedNonTerminalCount: 0,
-      globalReservedBefore: 0,
-      globalReservedAfter: 0,
+      expectedNonTerminalCount: 1,
+      globalReservedBefore: 1,
+      globalReservedAfter: 1,
       principalMismatchCountBefore: 0,
       principalMismatchCountAfter: 0,
       reservationMismatchCountBefore: 0,
@@ -406,7 +395,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       state: "canceled",
       reservationState: "released",
       globalReserved: 0,
-      globalRevision: "3",
+      globalRevision: "2",
       principalReserved: 0,
       canceledEvents: "1",
     });
@@ -1104,12 +1093,15 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     const slowExecutor = Layer.succeed(ModelCallExecutor)(
       ModelCallExecutor.of({
         execute: () =>
-          Stream.fromEffect(
-            Deferred.succeed(executionStarted, undefined).pipe(
-              Effect.andThen(Deferred.await(releaseExecution)),
-            ),
-          ).pipe(Stream.map(() => ({ fragmentIndex: 0, text: "slow but healthy" }))),
+          Effect.succeed(
+            Stream.fromEffect(
+              Deferred.succeed(executionStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseExecution)),
+              ),
+            ).pipe(Stream.map(() => ({ fragmentIndex: 0, text: "slow but healthy" }))),
+          ),
         cancel: () => Effect.succeed({ type: "confirmedStopped" }),
+        terminate: () => Effect.void,
       }),
     );
     const observingRepositoryLayer = Layer.effect(

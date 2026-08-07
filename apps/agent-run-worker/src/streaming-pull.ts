@@ -1,6 +1,16 @@
 import { PubSub, type Message, type Subscription } from "@google-cloud/pubsub";
 import { AgentRunWorker, decodeRunnableDeliveryData } from "@osfo/agent-run";
-import { Context, Data, Deferred, Effect, FiberMap, Layer, Schema, Semaphore } from "effect";
+import {
+  Context,
+  Data,
+  Deferred,
+  Effect,
+  FiberMap,
+  Layer,
+  Option,
+  Schema,
+  Semaphore,
+} from "effect";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 
@@ -151,6 +161,7 @@ export const makeGoogleStreamingPullSourceLayer = (config: GoogleStreamingPullCo
   );
 
 export const StreamingPullWorkerConfigSchema = Schema.Struct({
+  drainTimeoutMs: PositiveInteger,
   executionSlots: PositiveInteger,
 });
 
@@ -261,7 +272,13 @@ export const runStreamingPullWorker = (
               .pipe(
                 Effect.catch((cause) => Effect.logError("StreamingPull source stop failed", cause)),
               );
-            yield* FiberMap.awaitEmpty(fibers);
+            const drained = yield* FiberMap.awaitEmpty(fibers).pipe(
+              Effect.timeoutOption(config.drainTimeoutMs),
+            );
+            if (Option.isNone(drained)) {
+              yield* FiberMap.clear(fibers);
+              yield* FiberMap.awaitEmpty(fibers);
+            }
             yield* source
               .close()
               .pipe(

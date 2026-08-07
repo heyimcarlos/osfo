@@ -1,9 +1,13 @@
 import { NodeRuntime } from "@effect/platform-node";
-import { makeAgentRunWorkerLayer, makeDeterministicModelCallExecutorLayer } from "@osfo/agent-run";
+import { makeAgentRunWorkerLayer } from "@osfo/agent-run";
 import { makeDeterministicAgentRuntimeLayer } from "@osfo/agent-runtime";
 import { makeAgentRunRepositoryLayer } from "@osfo/db";
 import { Config, Effect, Layer, Schema } from "effect";
 import { makeGoogleStreamingPullSourceLayer, runStreamingPullWorker } from "./streaming-pull.js";
+import {
+  deterministicModelCallWorkerSource,
+  makeWorkerThreadModelCallExecutorLayer,
+} from "./worker-thread-model-call-executor.js";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const DatabasePoolMax = PositiveInteger.check(Schema.isLessThanOrEqualTo(8));
@@ -28,12 +32,19 @@ const WorkerConfig = Config.all({
     PositiveInteger,
     "OSFO_AGENT_RUN_CANCELLATION_POLL_INTERVAL_MS",
   ).pipe(Config.withDefault(100)),
+  cancellationGraceMs: Config.schema(PositiveInteger, "OSFO_AGENT_RUN_CANCELLATION_GRACE_MS").pipe(
+    Config.withDefault(100),
+  ),
   modelBinding: Config.nonEmptyString("OSFO_MODEL_BINDING"),
   projectId: Config.nonEmptyString("OSFO_PUBSUB_PROJECT_ID"),
   streamCount: Config.schema(PositiveInteger, "OSFO_PUBSUB_STREAM_COUNT").pipe(
     Config.withDefault(4),
   ),
   subscriptionId: Config.nonEmptyString("OSFO_PUBSUB_SUBSCRIPTION_ID"),
+  terminationDeadlineMs: Config.schema(
+    PositiveInteger,
+    "OSFO_AGENT_RUN_TERMINATION_DEADLINE_MS",
+  ).pipe(Config.withDefault(1_000)),
   workerId: Config.nonEmptyString("OSFO_AGENT_RUN_WORKER_ID"),
 });
 
@@ -49,7 +60,6 @@ const program = WorkerConfig.pipe(
       leaseDurationMs: config.leaseDurationMs,
       leaseRenewalIntervalMs: config.leaseRenewalIntervalMs,
       cancellationPollIntervalMs: config.cancellationPollIntervalMs,
-      providerSupervisorAttemptLimit: config.executionSlots,
     }).pipe(
       Layer.provide(repositoryLayer),
       Layer.provide(
@@ -58,7 +68,13 @@ const program = WorkerConfig.pipe(
           modelBinding: config.modelBinding,
         }),
       ),
-      Layer.provide(makeDeterministicModelCallExecutorLayer()),
+      Layer.provide(
+        makeWorkerThreadModelCallExecutorLayer({
+          cancellationGraceMs: config.cancellationGraceMs,
+          source: deterministicModelCallWorkerSource,
+          terminationDeadlineMs: config.terminationDeadlineMs,
+        }),
+      ),
     );
     const sourceLayer = makeGoogleStreamingPullSourceLayer({
       projectId: config.projectId,
@@ -70,7 +86,12 @@ const program = WorkerConfig.pipe(
     return Effect.logInfo(
       `OSFO_AGENT_RUN_WORKER_TOPOLOGY:streams=${config.streamCount}:executionSlots=${config.executionSlots}:databasePoolMax=${config.databasePoolMax}`,
     ).pipe(
-      Effect.andThen(runStreamingPullWorker({ executionSlots: config.executionSlots })),
+      Effect.andThen(
+        runStreamingPullWorker({
+          drainTimeoutMs: config.terminationDeadlineMs,
+          executionSlots: config.executionSlots,
+        }),
+      ),
       Effect.provide(workerLayer),
       Effect.provide(sourceLayer),
     );

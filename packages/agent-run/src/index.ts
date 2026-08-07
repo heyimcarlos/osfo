@@ -3,9 +3,11 @@ import {
   type RecordedAgentRunState,
   type RuntimeDecision,
 } from "@osfo/agent-runtime";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -15,10 +17,6 @@ import * as Predicate from "effect/Predicate";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import {
-  makeProviderFiberSupervisor,
-  type ProviderFiberReservation,
-} from "./provider-supervisor.js";
 
 const Identity = Schema.String.check(Schema.isUUID());
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
@@ -247,23 +245,36 @@ export const ModelCallCancellationDispositionSchema = Schema.Union([
 
 export type ModelCallCancellationDisposition = typeof ModelCallCancellationDispositionSchema.Type;
 
+type ModelCallExecutionExit = Exit.Exit<"completed" | "interrupted", AgentRunRepositoryError>;
+type ModelCallExecutionFiber = Fiber.Fiber<ModelCallExecutionExit>;
+
 export class ModelCallExecutor extends Context.Service<
   ModelCallExecutor,
   {
     readonly execute: (
       attempt: ModelCallAttempt,
-    ) => Stream.Stream<ModelCallObservation, ModelCallExecutionError>;
+    ) => Effect.Effect<
+      Stream.Stream<ModelCallObservation, ModelCallExecutionError>,
+      ModelCallExecutionError
+    >;
     readonly cancel: (
       attempt: ModelCallAttempt,
     ) => Effect.Effect<ModelCallCancellationDisposition, ModelCallExecutionError>;
+    readonly terminate: (attempt: ModelCallAttempt) => Effect.Effect<void>;
   }
 >()("@osfo/agent-run/ModelCallExecutor") {}
 
 export const makeDeterministicModelCallExecutorLayer = () =>
   Layer.succeed(ModelCallExecutor)({
     execute: (attempt) =>
-      Stream.make({ fragmentIndex: 0, text: "Echo: " }, { fragmentIndex: 1, text: attempt.prompt }),
+      Effect.succeed(
+        Stream.make(
+          { fragmentIndex: 0, text: "Echo: " },
+          { fragmentIndex: 1, text: attempt.prompt },
+        ),
+      ),
     cancel: () => Effect.succeed({ type: "confirmedStopped" }),
+    terminate: () => Effect.void,
   });
 
 export const AgentRunWorkerDispositionSchema = Schema.Union([
@@ -291,8 +302,6 @@ export const AgentRunWorkerConfigSchema = Schema.Struct({
   leaseDurationMs: PositiveInteger,
   leaseRenewalIntervalMs: PositiveInteger,
   cancellationPollIntervalMs: PositiveInteger,
-  providerSupervisorAttemptLimit: Schema.optional(PositiveInteger),
-  providerSupervisorDrainTimeoutMs: Schema.optional(PositiveInteger),
 }).check(
   Schema.makeFilter((config) =>
     config.leaseRenewalIntervalMs * 3 <= config.leaseDurationMs
@@ -317,41 +326,45 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
       const repository = yield* AgentRunRepository;
       const runtime = yield* AgentRuntime;
       const executor = yield* ModelCallExecutor;
-      const providerSupervisor = yield* makeProviderFiberSupervisor(
-        (config.providerSupervisorAttemptLimit ?? 32) * 2,
-        config.providerSupervisorDrainTimeoutMs ?? 1_000,
-      );
 
       const observeExecutorCleanup = Effect.fn("AgentRunWorker.observeExecutorCleanup")(function* (
         attempt: ModelCallAttempt,
         deadlineAtEpochMs: number,
-        reservation: ProviderFiberReservation,
+        execution: ModelCallExecutionFiber | undefined,
       ) {
-        const cleanupFiber = yield* reservation.fork(executor.cancel(attempt));
         const beforeCleanup = yield* Clock.currentTimeMillis;
         const remainingMs = deadlineAtEpochMs - beforeCleanup;
         if (remainingMs <= 0) {
+          yield* executor.terminate(attempt);
+          if (execution !== undefined) yield* Fiber.await(execution);
           return {
             cleanupDisposition: { type: "deadlineExceeded" as const },
             externalWorkMayContinue: true,
           };
         }
+        const cleanupFiber = yield* Effect.forkScoped(executor.cancel(attempt));
         const settled = yield* Fiber.await(cleanupFiber).pipe(Effect.timeoutOption(remainingMs));
         if (Option.isNone(settled)) {
+          yield* executor.terminate(attempt);
+          yield* Fiber.await(cleanupFiber);
+          if (execution !== undefined) yield* Fiber.await(execution);
           return {
             cleanupDisposition: { type: "deadlineExceeded" as const },
             externalWorkMayContinue: true,
           };
         }
         const cleanupExit = settled.value;
+        yield* executor.terminate(attempt);
+        if (execution !== undefined) yield* Fiber.await(execution);
         const afterCleanup = yield* Clock.currentTimeMillis;
+        if (afterCleanup >= deadlineAtEpochMs) {
+          return {
+            cleanupDisposition: { type: "deadlineExceeded" as const },
+            externalWorkMayContinue: true,
+          };
+        }
         return {
-          cleanupDisposition: {
-            type:
-              afterCleanup >= deadlineAtEpochMs
-                ? ("deadlineExceeded" as const)
-                : ("completed" as const),
-          },
+          cleanupDisposition: { type: "completed" as const },
           externalWorkMayContinue:
             Exit.isFailure(cleanupExit) ||
             (Exit.isSuccess(cleanupExit) && cleanupExit.value.type === "mayContinue"),
@@ -389,60 +402,37 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
         function* (
           fence: AgentRunFence,
           attempt: ModelCallAttempt,
-          execution: Fiber.Fiber<"completed" | "interrupted", AgentRunRepositoryError>,
-          reservation: ProviderFiberReservation,
+          execution: ModelCallExecutionFiber,
         ) {
-          yield* Effect.gen(function* () {
-            const now = yield* Clock.currentTimeMillis;
-            const cleanup = yield* observeExecutorCleanup(
-              attempt,
-              now + config.leaseRenewalIntervalMs,
-              reservation,
-            );
-            yield* recordCleanup(fence, attempt, cleanup, now + config.leaseDurationMs);
-          }).pipe(
-            Effect.ensuring(reservation.releaseUnused),
-            Effect.ensuring(
-              Effect.sync(() => {
-                execution.interruptUnsafe();
-              }),
-            ),
+          const now = yield* Clock.currentTimeMillis;
+          const cleanup = yield* observeExecutorCleanup(
+            attempt,
+            now + config.leaseRenewalIntervalMs,
+            execution,
           );
+          yield* recordCleanup(fence, attempt, cleanup, now + config.leaseDurationMs);
         },
       );
 
       const commitCancellation = Effect.fn("AgentRunWorker.commitCancellation")(function* (
         fence: AgentRunFence,
         activeAttempt: ModelCallAttempt | undefined,
-        activeExecution:
-          | Fiber.Fiber<"completed" | "interrupted", AgentRunRepositoryError>
-          | undefined,
-        activeReservation: ProviderFiberReservation | undefined,
+        activeExecution: ModelCallExecutionFiber | undefined,
       ) {
         const cancellation = Effect.gen(function* () {
           const directive = yield* repository.loadCancellation(fence).pipe(
             Effect.catchTags({
               AgentRunFenceRejected: (error) =>
-                activeAttempt !== undefined &&
-                activeExecution !== undefined &&
-                activeReservation !== undefined
-                  ? cleanupMaintenanceFailure(
-                      fence,
-                      activeAttempt,
-                      activeExecution,
-                      activeReservation,
-                    ).pipe(Effect.andThen(Effect.fail(error)))
+                activeAttempt !== undefined && activeExecution !== undefined
+                  ? cleanupMaintenanceFailure(fence, activeAttempt, activeExecution).pipe(
+                      Effect.andThen(Effect.fail(error)),
+                    )
                   : Effect.fail(error),
               AgentRunRepositoryUnavailable: (error) =>
-                activeAttempt !== undefined &&
-                activeExecution !== undefined &&
-                activeReservation !== undefined
-                  ? cleanupMaintenanceFailure(
-                      fence,
-                      activeAttempt,
-                      activeExecution,
-                      activeReservation,
-                    ).pipe(Effect.andThen(Effect.fail(error)))
+                activeAttempt !== undefined && activeExecution !== undefined
+                  ? cleanupMaintenanceFailure(fence, activeAttempt, activeExecution).pipe(
+                      Effect.andThen(Effect.fail(error)),
+                    )
                   : Effect.fail(error),
             }),
           );
@@ -454,11 +444,11 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
             externalWorkMayContinue: otherUnconfirmedAttempt,
           };
 
-          if (activeAttempt !== undefined && activeReservation !== undefined) {
+          if (activeAttempt !== undefined) {
             const activeCleanup = yield* observeExecutorCleanup(
               activeAttempt,
               directive.cleanupDeadlineAtEpochMs,
-              activeReservation,
+              activeExecution,
             );
             const persistenceStartedAt = yield* Clock.currentTimeMillis;
             yield* recordCleanup(
@@ -476,22 +466,12 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
 
           return yield* repository.commitCancellation(fence, cleanup);
         });
-        return yield* cancellation.pipe(
-          Effect.ensuring(activeReservation?.releaseUnused ?? Effect.void),
-          Effect.ensuring(
-            Effect.sync(() => {
-              activeExecution?.interruptUnsafe();
-            }),
-          ),
-        );
+        return yield* cancellation;
       });
 
       const driveClaim = Effect.fn("AgentRunWorker.driveClaim")(function* (fence: AgentRunFence) {
         let activeAttempt: ModelCallAttempt | undefined;
-        let activeExecution:
-          | Fiber.Fiber<"completed" | "interrupted", AgentRunRepositoryError>
-          | undefined;
-        let activeReservation: ProviderFiberReservation | undefined;
+        let activeExecution: ModelCallExecutionFiber | undefined;
         const body = Effect.gen(function* () {
           while (true) {
             const state = yield* repository.loadRecordedState(fence);
@@ -508,29 +488,32 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
             const modelCall = yield* repository.ensureModelCall(fence, decision);
             const attemptStart = yield* repository.beginModelCallAttempt(fence, modelCall);
             if (attemptStart.type === "cleanupRequired") {
-              const reservation = yield* providerSupervisor.reserve(1);
-              yield* Effect.gen(function* () {
-                const now = yield* Clock.currentTimeMillis;
-                const cleanup = yield* observeExecutorCleanup(
-                  attemptStart.attempt,
-                  now + config.leaseRenewalIntervalMs,
-                  reservation,
-                );
-                yield* recordCleanup(
-                  fence,
-                  attemptStart.attempt,
-                  cleanup,
-                  now + config.leaseDurationMs,
-                );
-              }).pipe(Effect.ensuring(reservation.releaseUnused));
+              const now = yield* Clock.currentTimeMillis;
+              const cleanup = yield* observeExecutorCleanup(
+                attemptStart.attempt,
+                now + config.leaseRenewalIntervalMs,
+                undefined,
+              );
+              yield* recordCleanup(
+                fence,
+                attemptStart.attempt,
+                cleanup,
+                now + config.leaseDurationMs,
+              );
               continue;
             }
             if (attemptStart.type === "recoveredInterruption") continue;
             const attempt = attemptStart.attempt;
-            const reservation = yield* providerSupervisor.reserve(2);
             activeAttempt = attempt;
-            activeReservation = reservation;
-            const execution = Stream.runForEach(executor.execute(attempt), (observation) =>
+            yield* repository.renewLease(fence, config.leaseDurationMs);
+            const observationStream = yield* executor
+              .execute(attempt)
+              .pipe(
+                Effect.catchTag("ModelCallExecutionError", (error) =>
+                  Effect.succeed(Stream.fail(error)),
+                ),
+              );
+            const execution = Stream.runForEach(observationStream, (observation) =>
               repository.appendModelOutput(fence, attempt, observation),
             ).pipe(
               Effect.as("completed" as const),
@@ -553,71 +536,116 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
               concurrency: 2,
               discard: true,
             });
-            const executionFiber = yield* reservation.fork(execution);
+            const firstResult = yield* Deferred.make<
+              | {
+                  readonly type: "execution";
+                  readonly exit: ModelCallExecutionExit;
+                }
+              | {
+                  readonly type: "maintenance";
+                  readonly exit: Exit.Exit<void, AgentRunRepositoryError>;
+                }
+            >();
+            const executionFiberStarted = yield* Deferred.make<void>();
+            const executionFiber = yield* Effect.forkScoped(
+              Effect.exit(
+                Deferred.succeed(executionFiberStarted, undefined).pipe(Effect.andThen(execution)),
+              ).pipe(
+                Effect.tap((exit) =>
+                  Deferred.succeed(firstResult, { type: "execution", exit }).pipe(Effect.asVoid),
+                ),
+              ),
+            );
             activeExecution = executionFiber;
-            yield* Effect.raceFirst(Fiber.await(executionFiber).pipe(Effect.asVoid), maintenance);
-            const executionResult = yield* Fiber.join(executionFiber);
+            yield* Deferred.await(executionFiberStarted);
+            yield* Effect.yieldNow;
+            const maintenanceFiber = yield* Effect.forkScoped(
+              Effect.exit(maintenance).pipe(
+                Effect.tap((exit) =>
+                  Deferred.succeed(firstResult, { type: "maintenance", exit }).pipe(Effect.asVoid),
+                ),
+              ),
+            );
+            const first = yield* Deferred.await(firstResult);
+            if (first.type === "maintenance") {
+              if (Exit.isFailure(first.exit)) {
+                const error = Cause.findErrorOption(first.exit.cause);
+                if (Option.isSome(error) && error.value._tag === "AgentRunCancellationObserved") {
+                  yield* commitCancellation(fence, activeAttempt, activeExecution);
+                  activeAttempt = undefined;
+                  activeExecution = undefined;
+                  return {
+                    type: "acknowledge" as const,
+                    outcome: "canceled" as const,
+                  };
+                }
+                yield* cleanupMaintenanceFailure(fence, attempt, executionFiber);
+                activeAttempt = undefined;
+                activeExecution = undefined;
+                if (Option.isSome(error)) return yield* error.value;
+              }
+              return yield* new AgentRunRepositoryUnavailable({
+                cause: "AgentRun maintenance ended unexpectedly",
+              });
+            }
+            yield* Fiber.interrupt(maintenanceFiber);
+            const executionExit = yield* Fiber.join(executionFiber);
+            const executionResult = yield* executionExit;
             if (executionResult === "interrupted") {
+              yield* executor.terminate(attempt);
+              yield* Fiber.await(executionFiber);
               yield* repository.interruptModelCall(fence, attempt, "modelCallFailed");
-              yield* reservation.releaseUnused;
               activeAttempt = undefined;
               activeExecution = undefined;
-              activeReservation = undefined;
               continue;
             }
             yield* repository.completeModelCall(fence, attempt);
-            yield* reservation.releaseUnused;
             activeAttempt = undefined;
             activeExecution = undefined;
-            activeReservation = undefined;
           }
         });
         const canceled = body.pipe(
-          Effect.catchTag("AgentRunCancellationObserved", () => {
-            const reservation = activeReservation;
-            activeReservation = undefined;
-            return commitCancellation(fence, activeAttempt, activeExecution, reservation).pipe(
+          Effect.catchTag("AgentRunCancellationObserved", () =>
+            commitCancellation(fence, activeAttempt, activeExecution).pipe(
               Effect.as({
                 type: "acknowledge" as const,
                 outcome: "canceled" as const,
               }),
-            );
-          }),
+            ),
+          ),
         );
-        return yield* canceled.pipe(
-          Effect.catchTags({
-            AgentRunFenceRejected: (error) => {
-              const reservation = activeReservation;
-              activeReservation = undefined;
-              return activeAttempt !== undefined && activeExecution !== undefined && reservation
-                ? cleanupMaintenanceFailure(
-                    fence,
-                    activeAttempt,
-                    activeExecution,
-                    reservation,
-                  ).pipe(Effect.andThen(Effect.fail(error)))
-                : Effect.fail(error);
-            },
-            AgentRunRepositoryUnavailable: (error) => {
-              const reservation = activeReservation;
-              activeReservation = undefined;
-              return activeAttempt !== undefined && activeExecution !== undefined && reservation
-                ? cleanupMaintenanceFailure(
-                    fence,
-                    activeAttempt,
-                    activeExecution,
-                    reservation,
-                  ).pipe(Effect.andThen(Effect.fail(error)))
-                : Effect.fail(error);
-            },
-          }),
-          Effect.ensuring(
-            Effect.suspend(() => {
-              const reservation = activeReservation;
-              activeReservation = undefined;
-              activeExecution?.interruptUnsafe();
-              return reservation?.releaseUnused ?? Effect.void;
+        return yield* Effect.scoped(
+          canceled.pipe(
+            Effect.catchTags({
+              AgentRunFenceRejected: (error) =>
+                activeAttempt !== undefined && activeExecution !== undefined
+                  ? cleanupMaintenanceFailure(fence, activeAttempt, activeExecution).pipe(
+                      Effect.andThen(Effect.fail(error)),
+                    )
+                  : Effect.fail(error),
+              AgentRunRepositoryUnavailable: (error) =>
+                activeAttempt !== undefined && activeExecution !== undefined
+                  ? cleanupMaintenanceFailure(fence, activeAttempt, activeExecution).pipe(
+                      Effect.andThen(Effect.fail(error)),
+                    )
+                  : Effect.fail(error),
             }),
+            Effect.ensuring(
+              Effect.suspend(() =>
+                activeAttempt === undefined
+                  ? Effect.void
+                  : executor
+                      .terminate(activeAttempt)
+                      .pipe(
+                        Effect.andThen(
+                          activeExecution === undefined
+                            ? Effect.void
+                            : Fiber.await(activeExecution),
+                        ),
+                        Effect.asVoid,
+                      ),
+              ),
+            ),
           ),
         );
       });
