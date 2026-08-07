@@ -368,7 +368,7 @@ jobs:
 
   development-drift:
     if: github.event_name == 'schedule'
-    needs: drift-configuration
+    needs: [static, drift-configuration]
     runs-on: ubuntu-24.04
     environment: development-platform
     permissions:
@@ -411,7 +411,7 @@ jobs:
 
   foundation-drift:
     if: github.event_name == 'schedule'
-    needs: drift-configuration
+    needs: [static, drift-configuration]
     runs-on: ubuntu-24.04
     environment: foundation
     permissions:

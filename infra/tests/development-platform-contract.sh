@@ -205,6 +205,11 @@ rg --fixed-strings --quiet 'DEVELOPMENT_PLATFORM_CLEANUP_ONLY: "1"' .github/work
 rg --fixed-strings --quiet 'always()' .github/workflows/terraform.yml
 rg --fixed-strings --quiet "needs.static.result == 'success'" .github/workflows/terraform.yml
 rg --fixed-strings --quiet "'development-platform-workflow'" .github/workflows/terraform.yml
+if [[ $(rg --fixed-strings 'needs: [static, drift-configuration]' \
+  .github/workflows/terraform.yml | wc -l) != 2 ]]; then
+  printf 'scheduled drift must validate reviewed source before OIDC authentication\n' >&2
+  exit 1
+fi
 if rg --fixed-strings --quiet 'group: terraform-development-platform' \
   .github/workflows/terraform.yml; then
   printf 'development lifecycle serialization must cover its independent cleanup job\n' >&2
