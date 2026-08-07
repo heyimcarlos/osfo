@@ -48,6 +48,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: terraform-${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.task == 'development-proof')) && 'development-platform-workflow' || github.run_id }}
+  cancel-in-progress: false
+
 jobs:
   static:
     runs-on: ubuntu-24.04
@@ -128,9 +132,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    concurrency:
-      group: terraform-development-platform
-      cancel-in-progress: false
     env:
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"
@@ -168,17 +169,15 @@ jobs:
       always() &&
       github.event_name == 'workflow_dispatch' &&
       inputs.task == 'development-proof' &&
+      needs.static.result == 'success' &&
       needs.development-authorization.result == 'success' &&
       needs.development-configuration.result == 'success'
-    needs: [development-lifecycle, development-authorization, development-configuration]
+    needs: [static, development-lifecycle, development-authorization, development-configuration]
     runs-on: ubuntu-24.04
     environment: development-platform
     permissions:
       contents: read
       id-token: write
-    concurrency:
-      group: terraform-development-platform
-      cancel-in-progress: false
     env:
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"
@@ -375,9 +374,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    concurrency:
-      group: terraform-development-platform
-      cancel-in-progress: false
     env:
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"

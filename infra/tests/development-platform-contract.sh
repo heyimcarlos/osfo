@@ -203,5 +203,12 @@ rg --fixed-strings --quiet 'Require an explicitly reviewed lifecycle ref' .githu
 rg --fixed-strings --quiet 'refs/heads/codex/provision-development-platform' .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'DEVELOPMENT_PLATFORM_CLEANUP_ONLY: "1"' .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'always()' .github/workflows/terraform.yml
+rg --fixed-strings --quiet "needs.static.result == 'success'" .github/workflows/terraform.yml
+rg --fixed-strings --quiet "'development-platform-workflow'" .github/workflows/terraform.yml
+if rg --fixed-strings --quiet 'group: terraform-development-platform' \
+  .github/workflows/terraform.yml; then
+  printf 'development lifecycle serialization must cover its independent cleanup job\n' >&2
+  exit 1
+fi
 
 printf 'PASS: development platform topology, reviewed inputs, and teardown boundaries\n'

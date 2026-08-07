@@ -100,7 +100,9 @@ reports preserve managed checks, absence checks, audit events, and the final
 lifecycle binding. An independent `always()` workflow job reauthenticates,
 reinitializes the same remote state, applies a separately bound destroy-only
 plan, and repeats the empty-state and provider-absence checks after success,
-failure, or cancellation of the qualification job.
+failure, or cancellation of the qualification job. Workflow-level
+serialization holds one lock through that cleanup, so a newer lifecycle or
+scheduled drift run cannot replace it in GitHub's pending job queue.
 
 Both scheduled drift jobs are read-only. One refreshes the retained foundation
 baseline, while the other refreshes the empty disposable state and performs the
