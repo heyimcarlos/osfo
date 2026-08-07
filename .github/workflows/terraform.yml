@@ -101,11 +101,28 @@ jobs:
           done
           exit "$missing"
 
+  development-authorization:
+    if: github.event_name == 'workflow_dispatch' && inputs.task == 'development-proof'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require an explicitly reviewed lifecycle ref
+        shell: bash
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/main|refs/heads/codex/provision-development-platform)
+              printf 'PASS: authorized development lifecycle ref %s\n' "$GITHUB_REF"
+              ;;
+            *)
+              printf 'FAIL: unauthorized development lifecycle ref %s\n' "$GITHUB_REF" >&2
+              exit 1
+              ;;
+          esac
+
   development-lifecycle:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.task == 'development-proof'
-    needs: [static, development-configuration]
+    needs: [static, development-authorization, development-configuration]
     runs-on: ubuntu-24.04
     environment: development-platform
     permissions:

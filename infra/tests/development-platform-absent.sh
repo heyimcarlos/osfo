@@ -62,6 +62,11 @@ while IFS=$'\t' read -r identity email; do
     gcloud iam service-accounts list --project="$project_id" --format='value(email)'
 done < <(jq -r '.runtime_service_accounts | to_entries[] | [.key, .value] | @tsv' "$varset")
 
+while IFS=$'\t' read -r identity email; do
+  assert_present "qualification_service_account_$identity" "$email" \
+    gcloud iam service-accounts list --project="$project_id" --format='value(email)'
+done < <(jq -r '.qualification_service_accounts | to_entries[] | [.key, .value] | @tsv' "$varset")
+
 for secret in model-adapter temporal-cloud; do
   assert_absent "secret_${secret//-/_}" "$name_prefix-$secret" \
     gcloud secrets list --project="$project_id" --format='value(name)'
@@ -90,6 +95,7 @@ jq -n --arg project_id "$project_id" --arg region "$region" '{
     cloud_sql: "PASS",
     pubsub_topic_and_subscription: "PASS",
     retained_runtime_service_accounts: "PASS",
+    retained_qualification_service_accounts: "PASS",
     secrets: "PASS",
     artifact_registry: "PASS",
     artifact_bucket: "PASS",

@@ -10,10 +10,11 @@ Foundation composes the environment baseline module, which owns the retained,
 development-only `us-east4` VPC, Direct VPC egress subnet, static Cloud NAT,
 private services access, private DNS, firewall rules, and an optional Temporal
 Cloud Private Service Connect endpoint. The `development/platform` root reads
-those provider resources by their reviewed names. Foundation also retains the six
-runtime service-account identities, their two exact Cloud SQL roles, and three
-qualification-job `actAs` grants. Data authority owns zonal private-IP Cloud SQL
-PostgreSQL with IAM database authentication, Secret Manager containers and per-secret IAM, immutable Artifact Registry tags,
+those provider resources by their reviewed names. Foundation also retains the
+six runtime service-account identities, three qualification-only identities,
+the exact Cloud SQL and conditional secret-access roles, and three probe-only
+`actAs` grants. Data authority owns zonal private-IP Cloud SQL PostgreSQL with
+IAM database authentication, Secret Manager containers, immutable Artifact Registry tags,
 and the disposable content-addressed artifact bucket. Command buffer owns the
 single ordered Pub/Sub topic and StreamingPull subscription.
 
@@ -29,7 +30,7 @@ subnet, static external address, Cloud NAT, router, private DNS zone, firewall,
 and private services access allocation continue to exist and may continue to
 incur cost after a platform destroy. They are not shared with production and
 the scheduled foundation refresh-only plan owns their drift. The disposable
-root creates and destroys Cloud SQL, Pub/Sub, secret containers and policy,
+root creates and destroys Cloud SQL, Pub/Sub, secret containers,
 Artifact Registry, the artifact bucket, qualification jobs, and its private
 database DNS record. Retaining the named runtime identities avoids tombstoned
 IAM principals across repeated platform recreation while granting them no
@@ -53,15 +54,16 @@ disposable root discovers the retained forwarding rule and records its exact
 target, so duplicated root inputs cannot drift. When the forwarding rule is not
 available, the report records Temporal PSC as `MISSING`, never `PASS`.
 
-The platform smoke uses digest-pinned disposable Cloud Run Jobs with Direct VPC
-egress. It proves private-only Cloud SQL connectivity with an IAM database
-login, private DNS resolution, and observed public egress through the retained
-static NAT address. It also uses the intended AgentRun and Temporal identities
-to read known non-secret qualification versions and proves the reconciliation
-identity cannot read them. The platform identity may create versions and manage
-containers and policy, but its custom role cannot access version payloads or
-mint runtime identity tokens. Its narrowly scoped `actAs` bindings exist only
-to configure the three reviewed qualification jobs.
+The platform smoke uses a digest-pinned base image for disposable Cloud Run
+Jobs with Direct VPC egress. It proves private-only Cloud SQL connectivity with
+an IAM database login, private DNS resolution, and observed public egress
+through the retained static NAT address. Foundation-owned qualification-only
+identities read known non-secret versions, and a third identity must fail with
+the exact `secretmanager.versions.access` permission denial. Runtime identities
+are never impersonable by the platform identity. The platform may create
+versions and manage containers, but it cannot change secret IAM, access version
+payloads, or mint runtime credentials. Package installation inside the pinned
+base image is still mutable, so full probe toolchain determinism is `MISSING`.
 
 The ordered Pub/Sub proof first validates the Terraform-managed subscription's
 topic, ordering, retention, and acknowledgement configuration. Its behavioral
@@ -69,8 +71,10 @@ round trip then uses an isolated disposable subscription and the `us-east4`
 regional API endpoint, so qualification cannot lease or acknowledge runtime
 messages.
 The artifact proof creates one content-addressed object, rejects a second
-generation with a zero-generation precondition, and verifies that only one
-generation exists.
+generation with a zero-generation caller precondition, and verifies that only
+one generation exists. Because the platform identity still has storage
+administration authority, IAM-enforced create-only immutability remains
+`MISSING`; the precondition check is not reported as that stronger guarantee.
 
 After foundation has applied the evidence bucket and platform IAM additions,
 initialize the development backend and run the destructive, disposable proof:

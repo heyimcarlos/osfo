@@ -28,6 +28,11 @@ output "development_runtime_service_accounts" {
   value       = { for identity, account in google_service_account.development_runtime : identity => account.email }
 }
 
+output "development_qualification_service_accounts" {
+  description = "Retained qualification-only identities consumed by disposable probe jobs."
+  value       = { for identity, account in google_service_account.development_qualification : identity => account.email }
+}
+
 output "github_workload_identity_provider" {
   description = "Full Workload Identity Provider name consumed by GitHub authentication."
   value       = google_iam_workload_identity_pool_provider.github.name

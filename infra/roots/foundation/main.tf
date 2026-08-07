@@ -86,6 +86,7 @@ locals {
     "roles/compute.networkAdmin",
     "roles/compute.securityAdmin",
     "roles/dns.admin",
+    "roles/iam.serviceAccountViewer",
     "roles/iam.roleAdmin",
     "roles/servicenetworking.networksAdmin",
   ]))
@@ -151,6 +152,35 @@ locals {
     }
   }
 
+  development_qualification_identities = {
+    denied_secret   = "qualification-denied"
+    network         = "qualification-network"
+    temporal_secret = "qualification-temporal"
+  }
+
+  development_secret_access_bindings = {
+    runtime_agentrun = {
+      identity_kind = "runtime"
+      identity      = "agentrun"
+      secret        = "model-adapter"
+    }
+    runtime_temporal = {
+      identity_kind = "runtime"
+      identity      = "temporal"
+      secret        = "temporal-cloud"
+    }
+    qualification_network = {
+      identity_kind = "qualification"
+      identity      = "network"
+      secret        = "model-adapter"
+    }
+    qualification_temporal = {
+      identity_kind = "qualification"
+      identity      = "temporal_secret"
+      secret        = "temporal-cloud"
+    }
+  }
+
   security_constraints = var.organization_id == null ? {} : {
     for pair in setproduct(local.environments, toset([
       "iam.automaticIamGrantsForDefaultServiceAccounts",
@@ -167,7 +197,7 @@ resource "google_project_iam_custom_role" "platform_secret_manager" {
   project     = google_project.environment["development"].project_id
   role_id     = "osfoPlatformSecretManager"
   title       = "Osfo platform secret manager"
-  description = "Manages secret containers, policy, and new versions without reading payloads."
+  description = "Manages secret containers and new versions without reading payloads or changing IAM."
   permissions = [
     "resourcemanager.projects.get",
     "secretmanager.locations.get",
@@ -177,7 +207,6 @@ resource "google_project_iam_custom_role" "platform_secret_manager" {
     "secretmanager.secrets.get",
     "secretmanager.secrets.getIamPolicy",
     "secretmanager.secrets.list",
-    "secretmanager.secrets.setIamPolicy",
     "secretmanager.secrets.update",
     "secretmanager.versions.add",
   ]
@@ -579,6 +608,34 @@ resource "google_project_iam_member" "development_runtime_cloud_sql" {
   member  = "serviceAccount:${google_service_account.development_runtime[each.value.identity].email}"
 }
 
+resource "google_project_iam_member" "development_qualification_cloud_sql_client" {
+  project = google_project.environment["development"].project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.development_qualification["network"].email}"
+}
+
+resource "google_project_iam_member" "development_qualification_cloud_sql_instance_user" {
+  project = google_project.environment["development"].project_id
+  role    = "roles/cloudsql.instanceUser"
+  member  = "serviceAccount:${google_service_account.development_qualification["network"].email}"
+}
+
+resource "google_project_iam_member" "development_secret_access" {
+  for_each = local.development_secret_access_bindings
+
+  project = google_project.environment["development"].project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member = "serviceAccount:${each.value.identity_kind == "runtime" ?
+    google_service_account.development_runtime[each.value.identity].email :
+  google_service_account.development_qualification[each.value.identity].email}"
+
+  condition {
+    title       = "${replace(each.key, "_", "-")}-secret"
+    description = "Restricts the retained identity to one reviewed disposable secret."
+    expression  = "resource.name.startsWith('projects/${google_project.environment["development"].number}/secrets/${var.development_environment_baseline.name_prefix}-${each.value.secret}')"
+  }
+}
+
 resource "google_service_account" "development_runtime" {
   for_each = local.development_runtime_identities
 
@@ -594,11 +651,23 @@ resource "google_service_account" "development_runtime" {
   depends_on = [google_project_service.required]
 }
 
-resource "google_service_account_iam_member" "development_platform_job_act_as" {
-  for_each = {
-    for key, account in google_service_account.development_runtime : key => account
-    if contains(["agentrun", "temporal", "reconciliation"], key)
+resource "google_service_account" "development_qualification" {
+  for_each = local.development_qualification_identities
+
+  project      = google_project.environment["development"].project_id
+  account_id   = "${var.development_environment_baseline.name_prefix}-${each.value}"
+  display_name = "Osfo development ${replace(each.key, "_", " ")} probe"
+  description  = "Retained qualification-only identity with no runtime authority."
+
+  lifecycle {
+    prevent_destroy = true
   }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_service_account_iam_member" "development_platform_probe_act_as" {
+  for_each = google_service_account.development_qualification
 
   service_account_id = each.value.name
   role               = "roles/iam.serviceAccountUser"

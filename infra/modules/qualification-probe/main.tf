@@ -35,11 +35,19 @@ locals {
 
   denied_secret_probe_script = <<-SCRIPT
     set -euo pipefail
-    if gcloud secrets versions access latest \
-      --secret="$${MODEL_SECRET}" --project="$${PROJECT_ID}" >/dev/null 2>&1; then
+    denial_file=$(mktemp)
+    set +e
+    gcloud secrets versions access latest \
+      --secret="$${MODEL_SECRET}" --project="$${PROJECT_ID}" \
+      >/dev/null 2>"$${denial_file}"
+    denial_status=$?
+    set -e
+    if ((denial_status == 0)); then
       printf 'FAIL unintended_secret_accessor\n' >&2
       exit 1
     fi
+    grep -Fq 'PERMISSION_DENIED' "$${denial_file}"
+    grep -Fq 'secretmanager.versions.access' "$${denial_file}"
     printf 'PASS unintended_secret_accessor_denied\n'
   SCRIPT
 }
@@ -66,7 +74,7 @@ resource "google_cloud_run_v2_job" "network" {
 
   template {
     template {
-      service_account = var.runtime_service_accounts["agentrun"]
+      service_account = var.qualification_service_accounts["network"]
       timeout         = "900s"
       max_retries     = 0
 
@@ -98,7 +106,7 @@ resource "google_cloud_run_v2_job" "network" {
         }
         env {
           name  = "DB_USER"
-          value = trimsuffix(var.runtime_service_accounts["agentrun"], ".gserviceaccount.com")
+          value = trimsuffix(var.qualification_service_accounts["network"], ".gserviceaccount.com")
         }
         env {
           name  = "MODEL_SECRET"
@@ -143,7 +151,7 @@ resource "google_cloud_run_v2_job" "temporal_secret" {
 
   template {
     template {
-      service_account = var.runtime_service_accounts["temporal"]
+      service_account = var.qualification_service_accounts["temporal_secret"]
       timeout         = "300s"
       max_retries     = 0
       containers {
@@ -174,7 +182,7 @@ resource "google_cloud_run_v2_job" "denied_secret" {
 
   template {
     template {
-      service_account = var.runtime_service_accounts["reconciliation"]
+      service_account = var.qualification_service_accounts["denied_secret"]
       timeout         = "300s"
       max_retries     = 0
       containers {

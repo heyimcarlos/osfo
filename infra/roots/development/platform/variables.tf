@@ -15,6 +15,18 @@ variable "runtime_service_accounts" {
     error_message = "runtime_service_accounts must contain exactly the six reviewed development identities."
   }
 }
+variable "qualification_service_accounts" {
+  type = map(string)
+
+  validation {
+    condition = toset(keys(var.qualification_service_accounts)) == toset([
+      "denied_secret",
+      "network",
+      "temporal_secret",
+    ])
+    error_message = "qualification_service_accounts must contain exactly the three reviewed probe identities."
+  }
+}
 variable "region" {
   type    = string
   default = "us-east4"
@@ -35,10 +47,6 @@ variable "artifact_bucket_name" { type = string }
 variable "artifact_registry_repository_id" { type = string }
 variable "evidence_archive_bucket_name" { type = string }
 variable "pubsub_message_retention_duration" { type = string }
-variable "secret_accessors" {
-  type    = map(set(string))
-  default = {}
-}
 variable "operating_contract" {
   type = object({
     transport_request_concurrency         = number

@@ -1,8 +1,5 @@
 locals {
-  secret_accessors = var.enabled ? merge(var.secret_accessors, {
-    model-adapter  = ["serviceAccount:${var.runtime_service_accounts["agentrun"]}"]
-    temporal-cloud = ["serviceAccount:${var.runtime_service_accounts["temporal"]}"]
-  }) : {}
+  secret_containers = toset(["model-adapter", "temporal-cloud"])
 }
 
 resource "google_sql_database_instance" "authority" {
@@ -63,7 +60,7 @@ resource "google_sql_database" "osfo" {
 }
 
 resource "google_sql_user" "runtime" {
-  for_each = var.enabled ? var.runtime_service_accounts : {}
+  for_each = var.enabled ? var.cloud_sql_service_accounts : {}
   project  = var.project_id
   instance = google_sql_database_instance.authority[0].name
   name     = trimsuffix(each.value, ".gserviceaccount.com")
@@ -101,7 +98,7 @@ resource "google_artifact_registry_repository" "images" {
 }
 
 resource "google_secret_manager_secret" "container" {
-  for_each = var.enabled ? local.secret_accessors : {}
+  for_each = var.enabled ? local.secret_containers : toset([])
 
   project   = var.project_id
   secret_id = "${var.name_prefix}-${each.key}"
@@ -109,21 +106,6 @@ resource "google_secret_manager_secret" "container" {
   replication {
     auto {}
   }
-}
-
-resource "google_secret_manager_secret_iam_member" "accessor" {
-  for_each = {
-    for binding in flatten([
-      for secret, members in local.secret_accessors : [
-        for member in members : { key = "${secret}/${member}", secret = secret, member = member }
-      ]
-    ]) : binding.key => binding if var.enabled
-  }
-
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.container[each.value.secret].secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = each.value.member
 }
 
 output "cloud_sql_connection_name" { value = try(google_sql_database_instance.authority[0].connection_name, null) }

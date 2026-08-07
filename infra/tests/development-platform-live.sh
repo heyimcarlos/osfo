@@ -123,6 +123,7 @@ cleanup_on_exit() {
   exit "$command_status"
 }
 trap cleanup_on_exit EXIT
+trap 'printf "cleanup: lifecycle interrupted by signal\n" >&2; exit 130' INT TERM
 
 "$repo_root/infra/tests/development-platform-preflight.sh"
 
@@ -141,7 +142,11 @@ second_binding=$(jq -r '.binding_sha256' "$second_plan.manifest.json")
 smoke_output=$("$repo_root/infra/tests/development-platform-smoke.sh")
 printf '%s\n' "$smoke_output"
 managed_report_sha=$(sed -n 's/.*evidence=//p' <<<"$smoke_output" | tail -1)
+managed_qualification=$(sed -n 's/^qualification=\([^ ]*\).*/\1/p' <<<"$smoke_output" | tail -1)
+temporal_qualification=$(sed -n 's/.*temporal=\([^ ]*\).*/\1/p' <<<"$smoke_output" | tail -1)
 test -n "$managed_report_sha"
+[[ "$managed_qualification" =~ ^(PASS|MISSING)$ ]]
+[[ "$temporal_qualification" =~ ^(PASS|MISSING)$ ]]
 
 destroy_platform
 cleanup_required=false
@@ -165,10 +170,12 @@ jq -n \
   --arg create_plan_binding_sha256 "$create_binding" \
   --arg second_plan_binding_sha256 "$second_binding" \
   --argjson destroy_plan_bindings "$destroy_bindings_json" \
+  --arg managed_qualification "$managed_qualification" \
+  --arg temporal_qualification "$temporal_qualification" \
   --arg managed_report_sha256 "$managed_report_sha" \
   --arg absence_report_sha256 "$absence_report_sha" \
   --arg audit_report_sha256 "$audit_report_sha" \
-  '{schema_version: 1, qualification: "MISSING", source: {
+  '{schema_version: 1, qualification: $managed_qualification, source: {
     commit_sha: $source_commit,
     clean_tree: true,
     variable_set_sha256: $variable_set_sha256,
@@ -184,15 +191,20 @@ jq -n \
     retained_environment_baseline: "PASS",
     backend_state_retained: "PASS",
     audit_history_retained: "PASS",
-    implementable_managed_service_checks: "PASS",
-    managed_service_qualification: "MISSING",
-    temporal_private_service_connect: "MISSING"
+    verified_managed_service_checks: "PASS",
+    artifact_immutability_enforced_by_iam: "MISSING",
+    probe_toolchain_determinism: "MISSING",
+    managed_service_qualification: $managed_qualification,
+    temporal_private_service_connect: $temporal_qualification
   }, managed_service_report_sha256: $managed_report_sha256,
   absence_report_sha256: $absence_report_sha256,
   audit_report_sha256: $audit_report_sha256}' >"$lifecycle_report"
 lifecycle_report_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
   "$lifecycle_report" "$evidence_bucket")
 
-printf 'MISSING: Temporal PSC, implementable lifecycle gates PASS, lifecycle evidence=%s\n' \
-  "$lifecycle_report_sha"
+printf 'qualification=%s temporal=%s lifecycle_evidence=%s\n' \
+  "$managed_qualification" "$temporal_qualification" "$lifecycle_report_sha"
+if [[ "$managed_qualification" == PASS ]]; then
+  exit 0
+fi
 exit 3

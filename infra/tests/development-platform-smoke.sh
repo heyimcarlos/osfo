@@ -119,16 +119,6 @@ if [[ "$effective_account" != "$terraform_service_account" ]]; then
 fi
 for secret_key in model-adapter temporal-cloud; do
   secret=$(jq -r --arg secret_key "$secret_key" '.secret_names[$secret_key]' "$scratch/platform.json")
-  case "$secret_key" in
-    model-adapter) accessor_key=agentrun ;;
-    temporal-cloud) accessor_key=temporal ;;
-  esac
-  accessor=$(jq -r --arg accessor_key "$accessor_key" '.runtime_service_accounts[$accessor_key]' "$scratch/platform.json")
-  member="serviceAccount:$accessor"
-  gcloud secrets get-iam-policy "$secret" --project="$project_id" --format=json \
-    | jq -e --arg member "$member" '
-      any(.bindings[]; .role == "roles/secretmanager.secretAccessor" and any(.members[]; . == $member))
-    ' >/dev/null
   gcloud secrets versions add "$secret" --project="$project_id" \
     --data-file="$scratch/secret-payload" >/dev/null
 done
@@ -185,7 +175,9 @@ if gcloud compute forwarding-rules describe "$name_prefix-temporal-psc" \
 fi
 
 test -f "$preflight_report"
+managed_qualification=MISSING
 jq -n \
+  --arg qualification "$managed_qualification" \
   --arg project_id "$project_id" \
   --arg region "$region" \
   --arg artifact_sha256 "$artifact_sha" \
@@ -197,16 +189,18 @@ jq -n \
   --slurpfile network_execution "$scratch/network-execution.json" \
   --slurpfile temporal_secret_execution "$scratch/temporal-secret-execution.json" \
   --slurpfile denied_secret_execution "$scratch/denied-secret-execution.json" \
-  '{schema_version: 1, qualification: "MISSING", project_id: $project_id, region: $region, checks: {
+  '{schema_version: 1, qualification: $qualification, project_id: $project_id, region: $region, checks: {
     private_cloud_sql_configuration_and_iam_users: "PASS",
     private_database_connection_from_direct_vpc: "PASS",
     managed_ordered_subscription_configuration: "PASS",
     ordered_pubsub_round_trip: "PASS",
-    immutable_artifact_round_trip: "PASS",
-    artifact_overwrite_rejected: "PASS",
-    intended_secret_accessor_policy: "PASS",
+    artifact_precondition_round_trip: "PASS",
+    artifact_precondition_rejected_second_generation: "PASS",
+    artifact_immutability_enforced_by_iam: "MISSING",
     authorized_secret_version_access: "PASS",
-    negative_secret_payload_access: "PASS",
+    exact_permission_denied_secret_payload_access: "PASS",
+    probe_base_image_digest: "PASS",
+    probe_toolchain_determinism: "MISSING",
     private_dns_zone_and_static_nat_configuration: "PASS",
     private_dns_resolution_from_direct_vpc: "PASS",
     private_dns_record: $private_dns_record,
@@ -224,4 +218,5 @@ jq -n \
 report_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
   "$scratch/report.json" "$evidence_bucket")
 
-printf 'MISSING: Temporal PSC, all implementable managed checks retained as evidence=%s\n' "$report_sha"
+printf 'qualification=%s temporal=%s evidence=%s\n' \
+  "$managed_qualification" "$temporal_status" "$report_sha"

@@ -37,8 +37,15 @@ rg --fixed-strings --quiet 'google_cloud_run_v2_job' infra/modules/qualification
 rg --fixed-strings --quiet 'egress = "ALL_TRAFFIC"' infra/modules/qualification-probe/main.tf
 rg --fixed-strings --quiet 'private_database_connection_from_direct_vpc: "PASS"' infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'static_nat_traffic_from_direct_vpc: "PASS"' infra/tests/development-platform-smoke.sh
-rg --fixed-strings --quiet 'negative_secret_payload_access: "PASS"' infra/tests/development-platform-smoke.sh
-rg --fixed-strings --quiet 'artifact_overwrite_rejected: "PASS"' infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet 'exact_permission_denied_secret_payload_access: "PASS"' \
+  infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet "grep -Fq 'PERMISSION_DENIED'" infra/modules/qualification-probe/main.tf
+rg --fixed-strings --quiet "grep -Fq 'secretmanager.versions.access'" \
+  infra/modules/qualification-probe/main.tf
+rg --fixed-strings --quiet 'artifact_immutability_enforced_by_iam: "MISSING"' \
+  infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet 'probe_toolchain_determinism: "MISSING"' \
+  infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'development-platform-absent.sh' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'development-platform-audit.sh' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'diff-index --quiet HEAD --' infra/tests/development-platform-live.sh
@@ -51,6 +58,7 @@ if rg --fixed-strings --quiet 'state-list.error' infra/tests/development-platfor
 fi
 rg --fixed-strings --quiet 'exact_disposable_destroy: "PASS"' infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'trap cleanup_on_exit EXIT' infra/tests/development-platform-live.sh
+rg --fixed-strings --quiet "exit 130' INT TERM" infra/tests/development-platform-live.sh
 rg --fixed-strings --quiet 'quota_requirement static_external_ipv4_addresses' infra/tests/development-platform-preflight.sh
 rg --fixed-strings --quiet 'quota_requirement pubsub_publisher_kb_per_minute' infra/tests/development-platform-preflight.sh
 rg --fixed-strings --quiet 'run.googleapis.com' infra/tests/development-platform-preflight.sh
@@ -99,7 +107,9 @@ rg --fixed-strings --quiet 'output "development_runtime_service_accounts"' \
   infra/roots/foundation/outputs.tf
 rg --fixed-strings --quiet 'resource "google_project_iam_member" "development_runtime_cloud_sql"' \
   infra/roots/foundation/main.tf
-rg --fixed-strings --quiet 'resource "google_service_account_iam_member" "development_platform_job_act_as"' \
+rg --fixed-strings --quiet 'resource "google_service_account" "development_qualification"' \
+  infra/roots/foundation/main.tf
+rg --fixed-strings --quiet 'resource "google_service_account_iam_member" "development_platform_probe_act_as"' \
   infra/roots/foundation/main.tf
 rg --fixed-strings --quiet '"roles/cloudsql.client"' infra/roots/foundation/main.tf
 rg --fixed-strings --quiet '"roles/cloudsql.instanceUser"' infra/roots/foundation/main.tf
@@ -122,6 +132,10 @@ if grep -Fq 'resourcemanager.projects.setIamPolicy' <<<"$platform_custom_roles";
   printf 'platform identity must not mutate project IAM\n' >&2
   exit 1
 fi
+if grep -Fq 'secretmanager.secrets.setIamPolicy' <<<"$platform_custom_roles"; then
+  printf 'platform identity must not mutate secret IAM\n' >&2
+  exit 1
+fi
 
 jq -e '
   . as $config
@@ -132,8 +146,20 @@ jq -e '
     .value == "\($config.name_prefix)-\(.key)@\($config.project_id).iam.gserviceaccount.com")
 ' "$root/development.tfvars.json" >/dev/null
 
+jq -e '
+  . as $config
+  | ($config.qualification_service_accounts | keys) == [
+    "denied_secret", "network", "temporal_secret"
+  ]
+  and all($config.qualification_service_accounts | to_entries[];
+    .value | startswith("\($config.name_prefix)-qualification-")
+    and endswith("@\($config.project_id).iam.gserviceaccount.com"))
+' "$root/development.tfvars.json" >/dev/null
+
 rg --fixed-strings --quiet 'foundation-drift' .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'development-platform-absent.sh' .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'Report missing protected configuration' .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'Require an explicitly reviewed lifecycle ref' .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'refs/heads/codex/provision-development-platform' .github/workflows/terraform.yml
 
 printf 'PASS: development platform topology, reviewed inputs, and teardown boundaries\n'

@@ -17,7 +17,12 @@ for attempt in {1..18}; do
     --order=asc --format=json >"$scratch/logs.json" \
     && jq -e '
       length > 0
-      and any(.[]; (.protoPayload.methodName // "") | test("Delete|delete"))
+      and any(.[];
+        ((.protoPayload.methodName // "") | test("delete"; "i"))
+        and ((.protoPayload.resourceName // "") | test(
+          "osfo-dev-postgres|osfo-dev-agentruns$|repositories/osfo$|osfo-development-artifacts-[0-9]+$|jobs/osfo-dev-(network|temporal-secret|denied-secret)-probe$"
+        ))
+      )
     ' "$scratch/logs.json" >/dev/null; then
     break
   fi
@@ -35,7 +40,7 @@ jq --arg project_id "$project_id" --arg since "$since" --arg principal "$platfor
   principal: $principal,
   checks: {
     retained_audit_history_query: "PASS",
-    lifecycle_deletion_event: "PASS"
+    terraform_owned_disposable_deletion_event: "PASS"
   },
   entries: [ .[] | {
     timestamp,
