@@ -375,29 +375,86 @@ rg --fixed-strings --quiet 'cron: "43 9 * * *"' \
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet 'Recovery for Terraform run {0} attempt {1}' \
   .github/workflows/development-platform-recovery.yml
-rg --fixed-strings --quiet 'PASS: scheduled janitor found no abandoned protected lifecycle marker' \
+rg --fixed-strings --quiet \
+  'PASS: scheduled janitor found no abandoned lifecycle in the retained %s-day horizon' \
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet 'FAIL: scheduled janitor source lacks exact successful static proof' \
   .github/workflows/development-platform-recovery.yml
-rg --fixed-strings --quiet 'development-platform-recovery.yml/runs?per_page=100' \
+rg --fixed-strings --quiet 'development-platform-recovery.yml/runs"' \
   .github/workflows/development-platform-recovery.yml
+# The shell and workflow variable references below are matched literally.
+# shellcheck disable=SC2016
+for bounded_recovery_contract in \
+  'JANITOR_HISTORY_DAYS: "14"' \
+  'JANITOR_MAX_ATTEMPT_REQUESTS: "400"' \
+  'JANITOR_MAX_ATTEMPTS_PER_RUN: "20"' \
+  'JANITOR_MAX_JOBS_PER_ATTEMPT: "100"' \
+  'JANITOR_MAX_RUNS: "100"' \
+  '-f event=workflow_dispatch' \
+  '-f "created=>=$horizon_start"' \
+  '-f "head_sha=$RECOVERY_SOURCE_SHA"' \
+  'total_runs > JANITOR_MAX_RUNS || returned_runs != total_runs' \
+  'attempt_request_count > JANITOR_MAX_ATTEMPT_REQUESTS' \
+  'attempt_request_count + source_attempt_requests' \
+  'total_jobs > JANITOR_MAX_JOBS_PER_ATTEMPT' \
+  'FAIL: retained history needs %s attempt-job requests, exceeding budget %s' \
+  'FAIL: source proof would exceed the %s attempt-job request budget'; do
+  rg --fixed-strings --quiet -- "$bounded_recovery_contract" \
+    .github/workflows/development-platform-recovery.yml
+done
+if [[ $(rg --fixed-strings -- '-f branch=main' \
+  .github/workflows/development-platform-recovery.yml | wc -l) != 3 ]]; then
+  printf 'scheduled recovery must server-filter candidate, marker, and source runs to main\n' >&2
+  exit 1
+fi
+if [[ $(rg --fixed-strings -- '-F page=1' \
+  .github/workflows/development-platform-recovery.yml | wc -l) != 4 ]]; then
+  printf 'scheduled recovery must bound every run and job listing to one page\n' >&2
+  exit 1
+fi
+if rg --fixed-strings --quiet -- '--paginate' \
+  .github/workflows/development-platform-recovery.yml; then
+  printf 'scheduled recovery must not walk unbounded GitHub pagination\n' >&2
+  exit 1
+fi
+recovery_horizon=2026-08-01T00:00:00Z
+fresh_recovery_fixture='{"workflow_runs":[{"created_at":"2026-08-01T00:00:00Z","run_attempt":2}]}'
+stale_recovery_fixture='{"workflow_runs":[{"created_at":"2026-07-31T23:59:59Z","run_attempt":2}]}'
+# shellcheck disable=SC2016
+recovery_window_predicate='
+  all(.workflow_runs[];
+    .created_at >= $horizon
+    and (.run_attempt | type) == "number"
+    and (.run_attempt | floor) == .run_attempt
+    and .run_attempt >= 1)
+'
+if ! jq -e --arg horizon "$recovery_horizon" "$recovery_window_predicate" \
+  <<<"$fresh_recovery_fixture" >/dev/null; then
+  printf 'scheduled recovery must accept the inclusive retained-horizon boundary\n' >&2
+  exit 1
+fi
+if jq -e --arg horizon "$recovery_horizon" "$recovery_window_predicate" \
+  <<<"$stale_recovery_fixture" >/dev/null; then
+  printf 'scheduled recovery must reject run history older than its retained horizon\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet \
   'development-cleanup-complete-${{ needs.authorize.outputs.marker_id }}' \
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet 'marker_id=%s-%s' \
   .github/workflows/development-platform-recovery.yml
 rg --fixed-strings --quiet \
-  'runs/$run_id/attempts/$run_attempt/jobs?per_page=100' \
+  'runs/$run_id/attempts/$run_attempt/jobs"' \
   .github/workflows/development-platform-recovery.yml
-rg --fixed-strings --quiet \
-  'runs/$TRIGGER_RUN_ID/attempts/$TRIGGER_RUN_ATTEMPT/jobs?per_page=100' \
-  .github/workflows/development-platform-recovery.yml
-rg --fixed-strings --quiet \
-  'runs/$source_run_id/attempts/$source_run_attempt/jobs?per_page=100' \
-  .github/workflows/development-platform-recovery.yml
-rg --fixed-strings --quiet \
-  'runs/$recovery_run_id/attempts/$recovery_run_attempt/jobs?per_page=100' \
-  .github/workflows/development-platform-recovery.yml
+# shellcheck disable=SC2016
+for attempt_job_read in \
+  'read_attempt_jobs "$TRIGGER_RUN_ID" "$TRIGGER_RUN_ATTEMPT"' \
+  'read_attempt_jobs "$source_run_id" "$source_run_attempt"' \
+  'read_attempt_jobs "$recovery_run_id" "$recovery_run_attempt"' \
+  'read_attempt_jobs "$run_id" "$run_attempt"'; do
+  rg --fixed-strings --quiet "$attempt_job_read" \
+    .github/workflows/development-platform-recovery.yml
+done
 if rg --fixed-strings --quiet 'jobs?filter=all' \
   .github/workflows/development-platform-recovery.yml; then
   printf 'recovery authorization must never combine jobs across run attempts\n' >&2

@@ -128,7 +128,12 @@ destructive one. A successful recovery records the original Terraform run ID and
 run attempt in its cleanup job name. Later schedules consult only successful,
 attempt-specific cleanup jobs across every GitHub rerun attempt, so completed
 cleanup clears the exact marker without combining or hiding rerun results. The
-GCP workload identity provider also rejects every ref except
+daily scan is bounded to main-branch runs from the last 14 days, which provides
+14 retry opportunities against a 24-hour cleanup SLA. It fails before OIDC when
+the retained window exceeds 100 runs, 20 attempts for one run, 100 jobs for one
+attempt, or 400 total attempt-job reads. Runs outside that retained horizon need
+the audited break-glass procedure and are never represented as automatic cleanup
+`PASS` evidence. The GCP workload identity provider also rejects every ref except
 `refs/heads/main`, outside branch-controlled workflow logic. Lifecycle,
 cleanup, recovery, drift, and root plan/apply runs that can touch development
 platform state share the global `terraform-development-platform` concurrency
