@@ -231,12 +231,46 @@ if [[ "$scope" == project ]]; then
   exit 0
 fi
 
+if ! gcloud projects describe "$project_id" --format=json \
+  >"$scratch/project.json" 2>"$scratch/project.error"; then
+  fail 'development project does not exist or is unreadable'
+fi
+if ! project_number=$(jq -ser --arg project_id "$project_id" '
+  select(length == 1)
+  | .[0]
+  | select(
+    type == "object"
+    and .projectId == $project_id
+    and (.projectNumber | type == "string" and test("^[0-9]+\\z"))
+  )
+  | .projectNumber
+' "$scratch/project.json"); then
+  fail 'development project live record is malformed or does not match configuration'
+fi
+
 if ! gcloud secrets describe "$target_secret" --project="$project_id" --format=json \
   >"$scratch/secret.json" 2>"$scratch/secret.error"; then
   fail 'target secret does not exist or is unreadable'
 fi
-if ! jq -e --arg name "projects/$project_id/secrets/$target_secret" '
-  type == "object" and .name == $name
+if ! jq -se \
+  --arg project_number "$project_number" \
+  --arg target_secret "$target_secret" '
+  length == 1
+  and (
+    .[0]
+    | type == "object"
+    and (.name | type == "string")
+    and (
+      .name
+      | split("/") as $segments
+      | ($segments | length == 4)
+        and $segments[0] == "projects"
+        and ($segments[1] | test("^[0-9]+\\z"))
+        and $segments[1] == $project_number
+        and $segments[2] == "secrets"
+        and $segments[3] == $target_secret
+    )
+  )
 ' "$scratch/secret.json" >/dev/null; then
   fail 'target secret live record is malformed or does not match configuration'
 fi
