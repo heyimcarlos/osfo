@@ -298,6 +298,7 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
                 SELECT
                   'userMessage'::text AS identity_type,
                   payload ->> 'userMessageId' AS identity_id,
+                  agent_run_id,
                   position
                 FROM thread_events
                 WHERE thread_id = ${request.threadId}::uuid
@@ -307,6 +308,7 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
                 SELECT
                   'assistantOutput'::text AS identity_type,
                   payload ->> 'assistantOutputId' AS identity_id,
+                  agent_run_id,
                   min(position) AS position
                 FROM thread_events
                 WHERE thread_id = ${request.threadId}::uuid
@@ -316,9 +318,9 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
                     'AssistantOutputCompleted',
                     'AssistantOutputInterrupted'
                   )
-                GROUP BY payload ->> 'assistantOutputId'
+                GROUP BY payload ->> 'assistantOutputId', agent_run_id
               ), retained_identities AS (
-                SELECT identity_type, identity_id, position
+                SELECT identity_type, identity_id, agent_run_id, position
                 FROM timeline_identities
                 ORDER BY position DESC
                 LIMIT ${config.snapshotTimelineLimit}
@@ -339,8 +341,13 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
                     event.event_type = 'UserMessageAppended'
                     AND EXISTS (
                       SELECT 1 FROM retained_identities retained
-                      WHERE retained.identity_type = 'userMessage'
+                      WHERE (
+                        retained.identity_type = 'userMessage'
                         AND retained.identity_id = event.payload ->> 'userMessageId'
+                      ) OR (
+                        retained.identity_type = 'assistantOutput'
+                        AND retained.agent_run_id = event.agent_run_id
+                      )
                     )
                   )
                   OR (
@@ -364,8 +371,13 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
                     )
                     AND EXISTS (
                       SELECT 1 FROM retained_identities retained
-                      WHERE retained.identity_type = 'userMessage'
+                      WHERE (
+                        retained.identity_type = 'userMessage'
                         AND retained.identity_id = event.user_message_id::text
+                      ) OR (
+                        retained.identity_type = 'assistantOutput'
+                        AND retained.agent_run_id = event.agent_run_id
+                      )
                     )
                   )
                 )

@@ -238,6 +238,106 @@ describe("PostgreSQL Thread resume", () => {
     expect(snapshot.throughPosition).toBe("6");
   });
 
+  it("retains cancellation authority for a bounded canceled assistant output", async () => {
+    const receipt = await accept("Cancel after output");
+    const assistantOutputId = crypto.randomUUID();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`UPDATE agent_runs
+          SET state = 'canceled',
+              cancellation_requested_at = transaction_timestamp(),
+              cleanup_deadline_at = transaction_timestamp() + interval '30 seconds',
+              cleanup_disposition = 'completed',
+              external_work_may_continue = false
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+        yield* sql`UPDATE agent_run_capacity_reservations
+          SET state = 'released', released_at = transaction_timestamp()
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+        yield* sql`UPDATE admission_global_capacity
+          SET reserved_count = reserved_count - 1, revision = revision + 1
+          WHERE singleton = true`;
+        yield* sql`UPDATE admission_principal_capacity
+          SET reserved_count = reserved_count - 1
+          WHERE principal_id = ${principalId}::uuid`;
+        yield* sql`INSERT INTO assistant_outputs (
+            assistant_output_id, agent_run_id, state, interruption_cause, created_at, terminated_at
+          ) VALUES (
+            ${assistantOutputId}::uuid, ${receipt.agentRunId}::uuid,
+            'interrupted', 'agentRunCanceled', transaction_timestamp(), transaction_timestamp()
+          )`;
+        yield* sql`INSERT INTO thread_events (
+            thread_id, position, event_id, principal_id, user_message_id, agent_run_id,
+            event_type, event_version, payload, occurred_at
+          ) VALUES
+          (
+            ${threadId}::uuid, 2, ${crypto.randomUUID()}::uuid, ${principalId}::uuid,
+            ${receipt.userMessageId}::uuid, ${receipt.agentRunId}::uuid,
+            'AssistantOutputAppended', 1,
+            ${JSON.stringify({
+              assistantOutputId,
+              agentRunId: receipt.agentRunId,
+              content: [{ type: "text", text: "Partial" }],
+            })}::jsonb,
+            transaction_timestamp()
+          ),
+          (
+            ${threadId}::uuid, 3, ${crypto.randomUUID()}::uuid, ${principalId}::uuid,
+            ${receipt.userMessageId}::uuid, ${receipt.agentRunId}::uuid,
+            'AgentRunCancellationRequested', 1,
+            ${JSON.stringify({ agentRunId: receipt.agentRunId })}::jsonb,
+            transaction_timestamp()
+          ),
+          (
+            ${threadId}::uuid, 4, ${crypto.randomUUID()}::uuid, ${principalId}::uuid,
+            ${receipt.userMessageId}::uuid, ${receipt.agentRunId}::uuid,
+            'AssistantOutputInterrupted', 2,
+            ${JSON.stringify({
+              assistantOutputId,
+              agentRunId: receipt.agentRunId,
+              cause: "agentRunCanceled",
+            })}::jsonb,
+            transaction_timestamp()
+          ),
+          (
+            ${threadId}::uuid, 5, ${crypto.randomUUID()}::uuid, ${principalId}::uuid,
+            ${receipt.userMessageId}::uuid, ${receipt.agentRunId}::uuid,
+            'AgentRunCanceled', 1,
+            ${JSON.stringify({
+              agentRunId: receipt.agentRunId,
+              cleanupDisposition: { type: "completed" },
+              externalWorkMayContinue: false,
+            })}::jsonb,
+            transaction_timestamp()
+          )`;
+        yield* sql`UPDATE threads SET next_position = 6, state_revision = 5
+          WHERE thread_id = ${threadId}::uuid`;
+      }).pipe(Effect.provide(databaseLayer)),
+    );
+
+    const snapshot = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const services = yield* Layer.build(
+            makeThreadResumeLayer({ ...resumeConfig, snapshotTimelineLimit: 1 }),
+          );
+          return yield* Context.get(services, ThreadResume).snapshot(access);
+        }),
+      ),
+    );
+
+    expect(snapshot.timeline).toEqual([
+      expect.objectContaining({
+        type: "assistantOutput",
+        assistantOutputId,
+        content: [{ type: "text", text: "Partial" }],
+        status: { type: "interrupted", cause: "agentRunCanceled" },
+      }),
+    ]);
+    expect(snapshot.activeState).toEqual([]);
+    expect(snapshot.throughPosition).toBe("5");
+  });
+
   it("keeps pagination gap-free through the first page's frozen head", async () => {
     await accept("First");
     await accept("Second");
