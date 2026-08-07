@@ -11,6 +11,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 import { type liveOpenAIExecutionProfile } from "./execution-profile.js";
 
 const NonEmptyText = Schema.String.check(Schema.isNonEmpty());
+const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 const CreatedEventSchema = Schema.Struct({
   type: Schema.Literal("response.created"),
@@ -19,6 +20,9 @@ const CreatedEventSchema = Schema.Struct({
 
 const OutputTextDeltaEventSchema = Schema.Struct({
   type: Schema.Literal("response.output_text.delta"),
+  item_id: NonEmptyText,
+  output_index: NonNegativeInt,
+  content_index: NonNegativeInt,
   delta: Schema.String,
 });
 
@@ -30,8 +34,8 @@ const CompletedEventSchema = Schema.Struct({
     model: NonEmptyText,
     store: Schema.Literal(false),
     usage: Schema.Struct({
-      input_tokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-      output_tokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      input_tokens: NonNegativeInt,
+      output_tokens: NonNegativeInt,
     }),
   }),
 });
@@ -42,12 +46,15 @@ const ProviderFailureEventSchema = Schema.Struct({
 
 const OutputItemEventSchema = Schema.Struct({
   type: Schema.Literals(["response.output_item.added", "response.output_item.done"]),
+  output_index: NonNegativeInt,
   item: Schema.Struct({
+    id: NonEmptyText,
     type: NonEmptyText,
     content: Schema.optional(
       Schema.Array(
         Schema.Struct({
           type: NonEmptyText,
+          text: Schema.optional(Schema.String),
         }),
       ),
     ),
@@ -56,6 +63,9 @@ const OutputItemEventSchema = Schema.Struct({
 
 const ContentPartEventSchema = Schema.Struct({
   type: Schema.Literals(["response.content_part.added", "response.content_part.done"]),
+  item_id: NonEmptyText,
+  output_index: NonNegativeInt,
+  content_index: NonNegativeInt,
   part: Schema.Struct({
     type: NonEmptyText,
     text: Schema.optional(Schema.String),
@@ -64,6 +74,9 @@ const ContentPartEventSchema = Schema.Struct({
 
 const OutputTextDoneEventSchema = Schema.Struct({
   type: Schema.Literal("response.output_text.done"),
+  item_id: NonEmptyText,
+  output_index: NonNegativeInt,
+  content_index: NonNegativeInt,
   text: Schema.String,
 });
 
@@ -84,6 +97,18 @@ const ResponsesEventSchema = Schema.Union([
 
 const ResponsesEventFromJson = Schema.fromJsonString(ResponsesEventSchema);
 type ResponsesEvent = typeof ResponsesEventSchema.Type;
+
+interface OutputItemIdentity {
+  readonly itemId: string;
+  readonly outputIndex: number;
+}
+
+interface TextPartState extends OutputItemIdentity {
+  readonly contentIndex: number;
+  streamedText: string;
+  outputTextDone: boolean;
+  contentPartDone: boolean;
+}
 
 interface OpenAIResponsesSession {
   readonly attempt: ModelCallAttempt;
@@ -127,6 +152,21 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
         let pendingDeltas: Array<string> = [];
         let providerRequestId: string | undefined;
         let textOutputObserved = false;
+        let outputItem: (OutputItemIdentity & { done: boolean }) | undefined;
+        let textPart: TextPartState | undefined;
+
+        const matchesOutputItem = (
+          identity: OutputItemIdentity,
+          itemId: string,
+          outputIndex: number,
+        ) => identity.itemId === itemId && identity.outputIndex === outputIndex;
+
+        const matchesTextPart = (
+          part: TextPartState,
+          itemId: string,
+          outputIndex: number,
+          contentIndex: number,
+        ) => matchesOutputItem(part, itemId, outputIndex) && part.contentIndex === contentIndex;
 
         const flush = (): ReadonlyArray<ModelCallObservation> => {
           if (pendingDeltas.length === 0) return [];
@@ -153,8 +193,24 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
                 if (completed) {
                   return yield* executionError(session, "Output arrived after response.completed");
                 }
+                if (
+                  textPart === undefined ||
+                  !matchesTextPart(
+                    textPart,
+                    event.item_id,
+                    event.output_index,
+                    event.content_index,
+                  ) ||
+                  textPart.outputTextDone
+                ) {
+                  return yield* executionError(
+                    session,
+                    "Provider emitted text delta for an unknown or finalized content part",
+                  );
+                }
                 if (event.delta.length === 0) return [];
                 textOutputObserved = true;
+                textPart.streamedText += event.delta;
                 pendingDeltas.push(event.delta);
                 return pendingDeltas.length >=
                   config.profile.permittedAdaptations.coalesceUpToDeltas
@@ -178,6 +234,16 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
                 if (!textOutputObserved) {
                   return yield* executionError(session, "Provider completed without text output");
                 }
+                if (
+                  outputItem?.done !== true ||
+                  textPart?.outputTextDone !== true ||
+                  textPart.contentPartDone !== true
+                ) {
+                  return yield* executionError(
+                    session,
+                    "Provider completed before finalizing text output",
+                  );
+                }
                 completed = true;
                 const outcome = {
                   dispatchEvidence: session.dispatchEvidence,
@@ -194,8 +260,7 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
               case "response.failed":
               case "response.incomplete":
                 return yield* executionError(session, `Provider emitted ${event.type}`);
-              case "response.output_item.added":
-              case "response.output_item.done": {
+              case "response.output_item.added": {
                 if (event.item.type !== "message") {
                   return yield* executionError(
                     session,
@@ -206,22 +271,126 @@ const executorLayer = (config: OpenAIResponsesModelCallExecutorConfig) =>
                   return yield* executionError(session, "Provider emitted invalid output message");
                 }
                 const unsupported = event.item.content.find((part) => part.type !== "output_text");
-                return unsupported === undefined
-                  ? []
-                  : yield* executionError(
-                      session,
-                      `Provider emitted unsupported content part ${unsupported.type}`,
-                    );
+                if (unsupported !== undefined) {
+                  return yield* executionError(
+                    session,
+                    `Provider emitted unsupported content part ${unsupported.type}`,
+                  );
+                }
+                if (outputItem !== undefined) {
+                  return yield* executionError(
+                    session,
+                    "Provider emitted multiple text output items",
+                  );
+                }
+                outputItem = {
+                  itemId: event.item.id,
+                  outputIndex: event.output_index,
+                  done: false,
+                };
+                return [];
+              }
+              case "response.output_item.done": {
+                if (event.item.type !== "message") {
+                  return yield* executionError(
+                    session,
+                    `Provider emitted unsupported output item ${event.item.type}`,
+                  );
+                }
+                if (
+                  outputItem === undefined ||
+                  !matchesOutputItem(outputItem, event.item.id, event.output_index)
+                ) {
+                  return yield* executionError(session, "Provider output item identity changed");
+                }
+                const content = event.item.content;
+                if (
+                  textPart === undefined ||
+                  !textPart.outputTextDone ||
+                  !textPart.contentPartDone ||
+                  content === undefined ||
+                  content.length !== 1 ||
+                  content[0]?.type !== "output_text" ||
+                  content[0].text !== textPart.streamedText
+                ) {
+                  return yield* executionError(
+                    session,
+                    "Provider finalized an invalid output message",
+                  );
+                }
+                outputItem.done = true;
+                return [];
               }
               case "response.content_part.added":
-              case "response.content_part.done":
-                return event.part.type === "output_text" && event.part.text !== undefined
-                  ? []
-                  : yield* executionError(
-                      session,
-                      `Provider emitted unsupported content part ${event.part.type}`,
-                    );
+                if (event.part.type !== "output_text" || event.part.text !== "") {
+                  return yield* executionError(
+                    session,
+                    `Provider emitted unsupported content part ${event.part.type}`,
+                  );
+                }
+                if (
+                  outputItem === undefined ||
+                  !matchesOutputItem(outputItem, event.item_id, event.output_index)
+                ) {
+                  return yield* executionError(session, "Provider content part identity changed");
+                }
+                if (textPart !== undefined) {
+                  return yield* executionError(
+                    session,
+                    "Provider emitted multiple text content parts",
+                  );
+                }
+                textPart = {
+                  itemId: event.item_id,
+                  outputIndex: event.output_index,
+                  contentIndex: event.content_index,
+                  streamedText: "",
+                  outputTextDone: false,
+                  contentPartDone: false,
+                };
+                return [];
               case "response.output_text.done":
+                if (
+                  textPart === undefined ||
+                  !matchesTextPart(textPart, event.item_id, event.output_index, event.content_index)
+                ) {
+                  return yield* executionError(session, "Provider finalized an unknown text part");
+                }
+                if (textPart.outputTextDone) {
+                  return yield* executionError(session, "Provider finalized text output twice");
+                }
+                if (event.text !== textPart.streamedText) {
+                  return yield* executionError(
+                    session,
+                    "Provider finalized text that differs from streamed output",
+                  );
+                }
+                textPart.outputTextDone = true;
+                return [];
+              case "response.content_part.done":
+                if (event.part.type !== "output_text" || event.part.text === undefined) {
+                  return yield* executionError(
+                    session,
+                    `Provider emitted unsupported content part ${event.part.type}`,
+                  );
+                }
+                if (
+                  textPart === undefined ||
+                  !matchesTextPart(
+                    textPart,
+                    event.item_id,
+                    event.output_index,
+                    event.content_index,
+                  ) ||
+                  !textPart.outputTextDone ||
+                  event.part.text !== textPart.streamedText
+                ) {
+                  return yield* executionError(
+                    session,
+                    "Provider finalized an invalid content part",
+                  );
+                }
+                textPart.contentPartDone = true;
                 return [];
               default:
                 return [];
