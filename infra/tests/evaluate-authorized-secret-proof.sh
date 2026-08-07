@@ -12,11 +12,9 @@ expected_region=${3:?expected region is required}
 expected_job=${4:?expected job is required}
 expected_execution=${5:?expected execution is required}
 expected_length=${6:?expected payload length is required}
-expected_sha256=${7:?expected payload digest is required}
-report_file=${8:?report file is required}
+report_file=${7:?report file is required}
 
-if [[ ! "$expected_length" =~ ^[1-9][0-9]*$ ]] \
-  || [[ ! "$expected_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+if [[ ! "$expected_length" =~ ^[1-9][0-9]*$ ]]; then
   fail 'managed qualification evaluator inputs are invalid'
 fi
 
@@ -45,13 +43,12 @@ jq -e \
     | select(
         type == "object"
         and (keys | sort) == [
-          "identity_verified", "payload_length", "payload_sha256", "schema_version"
+          "identity_verified", "payload_length", "payload_sha256_match", "schema_version"
         ]
         and .schema_version == 1
         and .identity_verified == true
         and (.payload_length | type == "number")
-        and (.payload_sha256 | type == "string")
-        and (.payload_sha256 | test("^[0-9a-f]{64}$"))
+        and .payload_sha256_match == true
       )' "$logs_file" >"$result_file" 2>/dev/null
 evaluation_status=$?
 set -e
@@ -64,14 +61,8 @@ fi
 
 observed_length=$(jq -r '.payload_length' "$result_file" 2>/dev/null) \
   || fail 'managed qualification result evaluator failed closed'
-observed_sha256=$(jq -r '.payload_sha256' "$result_file" 2>/dev/null) \
-  || fail 'managed qualification result evaluator failed closed'
-
 if [[ "$observed_length" != "$expected_length" ]]; then
   fail 'managed qualification payload length does not match'
-fi
-if [[ "$observed_sha256" != "$expected_sha256" ]]; then
-  fail 'managed qualification payload digest does not match'
 fi
 
 report_tmp=$scratch/report.json

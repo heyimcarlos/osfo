@@ -89,6 +89,12 @@ done
 rg --fixed-strings --quiet \
   'DENIED_SECRET_IAM_SCOPE=target-secret' \
   infra/tests/development-platform-live.sh
+for authorized_iam_boundary in \
+  'SECRET_ACCESS_IDENTITY_KEY=authorized_secret' \
+  'SECRET_ACCESS_TARGET_SUFFIX="$protected_secret"'; do
+  rg --fixed-strings --quiet "$authorized_iam_boundary" \
+    infra/tests/development-platform-live.sh
+done
 rg --fixed-strings --quiet \
   'PLATFORM_SERVICE_ACCOUNT: ${{ vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT }}' \
   .github/workflows/terraform.yml
@@ -125,17 +131,24 @@ if rg --quiet 'model-adapter|temporal-cloud' \
   exit 1
 fi
 for authorized_secret_live_contract in \
-  'openssl rand -hex 32' \
+  'osfo-authorized-secret-proof-v1:%s' \
   'gcloud secrets versions add "$secret"' \
   '--data-file=-' \
+  'gcloud projects describe "$project_id" --format=json' \
   'gcloud run jobs execute "$job"' \
-  '--update-env-vars="QUALIFICATION_VERSION=$version"' \
+  '--update-env-vars="QUALIFICATION_VERSION=$version,QUALIFICATION_RUN_ID=$lifecycle_run_id"' \
   'gcloud logging read "$log_filter"' \
   'evaluate-authorized-secret-proof.sh' \
   'PASS: managed authorized secret read produced sanitized evidence'; do
   rg --fixed-strings --quiet -- "$authorized_secret_live_contract" \
     infra/tests/development-authorized-secret-live.sh
 done
+if rg --quiet '"payload_sha256"|payload_sha256":"' \
+  infra/modules/qualification-probe/authorized-secret-proof.sh \
+  infra/tests/evaluate-authorized-secret-proof.sh; then
+  printf 'authorized-secret managed output must not retain a raw digest\n' >&2
+  exit 1
+fi
 if rg --quiet -- '--retry|--log-http|cat .*error' \
   infra/tests/development-authorized-secret-live.sh \
   infra/modules/qualification-probe/authorized-secret-proof.sh; then
@@ -554,6 +567,8 @@ rg --fixed-strings --quiet \
 rg --fixed-strings --quiet 'infra/tests/development-platform-recovery-preflight.sh' \
   .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'infra/tests/development-denied-secret-iam-preflight.sh' \
+  .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'SECRET_ACCESS_IDENTITY_KEY: authorized_secret' \
   .github/workflows/terraform.yml
 # Shell variables are intentionally matched as literal source text.
 # shellcheck disable=SC2016

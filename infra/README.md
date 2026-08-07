@@ -86,9 +86,10 @@ the exact live target-secret policy before the runtime probe. The source
 contract permits exactly one disposable secret-level accessor binding, for the
 dedicated qualification identity and target. Foundation grants the platform
 only `getIamPolicy` and `setIamPolicy` on the exact qualification secret name.
-The protected workflow generates a disposable non-secret sentinel outside
-Terraform, executes the managed job once with zero task retries, and retains
-only its expected length and a digest-match boolean. Payloads, provider errors,
+The protected workflow derives a disposable non-secret sentinel from the unique
+lifecycle run identifier outside Terraform. The managed job independently
+derives the expected digest, executes once with zero task retries, and retains
+only the expected length and a digest-match boolean. Payloads, raw digests, provider errors,
 credentials, and authorization headers are never printed or archived.
 Independent Terraform cleanup removes the sentinel version with its container,
 the job, accessor binding, and empty state, including after proof failure.

@@ -4,6 +4,10 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 varset=${TF_VARSET_FILE:-$repo_root/infra/roots/development/platform/development.tfvars.json}
 scope=${DENIED_SECRET_IAM_SCOPE:-project}
+identity_key=${SECRET_ACCESS_IDENTITY_KEY:-denied_secret}
+identity_label=${SECRET_ACCESS_IDENTITY_LABEL:-denied}
+proof_label=${SECRET_ACCESS_PROOF_LABEL:-denied-secret}
+target_secret_suffix=${SECRET_ACCESS_TARGET_SUFFIX:-model-adapter}
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -13,12 +17,20 @@ fail() {
 case "$scope" in
   project) expected_account=${FOUNDATION_SERVICE_ACCOUNT:?FOUNDATION_SERVICE_ACCOUNT is required} ;;
   target-secret) expected_account=${PLATFORM_SERVICE_ACCOUNT:?PLATFORM_SERVICE_ACCOUNT is required} ;;
-  *) fail 'denied-secret IAM preflight scope is unsupported' ;;
+  *) fail "$proof_label IAM preflight scope is unsupported" ;;
+esac
+case "$identity_key" in
+  denied_secret | authorized_secret) ;;
+  *) fail 'secret-access qualification identity selector is unsupported' ;;
+esac
+case "$target_secret_suffix" in
+  model-adapter | temporal-cloud) ;;
+  *) fail 'secret-access qualification target selector is unsupported' ;;
 esac
 
 effective_account=${CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT:-$(gcloud auth list --filter=status:ACTIVE --format='value(account)')}
 if [[ "$effective_account" != "$expected_account" ]]; then
-  fail "denied-secret $scope IAM preflight requires its exact authorized identity"
+  fail "$proof_label $scope IAM preflight requires its exact authorized identity"
 fi
 if ! project_id=$(jq -er \
   '.project_id | select(type == "string" and test("^[a-z][a-z0-9-]{4,28}[a-z0-9]$"))' \
@@ -30,29 +42,33 @@ if ! name_prefix=$(jq -er \
   "$varset"); then
   fail 'development name prefix is missing or malformed'
 fi
-if ! denied_account=$(jq -er '
-  .qualification_service_accounts.denied_secret
+if ! qualification_account=$(jq -er --arg identity_key "$identity_key" '
+  .qualification_service_accounts[$identity_key]
   | select(type == "string" and test("^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9][.]iam[.]gserviceaccount[.]com$"))
 ' "$varset"); then
-  fail 'denied qualification identity is missing or malformed'
+  fail "$identity_label qualification identity is missing or malformed"
 fi
-if [[ "$denied_account" != *"@$project_id.iam.gserviceaccount.com" ]]; then
-  fail 'denied qualification identity is missing or malformed'
+if [[ "$qualification_account" != *"@$project_id.iam.gserviceaccount.com" ]]; then
+  fail "$identity_label qualification identity is missing or malformed"
 fi
 
-target_member=serviceAccount:$denied_account
-target_secret=$name_prefix-model-adapter
+target_member=serviceAccount:$qualification_account
+target_secret=$name_prefix-$target_secret_suffix
+target_scope_label=$target_secret_suffix
+if [[ "$identity_key" == denied_secret && "$target_secret_suffix" == model-adapter ]]; then
+  target_scope_label=target-secret
+fi
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 
-if ! gcloud iam service-accounts describe "$denied_account" \
+if ! gcloud iam service-accounts describe "$qualification_account" \
   --project="$project_id" --format=json \
   >"$scratch/identity.json" 2>"$scratch/identity.error"; then
-  fail 'denied qualification identity does not exist or is unreadable'
+  fail "$identity_label qualification identity does not exist or is unreadable"
 fi
 if ! jq -e \
-  --arg email "$denied_account" \
-  --arg name "projects/$project_id/serviceAccounts/$denied_account" \
+  --arg email "$qualification_account" \
+  --arg name "projects/$project_id/serviceAccounts/$qualification_account" \
   --arg project_id "$project_id" '
   type == "object"
   and .email == $email
@@ -62,7 +78,7 @@ if ! jq -e \
   and (.disabled // false) == false
   and (.deleted // false) == false
 ' "$scratch/identity.json" >/dev/null; then
-  fail 'denied qualification identity live record is malformed or does not match configuration'
+  fail "$identity_label qualification identity live record is malformed or does not match configuration"
 fi
 
 validate_policy() {
@@ -107,14 +123,14 @@ role_grants_payload_access() {
   if [[ "$bound_role" =~ ^roles/[A-Za-z0-9_.]+$ ]]; then
     if ! gcloud iam roles describe "$bound_role" --format=json \
       >"$role_file" 2>"$scratch/role-$role_index.error"; then
-      fail 'unable to resolve a potentially effective role for denied-secret qualification'
+      fail "unable to resolve a potentially effective role for $proof_label qualification"
     fi
   elif [[ "$bound_role" == "projects/$project_id/roles/"* ]]; then
     role_id=${bound_role#"projects/$project_id/roles/"}
     if [[ ! "$role_id" =~ ^[A-Za-z0-9_.]+$ ]] \
       || ! gcloud iam roles describe "$role_id" --project="$project_id" --format=json \
         >"$role_file" 2>"$scratch/role-$role_index.error"; then
-      fail 'unable to resolve a potentially effective role for denied-secret qualification'
+      fail "unable to resolve a potentially effective role for $proof_label qualification"
     fi
   elif [[ "$bound_role" =~ ^organizations/([0-9]+)/roles/([A-Za-z0-9_.]+)$ ]]; then
     organization_id=${BASH_REMATCH[1]}
@@ -122,10 +138,10 @@ role_grants_payload_access() {
     if ! gcloud iam roles describe "$role_id" \
       --organization="$organization_id" --format=json \
       >"$role_file" 2>"$scratch/role-$role_index.error"; then
-      fail 'unable to resolve a potentially effective role for denied-secret qualification'
+      fail "unable to resolve a potentially effective role for $proof_label qualification"
     fi
   else
-    fail 'potentially effective denied-secret binding uses an unsupported role'
+    fail "potentially effective $proof_label binding uses an unsupported role"
   fi
 
   if ! jq -e \
@@ -136,7 +152,7 @@ role_grants_payload_access() {
     and all(.includedPermissions[]; type == "string" and length > 0)
     and .deleted != true
   ' "$role_file" >/dev/null; then
-    fail 'role definition for denied-secret qualification is malformed'
+    fail "role definition for $proof_label qualification is malformed"
   fi
 
   jq -e '
@@ -174,7 +190,7 @@ check_policy_for_payload_access() {
       | unique[]
       | @tsv
     ' "$policy" >"$selected_bindings" 2>"$scratch/$label-selection.error"; then
-    fail 'unable to select potentially effective denied-secret role bindings'
+    fail "unable to select potentially effective $proof_label role bindings"
   fi
 
   while IFS=$'\t' read -r bound_role principal_scope; do
@@ -188,7 +204,7 @@ check_policy_for_payload_access() {
         if [[ "$principal_scope" == aggregate ]]; then
           fail 'aggregate principal inheritance cannot be excluded for a role granting secretmanager.versions.access'
         fi
-        fail 'denied qualification identity has a role granting secretmanager.versions.access'
+        fail "$identity_label qualification identity has a role granting secretmanager.versions.access"
         ;;
       1) ;;
       *) fail 'unable to evaluate a potentially effective role for secretmanager.versions.access' ;;
@@ -199,18 +215,18 @@ check_policy_for_payload_access() {
 if [[ "$scope" == project ]]; then
   if ! gcloud projects get-ancestors "$project_id" --format=json \
     >"$scratch/ancestors.json" 2>"$scratch/ancestors.error"; then
-    fail 'unable to read development project ancestry for denied-secret qualification'
+    fail "unable to read development project ancestry for $proof_label qualification"
   fi
   if ! jq -e --arg project_id "$project_id" '
     type == "array"
     and length == 1
     and .[0] == {id: $project_id, type: "project"}
   ' "$scratch/ancestors.json" >/dev/null; then
-    fail 'denied-secret IAM preflight cannot exclude inherited access from a non-project ancestor'
+    fail "$proof_label IAM preflight cannot exclude inherited access from a non-project ancestor"
   fi
   if ! gcloud projects get-iam-policy "$project_id" --format=json \
     >"$scratch/project-policy.json" 2>"$scratch/project-policy.error"; then
-    fail 'unable to read project IAM policy for denied-secret qualification'
+    fail "unable to read project IAM policy for $proof_label qualification"
   fi
   check_policy_for_payload_access "$scratch/project-policy.json" project
 
@@ -235,7 +251,7 @@ if [[ "$scope" == project ]]; then
     1) fail 'disposable platform is missing the reviewed qualification-secret IAM binding' ;;
     *) fail 'unable to scan disposable platform Terraform for secret-level IAM authority' ;;
   esac
-  printf 'PASS: denied qualification identity has no project payload access role\n'
+  printf 'PASS: %s qualification identity has no project payload access role\n' "$identity_label"
   exit 0
 fi
 
@@ -285,7 +301,8 @@ fi
 if ! gcloud secrets get-iam-policy "$target_secret" \
   --project="$project_id" --format=json \
   >"$scratch/target-secret-policy.json" 2>"$scratch/target-secret-policy.error"; then
-  fail 'unable to read target-secret IAM policy for denied-secret qualification'
+  fail "unable to read target-secret IAM policy for $proof_label qualification"
 fi
 check_policy_for_payload_access "$scratch/target-secret-policy.json" target-secret
-printf 'PASS: denied qualification identity has no target-secret payload access role\n'
+printf 'PASS: %s qualification identity has no %s payload access role\n' \
+  "$identity_label" "$target_scope_label"

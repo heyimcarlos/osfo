@@ -329,6 +329,14 @@ create_binding=$(jq -r '.binding_sha256' "$create_plan.manifest.json")
 
 DENIED_SECRET_IAM_SCOPE=target-secret \
   "$repo_root/infra/tests/development-denied-secret-iam-preflight.sh"
+for protected_secret in model-adapter temporal-cloud; do
+  DENIED_SECRET_IAM_SCOPE=target-secret \
+  SECRET_ACCESS_IDENTITY_KEY=authorized_secret \
+  SECRET_ACCESS_IDENTITY_LABEL=authorized \
+  SECRET_ACCESS_PROOF_LABEL=authorized-secret \
+  SECRET_ACCESS_TARGET_SUFFIX="$protected_secret" \
+    "$repo_root/infra/tests/development-denied-secret-iam-preflight.sh"
+done
 
 second_plan="$plan_dir/second.tfplan"
 "$repo_root/infra/scripts/create-plan.sh" development "$root" "$second_plan" -detailed-exitcode

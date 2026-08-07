@@ -9,9 +9,9 @@ trap 'rm -rf "$scratch"' EXIT
 mock_bin=$scratch/bin
 mkdir -p "$mock_bin"
 
-payload='osfo disposable qualification sentinel'
+run_id=31180000000-1
+payload=$(printf 'osfo-authorized-secret-proof-v1:%s' "$run_id" | sha256sum | cut -d' ' -f1)
 expected_length=${#payload}
-expected_sha=$(printf '%s' "$payload" | sha256sum | cut -d' ' -f1)
 project_id=osfo-development-123456789
 region=us-east4
 secret=osfo-dev-authorized-secret-proof
@@ -40,7 +40,7 @@ printf '%s\n' \
   'set -euo pipefail' \
   '[[ "$*" == "secrets versions access 7 --secret=osfo-dev-authorized-secret-proof --project=osfo-development-123456789" ]] || exit 90' \
   'case "${MOCK_ACCESS_MODE:-success}" in' \
-  '  success) printf "%s" "${MOCK_PAYLOAD:?}" ;;' \
+  '  success) [[ ${MOCK_PAYLOAD+x} ]] || exit 92; printf "%s" "$MOCK_PAYLOAD" ;;' \
   '  failure) printf "provider diagnostic must not escape\n" >&2; exit 1 ;;' \
   '  partial-failure) printf "payload fragment must not escape"; printf "provider diagnostic must not escape\n" >&2; exit 1 ;;' \
   '  *) exit 91 ;;' \
@@ -58,6 +58,7 @@ run_probe() {
     PROJECT_ID="$project_id" \
     QUALIFICATION_SECRET="$secret" \
     QUALIFICATION_VERSION="$version" \
+    QUALIFICATION_RUN_ID="$run_id" \
     EXPECTED_SERVICE_ACCOUNT="$identity" \
     "$@" \
     "$probe" >"$output" 2>&1
@@ -66,12 +67,11 @@ run_probe() {
 run_probe success
 jq -e \
   --argjson expected_length "$expected_length" \
-  --arg expected_sha "$expected_sha" \
   '. == {
     schema_version: 1,
     identity_verified: true,
     payload_length: $expected_length,
-    payload_sha256: $expected_sha
+    payload_sha256_match: true
   }' "$scratch/success.output" >/dev/null
 
 expect_probe_fails() {
@@ -85,7 +85,7 @@ expect_probe_fails() {
     exit 1
   fi
   grep -Fxq "$expected_failure" "$output"
-  if grep -Eq 'osfo disposable qualification sentinel|payload fragment|provider diagnostic' "$output" \
+  if grep -Eq "$payload|payload fragment|provider diagnostic|[0-9a-f]{64}" "$output" \
     || grep -Fq '"schema_version":1' "$output"; then
     printf '%s authorized-secret probe leaked data or reported a result\n' "$scenario" >&2
     exit 1
@@ -104,6 +104,15 @@ expect_probe_fails wrong-secret \
 expect_probe_fails missing-version \
   'FAIL: qualification secret version is not an exact positive integer' \
   QUALIFICATION_VERSION=latest
+expect_probe_fails unsafe-run-id \
+  'FAIL: qualification run identifier contains unsafe characters' \
+  QUALIFICATION_RUN_ID='unsafe run'
+expect_probe_fails hash-mismatch \
+  'FAIL: authorized secret-version payload digest does not match' \
+  MOCK_PAYLOAD=wrong
+expect_probe_fails empty-payload \
+  'FAIL: authorized secret-version payload length is invalid' \
+  MOCK_PAYLOAD=
 expect_probe_fails metadata-tool-failure \
   'FAIL: managed qualification identity could not be verified' \
   MOCK_METADATA_MODE=failure
@@ -113,6 +122,24 @@ expect_probe_fails provider-tool-failure \
 expect_probe_fails partial-provider-failure \
   'FAIL: authorized secret-version access failed closed' \
   MOCK_ACCESS_MODE=partial-failure
+
+real_sha256sum=$(command -v sha256sum)
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "${MOCK_DIGEST_MODE:-success}" in' \
+  '  failure) exit 1 ;;' \
+  '  invalid) printf "%s\n" invalid ;;' \
+  '  *) exec "$REAL_SHA256SUM" "$@" ;;' \
+  'esac' >"$mock_bin/sha256sum"
+chmod +x "$mock_bin/sha256sum"
+expect_probe_fails digest-tool-failure \
+  'FAIL: authorized secret-version digest tool failed closed' \
+  MOCK_DIGEST_MODE=failure REAL_SHA256SUM="$real_sha256sum"
+expect_probe_fails invalid-digest-result \
+  'FAIL: authorized secret-version digest is invalid' \
+  MOCK_DIGEST_MODE=invalid REAL_SHA256SUM="$real_sha256sum"
+rm "$mock_bin/sha256sum"
 
 make_logs() {
   local result_json=$1
@@ -136,7 +163,7 @@ make_logs() {
 make_logs "$(<"$scratch/success.output")"
 "$evaluator" \
   "$scratch/logs.json" "$project_id" "$region" "$job" "$execution" \
-  "$expected_length" "$expected_sha" "$scratch/report.json"
+  "$expected_length" "$scratch/report.json"
 jq -e \
   --argjson expected_length "$expected_length" \
   '.checks.authorized_secret_version_access == "PASS"
@@ -151,9 +178,9 @@ expect_evaluator_fails() {
   shift 3
   local output=$scratch/$scenario.output
 
-  if "$evaluator" \
+  if PATH="$mock_bin:$PATH" "$evaluator" \
     "$logs" "$project_id" "$region" "$job" "$execution" \
-    "$expected_length" "$expected_sha" "$scratch/$scenario-report.json" \
+    "$expected_length" "$scratch/$scenario-report.json" \
     "$@" >"$output" 2>&1; then
     printf '%s authorized-secret evaluator must fail closed\n' "$scenario" >&2
     exit 1
@@ -173,10 +200,10 @@ expect_evaluator_fails malformed-result \
   'FAIL: managed qualification result is missing or malformed' \
   "$scratch/malformed.logs.json"
 
-jq '.[0].textPayload = (. [0].textPayload | fromjson | .payload_sha256 = ("0" * 64) | tojson)' \
+jq '.[0].textPayload = (. [0].textPayload | fromjson | .payload_sha256_match = false | tojson)' \
   "$scratch/logs.json" >"$scratch/hash-mismatch.logs.json"
 expect_evaluator_fails hash-mismatch \
-  'FAIL: managed qualification payload digest does not match' \
+  'FAIL: managed qualification result is missing or malformed' \
   "$scratch/hash-mismatch.logs.json"
 
 jq '.[0].textPayload = (. [0].textPayload | fromjson | .payload_length += 1 | tojson)' \
@@ -195,9 +222,23 @@ expect_evaluator_fails evaluator-tool-failure \
   'FAIL: managed qualification result evaluator failed closed' \
   "$scratch/evaluator-tool.logs.json"
 
+real_jq=$(command -v jq)
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'if [[ " $* " == " -n "* ]]; then exit 1; fi' \
+  'exec "$REAL_JQ" "$@"' >"$mock_bin/jq"
+chmod +x "$mock_bin/jq"
+REAL_JQ="$real_jq" expect_evaluator_fails report-encoding-failure \
+  'FAIL: managed qualification report encoding failed closed' \
+  "$scratch/logs.json"
+rm "$mock_bin/jq"
+
 live_proof=$repo_root/infra/tests/development-authorized-secret-live.sh
 live_bin=$scratch/live-bin
 mkdir -p "$live_bin"
+real_sha256sum=$(command -v sha256sum)
+real_mv=$(command -v mv)
 jq -n \
   --arg project_id "$project_id" \
   --arg identity "$identity" \
@@ -218,29 +259,90 @@ printf '%s\n' \
   '  "secrets versions add osfo-dev-authorized-secret-proof --project=osfo-development-123456789 --data-file=- --format=json")' \
   '    sentinel=$(</dev/stdin)' \
   '    printf "%s" "${#sentinel}" >"$MOCK_LIVE_LENGTH"' \
-  '    printf "%s" "$sentinel" | sha256sum | cut -d" " -f1 >"$MOCK_LIVE_SHA"' \
-  '    printf "%s\n" "{\"name\":\"projects/123456789012/secrets/osfo-dev-authorized-secret-proof/versions/7\"}"' \
+  '    case "${MOCK_LIVE_MODE:-success}" in' \
+  '      version-add-failure) printf "provider diagnostic must not escape\n" >&2; exit 1 ;;' \
+  '      malformed-version) printf "%s\n" "{\"name\":7}" ;;' \
+  '      wrong-project-version) printf "%s\n" "{\"name\":\"projects/999999999999/secrets/osfo-dev-authorized-secret-proof/versions/7\"}" ;;' \
+  '      wrong-secret-version) printf "%s\n" "{\"name\":\"projects/123456789012/secrets/wrong-secret/versions/7\"}" ;;' \
+  '      *) printf "%s\n" "{\"name\":\"projects/123456789012/secrets/osfo-dev-authorized-secret-proof/versions/7\"}" ;;' \
+  '    esac' \
   '    ;;' \
-  '  "run jobs execute osfo-dev-authorized-secret-probe --project=osfo-development-123456789 --region=us-east4 --wait --format=json --container=probe --update-env-vars=QUALIFICATION_VERSION=7")' \
+  '  "projects describe osfo-development-123456789 --format=json")' \
+  '    case "${MOCK_LIVE_MODE:-success}" in' \
+  '      project-lookup-failure) printf "provider diagnostic must not escape\n" >&2; exit 1 ;;' \
+  '      malformed-project) printf "%s\n" "{\"projectId\":\"wrong-project\",\"projectNumber\":\"123456789012\"}" ;;' \
+  '      *) printf "%s\n" "{\"projectId\":\"osfo-development-123456789\",\"projectNumber\":\"123456789012\"}" ;;' \
+  '    esac' \
+  '    ;;' \
+  '  "run jobs execute osfo-dev-authorized-secret-probe --project=osfo-development-123456789 --region=us-east4 --wait --format=json --container=probe --update-env-vars=QUALIFICATION_VERSION=7,QUALIFICATION_RUN_ID=31180000000-1")' \
   '    printf "%s\n" executed >>"$MOCK_LIVE_EXECUTIONS"' \
-  '    printf "%s\n" "{\"metadata\":{\"name\":\"osfo-dev-authorized-secret-probe-abc12\"}}"' \
+  '    case "${MOCK_LIVE_MODE:-success}" in' \
+  '      execution-failure) printf "provider diagnostic must not escape\n" >&2; exit 1 ;;' \
+  '      malformed-execution) printf "%s\n" "{\"metadata\":{}}" ;;' \
+  '      wrong-execution) printf "%s\n" "{\"metadata\":{\"name\":\"wrong-execution\"}}" ;;' \
+  '      *) printf "%s\n" "{\"metadata\":{\"name\":\"osfo-dev-authorized-secret-probe-abc12\"}}" ;;' \
+  '    esac' \
   '    ;;' \
   '  "logging read "*)' \
-  '    result=$(jq -cn --argjson length "$(<"$MOCK_LIVE_LENGTH")" --arg sha "$(<"$MOCK_LIVE_SHA")" '\''{schema_version: 1, identity_verified: true, payload_length: $length, payload_sha256: $sha}'\'')' \
+  '    case "${MOCK_LIVE_MODE:-success}" in' \
+  '      logging-failure) printf "provider diagnostic must not escape\n" >&2; exit 1 ;;' \
+  '      empty-logs|sleep-failure) printf "%s\n" "[]"; exit 0 ;;' \
+  '      malformed-logs) printf "%s\n" "not-json"; exit 0 ;;' \
+  '    esac' \
+  '    result=$(jq -cn --argjson length "$(<"$MOCK_LIVE_LENGTH")" '\''{schema_version: 1, identity_verified: true, payload_length: $length, payload_sha256_match: true}'\'')' \
   '    jq -n --arg result "$result" '\''[{resource: {type: "cloud_run_job", labels: {project_id: "osfo-development-123456789", location: "us-east4", job_name: "osfo-dev-authorized-secret-probe"}}, labels: {"run.googleapis.com/execution_name": "osfo-dev-authorized-secret-probe-abc12"}, textPayload: $result}]'\''' \
   '    ;;' \
   '  *) printf "unexpected live proof invocation\n" >&2; exit 90 ;;' \
   'esac' >"$live_bin/gcloud"
 chmod +x "$live_bin/gcloud"
 
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  '[[ "${MOCK_LIVE_MODE:-success}" != sentinel-tool-failure ]] || exit 1' \
+  'exec "$REAL_SHA256SUM" "$@"' >"$live_bin/sha256sum"
+chmod +x "$live_bin/sha256sum"
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  '[[ "${MOCK_LIVE_MODE:-success}" != sleep-failure ]] || exit 1' \
+  'exit 0' >"$live_bin/sleep"
+chmod +x "$live_bin/sleep"
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'if [[ "${MOCK_LIVE_MODE:-success}" == report-publication-failure ]]; then' \
+  '  count=0' \
+  '  [[ ! -e "$MOCK_MV_COUNT" ]] || count=$(<"$MOCK_MV_COUNT")' \
+  '  count=$((count + 1))' \
+  '  printf "%s" "$count" >"$MOCK_MV_COUNT"' \
+  '  ((count < 2)) || exit 1' \
+  'fi' \
+  'exec "$REAL_MV" "$@"' >"$live_bin/mv"
+chmod +x "$live_bin/mv"
+
+run_live() {
+  local scenario=$1
+  local mode=$2
+  local report=$3
+  local output=$scratch/$scenario.output
+  : >"$scratch/live.executions"
+  rm -f "$scratch/live.mv-count"
+  PATH="$live_bin:$PATH" \
+    TF_VARSET_FILE="$scratch/varset.json" \
+    DEVELOPMENT_LIFECYCLE_RUN_ID="$run_id" \
+    MOCK_LIVE_MODE="$mode" \
+    MOCK_LIVE_LENGTH="$scratch/live.length" \
+    MOCK_LIVE_EXECUTIONS="$scratch/live.executions" \
+    MOCK_MV_COUNT="$scratch/live.mv-count" \
+    REAL_SHA256SUM="$real_sha256sum" \
+    REAL_MV="$real_mv" \
+    "$live_proof" "$scratch/platform.json" "$report" \
+    >"$output" 2>&1
+}
+
 live_output=$scratch/live.output
-PATH="$live_bin:$PATH" \
-  TF_VARSET_FILE="$scratch/varset.json" \
-  MOCK_LIVE_LENGTH="$scratch/live.length" \
-  MOCK_LIVE_SHA="$scratch/live.sha" \
-  MOCK_LIVE_EXECUTIONS="$scratch/live.executions" \
-  "$live_proof" "$scratch/platform.json" "$scratch/live-report.json" \
-  >"$live_output" 2>&1
+run_live live success "$scratch/live-report.json"
 grep -Fxq 'PASS: managed authorized secret read produced sanitized evidence' "$live_output"
 [[ $(wc -l <"$scratch/live.executions") == 1 ]]
 jq -e '
@@ -249,12 +351,59 @@ jq -e '
   and .payload_sha256_match == true
   and (has("payload_sha256") | not)
 ' "$scratch/live-report.json" >/dev/null
-if grep -Fq "$(<"$scratch/live.sha")" "$scratch/live-report.json" "$live_output"; then
-  printf 'managed live proof persisted a sentinel digest instead of a comparison\n' >&2
+if grep -Eq '[0-9a-f]{64}' "$scratch/live-report.json" "$live_output"; then
+  printf 'managed live proof persisted a sentinel or digest instead of a comparison\n' >&2
   exit 1
 fi
 
-if rg -n 'osfo disposable qualification sentinel|payload fragment|provider diagnostic' \
+expect_live_fails() {
+  local scenario=$1
+  local mode=$2
+  local expected_failure=$3
+  local report=$scratch/$scenario-report.json
+  if run_live "$scenario" "$mode" "$report"; then
+    printf '%s managed live proof must fail closed\n' "$scenario" >&2
+    exit 1
+  fi
+  grep -Fxq "$expected_failure" "$scratch/$scenario.output"
+  test ! -e "$report"
+  if grep -Eq "$payload|provider diagnostic|[0-9a-f]{64}" "$scratch/$scenario.output"; then
+    printf '%s managed live proof leaked a payload, digest, or provider error\n' \
+      "$scenario" >&2
+    exit 1
+  fi
+}
+
+expect_live_fails sentinel-tool-failure sentinel-tool-failure \
+  'FAIL: disposable qualification sentinel generation failed closed'
+expect_live_fails version-add-failure version-add-failure \
+  'FAIL: disposable qualification secret version creation failed closed'
+expect_live_fails project-lookup-failure project-lookup-failure \
+  'FAIL: development project lookup failed closed'
+expect_live_fails malformed-project malformed-project \
+  'FAIL: development project result is malformed'
+for malformed_version_mode in malformed-version wrong-project-version wrong-secret-version; do
+  expect_live_fails "$malformed_version_mode" "$malformed_version_mode" \
+    'FAIL: disposable qualification secret version result is malformed'
+done
+expect_live_fails execution-failure execution-failure \
+  'FAIL: managed authorized-secret qualification execution failed closed'
+expect_live_fails malformed-execution malformed-execution \
+  'FAIL: managed authorized-secret execution result is malformed'
+expect_live_fails wrong-execution wrong-execution \
+  'FAIL: managed authorized-secret execution identity is invalid'
+expect_live_fails logging-failure logging-failure \
+  'FAIL: managed authorized-secret log observation failed closed'
+expect_live_fails empty-observations empty-logs \
+  'FAIL: managed authorized-secret result did not qualify'
+expect_live_fails malformed-observations malformed-logs \
+  'FAIL: managed authorized-secret result did not qualify'
+expect_live_fails sleep-failure sleep-failure \
+  'FAIL: managed authorized-secret observation delay failed closed'
+expect_live_fails report-publication-failure report-publication-failure \
+  'FAIL: managed authorized-secret report publication failed closed'
+
+if rg -n "$payload|payload fragment|provider diagnostic" \
   "$scratch"/*.output "$scratch"/*report.json 2>/dev/null; then
   printf 'authorized-secret evidence leaked payload or provider diagnostics\n' >&2
   exit 1

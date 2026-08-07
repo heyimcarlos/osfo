@@ -15,12 +15,14 @@ region=$(jq -er '.region' "$varset")
 job=$(jq -er '.qualification_probe_jobs.authorized_secret' "$platform_file")
 secret=$(jq -er '.qualification_secret_name' "$platform_file")
 identity=$(jq -er '.qualification_service_accounts.authorized_secret' "$platform_file")
+lifecycle_run_id=${DEVELOPMENT_LIFECYCLE_RUN_ID:?DEVELOPMENT_LIFECYCLE_RUN_ID is required}
 
 if [[ ! "$project_id" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] \
   || [[ ! "$region" =~ ^[a-z]+-[a-z]+[0-9]+$ ]] \
   || [[ ! "$job" =~ ^[a-z][a-z0-9-]{0,62}$ ]] \
   || [[ ! "$secret" =~ ^[A-Za-z0-9_-]{1,255}$ ]] \
-  || [[ ! "$identity" =~ ^[a-z0-9-]+@${project_id}[.]iam[.]gserviceaccount[.]com$ ]]; then
+  || [[ ! "$identity" =~ ^[a-z0-9-]+@${project_id}[.]iam[.]gserviceaccount[.]com$ ]] \
+  || [[ ! "$lifecycle_run_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
   fail 'authorized-secret managed identifiers are invalid'
 fi
 
@@ -40,14 +42,13 @@ execution_file=$scratch/execution.json
 logs_file=$scratch/logs.json
 candidate_report=$scratch/report.json
 
-if ! sentinel=$(openssl rand -hex 32 2>/dev/null); then
+if ! sentinel=$(printf 'osfo-authorized-secret-proof-v1:%s' "$lifecycle_run_id" \
+  | sha256sum 2>/dev/null | cut -d' ' -f1); then
   fail 'disposable qualification sentinel generation failed closed'
 fi
 expected_length=${#sentinel}
-expected_sha256=$(printf '%s' "$sentinel" | sha256sum 2>/dev/null | cut -d' ' -f1) \
-  || fail 'disposable qualification sentinel digest failed closed'
 if [[ ! "$expected_length" =~ ^[1-9][0-9]*$ ]] \
-  || [[ ! "$expected_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+  || [[ ! "$sentinel" =~ ^[0-9a-f]{64}$ ]]; then
   fail 'disposable qualification sentinel metadata is invalid'
 fi
 
@@ -57,10 +58,23 @@ if ! printf '%s' "$sentinel" | gcloud secrets versions add "$secret" \
   fail 'disposable qualification secret version creation failed closed'
 fi
 unset sentinel
+if ! gcloud projects describe "$project_id" --format=json \
+  >"$scratch/project.json" 2>/dev/null; then
+  fail 'development project lookup failed closed'
+fi
+project_number=$(jq -er --arg project_id "$project_id" '
+  select(type == "object" and .projectId == $project_id)
+  | .projectNumber
+  | select(type == "string" and test("^[0-9]+$"))' \
+  "$scratch/project.json" 2>/dev/null) \
+  || fail 'development project result is malformed'
 version=$(jq -e -r \
-  'select(type == "object" and (keys | index("name")) != null)
+  --arg expected_prefix "projects/$project_number/secrets/$secret/versions/" '
+    select(type == "object" and (.name | type == "string"))
     | .name
-    | capture("/versions/(?<version>[1-9][0-9]*)$").version' \
+    | select(startswith($expected_prefix))
+    | ltrimstr($expected_prefix)
+    | select(test("^[1-9][0-9]*$"))' \
   "$version_file" 2>/dev/null) \
   || fail 'disposable qualification secret version result is malformed'
 if [[ ! "$version" =~ ^[1-9][0-9]*$ ]]; then
@@ -68,7 +82,7 @@ if [[ ! "$version" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if ! gcloud run jobs execute "$job" --project="$project_id" --region="$region" \
   --wait --format=json --container=probe \
-  --update-env-vars="QUALIFICATION_VERSION=$version" \
+  --update-env-vars="QUALIFICATION_VERSION=$version,QUALIFICATION_RUN_ID=$lifecycle_run_id" \
   >"$execution_file" 2>/dev/null; then
   fail 'managed authorized-secret qualification execution failed closed'
 fi
@@ -88,22 +102,26 @@ for observation in {1..12}; do
   fi
   if "$repo_root/infra/tests/evaluate-authorized-secret-proof.sh" \
     "$logs_file" "$project_id" "$region" "$job" "$execution" \
-    "$expected_length" "$expected_sha256" "$candidate_report" \
+    "$expected_length" "$candidate_report" \
     >/dev/null 2>&1; then
     qualified=true
     break
   fi
   if ((observation < 12)); then
-    sleep 5
+    if ! sleep 5; then
+      fail 'managed authorized-secret observation delay failed closed'
+    fi
   fi
 done
 if [[ "$qualified" != true ]]; then
   "$repo_root/infra/tests/evaluate-authorized-secret-proof.sh" \
     "$logs_file" "$project_id" "$region" "$job" "$execution" \
-    "$expected_length" "$expected_sha256" "$candidate_report" \
+    "$expected_length" "$candidate_report" \
     >/dev/null || true
   fail 'managed authorized-secret result did not qualify'
 fi
 
-mv "$candidate_report" "$report_file"
+if ! mv "$candidate_report" "$report_file"; then
+  fail 'managed authorized-secret report publication failed closed'
+fi
 printf 'PASS: managed authorized secret read produced sanitized evidence\n'

@@ -86,6 +86,13 @@ describe("Terraform foundation", () => {
     ),
   );
 
+  it.effect("proves authorized identity has no protected-secret authority", () =>
+    expectCheckPasses(
+      "infra/tests/development-authorized-secret-iam-preflight-contract.sh",
+      "development authorized-secret IAM preflight assertions",
+    ),
+  );
+
   it.effect("enforces development failure diagnostics and teardown independence", () =>
     expectCheckPasses(
       "infra/tests/development-platform-repair-contract.sh",
