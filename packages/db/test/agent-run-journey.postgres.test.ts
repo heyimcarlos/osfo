@@ -56,6 +56,7 @@ if (databaseUrl === undefined) {
 const unknownAttemptOutcome = {
   dispatchEvidence: { type: "confirmed" as const },
   usage: { type: "unknown" as const },
+  completion: { type: "text" as const },
 };
 
 const principalId = "b3ef0861-2df7-4d2a-a195-fbc5ed75bc81";
@@ -304,6 +305,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             outputUnits: 5,
             reasoningUnits: 7,
           },
+          completion: { type: "text" },
         }),
       ),
     );
@@ -1640,6 +1642,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
           Effect.succeed({
             dispatchEvidence: { type: "confirmed" },
             usage: { type: "unknown" },
+            completion: { type: "text" },
           }),
         terminate: () => Effect.void,
       }),

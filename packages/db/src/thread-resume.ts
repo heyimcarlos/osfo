@@ -319,6 +319,17 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
                     'AssistantOutputInterrupted'
                   )
                 GROUP BY payload ->> 'assistantOutputId', agent_run_id
+                UNION ALL
+                SELECT
+                  'toolCallResult'::text AS identity_type,
+                  payload ->> 'toolCallId' AS identity_id,
+                  agent_run_id,
+                  min(position) AS position
+                FROM thread_events
+                WHERE thread_id = ${request.threadId}::uuid
+                  AND position <= ${head.position}::bigint
+                  AND event_type = 'ToolCallResultRecorded'
+                GROUP BY payload ->> 'toolCallId', agent_run_id
               ), retained_identities AS (
                 SELECT identity_type, identity_id, agent_run_id, position
                 FROM timeline_identities
@@ -339,14 +350,24 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
                 AND (
                   (
                     event.event_type = 'UserMessageAppended'
-                    AND EXISTS (
-                      SELECT 1 FROM retained_identities retained
-                      WHERE (
-                        retained.identity_type = 'userMessage'
-                        AND retained.identity_id = event.payload ->> 'userMessageId'
-                      ) OR (
-                        retained.identity_type = 'assistantOutput'
-                        AND retained.agent_run_id = event.agent_run_id
+                    AND (
+                      EXISTS (
+                        SELECT 1 FROM retained_identities retained
+                        WHERE (
+                          retained.identity_type = 'userMessage'
+                          AND retained.identity_id = event.payload ->> 'userMessageId'
+                        ) OR (
+                          retained.identity_type = 'assistantOutput'
+                          AND retained.agent_run_id = event.agent_run_id
+                        ) OR (
+                          retained.identity_type = 'toolCallResult'
+                          AND retained.agent_run_id = event.agent_run_id
+                        )
+                      )
+                      OR EXISTS (
+                        SELECT 1 FROM tool_calls call
+                        WHERE call.agent_run_id = event.agent_run_id
+                          AND call.state IN ('pending', 'running')
                       )
                     )
                   )
@@ -377,6 +398,29 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
                       ) OR (
                         retained.identity_type = 'assistantOutput'
                         AND retained.agent_run_id = event.agent_run_id
+                      ) OR (
+                        retained.identity_type = 'toolCallResult'
+                        AND retained.agent_run_id = event.agent_run_id
+                      )
+                    )
+                  )
+                  OR (
+                    event.event_type IN (
+                      'ToolCallRequested',
+                      'ToolCallProgressRecorded',
+                      'ToolCallResultRecorded'
+                    )
+                    AND (
+                      EXISTS (
+                        SELECT 1 FROM retained_identities retained
+                        WHERE retained.identity_type = 'toolCallResult'
+                          AND retained.identity_id = event.payload ->> 'toolCallId'
+                      )
+                      OR EXISTS (
+                        SELECT 1 FROM tool_calls call
+                        WHERE call.tool_call_id = event.payload ->> 'toolCallId'
+                          AND call.agent_run_id = event.agent_run_id
+                          AND call.state IN ('pending', 'running')
                       )
                     )
                   )
@@ -442,17 +486,22 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
               throughCursor,
               lastEventId: head.eventId,
               stateRevision: head.stateRevision,
-              activeState: activeRuns.map((run) => ({
-                type: "activeAgentRun",
-                agentRunId: run.agentRunId,
-                introducedBy: {
-                  eventId: run.eventId,
-                  position: run.position,
-                  occurredAt: new Date(run.occurredAt).toISOString(),
-                },
-                phase: { type: run.state },
-                cancellation: { type: run.cancellationRequested ? "requested" : "none" },
-              })),
+              activeState: [
+                ...activeRuns.map((run) => ({
+                  type: "activeAgentRun" as const,
+                  agentRunId: run.agentRunId,
+                  introducedBy: {
+                    eventId: run.eventId,
+                    position: run.position,
+                    occurredAt: new Date(run.occurredAt).toISOString(),
+                  },
+                  phase: { type: run.state },
+                  cancellation: {
+                    type: run.cancellationRequested ? ("requested" as const) : ("none" as const),
+                  },
+                })),
+                ...folded.activeState.filter((state) => state.type !== "activeAgentRun"),
+              ],
             }).pipe(Effect.mapError(() => new SnapshotUnavailable()));
           }),
         );

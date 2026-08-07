@@ -4,10 +4,17 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as AtomRegistry from "effect/unstable/reactivity/AtomRegistry";
-import { makeThreadChat } from "./atoms";
+import { makeThreadChat, projectCanonicalThreadMessages } from "./atoms";
 import { makeThreadProjectionStore } from "./projection-store";
 import type { ThreadResumeTransport } from "./resume-thread";
-import { applyThreadEvent, makeEmptyThreadSnapshot, makeUserMessageAppended } from "@osfo/session";
+import {
+  applyThreadEvent,
+  makeEmptyThreadSnapshot,
+  makeToolCallProgressRecorded,
+  makeToolCallRequested,
+  makeToolCallResultRecorded,
+  makeUserMessageAppended,
+} from "@osfo/session";
 import { Deferred, Stream } from "effect";
 
 class MemoryStorage implements Storage {
@@ -47,6 +54,104 @@ const receipt = new AcceptanceReceipt({
 });
 
 describe("Thread chat atoms", () => {
+  it("projects safe replaceable ToolCall progress and terminal results as canonical messages", () => {
+    const toolCallId = "tool_86290831-b9ca-414a-abf1-4055b5347133";
+    const presentation = {
+      version: 1,
+      title: "Search reference documents",
+      description: "Find relevant public references for this answer.",
+    } as const;
+    const events = [
+      Effect.runSync(
+        makeUserMessageAppended({
+          eventId: "34dc8a78-a94d-4050-8c5b-e3bf21077c40",
+          threadId,
+          threadPosition: "1",
+          userMessageId: receipt.userMessageId,
+          agentRunId: receipt.agentRunId,
+          occurredAt: receipt.acceptedAt,
+          content: "Find the reference",
+        }),
+      ),
+      Effect.runSync(
+        makeToolCallRequested({
+          eventId: "f04d3470-bf0c-4b72-90de-0454ac404c9c",
+          threadId,
+          threadPosition: "2",
+          occurredAt: receipt.acceptedAt,
+          agentRunId: receipt.agentRunId,
+          toolCallId,
+          memberIndex: 0,
+          presentation,
+        }),
+      ),
+      Effect.runSync(
+        makeToolCallProgressRecorded({
+          eventId: "a4a60d24-7d2e-4808-b6fc-f192ea7631de",
+          threadId,
+          threadPosition: "3",
+          occurredAt: receipt.acceptedAt,
+          agentRunId: receipt.agentRunId,
+          toolCallId,
+          presentation,
+          progress: { message: "Searching references" },
+        }),
+      ),
+    ];
+    const active = events.reduce(
+      (state, event, index) =>
+        Effect.runSync(
+          applyThreadEvent(state, { ...event, cursor: `cursor-position-${index + 1}` }),
+        ),
+      Effect.runSync(makeEmptyThreadSnapshot({ threadId, throughCursor: "cursor-origin" })),
+    );
+
+    expect(projectCanonicalThreadMessages(active).at(-1)).toEqual({
+      type: "toolCallProgress",
+      messageId: toolCallId,
+      toolCallId,
+      agentRunId: receipt.agentRunId,
+      content: "Search reference documents\nSearching references",
+      eventId: "a4a60d24-7d2e-4808-b6fc-f192ea7631de",
+      occurredAt: receipt.acceptedAt,
+      threadPosition: "3",
+      presentation,
+      progress: { message: "Searching references" },
+    });
+
+    const terminal = Effect.runSync(
+      makeToolCallResultRecorded({
+        eventId: "269787db-071e-4478-806f-1d85d00b7337",
+        threadId,
+        threadPosition: "4",
+        occurredAt: receipt.acceptedAt,
+        agentRunId: receipt.agentRunId,
+        toolCallId,
+        presentation,
+        outcome: { type: "succeeded" },
+      }),
+    );
+    const completed = Effect.runSync(
+      applyThreadEvent(active, { ...terminal, cursor: "cursor-position-4" }),
+    );
+    const projected = projectCanonicalThreadMessages(completed);
+
+    expect(projected.at(-1)).toEqual({
+      type: "toolCallResult",
+      messageId: toolCallId,
+      toolCallId,
+      agentRunId: receipt.agentRunId,
+      content: "Search reference documents\nOutcome: succeeded",
+      eventId: terminal.eventId,
+      occurredAt: receipt.acceptedAt,
+      threadPosition: "4",
+      presentation,
+      outcome: { type: "succeeded" },
+    });
+    expect(JSON.stringify(projected)).not.toContain("private raw argument");
+    expect(JSON.stringify(projected)).not.toContain("private raw result");
+  });
+
   it("submits through the API client without treating the receipt as projection authority", () => {
     const commands: Array<unknown> = [];
     const chat = makeThreadChat({

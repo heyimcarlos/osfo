@@ -1,8 +1,10 @@
 import {
   modelCallObservationTextMaxLength,
+  toolCallBatchSizeMax,
   ModelCallExecutionError,
   ModelCallExecutor,
   type ModelCallAttempt,
+  type ModelCallCompletion,
   type ModelCallAttemptOutcome,
   type ModelCallDispatchEvidence,
   type ModelCallObservation,
@@ -10,6 +12,12 @@ import {
 import { Deferred, Effect, Layer, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 import { type liveOpenRouterExecutionProfile } from "./execution-profile.js";
+import {
+  normalizeOpenRouterNonActionToolCalls,
+  openRouterNonActionToolCatalog,
+  OpenRouterToolCallDeltaSchema,
+  openRouterToolCallDeltaMax,
+} from "./openrouter-non-action-tool-catalog.js";
 
 const NonEmptyText = Schema.String.check(Schema.isNonEmpty());
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -43,7 +51,11 @@ const DeltaSchema = Schema.StructWithRest(
     reasoning: Schema.optional(Schema.NullOr(Schema.String)),
     reasoning_details: Schema.optional(Schema.NullOr(Schema.Array(Schema.Unknown))),
     refusal: Schema.optional(Schema.NullOr(Schema.String)),
-    tool_calls: Schema.optional(Schema.NullOr(Schema.Array(Schema.Unknown))),
+    tool_calls: Schema.optional(
+      Schema.NullOr(
+        Schema.Array(OpenRouterToolCallDeltaSchema).check(Schema.isMaxLength(toolCallBatchSizeMax)),
+      ),
+    ),
     audio: Schema.optional(Schema.NullOr(Schema.Unknown)),
   }),
   [Schema.Record(UnsupportedDeltaKey, Schema.Never)],
@@ -102,7 +114,11 @@ interface ValidatedUsage {
 type ChatCompletionsProtocolPhase =
   | { readonly type: "awaitingChunk" }
   | { readonly type: "streaming"; readonly providerRequestId: string }
-  | { readonly type: "awaitingUsage"; readonly providerRequestId: string }
+  | {
+      readonly type: "awaitingUsage";
+      readonly providerRequestId: string;
+      readonly finishReason: "stop" | "tool_calls";
+    }
   | {
       readonly type: "awaitingDone";
       readonly providerRequestId: string;
@@ -116,15 +132,16 @@ interface OpenRouterChatCompletionsSession {
   readonly outcome: Deferred.Deferred<ModelCallAttemptOutcome, ModelCallExecutionError>;
   dispatchEvidence: ModelCallDispatchEvidence;
   usage: ModelCallAttemptOutcome["usage"];
+  completion: ModelCallCompletion | undefined;
 }
 
 export interface OpenRouterChatCompletionsModelCallExecutorConfig {
   readonly apiKey: string;
   readonly profile: typeof liveOpenRouterExecutionProfile;
+  readonly nonActionToolsEnabled?: boolean;
 }
 
 const hasUnsupportedDeltaOutput = (delta: ChatCompletionDelta) =>
-  (delta.tool_calls?.length ?? 0) > 0 ||
   delta.audio != null ||
   (delta.refusal?.length ?? 0) > 0 ||
   (delta.reasoning?.length ?? 0) > 0 ||
@@ -150,7 +167,7 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
       const decodeEvent = (session: OpenRouterChatCompletionsSession, data: string) =>
         Schema.decodeUnknownEffect(OpenRouterEventFromJson, { onExcessProperty: "error" })(
           data,
-        ).pipe(Effect.mapError((cause) => executionError(session, cause)));
+        ).pipe(Effect.mapError(() => executionError(session, "Provider emitted an invalid event")));
 
       const decodeLine = (
         session: OpenRouterChatCompletionsSession,
@@ -179,6 +196,7 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
         let fragmentIndex = 0;
         let pendingDeltas: Array<string> = [];
         let textOutputObserved = false;
+        const toolCallDeltas: Array<unknown> = [];
 
         const flush = (): ReadonlyArray<ModelCallObservation> => {
           if (pendingDeltas.length === 0) return [];
@@ -259,14 +277,16 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
               const terminalEchoIsValid =
                 chunk.choices.length === 1 &&
                 terminalEcho !== undefined &&
-                terminalEcho.finish_reason === config.profile.requiredSemantics.finishReason &&
+                terminalEcho.finish_reason === phase.finishReason &&
                 (terminalEcho.native_finish_reason === undefined ||
                   terminalEcho.native_finish_reason === null ||
-                  terminalEcho.native_finish_reason ===
-                    config.profile.requiredSemantics.finishReason) &&
+                  terminalEcho.native_finish_reason === phase.finishReason) &&
                 (terminalEcho.delta.content === undefined ||
                   terminalEcho.delta.content === null ||
                   terminalEcho.delta.content.length === 0) &&
+                (terminalEcho.delta.tool_calls === undefined ||
+                  terminalEcho.delta.tool_calls === null ||
+                  terminalEcho.delta.tool_calls.length === 0) &&
                 !hasUnsupportedDeltaOutput(terminalEcho.delta);
               if (usage === undefined || (chunk.choices.length !== 0 && !terminalEchoIsValid)) {
                 return yield* executionError(
@@ -298,29 +318,91 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
             if (hasUnsupportedDeltaOutput(choice.delta)) {
               return yield* executionError(
                 session,
-                "Provider emitted output outside the text-only profile",
+                "Provider emitted output outside the text and ToolCall profile",
+              );
+            }
+            const streamedToolCalls = choice.delta.tool_calls ?? [];
+            if (
+              content !== undefined &&
+              content !== null &&
+              content.length > 0 &&
+              streamedToolCalls.length > 0
+            ) {
+              return yield* executionError(
+                session,
+                "Provider mixed assistant text and ToolCalls in one delta",
               );
             }
             if (content !== undefined && content !== null && content.length > 0) {
+              if (toolCallDeltas.length > 0) {
+                return yield* executionError(
+                  session,
+                  "Provider mixed assistant text and ToolCalls in one completion",
+                );
+              }
               textOutputObserved = true;
               pendingDeltas.push(content);
+            }
+            if (streamedToolCalls.length > 0) {
+              if (config.nonActionToolsEnabled !== true) {
+                return yield* executionError(
+                  session,
+                  "Provider emitted ToolCalls while the bounded catalog is disabled",
+                );
+              }
+              if (textOutputObserved) {
+                return yield* executionError(
+                  session,
+                  "Provider mixed assistant text and ToolCalls in one completion",
+                );
+              }
+              if (toolCallDeltas.length + streamedToolCalls.length > openRouterToolCallDeltaMax) {
+                return yield* executionError(
+                  session,
+                  "Provider exceeded the bounded ToolCall delta count",
+                );
+              }
+              toolCallDeltas.push(...streamedToolCalls);
             }
             if (choice.finish_reason === null) {
               return pendingDeltas.length >= config.profile.permittedAdaptations.coalesceUpToDeltas
                 ? flush()
                 : [];
             }
-            if (choice.finish_reason !== config.profile.requiredSemantics.finishReason) {
+            const supportedFinishReason =
+              choice.finish_reason === config.profile.requiredSemantics.finishReason ||
+              (config.nonActionToolsEnabled === true && choice.finish_reason === "tool_calls");
+            if (!supportedFinishReason) {
               return yield* executionError(
                 session,
                 "Provider emitted an unsupported finish reason",
               );
             }
-            if (!textOutputObserved) {
-              return yield* executionError(session, "Provider completed without text output");
+            const finishReason = choice.finish_reason === "stop" ? "stop" : "tool_calls";
+            if (finishReason === "stop") {
+              if (!textOutputObserved || toolCallDeltas.length > 0) {
+                return yield* executionError(session, "Provider completed without text output");
+              }
+              session.completion = { type: "text" };
+            } else {
+              if (textOutputObserved || toolCallDeltas.length === 0) {
+                return yield* executionError(
+                  session,
+                  "Provider completed without a pure ToolCall batch",
+                );
+              }
+              const batch = yield* normalizeOpenRouterNonActionToolCalls(
+                session.attempt.modelCallId,
+                toolCallDeltas,
+              ).pipe(Effect.mapError((cause) => executionError(session, cause)));
+              session.completion = { type: "toolCallBatch", batch };
             }
             if (usage === undefined) {
-              phase = { type: "awaitingUsage", providerRequestId: identity };
+              phase = {
+                type: "awaitingUsage",
+                providerRequestId: identity,
+                finishReason,
+              };
               return [];
             }
             const validatedUsage = yield* validateUsage(usage);
@@ -353,6 +435,9 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
             }
             const usage = phase.usage;
             const identity = phase.providerRequestId;
+            if (session.completion === undefined) {
+              return yield* executionError(session, "Provider completion kind is unavailable");
+            }
             phase = { type: "completed", providerRequestId: identity };
             yield* Deferred.succeed(session.outcome, {
               dispatchEvidence: session.dispatchEvidence,
@@ -362,6 +447,7 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
                 outputUnits: usage.outputUnits,
                 reasoningUnits: usage.reasoningUnits,
               },
+              completion: session.completion,
             });
             return flush();
           });
@@ -382,6 +468,13 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
               require_parameters: config.profile.request.provider.requireParameters,
               data_collection: config.profile.request.provider.dataCollection,
             },
+            ...(config.nonActionToolsEnabled === true
+              ? {
+                  tools: openRouterNonActionToolCatalog,
+                  tool_choice: "auto",
+                  parallel_tool_calls: true,
+                }
+              : {}),
           }),
           Effect.mapError((cause) => executionError(session, cause)),
         );
@@ -463,6 +556,7 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
           outcome,
           dispatchEvidence: { type: "notDispatched" },
           usage: { type: "unknown" },
+          completion: undefined,
         };
         sessions.set(attempt.modelCallAttemptId, session);
         return makeOutputStream(session);

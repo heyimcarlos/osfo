@@ -159,28 +159,47 @@ export class ToolCallExecutionError extends Data.TaggedError("ToolCallExecutionE
   readonly retryable: boolean;
 }> {}
 
+export interface NonActionToolCallExecutionContext {
+  readonly reportProgress: (
+    progress: ToolCallProgress,
+  ) => Effect.Effect<void, AgentRunRepositoryError>;
+  /**
+   * Revalidates the AgentRun fence and cancellation authority without mutating
+   * ToolCall progress. Long-running executors must call this periodically.
+   */
+  readonly pollCancellation: () => Effect.Effect<void, AgentRunRepositoryError>;
+}
+
 export class NonActionToolCallExecutor extends Context.Service<
   NonActionToolCallExecutor,
   {
     readonly execute: (
       attempt: ToolCallAttempt,
-      reportProgress: (progress: ToolCallProgress) => Effect.Effect<void, AgentRunRepositoryError>,
+      context: NonActionToolCallExecutionContext,
     ) => Effect.Effect<ToolCallOutcome, ToolCallExecutionError | AgentRunRepositoryError>;
   }
 >()("@osfo/agent-run/NonActionToolCallExecutor") {}
 
 export const makeDeterministicTextToolCallExecutorLayer = () =>
   Layer.succeed(NonActionToolCallExecutor)({
-    execute: (attempt, reportProgress) =>
+    execute: (attempt, context) =>
       Effect.gen(function* () {
-        yield* reportProgress({ observationIndex: 0, message: "Tool execution started" });
+        yield* context.pollCancellation();
+        yield* context.reportProgress({
+          observationIndex: 0,
+          message: "Tool execution started",
+        });
         if (attempt.toolName !== "echo") {
           return {
             type: "failed" as const,
             cause: "invalidInput" as const,
           };
         }
-        yield* reportProgress({ observationIndex: 1, message: "Tool execution completed" });
+        yield* context.pollCancellation();
+        yield* context.reportProgress({
+          observationIndex: 1,
+          message: "Tool execution completed",
+        });
         return {
           type: "succeeded" as const,
           result: { type: "text" as const, text: attempt.input.text },
@@ -188,16 +207,14 @@ export const makeDeterministicTextToolCallExecutorLayer = () =>
       }),
   });
 
-export const executeNonActionToolCallBatch = Effect.fn("NonActionToolCallBatch.execute")(function* (
-  fence: AgentRunFence,
-  request: ToolCallBatchRequest,
-) {
+export const executeCommittedNonActionToolCallBatch = Effect.fn(
+  "NonActionToolCallBatch.executeCommitted",
+)(function* (fence: AgentRunFence, committedBatch: PreparedToolCallBatch) {
   const repository = yield* ToolCallRepository;
   const executor = yield* NonActionToolCallExecutor;
-  const validatedRequest = yield* Schema.decodeUnknownEffect(ToolCallBatchRequestSchema)(
-    request,
-  ).pipe(Effect.mapError((cause) => new ToolCallExecutionError({ cause, retryable: false })));
-  const batch = yield* repository.commitBatch(fence, validatedRequest);
+  const batch = yield* Schema.decodeUnknownEffect(PreparedToolCallBatchSchema)(committedBatch).pipe(
+    Effect.mapError((cause) => new ToolCallExecutionError({ cause, retryable: false })),
+  );
 
   while (true) {
     const claim = yield* repository.claimNextAttempt(fence, batch);
@@ -211,9 +228,10 @@ export const executeNonActionToolCallBatch = Effect.fn("NonActionToolCallBatch.e
     }
 
     const outcome = yield* executor
-      .execute(claim.attempt, (progress) =>
-        repository.appendProgress(fence, claim.attempt, progress),
-      )
+      .execute(claim.attempt, {
+        reportProgress: (progress) => repository.appendProgress(fence, claim.attempt, progress),
+        pollCancellation: () => repository.loadBatchState(fence, batch).pipe(Effect.asVoid),
+      })
       .pipe(
         Effect.catchTag("ToolCallExecutionError", (error) =>
           error.retryable
@@ -228,4 +246,16 @@ export const executeNonActionToolCallBatch = Effect.fn("NonActionToolCallBatch.e
       );
     if (outcome !== undefined) yield* repository.completeAttempt(fence, claim.attempt, outcome);
   }
+});
+
+export const executeNonActionToolCallBatch = Effect.fn("NonActionToolCallBatch.execute")(function* (
+  fence: AgentRunFence,
+  request: ToolCallBatchRequest,
+) {
+  const repository = yield* ToolCallRepository;
+  const validatedRequest = yield* Schema.decodeUnknownEffect(ToolCallBatchRequestSchema)(
+    request,
+  ).pipe(Effect.mapError((cause) => new ToolCallExecutionError({ cause, retryable: false })));
+  const batch = yield* repository.commitBatch(fence, validatedRequest);
+  return yield* executeCommittedNonActionToolCallBatch(fence, batch);
 });

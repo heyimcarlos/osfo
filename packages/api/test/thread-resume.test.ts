@@ -18,6 +18,9 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   applyThreadEvent,
   makeEmptyThreadSnapshot,
+  makeToolCallProgressRecorded,
+  makeToolCallRequested,
+  makeToolCallResultRecorded,
   makeUserMessageAppended,
   type ThreadEventEnvelope,
 } from "@osfo/session";
@@ -176,6 +179,115 @@ describe("Thread resume API", () => {
           data: { throughPosition: "1", throughCursor: envelope.cursor },
         },
       ]);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("transports the client-safe non-Action ToolCall lifecycle without raw input or result", async () => {
+    const presentation = {
+      version: 1,
+      title: "Search reference documents",
+      description: "Find relevant public references for this answer.",
+    } as const;
+    const toolCallId = "tool_86290831-b9ca-414a-abf1-4055b5347133";
+    const toolEvents = [
+      envelope,
+      {
+        ...Effect.runSync(
+          makeToolCallRequested({
+            eventId: "f04d3470-bf0c-4b72-90de-0454ac404c9c",
+            threadId,
+            threadPosition: "2",
+            occurredAt: event.occurredAt,
+            agentRunId: event.payload.agentRunId,
+            toolCallId,
+            memberIndex: 0,
+            presentation,
+          }),
+        ),
+        cursor: "cursor-position-2",
+      },
+      {
+        ...Effect.runSync(
+          makeToolCallProgressRecorded({
+            eventId: "a4a60d24-7d2e-4808-b6fc-f192ea7631de",
+            threadId,
+            threadPosition: "3",
+            occurredAt: event.occurredAt,
+            agentRunId: event.payload.agentRunId,
+            toolCallId,
+            presentation,
+            progress: { message: "Searching references" },
+          }),
+        ),
+        cursor: "cursor-position-3",
+      },
+      {
+        ...Effect.runSync(
+          makeToolCallResultRecorded({
+            eventId: "269787db-071e-4478-806f-1d85d00b7337",
+            threadId,
+            threadPosition: "4",
+            occurredAt: event.occurredAt,
+            agentRunId: event.payload.agentRunId,
+            toolCallId,
+            presentation,
+            outcome: { type: "succeeded" },
+          }),
+        ),
+        cursor: "cursor-position-4",
+      },
+    ] satisfies ReadonlyArray<ThreadEventEnvelope>;
+    const toolSnapshot = toolEvents.reduce(
+      (state, current) => Effect.runSync(applyThreadEvent(state, current)),
+      Effect.runSync(makeEmptyThreadSnapshot({ threadId, throughCursor: "cursor-origin" })),
+    );
+    const toolResume = ThreadResume.of({
+      snapshot: () => Effect.succeed(toolSnapshot),
+      history: ({ afterPosition, throughPosition }) =>
+        Effect.succeed({
+          threadId,
+          afterPosition,
+          throughPosition: throughPosition ?? "4",
+          events: toolEvents,
+          nextAfterPosition: "4",
+          hasMore: false,
+        }),
+      stream: () =>
+        Effect.succeed(
+          Stream.fromIterable(
+            toolEvents.map((data) => ({ event: "thread_event" as const, data })),
+          ).pipe(
+            Stream.concat(
+              Stream.make({
+                event: "caught_up" as const,
+                data: { throughPosition: "4", throughCursor: "cursor-position-4" },
+              }),
+            ),
+          ),
+        ),
+    });
+    const harness = makeHarness(toolResume);
+    try {
+      const stream = await Effect.runPromise(
+        streamThreadEvents({
+          after: "cursor-origin",
+          authenticationToken: "reference-session",
+          baseUrl: "http://osfo.test",
+          httpClientLayer: harness.httpClientLayer,
+          threadId,
+        }),
+      );
+      const transported = Array.from(await Effect.runPromise(Stream.runCollect(stream)));
+
+      expect(transported.slice(0, -1)).toEqual(
+        toolEvents.map((data) => ({ event: "thread_event", data })),
+      );
+      expect(JSON.stringify(transported)).not.toContain('"input"');
+      expect(JSON.stringify(transported)).not.toContain('"result"');
+      expect(JSON.stringify(transported)).not.toContain("private raw argument");
+      expect(JSON.stringify(transported)).not.toContain("private raw result");
     } finally {
       await harness.dispose();
     }

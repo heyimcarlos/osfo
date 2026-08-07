@@ -243,6 +243,7 @@ const workerThreadModelCallExecutorLayer = (config: WorkerThreadModelCallExecuto
           Effect.succeed({
             dispatchEvidence: { type: "confirmed" },
             usage: { type: "unknown" },
+            completion: { type: "text" },
           }),
         terminate,
       });

@@ -21,6 +21,7 @@ export const evaluateOpenRouterLiveQualification = (input: OpenRouterLiveQualifi
   const checks = {
     oneHttpRequest: input.requestCount === 1,
     stableGenerationId: providerRequestId !== undefined,
+    textCompletion: input.outcome.completion.type === "text",
     nonemptyNormalizedText: normalizedText.trim().length > 0,
     exactExpectedText: normalizedText.trim() === "qualified",
     reportedUsage: reportedUsage && totalUsage > 0,
@@ -39,6 +40,7 @@ export const evaluateOpenRouterLiveQualification = (input: OpenRouterLiveQualifi
       provider: liveOpenRouterExecutionProfile.provider,
       oneHttpRequest: true,
       stableGenerationId: true,
+      textCompletion: true,
       terminalStop: true,
       terminalDone: true,
       nonemptyNormalizedText: true,

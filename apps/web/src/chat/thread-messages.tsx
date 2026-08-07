@@ -52,6 +52,14 @@ function CanonicalMessage({
   readonly message: CanonicalThreadMessage;
   readonly scrollAnchor: boolean;
 }) {
+  const canonicalIdentity =
+    message.type === "userMessage"
+      ? { label: "Message", value: message.userMessageId }
+      : message.type === "assistantOutput"
+        ? { label: "Output", value: message.assistantOutputId }
+        : message.type === "actionReceipt"
+          ? { label: "Action", value: message.toolCallId }
+          : { label: "ToolCall", value: message.toolCallId };
   return (
     <MessageScrollerItem messageId={message.messageId} scrollAnchor={scrollAnchor}>
       <Message align={message.type === "userMessage" ? "end" : "start"}>
@@ -73,6 +81,12 @@ function CanonicalMessage({
           {message.type === "assistantOutput" && message.status.type === "interrupted" ? (
             <p className="text-xs text-destructive">Assistant output interrupted</p>
           ) : null}
+          {message.type === "toolCallProgress" ? (
+            <p className="text-xs text-muted-foreground">ToolCall in progress</p>
+          ) : null}
+          {message.type === "toolCallResult" && message.outcome.type !== "succeeded" ? (
+            <p className="text-xs text-destructive">ToolCall did not succeed</p>
+          ) : null}
           <MessageFooter className={message.type === "userMessage" ? "items-end" : "items-start"}>
             <details
               className={
@@ -86,22 +100,7 @@ function CanonicalMessage({
               </summary>
               <dl className="mt-2 grid gap-1 rounded-lg border bg-background p-3 text-left font-mono text-[11px] leading-5 shadow-sm">
                 <CanonicalField label="Event" value={message.eventId} />
-                <CanonicalField
-                  label={
-                    message.type === "userMessage"
-                      ? "Message"
-                      : message.type === "assistantOutput"
-                        ? "Output"
-                        : "Action"
-                  }
-                  value={
-                    message.type === "userMessage"
-                      ? message.userMessageId
-                      : message.type === "assistantOutput"
-                        ? message.assistantOutputId
-                        : message.toolCallId
-                  }
-                />
+                <CanonicalField label={canonicalIdentity.label} value={canonicalIdentity.value} />
                 <CanonicalField label="AgentRun" value={message.agentRunId} />
                 <CanonicalField label="Committed" value={message.occurredAt} />
               </dl>

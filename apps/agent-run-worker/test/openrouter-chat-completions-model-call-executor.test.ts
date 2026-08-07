@@ -32,6 +32,12 @@ const layer = makeOpenRouterChatCompletionsModelCallExecutorLayer({
   profile: liveOpenRouterExecutionProfile,
 });
 
+const toolLayer = makeOpenRouterChatCompletionsModelCallExecutorLayer({
+  apiKey: "test-api-key",
+  profile: liveOpenRouterExecutionProfile,
+  nonActionToolsEnabled: true,
+});
+
 const chunk = (
   choices: ReadonlyArray<unknown>,
   overrides: Readonly<Record<string, unknown>> = {},
@@ -119,6 +125,7 @@ describe("OpenRouter Chat Completions ModelCall executor", () => {
       expect(Array.from(observations)).toEqual([{ fragmentIndex: 0, text: "Hello world" }]);
       expect(outcome).toEqual({
         dispatchEvidence: { type: "confirmed", providerRequestId: "gen-123" },
+        completion: { type: "text" },
         usage: {
           type: "reported",
           inputUnits: 4,
@@ -282,19 +289,127 @@ describe("OpenRouter Chat Completions ModelCall executor", () => {
     }),
   );
 
-  it.effect("rejects a tool-only completion", () =>
+  it.effect("normalizes a fragmented non-Action ToolCall completion", () =>
     Effect.gen(function* () {
-      const result = yield* runExit(
-        sse(
-          chunk([
+      let observedRequest: HttpClientRequest.HttpClientRequest | undefined;
+      const body = sse(
+        chunk([
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call-1",
+                  type: "function",
+                  function: { name: "echo", arguments: '{"text":"hel' },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ]),
+        chunk(
+          [
             {
               index: 0,
               delta: {
-                tool_calls: [{ index: 0, id: "call-1", type: "function" }],
+                tool_calls: [{ index: 0, function: { arguments: 'lo"}' } }],
               },
               finish_reason: "tool_calls",
             },
-          ]),
+          ],
+          { usage: terminalUsage },
+        ),
+        "data: [DONE]\n",
+      );
+      const http = HttpClient.make((request) => {
+        observedRequest = request;
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(body, {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+            }),
+          ),
+        );
+      });
+      const [observations, outcome] = yield* ModelCallExecutor.use((executor) =>
+        Effect.gen(function* () {
+          const output = yield* Stream.runCollect(execute(executor));
+          const completed = yield* executor.outcome(attempt);
+          return [output, completed] as const;
+        }),
+      ).pipe(Effect.provide(toolLayer), Effect.provideService(HttpClient.HttpClient, http));
+
+      expect(Array.from(observations)).toEqual([]);
+      expect(outcome).toEqual({
+        dispatchEvidence: { type: "confirmed", providerRequestId: "gen-123" },
+        completion: {
+          type: "toolCallBatch",
+          batch: {
+            batchKey: `model-call:${attempt.modelCallId}`,
+            attemptLimit: 2,
+            requests: [
+              {
+                executionMode: "nonAction",
+                toolName: "echo",
+                input: { type: "text", text: "hello" },
+              },
+            ],
+          },
+        },
+        usage: {
+          type: "reported",
+          inputUnits: 4,
+          outputUnits: 5,
+          reasoningUnits: 7,
+        },
+      });
+      const webRequest = yield* HttpClientRequest.toWeb(observedRequest!);
+      const requestBody = yield* Effect.promise(() => webRequest.json());
+      expect(requestBody).toEqual(
+        expect.objectContaining({
+          tool_choice: "auto",
+          parallel_tool_calls: true,
+          tools: [
+            {
+              type: "function",
+              function: expect.objectContaining({
+                name: "echo",
+                parameters: expect.objectContaining({ additionalProperties: false }),
+              }),
+            },
+          ],
+        }),
+      );
+    }),
+  );
+
+  it.effect("rejects ToolCalls when the bounded catalog is disabled", () =>
+    Effect.gen(function* () {
+      const result = yield* runExit(
+        sse(
+          chunk(
+            [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call-1",
+                      type: "function",
+                      function: { name: "echo", arguments: '{"text":"hello"}' },
+                    },
+                  ],
+                },
+                finish_reason: "tool_calls",
+              },
+            ],
+            { usage: terminalUsage },
+          ),
           "data: [DONE]\n",
         ),
       );

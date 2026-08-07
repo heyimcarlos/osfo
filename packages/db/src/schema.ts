@@ -343,6 +343,9 @@ export const threadEvents = pgTable(
         'AgentRunCanceled',
         'AgentRunSucceeded',
         'AgentRunFailed',
+        'ToolCallRequested',
+        'ToolCallProgressRecorded',
+        'ToolCallResultRecorded',
         'ActionApprovalRequested',
         'ActionReceiptRecorded'
       )`,
@@ -409,6 +412,71 @@ export const threadEvents = pgTable(
           ${table.payload} = jsonb_build_object(
             'agentRunId', ${table.payload} ->> 'agentRunId',
             'cause', 'modelCallFailed'
+          )
+        WHEN 'ToolCallRequested' THEN
+          ${table.payload} = jsonb_build_object(
+            'toolCallId', ${table.payload} ->> 'toolCallId',
+            'agentRunId', ${table.payload} ->> 'agentRunId',
+            'memberIndex', (${table.payload} ->> 'memberIndex')::integer,
+            'presentation', ${table.payload} -> 'presentation'
+          )
+          AND ${table.payload} ->> 'toolCallId' ~ '^tool_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          AND (${table.payload} ->> 'memberIndex')::integer >= 0
+          AND ${table.payload} -> 'presentation' = jsonb_build_object(
+            'version', 1,
+            'title', ${table.payload} -> 'presentation' ->> 'title',
+            'description', ${table.payload} -> 'presentation' ->> 'description'
+          )
+          AND length(${table.payload} -> 'presentation' ->> 'title') BETWEEN 1 AND 512
+          AND length(${table.payload} -> 'presentation' ->> 'description') BETWEEN 1 AND 512
+        WHEN 'ToolCallProgressRecorded' THEN
+          ${table.payload} = jsonb_build_object(
+            'toolCallId', ${table.payload} ->> 'toolCallId',
+            'agentRunId', ${table.payload} ->> 'agentRunId',
+            'presentation', ${table.payload} -> 'presentation',
+            'progress', ${table.payload} -> 'progress'
+          )
+          AND ${table.payload} ->> 'toolCallId' ~ '^tool_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          AND ${table.payload} -> 'presentation' = jsonb_build_object(
+            'version', 1,
+            'title', ${table.payload} -> 'presentation' ->> 'title',
+            'description', ${table.payload} -> 'presentation' ->> 'description'
+          )
+          AND length(${table.payload} -> 'presentation' ->> 'title') BETWEEN 1 AND 512
+          AND length(${table.payload} -> 'presentation' ->> 'description') BETWEEN 1 AND 512
+          AND ${table.payload} -> 'progress' = jsonb_build_object(
+            'message', ${table.payload} -> 'progress' ->> 'message'
+          )
+          AND length(${table.payload} -> 'progress' ->> 'message') BETWEEN 1 AND 512
+        WHEN 'ToolCallResultRecorded' THEN
+          ${table.payload} = jsonb_build_object(
+            'toolCallId', ${table.payload} ->> 'toolCallId',
+            'agentRunId', ${table.payload} ->> 'agentRunId',
+            'presentation', ${table.payload} -> 'presentation',
+            'outcome', ${table.payload} -> 'outcome'
+          )
+          AND ${table.payload} ->> 'toolCallId' ~ '^tool_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          AND ${table.payload} -> 'presentation' = jsonb_build_object(
+            'version', 1,
+            'title', ${table.payload} -> 'presentation' ->> 'title',
+            'description', ${table.payload} -> 'presentation' ->> 'description'
+          )
+          AND length(${table.payload} -> 'presentation' ->> 'title') BETWEEN 1 AND 512
+          AND length(${table.payload} -> 'presentation' ->> 'description') BETWEEN 1 AND 512
+          AND ${table.payload} -> 'outcome' = CASE ${table.payload} -> 'outcome' ->> 'type'
+            WHEN 'succeeded' THEN jsonb_build_object('type', 'succeeded')
+            WHEN 'failed' THEN jsonb_build_object(
+              'type', 'failed',
+              'cause', ${table.payload} -> 'outcome' ->> 'cause'
+            )
+            WHEN 'canceled' THEN jsonb_build_object('type', 'canceled')
+            ELSE NULL
+          END
+          AND (
+            ${table.payload} -> 'outcome' ->> 'type' <> 'failed'
+            OR ${table.payload} -> 'outcome' ->> 'cause' IN (
+              'invalidInput', 'executionFailed', 'dependencyUnavailable'
+            )
           )
         WHEN 'ActionApprovalRequested' THEN
           ${table.payload} = jsonb_build_object(

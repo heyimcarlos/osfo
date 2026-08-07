@@ -129,6 +129,58 @@ export const AgentRunFailedSchema = Schema.Struct({
   }),
 });
 
+export const ToolCallPresentationSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  title: ClientSafeText,
+  description: ClientSafeText,
+});
+
+export const ToolCallProgressSchema = Schema.Struct({
+  message: ClientSafeText,
+});
+
+export const ToolCallResultOutcomeSchema = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("succeeded") }),
+  Schema.Struct({
+    type: Schema.Literal("failed"),
+    cause: Schema.Literals(["invalidInput", "executionFailed", "dependencyUnavailable"]),
+  }),
+  Schema.Struct({ type: Schema.Literal("canceled") }),
+]);
+
+export const ToolCallRequestedSchema = Schema.Struct({
+  ...eventFields,
+  eventType: Schema.Literal("ToolCallRequested"),
+  payload: Schema.Struct({
+    toolCallId: ToolCallIdentity,
+    agentRunId: Identity,
+    memberIndex: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
+    presentation: ToolCallPresentationSchema,
+  }),
+});
+
+export const ToolCallProgressRecordedSchema = Schema.Struct({
+  ...eventFields,
+  eventType: Schema.Literal("ToolCallProgressRecorded"),
+  payload: Schema.Struct({
+    toolCallId: ToolCallIdentity,
+    agentRunId: Identity,
+    presentation: ToolCallPresentationSchema,
+    progress: ToolCallProgressSchema,
+  }),
+});
+
+export const ToolCallResultRecordedSchema = Schema.Struct({
+  ...eventFields,
+  eventType: Schema.Literal("ToolCallResultRecorded"),
+  payload: Schema.Struct({
+    toolCallId: ToolCallIdentity,
+    agentRunId: Identity,
+    presentation: ToolCallPresentationSchema,
+    outcome: ToolCallResultOutcomeSchema,
+  }),
+});
+
 export const ActionDefinitionRefSchema = Schema.Struct({
   name: Schema.Literal("sendDemoEmail"),
   version: Schema.Literal(1),
@@ -223,6 +275,9 @@ export const ThreadEventSchema = Schema.Union([
   AgentRunCanceledSchema,
   AgentRunSucceededSchema,
   AgentRunFailedSchema,
+  ToolCallRequestedSchema,
+  ToolCallProgressRecordedSchema,
+  ToolCallResultRecordedSchema,
   ActionApprovalRequestedSchema,
   ActionReceiptRecordedSchema,
 ]);
@@ -235,6 +290,9 @@ export type AgentRunCancellationRequested = typeof AgentRunCancellationRequested
 export type AgentRunCanceled = typeof AgentRunCanceledSchema.Type;
 export type AgentRunSucceeded = typeof AgentRunSucceededSchema.Type;
 export type AgentRunFailed = typeof AgentRunFailedSchema.Type;
+export type ToolCallRequested = typeof ToolCallRequestedSchema.Type;
+export type ToolCallProgressRecorded = typeof ToolCallProgressRecordedSchema.Type;
+export type ToolCallResultRecorded = typeof ToolCallResultRecordedSchema.Type;
 export type ActionApprovalRequested = typeof ActionApprovalRequestedSchema.Type;
 export type ActionReceiptRecorded = typeof ActionReceiptRecordedSchema.Type;
 export type ThreadEvent = typeof ThreadEventSchema.Type;
@@ -276,6 +334,23 @@ export interface AgentRunCanceledInput extends AgentRunEventInput {
 
 export interface AgentRunFailedInput extends AgentRunEventInput {
   readonly cause: "modelCallFailed";
+}
+
+interface ToolCallEventInput extends AgentRunEventInput {
+  readonly toolCallId: string;
+  readonly presentation: typeof ToolCallPresentationSchema.Type;
+}
+
+export interface ToolCallRequestedInput extends ToolCallEventInput {
+  readonly memberIndex: number;
+}
+
+export interface ToolCallProgressRecordedInput extends ToolCallEventInput {
+  readonly progress: typeof ToolCallProgressSchema.Type;
+}
+
+export interface ToolCallResultRecordedInput extends ToolCallEventInput {
+  readonly outcome: typeof ToolCallResultOutcomeSchema.Type;
 }
 
 interface ActionEventInput extends AgentRunEventInput {
@@ -410,6 +485,60 @@ export const makeAgentRunFailed = (input: AgentRunFailedInput) =>
     payload: { agentRunId: input.agentRunId, cause: input.cause },
   }).pipe(Effect.mapError((cause) => new InvalidThreadEvent({ cause })));
 
+export const makeToolCallRequested = (input: ToolCallRequestedInput) =>
+  Schema.decodeUnknownEffect(ToolCallRequestedSchema, {
+    onExcessProperty: "error",
+  })({
+    eventId: input.eventId,
+    eventType: "ToolCallRequested",
+    eventVersion: 1,
+    threadId: input.threadId,
+    threadPosition: input.threadPosition,
+    occurredAt: input.occurredAt,
+    payload: {
+      toolCallId: input.toolCallId,
+      agentRunId: input.agentRunId,
+      memberIndex: input.memberIndex,
+      presentation: input.presentation,
+    },
+  }).pipe(Effect.mapError((cause) => new InvalidThreadEvent({ cause })));
+
+export const makeToolCallProgressRecorded = (input: ToolCallProgressRecordedInput) =>
+  Schema.decodeUnknownEffect(ToolCallProgressRecordedSchema, {
+    onExcessProperty: "error",
+  })({
+    eventId: input.eventId,
+    eventType: "ToolCallProgressRecorded",
+    eventVersion: 1,
+    threadId: input.threadId,
+    threadPosition: input.threadPosition,
+    occurredAt: input.occurredAt,
+    payload: {
+      toolCallId: input.toolCallId,
+      agentRunId: input.agentRunId,
+      presentation: input.presentation,
+      progress: input.progress,
+    },
+  }).pipe(Effect.mapError((cause) => new InvalidThreadEvent({ cause })));
+
+export const makeToolCallResultRecorded = (input: ToolCallResultRecordedInput) =>
+  Schema.decodeUnknownEffect(ToolCallResultRecordedSchema, {
+    onExcessProperty: "error",
+  })({
+    eventId: input.eventId,
+    eventType: "ToolCallResultRecorded",
+    eventVersion: 1,
+    threadId: input.threadId,
+    threadPosition: input.threadPosition,
+    occurredAt: input.occurredAt,
+    payload: {
+      toolCallId: input.toolCallId,
+      agentRunId: input.agentRunId,
+      presentation: input.presentation,
+      outcome: input.outcome,
+    },
+  }).pipe(Effect.mapError((cause) => new InvalidThreadEvent({ cause })));
+
 export const makeActionApprovalRequested = (input: ActionApprovalRequestedInput) =>
   Schema.decodeUnknownEffect(ActionApprovalRequestedSchema, {
     onExcessProperty: "error",
@@ -464,6 +593,9 @@ export const ThreadEventEnvelopeSchema = Schema.Union([
   withCursor(AgentRunCanceledSchema.fields),
   withCursor(AgentRunSucceededSchema.fields),
   withCursor(AgentRunFailedSchema.fields),
+  withCursor(ToolCallRequestedSchema.fields),
+  withCursor(ToolCallProgressRecordedSchema.fields),
+  withCursor(ToolCallResultRecordedSchema.fields),
   withCursor(ActionApprovalRequestedSchema.fields),
   withCursor(ActionReceiptRecordedSchema.fields),
 ]);
@@ -509,6 +641,15 @@ export const AssistantOutputTimelineItemSchema = Schema.Struct({
   ]),
 });
 
+export const ToolCallResultTimelineItemSchema = Schema.Struct({
+  type: Schema.Literal("toolCallResult"),
+  toolCallId: ToolCallIdentity,
+  agentRunId: Identity,
+  source: SourceRangeSchema,
+  presentation: ToolCallPresentationSchema,
+  outcome: ToolCallResultOutcomeSchema,
+});
+
 export const ActionReceiptTimelineItemSchema = Schema.Struct({
   type: Schema.Literal("actionReceipt"),
   toolCallId: ToolCallIdentity,
@@ -545,11 +686,26 @@ export const ActiveActionApprovalSchema = Schema.Struct({
   presentation: ActionPresentationSchema,
 });
 
+export const ActiveToolCallSchema = Schema.Struct({
+  type: Schema.Literal("activeToolCall"),
+  toolCallId: ToolCallIdentity,
+  agentRunId: Identity,
+  memberIndex: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
+  introducedBy: SourcePointSchema,
+  presentation: ToolCallPresentationSchema,
+  progress: Schema.NullOr(
+    Schema.Struct({
+      ...ToolCallProgressSchema.fields,
+      source: SourcePointSchema,
+    }),
+  ),
+});
+
 const NonNegativePosition = Schema.String.pipe(Schema.check(Schema.isPattern(/^\d+$/u)));
 
 export const ThreadSnapshotSchema = Schema.Struct({
   projection: Schema.Literal("nativeThread"),
-  schemaVersion: Schema.Literal(4),
+  schemaVersion: Schema.Literal(5),
   threadId: Identity,
   throughPosition: NonNegativePosition,
   throughCursor: ThreadCursor,
@@ -562,10 +718,13 @@ export const ThreadSnapshotSchema = Schema.Struct({
     Schema.Union([
       UserMessageTimelineItemSchema,
       AssistantOutputTimelineItemSchema,
+      ToolCallResultTimelineItemSchema,
       ActionReceiptTimelineItemSchema,
     ]),
   ),
-  activeState: Schema.Array(Schema.Union([ActiveAgentRunSchema, ActiveActionApprovalSchema])),
+  activeState: Schema.Array(
+    Schema.Union([ActiveAgentRunSchema, ActiveToolCallSchema, ActiveActionApprovalSchema]),
+  ),
 });
 
 export type ThreadSnapshot = typeof ThreadSnapshotSchema.Type;
@@ -576,6 +735,7 @@ type AssistantOutputTimelineItem = Extract<
 >;
 type ActiveThreadState = ThreadSnapshot["activeState"][number];
 type ActiveAgentRun = Extract<ActiveThreadState, { readonly type: "activeAgentRun" }>;
+type ActiveToolCall = Extract<ActiveThreadState, { readonly type: "activeToolCall" }>;
 type ActiveActionApproval = Extract<ActiveThreadState, { readonly type: "activeActionApproval" }>;
 
 const isAssistantOutputTimelineItem = (
@@ -584,6 +744,9 @@ const isAssistantOutputTimelineItem = (
 
 const isActiveAgentRun = (state: ActiveThreadState): state is ActiveAgentRun =>
   state.type === "activeAgentRun";
+
+const isActiveToolCall = (state: ActiveThreadState): state is ActiveToolCall =>
+  state.type === "activeToolCall";
 
 const isActiveActionApproval = (state: ActiveThreadState): state is ActiveActionApproval =>
   state.type === "activeActionApproval";
@@ -599,6 +762,14 @@ const hasSameActionPresentation = (
   left.fields[0].value === right.fields[0].value &&
   left.fields[1].label === right.fields[1].label &&
   left.fields[1].value === right.fields[1].value;
+
+const hasSameToolCallPresentation = (
+  left: ActiveToolCall["presentation"],
+  right: ActiveToolCall["presentation"],
+) =>
+  left.version === right.version &&
+  left.title === right.title &&
+  left.description === right.description;
 
 export class InvalidThreadSnapshot extends Data.TaggedError("InvalidThreadSnapshot")<{
   readonly cause: unknown;
@@ -618,7 +789,7 @@ export interface EmptyThreadSnapshotInput {
 export const makeEmptyThreadSnapshot = (input: EmptyThreadSnapshotInput) =>
   Schema.decodeUnknownEffect(ThreadSnapshotSchema)({
     projection: "nativeThread",
-    schemaVersion: 4,
+    schemaVersion: 5,
     threadId: input.threadId,
     throughPosition: "0",
     throughCursor: input.throughCursor,
@@ -819,9 +990,13 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
       const openApproval = activeState.find(
         (state) => isActiveActionApproval(state) && state.agentRunId === event.payload.agentRunId,
       );
+      const openToolCall = activeState.find(
+        (state) => isActiveToolCall(state) && state.agentRunId === event.payload.agentRunId,
+      );
       if (
         activeRun === undefined ||
         activeRun.cancellation.type === "requested" ||
+        openToolCall !== undefined ||
         openApproval !== undefined
       ) {
         return yield* failAuthorityConflict();
@@ -844,9 +1019,13 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
       const openApproval = activeState.find(
         (state) => isActiveActionApproval(state) && state.agentRunId === event.payload.agentRunId,
       );
+      const openToolCall = activeState.find(
+        (state) => isActiveToolCall(state) && state.agentRunId === event.payload.agentRunId,
+      );
       if (
         activeRun === undefined ||
         activeRun.cancellation.type !== "requested" ||
+        openToolCall !== undefined ||
         openApproval !== undefined
       ) {
         return yield* failAuthorityConflict();
@@ -859,6 +1038,124 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
       );
       if (openOutput !== undefined) return yield* failAuthorityConflict();
       activeState = activeState.filter((state) => state.agentRunId !== event.payload.agentRunId);
+      break;
+    }
+    case "ToolCallRequested": {
+      const activeRun = activeState.find(
+        (state): state is ActiveAgentRun =>
+          isActiveAgentRun(state) && state.agentRunId === event.payload.agentRunId,
+      );
+      const existingActiveToolCall = activeState.find(
+        (state) => isActiveToolCall(state) && state.toolCallId === event.payload.toolCallId,
+      );
+      const existingToolCallResult = timeline.find(
+        (item) => item.type === "toolCallResult" && item.toolCallId === event.payload.toolCallId,
+      );
+      const conflictingApproval = activeState.find(
+        (state) => isActiveActionApproval(state) && state.toolCallId === event.payload.toolCallId,
+      );
+      const conflictingReceipt = timeline.find(
+        (item) => item.type === "actionReceipt" && item.toolCallId === event.payload.toolCallId,
+      );
+      if (
+        activeRun === undefined ||
+        activeRun.cancellation.type === "requested" ||
+        activeRun.phase.type === "waiting" ||
+        existingActiveToolCall !== undefined ||
+        existingToolCallResult !== undefined ||
+        conflictingApproval !== undefined ||
+        conflictingReceipt !== undefined
+      ) {
+        return yield* failAuthorityConflict();
+      }
+      activeState = [
+        ...activeState.map((state) =>
+          state === activeRun ? { ...activeRun, phase: { type: "running" as const } } : state,
+        ),
+        {
+          type: "activeToolCall" as const,
+          toolCallId: event.payload.toolCallId,
+          agentRunId: event.payload.agentRunId,
+          memberIndex: event.payload.memberIndex,
+          introducedBy: sourcePoint(event),
+          presentation: event.payload.presentation,
+          progress: null,
+        },
+      ];
+      break;
+    }
+    case "ToolCallProgressRecorded": {
+      const activeRun = activeState.find(
+        (state): state is ActiveAgentRun =>
+          isActiveAgentRun(state) && state.agentRunId === event.payload.agentRunId,
+      );
+      const activeToolCall = activeState.find(
+        (state): state is ActiveToolCall =>
+          isActiveToolCall(state) && state.toolCallId === event.payload.toolCallId,
+      );
+      if (
+        activeRun === undefined ||
+        activeRun.cancellation.type === "requested" ||
+        activeRun.phase.type === "waiting" ||
+        activeToolCall === undefined ||
+        activeToolCall.agentRunId !== event.payload.agentRunId ||
+        !hasSameToolCallPresentation(activeToolCall.presentation, event.payload.presentation)
+      ) {
+        return yield* failAuthorityConflict();
+      }
+      activeState = activeState.map((state) =>
+        state === activeToolCall
+          ? {
+              ...activeToolCall,
+              progress: {
+                ...event.payload.progress,
+                source: sourcePoint(event),
+              },
+            }
+          : state === activeRun
+            ? { ...activeRun, phase: { type: "running" as const } }
+            : state,
+      );
+      break;
+    }
+    case "ToolCallResultRecorded": {
+      const activeRun = activeState.find(
+        (state): state is ActiveAgentRun =>
+          isActiveAgentRun(state) && state.agentRunId === event.payload.agentRunId,
+      );
+      const activeToolCall = activeState.find(
+        (state): state is ActiveToolCall =>
+          isActiveToolCall(state) && state.toolCallId === event.payload.toolCallId,
+      );
+      const existingResult = timeline.find(
+        (item) => item.type === "toolCallResult" && item.toolCallId === event.payload.toolCallId,
+      );
+      if (
+        activeRun === undefined ||
+        activeToolCall === undefined ||
+        activeToolCall.agentRunId !== event.payload.agentRunId ||
+        !hasSameToolCallPresentation(activeToolCall.presentation, event.payload.presentation) ||
+        existingResult !== undefined ||
+        (activeRun.cancellation.type === "requested" && event.payload.outcome.type !== "canceled")
+      ) {
+        return yield* failAuthorityConflict();
+      }
+      timeline = [
+        ...timeline,
+        {
+          type: "toolCallResult" as const,
+          toolCallId: event.payload.toolCallId,
+          agentRunId: event.payload.agentRunId,
+          source: sourceRange(event),
+          presentation: event.payload.presentation,
+          outcome: event.payload.outcome,
+        },
+      ];
+      activeState = activeState
+        .filter((state) => state !== activeToolCall)
+        .map((state) =>
+          state === activeRun ? { ...activeRun, phase: { type: "running" as const } } : state,
+        );
       break;
     }
     case "ActionApprovalRequested": {
@@ -875,12 +1172,20 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
       const existingReceipt = timeline.find(
         (item) => item.type === "actionReceipt" && item.toolCallId === event.payload.toolCallId,
       );
+      const conflictingToolCall = activeState.find(
+        (state) => isActiveToolCall(state) && state.toolCallId === event.payload.toolCallId,
+      );
+      const conflictingToolCallResult = timeline.find(
+        (item) => item.type === "toolCallResult" && item.toolCallId === event.payload.toolCallId,
+      );
       if (
         activeRun === undefined ||
         activeRun.cancellation.type === "requested" ||
         activeRun.phase.type === "waiting" ||
         duplicateApproval !== undefined ||
         existingReceipt !== undefined ||
+        conflictingToolCall !== undefined ||
+        conflictingToolCallResult !== undefined ||
         event.payload.expiresAt <= event.occurredAt
       ) {
         return yield* failAuthorityConflict();
@@ -921,9 +1226,17 @@ const applyNextEvent = Effect.fn("Session.applyNextThreadEvent")(function* (
       const existingReceipt = timeline.find(
         (item) => item.type === "actionReceipt" && item.toolCallId === event.payload.toolCallId,
       );
+      const conflictingToolCall = activeState.find(
+        (state) => isActiveToolCall(state) && state.toolCallId === event.payload.toolCallId,
+      );
+      const conflictingToolCallResult = timeline.find(
+        (item) => item.type === "toolCallResult" && item.toolCallId === event.payload.toolCallId,
+      );
       if (
         activeRun === undefined ||
         existingReceipt !== undefined ||
+        conflictingToolCall !== undefined ||
+        conflictingToolCallResult !== undefined ||
         (approvalRequestId === undefined && approvalForToolCall !== undefined) ||
         (approvalRequestId !== undefined &&
           (approval === undefined ||

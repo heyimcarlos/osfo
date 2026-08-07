@@ -46,6 +46,14 @@ type ActionReceiptItem = Extract<
   ThreadSnapshot["timeline"][number],
   { readonly type: "actionReceipt" }
 >;
+type ToolCallResultItem = Extract<
+  ThreadSnapshot["timeline"][number],
+  { readonly type: "toolCallResult" }
+>;
+type ActiveToolCallItem = Extract<
+  ThreadSnapshot["activeState"][number],
+  { readonly type: "activeToolCall" }
+>;
 
 export type CanonicalThreadMessage =
   | {
@@ -81,10 +89,41 @@ export type CanonicalThreadMessage =
       readonly successBoundary: ActionReceiptItem["successBoundary"];
       readonly threadPosition: string;
       readonly toolCallId: string;
+    }
+  | {
+      readonly type: "toolCallProgress";
+      readonly messageId: string;
+      readonly agentRunId: string;
+      readonly content: string;
+      readonly eventId: string;
+      readonly occurredAt: string;
+      readonly presentation: ActiveToolCallItem["presentation"];
+      readonly progress: null | {
+        readonly message: string;
+      };
+      readonly threadPosition: string;
+      readonly toolCallId: string;
+    }
+  | {
+      readonly type: "toolCallResult";
+      readonly messageId: string;
+      readonly agentRunId: string;
+      readonly content: string;
+      readonly eventId: string;
+      readonly occurredAt: string;
+      readonly outcome: ToolCallResultItem["outcome"];
+      readonly presentation: ToolCallResultItem["presentation"];
+      readonly threadPosition: string;
+      readonly toolCallId: string;
     };
 
-const messagesFromSnapshot = (snapshot: ThreadSnapshot): ReadonlyArray<CanonicalThreadMessage> =>
-  snapshot.timeline.map((item): CanonicalThreadMessage => {
+const toolCallOutcomeText = (outcome: ToolCallResultItem["outcome"]) =>
+  outcome.type === "failed" ? `${outcome.type} (${outcome.cause})` : outcome.type;
+
+export const projectCanonicalThreadMessages = (
+  snapshot: ThreadSnapshot,
+): ReadonlyArray<CanonicalThreadMessage> => {
+  const timelineMessages = snapshot.timeline.map((item): CanonicalThreadMessage => {
     const canonical = {
       agentRunId: item.agentRunId,
       eventId: item.source.firstEventId,
@@ -109,6 +148,16 @@ const messagesFromSnapshot = (snapshot: ThreadSnapshot): ReadonlyArray<Canonical
           assistantOutputId: item.assistantOutputId,
           status: item.status,
         };
+      case "toolCallResult":
+        return {
+          ...canonical,
+          content: `${item.presentation.title}\nOutcome: ${toolCallOutcomeText(item.outcome)}`,
+          messageId: item.toolCallId,
+          outcome: item.outcome,
+          presentation: item.presentation,
+          toolCallId: item.toolCallId,
+          type: "toolCallResult",
+        };
       case "actionReceipt":
         return {
           ...canonical,
@@ -128,6 +177,40 @@ const messagesFromSnapshot = (snapshot: ThreadSnapshot): ReadonlyArray<Canonical
         };
     }
   });
+  const activeToolCallMessages = snapshot.activeState.flatMap(
+    (item): ReadonlyArray<CanonicalThreadMessage> => {
+      if (item.type !== "activeToolCall") return [];
+      const source = item.progress?.source ?? item.introducedBy;
+      return [
+        {
+          agentRunId: item.agentRunId,
+          content: `${item.presentation.title}\n${item.progress?.message ?? "Queued"}`,
+          eventId: source.eventId,
+          messageId: item.toolCallId,
+          occurredAt: source.occurredAt,
+          presentation: item.presentation,
+          progress:
+            item.progress === null
+              ? null
+              : {
+                  message: item.progress.message,
+                },
+          threadPosition: source.position,
+          toolCallId: item.toolCallId,
+          type: "toolCallProgress",
+        },
+      ];
+    },
+  );
+
+  return [...timelineMessages, ...activeToolCallMessages].sort((left, right) =>
+    left.threadPosition === right.threadPosition
+      ? 0
+      : BigInt(left.threadPosition) < BigInt(right.threadPosition)
+        ? -1
+        : 1,
+  );
+};
 
 const makeApiResumeTransport = (options: ThreadChatOptions): ThreadResumeTransport => ({
   snapshot: () =>
@@ -190,7 +273,7 @@ export const makeThreadChat = (options: ThreadChatOptions) => {
         store,
         transport,
         onProjection: (snapshot) => {
-          context.set(messages, messagesFromSnapshot(snapshot));
+          context.set(messages, projectCanonicalThreadMessages(snapshot));
           if (caughtUp) {
             context.set(synchronization, {
               type: "synchronized",

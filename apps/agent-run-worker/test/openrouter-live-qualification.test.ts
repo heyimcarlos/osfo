@@ -15,6 +15,7 @@ const reportedOutcome = {
     outputUnits: 5,
     reasoningUnits: 7,
   },
+  completion: { type: "text" as const },
 };
 
 describe("OpenRouter live qualification reporting", () => {

@@ -9,6 +9,7 @@ import {
   ThreadResume,
   type SubmitMessageCommand,
 } from "@osfo/api";
+import { ToolCallRepository, type ToolCallBatchRequest } from "@osfo/agent-run";
 import {
   Context,
   Effect,
@@ -21,7 +22,11 @@ import {
   Schedule,
   Stream,
 } from "effect";
-import { makeMessageAdmissionLayer, makeThreadResumeLayer } from "../src/index";
+import {
+  makeMessageAdmissionLayer,
+  makeThreadResumeLayer,
+  makeToolCallRepositoryLayer,
+} from "../src/index";
 import { makeThreadResumeTestLayer, prepareMessageAdmissionFixture } from "../src/testing";
 
 const databaseUrl = process.env.OSFO_TEST_DATABASE_URL;
@@ -63,12 +68,14 @@ const runtime = ManagedRuntime.make(
       principalNonTerminalLimit: 20,
     }),
     makeThreadResumeLayer(resumeConfig),
+    makeToolCallRepositoryLayer({ databaseUrl, maxConnections: 12 }),
     databaseLayer,
   ),
 );
 
-const run = <A, E, R extends MessageAdmission | ThreadResume>(effect: Effect.Effect<A, E, R>) =>
-  runtime.runPromise(effect);
+const run = <A, E, R extends MessageAdmission | ThreadResume | ToolCallRepository>(
+  effect: Effect.Effect<A, E, R>,
+) => runtime.runPromise(effect);
 
 const command = (content: string): SubmitMessageCommand => ({
   protocolVersion: 1,
@@ -153,6 +160,91 @@ describe("PostgreSQL Thread resume", () => {
       ),
     ).toEqual(["running", "waiting", "pending"]);
     expect(snapshot.throughCursor).toEqual(expect.any(String));
+  });
+
+  it("projects retained ToolCall progress and its terminal result from PostgreSQL", async () => {
+    const receipt = await accept("Exercise a bounded tool");
+    await setAgentRunState(receipt.agentRunId, "running");
+    const fence = {
+      agentRunId: receipt.agentRunId,
+      workerId: "thread-resume-test",
+      claimEpoch: "1",
+    } as const;
+    const request = {
+      batchKey: "model-call-1:tools",
+      attemptLimit: 2,
+      requests: [
+        {
+          executionMode: "nonAction",
+          toolName: "echo",
+          input: { type: "text", text: "private input" },
+        },
+      ],
+    } as const satisfies ToolCallBatchRequest;
+    const batch = await run(
+      ToolCallRepository.use((repository) => repository.commitBatch(fence, request)),
+    );
+    const claim = await run(
+      ToolCallRepository.use((repository) => repository.claimNextAttempt(fence, batch)),
+    );
+    if (claim.type !== "started") throw new Error("Expected a started ToolCall attempt");
+    await run(
+      ToolCallRepository.use((repository) =>
+        repository.appendProgress(fence, claim.attempt, {
+          observationIndex: 0,
+          message: "Tool execution started",
+        }),
+      ),
+    );
+
+    const active = await run(ThreadResume.use((resume) => resume.snapshot(access)));
+    expect(active.throughPosition).toBe("3");
+    expect(active.activeState).toEqual([
+      expect.objectContaining({
+        type: "activeAgentRun",
+        agentRunId: receipt.agentRunId,
+        phase: { type: "running" },
+      }),
+      expect.objectContaining({
+        type: "activeToolCall",
+        agentRunId: receipt.agentRunId,
+        toolCallId: claim.attempt.toolCallId,
+        progress: expect.objectContaining({ message: "Tool execution started" }),
+      }),
+    ]);
+
+    await run(
+      ToolCallRepository.use((repository) =>
+        repository.completeAttempt(fence, claim.attempt, {
+          type: "succeeded",
+          result: { type: "text", text: "private result" },
+        }),
+      ),
+    );
+
+    const terminal = await run(ThreadResume.use((resume) => resume.snapshot(access)));
+    expect(terminal.throughPosition).toBe("4");
+    expect(terminal.timeline).toEqual([
+      expect.objectContaining({
+        type: "userMessage",
+        userMessageId: receipt.userMessageId,
+      }),
+      expect.objectContaining({
+        type: "toolCallResult",
+        agentRunId: receipt.agentRunId,
+        toolCallId: claim.attempt.toolCallId,
+        outcome: { type: "succeeded" },
+      }),
+    ]);
+    expect(terminal.activeState).toEqual([
+      expect.objectContaining({
+        type: "activeAgentRun",
+        agentRunId: receipt.agentRunId,
+        phase: { type: "running" },
+      }),
+    ]);
+    expect(JSON.stringify(terminal)).not.toContain("private input");
+    expect(JSON.stringify(terminal)).not.toContain("private result");
   });
 
   it("retains complete logical histories without fetching omitted output tails", async () => {

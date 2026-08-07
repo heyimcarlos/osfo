@@ -110,6 +110,16 @@ describe("PostgreSQL non-Action ToolCall authority", () => {
     expect(first.calls.every((call) => call.toolCallId.startsWith("tool_"))).toBe(true);
     expect(authority).toEqual({ attempts: 0, calls: 2, members: 2, state: "pending" });
 
+    const prematureTerminal = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE agent_runs
+          SET state = 'succeeded', claim_owner = NULL, lease_expires_at = NULL
+          WHERE agent_run_id = ${agentRunId}::uuid`;
+      }).pipe(Effect.exit),
+    );
+    expect(Exit.isFailure(prematureTerminal)).toBe(true);
+
     const changedIntent = await run(
       ToolCallRepository.use((repository) =>
         repository.commitBatch(fence, {
@@ -136,10 +146,28 @@ describe("PostgreSQL non-Action ToolCall authority", () => {
     const evidence = await run(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        const rows = yield* sql<{ readonly progress: number; readonly terminal: number }>`SELECT
+        const rows = yield* sql<{
+          readonly progress: number;
+          readonly publicEvents: number;
+          readonly terminal: number;
+        }>`SELECT
             (SELECT count(*)::int FROM tool_call_progress_events) AS progress,
-            (SELECT count(*)::int FROM tool_calls WHERE outcome IS NOT NULL) AS terminal`;
+            (SELECT count(*)::int FROM tool_calls WHERE outcome IS NOT NULL) AS terminal,
+            (SELECT count(*)::int FROM thread_events WHERE event_type LIKE 'ToolCall%')
+              AS "publicEvents"`;
         return rows[0];
+      }),
+    );
+    const publicEvidence = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* sql<{
+          readonly eventType: string;
+          readonly payload: Record<string, unknown>;
+        }>`SELECT event_type AS "eventType", payload
+          FROM thread_events
+          WHERE event_type LIKE 'ToolCall%'
+          ORDER BY position`;
       }),
     );
 
@@ -150,7 +178,23 @@ describe("PostgreSQL non-Action ToolCall authority", () => {
         { type: "succeeded", result: { type: "text", text: "second" } },
       ]);
     }
-    expect(evidence).toEqual({ progress: 4, terminal: 2 });
+    expect(evidence).toEqual({ progress: 4, publicEvents: 8, terminal: 2 });
+    expect(publicEvidence.map(({ eventType }) => eventType)).toEqual([
+      "ToolCallRequested",
+      "ToolCallRequested",
+      "ToolCallProgressRecorded",
+      "ToolCallProgressRecorded",
+      "ToolCallResultRecorded",
+      "ToolCallProgressRecorded",
+      "ToolCallProgressRecorded",
+      "ToolCallResultRecorded",
+    ]);
+    const encodedPublicEvidence = JSON.stringify(publicEvidence);
+    expect(encodedPublicEvidence).not.toContain('"input"');
+    expect(encodedPublicEvidence).not.toContain('"result"');
+    expect(encodedPublicEvidence).not.toContain("first");
+    expect(encodedPublicEvidence).not.toContain("second");
+    expect(encodedPublicEvidence).not.toContain("observationIndex");
   });
 
   it("deduplicates progress and terminal observations without rewriting history", async () => {

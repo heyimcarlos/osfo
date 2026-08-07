@@ -49,6 +49,7 @@ const cancelConfirmed = () => Effect.succeed({ type: "confirmedStopped" as const
 const unknownAttemptOutcome = {
   dispatchEvidence: { type: "confirmed" as const },
   usage: { type: "unknown" as const },
+  completion: { type: "text" as const },
 };
 
 const makeExecutor = (
@@ -69,6 +70,7 @@ const makeExecutor = (
         Effect.succeed({
           dispatchEvidence: { type: "confirmed" as const },
           usage: { type: "unknown" as const },
+          completion: { type: "text" as const },
         })),
     terminate: service.terminate ?? (() => Effect.void),
   });
@@ -185,6 +187,7 @@ describe("AgentRun worker", () => {
             providerRequestId: "resp_accountable",
           },
           usage: { type: "reported" as const, inputUnits: 3, outputUnits: 2 },
+          completion: { type: "text" as const },
         }),
     });
     const layer = makeAgentRunWorkerLayer({
@@ -214,6 +217,7 @@ describe("AgentRun worker", () => {
       expect(observedOutcome).toEqual({
         dispatchEvidence: { type: "confirmed", providerRequestId: "resp_accountable" },
         usage: { type: "reported", inputUnits: 3, outputUnits: 2 },
+        completion: { type: "text" },
       });
     }).pipe(Effect.provide(layer));
   });
@@ -265,6 +269,66 @@ describe("AgentRun worker", () => {
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect("fails closed instead of completing a model-requested ToolCall batch", () => {
+    const repository = makeRepository();
+    const executor = makeExecutor({
+      cancel: cancelConfirmed,
+      execute: () => Stream.empty,
+      outcome: () =>
+        Effect.succeed({
+          completion: {
+            type: "toolCallBatch" as const,
+            batch: {
+              attemptLimit: 2,
+              batchKey: "model-turn-1",
+              requests: [
+                {
+                  executionMode: "nonAction" as const,
+                  input: { type: "text" as const, text: "hello" },
+                  toolName: "echo",
+                },
+              ],
+            },
+          },
+          dispatchEvidence: { type: "confirmed" as const },
+          usage: { type: "unknown" as const },
+        }),
+    });
+    const layer = makeAgentRunWorkerLayer({
+      executionProfileRef: "oz.deterministic.v1",
+      modelCallAttemptLimit: 1,
+      workerId: "worker-a",
+      leaseDurationMs: 30_000,
+      leaseRenewalIntervalMs: 10_000,
+      cancellationPollIntervalMs: 5,
+    }).pipe(
+      Layer.provide(Layer.succeed(AgentRunRepository)(repository.service)),
+      Layer.provide(Layer.succeed(ModelCallExecutor)(executor)),
+      Layer.provide(
+        makeDeterministicAgentRuntimeLayer({
+          executionProfileRef: "oz.deterministic.v1",
+          modelBinding: "oz.deterministic.echo.v1",
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      expect(yield* AgentRunWorker.use((worker) => worker.handle(delivery))).toEqual({
+        type: "acknowledge",
+        outcome: "failed",
+      });
+      expect(repository.calls).toEqual([
+        "claim",
+        "load",
+        "intent",
+        "attempt",
+        "output:interrupted",
+        "load",
+        "run:failed",
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("asks Pub/Sub to retry while another finite claim is authoritative", () => {
     const repository = makeRepository();

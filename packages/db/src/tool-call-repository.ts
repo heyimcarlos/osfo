@@ -12,6 +12,13 @@ import {
   type ToolCallOutcome,
   type ToolCallRepositoryService,
 } from "@osfo/agent-run";
+import {
+  makeToolCallProgressRecorded,
+  makeToolCallRequested,
+  makeToolCallResultRecorded,
+  type InvalidThreadEvent,
+  type ThreadEvent,
+} from "@osfo/session";
 import { Effect, Layer, Predicate, Redacted } from "effect";
 import type { AgentRunRepositoryDatabaseConfig } from "./agent-run-repository.js";
 
@@ -36,6 +43,48 @@ interface CallRow {
   readonly toolCallId: string;
   readonly toolName: string;
 }
+
+interface AgentRunAuthority {
+  readonly agentRunId: string;
+  readonly cancellationRequested: boolean;
+  readonly principalId: string;
+  readonly threadId: string;
+  readonly userMessageId: string;
+}
+
+type ToolCallPresentation = Parameters<typeof makeToolCallRequested>[0]["presentation"];
+
+type EventBuilder = (input: {
+  readonly eventId: string;
+  readonly threadId: string;
+  readonly threadPosition: string;
+  readonly occurredAt: string;
+  readonly agentRunId: string;
+}) => Effect.Effect<ThreadEvent, InvalidThreadEvent>;
+
+const presentationForTool = (toolName: string): ToolCallPresentation =>
+  toolName === "echo"
+    ? {
+        version: 1,
+        title: "Echo text",
+        description: "Run the bounded local echo tool.",
+      }
+    : {
+        version: 1,
+        title: "Run tool",
+        description: "Run a bounded non-Action tool.",
+      };
+
+const publicOutcome = (outcome: ToolCallOutcome) => {
+  switch (outcome.type) {
+    case "succeeded":
+      return { type: "succeeded" as const };
+    case "failed":
+      return { type: "failed" as const, cause: outcome.cause };
+    case "canceled":
+      return { type: "canceled" as const };
+  }
+};
 
 const toPreparedCall = (row: CallRow): PreparedToolCall => ({
   agentRunId: row.agentRunId,
@@ -91,7 +140,11 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
       const requireFence = Effect.fn("ToolCallRepository.requireFence")(function* (
         fence: AgentRunFence,
       ) {
-        const rows = yield* sql<{ readonly cancellationRequested: boolean }>`SELECT
+        const rows = yield* sql<AgentRunAuthority>`SELECT
+            agent_run_id::text AS "agentRunId",
+            thread_id::text AS "threadId",
+            principal_id::text AS "principalId",
+            user_message_id::text AS "userMessageId",
             cancellation_requested_at IS NOT NULL AS "cancellationRequested"
           FROM agent_runs
           WHERE agent_run_id = ${fence.agentRunId}::uuid
@@ -110,7 +163,66 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
       ) {
         const authority = yield* requireFence(fence);
         if (authority.cancellationRequested) return yield* new AgentRunCancellationObserved();
+        return authority;
       });
+
+      const appendThreadEvent = Effect.fn("ToolCallRepository.appendThreadEvent")(function* (
+        authority: AgentRunAuthority,
+        build: EventBuilder,
+      ) {
+        const positions = yield* sql<{ readonly position: string }>`UPDATE threads
+          SET next_position = next_position + 1,
+              state_revision = state_revision + 1
+          WHERE thread_id = ${authority.threadId}::uuid
+          RETURNING (next_position - 1)::text AS position`;
+        const position = positions[0];
+        if (position === undefined) {
+          return yield* new AgentRunRepositoryUnavailable({ cause: "Thread authority missing" });
+        }
+        const timestamps = yield* sql<{ readonly occurredAt: string }>`SELECT
+          transaction_timestamp()::text AS "occurredAt"`;
+        const timestamp = timestamps[0];
+        if (timestamp === undefined) {
+          return yield* new AgentRunRepositoryUnavailable({ cause: "Timestamp unavailable" });
+        }
+        const event = yield* build({
+          eventId: randomUUID(),
+          threadId: authority.threadId,
+          threadPosition: position.position,
+          occurredAt: new Date(timestamp.occurredAt).toISOString(),
+          agentRunId: authority.agentRunId,
+        });
+        yield* sql`INSERT INTO thread_events (
+            thread_id, position, event_id, principal_id, user_message_id,
+            agent_run_id, event_type, event_version, payload, occurred_at
+          ) VALUES (
+            ${event.threadId}::uuid,
+            ${event.threadPosition}::bigint,
+            ${event.eventId}::uuid,
+            ${authority.principalId}::uuid,
+            ${authority.userMessageId}::uuid,
+            ${event.payload.agentRunId}::uuid,
+            ${event.eventType},
+            ${event.eventVersion},
+            ${JSON.stringify(event.payload)}::jsonb,
+            ${event.occurredAt}::timestamptz
+          )`;
+        return event;
+      });
+
+      const appendResultEvent = (
+        authority: AgentRunAuthority,
+        call: Pick<CallRow, "toolCallId" | "toolName">,
+        outcome: ToolCallOutcome,
+      ) =>
+        appendThreadEvent(authority, (base) =>
+          makeToolCallResultRecorded({
+            ...base,
+            toolCallId: call.toolCallId,
+            presentation: presentationForTool(call.toolName),
+            outcome: publicOutcome(outcome),
+          }),
+        );
 
       const loadCalls = (batchId: string, agentRunId: string) =>
         sql<CallRow>`SELECT
@@ -158,7 +270,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              yield* requireOpenFence(fence);
+              const authority = yield* requireOpenFence(fence);
               const existing = yield* sql<BatchRow>`SELECT
                   tool_call_batch_id::text AS "toolCallBatchId",
                   agent_run_id::text AS "agentRunId",
@@ -228,6 +340,14 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   toolCallId,
                   toolName: member.toolName,
                 });
+                yield* appendThreadEvent(authority, (base) =>
+                  makeToolCallRequested({
+                    ...base,
+                    memberIndex,
+                    presentation: presentationForTool(member.toolName),
+                    toolCallId,
+                  }),
+                );
               }
               return {
                 agentRunId: fence.agentRunId,
@@ -246,7 +366,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              yield* requireOpenFence(fence);
+              const authority = yield* requireOpenFence(fence);
               const persistedBatch = yield* requireBatch(fence, batch);
               if (persistedBatch.state !== "pending") return { type: "terminal" as const };
 
@@ -308,18 +428,28 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   type: "failed" as const,
                   cause: "dependencyUnavailable" as const,
                 };
-                yield* sql`UPDATE tool_calls
+                const failed = yield* sql`UPDATE tool_calls
                   SET state = 'failed', outcome = ${JSON.stringify(outcome)}::jsonb,
                       current_progress = NULL, completed_at = transaction_timestamp()
-                  WHERE tool_call_id = ${call.toolCallId} AND state = 'pending'`;
+                  WHERE tool_call_id = ${call.toolCallId} AND state = 'pending'
+                  RETURNING tool_call_id`;
+                if (failed.length !== 1) return yield* new AgentRunFenceRejected();
+                yield* appendResultEvent(authority, call, outcome);
                 const canceledOutcome = JSON.stringify({ type: "canceled" });
-                yield* sql`UPDATE tool_calls
+                const canceledCalls = yield* sql<{
+                  readonly toolCallId: string;
+                  readonly toolName: string;
+                }>`UPDATE tool_calls
                   SET state = 'canceled', outcome = ${canceledOutcome}::jsonb,
                       current_progress = NULL, completed_at = transaction_timestamp()
                   WHERE tool_call_batch_id = ${batch.toolCallBatchId}::uuid
                     AND agent_run_id = ${fence.agentRunId}::uuid
                     AND tool_call_id <> ${call.toolCallId}
-                    AND state IN ('pending', 'running')`;
+                    AND state IN ('pending', 'running')
+                  RETURNING tool_call_id AS "toolCallId", tool_name AS "toolName"`;
+                for (const canceled of canceledCalls) {
+                  yield* appendResultEvent(authority, canceled, { type: "canceled" });
+                }
                 yield* sql`UPDATE tool_call_batches
                   SET state = 'failed', completed_at = transaction_timestamp()
                   WHERE tool_call_batch_id = ${batch.toolCallBatchId}::uuid AND state = 'pending'`;
@@ -358,7 +488,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              yield* requireOpenFence(fence);
+              const authority = yield* requireOpenFence(fence);
               const inserted = yield* sql`INSERT INTO tool_call_progress_events (
                   tool_call_id, observation_index, tool_call_attempt_id, agent_run_id,
                   message, created_at
@@ -412,7 +542,16 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                 ) {
                   return yield* new AgentRunFenceRejected();
                 }
+                return;
               }
+              yield* appendThreadEvent(authority, (base) =>
+                makeToolCallProgressRecorded({
+                  ...base,
+                  toolCallId: attempt.toolCallId,
+                  presentation: presentationForTool(attempt.toolName),
+                  progress: { message: progress.message },
+                }),
+              );
             }),
           ),
         );
@@ -424,7 +563,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              yield* requireOpenFence(fence);
+              const authority = yield* requireOpenFence(fence);
               const calls = yield* sql<CallRow>`SELECT
                   tool_call_id::text AS "toolCallId", tool_call_batch_id::text AS "toolCallBatchId",
                   agent_run_id::text AS "agentRunId", member_index AS "memberIndex",
@@ -456,10 +595,13 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                 RETURNING tool_call_attempt_id`;
               if (finished.length !== 1) return yield* new AgentRunFenceRejected();
               const terminalState = outcome.type;
-              yield* sql`UPDATE tool_calls
+              const completed = yield* sql`UPDATE tool_calls
                 SET state = ${terminalState}, outcome = ${JSON.stringify(outcome)}::jsonb,
                     current_progress = NULL, completed_at = transaction_timestamp()
-                WHERE tool_call_id = ${attempt.toolCallId} AND state = 'running'`;
+                WHERE tool_call_id = ${attempt.toolCallId} AND state = 'running'
+                RETURNING tool_call_id`;
+              if (completed.length !== 1) return yield* new AgentRunFenceRejected();
+              yield* appendResultEvent(authority, call, outcome);
               if (outcome.type !== "succeeded") {
                 yield* sql`UPDATE tool_call_attempts attempt
                   SET state = 'canceled', finished_at = transaction_timestamp()
@@ -470,12 +612,19 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     AND attempt.agent_run_id = sibling.agent_run_id
                     AND attempt.state = 'started'`;
                 const canceledOutcome = JSON.stringify({ type: "canceled" });
-                yield* sql`UPDATE tool_calls
+                const canceledCalls = yield* sql<{
+                  readonly toolCallId: string;
+                  readonly toolName: string;
+                }>`UPDATE tool_calls
                   SET state = 'canceled', outcome = ${canceledOutcome}::jsonb,
                       current_progress = NULL, completed_at = transaction_timestamp()
                   WHERE tool_call_batch_id = ${call.toolCallBatchId}::uuid
                     AND agent_run_id = ${fence.agentRunId}::uuid
-                    AND state IN ('pending', 'running')`;
+                    AND state IN ('pending', 'running')
+                  RETURNING tool_call_id AS "toolCallId", tool_name AS "toolName"`;
+                for (const canceled of canceledCalls) {
+                  yield* appendResultEvent(authority, canceled, { type: "canceled" });
+                }
                 yield* sql`UPDATE tool_call_batches
                   SET state = ${terminalState}, completed_at = transaction_timestamp()
                   WHERE tool_call_batch_id = ${call.toolCallBatchId}::uuid AND state = 'pending'`;
@@ -528,7 +677,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
-              yield* requireFence(fence);
+              const authority = yield* requireFence(fence);
               const persisted = yield* requireBatch(fence, batch);
               if (persisted.state === "canceled") return;
               if (persisted.state !== "pending") return yield* new AgentRunFenceRejected();
@@ -541,11 +690,18 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   AND attempt.agent_run_id = call.agent_run_id
                   AND attempt.state = 'started'`;
               const outcome = JSON.stringify({ type: "canceled" });
-              yield* sql`UPDATE tool_calls
+              const canceledCalls = yield* sql<{
+                readonly toolCallId: string;
+                readonly toolName: string;
+              }>`UPDATE tool_calls
                 SET state = 'canceled', outcome = ${outcome}::jsonb,
                     current_progress = NULL, completed_at = transaction_timestamp()
                 WHERE tool_call_batch_id = ${batch.toolCallBatchId}::uuid
-                  AND state IN ('pending', 'running')`;
+                  AND state IN ('pending', 'running')
+                RETURNING tool_call_id AS "toolCallId", tool_name AS "toolName"`;
+              for (const canceled of canceledCalls) {
+                yield* appendResultEvent(authority, canceled, { type: "canceled" });
+              }
               yield* sql`UPDATE tool_call_batches
                 SET state = 'canceled', completed_at = transaction_timestamp()
                 WHERE tool_call_batch_id = ${batch.toolCallBatchId}::uuid AND state = 'pending'`;

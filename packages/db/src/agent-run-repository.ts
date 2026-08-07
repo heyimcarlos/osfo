@@ -8,7 +8,7 @@ import {
   ModelCallObservationSchema,
   type AgentRunFence,
   type AgentRunRepositoryService,
-  type ModelCallAttemptOutcome,
+  type ModelCallAttemptAccounting,
   type PreparedModelCall,
 } from "@osfo/agent-run";
 import {
@@ -74,7 +74,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
 
-      const attemptOutcomeColumns = (outcome: ModelCallAttemptOutcome) => ({
+      const attemptOutcomeColumns = (outcome: ModelCallAttemptAccounting) => ({
         dispatchState:
           outcome.dispatchEvidence.type === "notDispatched"
             ? "not_dispatched"
@@ -1199,12 +1199,12 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               ) {
                 return yield* new AgentRunFenceRejected();
               }
-              const openActions = yield* sql`SELECT tool_call_id
-                FROM actions
+              const openToolCalls = yield* sql`SELECT tool_call_id
+                FROM tool_calls
                 WHERE agent_run_id = ${fence.agentRunId}::uuid
-                  AND state NOT IN ('applied', 'notApplied', 'unresolved')
+                  AND state IN ('pending', 'running')
                 FOR UPDATE`;
-              if (openActions.length !== 0) return yield* new AgentRunFenceRejected();
+              if (openToolCalls.length !== 0) return yield* new AgentRunFenceRejected();
               const openOutputs = yield* sql<{
                 readonly assistantOutputId: string;
               }>`SELECT
@@ -1346,12 +1346,12 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               if (authority.cancellationRequestedAt !== null) {
                 return yield* new AgentRunCancellationObserved();
               }
-              const openActions = yield* sql`SELECT tool_call_id
-                FROM actions
+              const openToolCalls = yield* sql`SELECT tool_call_id
+                FROM tool_calls
                 WHERE agent_run_id = ${fence.agentRunId}::uuid
-                  AND state NOT IN ('applied', 'notApplied', 'unresolved')
+                  AND state IN ('pending', 'running')
                 FOR UPDATE`;
-              if (openActions.length !== 0) return yield* new AgentRunFenceRejected();
+              if (openToolCalls.length !== 0) return yield* new AgentRunFenceRejected();
               const expectedCallState = decision.type === "succeed" ? "succeeded" : "failed";
               const expectedOutputState = decision.type === "succeed" ? "completed" : "interrupted";
               const terminalState = decision.type === "succeed" ? "succeeded" : "failed";

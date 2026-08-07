@@ -17,9 +17,11 @@ import * as Predicate from "effect/Predicate";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import { ToolCallBatchRequestSchema } from "./tool-call.js";
 
 export * from "./action.js";
 export * from "./tool-call.js";
+export * from "./tool-loop.js";
 
 const Identity = Schema.String.check(Schema.isUUID());
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
@@ -116,9 +118,26 @@ export const ModelCallDispatchEvidenceSchema = Schema.Union([
 
 export type ModelCallDispatchEvidence = typeof ModelCallDispatchEvidenceSchema.Type;
 
-export const ModelCallAttemptOutcomeSchema = Schema.Struct({
+export const ModelCallCompletionSchema = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("text") }),
+  Schema.Struct({
+    type: Schema.Literal("toolCallBatch"),
+    batch: ToolCallBatchRequestSchema,
+  }),
+]);
+
+export type ModelCallCompletion = typeof ModelCallCompletionSchema.Type;
+
+export const ModelCallAttemptAccountingSchema = Schema.Struct({
   dispatchEvidence: ModelCallDispatchEvidenceSchema,
   usage: ModelCallUsageSchema,
+});
+
+export type ModelCallAttemptAccounting = typeof ModelCallAttemptAccountingSchema.Type;
+
+export const ModelCallAttemptOutcomeSchema = Schema.Struct({
+  ...ModelCallAttemptAccountingSchema.fields,
+  completion: ModelCallCompletionSchema,
 });
 
 export type ModelCallAttemptOutcome = typeof ModelCallAttemptOutcomeSchema.Type;
@@ -243,13 +262,13 @@ export interface AgentRunRepositoryService {
     fence: AgentRunFence,
     attempt: ModelCallAttempt,
     cause: "modelCallFailed",
-    outcome: ModelCallAttemptOutcome,
+    outcome: ModelCallAttemptAccounting,
   ) => Effect.Effect<void, AgentRunRepositoryError>;
   readonly recordModelCallCleanup: (
     fence: AgentRunFence,
     attempt: ModelCallAttempt,
     cleanup: AgentRunCleanupResult,
-    outcome?: ModelCallAttemptOutcome,
+    outcome?: ModelCallAttemptAccounting,
   ) => Effect.Effect<void, AgentRunRepositoryError>;
   readonly loadCancellation: (
     fence: AgentRunFence,
@@ -288,13 +307,13 @@ export type ModelCallCancellationDisposition = typeof ModelCallCancellationDispo
 
 type ModelCallExecutionResult =
   | { readonly type: "completed"; readonly outcome: ModelCallAttemptOutcome }
-  | { readonly type: "interrupted"; readonly outcome: ModelCallAttemptOutcome };
+  | { readonly type: "interrupted"; readonly outcome: ModelCallAttemptAccounting };
 type ModelCallExecutionExit = Exit.Exit<ModelCallExecutionResult, AgentRunRepositoryError>;
 type ModelCallExecutionFiber = Fiber.Fiber<ModelCallExecutionExit>;
 
 interface ModelCallCleanupCache {
   result?: AgentRunCleanupResult;
-  outcome?: ModelCallAttemptOutcome;
+  outcome?: ModelCallAttemptAccounting;
 }
 
 export class ModelCallExecutor extends Context.Service<
@@ -330,6 +349,7 @@ export const makeDeterministicModelCallExecutorLayer = () =>
       Effect.succeed({
         dispatchEvidence: { type: "confirmed" },
         usage: { type: "unknown" },
+        completion: { type: "text" },
       }),
     terminate: () => Effect.void,
   });
@@ -435,7 +455,7 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
         attempt: ModelCallAttempt,
         cleanup: AgentRunCleanupResult,
         deadlineAtEpochMs: number,
-        outcome?: ModelCallAttemptOutcome,
+        outcome?: ModelCallAttemptAccounting,
       ) {
         const now = yield* Clock.currentTimeMillis;
         const remainingMs = deadlineAtEpochMs - now;
@@ -685,6 +705,18 @@ const agentRunWorkerLayer = (config: AgentRunWorkerConfig) =>
             if (executionResult.type === "interrupted") {
               yield* executor.terminate(attempt);
               yield* Fiber.await(executionFiber);
+              yield* repository.interruptModelCall(
+                fence,
+                attempt,
+                "modelCallFailed",
+                executionResult.outcome,
+              );
+              activeAttempt = undefined;
+              activeExecution = undefined;
+              activeCleanup = {};
+              continue;
+            }
+            if (executionResult.outcome.completion.type === "toolCallBatch") {
               yield* repository.interruptModelCall(
                 fence,
                 attempt,

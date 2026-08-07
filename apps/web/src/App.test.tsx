@@ -198,6 +198,74 @@ describe("browser reference client", () => {
     expect(html).not.toContain("osfo-demo-recipient@example.invalid");
   });
 
+  it("renders client-safe non-Action ToolCall progress and result cards", () => {
+    const chat = makeTestChat();
+    const toolCallId = "tool_4ad4707e-a960-448b-ab7b-6edcc7ae213f";
+    const presentation = {
+      version: 1,
+      title: "Search reference documents",
+      description: "Find relevant public references for this answer.",
+    } as const;
+    const progressHtml = renderToStaticMarkup(
+      <RegistryProvider
+        initialValues={[
+          [
+            chat.messages,
+            [
+              {
+                type: "toolCallProgress",
+                messageId: toolCallId,
+                toolCallId,
+                agentRunId: receipt.agentRunId,
+                content: "Search reference documents\nSearching references",
+                eventId: "b399f65c-0274-40b4-aa4d-e7b80f8c531c",
+                occurredAt: receipt.acceptedAt,
+                presentation,
+                progress: { message: "Searching references" },
+                threadPosition: "2",
+              },
+            ],
+          ],
+        ]}
+      >
+        <App chat={chat} threadId={threadId} />
+      </RegistryProvider>,
+    );
+    const resultHtml = renderToStaticMarkup(
+      <RegistryProvider
+        initialValues={[
+          [
+            chat.messages,
+            [
+              {
+                type: "toolCallResult",
+                messageId: toolCallId,
+                toolCallId,
+                agentRunId: receipt.agentRunId,
+                content: "Search reference documents\nOutcome: succeeded",
+                eventId: "269787db-071e-4478-806f-1d85d00b7337",
+                occurredAt: receipt.acceptedAt,
+                presentation,
+                outcome: { type: "succeeded" },
+                threadPosition: "3",
+              },
+            ],
+          ],
+        ]}
+      >
+        <App chat={chat} threadId={threadId} />
+      </RegistryProvider>,
+    );
+
+    expect(progressHtml).toContain("ToolCall in progress");
+    expect(progressHtml).toContain("Searching references");
+    expect(progressHtml).toContain(toolCallId);
+    expect(resultHtml).toContain("Outcome: succeeded");
+    expect(resultHtml).toContain(toolCallId);
+    expect(`${progressHtml}${resultHtml}`).not.toContain("private raw argument");
+    expect(`${progressHtml}${resultHtml}`).not.toContain("private raw result");
+  });
+
   it("resumes committed assistant output through the API and renders it reactively", async () => {
     const assistantOutputId = "86290831-b9ca-414a-abf1-4055b5347133";
     const eventInput = {
