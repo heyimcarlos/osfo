@@ -141,7 +141,7 @@ if rg --quiet 'OSFO_OPENROUTER_MODEL|OPENAI_API_KEY' .env.example; then
 fi
 rg --fixed-strings --quiet 'gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.22.0@sha256:' "$root/image-digests.json"
 rg --fixed-strings --quiet \
-  'us-east4-docker.pkg.dev/osfo-development-318708913/osfo/application@sha256:5c0779a0b6ce57817f6d2e05c062236c6d586e0f12ec7dc07292216d4fa4bb84' \
+  'us-east4-docker.pkg.dev/osfo-development-318708913/osfo/application@sha256:dda45cf1dc4bf438e8b49314bdbe0bc194660f92fd8d5334bc1f575610ecc1a1' \
   "$root/image-digests.json"
 
 jq -e '
