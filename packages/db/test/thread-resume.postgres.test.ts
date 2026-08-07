@@ -340,7 +340,7 @@ describe("PostgreSQL Thread resume", () => {
           const sql = yield* PgClient.PgClient;
           const countListeners = sql<{ readonly count: string }>`SELECT count(*)::text AS count
             FROM pg_stat_activity
-            WHERE application_name = 'osfo-thread-resume'
+            WHERE application_name LIKE 'osfo-thread-resume-%'
               AND query LIKE 'LISTEN %'`;
           const baseline = Number((yield* countListeners)[0]?.count ?? "0");
           const services = yield* Layer.build(
@@ -363,6 +363,67 @@ describe("PostgreSQL Thread resume", () => {
       ).pipe(Effect.provide(databaseLayer)),
     );
   });
+
+  it("reconnects a terminated PostgreSQL notification backend without waiting for polling", async () => {
+    const origin = (await run(ThreadResume.use((resume) => resume.snapshot(access)))).throughCursor;
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const listenerPids = sql<{ readonly pid: string }>`SELECT pid::text AS pid
+            FROM pg_stat_activity
+            WHERE application_name LIKE 'osfo-thread-resume-%'
+              AND query LIKE 'LISTEN %'`;
+          const baseline = new Set((yield* listenerPids).map((row) => row.pid));
+          const services = yield* Layer.build(
+            makeThreadResumeLayer({ ...resumeConfig, maxConnections: 1, pollIntervalMs: 60_000 }),
+          );
+          const resume = Context.get(services, ThreadResume);
+          const initialListenerPid = yield* listenerPids.pipe(
+            Effect.flatMap((rows) => {
+              const pid = rows.find((row) => !baseline.has(row.pid))?.pid;
+              return pid === undefined ? Effect.fail("listener not ready") : Effect.succeed(pid);
+            }),
+            Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 200 }),
+            Effect.timeout("3 seconds"),
+          );
+          const caughtUp = yield* Latch.make();
+          const stream = yield* resume.stream({ ...access, after: origin });
+          const collector = yield* stream.pipe(
+            Stream.tap((event) =>
+              event.event === "caught_up" ? caughtUp.open.pipe(Effect.asVoid) : Effect.void,
+            ),
+            Stream.take(3),
+            Stream.runCollect,
+            Effect.forkChild,
+          );
+          yield* caughtUp.await;
+
+          yield* sql`SELECT pg_terminate_backend(${initialListenerPid}::integer)`;
+          yield* Effect.promise(() => accept("Committed while listener is unavailable"));
+          yield* listenerPids.pipe(
+            Effect.filterOrFail(
+              (rows) =>
+                rows.some((row) => row.pid !== initialListenerPid && !baseline.has(row.pid)),
+              () => "notification listener has not reconnected",
+            ),
+            Effect.retry({ schedule: Schedule.spaced("25 millis"), times: 200 }),
+            Effect.timeout("6 seconds"),
+          );
+          yield* Effect.promise(() => accept("Delivered after listener reconnect"));
+
+          const delivered = Array.from(
+            yield* Fiber.join(collector).pipe(Effect.timeout("3 seconds")),
+          );
+          expect(
+            delivered.flatMap((event) =>
+              event.event === "thread_event" ? [event.data.threadPosition] : [],
+            ),
+          ).toEqual(["1", "2"]);
+        }),
+      ).pipe(Effect.provide(databaseLayer)),
+    );
+  }, 15_000);
 
   it("keeps unknown and unauthorized Threads indistinguishable", async () => {
     const unauthorized = await run(

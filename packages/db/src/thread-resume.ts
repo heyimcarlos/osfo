@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import {
   AuthenticationRejected,
@@ -27,6 +27,8 @@ import { Data, Effect, Layer, Option, PubSub, Redacted, Schedule, Schema, Stream
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const threadEventsNotificationChannel = "osfo_thread_events";
+const notificationListenerLivenessIntervalMs = 1_000;
+const notificationListenerReconnectDelayMs = 100;
 
 export const ThreadResumeDatabaseConfigSchema = Schema.Struct({
   databaseUrl: Schema.NonEmptyString,
@@ -106,8 +108,9 @@ const decodeCursor = Effect.fn("DatabaseThreadResume.decodeCursor")(function* (
 });
 
 const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResumeTestHooks) => {
+  const applicationName = `osfo-thread-resume-${randomUUID().slice(0, 8)}`;
   const postgresLayer = PgClient.layer({
-    applicationName: "osfo-thread-resume",
+    applicationName,
     maxConnections: config.maxConnections,
     url: Redacted.make(config.databaseUrl),
   });
@@ -116,20 +119,43 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
       const notificationHints = yield* PubSub.sliding<string>(1_024);
-      // PgClient.listen owns a dedicated listener connection and does not lease a query-pool slot.
-      const listenForNotificationHints = sql.listen(threadEventsNotificationChannel).pipe(
-        Stream.runForEach((notifiedThreadId) =>
-          hooks.dropNotificationHint(notifiedThreadId).pipe(
-            Effect.flatMap((drop) =>
-              drop ? Effect.void : PubSub.publish(notificationHints, notifiedThreadId),
+      const readListenerBackend = sql<{ readonly pid: string }>`SELECT pid::text AS pid
+        FROM pg_stat_activity
+        WHERE application_name = ${applicationName}
+          AND query LIKE 'LISTEN %'
+        LIMIT 1`;
+      const listenForNotificationHints = Effect.scoped(
+        Effect.gen(function* () {
+          yield* sql.listen(threadEventsNotificationChannel).pipe(
+            Stream.runForEach((notifiedThreadId) =>
+              hooks.dropNotificationHint(notifiedThreadId).pipe(
+                Effect.flatMap((drop) =>
+                  drop ? Effect.void : PubSub.publish(notificationHints, notifiedThreadId),
+                ),
+                Effect.asVoid,
+              ),
             ),
-            Effect.asVoid,
-          ),
-        ),
+            Effect.forkScoped,
+          );
+          const backendPid = yield* readListenerBackend.pipe(
+            Effect.flatMap((rows) =>
+              rows[0] === undefined
+                ? Effect.fail(new ThreadResumeUnavailable())
+                : Effect.succeed(rows[0].pid),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 200 }),
+          );
+          while (true) {
+            yield* Effect.sleep(notificationListenerLivenessIntervalMs);
+            const alive = (yield* readListenerBackend).some((row) => row.pid === backendPid);
+            if (!alive) return yield* new ThreadResumeUnavailable();
+          }
+        }),
+      ).pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("Thread event notification listener unavailable", cause),
+          Effect.logWarning("Thread event notification listener reconnecting", cause),
         ),
-        Effect.andThen(Effect.sleep(config.pollIntervalMs)),
+        Effect.andThen(Effect.sleep(notificationListenerReconnectDelayMs)),
       );
       yield* Effect.forever(listenForNotificationHints).pipe(Effect.forkScoped);
 
