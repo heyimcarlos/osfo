@@ -25,8 +25,10 @@ and output paths inside evidence roots are rejected.
 
 Metrics and reports retain only the bounded bundle slug and checksum-manifest
 hash. Local filesystem paths are never emitted. A run contributes to the
-qualification matrix only when its manifest explicitly sets `qualifying` and
-its region matches `selectedRegion`.
+qualification matrix only when its checksum-bound identity is in the
+top-level `qualifyingRuns` selection, its sealed region matches
+`selectedRegion`, and it names a sealed matrix cell. Per-bundle metadata cannot
+promote a contextual or historical run into production qualification.
 
 ## One-command walkthrough
 
@@ -47,7 +49,12 @@ Pass three explicit sealed run directories in this order:
 The command starts Grafana at `http://127.0.0.1:13000` and Prometheus at
 `http://127.0.0.1:19090`, imports the bundles, locks the UTC range, saves loaded
 dashboard definitions and query responses, captures 1920 × 1080 screenshots,
-and seals the presentation bundle with `SEALED-SHA256SUMS`.
+and seals the presentation bundle with `SEALED-SHA256SUMS`. It builds in a
+sibling staging directory and publishes with an atomic rename. A failed run
+removes its partial staging data and its owned Compose containers and volumes.
+Each screenshot is accepted only after its dumped DOM proves the sealed run
+and locked range are selected and no panel is loading, errored, or reporting
+`No data`.
 
 Ports can be changed with `OSFO_OPENPOKE_GRAFANA_PORT` and
 `OSFO_OPENPOKE_PROMETHEUS_PORT`.

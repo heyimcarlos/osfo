@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, lstat, open, readFile, readlink, realpath, writeFile } from "node:fs/promises";
+import { access, lstat, open, readlink, realpath, rename, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -14,7 +14,6 @@ export const EvidenceBundleInputSchema = Schema.Struct({
   root: Schema.String,
   run: Schema.String,
   classification: RunClassificationSchema,
-  qualifying: Schema.optionalKey(Schema.Boolean),
   region: Schema.optionalKey(Schema.String),
   topology: Schema.optionalKey(Schema.String),
   cell: Schema.optionalKey(Schema.Literals(["A", "B", "C", "D"])),
@@ -24,6 +23,7 @@ export const EvidenceBundleInputSchema = Schema.Struct({
 
 export const EvidenceImportRequestSchema = Schema.Struct({
   bundles: Schema.Array(EvidenceBundleInputSchema),
+  qualifyingRuns: Schema.Array(Schema.String),
   selectedRegion: Schema.String,
 });
 
@@ -75,6 +75,8 @@ export interface ImportedRun {
   readonly overallStatus: GateStatus;
   readonly artifactStatuses: Readonly<Record<string, GateStatus>>;
   readonly integrityViolations: Readonly<Record<string, number | undefined>>;
+  readonly recoveryRequirementStatuses: Readonly<Record<string, GateStatus>>;
+  readonly multiDeviceRequirementStatuses: Readonly<Record<string, GateStatus>>;
 }
 
 export interface EvidenceImportResult {
@@ -113,64 +115,81 @@ const recognizedArtifacts = [
   "multi-device.json",
 ] as const;
 
-const OptionalNumber = Schema.optionalKey(Schema.Number);
+const NonNegativeFinite = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
+const NonNegativeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const Ratio = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
+const OptionalNonNegativeFinite = Schema.optionalKey(NonNegativeFinite);
+const OptionalNonNegativeInteger = Schema.optionalKey(NonNegativeInteger);
+const OptionalRatio = Schema.optionalKey(Ratio);
 const OptionalString = Schema.optionalKey(Schema.String);
 
 const ScenarioArtifactSchema = Schema.Struct({
+  benchmark_id: Schema.String,
   candidate: OptionalString,
-  count: OptionalNumber,
+  count: OptionalNonNegativeInteger,
   database_wal_envelope: OptionalString,
-  duration_seconds: OptionalNumber,
+  duration_seconds: OptionalNonNegativeFinite,
   ended_at: OptionalString,
   lane: OptionalString,
-  rate_per_second: OptionalNumber,
+  rate_per_second: OptionalNonNegativeFinite,
   region: OptionalString,
+  repetition: OptionalNonNegativeInteger,
   started_at: OptionalString,
   worker_delivery: OptionalString,
 });
 
 const AuditArtifactSchema = Schema.Struct({
-  accepted_incoming: OptionalNumber,
+  benchmark_id: OptionalString,
+  lane: OptionalString,
+  accepted_incoming: OptionalNonNegativeInteger,
   caller_to_receipt_ms: Schema.optionalKey(
-    Schema.Struct({ max: OptionalNumber, p95: OptionalNumber, p99: OptionalNumber }),
+    Schema.Struct({
+      max: OptionalNonNegativeFinite,
+      p95: OptionalNonNegativeFinite,
+      p99: OptionalNonNegativeFinite,
+    }),
   ),
-  completed_root_outcomes: OptionalNumber,
-  duplicate_publications: OptionalNumber,
-  duplicate_terminal_commits: OptionalNumber,
-  ghost_delivery_attempts: OptionalNumber,
-  good_root_outcomes: OptionalNumber,
-  nonterminal_agent_runs: OptionalNumber,
-  outbox_index_bytes: OptionalNumber,
-  outbox_table_bytes: OptionalNumber,
-  stranded_accepted_runs: OptionalNumber,
-  succeeded_agent_runs: OptionalNumber,
-  unfinished_agent_run_attempts: OptionalNumber,
-  unfinished_model_call_attempts: OptionalNumber,
-  expected_incoming: OptionalNumber,
+  completed_root_outcomes: OptionalNonNegativeInteger,
+  duplicate_publications: OptionalNonNegativeInteger,
+  duplicate_terminal_commits: OptionalNonNegativeInteger,
+  ghost_delivery_attempts: OptionalNonNegativeInteger,
+  good_root_outcomes: OptionalNonNegativeInteger,
+  nonterminal_agent_runs: OptionalNonNegativeInteger,
+  outbox_index_bytes: OptionalNonNegativeInteger,
+  outbox_table_bytes: OptionalNonNegativeInteger,
+  stranded_accepted_runs: OptionalNonNegativeInteger,
+  succeeded_agent_runs: OptionalNonNegativeInteger,
+  unfinished_agent_run_attempts: OptionalNonNegativeInteger,
+  unfinished_model_call_attempts: OptionalNonNegativeInteger,
+  expected_incoming: OptionalNonNegativeInteger,
   verdict: Schema.optionalKey(EvidenceVerdictSchema),
 });
 
 const QualificationArtifactSchema = Schema.Struct({
-  atomic_admission: Schema.optionalKey(Schema.Struct({ mean_ms: OptionalNumber })),
+  benchmark_id: OptionalString,
+  matrix_cell: OptionalString,
+  atomic_admission: Schema.optionalKey(Schema.Struct({ mean_ms: OptionalNonNegativeFinite })),
   checkpoints: Schema.optionalKey(
     Schema.Struct({
-      checkpoint_starts: OptionalNumber,
-      duration_seconds: Schema.optionalKey(Schema.Struct({ p95: OptionalNumber })),
+      checkpoint_starts: OptionalNonNegativeInteger,
+      duration_seconds: Schema.optionalKey(Schema.Struct({ p95: OptionalNonNegativeFinite })),
     }),
   ),
   database: Schema.optionalKey(
     Schema.Struct({
-      backends: Schema.optionalKey(Schema.Struct({ max: OptionalNumber, p95: OptionalNumber })),
-      cpu: Schema.optionalKey(Schema.Struct({ max: OptionalNumber, p95: OptionalNumber })),
-      wal_bytes: OptionalNumber,
+      backends: Schema.optionalKey(
+        Schema.Struct({ max: OptionalNonNegativeFinite, p95: OptionalNonNegativeFinite }),
+      ),
+      cpu: Schema.optionalKey(Schema.Struct({ max: OptionalRatio, p95: OptionalRatio })),
+      wal_bytes: OptionalNonNegativeInteger,
     }),
   ),
   receipt: Schema.optionalKey(
     Schema.Struct({
-      max_ms: OptionalNumber,
-      p95_ms: OptionalNumber,
-      p99_ms: OptionalNumber,
-      within_1_second_ratio: OptionalNumber,
+      max_ms: OptionalNonNegativeFinite,
+      p95_ms: OptionalNonNegativeFinite,
+      p99_ms: OptionalNonNegativeFinite,
+      within_1_second_ratio: OptionalRatio,
     }),
   ),
   reconciliation: Schema.optionalKey(
@@ -180,25 +199,44 @@ const QualificationArtifactSchema = Schema.Struct({
   wal_envelope: OptionalString,
 });
 
-const CheckpointsArtifactSchema = Schema.Struct({ checkpoint_starts: OptionalNumber });
+const CheckpointsArtifactSchema = Schema.Struct({ checkpoint_starts: OptionalNonNegativeInteger });
 
 const FirstMeaningfulEventArtifactSchema = Schema.Struct({
   verdict: EvidenceVerdictSchema,
-  within_10_seconds_ratio: OptionalNumber,
+  within_10_seconds_ratio: OptionalRatio,
 });
 
 const RecoveryArtifactSchema = Schema.Struct({
   backlog_bounded: Schema.Boolean,
   full_drain_within_20_minutes: Schema.Boolean,
+  process_cut_timeline_seconds: OptionalNonNegativeFinite,
   progress_within_5_minutes: Schema.Boolean,
+  recovery_rate_per_second: OptionalNonNegativeFinite,
+  requirements: Schema.optionalKey(
+    Schema.Struct({
+      dependency_outage: Schema.optionalKey(EvidenceVerdictSchema),
+      process_cut_timeline: Schema.optionalKey(EvidenceVerdictSchema),
+      recovery_rate: Schema.optionalKey(EvidenceVerdictSchema),
+    }),
+  ),
   verdict: EvidenceVerdictSchema,
 });
 
 const MultiDeviceArtifactSchema = Schema.Struct({
+  concurrent_sse_connections: OptionalNonNegativeInteger,
   converged: Schema.Boolean,
-  ordering_violations: Schema.Number,
-  stream_duplicates: Schema.Number,
-  stream_gaps: Schema.Number,
+  device_cursor_positions: OptionalNonNegativeInteger,
+  ordering_violations: NonNegativeInteger,
+  replay_latency_ms: OptionalNonNegativeFinite,
+  requirements: Schema.optionalKey(
+    Schema.Struct({
+      concurrent_sse_connections: Schema.optionalKey(EvidenceVerdictSchema),
+      device_cursor_positions: Schema.optionalKey(EvidenceVerdictSchema),
+      replay_latency: Schema.optionalKey(EvidenceVerdictSchema),
+    }),
+  ),
+  stream_duplicates: NonNegativeInteger,
+  stream_gaps: NonNegativeInteger,
   verdict: EvidenceVerdictSchema,
 });
 
@@ -206,7 +244,7 @@ const RequestCountArtifactSchema = Schema.Struct({
   timeSeries: Schema.Array(
     Schema.Struct({
       metric: Schema.Struct({
-        labels: Schema.Struct({ response_code: Schema.optionalKey(Schema.String) }),
+        labels: Schema.Struct({ response_code: Schema.String }),
       }),
       points: Schema.Array(Schema.Struct({ value: Schema.Struct({ int64Value: Schema.String }) })),
     }),
@@ -398,9 +436,6 @@ const verifyBundle = async (inputRoot: string): Promise<VerifiedBundle> => {
   return { root, sourceHash: sha256(manifestBytes), files };
 };
 
-const statusFrom = (value: unknown): GateStatus =>
-  value === "PASS" ? "PASS" : value === "FAIL" ? "FAIL" : "MISSING";
-
 const cellFrom = (lane: string | undefined) => {
   const match = /matrix-([A-D])(?:-|$)/u.exec(lane ?? "");
   return match?.[1] ?? "none";
@@ -426,14 +461,13 @@ const sumCloudRun429s = (files: ReadonlyMap<string, Buffer>) => {
   );
   if (requestCountFiles.length === 0) return undefined;
 
-  let total = 0;
+  let total = 0n;
   let observedSeries = false;
   for (const listed of requestCountFiles) {
     const parsed = decodeArtifact(RequestCountArtifactSchema, files.get(listed), listed);
     if (parsed === undefined || parsed.timeSeries.length === 0) continue;
-    observedSeries = true;
     for (const item of parsed.timeSeries) {
-      if (item.metric.labels.response_code !== "429") continue;
+      if (item.points.length > 0) observedSeries = true;
       for (const point of item.points) {
         const raw = point.value.int64Value;
         if (!/^(?:0|[1-9][0-9]*)$/u.test(raw)) {
@@ -443,19 +477,20 @@ const sumCloudRun429s = (files: ReadonlyMap<string, Buffer>) => {
             "request-count point is not a non-negative integer",
           );
         }
-        const value = Number(raw);
-        if (!Number.isSafeInteger(value)) {
+        const value = BigInt(raw);
+        if (item.metric.labels.response_code !== "429") continue;
+        total += value;
+        if (total > BigInt(Number.MAX_SAFE_INTEGER)) {
           throw new EvidenceImportError(
             "MALFORMED_ARTIFACT",
             listed,
-            "request-count point exceeds safe integer range",
+            "request-count total exceeds safe integer range",
           );
         }
-        total += value;
       }
     }
   }
-  return observedSeries ? total : undefined;
+  return observedSeries ? Number(total) : undefined;
 };
 
 const minStatus = (statuses: ReadonlyArray<GateStatus>): GateStatus =>
@@ -486,7 +521,11 @@ const validateTimestamp = (value: string | undefined, field: string) => {
     );
   }
   const milliseconds = Date.parse(value);
-  if (!Number.isFinite(milliseconds)) {
+  const normalized = value.replace(
+    /(?:\.(\d{1,3}))?Z$/u,
+    (_match, fraction: string | undefined) => `.${(fraction ?? "").padEnd(3, "0")}Z`,
+  );
+  if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString() !== normalized) {
     throw new EvidenceImportError("MALFORMED_ARTIFACT", "scenario.json", `${field} is invalid`);
   }
   return milliseconds;
@@ -495,6 +534,7 @@ const validateTimestamp = (value: string | undefined, field: string) => {
 const importBundle = async (
   input: EvidenceBundleInput,
   selectedRegion: string,
+  qualifyingRuns: ReadonlySet<string>,
 ): Promise<ImportedRun> => {
   if (!isRecord(input)) {
     throw new EvidenceImportError("INVALID_REQUEST", "bundles", "each bundle must be an object");
@@ -511,9 +551,6 @@ const importBundle = async (
   }
   if (!["retained", "failed", "pilot", "historical"].includes(input.classification)) {
     throw new EvidenceImportError("INVALID_REQUEST", input.run, "classification is invalid");
-  }
-  if (input.qualifying !== undefined && typeof input.qualifying !== "boolean") {
-    throw new EvidenceImportError("INVALID_REQUEST", input.run, "qualifying must be boolean");
   }
   for (const [field, value] of [
     ["region", input.region],
@@ -564,6 +601,77 @@ const importBundle = async (
     "multi-device.json",
   );
 
+  const sealedRun = validateBoundedSlug(
+    scenarioArtifact?.benchmark_id,
+    "benchmark_id",
+    "scenario.json",
+  );
+  if (input.run !== sealedRun) {
+    throw new EvidenceImportError(
+      "INVALID_REQUEST",
+      input.run,
+      "run must match the checksum-bound benchmark identity",
+    );
+  }
+  for (const [sourceName, benchmarkId] of [
+    ["audit.json", auditArtifact?.benchmark_id],
+    ["qualification-metrics.json", qualificationArtifact?.benchmark_id],
+  ] as const) {
+    if (benchmarkId !== undefined && benchmarkId !== sealedRun) {
+      throw new EvidenceImportError(
+        "MALFORMED_ARTIFACT",
+        sourceName,
+        "benchmark identity contradicts scenario.json",
+      );
+    }
+  }
+
+  const sealedRegions = [scenarioArtifact?.region, qualificationArtifact?.region].filter(
+    (region): region is string => region !== undefined,
+  );
+  if (new Set(sealedRegions).size > 1) {
+    throw new EvidenceImportError(
+      "MALFORMED_ARTIFACT",
+      "qualification-metrics.json",
+      "sealed region contradicts scenario.json",
+    );
+  }
+  const sealedRegion = sealedRegions[0];
+  if (input.region !== undefined && input.region !== sealedRegion) {
+    throw new EvidenceImportError(
+      "INVALID_REQUEST",
+      input.run,
+      "region override must match checksum-bound region evidence",
+    );
+  }
+
+  const sealedLane = scenarioArtifact?.lane;
+  if (sealedLane !== undefined) {
+    const repetition = scenarioArtifact?.repetition;
+    const repeatedLane = repetition === undefined ? sealedLane : `${sealedLane}-${repetition}`;
+    if (
+      auditArtifact?.lane !== undefined &&
+      auditArtifact.lane !== sealedLane &&
+      auditArtifact.lane !== repeatedLane
+    ) {
+      throw new EvidenceImportError(
+        "MALFORMED_ARTIFACT",
+        "audit.json",
+        "sealed lane contradicts scenario.json",
+      );
+    }
+    if (
+      qualificationArtifact?.matrix_cell !== undefined &&
+      qualificationArtifact.matrix_cell !== sealedLane
+    ) {
+      throw new EvidenceImportError(
+        "MALFORMED_ARTIFACT",
+        "qualification-metrics.json",
+        "sealed lane contradicts scenario.json",
+      );
+    }
+  }
+
   const startedAtMilliseconds = validateTimestamp(scenarioArtifact?.started_at, "started_at");
   const endedAtMilliseconds = validateTimestamp(scenarioArtifact?.ended_at, "ended_at");
   if (
@@ -578,7 +686,7 @@ const importBundle = async (
     );
   }
 
-  const lane = scenarioArtifact?.lane;
+  const lane = sealedLane;
   const qualReceipt = qualificationArtifact?.receipt;
   const qualAdmission = qualificationArtifact?.atomic_admission;
   const qualDatabase = qualificationArtifact?.database;
@@ -601,34 +709,134 @@ const importBundle = async (
       : receiptWithinOneSecondRatio >= 0.999
         ? "PASS"
         : "FAIL";
-  const reconciliationStatus = statusFrom(qualReconciliation?.verdict ?? auditArtifact?.verdict);
+  const integrityCounters = [
+    auditArtifact?.duplicate_publications,
+    auditArtifact?.duplicate_terminal_commits,
+    auditArtifact?.ghost_delivery_attempts,
+    auditArtifact?.nonterminal_agent_runs,
+    auditArtifact?.stranded_accepted_runs,
+    auditArtifact?.unfinished_agent_run_attempts,
+    auditArtifact?.unfinished_model_call_attempts,
+  ];
+  const knownFieldFailure =
+    (accepted !== undefined && correct !== undefined && accepted !== correct) ||
+    integrityCounters.some((value) => value !== undefined && value > 0);
+  const fieldsComplete =
+    accepted !== undefined &&
+    correct !== undefined &&
+    integrityCounters.every((value) => value !== undefined);
+  if (
+    (knownFieldFailure && auditArtifact?.verdict === "PASS") ||
+    (fieldsComplete && !knownFieldFailure && auditArtifact?.verdict === "FAIL")
+  ) {
+    throw new EvidenceImportError(
+      "MALFORMED_ARTIFACT",
+      "audit.json",
+      "audit verdict contradicts authoritative correctness fields",
+    );
+  }
+  const correctnessStatus: GateStatus =
+    knownFieldFailure || auditArtifact?.verdict === "FAIL"
+      ? "FAIL"
+      : fieldsComplete
+        ? "PASS"
+        : "MISSING";
+  if (
+    auditArtifact?.verdict !== undefined &&
+    qualReconciliation?.verdict !== undefined &&
+    auditArtifact.verdict !== qualReconciliation.verdict
+  ) {
+    throw new EvidenceImportError(
+      "MALFORMED_ARTIFACT",
+      "qualification-metrics.json",
+      "reconciliation verdict contradicts audit.json",
+    );
+  }
+  if (
+    (qualReconciliation?.verdict === "PASS" && correctnessStatus !== "PASS") ||
+    (qualReconciliation?.verdict === "FAIL" && correctnessStatus === "PASS")
+  ) {
+    throw new EvidenceImportError(
+      "MALFORMED_ARTIFACT",
+      "qualification-metrics.json",
+      "reconciliation verdict contradicts authoritative correctness status",
+    );
+  }
+  const reconciliationStatus: GateStatus =
+    qualReconciliation?.verdict === "FAIL" ? "FAIL" : correctnessStatus;
   const offeredAcceptedStatus: GateStatus =
     offered === undefined || accepted === undefined
       ? "MISSING"
       : offered === accepted
         ? "PASS"
         : "FAIL";
-  const correctnessStatus = reconciliationStatus;
-  const firstMeaningfulEventStatus = statusFrom(firstMeaningfulEventArtifact?.verdict);
+  const firstMeaningfulEventStatus: GateStatus =
+    firstMeaningfulEventArtifact?.within_10_seconds_ratio === undefined
+      ? "MISSING"
+      : firstMeaningfulEventArtifact.verdict === "PASS" &&
+          firstMeaningfulEventArtifact.within_10_seconds_ratio >= 0.999
+        ? "PASS"
+        : "FAIL";
+  const recoveryRequirementStatuses: Readonly<Record<string, GateStatus>> = {
+    dependency_outage: recoveryArtifact?.requirements?.dependency_outage ?? "MISSING",
+    backlog_accumulation:
+      recoveryArtifact === undefined
+        ? "MISSING"
+        : recoveryArtifact.backlog_bounded
+          ? "PASS"
+          : "FAIL",
+    recovery_rate: recoveryArtifact?.requirements?.recovery_rate ?? "MISSING",
+    drain_time:
+      recoveryArtifact === undefined
+        ? "MISSING"
+        : recoveryArtifact.full_drain_within_20_minutes
+          ? "PASS"
+          : "FAIL",
+    process_cut_timeline: recoveryArtifact?.requirements?.process_cut_timeline ?? "MISSING",
+  };
+  const multiDeviceRequirementStatuses: Readonly<Record<string, GateStatus>> = {
+    concurrent_sse_connections:
+      multiDeviceArtifact?.requirements?.concurrent_sse_connections ?? "MISSING",
+    device_cursor_positions:
+      multiDeviceArtifact?.requirements?.device_cursor_positions ?? "MISSING",
+    stream_gaps:
+      multiDeviceArtifact === undefined
+        ? "MISSING"
+        : multiDeviceArtifact.stream_gaps === 0
+          ? "PASS"
+          : "FAIL",
+    stream_duplicates:
+      multiDeviceArtifact === undefined
+        ? "MISSING"
+        : multiDeviceArtifact.stream_duplicates === 0
+          ? "PASS"
+          : "FAIL",
+    stream_ordering:
+      multiDeviceArtifact === undefined
+        ? "MISSING"
+        : multiDeviceArtifact.ordering_violations === 0
+          ? "PASS"
+          : "FAIL",
+    replay_latency: multiDeviceArtifact?.requirements?.replay_latency ?? "MISSING",
+    device_convergence:
+      multiDeviceArtifact === undefined
+        ? "MISSING"
+        : multiDeviceArtifact.converged
+          ? "PASS"
+          : "FAIL",
+  };
   const recoveryStatus: GateStatus =
     recoveryArtifact === undefined
       ? "MISSING"
-      : recoveryArtifact.verdict === "PASS" &&
-          recoveryArtifact.backlog_bounded &&
-          recoveryArtifact.progress_within_5_minutes &&
-          recoveryArtifact.full_drain_within_20_minutes
-        ? "PASS"
-        : "FAIL";
+      : recoveryArtifact.verdict === "FAIL" || !recoveryArtifact.progress_within_5_minutes
+        ? "FAIL"
+        : minStatus(Object.values(recoveryRequirementStatuses));
   const multiDeviceStatus: GateStatus =
     multiDeviceArtifact === undefined
       ? "MISSING"
-      : multiDeviceArtifact.verdict === "PASS" &&
-          multiDeviceArtifact.converged &&
-          multiDeviceArtifact.ordering_violations === 0 &&
-          multiDeviceArtifact.stream_duplicates === 0 &&
-          multiDeviceArtifact.stream_gaps === 0
-        ? "PASS"
-        : "FAIL";
+      : multiDeviceArtifact.verdict === "FAIL"
+        ? "FAIL"
+        : minStatus(Object.values(multiDeviceRequirementStatuses));
   const overallStatus = minStatus([
     correctnessStatus,
     offeredAcceptedStatus,
@@ -647,27 +855,65 @@ const importBundle = async (
     ["monitoring", cloudRun429s === undefined ? "MISSING" : "PASS"],
   ]) as Record<string, GateStatus>;
 
-  const region =
-    input.region ?? scenarioArtifact?.region ?? qualificationArtifact?.region ?? "unspecified";
+  const region = sealedRegion ?? "unspecified";
   validateBoundedSlug(region, "region", input.run);
-  const topology = input.topology ?? topologyFrom(scenarioArtifact);
-  const cell = input.cell ?? cellFrom(lane);
-  const history = input.history ?? historyFrom(lane);
-  const wal =
-    input.wal ??
-    scenarioArtifact?.database_wal_envelope ??
-    qualificationArtifact?.wal_envelope ??
-    "unspecified";
+  const sealedTopology = topologyFrom(scenarioArtifact);
+  if (input.topology !== undefined && input.topology !== sealedTopology) {
+    throw new EvidenceImportError(
+      "INVALID_REQUEST",
+      input.run,
+      "topology override must match checksum-bound scenario evidence",
+    );
+  }
+  const topology = sealedTopology;
+  const sealedCell = cellFrom(lane);
+  if (input.cell !== undefined && input.cell !== sealedCell) {
+    throw new EvidenceImportError(
+      "INVALID_REQUEST",
+      input.run,
+      "matrix cell override must match checksum-bound lane evidence",
+    );
+  }
+  const cell = sealedCell;
+  const sealedHistory = historyFrom(lane);
+  if (input.history !== undefined && input.history !== sealedHistory) {
+    throw new EvidenceImportError(
+      "INVALID_REQUEST",
+      input.run,
+      "history override must match checksum-bound lane evidence",
+    );
+  }
+  const history = sealedHistory;
+  const sealedWals = [
+    scenarioArtifact?.database_wal_envelope,
+    qualificationArtifact?.wal_envelope,
+  ].filter((wal): wal is string => wal !== undefined);
+  if (new Set(sealedWals).size > 1) {
+    throw new EvidenceImportError(
+      "MALFORMED_ARTIFACT",
+      "qualification-metrics.json",
+      "sealed WAL envelope contradicts scenario.json",
+    );
+  }
+  const sealedWal = sealedWals[0];
+  if (input.wal !== undefined && input.wal !== sealedWal) {
+    throw new EvidenceImportError(
+      "INVALID_REQUEST",
+      input.run,
+      "WAL override must match checksum-bound evidence",
+    );
+  }
+  const wal = sealedWal ?? "unspecified";
   validateBoundedSlug(topology, "topology", input.run);
   validateBoundedSlug(history, "history", input.run);
   validateBoundedSlug(wal, "wal", input.run);
   if (!["A", "B", "C", "D", "none"].includes(cell)) {
     throw new EvidenceImportError("MALFORMED_ARTIFACT", "scenario.json", "matrix cell is invalid");
   }
-  const qualifying = input.qualifying === true && region === selectedRegion;
+  const qualifying = qualifyingRuns.has(sealedRun) && region === selectedRegion && cell !== "none";
 
   return {
-    run: input.run,
+    run: sealedRun,
     classification: input.classification,
     qualifying,
     sourceHash: verified.sourceHash,
@@ -718,6 +964,8 @@ const importBundle = async (
       unfinished_agent_run_attempts: auditArtifact?.unfinished_agent_run_attempts,
       unfinished_model_call_attempts: auditArtifact?.unfinished_model_call_attempts,
     },
+    recoveryRequirementStatuses,
+    multiDeviceRequirementStatuses,
   };
 };
 
@@ -741,11 +989,13 @@ const renderMetrics = (runs: ReadonlyArray<ImportedRun>) => {
   for (const run of runs) {
     const base = { run: run.run };
     const summary =
-      run.overallStatus === "PASS"
+      run.overallStatus === "PASS" && run.qualifying
         ? "qualified"
-        : run.overallStatus === "MISSING"
-          ? "evidence-incomplete"
-          : "gate-failed";
+        : run.overallStatus === "PASS"
+          ? "known-gates-passed"
+          : run.overallStatus === "MISSING"
+            ? "evidence-incomplete"
+            : "gate-failed";
     const bottleneck =
       run.admissionStatus === "FAIL" && run.cloudRun429s !== undefined && run.cloudRun429s > 0
         ? "admission-capacity"
@@ -809,57 +1059,38 @@ const renderMetrics = (runs: ReadonlyArray<ImportedRun>) => {
       }),
     );
 
-    const requirementGroups: ReadonlyArray<readonly [string, ReadonlyArray<string>, GateStatus]> = [
-      [
-        "recovery",
-        [
-          "dependency_outage",
-          "backlog_accumulation",
-          "recovery_rate",
-          "drain_time",
-          "process_cut_timeline",
-        ],
-        run.recoveryStatus,
-      ],
-      [
-        "multi_device",
-        [
-          "concurrent_sse_connections",
-          "device_cursor_positions",
-          "stream_gaps",
-          "stream_duplicates",
-          "stream_ordering",
-          "replay_latency",
-          "device_convergence",
-        ],
-        run.multiDeviceStatus,
-      ],
+    const requirementGroups: ReadonlyArray<
+      readonly [string, Readonly<Record<string, GateStatus>>]
+    > = [
+      ["recovery", run.recoveryRequirementStatuses],
+      ["multi_device", run.multiDeviceRequirementStatuses],
       [
         "qualification",
-        [
-          "pre_admitted_348_control",
-          "combined_232_target",
-          "three_target_repetitions",
-          "before_claim_failure_cut",
-          "after_claim_failure_cut",
-          "six_worker_recovery_reserve",
-          "eight_worker_recovery_reserve",
-          "smallest_fixed_fleet_selection",
-          "worker_stream_flow_slot_connection_inputs",
-          "resource_and_incremental_cost_inputs",
-          "internal_claim_latency_distribution",
-          "sustained",
-          "fairness",
-          "retained_corpus",
-          "temporal",
-          "aggregate_sse",
-          "total_cost",
-        ],
-        "MISSING",
+        Object.fromEntries(
+          [
+            "pre_admitted_348_control",
+            "combined_232_target",
+            "three_target_repetitions",
+            "before_claim_failure_cut",
+            "after_claim_failure_cut",
+            "six_worker_recovery_reserve",
+            "eight_worker_recovery_reserve",
+            "smallest_fixed_fleet_selection",
+            "worker_stream_flow_slot_connection_inputs",
+            "resource_and_incremental_cost_inputs",
+            "internal_claim_latency_distribution",
+            "sustained",
+            "fairness",
+            "retained_corpus",
+            "temporal",
+            "aggregate_sse",
+            "total_cost",
+          ].map((requirement) => [requirement, "MISSING"] as const),
+        ),
       ],
     ];
-    for (const [view, requirements, status] of requirementGroups) {
-      for (const requirement of requirements) {
+    for (const [view, requirements] of requirementGroups) {
+      for (const [requirement, status] of Object.entries(requirements)) {
         lines.push(
           sample("openpoke_requirement_status", statusValue(status), {
             requirement,
@@ -977,8 +1208,12 @@ const renderOpenMetrics = (metrics: string, runs: ReadonlyArray<ImportedRun>) =>
 };
 
 const utcRangeFor = (runs: ReadonlyArray<ImportedRun>) => {
-  const starts = runs.flatMap((run) => (run.startedAt === undefined ? [] : [run.startedAt])).sort();
-  const ends = runs.flatMap((run) => (run.endedAt === undefined ? [] : [run.endedAt])).sort();
+  const starts = runs
+    .flatMap((run) => (run.startedAt === undefined ? [] : [run.startedAt]))
+    .sort((left, right) => Date.parse(left) - Date.parse(right));
+  const ends = runs
+    .flatMap((run) => (run.endedAt === undefined ? [] : [run.endedAt]))
+    .sort((left, right) => Date.parse(left) - Date.parse(right));
   return starts.length === 0 || ends.length === 0
     ? undefined
     : { from: starts[0]!, to: ends[ends.length - 1]! };
@@ -988,6 +1223,16 @@ export const importEvidenceBundles = async (
   request: EvidenceImportRequest,
 ): Promise<EvidenceImportResult> => {
   const selectedRegion = validateBoundedSlug(request.selectedRegion, "selectedRegion", "manifest");
+  const qualifyingRuns = new Set(
+    request.qualifyingRuns.map((run) => validateBoundedSlug(run, "qualifyingRuns", "manifest")),
+  );
+  if (qualifyingRuns.size !== request.qualifyingRuns.length) {
+    throw new EvidenceImportError(
+      "INVALID_REQUEST",
+      "qualifyingRuns",
+      "qualifying run identities must be distinct",
+    );
+  }
   if (request.bundles.length === 0) {
     throw new EvidenceImportError("INVALID_REQUEST", "bundles", "at least one bundle is required");
   }
@@ -1001,8 +1246,17 @@ export const importEvidenceBundles = async (
     }
   }
   const runs = await Promise.all(
-    request.bundles.map((bundle) => importBundle(bundle, selectedRegion)),
+    request.bundles.map((bundle) => importBundle(bundle, selectedRegion, qualifyingRuns)),
   );
+  for (const qualifyingRun of qualifyingRuns) {
+    if (!runs.some((run) => run.run === qualifyingRun)) {
+      throw new EvidenceImportError(
+        "INVALID_REQUEST",
+        "qualifyingRuns",
+        "qualifying identity is not present in the sealed bundles",
+      );
+    }
+  }
   const metrics = renderMetrics(runs);
   return {
     runs,
@@ -1014,7 +1268,13 @@ export const importEvidenceBundles = async (
 
 const canonicalOutputTarget = async (inputPath: string) => {
   const target = resolve(inputPath);
-  if (await exists(target)) return realpath(target);
+  if (await pathEntryExists(target)) {
+    throw new EvidenceImportError(
+      "INVALID_REQUEST",
+      "outputs",
+      "output paths must be fresh and must not be links",
+    );
+  }
   const parent = await realpath(dirname(target));
   return resolve(parent, basename(target));
 };
@@ -1022,11 +1282,20 @@ const canonicalOutputTarget = async (inputPath: string) => {
 const assertOutputsOutsideEvidenceRoots = async (
   bundles: ReadonlyArray<EvidenceBundleInput>,
   outputPaths: ReadonlyArray<string>,
+  manifestPath: string,
 ) => {
   const roots = await Promise.all(bundles.map((bundle) => realpath(resolve(bundle.root))));
   const targets = await Promise.all(outputPaths.map(canonicalOutputTarget));
   if (new Set(targets).size !== targets.length) {
     throw new EvidenceImportError("INVALID_REQUEST", "outputs", "output paths must be distinct");
+  }
+  const canonicalManifest = await realpath(resolve(manifestPath));
+  if (targets.includes(canonicalManifest)) {
+    throw new EvidenceImportError(
+      "INVALID_REQUEST",
+      "outputs",
+      "output paths must not collide with the manifest",
+    );
   }
   for (const target of targets) {
     if (roots.some((root) => isInside(root, target))) {
@@ -1036,6 +1305,70 @@ const assertOutputsOutsideEvidenceRoots = async (
         "output paths must be outside every evidence root",
       );
     }
+  }
+  return targets;
+};
+
+const readManifestNoFollow = async (manifestPath: string) => {
+  let handle;
+  try {
+    handle = await open(resolve(manifestPath), constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (!(await handle.stat()).isFile()) {
+      throw new EvidenceImportError("INVALID_REQUEST", manifestPath, "manifest is not a file");
+    }
+    return await handle.readFile("utf8");
+  } catch (cause) {
+    if (cause instanceof EvidenceImportError) throw cause;
+    throw new EvidenceImportError(
+      "INVALID_REQUEST",
+      manifestPath,
+      "manifest must be a readable non-symlink file",
+    );
+  } finally {
+    await handle?.close();
+  }
+};
+
+const publishFreshOutputs = async (
+  outputs: ReadonlyArray<readonly [target: string, contents: string]>,
+) => {
+  const prepared: Array<{ readonly target: string; readonly temporary: string }> = [];
+  const published: Array<string> = [];
+  try {
+    for (const [target, contents] of outputs) {
+      const temporary = resolve(dirname(target), `.${basename(target)}.tmp-${randomUUID()}`);
+      const handle = await open(
+        temporary,
+        constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_WRONLY,
+        0o644,
+      );
+      try {
+        await handle.writeFile(contents);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      prepared.push({ target, temporary });
+    }
+
+    for (const entry of prepared) {
+      if (await pathEntryExists(entry.target)) {
+        throw new EvidenceImportError(
+          "INVALID_REQUEST",
+          "outputs",
+          "output path appeared during publication",
+        );
+      }
+      await rename(entry.temporary, entry.target);
+      published.push(entry.target);
+    }
+  } catch (cause) {
+    await Promise.allSettled(
+      prepared
+        .map((entry) => unlink(entry.temporary))
+        .concat(published.map((path) => unlink(path))),
+    );
+    throw cause;
   }
 };
 
@@ -1064,7 +1397,7 @@ const runCli = async () => {
 
   const decodedRequest = Schema.decodeUnknownExit(
     Schema.fromJsonString(EvidenceImportRequestSchema),
-  )(await readFile(resolve(manifestPath), "utf8"));
+  )(await readManifestNoFollow(manifestPath));
   if (Exit.isFailure(decodedRequest)) {
     throw new EvidenceImportError(
       "INVALID_REQUEST",
@@ -1073,18 +1406,20 @@ const runCli = async () => {
     );
   }
   const request = decodedRequest.value;
-  await assertOutputsOutsideEvidenceRoots(request.bundles, [
-    outputPath,
-    openMetricsPath,
-    reportPath,
-  ]);
-  const result = await importEvidenceBundles(request);
-  await writeFile(resolve(outputPath), result.metrics);
-  await writeFile(resolve(openMetricsPath), result.openMetrics);
-  await writeFile(
-    resolve(reportPath),
-    `${JSON.stringify({ runs: result.runs, utcRange: result.utcRange }, undefined, 2)}\n`,
+  const [outputTarget, openMetricsTarget, reportTarget] = await assertOutputsOutsideEvidenceRoots(
+    request.bundles,
+    [outputPath, openMetricsPath, reportPath],
+    manifestPath,
   );
+  const result = await importEvidenceBundles(request);
+  await publishFreshOutputs([
+    [outputTarget!, result.metrics],
+    [openMetricsTarget!, result.openMetrics],
+    [
+      reportTarget!,
+      `${JSON.stringify({ runs: result.runs, utcRange: result.utcRange }, undefined, 2)}\n`,
+    ],
+  ]);
 };
 
 const invokedPath =
