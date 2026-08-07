@@ -29,6 +29,8 @@ const eventFields = {
   occurredAt: UtcTimestamp,
 };
 
+const eventFieldsV2 = { ...eventFields, eventVersion: Schema.Literal(2) };
+
 export const UserMessageAppendedSchema = Schema.Struct({
   ...eventFields,
   eventType: Schema.Literal("UserMessageAppended"),
@@ -55,15 +57,30 @@ export const AssistantOutputCompletedSchema = Schema.Struct({
   payload: Schema.Struct({ assistantOutputId: Identity, agentRunId: Identity }),
 });
 
-export const AssistantOutputInterruptedSchema = Schema.Struct({
+export const AssistantOutputInterruptedV1Schema = Schema.Struct({
   ...eventFields,
   eventType: Schema.Literal("AssistantOutputInterrupted"),
   payload: Schema.Struct({
     assistantOutputId: Identity,
     agentRunId: Identity,
-    cause: AssistantOutputInterruptionCause,
+    cause: Schema.Literal("modelCallFailed"),
   }),
 });
+
+export const AssistantOutputInterruptedV2Schema = Schema.Struct({
+  ...eventFieldsV2,
+  eventType: Schema.Literal("AssistantOutputInterrupted"),
+  payload: Schema.Struct({
+    assistantOutputId: Identity,
+    agentRunId: Identity,
+    cause: Schema.Literal("agentRunCanceled"),
+  }),
+});
+
+export const AssistantOutputInterruptedSchema = Schema.Union([
+  AssistantOutputInterruptedV1Schema,
+  AssistantOutputInterruptedV2Schema,
+]);
 
 export const AgentRunCancellationRequestedSchema = Schema.Struct({
   ...eventFields,
@@ -102,7 +119,8 @@ export const ThreadEventSchema = Schema.Union([
   UserMessageAppendedSchema,
   AssistantOutputAppendedSchema,
   AssistantOutputCompletedSchema,
-  AssistantOutputInterruptedSchema,
+  AssistantOutputInterruptedV1Schema,
+  AssistantOutputInterruptedV2Schema,
   AgentRunCancellationRequestedSchema,
   AgentRunCanceledSchema,
   AgentRunSucceededSchema,
@@ -214,7 +232,7 @@ export const makeAssistantOutputInterrupted = (input: AssistantOutputInterrupted
   Schema.decodeUnknownEffect(AssistantOutputInterruptedSchema)({
     eventId: input.eventId,
     eventType: "AssistantOutputInterrupted",
-    eventVersion: 1,
+    eventVersion: input.cause === "modelCallFailed" ? 1 : 2,
     threadId: input.threadId,
     threadPosition: input.threadPosition,
     occurredAt: input.occurredAt,
@@ -280,7 +298,8 @@ export const ThreadEventEnvelopeSchema = Schema.Union([
   withCursor(UserMessageAppendedSchema.fields),
   withCursor(AssistantOutputAppendedSchema.fields),
   withCursor(AssistantOutputCompletedSchema.fields),
-  withCursor(AssistantOutputInterruptedSchema.fields),
+  withCursor(AssistantOutputInterruptedV1Schema.fields),
+  withCursor(AssistantOutputInterruptedV2Schema.fields),
   withCursor(AgentRunCancellationRequestedSchema.fields),
   withCursor(AgentRunCanceledSchema.fields),
   withCursor(AgentRunSucceededSchema.fields),

@@ -1,0 +1,3398 @@
+{
+  "version": "8",
+  "dialect": "postgres",
+  "id": "b96161f3-a17d-4623-9327-b0b72df0aa33",
+  "prevIds": ["d73645ca-65f2-46fc-afc0-cbb5f48971f3"],
+  "ddl": [
+    {
+      "isRlsEnabled": false,
+      "name": "acceptance_receipts",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "admission_global_capacity",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "admission_principal_capacity",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "admission_principal_set_generation",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "admission_rejections",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "agent_run_capacity_reservations",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "agent_runs",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "assistant_outputs",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "authentication_sessions",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "model_call_attempts",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "model_call_fragments",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "model_calls",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "outbox_obligations",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "principals",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "relay_dispatch_capacity",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "relay_principals",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "relay_publication_attempts",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "relay_publication_tasks",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "relay_threads",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "thread_events",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "threads",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "user_messages",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "receipt_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "type": "smallint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "protocol_version",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "idempotency_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "request_fingerprint",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "user_message_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "agent_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_position",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "accepted_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "true",
+      "generated": null,
+      "identity": null,
+      "name": "singleton",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "admission_global_capacity"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reserved_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "admission_global_capacity"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "revision",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "admission_global_capacity"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "admission_principal_capacity"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reserved_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "admission_principal_capacity"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "true",
+      "generated": null,
+      "identity": null,
+      "name": "singleton",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "admission_principal_set_generation"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "generation",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "admission_principal_set_generation"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "admission_rejections"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "idempotency_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "admission_rejections"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "admission_rejections"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "request_fingerprint",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "admission_rejections"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "rejected_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "admission_rejections"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "agent_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_run_capacity_reservations"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_run_capacity_reservations"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_run_capacity_reservations"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reserved_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_run_capacity_reservations"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "released_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_run_capacity_reservations"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "agent_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "user_message_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "claim_epoch",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "claim_owner",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "lease_expires_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "cancellation_requested_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "cleanup_deadline_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "cleanup_disposition",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "external_work_may_continue",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "execution_profile_ref",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "assistant_output_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "assistant_outputs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "agent_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "assistant_outputs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "assistant_outputs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "interruption_cause",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "assistant_outputs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "assistant_outputs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "terminated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "assistant_outputs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "authentication_sessions"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "authentication_sessions"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "token_sha256",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "authentication_sessions"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "expires_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "authentication_sessions"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "revoked_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "authentication_sessions"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "transaction_timestamp()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "authentication_sessions"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "model_call_attempt_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "model_call_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "agent_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "assistant_output_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "attempt_number",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "claim_epoch",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'unknown'",
+      "generated": null,
+      "identity": null,
+      "name": "usage_type",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "input_units",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "output_units",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "cleanup_disposition",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "external_work_may_continue",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "started_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "finished_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "model_call_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_fragments"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "fragment_index",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_fragments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "model_call_attempt_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_fragments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "assistant_output_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_fragments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "agent_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_fragments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "text",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_fragments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_event_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_fragments"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_fragments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "model_call_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "agent_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "model_binding",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "prompt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "failure_cause",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "completed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "outbox_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "agent_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "predecessor_outbox_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "type": "smallint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "version",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "publication_evidence",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "published_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "principals"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "transaction_timestamp()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "principals"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "true",
+      "generated": null,
+      "identity": null,
+      "name": "singleton",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_dispatch_capacity"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "active_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_dispatch_capacity"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_principals"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "virtual_pass",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_principals"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "outbox_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_publication_attempts"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "publication_epoch",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_publication_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "publication_owner",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_publication_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_publication_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_message_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_publication_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "started_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_publication_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "finished_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_publication_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "outbox_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_publication_tasks"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'pending'",
+      "generated": null,
+      "identity": null,
+      "name": "publication_state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_publication_tasks"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "publication_epoch",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_publication_tasks"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "publication_owner",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_publication_tasks"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "publication_lease_expires_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_publication_tasks"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_publication_tasks"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_threads"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_threads"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "virtual_pass",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_threads"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "position",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "event_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "user_message_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "agent_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "event_type",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "type": "smallint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "event_version",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "payload",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "occurred_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "1",
+      "generated": null,
+      "identity": null,
+      "name": "next_position",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "state_revision",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "transaction_timestamp()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "user_message_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "user_messages"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "user_messages"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "user_messages"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "content",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "user_messages"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "user_messages"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "thread_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "thread_position",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "acceptance_receipts_thread_position_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "principal_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"reserved_count\" <> 0",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "admission_principal_capacity_nonzero_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "admission_principal_capacity"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "state",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "principal_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "agent_run_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "agent_run_capacity_reservations_state_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "agent_run_capacity_reservations"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "lease_expires_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"state\" = 'running'",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "agent_runs_expired_claim_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "principal_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "state",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "agent_run_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "agent_runs_principal_state_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "principal_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "agent_run_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"state\" NOT IN ('succeeded', 'failed', 'canceled')",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "agent_runs_nonterminal_capacity_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "token_sha256",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"revoked_at\" IS NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "authentication_sessions_active_token_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "authentication_sessions"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "outbox_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "outbox_obligations_created_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "outbox_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"published_at\" IS NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "outbox_obligations_unpublished_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "virtual_pass",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "principal_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "relay_principals_selection_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "relay_principals"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "publication_state",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "publication_lease_expires_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "outbox_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "relay_publication_tasks_claim_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "relay_publication_tasks"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "principal_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "virtual_pass",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "thread_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "relay_threads_selection_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "relay_threads"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["thread_id", "principal_id"],
+      "schemaTo": "public",
+      "tableTo": "threads",
+      "columnsTo": ["thread_id", "principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "acceptance_receipts_1vVD2rIpd8yN_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["user_message_id", "thread_id", "principal_id"],
+      "schemaTo": "public",
+      "tableTo": "user_messages",
+      "columnsTo": ["user_message_id", "thread_id", "principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "acceptance_receipts_AYmlXTFfHNBK_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["agent_run_id", "thread_id", "principal_id"],
+      "schemaTo": "public",
+      "tableTo": "agent_runs",
+      "columnsTo": ["agent_run_id", "thread_id", "principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "acceptance_receipts_IkIBOveuS34A_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["thread_id", "thread_position", "user_message_id", "agent_run_id"],
+      "schemaTo": "public",
+      "tableTo": "thread_events",
+      "columnsTo": ["thread_id", "position", "user_message_id", "agent_run_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "acceptance_receipts_f7VpWPAjO5Qf_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["principal_id"],
+      "schemaTo": "public",
+      "tableTo": "principals",
+      "columnsTo": ["principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "admission_principal_capacity_6cwhN3BxJnGF_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "admission_principal_capacity"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["thread_id", "principal_id"],
+      "schemaTo": "public",
+      "tableTo": "threads",
+      "columnsTo": ["thread_id", "principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "admission_rejections_C2cl8xSJMfpS_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "admission_rejections"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["agent_run_id", "principal_id"],
+      "schemaTo": "public",
+      "tableTo": "agent_runs",
+      "columnsTo": ["agent_run_id", "principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "agent_run_capacity_reservations_IN32xH7GFuJD_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "agent_run_capacity_reservations"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["thread_id", "principal_id"],
+      "schemaTo": "public",
+      "tableTo": "threads",
+      "columnsTo": ["thread_id", "principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "agent_runs_myTxsGnWaphE_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["user_message_id", "thread_id", "principal_id"],
+      "schemaTo": "public",
+      "tableTo": "user_messages",
+      "columnsTo": ["user_message_id", "thread_id", "principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "agent_runs_TD8RYFVnyBKx_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["agent_run_id"],
+      "schemaTo": "public",
+      "tableTo": "agent_runs",
+      "columnsTo": ["agent_run_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "assistant_outputs_agent_run_id_agent_runs_agent_run_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "assistant_outputs"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["principal_id"],
+      "schemaTo": "public",
+      "tableTo": "principals",
+      "columnsTo": ["principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "authentication_sessions_sDQk3oH8u53Q_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "authentication_sessions"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["model_call_id", "agent_run_id"],
+      "schemaTo": "public",
+      "tableTo": "model_calls",
+      "columnsTo": ["model_call_id", "agent_run_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "model_call_attempts_HI98vM6hhqyP_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["assistant_output_id", "agent_run_id"],
+      "schemaTo": "public",
+      "tableTo": "assistant_outputs",
+      "columnsTo": ["assistant_output_id", "agent_run_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "model_call_attempts_1wm6kLGoWOdz_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["thread_event_id"],
+      "schemaTo": "public",
+      "tableTo": "thread_events",
+      "columnsTo": ["event_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "model_call_fragments_6WKF0fMR31c4_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "model_call_fragments"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["model_call_attempt_id", "model_call_id", "assistant_output_id", "agent_run_id"],
+      "schemaTo": "public",
+      "tableTo": "model_call_attempts",
+      "columnsTo": [
+        "model_call_attempt_id",
+        "model_call_id",
+        "assistant_output_id",
+        "agent_run_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "model_call_fragments_cyXpceGKC2cG_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "model_call_fragments"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["agent_run_id"],
+      "schemaTo": "public",
+      "tableTo": "agent_runs",
+      "columnsTo": ["agent_run_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "model_calls_agent_run_id_agent_runs_agent_run_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["agent_run_id", "thread_id", "principal_id"],
+      "schemaTo": "public",
+      "tableTo": "agent_runs",
+      "columnsTo": ["agent_run_id", "thread_id", "principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "outbox_obligations_i7cAT50cIV9M_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["predecessor_outbox_id"],
+      "schemaTo": "public",
+      "tableTo": "outbox_obligations",
+      "columnsTo": ["outbox_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "outbox_obligations_TBBaUC2FvaVr_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["principal_id"],
+      "schemaTo": "public",
+      "tableTo": "principals",
+      "columnsTo": ["principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "relay_principals_principal_id_principals_principal_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "relay_principals"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["outbox_id"],
+      "schemaTo": "public",
+      "tableTo": "outbox_obligations",
+      "columnsTo": ["outbox_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "relay_publication_attempts_uhoIdiDE8hP9_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "relay_publication_attempts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["outbox_id"],
+      "schemaTo": "public",
+      "tableTo": "outbox_obligations",
+      "columnsTo": ["outbox_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "relay_publication_tasks_Muo6sGTuNsgz_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "relay_publication_tasks"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["thread_id", "principal_id"],
+      "schemaTo": "public",
+      "tableTo": "threads",
+      "columnsTo": ["thread_id", "principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "relay_threads_NpEhHz2Z964X_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "relay_threads"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["principal_id"],
+      "schemaTo": "public",
+      "tableTo": "relay_principals",
+      "columnsTo": ["principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "relay_threads_principal_id_relay_principals_principal_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "relay_threads"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["thread_id"],
+      "schemaTo": "public",
+      "tableTo": "threads",
+      "columnsTo": ["thread_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "thread_events_thread_id_threads_thread_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["thread_id", "principal_id"],
+      "schemaTo": "public",
+      "tableTo": "threads",
+      "columnsTo": ["thread_id", "principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "thread_events_Qj3GaShk04VC_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["user_message_id", "thread_id", "principal_id"],
+      "schemaTo": "public",
+      "tableTo": "user_messages",
+      "columnsTo": ["user_message_id", "thread_id", "principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "thread_events_k2gA4P59BLPV_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["agent_run_id", "thread_id", "principal_id"],
+      "schemaTo": "public",
+      "tableTo": "agent_runs",
+      "columnsTo": ["agent_run_id", "thread_id", "principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "thread_events_CiLkR0UZnmVh_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["principal_id"],
+      "schemaTo": "public",
+      "tableTo": "principals",
+      "columnsTo": ["principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "threads_principal_id_principals_principal_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["thread_id"],
+      "schemaTo": "public",
+      "tableTo": "threads",
+      "columnsTo": ["thread_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "user_messages_thread_id_threads_thread_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "user_messages"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["principal_id"],
+      "schemaTo": "public",
+      "tableTo": "principals",
+      "columnsTo": ["principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "user_messages_principal_id_principals_principal_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "user_messages"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["thread_id", "principal_id"],
+      "schemaTo": "public",
+      "tableTo": "threads",
+      "columnsTo": ["thread_id", "principal_id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "user_messages_NBVxNjx8cZMa_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "user_messages"
+    },
+    {
+      "columns": ["principal_id", "idempotency_key"],
+      "nameExplicit": false,
+      "name": "admission_rejections_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "admission_rejections"
+    },
+    {
+      "columns": ["model_call_attempt_id", "fragment_index"],
+      "nameExplicit": false,
+      "name": "model_call_fragments_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "model_call_fragments"
+    },
+    {
+      "columns": ["outbox_id", "publication_epoch"],
+      "nameExplicit": false,
+      "name": "relay_publication_attempts_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "relay_publication_attempts"
+    },
+    {
+      "columns": ["thread_id", "position"],
+      "nameExplicit": false,
+      "name": "thread_events_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "columns": ["receipt_id"],
+      "nameExplicit": false,
+      "name": "acceptance_receipts_pkey",
+      "schema": "public",
+      "table": "acceptance_receipts",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["singleton"],
+      "nameExplicit": false,
+      "name": "admission_global_capacity_pkey",
+      "schema": "public",
+      "table": "admission_global_capacity",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["principal_id"],
+      "nameExplicit": false,
+      "name": "admission_principal_capacity_pkey",
+      "schema": "public",
+      "table": "admission_principal_capacity",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["singleton"],
+      "nameExplicit": false,
+      "name": "admission_principal_set_generation_pkey",
+      "schema": "public",
+      "table": "admission_principal_set_generation",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["agent_run_id"],
+      "nameExplicit": false,
+      "name": "agent_run_capacity_reservations_pkey",
+      "schema": "public",
+      "table": "agent_run_capacity_reservations",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["agent_run_id"],
+      "nameExplicit": false,
+      "name": "agent_runs_pkey",
+      "schema": "public",
+      "table": "agent_runs",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["assistant_output_id"],
+      "nameExplicit": false,
+      "name": "assistant_outputs_pkey",
+      "schema": "public",
+      "table": "assistant_outputs",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["session_id"],
+      "nameExplicit": false,
+      "name": "authentication_sessions_pkey",
+      "schema": "public",
+      "table": "authentication_sessions",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["model_call_attempt_id"],
+      "nameExplicit": false,
+      "name": "model_call_attempts_pkey",
+      "schema": "public",
+      "table": "model_call_attempts",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["model_call_id"],
+      "nameExplicit": false,
+      "name": "model_calls_pkey",
+      "schema": "public",
+      "table": "model_calls",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["outbox_id"],
+      "nameExplicit": false,
+      "name": "outbox_obligations_pkey",
+      "schema": "public",
+      "table": "outbox_obligations",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["principal_id"],
+      "nameExplicit": false,
+      "name": "principals_pkey",
+      "schema": "public",
+      "table": "principals",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["singleton"],
+      "nameExplicit": false,
+      "name": "relay_dispatch_capacity_pkey",
+      "schema": "public",
+      "table": "relay_dispatch_capacity",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["principal_id"],
+      "nameExplicit": false,
+      "name": "relay_principals_pkey",
+      "schema": "public",
+      "table": "relay_principals",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["outbox_id"],
+      "nameExplicit": false,
+      "name": "relay_publication_tasks_pkey",
+      "schema": "public",
+      "table": "relay_publication_tasks",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["thread_id"],
+      "nameExplicit": false,
+      "name": "relay_threads_pkey",
+      "schema": "public",
+      "table": "relay_threads",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["thread_id"],
+      "nameExplicit": false,
+      "name": "threads_pkey",
+      "schema": "public",
+      "table": "threads",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["user_message_id"],
+      "nameExplicit": false,
+      "name": "user_messages_pkey",
+      "schema": "public",
+      "table": "user_messages",
+      "entityType": "pks"
+    },
+    {
+      "nameExplicit": true,
+      "columns": ["principal_id", "idempotency_key"],
+      "nullsNotDistinct": false,
+      "name": "acceptance_receipts_principal_idempotency_unique",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": ["agent_run_id", "principal_id"],
+      "nullsNotDistinct": false,
+      "name": "agent_runs_run_principal_unique",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": ["agent_run_id", "thread_id", "principal_id"],
+      "nullsNotDistinct": false,
+      "name": "agent_runs_run_thread_principal_unique",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": ["assistant_output_id", "agent_run_id"],
+      "nullsNotDistinct": false,
+      "name": "assistant_outputs_output_run_unique",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "assistant_outputs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": ["model_call_attempt_id", "model_call_id", "assistant_output_id", "agent_run_id"],
+      "nullsNotDistinct": false,
+      "name": "model_call_attempts_attempt_authority_unique",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": ["model_call_id", "attempt_number"],
+      "nullsNotDistinct": false,
+      "name": "model_call_attempts_call_number_unique",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": ["model_call_id", "agent_run_id"],
+      "nullsNotDistinct": false,
+      "name": "model_calls_call_run_unique",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "nameExplicit": true,
+      "columns": ["thread_id", "position", "user_message_id", "agent_run_id"],
+      "nullsNotDistinct": false,
+      "name": "thread_events_authority_unique",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "nameExplicit": true,
+      "columns": ["thread_id", "principal_id"],
+      "nullsNotDistinct": false,
+      "name": "threads_thread_id_principal_id_unique",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "nameExplicit": true,
+      "columns": ["user_message_id", "thread_id", "principal_id"],
+      "nullsNotDistinct": false,
+      "name": "user_messages_message_thread_principal_unique",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "user_messages"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["user_message_id"],
+      "nullsNotDistinct": false,
+      "name": "acceptance_receipts_user_message_id_key",
+      "schema": "public",
+      "table": "acceptance_receipts",
+      "entityType": "uniques"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["agent_run_id"],
+      "nullsNotDistinct": false,
+      "name": "acceptance_receipts_agent_run_id_key",
+      "schema": "public",
+      "table": "acceptance_receipts",
+      "entityType": "uniques"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["user_message_id"],
+      "nullsNotDistinct": false,
+      "name": "agent_runs_user_message_id_key",
+      "schema": "public",
+      "table": "agent_runs",
+      "entityType": "uniques"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["token_sha256"],
+      "nullsNotDistinct": false,
+      "name": "authentication_sessions_token_sha256_key",
+      "schema": "public",
+      "table": "authentication_sessions",
+      "entityType": "uniques"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["thread_event_id"],
+      "nullsNotDistinct": false,
+      "name": "model_call_fragments_thread_event_id_key",
+      "schema": "public",
+      "table": "model_call_fragments",
+      "entityType": "uniques"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["agent_run_id"],
+      "nullsNotDistinct": false,
+      "name": "model_calls_agent_run_id_key",
+      "schema": "public",
+      "table": "model_calls",
+      "entityType": "uniques"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["agent_run_id"],
+      "nullsNotDistinct": false,
+      "name": "outbox_obligations_agent_run_id_key",
+      "schema": "public",
+      "table": "outbox_obligations",
+      "entityType": "uniques"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["event_id"],
+      "nullsNotDistinct": false,
+      "name": "thread_events_event_id_key",
+      "schema": "public",
+      "table": "thread_events",
+      "entityType": "uniques"
+    },
+    {
+      "value": "\"protocol_version\" = 1",
+      "name": "acceptance_receipts_protocol_version_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "value": "\"request_fingerprint\" ~ '^[0-9a-f]{64}$'",
+      "name": "acceptance_receipts_fingerprint_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "value": "\"thread_position\" > 0",
+      "name": "acceptance_receipts_thread_position_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "acceptance_receipts"
+    },
+    {
+      "value": "\"singleton\"",
+      "name": "admission_global_capacity_singleton_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "admission_global_capacity"
+    },
+    {
+      "value": "\"reserved_count\" >= 0",
+      "name": "admission_global_capacity_reserved_count_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "admission_global_capacity"
+    },
+    {
+      "value": "\"revision\" >= 0",
+      "name": "admission_global_capacity_revision_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "admission_global_capacity"
+    },
+    {
+      "value": "\"reserved_count\" >= 0",
+      "name": "admission_principal_capacity_reserved_count_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "admission_principal_capacity"
+    },
+    {
+      "value": "\"singleton\"",
+      "name": "admission_principal_set_generation_singleton_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "admission_principal_set_generation"
+    },
+    {
+      "value": "\"generation\" >= 0",
+      "name": "admission_principal_set_generation_generation_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "admission_principal_set_generation"
+    },
+    {
+      "value": "\"request_fingerprint\" ~ '^[0-9a-f]{64}$'",
+      "name": "admission_rejections_fingerprint_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "admission_rejections"
+    },
+    {
+      "value": "\"state\" IN ('held', 'released')",
+      "name": "agent_run_capacity_reservations_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "agent_run_capacity_reservations"
+    },
+    {
+      "value": "((\n        (\"state\" = 'held' AND \"released_at\" IS NULL)\n        OR (\"state\" = 'released' AND \"released_at\" IS NOT NULL)\n      )) IS TRUE",
+      "name": "agent_run_capacity_reservations_release_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "agent_run_capacity_reservations"
+    },
+    {
+      "value": "\"state\" IN ('pending', 'running', 'waiting', 'succeeded', 'failed', 'canceled')",
+      "name": "agent_runs_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "value": "length(\"execution_profile_ref\") BETWEEN 1 AND 255",
+      "name": "agent_runs_execution_profile_ref_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "value": "\"claim_epoch\" >= 0",
+      "name": "agent_runs_claim_epoch_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "value": "((\n        (\"state\" = 'running'\n          AND \"claim_epoch\" > 0\n          AND \"claim_owner\" IS NOT NULL\n          AND \"lease_expires_at\" IS NOT NULL)\n        OR (\"state\" <> 'running'\n          AND \"claim_owner\" IS NULL\n          AND \"lease_expires_at\" IS NULL)\n      )) IS TRUE",
+      "name": "agent_runs_claim_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "value": "((\"cancellation_requested_at\" IS NULL) = (\"cleanup_deadline_at\" IS NULL))",
+      "name": "agent_runs_cancellation_request_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "value": "((\n        (\"state\" = 'canceled'\n          AND \"cancellation_requested_at\" IS NOT NULL\n          AND \"cleanup_deadline_at\" IS NOT NULL\n          AND (\n            \"cleanup_disposition\" IN ('completed', 'deadlineExceeded')\n            OR (\n              \"cleanup_disposition\" = 'unknown'\n              AND \"external_work_may_continue\" = true\n            )\n          )\n          AND \"external_work_may_continue\" IS NOT NULL)\n        OR (\"state\" <> 'canceled'\n          AND \"cleanup_disposition\" IS NULL\n          AND \"external_work_may_continue\" IS NULL)\n      )) IS TRUE",
+      "name": "agent_runs_cleanup_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "agent_runs"
+    },
+    {
+      "value": "\"state\" IN ('open', 'completed', 'interrupted')",
+      "name": "assistant_outputs_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "assistant_outputs"
+    },
+    {
+      "value": "((\n        (\"state\" = 'open'\n          AND \"interruption_cause\" IS NULL\n          AND \"terminated_at\" IS NULL)\n        OR (\"state\" = 'completed'\n          AND \"interruption_cause\" IS NULL\n          AND \"terminated_at\" IS NOT NULL)\n        OR (\"state\" = 'interrupted'\n          AND \"interruption_cause\" IN ('modelCallFailed', 'agentRunCanceled')\n          AND \"terminated_at\" IS NOT NULL)\n      )) IS TRUE",
+      "name": "assistant_outputs_terminal_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "assistant_outputs"
+    },
+    {
+      "value": "\"token_sha256\" ~ '^[0-9a-f]{64}$'",
+      "name": "authentication_sessions_token_sha256_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "authentication_sessions"
+    },
+    {
+      "value": "\"attempt_number\" > 0",
+      "name": "model_call_attempts_number_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "value": "\"claim_epoch\" > 0",
+      "name": "model_call_attempts_epoch_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "value": "\"state\" IN ('started', 'succeeded', 'failed', 'canceled')",
+      "name": "model_call_attempts_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "value": "((\n        (\"usage_type\" = 'unknown'\n          AND \"input_units\" IS NULL\n          AND \"output_units\" IS NULL)\n        OR (\"usage_type\" IN ('reported', 'estimated')\n          AND \"input_units\" >= 0\n          AND \"output_units\" >= 0)\n      )) IS TRUE",
+      "name": "model_call_attempts_usage_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "value": "((\n        (\"state\" = 'started' AND \"finished_at\" IS NULL)\n        OR (\"state\" <> 'started' AND \"finished_at\" IS NOT NULL)\n      )) IS TRUE",
+      "name": "model_call_attempts_finished_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "value": "((\"cleanup_disposition\" IS NULL AND \"external_work_may_continue\" IS NULL)\n        OR (\n          \"cleanup_disposition\" IN ('completed', 'deadlineExceeded')\n          AND \"external_work_may_continue\" IS NOT NULL\n        ))",
+      "name": "model_call_attempts_cleanup_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
+      "value": "\"fragment_index\" >= 0",
+      "name": "model_call_fragments_index_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "model_call_fragments"
+    },
+    {
+      "value": "length(\"text\") BETWEEN 1 AND 16384",
+      "name": "model_call_fragments_text_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "model_call_fragments"
+    },
+    {
+      "value": "length(\"model_binding\") BETWEEN 1 AND 255",
+      "name": "model_calls_binding_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "value": "length(\"prompt\") BETWEEN 1 AND 16384",
+      "name": "model_calls_prompt_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "value": "\"state\" IN ('pending', 'succeeded', 'failed', 'canceled')",
+      "name": "model_calls_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "value": "((\n        (\"state\" = 'pending'\n          AND \"failure_cause\" IS NULL\n          AND \"completed_at\" IS NULL)\n        OR (\"state\" = 'succeeded'\n          AND \"failure_cause\" IS NULL\n          AND \"completed_at\" IS NOT NULL)\n        OR (\"state\" = 'failed'\n          AND \"failure_cause\" = 'modelCallFailed'\n          AND \"completed_at\" IS NOT NULL)\n        OR (\"state\" = 'canceled'\n          AND \"failure_cause\" IS NULL\n          AND \"completed_at\" IS NOT NULL)\n      )) IS TRUE",
+      "name": "model_calls_outcome_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "model_calls"
+    },
+    {
+      "value": "\"kind\" = 'AgentRunPending'",
+      "name": "outbox_obligations_kind_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "value": "\"version\" = 1",
+      "name": "outbox_obligations_version_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "value": "((\n        (\"publication_evidence\" IS NULL AND \"published_at\" IS NULL)\n        OR (\"publication_evidence\" IS NOT NULL AND \"published_at\" IS NOT NULL)\n      )) IS TRUE",
+      "name": "outbox_obligations_publication_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "value": "((\n        \"publication_evidence\" IS NULL\n        OR \"publication_evidence\" = CASE \"publication_evidence\" ->> 'type'\n            WHEN 'pubsub' THEN jsonb_build_object(\n              'type', 'pubsub',\n              'providerMessageId', \"publication_evidence\" ->> 'providerMessageId'\n            )\n            WHEN 'legacyUnavailable' THEN jsonb_build_object('type', 'legacyUnavailable')\n            ELSE NULL\n          END\n      )) IS TRUE",
+      "name": "outbox_obligations_publication_evidence_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "outbox_obligations"
+    },
+    {
+      "value": "\"singleton\"",
+      "name": "relay_dispatch_capacity_singleton_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "relay_dispatch_capacity"
+    },
+    {
+      "value": "\"active_count\" >= 0",
+      "name": "relay_dispatch_capacity_active_count_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "relay_dispatch_capacity"
+    },
+    {
+      "value": "\"virtual_pass\" >= 0",
+      "name": "relay_principals_virtual_pass_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "relay_principals"
+    },
+    {
+      "value": "\"publication_epoch\" > 0",
+      "name": "relay_publication_attempts_epoch_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "relay_publication_attempts"
+    },
+    {
+      "value": "length(\"publication_owner\") BETWEEN 1 AND 255",
+      "name": "relay_publication_attempts_owner_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "relay_publication_attempts"
+    },
+    {
+      "value": "\"state\" IN ('started', 'expired', 'confirmed')",
+      "name": "relay_publication_attempts_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "relay_publication_attempts"
+    },
+    {
+      "value": "((\n        (\"state\" = 'started'\n          AND \"provider_message_id\" IS NULL\n          AND \"finished_at\" IS NULL)\n        OR (\"state\" = 'expired'\n          AND \"provider_message_id\" IS NULL\n          AND \"finished_at\" IS NOT NULL)\n        OR (\"state\" = 'confirmed'\n          AND length(\"provider_message_id\") BETWEEN 1 AND 255\n          AND \"finished_at\" IS NOT NULL)\n      )) IS TRUE",
+      "name": "relay_publication_attempts_outcome_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "relay_publication_attempts"
+    },
+    {
+      "value": "\"publication_state\" IN ('pending', 'publishing')",
+      "name": "relay_publication_tasks_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "relay_publication_tasks"
+    },
+    {
+      "value": "\"publication_epoch\" >= 0",
+      "name": "relay_publication_tasks_epoch_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "relay_publication_tasks"
+    },
+    {
+      "value": "((\n        (\"publication_state\" = 'pending'\n          AND \"publication_owner\" IS NULL\n          AND \"publication_lease_expires_at\" IS NULL)\n        OR (\"publication_state\" = 'publishing'\n          AND \"publication_epoch\" > 0\n          AND \"publication_owner\" IS NOT NULL\n          AND \"publication_lease_expires_at\" IS NOT NULL)\n      )) IS TRUE",
+      "name": "relay_publication_tasks_claim_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "relay_publication_tasks"
+    },
+    {
+      "value": "\"virtual_pass\" >= 0",
+      "name": "relay_threads_virtual_pass_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "relay_threads"
+    },
+    {
+      "value": "\"position\" > 0",
+      "name": "thread_events_position_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "value": "\"event_type\" IN (\n        'UserMessageAppended',\n        'AssistantOutputAppended',\n        'AssistantOutputCompleted',\n        'AssistantOutputInterrupted',\n        'AgentRunCancellationRequested',\n        'AgentRunCanceled',\n        'AgentRunSucceeded',\n        'AgentRunFailed'\n      )",
+      "name": "thread_events_event_type_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "value": "(\n        (\"event_type\" = 'AssistantOutputInterrupted' AND \"event_version\" IN (1, 2))\n        OR (\"event_type\" <> 'AssistantOutputInterrupted' AND \"event_version\" = 1)\n      )",
+      "name": "thread_events_event_version_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "value": "jsonb_typeof(\"payload\") = 'object'",
+      "name": "thread_events_payload_object_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "value": "(\"payload\" ->> 'agentRunId')::uuid = \"agent_run_id\"",
+      "name": "thread_events_payload_run_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "value": "CASE \"event_type\"\n        WHEN 'UserMessageAppended' THEN\n          \"payload\" = jsonb_build_object(\n            'userMessageId', \"payload\" ->> 'userMessageId',\n            'agentRunId', \"payload\" ->> 'agentRunId',\n            'content', \"payload\" -> 'content'\n          )\n          AND (\"payload\" ->> 'userMessageId')::uuid = \"user_message_id\"\n        WHEN 'AssistantOutputAppended' THEN\n          \"payload\" = jsonb_build_object(\n            'assistantOutputId', \"payload\" ->> 'assistantOutputId',\n            'agentRunId', \"payload\" ->> 'agentRunId',\n            'content', \"payload\" -> 'content'\n          )\n        WHEN 'AssistantOutputCompleted' THEN\n          \"payload\" = jsonb_build_object(\n            'assistantOutputId', \"payload\" ->> 'assistantOutputId',\n            'agentRunId', \"payload\" ->> 'agentRunId'\n          )\n        WHEN 'AssistantOutputInterrupted' THEN\n          \"payload\" = jsonb_build_object(\n            'assistantOutputId', \"payload\" ->> 'assistantOutputId',\n            'agentRunId', \"payload\" ->> 'agentRunId',\n            'cause', \"payload\" ->> 'cause'\n          )\n          AND (\n            (\"event_version\" = 1 AND \"payload\" ->> 'cause' = 'modelCallFailed')\n            OR (\"event_version\" = 2 AND \"payload\" ->> 'cause' = 'agentRunCanceled')\n          )\n        WHEN 'AgentRunCancellationRequested' THEN\n          \"payload\" = jsonb_build_object('agentRunId', \"payload\" ->> 'agentRunId')\n        WHEN 'AgentRunCanceled' THEN\n          \"payload\" = jsonb_build_object(\n            'agentRunId', \"payload\" ->> 'agentRunId',\n            'cleanupDisposition', \"payload\" -> 'cleanupDisposition',\n            'externalWorkMayContinue', \"payload\" -> 'externalWorkMayContinue'\n          )\n          AND \"payload\" -> 'cleanupDisposition' IN (\n            jsonb_build_object('type', 'completed'),\n            jsonb_build_object('type', 'deadlineExceeded')\n          )\n          AND jsonb_typeof(\"payload\" -> 'externalWorkMayContinue') = 'boolean'\n        WHEN 'AgentRunSucceeded' THEN\n          \"payload\" = jsonb_build_object('agentRunId', \"payload\" ->> 'agentRunId')\n        WHEN 'AgentRunFailed' THEN\n          \"payload\" = jsonb_build_object(\n            'agentRunId', \"payload\" ->> 'agentRunId',\n            'cause', 'modelCallFailed'\n          )\n        ELSE false\n      END",
+      "name": "thread_events_payload_shape_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "value": "\"event_type\" NOT IN ('UserMessageAppended', 'AssistantOutputAppended')\n        OR (\n          jsonb_typeof(\"payload\" -> 'content') = 'array'\n          AND jsonb_array_length(\"payload\" -> 'content') = 1\n          AND (\"payload\" -> 'content' -> 0) = jsonb_build_object(\n            'type', 'text',\n            'text', \"payload\" -> 'content' -> 0 ->> 'text'\n          )\n          AND length(\"payload\" -> 'content' -> 0 ->> 'text') BETWEEN 1 AND 16384\n        )",
+      "name": "thread_events_payload_content_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "thread_events"
+    },
+    {
+      "value": "\"next_position\" > 0",
+      "name": "threads_next_position_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "value": "\"state_revision\" >= 0",
+      "name": "threads_state_revision_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "value": "length(\"content\") BETWEEN 1 AND 16384",
+      "name": "user_messages_content_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "user_messages"
+    }
+  ],
+  "renames": []
+}

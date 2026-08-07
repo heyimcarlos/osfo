@@ -317,6 +317,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
         const sql = yield* SqlClient.SqlClient;
         yield* sql.withTransaction(
           Effect.gen(function* () {
+            yield* sql`SELECT pg_advisory_xact_lock(
+              hashtextextended(${ADMISSION_CAPACITY_LOCK_KEY}, 0)
+            )`;
             yield* sql`UPDATE agent_runs
               SET state = 'waiting'
               WHERE agent_run_id = ${receipt.agentRunId}::uuid
@@ -326,7 +329,8 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
               WHERE agent_run_id = ${receipt.agentRunId}::uuid
                 AND state = 'held'`;
             yield* sql`UPDATE admission_global_capacity
-              SET reserved_count = reserved_count - 1
+              SET reserved_count = reserved_count - 1,
+                  revision = revision + 1
               WHERE singleton = true AND reserved_count = 1`;
             yield* sql`UPDATE admission_principal_capacity
               SET reserved_count = reserved_count - 1
@@ -368,10 +372,12 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
           readonly globalReserved: number;
           readonly principalReserved: number;
           readonly canceledEvents: string;
+          readonly globalRevision: string;
         }>`SELECT
           run.state,
           reservation.state AS "reservationState",
           global_capacity.reserved_count AS "globalReserved",
+          global_capacity.revision::text AS "globalRevision",
           principal_capacity.reserved_count AS "principalReserved",
           (SELECT count(*) FROM thread_events event
             WHERE event.agent_run_id = run.agent_run_id
@@ -389,6 +395,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       state: "canceled",
       reservationState: "released",
       globalReserved: 0,
+      globalRevision: "3",
       principalReserved: 0,
       canceledEvents: "1",
     });
@@ -558,8 +565,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
               );
               for (let attempt = 0; attempt < 200; attempt += 1) {
                 const waiting = yield* sql<{ readonly observed: boolean }>`SELECT EXISTS (
-                  SELECT 1 FROM pg_locks
-                  WHERE locktype <> 'advisory' AND granted = false
+                  SELECT 1 FROM pg_stat_activity
+                  WHERE application_name = 'osfo-api'
+                    AND wait_event = 'advisory'
                 ) AS observed`;
                 if (waiting[0]?.observed === true) break;
                 if (attempt === 199) {
@@ -1079,15 +1087,34 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     await run(OutboxRelay.use((relay) => relay.selectOnce()));
     await run(OutboxRelay.use((relay) => relay.publishOnce()));
     const delivery = published[0]!;
+    const executionStarted = Effect.runSync(Deferred.make<void>());
+    const releaseExecution = Effect.runSync(Deferred.make<void>());
+    const leaseRenewed = Effect.runSync(Deferred.make<void>());
     const slowExecutor = Layer.succeed(ModelCallExecutor)(
       ModelCallExecutor.of({
         execute: () =>
-          Stream.fromEffect(Effect.sleep(120)).pipe(
-            Stream.map(() => ({ fragmentIndex: 0, text: "slow but healthy" })),
-          ),
+          Stream.fromEffect(
+            Deferred.succeed(executionStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseExecution)),
+            ),
+          ).pipe(Stream.map(() => ({ fragmentIndex: 0, text: "slow but healthy" }))),
         cancel: () => Effect.succeed({ type: "confirmedStopped" }),
       }),
     );
+    const observingRepositoryLayer = Layer.effect(
+      AgentRunRepository,
+      AgentRunRepository.use((repository) =>
+        Effect.succeed(
+          AgentRunRepository.of({
+            ...repository,
+            renewLease: (fence, leaseDurationMs) =>
+              repository
+                .renewLease(fence, leaseDurationMs)
+                .pipe(Effect.tap(() => Deferred.succeed(leaseRenewed, undefined))),
+          }),
+        ),
+      ),
+    ).pipe(Layer.provide(repositoryLayer));
     const slowWorker = makeAgentRunWorkerLayer({
       executionProfileRef: "oz.deterministic.v1",
       workerId: "slow-worker",
@@ -1095,7 +1122,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       leaseRenewalIntervalMs: 10,
       cancellationPollIntervalMs: 5,
     }).pipe(
-      Layer.provide(repositoryLayer),
+      Layer.provide(observingRepositoryLayer),
       Layer.provide(runtimeLayer),
       Layer.provide(slowExecutor),
     );
@@ -1107,13 +1134,15 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
           const running = yield* Effect.forkChild(
             AgentRunWorker.use((worker) => worker.handle(delivery)),
           );
-          yield* Effect.sleep(90);
+          yield* Deferred.await(executionStarted);
+          yield* Deferred.await(leaseRenewed);
           const competingClaim = yield* AgentRunRepository.use((repository) =>
             repository.claimAgentRun(delivery, {
               workerId: "competing-worker",
               leaseDurationMs: 60,
             }),
           );
+          yield* Deferred.succeed(releaseExecution, undefined);
           const completed = yield* Fiber.join(running);
           return { competingClaim, completed };
         }),
@@ -1308,7 +1337,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             fragmentIndex: 0,
             text: "Possibly still running",
           });
-          yield* repository.recordModelCallCleanup(attempt, {
+          yield* repository.recordModelCallCleanup(abandoned.fence, attempt, {
             cleanupDisposition: { type: "deadlineExceeded" },
             externalWorkMayContinue: true,
           });
@@ -1847,6 +1876,10 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             }),
             repository.completeModelCall(abandoned.fence, abandonedAttempt),
             repository.interruptModelCall(abandoned.fence, abandonedAttempt, "modelCallFailed"),
+            repository.recordModelCallCleanup(abandoned.fence, abandonedAttempt, {
+              cleanupDisposition: { type: "completed" },
+              externalWorkMayContinue: false,
+            }),
             repository.commitTerminal(abandoned.fence, { type: "succeed" }),
             repository.commitCancellation(abandoned.fence, {
               cleanupDisposition: { type: "completed" },
@@ -1858,7 +1891,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       ),
     );
     expect(staleErrors.map((error) => error._tag)).toEqual(
-      Array.from({ length: 8 }, () => "AgentRunFenceRejected"),
+      Array.from({ length: 9 }, () => "AgentRunFenceRejected"),
     );
 
     const authority = await run(
@@ -1884,8 +1917,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
         WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
         const events = yield* sql<{
           readonly eventType: string;
+          readonly eventVersion: number;
           readonly payload: unknown;
-        }>`SELECT event_type AS "eventType", payload
+        }>`SELECT event_type AS "eventType", event_version AS "eventVersion", payload
           FROM thread_events
           WHERE agent_run_id = ${receipt.agentRunId}::uuid
           ORDER BY position`;
@@ -1901,11 +1935,12 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       startedAttempts: "0",
     });
     expect(authority.events).toEqual([
-      expect.objectContaining({ eventType: "UserMessageAppended" }),
-      expect.objectContaining({ eventType: "AssistantOutputAppended" }),
-      expect.objectContaining({ eventType: "AgentRunCancellationRequested" }),
+      expect.objectContaining({ eventType: "UserMessageAppended", eventVersion: 1 }),
+      expect.objectContaining({ eventType: "AssistantOutputAppended", eventVersion: 1 }),
+      expect.objectContaining({ eventType: "AgentRunCancellationRequested", eventVersion: 1 }),
       {
         eventType: "AssistantOutputInterrupted",
+        eventVersion: 2,
         payload: {
           assistantOutputId: abandonedAttempt.assistantOutputId,
           agentRunId: receipt.agentRunId,
@@ -1914,6 +1949,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
       },
       {
         eventType: "AgentRunCanceled",
+        eventVersion: 1,
         payload: {
           agentRunId: receipt.agentRunId,
           cleanupDisposition: { type: "deadlineExceeded" },

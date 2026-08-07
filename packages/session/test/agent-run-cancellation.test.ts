@@ -56,6 +56,7 @@ describe("AgentRun cancellation session semantics", () => {
         occurredAt,
         cause: "agentRunCanceled",
       });
+      expect(interrupted.eventVersion).toBe(2);
       const canceled = yield* makeAgentRunCanceled({
         eventId: "6becadfa-4725-4752-a107-4b7368e5b377",
         threadId,

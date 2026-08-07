@@ -10,6 +10,7 @@ import {
 } from "@osfo/api";
 import { makeAgentRunCanceled, makeAgentRunCancellationRequested } from "@osfo/session";
 import { Data, Effect, Layer, Redacted, Schema } from "effect";
+import { ADMISSION_CAPACITY_LOCK_KEY } from "./admission-capacity.js";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 
@@ -125,6 +126,11 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
           if (reservation.state !== "released") {
             return yield* new AgentRunCancellationUnavailable();
           }
+          const revised = yield* sql`UPDATE admission_global_capacity
+            SET revision = revision + 1
+            WHERE singleton = true
+            RETURNING revision`;
+          if (revised.length !== 1) return yield* new AgentRunCancellationUnavailable();
           return;
         }
         if (authority.state !== "pending" || reservation.state !== "held") {
@@ -173,6 +179,9 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
               WHERE thread_id = ${command.threadId}::uuid
                 AND principal_id = ${session.principalId}::uuid`;
             if (owned[0] === undefined) return yield* new ThreadNotFound();
+            yield* sql`SELECT pg_advisory_xact_lock(
+              hashtextextended(${ADMISSION_CAPACITY_LOCK_KEY}, 0)
+            )`;
             const globalCapacity = yield* sql`SELECT reserved_count
               FROM admission_global_capacity
               WHERE singleton = true

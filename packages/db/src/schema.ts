@@ -331,7 +331,13 @@ export const threadEvents = pgTable(
         'AgentRunFailed'
       )`,
     ),
-    check("thread_events_event_version_check", sql`${table.eventVersion} = 1`),
+    check(
+      "thread_events_event_version_check",
+      sql`(
+        (${table.eventType} = 'AssistantOutputInterrupted' AND ${table.eventVersion} IN (1, 2))
+        OR (${table.eventType} <> 'AssistantOutputInterrupted' AND ${table.eventVersion} = 1)
+      )`,
+    ),
     check("thread_events_payload_object_check", sql`jsonb_typeof(${table.payload}) = 'object'`),
     check(
       "thread_events_payload_run_check",
@@ -364,7 +370,10 @@ export const threadEvents = pgTable(
             'agentRunId', ${table.payload} ->> 'agentRunId',
             'cause', ${table.payload} ->> 'cause'
           )
-          AND ${table.payload} ->> 'cause' IN ('modelCallFailed', 'agentRunCanceled')
+          AND (
+            (${table.eventVersion} = 1 AND ${table.payload} ->> 'cause' = 'modelCallFailed')
+            OR (${table.eventVersion} = 2 AND ${table.payload} ->> 'cause' = 'agentRunCanceled')
+          )
         WHEN 'AgentRunCancellationRequested' THEN
           ${table.payload} = jsonb_build_object('agentRunId', ${table.payload} ->> 'agentRunId')
         WHEN 'AgentRunCanceled' THEN

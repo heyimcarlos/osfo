@@ -223,6 +223,7 @@ describe("UserMessageAppended", () => {
         }),
       ),
     ];
+    expect(events[2]?.eventVersion).toBe(1);
     const result = events.reduce(
       (snapshot, event, index) =>
         Effect.runSync(

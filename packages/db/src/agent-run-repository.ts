@@ -861,10 +861,11 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
 
       const recordModelCallCleanup: AgentRunRepositoryService["recordModelCallCleanup"] = Effect.fn(
         "AgentRunRepository.recordModelCallCleanup",
-      )(function* (attempt, cleanup) {
+      )(function* (fence, attempt, cleanup) {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
+              yield* requireFence(fence);
               const rows = yield* sql<{
                 readonly cleanupDisposition: "completed" | "deadlineExceeded" | null;
                 readonly externalWorkMayContinue: boolean | null;
@@ -880,9 +881,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   FOR UPDATE`;
               const existing = rows[0];
               if (existing === undefined) {
-                return yield* new AgentRunRepositoryUnavailable({
-                  cause: "ModelCallAttempt cleanup authority missing",
-                });
+                return yield* new AgentRunFenceRejected();
               }
               if (
                 existing.cleanupDisposition === cleanup.cleanupDisposition.type &&
@@ -894,14 +893,10 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                 existing.cleanupDisposition !== null ||
                 existing.externalWorkMayContinue !== null
               ) {
-                return yield* new AgentRunRepositoryUnavailable({
-                  cause: "ModelCallAttempt cleanup authority conflict",
-                });
+                return yield* new AgentRunFenceRejected();
               }
               if (existing.state !== "started") {
-                return yield* new AgentRunRepositoryUnavailable({
-                  cause: "ModelCallAttempt cleanup authority is no longer active",
-                });
+                return yield* new AgentRunFenceRejected();
               }
               const recorded = yield* sql`UPDATE model_call_attempts
                   SET cleanup_disposition = ${cleanup.cleanupDisposition.type},
@@ -913,9 +908,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     AND external_work_may_continue IS NULL
                   RETURNING model_call_attempt_id`;
               if (recorded.length !== 1) {
-                return yield* new AgentRunRepositoryUnavailable({
-                  cause: "ModelCallAttempt cleanup was not recorded",
-                });
+                return yield* new AgentRunFenceRejected();
               }
             }),
           ),

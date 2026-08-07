@@ -49,6 +49,7 @@ const program = WorkerConfig.pipe(
       leaseDurationMs: config.leaseDurationMs,
       leaseRenewalIntervalMs: config.leaseRenewalIntervalMs,
       cancellationPollIntervalMs: config.cancellationPollIntervalMs,
+      providerSupervisorAttemptLimit: config.executionSlots,
     }).pipe(
       Layer.provide(repositoryLayer),
       Layer.provide(
