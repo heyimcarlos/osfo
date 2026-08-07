@@ -59,6 +59,7 @@ const runtime = ManagedRuntime.make(
       databaseUrl,
       executionProfileRef: "oz.deterministic.v1",
       globalNonTerminalLimit: 8,
+      maxConnections: 8,
       principalNonTerminalLimit: 8,
     }),
   ),

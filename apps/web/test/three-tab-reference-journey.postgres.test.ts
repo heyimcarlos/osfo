@@ -126,6 +126,8 @@ describe("three-tab Oz Reference Journey", () => {
           executionProfileRef,
           workerId: "reference-worker",
           leaseDurationMs: 30_000,
+          leaseRenewalIntervalMs: 10_000,
+          cancellationPollIntervalMs: 100,
         }).pipe(
           Layer.provide(repositoryLayer),
           Layer.provide(
