@@ -10,13 +10,15 @@ import { requireApprovedDatabaseProxy } from "./approved-database-proxy";
 const DatabaseRole = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9@._-]{0,62}$/u));
 const DatabaseName = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_-]{0,62}$/u));
 const DatabaseBootstrapConfig = Config.all({
-  databaseAdminUrl: Config.schema(Schema.Redacted(Schema.URLFromString), "OSFO_DATABASE_ADMIN_URL"),
+  databaseAdminUrl: Config.redacted("OSFO_DATABASE_ADMIN_URL"),
   runtimeRoles: Config.nonEmptyString("OSFO_DATABASE_RUNTIME_ROLES"),
 });
 
 Effect.gen(function* () {
   const config = yield* DatabaseBootstrapConfig;
-  const databaseAdminUrl = Redacted.value(config.databaseAdminUrl);
+  const databaseAdminUrl = yield* Schema.decodeUnknownEffect(Schema.URLFromString)(
+    Redacted.value(config.databaseAdminUrl),
+  );
   yield* requireApprovedDatabaseProxy(databaseAdminUrl, "database access bootstrap");
   const runtimeRoles = yield* Schema.decodeUnknownEffect(
     Schema.Array(DatabaseRole).check(Schema.isMinLength(1)),
@@ -26,7 +28,7 @@ Effect.gen(function* () {
   );
 
   yield* bootstrapDatabaseAccess({
-    databaseAdminUrl: config.databaseAdminUrl,
+    databaseAdminUrl: Redacted.make(databaseAdminUrl),
     databaseName,
     runtimeRoles,
   });
