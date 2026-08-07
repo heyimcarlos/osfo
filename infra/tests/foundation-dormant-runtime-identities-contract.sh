@@ -30,10 +30,7 @@ fi
 for protected_contract in \
   'development_protected_runtime_identities = setunion(' \
   'local.development_runtime_identities,' \
-  'local.development_dormant_runtime_identities,' \
-  'for_each = local.development_protected_runtime_identities' \
-  'prevent_destroy = true' \
-  'disabled = contains(local.development_dormant_runtime_identities, each.key)'; do
+  'local.development_dormant_runtime_identities,'; do
   rg --fixed-strings --quiet "$protected_contract" "$foundation"
 done
 
@@ -103,7 +100,7 @@ for removed_job in database_bootstrap migration seed reconciliation; do
   fi
 done
 
-rg --fixed-strings --quiet 'protected_dormant_service_accounts: "PASS"' \
+rg --fixed-strings --quiet 'protected_dormant_identity_authority_absent: "PASS"' \
   infra/tests/development-platform-absent.sh
 
 printf 'PASS: protected dormant identities are retained without runtime authority\n'

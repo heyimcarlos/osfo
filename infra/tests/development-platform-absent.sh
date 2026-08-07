@@ -99,10 +99,54 @@ while IFS=$'\t' read -r identity email; do
     gcloud iam service-accounts list --project="$project_id" --format='value(email)'
 done < <(jq -r '.runtime_service_accounts | to_entries[] | [.key, .value] | @tsv' "$varset")
 
+if ! gcloud projects get-iam-policy "$project_id" --format=json \
+  >"$scratch/project-iam-policy.json" 2>"$scratch/project-iam-policy.error"; then
+  printf 'FAIL: provider lookup for project IAM policy failed closed\n' >&2
+  cat "$scratch/project-iam-policy.error" >&2
+  exit 1
+fi
+
 for identity in migration reconciliation; do
-  assert_present "service_account_dormant_$identity" \
-    "$name_prefix-$identity@$project_id.iam.gserviceaccount.com" \
+  email="$name_prefix-$identity@$project_id.iam.gserviceaccount.com"
+  assert_present "service_account_dormant_$identity" "$email" \
     gcloud iam service-accounts list --project="$project_id" --format='value(email)'
+
+  if ! gcloud iam service-accounts describe "$email" --project="$project_id" \
+    --format=json >"$scratch/service-account-dormant-$identity.json" \
+    2>"$scratch/service-account-dormant-$identity.error"; then
+    printf 'FAIL: provider lookup for dormant service account %s failed closed\n' \
+      "$identity" >&2
+    cat "$scratch/service-account-dormant-$identity.error" >&2
+    exit 1
+  fi
+  jq -e --arg email "$email" '.email == $email and .disabled == true' \
+    "$scratch/service-account-dormant-$identity.json" >/dev/null || {
+    printf 'FAIL: dormant service account %s is not disabled\n' "$identity" >&2
+    exit 1
+  }
+
+  jq -e --arg member "serviceAccount:$email" \
+    'all(.bindings // []; all(.members // []; . != $member))' \
+    "$scratch/project-iam-policy.json" >/dev/null || {
+    printf 'FAIL: dormant service account %s retains a project role\n' "$identity" >&2
+    exit 1
+  }
+
+  if ! gcloud iam service-accounts get-iam-policy "$email" \
+    --project="$project_id" --format=json \
+    >"$scratch/service-account-dormant-$identity-policy.json" \
+    2>"$scratch/service-account-dormant-$identity-policy.error"; then
+    printf 'FAIL: provider lookup for dormant service account %s policy failed closed\n' \
+      "$identity" >&2
+    cat "$scratch/service-account-dormant-$identity-policy.error" >&2
+    exit 1
+  fi
+  jq -e '(.bindings // []) | length == 0' \
+    "$scratch/service-account-dormant-$identity-policy.json" >/dev/null || {
+    printf 'FAIL: dormant service account %s retains an actAs or impersonation binding\n' \
+      "$identity" >&2
+    exit 1
+  }
 done
 
 while IFS=$'\t' read -r identity email; do
@@ -139,7 +183,7 @@ jq -n --arg project_id "$project_id" --arg region "$region" '{
     pubsub_topic_and_subscription: "PASS",
     qualification_subscriptions: "PASS",
     retained_runtime_service_accounts: "PASS",
-    protected_dormant_service_accounts: "PASS",
+    protected_dormant_identity_authority_absent: "PASS",
     retained_qualification_service_accounts: "PASS",
     secrets: "PASS",
     artifact_registry: "PASS",
