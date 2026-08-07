@@ -153,9 +153,9 @@ locals {
   }
 
   development_qualification_identities = {
-    denied_secret   = "qualification-denied"
-    network         = "qualification-network"
-    temporal_secret = "qualification-temporal"
+    denied_secret   = "qual-denied"
+    network         = "qual-network"
+    temporal_secret = "qual-temporal"
   }
 
   development_secret_access_bindings = {

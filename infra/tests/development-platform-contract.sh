@@ -152,7 +152,7 @@ jq -e '
     "denied_secret", "network", "temporal_secret"
   ]
   and all($config.qualification_service_accounts | to_entries[];
-    .value | startswith("\($config.name_prefix)-qualification-")
+    .value | startswith("\($config.name_prefix)-qual-")
     and endswith("@\($config.project_id).iam.gserviceaccount.com"))
 ' "$root/development.tfvars.json" >/dev/null
 
