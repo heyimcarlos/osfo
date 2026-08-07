@@ -35,7 +35,7 @@
       "artifactStatus": "PASS",
       "evidenceStatus": "PASS",
       "path": "walkthrough.md",
-      "sha256": "212e8d91823c20e017d3a64756f0be1d5771df64e2f273763ab7ed6143937652",
+      "sha256": "b887c2600dd5d4fa287aca551e699146fb028117ad43c3d1cf62993c4892dd49",
       "description": "Built, skipped or failed, and next-improvements walkthrough."
     },
     {
