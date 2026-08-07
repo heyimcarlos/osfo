@@ -19,13 +19,15 @@
     "db:verify": "bash scripts/verify-migrations.sh",
     "dev": "bun run --env-file=.env turbo run dev",
     "dev:web": "turbo run dev --filter=@osfo/web",
-    "format": "oxfmt .oxfmtrc.json package.json turbo.json tsconfig.json tsconfig.scripts.json compose.postgres.yaml README.md apps packages scripts",
-    "format:check": "oxfmt --check .oxfmtrc.json package.json turbo.json tsconfig.json tsconfig.scripts.json compose.postgres.yaml README.md apps packages scripts",
+    "format": "oxfmt .oxfmtrc.json package.json turbo.json tsconfig.json tsconfig.scripts.json tsconfig.infra.json compose.postgres.yaml README.md apps packages scripts infra .github",
+    "format:check": "oxfmt --check .oxfmtrc.json package.json turbo.json tsconfig.json tsconfig.scripts.json tsconfig.infra.json compose.postgres.yaml README.md apps packages scripts infra .github",
+    "infra:check": "terraform fmt -check -recursive infra && bash infra/tests/policy.sh && bash infra/tests/repository-contract.sh && bash infra/scripts/check-source.sh infra",
+    "infra:test": "vitest run infra/test/terraform-foundation.test.ts",
     "lint": "oxlint --deny-warnings .",
     "start:agent-run-worker": "bun run --cwd apps/agent-run-worker start",
     "start:ingress": "bun run --cwd apps/ingress start",
-    "test": "turbo run test",
-    "typecheck": "tsc --project tsconfig.scripts.json && turbo run typecheck"
+    "test": "bun run infra:test && turbo run test",
+    "typecheck": "tsc --project tsconfig.scripts.json && tsc --project tsconfig.infra.json && turbo run typecheck"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
@@ -34,12 +36,14 @@
   },
   "devDependencies": {
     "@effect/language-service": "0.85.1",
+    "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "oxfmt": "0.44.0",
     "oxlint": "1.56.0",
     "tsx": "catalog:",
     "turbo": "2.9.18",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "engines": {
     "node": "24.18.0"

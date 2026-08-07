@@ -1,0 +1,2 @@
+bucket = "osfo-development-tfstate-unique"
+prefix = "roots/development/runtime"

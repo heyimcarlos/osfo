@@ -11,12 +11,14 @@
       },
       "devDependencies": {
         "@effect/language-service": "0.85.1",
+        "@effect/vitest": "catalog:",
         "@types/node": "catalog:",
         "oxfmt": "0.44.0",
         "oxlint": "1.56.0",
         "tsx": "catalog:",
         "turbo": "2.9.18",
         "typescript": "catalog:",
+        "vitest": "catalog:",
       },
     },
     "apps/agent-run-worker": {

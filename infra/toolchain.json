@@ -1,0 +1,7 @@
+{
+  "terraform_version": "1.15.8",
+  "google_provider_version": "7.43.0",
+  "gcloud_version": "569.0.0",
+  "ci_image": "hashicorp/terraform:1.15.8@sha256:7ae513256f7ce67879e218ae8593d6fbe216ec9e123abe6c94e4e10704857963",
+  "terraform_linux_amd64_sha256": "d25ce7b6902013ad905db3d2eab0be4cd905887fe88b81a6171b8d5503c31f3d"
+}
