@@ -155,8 +155,8 @@ Integrated capacity still failed. Corrected 60-second target controls varied
 the dispatch window, worker concurrency, worker ceiling, and warm floor. The
 best accepted 8,833 of 13,920 offered commands and completed all 12,595 derived
 AgentRuns exactly. A max-16 worker ceiling and a 12-worker warm floor did not
-close the gap. The short target gate remains `FAIL`, so longer target and
-Production Acceptance Corpus lanes remain `MISSING`.
+close the gap. That historical push short-target gate is `FAIL`; its longer
+target and Production Acceptance Corpus lanes remain `MISSING`.
 
 Issue 87 subsequently selected one ordered subscription and a fixed
 StreamingPull fleet. A 64-stripe 60-second control accepted all 13,920 commands
@@ -214,7 +214,9 @@ deployment contract before production approval.
   confirmation. They are not held until AgentRun terminal completion.
 - Durable publication tasks with owner, lease, and epoch recovery replace the
   selector-wide publication lock.
-- Full production approval remains blocked. A delivery and worker activation
-  contract must meet the short target gate before longer target,
-  retained-corpus, Temporal, cost, and recovery evidence can qualify a final
-  manifest.
+- Full production approval remains blocked. The selected StreamingPull short
+  target passed, but the final `us-east4` matrix failed admission at the target
+  rate. Admission stability under exact retained history must pass before the
+  overload knee, 400,000-AgentRun reserve outage and drain, retained corpora,
+  user-visible SLO, bounded-resource, and complete-cost gates can qualify a
+  final production manifest.

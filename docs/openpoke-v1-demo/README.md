@@ -17,9 +17,11 @@ The packet copies only selected records from source bundles whose complete
 `SHA256SUMS` manifests were verified before copying. Each copied byte sequence
 has a new entry in the packet index. The copied source manifests preserve the
 original seal and provenance, but they refer to full raw bundles that are not
-vendored here. The five Grafana screenshots and import report came from the
-sealed temporary v16 capture after its complete `SEALED-SHA256SUMS` passed.
-The final `us-east4` A/B/C/D matrix summary is also copied from its verified
+vendored here. Four Grafana screenshots and the import report came from the
+sealed temporary v16 capture after its complete `SEALED-SHA256SUMS` passed. The
+capacity view was regenerated through the dashboard source pipeline to correct
+the final matrix B/C mapping, then sealed with its generated definition and the
+authoritative final matrix summary. That summary is copied from its verified
 stable bundle. Its two provider roots passed their complete seals and recorded
 zero manifest-owned cloud residue after teardown.
 

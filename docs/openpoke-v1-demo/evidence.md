@@ -47,9 +47,9 @@ qualification.
 | External-action retry control | 20 / 20 bounded SendEmail ToolCalls produced exactly 20 Mailpit messages; duplicate decision and terminal outcome returned idempotent replay | PASS | Existing sealed [Issue 13 result](../../prototypes/agent-run-lifecycle/evidence/issue-13-temporal-cloud-confirmation-20260803T214500Z/results.json). Focused test sink only. |
 | Production external-action guarantee | No production ActionReceipt lane proves retries against a real external action provider | MISSING | The Mailpit control explicitly does not establish production ActionReceipt semantics. |
 | Recovery-rate screen | Four workers: claim p99 10,966.367 ms. Six: 30.548 ms. Eight: 40.649 ms. Every fleet completed 36,540 / 36,540 at 609 AgentRuns/s before offer end. | PASS | [Four](evidence/runs/recovery-rate-609-workers-4/audit.json), [six](evidence/runs/recovery-rate-609-workers-6/audit.json), and [eight](evidence/runs/recovery-rate-609-workers-8/audit.json). Six is the selected fixed-fleet candidate. |
-| Full outage recovery and backlog drain | The required 15-minute outage creates 313,200 AgentRuns. The historical 4,096-run reserve cannot hold it. No sealed proof shows progress within 5 minutes and full drain within 20 minutes. | MISSING | The [durability dashboard](assets/grafana/openpoke-durability-recovery.png) keeps each recovery requirement `MISSING`. |
+| Full outage recovery and backlog drain | The required 15-minute outage creates 313,200 AgentRuns. The final matrix used the 400,000-AgentRun reserve candidate, leaving 86,800 nominal slots, but did not execute the declared outage. No sealed proof shows progress within 5 minutes and full drain within 20 minutes. | MISSING | Reserve sizing is present; outage, recovery, drain, and cost qualification remain absent. The [durability dashboard](assets/grafana/openpoke-durability-recovery.png) keeps each recovery requirement `MISSING`. |
 | Per-load-run screenshot or recording | No dedicated screenshot or recording exists for the selected load lanes | MISSING | The artifact index retains one placeholder for every short, sustained, pre-admitted, recovery-fleet, process-loss, and final A/B/C/D matrix run. |
-| Five Grafana views | Five 1920 x 1080 v16 captures exist and their copied bytes match the packet index | PASS | [Scorecard](assets/grafana/openpoke-100k-scorecard.png), [capacity](assets/grafana/openpoke-capacity-postgres.png), [durability](assets/grafana/openpoke-durability-recovery.png), [multi-device](assets/grafana/openpoke-multi-device.png), and [topology](assets/grafana/openpoke-topology-evolution.png). Dashboard panels remain derived presentation, not authority. |
+| Five Grafana views | Five 1920 x 1080 captures exist and their copied bytes match the packet index | PASS | [Scorecard](assets/grafana/openpoke-100k-scorecard.png), [capacity](assets/grafana/openpoke-capacity-postgres.png), [durability](assets/grafana/openpoke-durability-recovery.png), [multi-device](assets/grafana/openpoke-multi-device.png), and [topology](assets/grafana/openpoke-topology-evolution.png). The capacity view was regenerated through Grafana from the corrected dashboard definition and sealed final matrix mapping. Dashboard panels remain derived presentation, not authority. |
 | Authenticated three-tab disconnect and resume recording | No recording exists | MISSING | The artifact index is ready for a future checksummed file. |
 | Overall production qualification | Required production region, sustained stability, overload, saturation, full recovery, multi-device load, complete cost, and recordings are not all closed | MISSING | No lower-level pass is promoted to an overall pass. |
 
@@ -67,7 +67,8 @@ These are configuration inputs, not saturation evidence:
 | Relay selector | 1 active N1 selector |
 | Relay publisher workers | 4 recoverable publishers |
 | Principal-first publication window | 128 records |
-| Historical durable reserve | 4,096 AgentRuns, rejected for the full outage contract |
+| Selected-region durable reserve | 400,000 AgentRuns, candidate exercised by the final admission matrix; outage qualification still `MISSING` |
+| Historical Montreal reserve | 4,096 AgentRuns, superseded and rejected for the full outage contract |
 
 ## Integrity
 
@@ -79,5 +80,7 @@ bun run demo:evidence:verify
 ```
 
 The verifier rejects a malformed index, duplicate artifact IDs, missing files,
-non-regular files, path escapes, and SHA-256 mismatches. `MISSING` entries must
-have no path or checksum, so a placeholder cannot look like present evidence.
+non-regular files, canonical realpath escapes, and SHA-256 mismatches. For each
+provenanced artifact it also parses the referenced typed source manifest and
+requires the exact original path and digest entry. `MISSING` entries must have
+no path or checksum, so a placeholder cannot look like present evidence.

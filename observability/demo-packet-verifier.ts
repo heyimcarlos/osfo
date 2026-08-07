@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 
 import { NodeRuntime } from "@effect/platform-node";
@@ -11,8 +11,14 @@ const ArtifactKindSchema = Schema.Literals([
   "dashboard-view",
   "recording",
   "document",
+  "source-manifest",
 ]);
 const Sha256Schema = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
+const SourceManifestPathSchema = Schema.String.check(Schema.isPattern(/^\.\/[^\r\n]+$/u));
+const SourceManifestEntrySchema = Schema.Struct({
+  sha256: Sha256Schema,
+  path: SourceManifestPathSchema,
+});
 
 const PresentArtifactSchema = Schema.Struct({
   id: Schema.String,
@@ -24,6 +30,7 @@ const PresentArtifactSchema = Schema.Struct({
   description: Schema.String,
   source: Schema.optionalKey(Schema.String),
   sourceManifestSha256: Schema.optionalKey(Sha256Schema),
+  sourceManifestPath: Schema.optionalKey(SourceManifestPathSchema),
 });
 
 const MissingArtifactSchema = Schema.Struct({
@@ -71,6 +78,7 @@ const readIndex = (indexPath: string) =>
   );
 
 const verifyPresentArtifact = (
+  packetRealPath: string,
   indexDirectory: string,
   artifact: typeof PresentArtifactSchema.Type,
 ) =>
@@ -83,8 +91,16 @@ const verifyPresentArtifact = (
     }
 
     const artifactPath = resolve(indexDirectory, artifact.path);
-    const rootPrefix = `${resolve(indexDirectory)}${sep}`;
-    if (!artifactPath.startsWith(rootPrefix)) {
+    const packetPrefix = `${packetRealPath}${sep}`;
+    const artifactRealPath = yield* Effect.tryPromise({
+      try: () => realpath(artifactPath),
+      catch: () =>
+        new DemoPacketVerificationError({
+          code: "ARTIFACT_INVALID",
+          message: `${artifact.id}: indexed artifact is missing`,
+        }),
+    });
+    if (!artifactRealPath.startsWith(packetPrefix)) {
       return yield* new DemoPacketVerificationError({
         code: "ARTIFACT_INVALID",
         message: `${artifact.id}: path escapes packet directory`,
@@ -107,7 +123,7 @@ const verifyPresentArtifact = (
     }
 
     const bytes = yield* Effect.tryPromise({
-      try: () => readFile(artifactPath),
+      try: () => readFile(artifactRealPath),
       catch: () =>
         new DemoPacketVerificationError({
           code: "ARTIFACT_INVALID",
@@ -121,12 +137,41 @@ const verifyPresentArtifact = (
         message: `${artifact.id}: checksum mismatch`,
       });
     }
+
+    return bytes;
   });
+
+const parseSourceManifest = (manifestId: string, bytes: Buffer) => {
+  const text = bytes.toString("utf8");
+  const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+  const entries = lines.map((line) => {
+    const match = /^([a-f0-9]{64})  (\.\/[^\r\n]+)$/u.exec(line);
+    return match === null ? null : { sha256: match[1], path: match[2] };
+  });
+
+  return Schema.decodeUnknownEffect(Schema.Array(SourceManifestEntrySchema))(entries).pipe(
+    Effect.mapError(
+      () =>
+        new DemoPacketVerificationError({
+          code: "ARTIFACT_INVALID",
+          message: `${manifestId}: malformed source manifest`,
+        }),
+    ),
+  );
+};
 
 export const verifyDemoPacket = (indexPath: string) =>
   Effect.gen(function* () {
     const index = yield* readIndex(indexPath);
     const indexDirectory = dirname(resolve(indexPath));
+    const packetRealPath = yield* Effect.tryPromise({
+      try: () => realpath(indexDirectory),
+      catch: () =>
+        new DemoPacketVerificationError({
+          code: "INDEX_INVALID",
+          message: `cannot resolve packet directory ${indexDirectory}`,
+        }),
+    });
     const artifactIds = new Set<string>();
     for (const artifact of index.artifacts) {
       if (artifactIds.has(artifact.id)) {
@@ -139,23 +184,56 @@ export const verifyDemoPacket = (indexPath: string) =>
     }
     const present = index.artifacts.filter((artifact) => artifact.artifactStatus === "PASS");
     const missing = index.artifacts.length - present.length;
-    const indexedChecksums = new Set(present.map((artifact) => artifact.sha256));
     for (const artifact of present) {
+      const hasManifestChecksum = artifact.sourceManifestSha256 !== undefined;
+      const hasManifestPath = artifact.sourceManifestPath !== undefined;
+      if (hasManifestChecksum !== hasManifestPath) {
+        return yield* new DemoPacketVerificationError({
+          code: "INDEX_INVALID",
+          message: `${artifact.id}: source manifest checksum and path must be paired`,
+        });
+      }
+    }
+
+    const verified = yield* Effect.forEach(
+      present,
+      (artifact) =>
+        verifyPresentArtifact(packetRealPath, indexDirectory, artifact).pipe(
+          Effect.map((bytes) => ({ artifact, bytes })),
+        ),
+      { concurrency: 1 },
+    );
+
+    for (const { artifact } of verified) {
       if (
-        artifact.sourceManifestSha256 !== undefined &&
-        !indexedChecksums.has(artifact.sourceManifestSha256)
+        artifact.sourceManifestSha256 === undefined ||
+        artifact.sourceManifestPath === undefined
       ) {
+        continue;
+      }
+      const manifest = verified.find(
+        (candidate) =>
+          candidate.artifact.kind === "source-manifest" &&
+          candidate.artifact.sha256 === artifact.sourceManifestSha256,
+      );
+      if (manifest === undefined) {
         return yield* new DemoPacketVerificationError({
           code: "INDEX_INVALID",
           message: `${artifact.id}: source manifest checksum is not indexed`,
         });
       }
+      const entries = yield* parseSourceManifest(manifest.artifact.id, manifest.bytes);
+      if (
+        !entries.some(
+          (entry) => entry.path === artifact.sourceManifestPath && entry.sha256 === artifact.sha256,
+        )
+      ) {
+        return yield* new DemoPacketVerificationError({
+          code: "ARTIFACT_INVALID",
+          message: `${artifact.id}: source manifest entry mismatch`,
+        });
+      }
     }
-
-    yield* Effect.forEach(present, (artifact) => verifyPresentArtifact(indexDirectory, artifact), {
-      concurrency: 1,
-      discard: true,
-    });
 
     return { present: present.length, missing } as const;
   });

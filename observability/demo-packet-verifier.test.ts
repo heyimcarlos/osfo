@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -27,8 +27,19 @@ describe("OpenPoke demo packet verifier CLI", () => {
   it("accepts verified artifacts and explicit MISSING placeholders", async () => {
     const root = await createPacketRoot();
     const artifact = "sealed evidence\n";
+    const manifest = `${sha256(artifact)}  ./artifact.txt\n`;
     await writeFile(join(root, "artifact.txt"), artifact);
+    await writeFile(join(root, "SOURCE-SHA256SUMS"), manifest);
     const indexPath = await writeIndex(root, [
+      {
+        id: "source-manifest",
+        kind: "source-manifest",
+        artifactStatus: "PASS",
+        evidenceStatus: "PASS",
+        path: "SOURCE-SHA256SUMS",
+        sha256: sha256(manifest),
+        description: "The copied source manifest.",
+      },
       {
         id: "sealed-run",
         kind: "sealed-run",
@@ -36,6 +47,8 @@ describe("OpenPoke demo packet verifier CLI", () => {
         evidenceStatus: "PASS",
         path: "artifact.txt",
         sha256: sha256(artifact),
+        sourceManifestSha256: sha256(manifest),
+        sourceManifestPath: "./artifact.txt",
         description: "A copied checksummed result.",
       },
       {
@@ -51,7 +64,7 @@ describe("OpenPoke demo packet verifier CLI", () => {
 
     const result = await runVerifier(indexPath);
 
-    expect(result.stdout).toBe("PASS: verified 1 artifact; 1 MISSING\n");
+    expect(result.stdout).toBe("PASS: verified 2 artifacts; 1 MISSING\n");
     expect(result.stderr).toBe("");
   });
 
@@ -88,12 +101,124 @@ describe("OpenPoke demo packet verifier CLI", () => {
         path: "artifact.txt",
         sha256: sha256(artifact),
         sourceManifestSha256: sha256("manifest not in this index"),
+        sourceManifestPath: "./artifact.txt",
         description: "A copied checksummed result.",
       },
     ]);
 
     await expect(runVerifier(indexPath)).rejects.toMatchObject({
       stderr: "FAIL: INDEX_INVALID: sealed-run: source manifest checksum is not indexed\n",
+    });
+  });
+
+  it("rejects forged linkage to an indexed non-manifest artifact", async () => {
+    const root = await createPacketRoot();
+    const artifact = "sealed evidence\n";
+    const forgedManifest = `${sha256(artifact)}  ./artifact.txt\n`;
+    await writeFile(join(root, "artifact.txt"), artifact);
+    await writeFile(join(root, "forged.txt"), forgedManifest);
+    const indexPath = await writeIndex(root, [
+      {
+        id: "forged-document",
+        kind: "document",
+        artifactStatus: "PASS",
+        evidenceStatus: "PASS",
+        path: "forged.txt",
+        sha256: sha256(forgedManifest),
+        description: "An ordinary document cannot stand in for a source manifest.",
+      },
+      {
+        id: "sealed-run",
+        kind: "sealed-run",
+        artifactStatus: "PASS",
+        evidenceStatus: "PASS",
+        path: "artifact.txt",
+        sha256: sha256(artifact),
+        sourceManifestSha256: sha256(forgedManifest),
+        sourceManifestPath: "./artifact.txt",
+        description: "A copied checksummed result.",
+      },
+    ]);
+
+    await expect(runVerifier(indexPath)).rejects.toMatchObject({
+      stderr: "FAIL: INDEX_INVALID: sealed-run: source manifest checksum is not indexed\n",
+    });
+  });
+
+  it.each([
+    {
+      name: "path",
+      manifestEntry: (artifact: string) => `${sha256(artifact)}  ./different.txt\n`,
+    },
+    {
+      name: "digest",
+      manifestEntry: () => `${sha256("different bytes")}  ./artifact.txt\n`,
+    },
+  ])("rejects a source manifest with the wrong $name", async ({ manifestEntry }) => {
+    const root = await createPacketRoot();
+    const artifact = "sealed evidence\n";
+    const manifest = manifestEntry(artifact);
+    await writeFile(join(root, "artifact.txt"), artifact);
+    await writeFile(join(root, "SOURCE-SHA256SUMS"), manifest);
+    const indexPath = await writeIndex(root, [
+      {
+        id: "source-manifest",
+        kind: "source-manifest",
+        artifactStatus: "PASS",
+        evidenceStatus: "PASS",
+        path: "SOURCE-SHA256SUMS",
+        sha256: sha256(manifest),
+        description: "The copied source manifest.",
+      },
+      {
+        id: "sealed-run",
+        kind: "sealed-run",
+        artifactStatus: "PASS",
+        evidenceStatus: "PASS",
+        path: "artifact.txt",
+        sha256: sha256(artifact),
+        sourceManifestSha256: sha256(manifest),
+        sourceManifestPath: "./artifact.txt",
+        description: "A copied checksummed result.",
+      },
+    ]);
+
+    await expect(runVerifier(indexPath)).rejects.toMatchObject({
+      stderr: "FAIL: ARTIFACT_INVALID: sealed-run: source manifest entry mismatch\n",
+    });
+  });
+
+  it("rejects a malformed source manifest", async () => {
+    const root = await createPacketRoot();
+    const artifact = "sealed evidence\n";
+    const manifest = "not a checksum manifest\n";
+    await writeFile(join(root, "artifact.txt"), artifact);
+    await writeFile(join(root, "SOURCE-SHA256SUMS"), manifest);
+    const indexPath = await writeIndex(root, [
+      {
+        id: "source-manifest",
+        kind: "source-manifest",
+        artifactStatus: "PASS",
+        evidenceStatus: "PASS",
+        path: "SOURCE-SHA256SUMS",
+        sha256: sha256(manifest),
+        description: "The copied source manifest.",
+      },
+      {
+        id: "sealed-run",
+        kind: "sealed-run",
+        artifactStatus: "PASS",
+        evidenceStatus: "PASS",
+        path: "artifact.txt",
+        sha256: sha256(artifact),
+        sourceManifestSha256: sha256(manifest),
+        sourceManifestPath: "./artifact.txt",
+        description: "A copied checksummed result.",
+      },
+    ]);
+
+    await expect(runVerifier(indexPath)).rejects.toMatchObject({
+      stderr: "FAIL: ARTIFACT_INVALID: source-manifest: malformed source manifest\n",
     });
   });
 
@@ -145,6 +270,29 @@ describe("OpenPoke demo packet verifier CLI", () => {
 
     await expect(runVerifier(indexPath)).rejects.toMatchObject({
       stderr: "FAIL: ARTIFACT_INVALID: missing-file: indexed artifact is missing\n",
+    });
+  });
+
+  it("fails closed when an intermediate directory symlink escapes the packet", async () => {
+    const root = await createPacketRoot();
+    const outside = await createPacketRoot();
+    const artifact = "outside evidence\n";
+    await writeFile(join(outside, "artifact.txt"), artifact);
+    await symlink(outside, join(root, "linked-outside"), "dir");
+    const indexPath = await writeIndex(root, [
+      {
+        id: "escaped-file",
+        kind: "sealed-run",
+        artifactStatus: "PASS",
+        evidenceStatus: "PASS",
+        path: "linked-outside/artifact.txt",
+        sha256: sha256(artifact),
+        description: "Lexically contained but canonically outside.",
+      },
+    ]);
+
+    await expect(runVerifier(indexPath)).rejects.toMatchObject({
+      stderr: "FAIL: ARTIFACT_INVALID: escaped-file: path escapes packet directory\n",
     });
   });
 

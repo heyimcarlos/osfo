@@ -67,10 +67,13 @@ or bounded resources fail. Do not call the last offered rate a ceiling unless
 every lower gate passed.
 
 Full outage recovery is also `MISSING`. The declared 15-minute outage at 348
-AgentRuns/s accumulates 313,200 runs. Resize the historical 4,096-run reserve,
-continue 232 commands/s during outage and recovery, cut the selected worker
-fleet, require visible recovery progress within 5 minutes, full drain within 20
-minutes, and reconcile every run, attempt, fence, budget, and ThreadEvent.
+AgentRuns/s accumulates 313,200 runs. The final matrix used the 400,000-AgentRun
+reserve candidate, so sizing is no longer the missing input. The matrix tested
+admission, not the declared outage or recovery. After admission stability is
+repaired, keep 232 commands/s running during outage and recovery, cut the
+selected worker fleet, require visible recovery progress within 5 minutes,
+full drain within 20 minutes, and reconcile every run, attempt, fence, budget,
+and ThreadEvent.
 
 Current saturation evidence is incomplete. One selected production lane must
 capture CPU, memory, open connections, Pub/Sub backlog and oldest age,
