@@ -877,6 +877,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   FROM model_call_attempts
                   WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
                     AND model_call_id = ${attempt.modelCallId}::uuid
+                    AND agent_run_id = ${fence.agentRunId}::uuid
                     AND assistant_output_id = ${attempt.assistantOutputId}::uuid
                   FOR UPDATE`;
               const existing = rows[0];
@@ -903,6 +904,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                       external_work_may_continue = ${cleanup.externalWorkMayContinue}
                   WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
                     AND model_call_id = ${attempt.modelCallId}::uuid
+                    AND agent_run_id = ${fence.agentRunId}::uuid
                     AND assistant_output_id = ${attempt.assistantOutputId}::uuid
                     AND cleanup_disposition IS NULL
                     AND external_work_may_continue IS NULL
@@ -1110,23 +1112,28 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
               const terminal = yield* sql<{
                 readonly cleanupDisposition: "completed" | "deadlineExceeded";
                 readonly externalWorkMayContinue: boolean;
-              }>`UPDATE agent_runs
+              }>`WITH cancellation_commit AS MATERIALIZED (
+                  SELECT clock_timestamp() AS observed_at
+                )
+                UPDATE agent_runs
                 SET state = 'canceled',
                     claim_owner = NULL,
                     lease_expires_at = NULL,
                     cleanup_disposition = CASE
-                      WHEN cleanup_deadline_at <= clock_timestamp() THEN 'deadlineExceeded'
+                      WHEN cleanup_deadline_at <= cancellation_commit.observed_at
+                        THEN 'deadlineExceeded'
                       ELSE ${cleanup.cleanupDisposition.type}
                     END,
                     external_work_may_continue = CASE
-                      WHEN cleanup_deadline_at <= clock_timestamp() THEN true
+                      WHEN cleanup_deadline_at <= cancellation_commit.observed_at THEN true
                       ELSE ${cleanup.externalWorkMayContinue}
                     END
+                FROM cancellation_commit
                 WHERE agent_run_id = ${fence.agentRunId}::uuid
                   AND state = 'running'
                   AND claim_owner = ${fence.workerId}
                   AND claim_epoch = ${fence.claimEpoch}::bigint
-                  AND lease_expires_at > clock_timestamp()
+                  AND lease_expires_at > cancellation_commit.observed_at
                   AND cancellation_requested_at IS NOT NULL
                   AND cleanup_deadline_at IS NOT NULL
                 RETURNING

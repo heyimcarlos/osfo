@@ -775,6 +775,96 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     ).rejects.toBeDefined();
   });
 
+  it("rejects cleanup evidence from a different fenced AgentRun", async () => {
+    failFirstPublication = false;
+    const otherThreadId = randomUUID();
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO threads (thread_id, principal_id)
+          VALUES (${otherThreadId}::uuid, ${principalId}::uuid)`;
+      }),
+    );
+    const accept = (targetThreadId: string, content: string) =>
+      run(
+        MessageAdmission.use((admission) =>
+          admission.accept({
+            protocolVersion: 1,
+            authenticationToken,
+            threadId: targetThreadId,
+            idempotencyKey: randomUUID(),
+            message: { content },
+          }),
+        ),
+      );
+    const first = await accept(threadId, "first fenced cleanup");
+    const second = await accept(otherThreadId, "second fenced cleanup");
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const firstDelivery = published.find((delivery) => delivery.agentRunId === first.agentRunId)!;
+    const secondDelivery = published.find((delivery) => delivery.agentRunId === second.agentRunId)!;
+    const firstClaim = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(firstDelivery, {
+          workerId: "first-cleanup-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    const secondAttempt = await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const secondClaimResult = yield* repository.claimAgentRun(secondDelivery, {
+            workerId: "second-cleanup-worker",
+            leaseDurationMs: 30_000,
+          });
+          const secondClaim =
+            yield* Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(secondClaimResult);
+          const modelCall = yield* repository.ensureModelCall(secondClaim.fence, {
+            type: "startModelCall",
+            modelBinding: "oz.deterministic.echo.v1",
+            prompt: "second fenced cleanup",
+          });
+          return yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(secondClaim.fence, modelCall),
+          );
+        }),
+      ),
+    );
+
+    const mismatch = await run(
+      Effect.flip(
+        AgentRunRepository.use((repository) =>
+          repository.recordModelCallCleanup(firstClaim.fence, secondAttempt, {
+            cleanupDisposition: { type: "completed" },
+            externalWorkMayContinue: false,
+          }),
+        ),
+      ),
+    );
+    expect(mismatch).toBeInstanceOf(AgentRunFenceRejected);
+    const cleanup = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly cleanupDisposition: string | null;
+          readonly externalWorkMayContinue: boolean | null;
+        }>`SELECT
+            cleanup_disposition AS "cleanupDisposition",
+            external_work_may_continue AS "externalWorkMayContinue"
+          FROM model_call_attempts
+          WHERE model_call_attempt_id = ${secondAttempt.modelCallAttemptId}::uuid`;
+        return rows[0];
+      }),
+    );
+    expect(cleanup).toEqual({
+      cleanupDisposition: null,
+      externalWorkMayContinue: null,
+    });
+  });
+
   it("publishes same-Thread work in authoritative ThreadPosition order", async () => {
     failFirstPublication = false;
     const accept = (content: string) =>

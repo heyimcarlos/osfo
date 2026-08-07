@@ -62,6 +62,10 @@ ALTER TABLE "thread_events" DROP CONSTRAINT "thread_events_event_type_check", AD
         'AgentRunSucceeded',
         'AgentRunFailed'
       ));--> statement-breakpoint
+ALTER TABLE "thread_events" DROP CONSTRAINT "thread_events_event_version_check", ADD CONSTRAINT "thread_events_event_version_check" CHECK ((
+        ("event_type" = 'AssistantOutputInterrupted' AND "event_version" IN (1, 2))
+        OR ("event_type" <> 'AssistantOutputInterrupted' AND "event_version" = 1)
+      ));--> statement-breakpoint
 ALTER TABLE "thread_events" DROP CONSTRAINT "thread_events_payload_shape_check", ADD CONSTRAINT "thread_events_payload_shape_check" CHECK (CASE "event_type"
         WHEN 'UserMessageAppended' THEN
           "payload" = jsonb_build_object(
@@ -87,7 +91,10 @@ ALTER TABLE "thread_events" DROP CONSTRAINT "thread_events_payload_shape_check",
             'agentRunId', "payload" ->> 'agentRunId',
             'cause', "payload" ->> 'cause'
           )
-          AND "payload" ->> 'cause' IN ('modelCallFailed', 'agentRunCanceled')
+          AND (
+            ("event_version" = 1 AND "payload" ->> 'cause' = 'modelCallFailed')
+            OR ("event_version" = 2 AND "payload" ->> 'cause' = 'agentRunCanceled')
+          )
         WHEN 'AgentRunCancellationRequested' THEN
           "payload" = jsonb_build_object('agentRunId', "payload" ->> 'agentRunId')
         WHEN 'AgentRunCanceled' THEN
