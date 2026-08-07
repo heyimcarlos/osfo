@@ -225,6 +225,115 @@ beforeEach(async () => {
 afterAll(() => runtime.dispose());
 
 describe("deterministic PostgreSQL AgentRun journey", () => {
+  it("enforces the shared UTF-16 fragment bound and persists reasoning usage", async () => {
+    failFirstPublication = false;
+    await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "durable model evidence" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const claimed = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(delivery, {
+          workerId: "durable-evidence-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+    const attempt = await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const modelCall = yield* repository.ensureModelCall(claimed.fence, {
+            type: "startModelCall",
+            modelBinding: "openrouter.chat-completions.minimax.minimax-m3.v1",
+            prompt: "durable model evidence",
+          });
+          return yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(claimed.fence, modelCall, 1),
+          );
+        }),
+      ),
+    );
+    const exactBoundary = "😀".repeat(8_192);
+    const overBoundary = "😀".repeat(8_193);
+    await run(
+      AgentRunRepository.use((repository) =>
+        repository.appendModelOutput(claimed.fence, attempt, {
+          fragmentIndex: 0,
+          text: exactBoundary,
+        }),
+      ),
+    );
+
+    const repositoryRejection = await run(
+      AgentRunRepository.use((repository) =>
+        repository.appendModelOutput(claimed.fence, attempt, {
+          fragmentIndex: 1,
+          text: overBoundary,
+        }),
+      ).pipe(Effect.exit),
+    );
+    const databaseRejection = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* sql`UPDATE model_call_fragments
+          SET text = ${overBoundary}
+          WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
+            AND fragment_index = 0`;
+      }).pipe(Effect.exit),
+    );
+    expect(Exit.isFailure(repositoryRejection)).toBe(true);
+    expect(Exit.isFailure(databaseRejection)).toBe(true);
+
+    await run(
+      AgentRunRepository.use((repository) =>
+        repository.completeModelCall(claimed.fence, attempt, {
+          dispatchEvidence: { type: "confirmed", providerRequestId: "gen-durable-evidence" },
+          usage: {
+            type: "reported",
+            inputUnits: 4,
+            outputUnits: 5,
+            reasoningUnits: 3,
+          },
+        }),
+      ),
+    );
+    const evidence = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly fragmentText: string;
+          readonly inputUnits: number;
+          readonly outputUnits: number;
+          readonly reasoningUnits: number | null;
+        }>`SELECT
+          fragment.text AS "fragmentText",
+          attempt.input_units AS "inputUnits",
+          attempt.output_units AS "outputUnits",
+          attempt.reasoning_units AS "reasoningUnits"
+        FROM model_call_attempts attempt
+        JOIN model_call_fragments fragment USING (model_call_attempt_id)
+        WHERE attempt.model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid`;
+        return rows[0];
+      }),
+    );
+    expect(evidence).toEqual({
+      fragmentText: exactBoundary,
+      inputUnits: 4,
+      outputUnits: 5,
+      reasoningUnits: 3,
+    });
+  });
+
   it("cancels pending work once and releases its execution capacity", async () => {
     const receipt = await run(
       MessageAdmission.use((admission) =>
@@ -1783,7 +1892,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
         Effect.gen(function* () {
           const modelCall = yield* repository.ensureModelCall(abandoned.fence, {
             type: "startModelCall",
-            modelBinding: "openai.responses.gpt-4.1-mini-2025-04-14.v1",
+            modelBinding: "openrouter.chat-completions.minimax.minimax-m3.v1",
             prompt: "one logical model attempt",
           });
           const attempt = yield* expectStartedAttempt(
@@ -1836,7 +1945,7 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     );
     expect(authority).toEqual({
       attempts: "1",
-      attemptBinding: "openai.responses.gpt-4.1-mini-2025-04-14.v1",
+      attemptBinding: "openrouter.chat-completions.minimax.minimax-m3.v1",
       attemptState: "failed",
       dispatchState: "uncertain",
       runState: "failed",

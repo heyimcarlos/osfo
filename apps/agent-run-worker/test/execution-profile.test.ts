@@ -1,21 +1,24 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   deterministicExecutionProfile,
-  liveOpenAIExecutionProfile,
+  liveOpenRouterExecutionProfile,
   resolveExecutionProfile,
 } from "../src/execution-profile.js";
 
 describe("Oz execution profiles", () => {
-  it("pins the live Responses binding and one logical attempt", () => {
-    expect(liveOpenAIExecutionProfile).toEqual({
-      type: "openaiResponses",
-      ref: "oz.openai.gpt-4.1-mini-2025-04-14.responses.v1",
-      modelBinding: "openai.responses.gpt-4.1-mini-2025-04-14.v1",
-      model: "gpt-4.1-mini-2025-04-14",
+  it("pins the live OpenRouter binding and one logical attempt", () => {
+    expect(liveOpenRouterExecutionProfile).toEqual({
+      type: "openRouterChatCompletions",
+      ref: "oz.openrouter.minimax.minimax-m3.chat-completions.v1",
+      modelBinding: "openrouter.chat-completions.minimax.minimax-m3.v1",
+      endpoint: "https://openrouter.ai/api/v1/chat/completions",
+      model: "minimax/minimax-m3",
+      provider: "Minimax",
       requiredSemantics: {
         output: "text",
-        protocol: "responsesSseV1",
-        terminalEvent: "response.completed",
+        protocol: "chatCompletionsSseV1",
+        terminalEnvelope: "[DONE]",
+        finishReason: "stop",
       },
       permittedAdaptations: {
         coalesceUpToDeltas: 8,
@@ -29,13 +32,24 @@ describe("Oz execution profiles", () => {
         modelCallAttempts: 1,
       },
       request: {
-        maxOutputTokens: 1_024,
-        store: false,
+        maxTokens: 256,
+        temperature: 0,
         stream: true,
+        reasoning: {
+          enabled: true,
+          exclude: true,
+        },
+        provider: {
+          only: ["minimax"],
+          allowFallbacks: false,
+          requireParameters: true,
+          dataCollection: "deny",
+        },
       },
     });
-    expect(Object.isFrozen(liveOpenAIExecutionProfile)).toBe(true);
-    expect(Object.isFrozen(liveOpenAIExecutionProfile.retry)).toBe(true);
+    expect(Object.isFrozen(liveOpenRouterExecutionProfile)).toBe(true);
+    expect(Object.isFrozen(liveOpenRouterExecutionProfile.retry)).toBe(true);
+    expect(Object.isFrozen(liveOpenRouterExecutionProfile.request.provider.only)).toBe(true);
   });
 
   it("keeps the deterministic profile as a distinct binding", () => {
@@ -45,8 +59,8 @@ describe("Oz execution profiles", () => {
     expect(resolveExecutionProfile(deterministicExecutionProfile.ref)).toBe(
       deterministicExecutionProfile,
     );
-    expect(resolveExecutionProfile(liveOpenAIExecutionProfile.ref)).toBe(
-      liveOpenAIExecutionProfile,
+    expect(resolveExecutionProfile(liveOpenRouterExecutionProfile.ref)).toBe(
+      liveOpenRouterExecutionProfile,
     );
   });
 });

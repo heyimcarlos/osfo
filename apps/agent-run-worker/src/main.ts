@@ -4,7 +4,7 @@ import { makeDeterministicAgentRuntimeLayer } from "@osfo/agent-runtime";
 import { makeAgentRunRepositoryLayer } from "@osfo/db";
 import { Config, Data, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { resolveExecutionProfile, type OzExecutionProfile } from "./execution-profile.js";
-import { makeOpenAIResponsesModelCallExecutorLayer } from "./openai-responses-model-call-executor.js";
+import { makeOpenRouterChatCompletionsModelCallExecutorLayer } from "./openrouter-chat-completions-model-call-executor.js";
 import { makeGoogleStreamingPullSourceLayer, runStreamingPullWorker } from "./streaming-pull.js";
 import {
   deterministicModelCallWorkerSource,
@@ -37,7 +37,7 @@ const WorkerConfig = Config.all({
   cancellationGraceMs: Config.schema(PositiveInteger, "OSFO_AGENT_RUN_CANCELLATION_GRACE_MS").pipe(
     Config.withDefault(100),
   ),
-  openAIApiKey: Config.option(Config.redacted("OPENAI_API_KEY")),
+  openRouterApiKey: Config.option(Config.redacted("OPENROUTER_API_KEY")),
   projectId: Config.nonEmptyString("OSFO_PUBSUB_PROJECT_ID"),
   streamCount: Config.schema(PositiveInteger, "OSFO_PUBSUB_STREAM_COUNT").pipe(
     Config.withDefault(4),
@@ -57,7 +57,7 @@ class InvalidWorkerExecutionProfile extends Data.TaggedError("InvalidWorkerExecu
 
 const modelCallExecutorLayer = (
   profile: OzExecutionProfile,
-  openAIApiKey: Option.Option<Redacted.Redacted<string>>,
+  openRouterApiKey: Option.Option<Redacted.Redacted<string>>,
   cancellationGraceMs: number,
   terminationDeadlineMs: number,
 ): Effect.Effect<Layer.Layer<ModelCallExecutor>, InvalidWorkerExecutionProfile> => {
@@ -70,8 +70,8 @@ const modelCallExecutorLayer = (
           terminationDeadlineMs,
         }),
       );
-    case "openaiResponses":
-      if (Option.isNone(openAIApiKey)) {
+    case "openRouterChatCompletions":
+      if (Option.isNone(openRouterApiKey)) {
         return Effect.fail(
           new InvalidWorkerExecutionProfile({
             executionProfileRef: profile.ref,
@@ -80,8 +80,8 @@ const modelCallExecutorLayer = (
         );
       }
       return Effect.succeed(
-        makeOpenAIResponsesModelCallExecutorLayer({
-          apiKey: Redacted.value(openAIApiKey.value),
+        makeOpenRouterChatCompletionsModelCallExecutorLayer({
+          apiKey: Redacted.value(openRouterApiKey.value),
           profile,
         }).pipe(Layer.provide(NodeHttpClient.layerUndici)),
       );
@@ -101,7 +101,7 @@ const program = WorkerConfig.pipe(
     }
     return modelCallExecutorLayer(
       profile,
-      config.openAIApiKey,
+      config.openRouterApiKey,
       config.cancellationGraceMs,
       config.terminationDeadlineMs,
     ).pipe(

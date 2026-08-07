@@ -96,6 +96,7 @@ export const ModelCallUsageSchema = Schema.Union([
     type: Schema.Literals(["reported", "estimated"]),
     inputUnits: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
     outputUnits: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    reasoningUnits: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   }),
 ]);
 

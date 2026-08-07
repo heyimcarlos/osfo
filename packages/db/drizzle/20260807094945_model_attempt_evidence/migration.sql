@@ -1,6 +1,19 @@
+CREATE FUNCTION text_utf16_code_units(value text) RETURNS integer
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
+  SELECT COALESCE(sum(
+    CASE WHEN ascii(substring(value FROM character_index FOR 1)) > 65535
+      THEN 2
+      ELSE 1
+    END
+  ), 0)::integer
+  FROM generate_series(1, length(value)) AS character_index;
+$$;--> statement-breakpoint
+ALTER TABLE "model_call_fragments" DROP CONSTRAINT "model_call_fragments_text_check";--> statement-breakpoint
+ALTER TABLE "model_call_fragments" ADD CONSTRAINT "model_call_fragments_text_check" CHECK (text_utf16_code_units("text") BETWEEN 1 AND 16384);--> statement-breakpoint
 ALTER TABLE "model_call_attempts" ADD COLUMN "model_binding" text;--> statement-breakpoint
 ALTER TABLE "model_call_attempts" ADD COLUMN "dispatch_state" text DEFAULT 'prepared' NOT NULL;--> statement-breakpoint
 ALTER TABLE "model_call_attempts" ADD COLUMN "provider_request_id" text;--> statement-breakpoint
+ALTER TABLE "model_call_attempts" ADD COLUMN "reasoning_units" integer;--> statement-breakpoint
 UPDATE "model_call_attempts" AS attempt
 SET "model_binding" = model_call."model_binding",
     "dispatch_state" = CASE
@@ -20,6 +33,19 @@ ALTER TABLE "model_call_attempts" ADD CONSTRAINT "model_call_attempts_binding_ch
 ALTER TABLE "model_call_attempts" ADD CONSTRAINT "model_call_attempts_dispatch_check" CHECK ((("dispatch_state" IN ('prepared', 'confirmed', 'not_dispatched', 'uncertain')
         AND ("provider_request_id" IS NULL OR "dispatch_state" = 'confirmed')
         AND ("provider_request_id" IS NULL OR length("provider_request_id") BETWEEN 1 AND 255)
+      )) IS TRUE);--> statement-breakpoint
+ALTER TABLE "model_call_attempts" DROP CONSTRAINT "model_call_attempts_usage_check";--> statement-breakpoint
+ALTER TABLE "model_call_attempts" ADD CONSTRAINT "model_call_attempts_usage_check" CHECK (((
+        ("usage_type" = 'unknown'
+          AND "input_units" IS NULL
+          AND "output_units" IS NULL
+          AND "reasoning_units" IS NULL)
+        OR ("usage_type" IN ('reported', 'estimated')
+          AND "input_units" >= 0
+          AND "output_units" >= 0
+          AND ("reasoning_units" IS NULL OR (
+            "reasoning_units" >= 0
+            AND "reasoning_units" <= "output_units")))
       )) IS TRUE);--> statement-breakpoint
 CREATE FUNCTION complete_model_call_attempt_evidence() RETURNS trigger
 LANGUAGE plpgsql AS $$

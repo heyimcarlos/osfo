@@ -678,6 +678,7 @@ export const modelCallAttempts = pgTable(
     usageType: text("usage_type").notNull().default("unknown"),
     inputUnits: integer("input_units"),
     outputUnits: integer("output_units"),
+    reasoningUnits: integer("reasoning_units"),
     cleanupDisposition: text("cleanup_disposition"),
     externalWorkMayContinue: boolean("external_work_may_continue"),
     startedAt: timestamp("started_at", { withTimezone: true, mode: "string" }).notNull(),
@@ -721,10 +722,14 @@ export const modelCallAttempts = pgTable(
       sql`((
         (${table.usageType} = 'unknown'
           AND ${table.inputUnits} IS NULL
-          AND ${table.outputUnits} IS NULL)
+          AND ${table.outputUnits} IS NULL
+          AND ${table.reasoningUnits} IS NULL)
         OR (${table.usageType} IN ('reported', 'estimated')
           AND ${table.inputUnits} >= 0
-          AND ${table.outputUnits} >= 0)
+          AND ${table.outputUnits} >= 0
+          AND (${table.reasoningUnits} IS NULL OR (
+            ${table.reasoningUnits} >= 0
+            AND ${table.reasoningUnits} <= ${table.outputUnits})))
       )) IS TRUE`,
     ),
     check(
@@ -779,7 +784,7 @@ export const modelCallFragments = pgTable(
     check("model_call_fragments_index_check", sql`${table.fragmentIndex} >= 0`),
     check(
       "model_call_fragments_text_check",
-      sql`length(${table.text}) BETWEEN 1 AND ${modelCallObservationTextMaxLengthSql}`,
+      sql`text_utf16_code_units(${table.text}) BETWEEN 1 AND ${modelCallObservationTextMaxLengthSql}`,
     ),
   ],
 );

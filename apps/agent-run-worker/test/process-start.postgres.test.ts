@@ -82,10 +82,10 @@ describe("AgentRun worker process role", () => {
         {
           cwd: packageDirectory,
           env: {
-            OPENAI_API_KEY: "",
+            OPENROUTER_API_KEY: "",
             OSFO_AGENT_RUN_WORKER_ID: "empty-credential-worker",
             OSFO_DATABASE_URL: databaseUrl,
-            OSFO_EXECUTION_PROFILE_REF: "oz.openai.gpt-4.1-mini-2025-04-14.responses.v1",
+            OSFO_EXECUTION_PROFILE_REF: "oz.openrouter.minimax.minimax-m3.chat-completions.v1",
             OSFO_PUBSUB_PROJECT_ID: "osfo-test",
             OSFO_PUBSUB_SUBSCRIPTION_ID: "agent-runs-test",
             PUBSUB_EMULATOR_HOST: "127.0.0.1:1",

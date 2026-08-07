@@ -995,6 +995,19 @@
       "table": "model_call_attempts"
     },
     {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reasoning_units",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "model_call_attempts"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": false,
@@ -3209,7 +3222,7 @@
       "table": "model_call_attempts"
     },
     {
-      "value": "((\n        (\"usage_type\" = 'unknown'\n          AND \"input_units\" IS NULL\n          AND \"output_units\" IS NULL)\n        OR (\"usage_type\" IN ('reported', 'estimated')\n          AND \"input_units\" >= 0\n          AND \"output_units\" >= 0)\n      )) IS TRUE",
+      "value": "((\n        (\"usage_type\" = 'unknown'\n          AND \"input_units\" IS NULL\n          AND \"output_units\" IS NULL\n          AND \"reasoning_units\" IS NULL)\n        OR (\"usage_type\" IN ('reported', 'estimated')\n          AND \"input_units\" >= 0\n          AND \"output_units\" >= 0\n          AND (\"reasoning_units\" IS NULL OR (\n            \"reasoning_units\" >= 0\n            AND \"reasoning_units\" <= \"output_units\")))\n      )) IS TRUE",
       "name": "model_call_attempts_usage_check",
       "entityType": "checks",
       "schema": "public",
@@ -3237,7 +3250,7 @@
       "table": "model_call_fragments"
     },
     {
-      "value": "length(\"text\") BETWEEN 1 AND 16384",
+      "value": "text_utf16_code_units(\"text\") BETWEEN 1 AND 16384",
       "name": "model_call_fragments_text_check",
       "entityType": "checks",
       "schema": "public",

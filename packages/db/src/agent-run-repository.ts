@@ -5,6 +5,7 @@ import {
   AgentRunFenceRejected,
   AgentRunRepository,
   AgentRunRepositoryUnavailable,
+  ModelCallObservationSchema,
   type AgentRunFence,
   type AgentRunRepositoryService,
   type ModelCallAttemptOutcome,
@@ -85,6 +86,8 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         usageType: outcome.usage.type,
         inputUnits: outcome.usage.type === "unknown" ? null : outcome.usage.inputUnits,
         outputUnits: outcome.usage.type === "unknown" ? null : outcome.usage.outputUnits,
+        reasoningUnits:
+          outcome.usage.type === "unknown" ? null : (outcome.usage.reasoningUnits ?? null),
       });
 
       const isFenceRejected = Predicate.isTagged("AgentRunFenceRejected");
@@ -976,12 +979,15 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         return yield* protect(
           sql.withTransaction(
             Effect.gen(function* () {
+              const decodedObservation = yield* Schema.decodeUnknownEffect(
+                ModelCallObservationSchema,
+              )(observation);
               const authority = yield* requireOpenFence(fence);
               const existing = yield* sql<{ readonly text: string }>`SELECT text
                   FROM model_call_fragments
                   WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
-                    AND fragment_index = ${observation.fragmentIndex}`;
-              if (existing[0]?.text === observation.text) return;
+                    AND fragment_index = ${decodedObservation.fragmentIndex}`;
+              if (existing[0]?.text === decodedObservation.text) return;
               if (existing[0] !== undefined) {
                 return yield* new AgentRunRepositoryUnavailable({
                   cause: "ModelCall fragment authority conflict",
@@ -991,7 +997,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                 makeAssistantOutputAppended({
                   ...base,
                   assistantOutputId: attempt.assistantOutputId,
-                  content: observation.text,
+                  content: decodedObservation.text,
                 }),
               );
               yield* sql`INSERT INTO model_call_fragments (
@@ -999,11 +1005,11 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     assistant_output_id, agent_run_id, text, thread_event_id, created_at
                   ) VALUES (
                     ${attempt.modelCallId}::uuid,
-                    ${observation.fragmentIndex},
+                    ${decodedObservation.fragmentIndex},
                     ${attempt.modelCallAttemptId}::uuid,
                     ${attempt.assistantOutputId}::uuid,
                     ${fence.agentRunId}::uuid,
-                    ${observation.text},
+                    ${decodedObservation.text},
                     ${event.eventId}::uuid,
                     ${event.occurredAt}::timestamptz
                   )`;
@@ -1036,6 +1042,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                       usage_type = ${evidence.usageType},
                       input_units = ${evidence.inputUnits},
                       output_units = ${evidence.outputUnits},
+                      reasoning_units = ${evidence.reasoningUnits},
                       finished_at = transaction_timestamp()
                   WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
                     AND model_call_id = ${attempt.modelCallId}::uuid
@@ -1091,6 +1098,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                       usage_type = ${evidence.usageType},
                       input_units = ${evidence.inputUnits},
                       output_units = ${evidence.outputUnits},
+                      reasoning_units = ${evidence.reasoningUnits},
                       finished_at = transaction_timestamp()
                   WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
                     AND model_call_id = ${attempt.modelCallId}::uuid

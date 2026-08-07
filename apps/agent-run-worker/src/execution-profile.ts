@@ -10,15 +10,18 @@ export const deterministicExecutionProfile = frozen({
   }),
 });
 
-export const liveOpenAIExecutionProfile = frozen({
-  type: "openaiResponses" as const,
-  ref: "oz.openai.gpt-4.1-mini-2025-04-14.responses.v1",
-  modelBinding: "openai.responses.gpt-4.1-mini-2025-04-14.v1",
-  model: "gpt-4.1-mini-2025-04-14",
+export const liveOpenRouterExecutionProfile = frozen({
+  type: "openRouterChatCompletions" as const,
+  ref: "oz.openrouter.minimax.minimax-m3.chat-completions.v1",
+  modelBinding: "openrouter.chat-completions.minimax.minimax-m3.v1",
+  endpoint: "https://openrouter.ai/api/v1/chat/completions",
+  model: "minimax/minimax-m3",
+  provider: "Minimax",
   requiredSemantics: frozen({
     output: "text" as const,
-    protocol: "responsesSseV1" as const,
-    terminalEvent: "response.completed" as const,
+    protocol: "chatCompletionsSseV1" as const,
+    terminalEnvelope: "[DONE]" as const,
+    finishReason: "stop" as const,
   }),
   permittedAdaptations: frozen({
     coalesceUpToDeltas: 8,
@@ -32,22 +35,32 @@ export const liveOpenAIExecutionProfile = frozen({
     modelCallAttempts: 1,
   }),
   request: frozen({
-    maxOutputTokens: 1_024,
-    store: false,
+    maxTokens: 256,
+    temperature: 0,
     stream: true,
+    reasoning: frozen({
+      enabled: true,
+      exclude: true,
+    }),
+    provider: frozen({
+      only: frozen(["minimax"] as const),
+      allowFallbacks: false,
+      requireParameters: true,
+      dataCollection: "deny" as const,
+    }),
   }),
 });
 
 export type OzExecutionProfile =
   | typeof deterministicExecutionProfile
-  | typeof liveOpenAIExecutionProfile;
+  | typeof liveOpenRouterExecutionProfile;
 
 export const resolveExecutionProfile = (ref: string): OzExecutionProfile | undefined => {
   switch (ref) {
     case deterministicExecutionProfile.ref:
       return deterministicExecutionProfile;
-    case liveOpenAIExecutionProfile.ref:
-      return liveOpenAIExecutionProfile;
+    case liveOpenRouterExecutionProfile.ref:
+      return liveOpenRouterExecutionProfile;
     default:
       return undefined;
   }
