@@ -30,7 +30,7 @@ Pass three explicit sealed run directories in this order:
 3. Invalid 4,096-reserve pilot.
 
 ```bash
-./prototypes/pubsub-worker-seam/observability/run-presentation.sh \
+./observability/run-presentation.sh \
   tmp/openpoke-presentation \
   /absolute/path/to/montreal-sustained-run \
   /absolute/path/to/us-east4-current-wal-failure \
@@ -64,7 +64,7 @@ Grafana UI updates are disabled and anonymous access is viewer-only.
 ## Verification
 
 ```bash
-bunx vitest run prototypes/pubsub-worker-seam/observability/evidence-importer.test.ts
-bunx tsc --project prototypes/pubsub-worker-seam/observability/tsconfig.json
-docker compose --file prototypes/pubsub-worker-seam/observability/compose.yaml config --quiet
+bun run observability:test
+bun run observability:typecheck
+bun run observability:compose:check
 ```
