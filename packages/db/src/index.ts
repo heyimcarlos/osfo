@@ -10,7 +10,11 @@ export {
   makeAgentRunRepositoryLayer,
   type AgentRunRepositoryDatabaseConfig,
 } from "./agent-run-repository.js";
-export { bootstrapDatabaseAccess, databaseAccessStatements } from "./database-access.js";
+export {
+  bootstrapDatabaseAccess,
+  DatabaseAccessOwnerUnavailable,
+  databaseAccessStatements,
+} from "./database-access.js";
 export {
   assessDevelopmentAgentRunEvidence,
   DevelopmentAgentRunEvidenceMissing,
@@ -25,7 +29,10 @@ export {
   MessageAdmissionDatabaseConfigSchema,
   type MessageAdmissionDatabaseConfig,
 } from "./message-admission.js";
-export { migrateDatabase, type DatabaseConfig } from "./migrations.js";
+export {
+  checkDatabaseMigrationReadiness,
+  DatabaseMigrationsNotReady,
+} from "./migration-readiness.js";
 export {
   InvalidThreadResumeDatabaseConfig,
   makeThreadResumeLayer,

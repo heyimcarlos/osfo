@@ -8,10 +8,10 @@ the six-worker candidate for production.
 | Browser bearer excluded from repository, image build args, Vite assets, and Terraform | PASS | The reference client accepts the bearer interactively and keeps it in per-tab session storage. Static contract and web tests enforce the boundary. |
 | Digest-pinned build and Cloud SQL proxy inputs | PASS | Both `Containerfile` bases and the Cloud SQL Auth Proxy are pinned by manifest digest. The application image workflow returns an immutable Artifact Registry digest. |
 | Published application image | MISSING | `image-digests.json` deliberately contains `null` until a protected-main build publishes the exact application image and a reviewed follow-up pins it. |
-| Required secret versions | MISSING | Cursor signing, database administrator URL, reference bearer, and model-adapter secret containers exist, but no reviewed version inputs or payloads have been supplied. |
+| Required runtime secret versions | MISSING | Cursor signing and model-adapter secret containers exist, but no reviewed version inputs or payloads have been supplied. Database administration and demo seed values remain ignored local operator inputs. |
 | Protected cloud lifecycle authority | MISSING | The #89 protected lifecycle must complete before #90 can apply or mutate development runtime resources. |
-| Database job static contract | PASS | Terraform defines separate one-task, zero-retry bootstrap, migration, seed, and reconciliation jobs. A real PostgreSQL test proves the privilege bootstrap is idempotent. |
-| Database privilege bootstrap, migration, and idempotent reference seed execution | MISSING | The bootstrap must use the out-of-band administrator URL first, then migration and seed must prove private Cloud SQL IAM connectivity. |
+| Operator database deployment contract | PASS | Terraform contains no database Cloud Run jobs. Focused operator scripts own one-time IAM grants, the explicit demo seed, migration readiness, and qualification reconciliation. A real PostgreSQL test proves bootstrap-before-migrate grants runtime access. |
+| Database privilege bootstrap, migration, and explicit demo seed execution | MISSING | An operator must establish the approved private proxy, bootstrap access, apply reviewed generated SQL with `bun run db:migrate`, seed the demo authority, and pass the version-readiness check. |
 | Private Cloud SQL connectivity | MISSING | Static checks prove the runtime definitions use the private-IP, auto-IAM Cloud SQL Auth Proxy sidecar. No live runtime has connected. |
 | Fixed-one relay and four-publisher deployment | MISSING | Static checks prove the configuration pins one worker, four publishers, a 128-record window, one-second safety drain, and DB pool eight. No live relay has run. |
 | Ordered six-worker StreamingPull candidate deployment | MISSING | Static checks prove six manual workers, four streams, 32 slots, DB pool eight, and one ordered subscription. No live candidate has run. |
@@ -54,41 +54,50 @@ Deployment order is strict:
 foundation IAM apply
   -> disposable platform apply
   -> protected application image build
-  -> out-of-band secret version insertion
-  -> runtime bootstrap apply (serving disabled)
-  -> migration job
-  -> seed job
+  -> out-of-band cursor and OpenRouter secret version insertion
+  -> runtime infrastructure apply (serving disabled)
+  -> approved private operator database connection
+  -> one-time access bootstrap
+  -> bun run db:migrate
+  -> explicit demo seed
+  -> migration version readiness check
   -> runtime serving apply
   -> authenticated three-cursor smoke
-  -> duplicate-delivery recovery proof
+  -> separate qualification reconciliation and duplicate-delivery proof
   -> evidence seal
   -> exact runtime destroy and provider absence
 ```
 
-The cursor, database administrator URL, reference bearer, and model-adapter
-secret version numbers, plus the application image digest, are non-secret
-reviewed inputs. Secret payloads never enter Terraform state or the repository.
+The cursor and model-adapter secret version numbers, plus the application image
+digest, are non-secret reviewed inputs. Secret payloads never enter Terraform
+state or the repository.
 Only the AgentRun worker receives the model-adapter payload as
 `OPENROUTER_API_KEY`; the immutable profile pins the model and provider. The
-database administrator URL must be inserted out of band after setting the
-built-in `postgres` password interactively. It is used only by the privilege
-bootstrap job. Serving processes and the migration and seed jobs retain IAM
-database authentication.
+database administrator URL and demo bearer stay in the operator's ignored local
+environment. Operator scripts accept only loopback database URLs from an
+already-running approved private Cloud SQL Auth Proxy. The same administrator
+connection owns bootstrap and `bun run db:migrate`, so default privileges apply
+to every reviewed migration. The scripts do not store either credential.
+Serving processes retain IAM database authentication.
 
 ## Protected lifecycle commands
 
-All mutation happens from protected `main` through the existing bound
-`development-runtime` root plan and apply workflow. A reviewed bootstrap change
-pins the published application digest, all four secret version numbers, and
-`platform_ready = true` while leaving `serving_enabled = false`. After that
-bound plan applies, run:
+All cloud mutation happens from protected `main` through the existing bound
+Terraform plan and apply workflow. A reviewed bootstrap change pins the
+published application digest, the cursor and model-adapter secret versions, and
+`platform_ready = true` while leaving `serving_enabled = false`. Establish the
+approved private proxy, load the ignored operator environment, then run:
 
 ```bash
-GCP_DEVELOPMENT_PROJECT_ID=osfo-development-318708913 \
-  infra/tests/development-runtime-jobs.sh
+export OSFO_DATABASE_ADMIN_URL='postgresql://<admin>@127.0.0.1:5432/osfo'
+export OSFO_DATABASE_URL="$OSFO_DATABASE_ADMIN_URL"
+export OSFO_DATABASE_RUNTIME_ROLES='<transport-role>,<relay-role>,<agentrun-role>'
+export OSFO_REFERENCE_AUTHENTICATION_TOKEN="$REFERENCE_TOKEN"
+export OSFO_REFERENCE_THREAD_ID=6ef239bd-3f04-4c77-8976-1171e75ea0ab
+infra/tests/development-runtime-database.sh
 ```
 
-Only a successful migration and seed run permits a new reviewed plan with
+Only a successful migration, seed, and readiness run permits a new reviewed plan with
 `serving_enabled = true`. The serving apply with `public_hostname = null`
 reserves the stable global IP reported as `runtime.edge_ip_address`, but creates
 no NEG, backend, certificate, URL map, HTTPS proxy, forwarding rule, or public
@@ -108,12 +117,15 @@ The bearer is inserted out of band and supplied only to the smoke process:
 ```bash
 GCP_DEVELOPMENT_PROJECT_ID=osfo-development-318708913 \
 OSFO_RUNTIME_ORIGIN=https://reviewed-origin.example \
+OSFO_DATABASE_URL='postgresql://<admin>@127.0.0.1:5432/osfo' \
 OSFO_REFERENCE_AUTHENTICATION_TOKEN="$REFERENCE_TOKEN" \
 OSFO_REFERENCE_THREAD_ID=6ef239bd-3f04-4c77-8976-1171e75ea0ab \
   infra/tests/development-runtime-smoke.sh
 ```
 
-The smoke binds reconciliation to the accepted AgentRun identifier and records
+The smoke requires `OSFO_DATABASE_URL` to point at the approved private proxy.
+It runs `scripts/qualification/reconcile-agent-run.ts` outside Cloud Run, binds
+reconciliation to the accepted AgentRun identifier, and records
 only sanitized counts and immutable profile/binding names. It requires one
 confirmed provider request identity, one terminal output, reported usage, and
 positive reasoning usage without recording model content, provider payloads, or
@@ -123,6 +135,7 @@ compares the complete sanitized durable identity graph before and after:
 
 ```bash
 GCP_DEVELOPMENT_PROJECT_ID=osfo-development-318708913 \
+OSFO_DATABASE_URL='postgresql://<admin>@127.0.0.1:5432/osfo' \
   infra/tests/development-runtime-recovery.sh
 ```
 
@@ -134,8 +147,8 @@ safe duplicate-delivery script, then apply the saved prior-image plan and rerun
 the smoke. Capture Cloud Run, Pub/Sub, Cloud SQL, application logs, and the
 runtime dashboard for each source SHA. Finally apply a reviewed plan with
 `serving_enabled = false`, followed by an exact runtime plan with
-`platform_ready = false` and all application and secret version inputs returned
-to `null`. Only after that plan applies, run:
+`platform_ready = false` and the application, cursor, and model-adapter inputs
+returned to `null`. Only after that plan applies, run:
 
 ```bash
 GCP_DEVELOPMENT_PROJECT_ID=osfo-development-318708913 \
@@ -147,3 +160,14 @@ teardown evidence. Process replacement and lease takeover remain `MISSING` until
 an explicit pre-provider qualification seam exists. Destroy of the disposable
 platform remains the separate issue #89 lifecycle. Any unexecuted stage is
 `MISSING`, not `PASS`.
+
+## Removal plan safety
+
+This change removes the migration and reconciliation service accounts, their
+Cloud SQL and act-as bindings, their Cloud SQL IAM users, and the obsolete
+database-administrator and reference-bearer secret containers from Terraform.
+An environment that previously applied those resources will show destroys in
+the foundation and development-platform roots. Review and bind each plan
+exactly before applying it. Do not interrupt either root while its shared state
+is locked. Database schema and product rows remain owned by Cloud SQL and are
+not destroyed by this runtime cleanup.

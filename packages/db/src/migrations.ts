@@ -5,7 +5,7 @@ import { migrate as migrateDrizzle } from "drizzle-orm/effect-postgres/migrator"
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 
-export interface DatabaseConfig {
+export interface TestDatabaseMigrationConfig {
   readonly databaseUrl: string;
   readonly applicationName: string;
   readonly migrationsFolder?: string;
@@ -13,13 +13,13 @@ export interface DatabaseConfig {
 
 const migrationsFolder = fileURLToPath(new URL("../drizzle", import.meta.url));
 
-const postgresLayer = (config: DatabaseConfig) =>
+const postgresLayer = (config: TestDatabaseMigrationConfig) =>
   PgClient.layer({
     applicationName: config.applicationName,
     url: Redacted.make(config.databaseUrl),
   });
 
-export const migrateDatabase = (config: DatabaseConfig) =>
+export const migrateTestDatabase = (config: TestDatabaseMigrationConfig) =>
   Effect.gen(function* () {
     const db = yield* PgDrizzle.makeWithDefaults();
     yield* migrateDrizzle(db, { migrationsFolder: config.migrationsFolder ?? migrationsFolder });

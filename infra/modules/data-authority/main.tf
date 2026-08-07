@@ -1,9 +1,7 @@
 locals {
   secret_containers = toset([
     "cursor-signing",
-    "database-admin-url",
     "model-adapter",
-    "reference-client-auth",
     "temporal-cloud",
   ])
 }

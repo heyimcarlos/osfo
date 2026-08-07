@@ -13,7 +13,7 @@ variable "platform_ready" {
   type        = bool
 }
 variable "serving_enabled" {
-  description = "Creates serving resources only after migration and seed jobs pass."
+  description = "Creates serving resources only after the operator migration, demo seed, and readiness sequence passes."
   type        = bool
 }
 variable "public_hostname" {
@@ -21,30 +21,12 @@ variable "public_hostname" {
   type        = string
   nullable    = true
 }
-variable "database_admin_secret_version" {
-  description = "Pinned Secret Manager version containing the out-of-band PostgreSQL administrator URL."
-  type        = string
-  nullable    = true
-  validation {
-    condition     = var.database_admin_secret_version == null || can(regex("^[1-9][0-9]*\\z", var.database_admin_secret_version))
-    error_message = "The secret version must be null or an exact positive integer string."
-  }
-}
 variable "cursor_secret_version" {
   description = "Pinned Secret Manager version number inserted out of band."
   type        = string
   nullable    = true
   validation {
     condition     = var.cursor_secret_version == null || can(regex("^[1-9][0-9]*\\z", var.cursor_secret_version))
-    error_message = "The secret version must be null or an exact positive integer string."
-  }
-}
-variable "reference_auth_secret_version" {
-  description = "Pinned Secret Manager version number inserted out of band."
-  type        = string
-  nullable    = true
-  validation {
-    condition     = var.reference_auth_secret_version == null || can(regex("^[1-9][0-9]*\\z", var.reference_auth_secret_version))
     error_message = "The secret version must be null or an exact positive integer string."
   }
 }
@@ -57,7 +39,6 @@ variable "model_adapter_secret_version" {
     error_message = "The secret version must be null or an exact positive integer string."
   }
 }
-variable "reference_thread_id" { type = string }
 variable "execution_profile_ref" {
   description = "Immutable Oz profile deployed by both admission and AgentRun execution."
   type        = string

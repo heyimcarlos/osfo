@@ -136,8 +136,6 @@ locals {
 
   development_runtime_identities = toset([
     "agentrun",
-    "migration",
-    "reconciliation",
     "relay",
     "temporal",
     "transport",
@@ -186,14 +184,6 @@ locals {
     runtime_transport_cursor = {
       identity = "transport"
       secret   = "cursor-signing"
-    }
-    runtime_migration_reference = {
-      identity = "migration"
-      secret   = "reference-client-auth"
-    }
-    runtime_migration_database_admin = {
-      identity = "migration"
-      secret   = "database-admin-url"
     }
   }
 

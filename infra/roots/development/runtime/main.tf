@@ -6,29 +6,26 @@ provider "google" {
 }
 
 locals {
-  images                     = jsondecode(file("${path.root}/image-digests.json"))
-  application_image          = try(local.images.application, null)
-  cloud_sql_proxy_image      = local.images.cloud_sql_auth_proxy
-  secret_versions_ready      = var.cursor_secret_version != null && var.database_admin_secret_version != null && var.reference_auth_secret_version != null && var.model_adapter_secret_version != null
-  runtime_ready              = var.platform_ready && local.application_image != null && local.secret_versions_ready
-  serving_ready              = local.runtime_ready && var.serving_enabled
-  public_edge_ready          = local.serving_ready && var.public_hostname != null
-  runtime_identity_names     = toset(["agentrun", "migration", "relay", "transport"])
-  runtime_service_accounts   = { for identity in local.runtime_identity_names : identity => "${var.name_prefix}-${identity}@${var.project_id}.iam.gserviceaccount.com" }
-  database_roles             = { for identity, email in local.runtime_service_accounts : identity => trimsuffix(email, ".gserviceaccount.com") }
-  database_users             = { for identity, role in local.database_roles : identity => urlencode(role) }
-  database_urls              = { for identity, user in local.database_users : identity => "postgresql://${user}@127.0.0.1:5432/osfo?sslmode=disable" }
-  cloud_sql_connection_name  = "${var.project_id}:${var.region}:${var.name_prefix}-postgres"
-  network_name               = "${var.name_prefix}-vpc"
-  subnetwork_name            = "${var.name_prefix}-us-east4"
-  topic_name                 = "${var.name_prefix}-agentruns"
-  subscription_name          = "${var.name_prefix}-agentruns"
-  cursor_secret_name         = "${var.name_prefix}-cursor-signing"
-  reference_auth_secret_name = "${var.name_prefix}-reference-client-auth"
-  database_admin_secret_name = "${var.name_prefix}-database-admin-url"
-  model_adapter_secret_name  = "${var.name_prefix}-model-adapter"
-  common_proxy_args          = ["--auto-iam-authn", "--private-ip", "--address=127.0.0.1", "--port=5432", local.cloud_sql_connection_name]
-  admin_proxy_args           = ["--private-ip", "--address=127.0.0.1", "--port=5432", local.cloud_sql_connection_name]
+  images                    = jsondecode(file("${path.root}/image-digests.json"))
+  application_image         = try(local.images.application, null)
+  cloud_sql_proxy_image     = local.images.cloud_sql_auth_proxy
+  secret_versions_ready     = var.cursor_secret_version != null && var.model_adapter_secret_version != null
+  runtime_ready             = var.platform_ready && local.application_image != null && local.secret_versions_ready
+  serving_ready             = local.runtime_ready && var.serving_enabled
+  public_edge_ready         = local.serving_ready && var.public_hostname != null
+  runtime_identity_names    = toset(["agentrun", "relay", "transport"])
+  runtime_service_accounts  = { for identity in local.runtime_identity_names : identity => "${var.name_prefix}-${identity}@${var.project_id}.iam.gserviceaccount.com" }
+  database_roles            = { for identity, email in local.runtime_service_accounts : identity => trimsuffix(email, ".gserviceaccount.com") }
+  database_users            = { for identity, role in local.database_roles : identity => urlencode(role) }
+  database_urls             = { for identity, user in local.database_users : identity => "postgresql://${user}@127.0.0.1:5432/osfo?sslmode=disable" }
+  cloud_sql_connection_name = "${var.project_id}:${var.region}:${var.name_prefix}-postgres"
+  network_name              = "${var.name_prefix}-vpc"
+  subnetwork_name           = "${var.name_prefix}-us-east4"
+  topic_name                = "${var.name_prefix}-agentruns"
+  subscription_name         = "${var.name_prefix}-agentruns"
+  cursor_secret_name        = "${var.name_prefix}-cursor-signing"
+  model_adapter_secret_name = "${var.name_prefix}-model-adapter"
+  common_proxy_args         = ["--auto-iam-authn", "--private-ip", "--address=127.0.0.1", "--port=5432", local.cloud_sql_connection_name]
   labels = {
     environment          = "development"
     managed_by           = "terraform"
@@ -48,239 +45,6 @@ data "google_compute_subnetwork" "runtime" {
   project = var.project_id
   region  = var.region
   name    = local.subnetwork_name
-}
-
-resource "google_cloud_run_v2_job" "database_bootstrap" {
-  count               = local.runtime_ready ? 1 : 0
-  project             = var.project_id
-  location            = var.region
-  name                = "${var.name_prefix}-database-bootstrap"
-  deletion_protection = false
-  labels              = local.labels
-
-  template {
-    task_count = 1
-    template {
-      max_retries     = 0
-      timeout         = "600s"
-      service_account = local.runtime_service_accounts.migration
-      vpc_access {
-        egress = "ALL_TRAFFIC"
-        network_interfaces {
-          network    = data.google_compute_network.runtime[0].name
-          subnetwork = data.google_compute_subnetwork.runtime[0].name
-        }
-      }
-      containers {
-        name       = "database-bootstrap"
-        image      = local.application_image
-        command    = ["node"]
-        args       = ["apps/database-jobs/dist/main.js"]
-        depends_on = ["cloud-sql-auth-proxy"]
-        env {
-          name  = "OSFO_DATABASE_JOB"
-          value = "bootstrap"
-        }
-        env {
-          name = "OSFO_DATABASE_ADMIN_URL"
-          value_source {
-            secret_key_ref {
-              secret  = local.database_admin_secret_name
-              version = var.database_admin_secret_version
-            }
-          }
-        }
-        env {
-          name  = "OSFO_DATABASE_MIGRATION_ROLE"
-          value = local.database_roles.migration
-        }
-        env {
-          name  = "OSFO_DATABASE_RUNTIME_ROLES"
-          value = join(",", [local.database_roles.transport, local.database_roles.relay, local.database_roles.agentrun])
-        }
-        resources { limits = { cpu = "1", memory = "512Mi" } }
-      }
-      containers {
-        name  = "cloud-sql-auth-proxy"
-        image = local.cloud_sql_proxy_image
-        args  = local.admin_proxy_args
-        startup_probe {
-          tcp_socket { port = 5432 }
-        }
-        resources { limits = { cpu = "1", memory = "256Mi" } }
-      }
-    }
-  }
-}
-
-resource "google_cloud_run_v2_job" "migration" {
-  count               = local.runtime_ready ? 1 : 0
-  project             = var.project_id
-  location            = var.region
-  name                = "${var.name_prefix}-migration"
-  deletion_protection = false
-  labels              = local.labels
-  depends_on          = [google_cloud_run_v2_job.database_bootstrap]
-
-  template {
-    task_count = 1
-    template {
-      max_retries     = 0
-      timeout         = "600s"
-      service_account = local.runtime_service_accounts.migration
-      vpc_access {
-        egress = "ALL_TRAFFIC"
-        network_interfaces {
-          network    = data.google_compute_network.runtime[0].name
-          subnetwork = data.google_compute_subnetwork.runtime[0].name
-        }
-      }
-      containers {
-        name       = "migration"
-        image      = local.application_image
-        command    = ["node"]
-        args       = ["apps/database-jobs/dist/main.js"]
-        depends_on = ["cloud-sql-auth-proxy"]
-        env {
-          name  = "OSFO_DATABASE_JOB"
-          value = "migrate"
-        }
-        env {
-          name  = "OSFO_DATABASE_URL"
-          value = local.database_urls.migration
-        }
-        resources { limits = { cpu = "1", memory = "512Mi" } }
-      }
-      containers {
-        name  = "cloud-sql-auth-proxy"
-        image = local.cloud_sql_proxy_image
-        args  = local.common_proxy_args
-        startup_probe {
-          tcp_socket { port = 5432 }
-        }
-        resources { limits = { cpu = "1", memory = "256Mi" } }
-      }
-    }
-  }
-}
-
-resource "google_cloud_run_v2_job" "seed" {
-  count               = local.runtime_ready ? 1 : 0
-  project             = var.project_id
-  location            = var.region
-  name                = "${var.name_prefix}-reference-seed"
-  deletion_protection = false
-  labels              = local.labels
-  depends_on          = [google_cloud_run_v2_job.migration]
-
-  template {
-    task_count = 1
-    template {
-      max_retries     = 0
-      timeout         = "600s"
-      service_account = local.runtime_service_accounts.migration
-      vpc_access {
-        egress = "ALL_TRAFFIC"
-        network_interfaces {
-          network    = data.google_compute_network.runtime[0].name
-          subnetwork = data.google_compute_subnetwork.runtime[0].name
-        }
-      }
-      containers {
-        name       = "seed"
-        image      = local.application_image
-        command    = ["node"]
-        args       = ["apps/database-jobs/dist/main.js"]
-        depends_on = ["cloud-sql-auth-proxy"]
-        env {
-          name  = "OSFO_DATABASE_JOB"
-          value = "seed"
-        }
-        env {
-          name  = "OSFO_DATABASE_URL"
-          value = local.database_urls.migration
-        }
-        env {
-          name  = "OSFO_REFERENCE_THREAD_ID"
-          value = var.reference_thread_id
-        }
-        env {
-          name = "OSFO_REFERENCE_AUTHENTICATION_TOKEN"
-          value_source {
-            secret_key_ref {
-              secret  = local.reference_auth_secret_name
-              version = var.reference_auth_secret_version
-            }
-          }
-        }
-        resources { limits = { cpu = "1", memory = "512Mi" } }
-      }
-      containers {
-        name  = "cloud-sql-auth-proxy"
-        image = local.cloud_sql_proxy_image
-        args  = local.common_proxy_args
-        startup_probe {
-          tcp_socket { port = 5432 }
-        }
-        resources { limits = { cpu = "1", memory = "256Mi" } }
-      }
-    }
-  }
-}
-
-resource "google_cloud_run_v2_job" "reconciliation" {
-  count               = local.runtime_ready ? 1 : 0
-  project             = var.project_id
-  location            = var.region
-  name                = "${var.name_prefix}-reconciliation"
-  deletion_protection = false
-  labels              = local.labels
-  depends_on          = [google_cloud_run_v2_job.migration]
-
-  template {
-    task_count = 1
-    template {
-      max_retries     = 0
-      timeout         = "600s"
-      service_account = local.runtime_service_accounts.migration
-      vpc_access {
-        egress = "ALL_TRAFFIC"
-        network_interfaces {
-          network    = data.google_compute_network.runtime[0].name
-          subnetwork = data.google_compute_subnetwork.runtime[0].name
-        }
-      }
-      containers {
-        name       = "reconciliation"
-        image      = local.application_image
-        command    = ["node"]
-        args       = ["apps/database-jobs/dist/main.js"]
-        depends_on = ["cloud-sql-auth-proxy"]
-        env {
-          name  = "OSFO_DATABASE_JOB"
-          value = "reconcile"
-        }
-        env {
-          name  = "OSFO_DATABASE_URL"
-          value = local.database_urls.migration
-        }
-        env {
-          name  = "OSFO_RECONCILIATION_AGENT_RUN_ID"
-          value = "00000000-0000-4000-8000-000000000000"
-        }
-        resources { limits = { cpu = "1", memory = "512Mi" } }
-      }
-      containers {
-        name  = "cloud-sql-auth-proxy"
-        image = local.cloud_sql_proxy_image
-        args  = local.common_proxy_args
-        startup_probe {
-          tcp_socket { port = 5432 }
-        }
-        resources { limits = { cpu = "1", memory = "256Mi" } }
-      }
-    }
-  }
 }
 
 resource "google_cloud_run_v2_service" "transport" {
@@ -385,12 +149,6 @@ resource "google_cloud_run_v2_service" "transport" {
     }
   }
 
-  depends_on = [
-    google_cloud_run_v2_job.database_bootstrap,
-    google_cloud_run_v2_job.migration,
-    google_cloud_run_v2_job.seed,
-    google_cloud_run_v2_job.reconciliation,
-  ]
 }
 
 resource "google_cloud_run_v2_service_iam_member" "transport_public_invoker" {
@@ -789,7 +547,7 @@ resource "google_monitoring_dashboard" "runtime" {
           widget = {
             title = "Runtime dependency, lease, fence, cancellation, and rollout logs"
             logsPanel = {
-              filter = "resource.type=(\"cloud_run_revision\" OR \"cloud_run_worker_pool_revision\" OR \"cloud_run_job\") AND resource.labels.location=\"${var.region}\" AND (resource.labels.service_name=\"${var.name_prefix}-transport\" OR resource.labels.worker_pool_name=(\"${var.name_prefix}-relay\" OR \"${var.name_prefix}-agentrun\") OR resource.labels.job_name:\"${var.name_prefix}-\")"
+              filter = "resource.type=(\"cloud_run_revision\" OR \"cloud_run_worker_pool_revision\") AND resource.labels.location=\"${var.region}\" AND (resource.labels.service_name=\"${var.name_prefix}-transport\" OR resource.labels.worker_pool_name=(\"${var.name_prefix}-relay\" OR \"${var.name_prefix}-agentrun\"))"
             }
           }
         }

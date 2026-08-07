@@ -21,7 +21,7 @@ Local development keeps database setup explicit:
 bun run db:up
 cp .env.example .env
 bun run db:migrate
-bun run db:seed:reference
+bun run db:seed:demo
 bun run dev
 ```
 
@@ -114,7 +114,8 @@ PostgreSQL authority reconciliation.
 
 The reference seed is explicit and idempotent. It creates only the local
 Principal, authentication session, Thread, and capacity rows named by the
-`VITE_OSFO_*` values in `.env`. It does not start PostgreSQL or run migrations.
+`OSFO_REFERENCE_*` values in `.env`. It does not start PostgreSQL or run
+migrations.
 
 Reusable chat presentation lives in `@osfo/ui` as shadcn `MessageScroller`,
 `Message`, `Bubble`, `Marker`, and composer primitives. The app owns Thread

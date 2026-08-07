@@ -60,14 +60,6 @@ for pool in relay agentrun; do
     --filter="metadata.name=$prefix-$pool" \
     --format='value(metadata.name)'
 done
-for job in database-bootstrap migration reconciliation reference-seed; do
-  require_empty "Cloud Run job $prefix-$job" \
-    gcloud run jobs list \
-    --project="$project_id" \
-    --region="$region" \
-    --filter="metadata.name=$prefix-$job" \
-    --format='value(metadata.name)'
-done
 require_empty "serverless NEG $prefix-transport" \
   gcloud compute network-endpoint-groups list \
   --project="$project_id" \

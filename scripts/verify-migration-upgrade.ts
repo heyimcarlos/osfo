@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeRuntime } from "@effect/platform-node";
 import { PgClient } from "@effect/sql-pg";
-import { migrateDatabase } from "@osfo/db";
+import { migrateTestDatabase } from "@osfo/db/testing";
 import { Config, Effect, Redacted } from "effect";
 
 const fixedPointMigrations = [
@@ -47,7 +47,7 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
         yield* sql.unsafe(`CREATE DATABASE ${upgradeDatabaseName}`);
       }).pipe(Effect.provide(adminLayer));
 
-      yield* migrateDatabase({
+      yield* migrateTestDatabase({
         applicationName: "osfo-upgrade-fixed-point",
         databaseUrl: upgradeUrl.toString(),
         migrationsFolder,
@@ -201,7 +201,7 @@ const program = Config.nonEmptyString("OSFO_DATABASE_URL").pipe(
           WHERE thread_id = '6ef239bd-3f04-4c77-8976-1171e75ea0ab'::uuid`;
       }).pipe(Effect.provide(upgradeLayer));
 
-      yield* migrateDatabase({
+      yield* migrateTestDatabase({
         applicationName: "osfo-upgrade-current",
         databaseUrl: upgradeUrl.toString(),
       });

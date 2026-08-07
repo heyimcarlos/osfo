@@ -43,23 +43,6 @@
         "vitest": "catalog:",
       },
     },
-    "apps/database-jobs": {
-      "name": "@osfo/database-jobs",
-      "version": "0.0.0",
-      "dependencies": {
-        "@effect/platform-node": "catalog:",
-        "@effect/sql-pg": "catalog:",
-        "@osfo/db": "workspace:*",
-        "effect": "catalog:",
-      },
-      "devDependencies": {
-        "@effect/vitest": "catalog:",
-        "@types/node": "catalog:",
-        "tsx": "catalog:",
-        "typescript": "catalog:",
-        "vitest": "catalog:",
-      },
-    },
     "apps/ingress": {
       "name": "@osfo/ingress",
       "version": "0.0.0",
@@ -488,8 +471,6 @@
     "@osfo/agent-runtime": ["@osfo/agent-runtime@workspace:packages/agent-runtime"],
 
     "@osfo/api": ["@osfo/api@workspace:packages/api"],
-
-    "@osfo/database-jobs": ["@osfo/database-jobs@workspace:apps/database-jobs"],
 
     "@osfo/db": ["@osfo/db@workspace:packages/db"],
 
