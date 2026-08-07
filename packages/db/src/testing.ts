@@ -73,6 +73,7 @@ export const prepareMessageAdmissionFixture = (
         authentication_sessions,
         threads,
         principals,
+        relay_dispatch_capacity,
         admission_global_capacity
         CASCADE`);
 
@@ -98,6 +99,7 @@ export const prepareMessageAdmissionFixture = (
         });
       }
       yield* db.insert(admissionGlobalCapacity).values({ singleton: true, reservedCount: 0 });
+      yield* db.insert(relayDispatchCapacity).values({ singleton: true, activeCount: 0 });
     }),
   );
 

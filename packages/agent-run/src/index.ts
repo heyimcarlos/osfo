@@ -101,7 +101,10 @@ export type PublicationClaim = typeof PublicationClaimSchema.Type;
 
 export const PublicationSelectionSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("none") }),
-  Schema.Struct({ type: Schema.Literal("selected"), outboxId: Identity }),
+  Schema.Struct({
+    type: Schema.Literal("selected"),
+    outboxIds: Schema.Array(Identity).check(Schema.isMinLength(1)),
+  }),
 ]);
 
 export type PublicationSelection = typeof PublicationSelectionSchema.Type;
@@ -309,9 +312,23 @@ export class RunnableDeliveryPublisher extends Context.Service<
   }
 >()("@osfo/agent-run/RunnableDeliveryPublisher") {}
 
+export type OutboxRelayWakeEvent =
+  | { readonly type: "connected"; readonly reconnect: boolean }
+  | { readonly type: "notification" };
+
+export class OutboxRelayWake extends Context.Service<
+  OutboxRelayWake,
+  {
+    readonly events: Stream.Stream<OutboxRelayWakeEvent, AgentRunRepositoryUnavailable>;
+  }
+>()("@osfo/agent-run/OutboxRelayWake") {}
+
 export const OutboxRelaySelectionResultSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("idle") }),
-  Schema.Struct({ type: Schema.Literal("selected"), outboxId: Identity }),
+  Schema.Struct({
+    type: Schema.Literal("selected"),
+    outboxIds: Schema.Array(Identity).check(Schema.isMinLength(1)),
+  }),
 ]);
 
 export type OutboxRelaySelectionResult = typeof OutboxRelaySelectionResultSchema.Type;
@@ -331,6 +348,7 @@ export class OutboxRelay extends Context.Service<
       OutboxRelayPublicationResult,
       AgentRunRepositoryError | RunnableDeliveryPublisherUnavailable
     >;
+    readonly wakeEvents: Stream.Stream<OutboxRelayWakeEvent, AgentRunRepositoryUnavailable>;
   }
 >()("@osfo/agent-run/OutboxRelay") {}
 
@@ -348,12 +366,13 @@ export const makeOutboxRelayLayer = (config: OutboxRelayConfig) =>
     Effect.gen(function* () {
       const repository = yield* AgentRunRepository;
       const publisher = yield* RunnableDeliveryPublisher;
+      const wake = yield* OutboxRelayWake;
 
       const selectOnce = Effect.fn("OutboxRelay.selectOnce")(function* () {
         const selection = yield* repository.selectPublication(config);
         return selection.type === "none"
           ? ({ type: "idle" } as const)
-          : ({ type: "selected", outboxId: selection.outboxId } as const);
+          : ({ type: "selected", outboxIds: selection.outboxIds } as const);
       });
 
       const publishOnce = Effect.fn("OutboxRelay.publishOnce")(function* () {
@@ -364,6 +383,6 @@ export const makeOutboxRelayLayer = (config: OutboxRelayConfig) =>
         return { type: "published" as const, delivery: claim.delivery };
       });
 
-      return OutboxRelay.of({ selectOnce, publishOnce });
+      return OutboxRelay.of({ selectOnce, publishOnce, wakeEvents: wake.events });
     }),
   );

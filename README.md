@@ -56,6 +56,7 @@ The runnable process-role scaffolds are:
 
 ```sh
 bun run start:ingress
+bun run start:outbox-relay
 bun run start:agent-run-worker
 ```
 
@@ -81,6 +82,16 @@ Snapshot size, replay retention, stream
 polling, and cursor signing have bounded local defaults. Production deployments
 set `OSFO_CURSOR_SECRET` explicitly. Set `OSFO_INGRESS_PORT` to override its
 default port, 3000.
+
+The outbox relay uses one dedicated PostgreSQL notification connection, a
+database pool of four connections by default, one Principal-first selector, a
+128-record publication window, four recoverable publishers, and a one-second
+safety drain. `LISTEN/NOTIFY` is only a wake hint. Startup, listener reconnect,
+and the safety drain always recheck durable PostgreSQL authority. Configure the
+pool with `OSFO_RELAY_DATABASE_POOL_MAX`; the selected publication topology is
+fixed by `OSFO_RELAY_PUBLICATION_WINDOW_SIZE=128`,
+`OSFO_RELAY_PUBLISHER_CONCURRENCY=4`, and
+`OSFO_RELAY_SAFETY_DRAIN_INTERVAL_MS=1000`.
 
 ## Browser reference and UI
 
