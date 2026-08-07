@@ -1,5 +1,10 @@
 import { Data, Effect, Layer, Schema, Stream } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+} from "effect/unstable/http";
 import { HttpApiClient, HttpApiMiddleware } from "effect/unstable/httpapi";
 import { OsfoApi } from "./api.js";
 import {
@@ -56,6 +61,9 @@ const isDefiniteSubmissionRejection = Schema.is(
 const isDefiniteReconciliationResult = Schema.is(
   Schema.Union([AdmissionNotAccepted, IdempotencyConflict, ThreadNotFound]),
 );
+
+const isAmbiguousClientFailure = (error: unknown) =>
+  HttpClientError.isHttpClientError(error) || Schema.isSchemaError(error);
 
 export const submitThreadMessage = Effect.fn("OsfoApiClient.submitThreadMessage")(function* (
   command: SubmitThreadMessage,

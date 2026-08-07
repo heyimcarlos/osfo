@@ -33,6 +33,8 @@ describe("AgentRun cancellation API", () => {
     const admission = MessageAdmission.of({
       accept: (_command: SubmitMessageCommand): Effect.Effect<never, MessageAdmissionError> =>
         Effect.never,
+      reconcile: () => Effect.never,
+      reconcileCapacity: () => Effect.never,
     });
     const resume = ThreadResume.of({
       snapshot: (): ReturnType<ThreadResumeService["snapshot"]> => Effect.never,

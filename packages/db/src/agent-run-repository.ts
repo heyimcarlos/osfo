@@ -109,6 +109,9 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
 
       const lockCapacityBeforeFence = Effect.fn("AgentRunRepository.lockCapacityBeforeFence")(
         function* (fence: AgentRunFence) {
+          yield* sql`SELECT pg_advisory_xact_lock(
+            hashtextextended(${ADMISSION_CAPACITY_LOCK_KEY}, 0)
+          )`;
           const hints = yield* sql<{ readonly principalId: string }>`SELECT
             principal_id::text AS "principalId"
           FROM agent_runs
@@ -732,13 +735,42 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
           sql.withTransaction(
             Effect.gen(function* () {
               const authority = yield* requireOpenFence(fence);
-              const abandoned = yield* sql<{ readonly assistantOutputId: string }>`SELECT
-                    assistant_output_id::text AS "assistantOutputId"
+              const abandoned = yield* sql<{
+                readonly assistantOutputId: string;
+                readonly attemptNumber: number;
+                readonly cleanupDisposition: "completed" | "deadlineExceeded" | null;
+                readonly externalWorkMayContinue: boolean | null;
+                readonly modelCallAttemptId: string;
+              }>`SELECT
+                    assistant_output_id::text AS "assistantOutputId",
+                    attempt_number AS "attemptNumber",
+                    cleanup_disposition AS "cleanupDisposition",
+                    external_work_may_continue AS "externalWorkMayContinue",
+                    model_call_attempt_id::text AS "modelCallAttemptId"
                   FROM model_call_attempts
                   WHERE model_call_id = ${modelCall.modelCallId}::uuid
                     AND state = 'started'
                     AND claim_epoch < ${fence.claimEpoch}::bigint
+                  ORDER BY attempt_number
                   FOR UPDATE`;
+              const cleanupRequired = abandoned.find(
+                (previous) => previous.cleanupDisposition === null,
+              );
+              if (cleanupRequired !== undefined) {
+                return {
+                  type: "cleanupRequired" as const,
+                  attempt: {
+                    ...modelCall,
+                    assistantOutputId: cleanupRequired.assistantOutputId,
+                    modelCallAttemptId: cleanupRequired.modelCallAttemptId,
+                    attemptNumber: cleanupRequired.attemptNumber,
+                    usage: { type: "unknown" as const },
+                  },
+                };
+              }
+              const uncertain = abandoned.some(
+                (previous) => previous.externalWorkMayContinue === true,
+              );
               yield* sql`UPDATE model_call_attempts
                   SET state = 'failed', finished_at = transaction_timestamp()
                   WHERE model_call_id = ${modelCall.modelCallId}::uuid
@@ -758,6 +790,18 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                     cause: "modelCallFailed",
                   }),
                 );
+              }
+              if (uncertain) {
+                const failed = yield* sql`UPDATE model_calls
+                  SET state = 'failed',
+                      failure_cause = 'modelCallFailed',
+                      completed_at = transaction_timestamp()
+                  WHERE model_call_id = ${modelCall.modelCallId}::uuid
+                    AND agent_run_id = ${fence.agentRunId}::uuid
+                    AND state = 'pending'
+                  RETURNING model_call_id`;
+                if (failed.length !== 1) return yield* new AgentRunFenceRejected();
+                return { type: "recoveredInterruption" as const };
               }
               const numbers = yield* sql<{ readonly attemptNumber: number }>`SELECT
                     (coalesce(max(attempt_number), 0) + 1)::integer AS "attemptNumber"
@@ -801,12 +845,78 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
                   RETURNING model_call_attempt_id::text AS "modelCallAttemptId"`;
               if (inserted.length !== 1) return yield* new AgentRunFenceRejected();
               return {
-                ...modelCall,
-                assistantOutputId,
-                modelCallAttemptId,
-                attemptNumber,
-                usage: { type: "unknown" as const },
+                type: "started" as const,
+                attempt: {
+                  ...modelCall,
+                  assistantOutputId,
+                  modelCallAttemptId,
+                  attemptNumber,
+                  usage: { type: "unknown" as const },
+                },
               };
+            }),
+          ),
+        );
+      });
+
+      const recordModelCallCleanup: AgentRunRepositoryService["recordModelCallCleanup"] = Effect.fn(
+        "AgentRunRepository.recordModelCallCleanup",
+      )(function* (attempt, cleanup) {
+        return yield* protect(
+          sql.withTransaction(
+            Effect.gen(function* () {
+              const rows = yield* sql<{
+                readonly cleanupDisposition: "completed" | "deadlineExceeded" | null;
+                readonly externalWorkMayContinue: boolean | null;
+                readonly state: "started" | "succeeded" | "failed" | "canceled";
+              }>`SELECT
+                    cleanup_disposition AS "cleanupDisposition",
+                    external_work_may_continue AS "externalWorkMayContinue",
+                    state
+                  FROM model_call_attempts
+                  WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
+                    AND model_call_id = ${attempt.modelCallId}::uuid
+                    AND assistant_output_id = ${attempt.assistantOutputId}::uuid
+                  FOR UPDATE`;
+              const existing = rows[0];
+              if (existing === undefined) {
+                return yield* new AgentRunRepositoryUnavailable({
+                  cause: "ModelCallAttempt cleanup authority missing",
+                });
+              }
+              if (
+                existing.cleanupDisposition === cleanup.cleanupDisposition.type &&
+                existing.externalWorkMayContinue === cleanup.externalWorkMayContinue
+              ) {
+                return;
+              }
+              if (
+                existing.cleanupDisposition !== null ||
+                existing.externalWorkMayContinue !== null
+              ) {
+                return yield* new AgentRunRepositoryUnavailable({
+                  cause: "ModelCallAttempt cleanup authority conflict",
+                });
+              }
+              if (existing.state !== "started") {
+                return yield* new AgentRunRepositoryUnavailable({
+                  cause: "ModelCallAttempt cleanup authority is no longer active",
+                });
+              }
+              const recorded = yield* sql`UPDATE model_call_attempts
+                  SET cleanup_disposition = ${cleanup.cleanupDisposition.type},
+                      external_work_may_continue = ${cleanup.externalWorkMayContinue}
+                  WHERE model_call_attempt_id = ${attempt.modelCallAttemptId}::uuid
+                    AND model_call_id = ${attempt.modelCallId}::uuid
+                    AND assistant_output_id = ${attempt.assistantOutputId}::uuid
+                    AND cleanup_disposition IS NULL
+                    AND external_work_may_continue IS NULL
+                  RETURNING model_call_attempt_id`;
+              if (recorded.length !== 1) {
+                return yield* new AgentRunRepositoryUnavailable({
+                  cause: "ModelCallAttempt cleanup was not recorded",
+                });
+              }
             }),
           ),
         );
@@ -1106,6 +1216,7 @@ const repositoryLayer = (config: AgentRunRepositoryDatabaseConfig) => {
         loadCancellation,
         ensureModelCall,
         beginModelCallAttempt,
+        recordModelCallCleanup,
         appendModelOutput,
         completeModelCall,
         interruptModelCall,

@@ -13,6 +13,8 @@ import {
   makeAgentRunWorkerLayer,
   makeDeterministicModelCallExecutorLayer,
   makeOutboxRelayLayer,
+  type ModelCallAttempt,
+  type ModelCallAttemptStart,
   type RunnableAgentRunDelivery,
 } from "@osfo/agent-run";
 import { makeDeterministicAgentRuntimeLayer } from "@osfo/agent-runtime";
@@ -142,6 +144,17 @@ const ClaimedAgentRunSchema = Schema.Struct({
   type: Schema.Literal("claimed"),
   fence: AgentRunFenceSchema,
 });
+
+const expectStartedAttempt = <E, R>(
+  effect: Effect.Effect<ModelCallAttemptStart, E, R>,
+): Effect.Effect<ModelCallAttempt, E, R> =>
+  effect.pipe(
+    Effect.flatMap((start) =>
+      start.type === "started"
+        ? Effect.succeed(start.attempt)
+        : Effect.die("Expected a newly started ModelCallAttempt"),
+    ),
+  );
 
 const seedAuthority = () =>
   run(
@@ -625,7 +638,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             modelBinding: "oz.deterministic.echo.v1",
             prompt: "cancel active output",
           });
-          const started = yield* repository.beginModelCallAttempt(claimed.fence, modelCall);
+          const started = yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(claimed.fence, modelCall),
+          );
           yield* repository.appendModelOutput(claimed.fence, started, {
             fragmentIndex: 0,
             text: "Partial",
@@ -1171,7 +1186,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
               prompt: `crash after ${cut}`,
             });
             if (cut === "intent") return;
-            const attempt = yield* repository.beginModelCallAttempt(abandoned.fence, modelCall);
+            const attempt = yield* expectStartedAttempt(
+              repository.beginModelCallAttempt(abandoned.fence, modelCall),
+            );
             if (cut === "completedOutput") {
               yield* repository.completeModelCall(abandoned.fence, attempt);
             }
@@ -1251,6 +1268,125 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     },
   );
 
+  it("fails takeover without duplicating external work when cleanup remains uncertain", async () => {
+    failFirstPublication = false;
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "uncertain cleanup takeover" },
+        }),
+      ),
+    );
+    await run(OutboxRelay.use((relay) => relay.selectOnce()));
+    await run(OutboxRelay.use((relay) => relay.publishOnce()));
+    const delivery = published[0]!;
+    const abandoned = await run(
+      AgentRunRepository.use((repository) =>
+        repository.claimAgentRun(delivery, {
+          workerId: "uncertain-cleanup-worker",
+          leaseDurationMs: 30_000,
+        }),
+      ),
+    ).then((claim) => Effect.runPromise(Schema.decodeUnknownEffect(ClaimedAgentRunSchema)(claim)));
+
+    await run(
+      AgentRunRepository.use((repository) =>
+        Effect.gen(function* () {
+          const modelCall = yield* repository.ensureModelCall(abandoned.fence, {
+            type: "startModelCall",
+            modelBinding: "oz.deterministic.echo.v1",
+            prompt: "uncertain cleanup takeover",
+          });
+          const attempt = yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(abandoned.fence, modelCall),
+          );
+          yield* repository.appendModelOutput(abandoned.fence, attempt, {
+            fragmentIndex: 0,
+            text: "Possibly still running",
+          });
+          yield* repository.recordModelCallCleanup(attempt, {
+            cleanupDisposition: { type: "deadlineExceeded" },
+            externalWorkMayContinue: true,
+          });
+        }),
+      ),
+    );
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE agent_runs
+          SET lease_expires_at = clock_timestamp() - interval '1 millisecond'
+          WHERE agent_run_id = ${receipt.agentRunId}::uuid`;
+      }),
+    );
+
+    expect(await run(AgentRunWorker.use((worker) => worker.handle(delivery)))).toEqual({
+      type: "acknowledge",
+      outcome: "failed",
+    });
+
+    const authority = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly attempts: string;
+          readonly cleanupDisposition: string;
+          readonly externalWorkMayContinue: boolean;
+          readonly globalReserved: number;
+          readonly principalReserved: number;
+          readonly reservationState: string;
+          readonly runState: string;
+          readonly startedAttempts: string;
+        }>`SELECT
+          run.state AS "runState",
+          reservation.state AS "reservationState",
+          global_capacity.reserved_count AS "globalReserved",
+          principal_capacity.reserved_count AS "principalReserved",
+          (SELECT count(*) FROM model_call_attempts
+            WHERE agent_run_id = run.agent_run_id)::text AS attempts,
+          (SELECT count(*) FROM model_call_attempts
+            WHERE agent_run_id = run.agent_run_id AND state = 'started')::text
+            AS "startedAttempts",
+          attempt.cleanup_disposition AS "cleanupDisposition",
+          attempt.external_work_may_continue AS "externalWorkMayContinue"
+        FROM agent_runs run
+        JOIN agent_run_capacity_reservations reservation USING (agent_run_id)
+        CROSS JOIN admission_global_capacity global_capacity
+        JOIN admission_principal_capacity principal_capacity
+          ON principal_capacity.principal_id = run.principal_id
+        JOIN model_call_attempts attempt USING (agent_run_id)
+        WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
+        const events = yield* sql<{ readonly eventType: string }>`SELECT
+          event_type AS "eventType"
+        FROM thread_events
+        WHERE agent_run_id = ${receipt.agentRunId}::uuid
+        ORDER BY position`;
+        return { row: rows[0], events };
+      }),
+    );
+
+    expect(authority.row).toEqual({
+      runState: "failed",
+      reservationState: "released",
+      globalReserved: 0,
+      principalReserved: 0,
+      attempts: "1",
+      startedAttempts: "0",
+      cleanupDisposition: "deadlineExceeded",
+      externalWorkMayContinue: true,
+    });
+    expect(authority.events).toEqual([
+      { eventType: "UserMessageAppended" },
+      { eventType: "AssistantOutputAppended" },
+      { eventType: "AssistantOutputInterrupted" },
+      { eventType: "AgentRunFailed" },
+    ]);
+  });
+
   it("recovers relay, output, and terminal-ack crash cuts without duplicate authority", async () => {
     const command = {
       protocolVersion: 1,
@@ -1307,7 +1443,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             modelBinding: "oz.deterministic.echo.v1",
             prompt: "Hello, Oz",
           });
-          const attempt = yield* repository.beginModelCallAttempt(abandoned.fence, modelCall);
+          const attempt = yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(abandoned.fence, modelCall),
+          );
           yield* repository.appendModelOutput(abandoned.fence, attempt, {
             fragmentIndex: 0,
             text: "Echo: ",
@@ -1657,7 +1795,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
             modelBinding: "oz.deterministic.echo.v1",
             prompt: "cancel after worker loss",
           });
-          const attempt = yield* repository.beginModelCallAttempt(abandoned.fence, modelCall);
+          const attempt = yield* expectStartedAttempt(
+            repository.beginModelCallAttempt(abandoned.fence, modelCall),
+          );
           yield* repository.appendModelOutput(abandoned.fence, attempt, {
             fragmentIndex: 0,
             text: "Working",
@@ -1863,7 +2003,9 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
               modelBinding: "oz.deterministic.echo.v1",
               prompt: `${operation} fence`,
             });
-            return yield* repository.beginModelCallAttempt(claimed.fence, modelCall);
+            return yield* expectStartedAttempt(
+              repository.beginModelCallAttempt(claimed.fence, modelCall),
+            );
           }),
         ),
       );

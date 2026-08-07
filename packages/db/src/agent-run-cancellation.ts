@@ -140,7 +140,8 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
           return yield* new AgentRunCancellationUnavailable();
         }
         const global = yield* sql`UPDATE admission_global_capacity
-          SET reserved_count = reserved_count - 1
+          SET reserved_count = reserved_count - 1,
+              revision = revision + 1
           WHERE singleton = true AND reserved_count > 0
           RETURNING reserved_count`;
         const principal = yield* sql`UPDATE admission_principal_capacity

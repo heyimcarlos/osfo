@@ -664,6 +664,8 @@ export const modelCallAttempts = pgTable(
     usageType: text("usage_type").notNull().default("unknown"),
     inputUnits: integer("input_units"),
     outputUnits: integer("output_units"),
+    cleanupDisposition: text("cleanup_disposition"),
+    externalWorkMayContinue: boolean("external_work_may_continue"),
     startedAt: timestamp("started_at", { withTimezone: true, mode: "string" }).notNull(),
     finishedAt: timestamp("finished_at", { withTimezone: true, mode: "string" }),
   },
@@ -706,6 +708,14 @@ export const modelCallAttempts = pgTable(
         (${table.state} = 'started' AND ${table.finishedAt} IS NULL)
         OR (${table.state} <> 'started' AND ${table.finishedAt} IS NOT NULL)
       )) IS TRUE`,
+    ),
+    check(
+      "model_call_attempts_cleanup_check",
+      sql`((${table.cleanupDisposition} IS NULL AND ${table.externalWorkMayContinue} IS NULL)
+        OR (
+          ${table.cleanupDisposition} IN ('completed', 'deadlineExceeded')
+          AND ${table.externalWorkMayContinue} IS NOT NULL
+        ))`,
     ),
   ],
 );
