@@ -30,7 +30,7 @@
     "infra:test": "vitest run infra/test/terraform-foundation.test.ts --exclude '**/.worktrees/**'",
     "lint": "oxlint --deny-warnings .",
     "observability:compose:check": "docker compose --file observability/compose.yaml config --quiet",
-    "observability:test": "vitest run observability/*.test.ts",
+    "observability:test": "vitest run observability/*.test.ts --exclude '**/.worktrees/**'",
     "observability:typecheck": "tsc --project observability/tsconfig.json",
     "qualification:reconcile-agent-run": "node --env-file=.env --conditions=development --import tsx scripts/qualification/reconcile-agent-run.ts",
     "start:agent-run-worker": "bun run --cwd apps/agent-run-worker start",
