@@ -105,17 +105,40 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
           )`;
       });
 
-      const releaseCapacity = Effect.fn("DatabaseAgentRunCancellation.releaseCapacity")(function* (
+      const settleCapacity = Effect.fn("DatabaseAgentRunCancellation.settleCapacity")(function* (
         authority: AgentRunAuthority,
       ) {
+        const reservations = yield* sql<{
+          readonly principalId: string;
+          readonly state: "held" | "released";
+        }>`SELECT
+            principal_id::text AS "principalId",
+            state
+          FROM agent_run_capacity_reservations
+          WHERE agent_run_id = ${authority.agentRunId}::uuid
+          FOR UPDATE`;
+        const reservation = reservations[0];
+        if (reservation?.principalId !== authority.principalId) {
+          return yield* new AgentRunCancellationUnavailable();
+        }
+        if (authority.state === "waiting") {
+          if (reservation.state !== "released") {
+            return yield* new AgentRunCancellationUnavailable();
+          }
+          return;
+        }
+        if (authority.state !== "pending" || reservation.state !== "held") {
+          return yield* new AgentRunCancellationUnavailable();
+        }
         const released = yield* sql<{ readonly principalId: string }>`UPDATE
             agent_run_capacity_reservations
           SET state = 'released', released_at = transaction_timestamp()
           WHERE agent_run_id = ${authority.agentRunId}::uuid
             AND state = 'held'
           RETURNING principal_id::text AS "principalId"`;
-        const reservation = released[0];
-        if (reservation === undefined) return yield* new AgentRunCancellationUnavailable();
+        if (released[0]?.principalId !== authority.principalId) {
+          return yield* new AgentRunCancellationUnavailable();
+        }
         const global = yield* sql`UPDATE admission_global_capacity
           SET reserved_count = reserved_count - 1
           WHERE singleton = true AND reserved_count > 0
@@ -230,7 +253,7 @@ const cancellationLayer = (config: AgentRunCancellationDatabaseConfig) => {
               type: "canceled",
               cleanupDisposition: result.cleanupDisposition,
             });
-            yield* releaseCapacity(authority);
+            yield* settleCapacity(authority);
             return new AgentRunCancellationReceipt({
               protocolVersion: 1,
               agentRunId: authority.agentRunId,

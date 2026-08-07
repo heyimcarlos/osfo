@@ -287,6 +287,100 @@ describe("deterministic PostgreSQL AgentRun journey", () => {
     expect(snapshot.throughPosition).toBe("3");
   });
 
+  it("cancels waiting work without releasing execution capacity a second time", async () => {
+    const receipt = await run(
+      MessageAdmission.use((admission) =>
+        admission.accept({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          idempotencyKey: randomUUID(),
+          message: { content: "cancel while waiting" },
+        }),
+      ),
+    );
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`UPDATE agent_runs
+              SET state = 'waiting'
+              WHERE agent_run_id = ${receipt.agentRunId}::uuid
+                AND state = 'pending'`;
+            yield* sql`UPDATE agent_run_capacity_reservations
+              SET state = 'released', released_at = transaction_timestamp()
+              WHERE agent_run_id = ${receipt.agentRunId}::uuid
+                AND state = 'held'`;
+            yield* sql`UPDATE admission_global_capacity
+              SET reserved_count = reserved_count - 1
+              WHERE singleton = true AND reserved_count = 1`;
+            yield* sql`UPDATE admission_principal_capacity
+              SET reserved_count = reserved_count - 1
+              WHERE principal_id = ${principalId}::uuid AND reserved_count = 1`;
+          }),
+        );
+      }),
+    );
+
+    const canceled = await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ),
+    );
+    const duplicate = await run(
+      AgentRunCancellation.use((cancellation) =>
+        cancellation.cancel({
+          protocolVersion: 1,
+          authenticationToken,
+          threadId,
+          agentRunId: receipt.agentRunId,
+        }),
+      ),
+    );
+
+    expect(canceled).toMatchObject({ outcome: "canceled" });
+    expect(duplicate).toMatchObject({ outcome: "alreadyTerminal" });
+    const authority = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly state: string;
+          readonly reservationState: string;
+          readonly globalReserved: number;
+          readonly principalReserved: number;
+          readonly canceledEvents: string;
+        }>`SELECT
+          run.state,
+          reservation.state AS "reservationState",
+          global_capacity.reserved_count AS "globalReserved",
+          principal_capacity.reserved_count AS "principalReserved",
+          (SELECT count(*) FROM thread_events event
+            WHERE event.agent_run_id = run.agent_run_id
+              AND event.event_type = 'AgentRunCanceled')::text AS "canceledEvents"
+        FROM agent_runs run
+        JOIN agent_run_capacity_reservations reservation USING (agent_run_id)
+        CROSS JOIN admission_global_capacity global_capacity
+        JOIN admission_principal_capacity principal_capacity
+          ON principal_capacity.principal_id = run.principal_id
+        WHERE run.agent_run_id = ${receipt.agentRunId}::uuid`;
+        return rows[0];
+      }),
+    );
+    expect(authority).toEqual({
+      state: "canceled",
+      reservationState: "released",
+      globalReserved: 0,
+      principalReserved: 0,
+      canceledEvents: "1",
+    });
+  });
+
   it("samples the pending cancellation deadline at its terminal update", async () => {
     const receipt = await run(
       MessageAdmission.use((admission) =>
