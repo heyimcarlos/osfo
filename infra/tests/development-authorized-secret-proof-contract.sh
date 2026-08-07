@@ -127,9 +127,17 @@ real_sha256sum=$(command -v sha256sum)
 # shellcheck disable=SC2016
 printf '%s\n' \
   '#!/usr/bin/env bash' \
+  'count=0' \
+  'if [[ -n "${MOCK_DIGEST_COUNT:-}" ]]; then' \
+  '  [[ ! -e "$MOCK_DIGEST_COUNT" ]] || count=$(<"$MOCK_DIGEST_COUNT")' \
+  '  count=$((count + 1))' \
+  '  printf "%s" "$count" >"$MOCK_DIGEST_COUNT"' \
+  'fi' \
   'case "${MOCK_DIGEST_MODE:-success}" in' \
   '  failure) exit 1 ;;' \
   '  invalid) printf "%s\n" invalid ;;' \
+  '  failure-at-2) ((count != 2)) || exit 1; exec "$REAL_SHA256SUM" "$@" ;;' \
+  '  failure-at-3) ((count != 3)) || exit 1; exec "$REAL_SHA256SUM" "$@" ;;' \
   '  *) exec "$REAL_SHA256SUM" "$@" ;;' \
   'esac' >"$mock_bin/sha256sum"
 chmod +x "$mock_bin/sha256sum"
@@ -139,6 +147,16 @@ expect_probe_fails digest-tool-failure \
 expect_probe_fails invalid-digest-result \
   'FAIL: authorized secret-version digest is invalid' \
   MOCK_DIGEST_MODE=invalid REAL_SHA256SUM="$real_sha256sum"
+rm -f "$scratch/probe-digest.count"
+expect_probe_fails sentinel-generation-tool-failure \
+  'FAIL: qualification sentinel generation failed closed' \
+  MOCK_DIGEST_MODE=failure-at-2 MOCK_DIGEST_COUNT="$scratch/probe-digest.count" \
+  REAL_SHA256SUM="$real_sha256sum"
+rm -f "$scratch/probe-digest.count"
+expect_probe_fails sentinel-digest-tool-failure \
+  'FAIL: qualification sentinel digest tool failed closed' \
+  MOCK_DIGEST_MODE=failure-at-3 MOCK_DIGEST_COUNT="$scratch/probe-digest.count" \
+  REAL_SHA256SUM="$real_sha256sum"
 rm "$mock_bin/sha256sum"
 
 make_logs() {
@@ -222,15 +240,31 @@ expect_evaluator_fails evaluator-tool-failure \
   'FAIL: managed qualification result evaluator failed closed' \
   "$scratch/evaluator-tool.logs.json"
 
+invalid_evaluator_output=$scratch/invalid-evaluator-input.output
+if "$evaluator" \
+  "$scratch/logs.json" "$project_id" "$region" "$job" "$execution" \
+  0 "$scratch/invalid-evaluator-input-report.json" \
+  >"$invalid_evaluator_output" 2>&1; then
+  printf 'invalid authorized-secret evaluator input must fail closed\n' >&2
+  exit 1
+fi
+grep -Fxq 'FAIL: managed qualification evaluator inputs are invalid' \
+  "$invalid_evaluator_output"
+
 real_jq=$(command -v jq)
 # shellcheck disable=SC2016
 printf '%s\n' \
   '#!/usr/bin/env bash' \
+  'if [[ "${MOCK_JQ_MODE:-success}" == extraction-failure && "${1:-}" == -r ]]; then exit 1; fi' \
   'if [[ " $* " == " -n "* ]]; then exit 1; fi' \
   'exec "$REAL_JQ" "$@"' >"$mock_bin/jq"
 chmod +x "$mock_bin/jq"
 REAL_JQ="$real_jq" expect_evaluator_fails report-encoding-failure \
   'FAIL: managed qualification report encoding failed closed' \
+  "$scratch/logs.json"
+MOCK_JQ_MODE=extraction-failure REAL_JQ="$real_jq" \
+  expect_evaluator_fails result-extraction-failure \
+  'FAIL: managed qualification result evaluator failed closed' \
   "$scratch/logs.json"
 rm "$mock_bin/jq"
 
@@ -262,6 +296,7 @@ printf '%s\n' \
   '    case "${MOCK_LIVE_MODE:-success}" in' \
   '      version-add-failure) printf "provider diagnostic must not escape\n" >&2; exit 1 ;;' \
   '      malformed-version) printf "%s\n" "{\"name\":7}" ;;' \
+  '      duplicate-version) printf "%s\n%s\n" "{\"name\":\"projects/123456789012/secrets/osfo-dev-authorized-secret-proof/versions/7\"}" "{\"name\":\"projects/123456789012/secrets/osfo-dev-authorized-secret-proof/versions/8\"}" ;;' \
   '      wrong-project-version) printf "%s\n" "{\"name\":\"projects/999999999999/secrets/osfo-dev-authorized-secret-proof/versions/7\"}" ;;' \
   '      wrong-secret-version) printf "%s\n" "{\"name\":\"projects/123456789012/secrets/wrong-secret/versions/7\"}" ;;' \
   '      *) printf "%s\n" "{\"name\":\"projects/123456789012/secrets/osfo-dev-authorized-secret-proof/versions/7\"}" ;;' \
@@ -271,6 +306,7 @@ printf '%s\n' \
   '    case "${MOCK_LIVE_MODE:-success}" in' \
   '      project-lookup-failure) printf "provider diagnostic must not escape\n" >&2; exit 1 ;;' \
   '      malformed-project) printf "%s\n" "{\"projectId\":\"wrong-project\",\"projectNumber\":\"123456789012\"}" ;;' \
+  '      duplicate-project) printf "%s\n%s\n" "{\"projectId\":\"osfo-development-123456789\",\"projectNumber\":\"123456789012\"}" "{\"projectId\":\"osfo-development-123456789\",\"projectNumber\":\"123456789012\"}" ;;' \
   '      *) printf "%s\n" "{\"projectId\":\"osfo-development-123456789\",\"projectNumber\":\"123456789012\"}" ;;' \
   '    esac' \
   '    ;;' \
@@ -300,6 +336,7 @@ chmod +x "$live_bin/gcloud"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   '[[ "${MOCK_LIVE_MODE:-success}" != sentinel-tool-failure ]] || exit 1' \
+  'if [[ "${MOCK_LIVE_MODE:-success}" == sentinel-invalid ]]; then printf "%s\n" invalid; exit 0; fi' \
   'exec "$REAL_SHA256SUM" "$@"' >"$live_bin/sha256sum"
 chmod +x "$live_bin/sha256sum"
 # shellcheck disable=SC2016
@@ -325,19 +362,22 @@ run_live() {
   local scenario=$1
   local mode=$2
   local report=$3
+  local selected_platform=${4:-$scratch/platform.json}
+  local selected_varset=${5:-$scratch/varset.json}
+  local selected_run_id=${6:-$run_id}
   local output=$scratch/$scenario.output
   : >"$scratch/live.executions"
   rm -f "$scratch/live.mv-count"
   PATH="$live_bin:$PATH" \
-    TF_VARSET_FILE="$scratch/varset.json" \
-    DEVELOPMENT_LIFECYCLE_RUN_ID="$run_id" \
+    TF_VARSET_FILE="$selected_varset" \
+    DEVELOPMENT_LIFECYCLE_RUN_ID="$selected_run_id" \
     MOCK_LIVE_MODE="$mode" \
     MOCK_LIVE_LENGTH="$scratch/live.length" \
     MOCK_LIVE_EXECUTIONS="$scratch/live.executions" \
     MOCK_MV_COUNT="$scratch/live.mv-count" \
     REAL_SHA256SUM="$real_sha256sum" \
     REAL_MV="$real_mv" \
-    "$live_proof" "$scratch/platform.json" "$report" \
+    "$live_proof" "$selected_platform" "$report" \
     >"$output" 2>&1
 }
 
@@ -376,13 +416,18 @@ expect_live_fails() {
 
 expect_live_fails sentinel-tool-failure sentinel-tool-failure \
   'FAIL: disposable qualification sentinel generation failed closed'
+expect_live_fails sentinel-invalid sentinel-invalid \
+  'FAIL: disposable qualification sentinel metadata is invalid'
 expect_live_fails version-add-failure version-add-failure \
   'FAIL: disposable qualification secret version creation failed closed'
 expect_live_fails project-lookup-failure project-lookup-failure \
   'FAIL: development project lookup failed closed'
 expect_live_fails malformed-project malformed-project \
   'FAIL: development project result is malformed'
-for malformed_version_mode in malformed-version wrong-project-version wrong-secret-version; do
+expect_live_fails duplicate-project duplicate-project \
+  'FAIL: development project result is malformed'
+for malformed_version_mode in \
+  malformed-version duplicate-version wrong-project-version wrong-secret-version; do
   expect_live_fails "$malformed_version_mode" "$malformed_version_mode" \
     'FAIL: disposable qualification secret version result is malformed'
 done
@@ -402,6 +447,26 @@ expect_live_fails sleep-failure sleep-failure \
   'FAIL: managed authorized-secret observation delay failed closed'
 expect_live_fails report-publication-failure report-publication-failure \
   'FAIL: managed authorized-secret report publication failed closed'
+
+jq '.qualification_probe_jobs.authorized_secret = "invalid job"' \
+  "$scratch/platform.json" >"$scratch/invalid-platform.json"
+if run_live invalid-platform success "$scratch/invalid-platform-report.json" \
+  "$scratch/invalid-platform.json"; then
+  printf 'invalid authorized-secret managed identifier must fail closed\n' >&2
+  exit 1
+fi
+grep -Fxq 'FAIL: authorized-secret managed identifiers are invalid' \
+  "$scratch/invalid-platform.output"
+test ! -e "$scratch/invalid-platform-report.json"
+
+if run_live unsafe-lifecycle success "$scratch/unsafe-lifecycle-report.json" \
+  "$scratch/platform.json" "$scratch/varset.json" 'unsafe run'; then
+  printf 'unsafe authorized-secret lifecycle identifier must fail closed\n' >&2
+  exit 1
+fi
+grep -Fxq 'FAIL: authorized-secret managed identifiers are invalid' \
+  "$scratch/unsafe-lifecycle.output"
+test ! -e "$scratch/unsafe-lifecycle-report.json"
 
 if rg -n "$payload|payload fragment|provider diagnostic" \
   "$scratch"/*.output "$scratch"/*report.json 2>/dev/null; then

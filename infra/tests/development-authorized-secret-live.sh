@@ -62,15 +62,19 @@ if ! gcloud projects describe "$project_id" --format=json \
   >"$scratch/project.json" 2>/dev/null; then
   fail 'development project lookup failed closed'
 fi
-project_number=$(jq -er --arg project_id "$project_id" '
-  select(type == "object" and .projectId == $project_id)
+project_number=$(jq -ser --arg project_id "$project_id" '
+  select(length == 1)
+  | .[0]
+  | select(type == "object" and .projectId == $project_id)
   | .projectNumber
   | select(type == "string" and test("^[0-9]+$"))' \
   "$scratch/project.json" 2>/dev/null) \
   || fail 'development project result is malformed'
-version=$(jq -e -r \
+version=$(jq -s -e -r \
   --arg expected_prefix "projects/$project_number/secrets/$secret/versions/" '
-    select(type == "object" and (.name | type == "string"))
+    select(length == 1)
+    | .[0]
+    | select(type == "object" and (.name | type == "string"))
     | .name
     | select(startswith($expected_prefix))
     | ltrimstr($expected_prefix)
