@@ -149,6 +149,17 @@ cleanup_on_exit() {
 trap cleanup_on_exit EXIT
 trap 'printf "cleanup: lifecycle interrupted by signal\n" >&2; exit 130' INT TERM
 
+if [[ "${DEVELOPMENT_PLATFORM_CLEANUP_ONLY:-0}" == 1 ]]; then
+  cleanup_absence_report="$plan_dir/cleanup-absence.json"
+  destroy_platform
+  "$repo_root/infra/tests/development-platform-absent.sh" "$cleanup_absence_report"
+  cleanup_absence_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
+    "$cleanup_absence_report" "$evidence_bucket")
+  printf 'PASS: independent cleanup completed source=%s absence_evidence=%s\n' \
+    "$source_commit" "$cleanup_absence_sha"
+  exit 0
+fi
+
 "$repo_root/infra/tests/development-platform-preflight.sh"
 
 create_plan="$plan_dir/create.tfplan"

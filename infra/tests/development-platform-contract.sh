@@ -144,16 +144,21 @@ if grep -Eq 'roles/(iam.serviceAccountAdmin|resourcemanager.projectIamAdmin|serv
   printf 'platform identity must not administer project or service-account IAM\n' >&2
   exit 1
 fi
+probe_act_as=$(sed -n \
+  '/resource "google_service_account_iam_member" "development_platform_probe_act_as"/,/^}/p' \
+  infra/roots/foundation/main.tf)
+if [[ $(rg --fixed-strings 'roles/iam.serviceAccountUser' infra/roots/foundation/main.tf | wc -l) != 1 ]] \
+  || ! grep -Fq 'for_each = google_service_account.development_qualification' <<<"$probe_act_as" \
+  || ! grep -Fq 'service_account_id = each.value.name' <<<"$probe_act_as" \
+  || ! grep -Fq 'google_service_account.terraform["development-platform"].email' <<<"$probe_act_as"; then
+  printf 'platform actAs must target only the reviewed qualification identities\n' >&2
+  exit 1
+fi
 secret_access=$(sed -n \
   '/resource "google_project_iam_member" "development_secret_access"/,/resource "google_service_account" "development_runtime"/p' \
   infra/roots/foundation/main.tf)
 if grep -Fq 'development_qualification' <<<"$secret_access"; then
   printf 'qualification identities must not receive secret payload access\n' >&2
-  exit 1
-fi
-if rg --fixed-strings --quiet 'development_platform_job_act_as' \
-  infra/roots/foundation/main.tf; then
-  printf 'platform identity must not impersonate secret-bearing runtime identities\n' >&2
   exit 1
 fi
 platform_custom_roles=$(sed -n \
@@ -165,6 +170,10 @@ if grep -Fq 'resourcemanager.projects.setIamPolicy' <<<"$platform_custom_roles";
 fi
 if grep -Fq 'secretmanager.secrets.setIamPolicy' <<<"$platform_custom_roles"; then
   printf 'platform identity must not mutate secret IAM\n' >&2
+  exit 1
+fi
+if grep -Fq 'iam.serviceAccounts.actAs' <<<"$platform_custom_roles"; then
+  printf 'platform custom roles must not permit service-account impersonation\n' >&2
   exit 1
 fi
 
@@ -192,5 +201,7 @@ rg --fixed-strings --quiet 'development-platform-absent.sh' .github/workflows/te
 rg --fixed-strings --quiet 'Report missing protected configuration' .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'Require an explicitly reviewed lifecycle ref' .github/workflows/terraform.yml
 rg --fixed-strings --quiet 'refs/heads/codex/provision-development-platform' .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'DEVELOPMENT_PLATFORM_CLEANUP_ONLY: "1"' .github/workflows/terraform.yml
+rg --fixed-strings --quiet 'always()' .github/workflows/terraform.yml
 
 printf 'PASS: development platform topology, reviewed inputs, and teardown boundaries\n'

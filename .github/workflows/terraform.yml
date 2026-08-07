@@ -163,6 +163,49 @@ jobs:
         run: |
           infra/tests/development-platform-live.sh
 
+  development-cleanup:
+    if: >-
+      always() &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.task == 'development-proof' &&
+      needs.development-authorization.result == 'success' &&
+      needs.development-configuration.result == 'success'
+    needs: [development-lifecycle, development-authorization, development-configuration]
+    runs-on: ubuntu-24.04
+    environment: development-platform
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: terraform-development-platform
+      cancel-in-progress: false
+    env:
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+      TF_VARSET_FILE: ${{ github.workspace }}/infra/roots/development/platform/development.tfvars.json
+      TF_IMAGE_DIGESTS_FILE: ${{ github.workspace }}/infra/roots/development/platform/image-digests.json
+      TERRAFORM_BIN: ${{ github.workspace }}/infra/scripts/terraform-ci.sh
+      SAVED_PLAN_BUCKET: ${{ vars.GCP_SAVED_PLAN_BUCKET }}
+      DEVELOPMENT_STATE_BUCKET: ${{ vars.GCP_DEVELOPMENT_STATE_BUCKET }}
+      DEVELOPMENT_PLATFORM_CLEANUP_ONLY: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEVELOPMENT_PLATFORM_TERRAFORM_SERVICE_ACCOUNT }}
+      - name: Initialize isolated development state for cleanup
+        run: |
+          infra/scripts/terraform-ci.sh -chdir=infra/roots/development/platform init -input=false \
+            -backend-config="bucket=$DEVELOPMENT_STATE_BUCKET" \
+            -backend-config="prefix=roots/development/platform"
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 569.0.0
+      - name: Independently destroy and verify the disposable platform
+        shell: bash
+        run: infra/tests/development-platform-live.sh
+
   root-workflow:
     if: >-
       github.event_name == 'workflow_dispatch' &&

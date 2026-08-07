@@ -97,7 +97,10 @@ post-destroy gate fails closed if Terraform state cannot be read, then performs
 negative provider lookups for every disposable service and queries retained
 Cloud Audit Logs for lifecycle deletion history. Separate content-addressed
 reports preserve managed checks, absence checks, audit events, and the final
-lifecycle binding.
+lifecycle binding. An independent `always()` workflow job reauthenticates,
+reinitializes the same remote state, applies a separately bound destroy-only
+plan, and repeats the empty-state and provider-absence checks after success,
+failure, or cancellation of the qualification job.
 
 Both scheduled drift jobs are read-only. One refreshes the retained foundation
 baseline, while the other refreshes the empty disposable state and performs the
