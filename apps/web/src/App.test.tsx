@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 import { RegistryProvider } from "@effect/atom-react";
 import { AcceptanceReceipt } from "@osfo/api";
 import { describe, expect, it } from "@effect/vitest";
@@ -9,8 +11,9 @@ import {
   makeEmptyThreadSnapshot,
   makeUserMessageAppended,
 } from "@osfo/session";
-import { Deferred, Effect, Stream } from "effect";
-import * as AtomRegistry from "effect/unstable/reactivity/AtomRegistry";
+import { Deferred, Effect } from "effect";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { App } from "./App";
 import { makeThreadChat } from "./chat/atoms";
@@ -139,7 +142,7 @@ describe("browser reference client", () => {
     expect(html).toContain("Canonical at position 2");
   });
 
-  it("resumes committed assistant output and renders it in the browser transcript", async () => {
+  it("resumes committed assistant output through the API and renders it reactively", async () => {
     const assistantOutputId = "86290831-b9ca-414a-abf1-4055b5347133";
     const eventInput = {
       threadId,
@@ -188,39 +191,70 @@ describe("browser reference client", () => {
         ),
       Effect.runSync(makeEmptyThreadSnapshot({ threadId, throughCursor: "cursor-origin" })),
     );
-    const streamStarted = Deferred.makeUnsafe<void>();
+    const streamRequested = Deferred.makeUnsafe<void>();
     const chat = makeThreadChat({
       authenticationToken: "reference-session",
       baseUrl: "https://osfo.test",
       threadId,
       projectionStore: makeThreadProjectionStore({ storage: new MemoryStorage(), threadId }),
-      resumeTransport: {
-        snapshot: () => Effect.succeed(snapshot),
-        stream: () =>
-          Effect.succeed(
-            Stream.empty.pipe(Stream.onStart(Deferred.succeed(streamStarted, undefined))),
-          ),
-      },
       submitMessage: () => Effect.succeed(receipt),
     });
-    const registry = AtomRegistry.make();
-    const unmountResume = registry.mount(chat.resume);
-    const unmountMessages = registry.mount(chat.messages);
-    await Effect.runPromise(Deferred.await(streamStarted));
-    const resumedMessages = registry.get(chat.messages);
+    const originalFetch = globalThis.fetch;
+    const requestedPaths: Array<string> = [];
+    globalThis.fetch = async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      requestedPaths.push(`${url.pathname}${url.search}`);
+      if (url.pathname.endsWith("/snapshot")) {
+        return new Response(JSON.stringify(snapshot), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.pathname.endsWith("/events")) {
+        Effect.runSync(Deferred.succeed(streamRequested, undefined));
+        return new Response(
+          `event: caught_up\ndata: ${JSON.stringify({
+            throughPosition: snapshot.throughPosition,
+            throughCursor: snapshot.throughCursor,
+          })}\n\n`,
+          { headers: { "content-type": "text/event-stream; charset=utf-8" } },
+        );
+      }
+      return new Response(undefined, { status: 404 });
+    };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const hadReactActEnvironment = Object.hasOwn(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    const originalReactActEnvironment = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 
-    const html = renderToStaticMarkup(
-      <RegistryProvider initialValues={[[chat.messages, resumedMessages]]}>
-        <App chat={chat} threadId={threadId} />
-      </RegistryProvider>,
-    );
+    try {
+      await act(() => {
+        root.render(
+          <RegistryProvider>
+            <App chat={chat} threadId={threadId} />
+          </RegistryProvider>,
+        );
+      });
+      await Effect.runPromise(Deferred.await(streamRequested));
+      await act(async () => undefined);
 
-    expect(html).toContain("Echo: Hello through resume");
-    expect(html).toContain(assistantOutputId);
-    expect(html).toContain("Canonical at position 2");
-    unmountMessages();
-    unmountResume();
-    registry.dispose();
+      expect(requestedPaths).toContain(`/v1/threads/${threadId}/snapshot`);
+      expect(requestedPaths).toContain(
+        `/v1/threads/${threadId}/events?after=${encodeURIComponent(snapshot.throughCursor)}`,
+      );
+      expect(container.innerHTML).toContain("Echo: Hello through resume");
+      expect(container.innerHTML).toContain(assistantOutputId);
+      expect(container.innerHTML).toContain("Canonical at position 2");
+    } finally {
+      await act(async () => root.unmount());
+      globalThis.fetch = originalFetch;
+      if (hadReactActEnvironment) {
+        Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", originalReactActEnvironment);
+      } else {
+        Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+      }
+    }
   });
 
   it("explains the explicit configuration when browser authority is missing", () => {
