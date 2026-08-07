@@ -36,3 +36,5 @@ OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/os
   bun run --cwd apps/agent-run-worker test:postgres
 OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
   bun run --cwd apps/ingress test:postgres
+OSFO_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${verify_port}/osfo_lifecycle" \
+  bun run --cwd apps/web test:postgres

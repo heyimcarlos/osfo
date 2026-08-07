@@ -15,6 +15,7 @@ export interface AppProps {
 
 export function App({ chat, threadId }: AppProps) {
   const messages = useAtomValue(chat.messages);
+  const synchronization = useAtomValue(chat.synchronization);
   useAtomMount(chat.resume);
   const [submission, submit] = useAtom(chat.submit, { mode: "promiseExit" });
   const [content, setContent] = useState("");
@@ -37,7 +38,11 @@ export function App({ chat, threadId }: AppProps) {
   return (
     <main className="flex min-h-dvh items-center justify-center bg-[radial-gradient(circle_at_top,oklch(0.96_0.035_250),oklch(0.985_0.006_250)_42%,oklch(0.965_0.008_250))] sm:p-6">
       <section className="flex h-dvh w-full max-w-3xl flex-col overflow-hidden bg-card sm:h-[min(52rem,calc(100dvh-3rem))] sm:rounded-2xl sm:border sm:shadow-xl sm:shadow-slate-900/5">
-        <ThreadHeader threadId={threadId} />
+        <ThreadHeader
+          clientInstanceId={chat.clientInstanceId}
+          synchronization={synchronization}
+          threadId={threadId}
+        />
         <ThreadMessages messages={messages} submission={submission} />
         <div className="border-t bg-card/90 p-4 backdrop-blur-sm sm:px-6 sm:py-4">
           <ThreadComposer

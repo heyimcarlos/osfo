@@ -59,6 +59,7 @@ const makeTestChat = () =>
   makeThreadChat({
     authenticationToken: "reference-session",
     baseUrl: "https://osfo.test",
+    clientInstanceId: "A",
     threadId,
     submitMessage: () => Effect.succeed(receipt),
   });
@@ -73,6 +74,8 @@ describe("browser reference client", () => {
     );
 
     expect(html).toContain("Start the durable Thread");
+    expect(html).toContain("Tab A");
+    expect(html).toContain("Synchronizing");
     expect(html).toContain('data-slot="message-scroller"');
     expect(html).toContain('data-slot="message-composer"');
   });
@@ -195,6 +198,7 @@ describe("browser reference client", () => {
     const chat = makeThreadChat({
       authenticationToken: "reference-session",
       baseUrl: "https://osfo.test",
+      clientInstanceId: "A",
       threadId,
       projectionStore: makeThreadProjectionStore({ storage: new MemoryStorage(), threadId }),
       submitMessage: () => Effect.succeed(receipt),
@@ -246,6 +250,7 @@ describe("browser reference client", () => {
       expect(container.innerHTML).toContain("Echo: Hello through resume");
       expect(container.innerHTML).toContain(assistantOutputId);
       expect(container.innerHTML).toContain("Canonical at position 2");
+      expect(container.innerHTML).toContain("Reconnecting");
     } finally {
       await act(async () => root.unmount());
       globalThis.fetch = originalFetch;

@@ -6,7 +6,8 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite dev",
-    "test": "vitest run --exclude '**/.typescript/**' --exclude '**/dist/**'",
+    "test": "vitest run --exclude '**/*.postgres.test.ts' --exclude '**/.typescript/**' --exclude '**/dist/**'",
+    "test:postgres": "vitest run --no-file-parallelism test/*.postgres.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -20,7 +21,14 @@
     "react-dom": "catalog:"
   },
   "devDependencies": {
+    "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
+    "@osfo/agent-run": "workspace:*",
+    "@osfo/agent-run-worker": "workspace:*",
+    "@osfo/agent-runtime": "workspace:*",
+    "@osfo/db": "workspace:*",
+    "@osfo/ingress": "workspace:*",
+    "@osfo/outbox-relay": "workspace:*",
     "@tailwindcss/vite": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",

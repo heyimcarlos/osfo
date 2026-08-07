@@ -3,6 +3,18 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/relay.d.ts",
+      "development": "./src/relay.ts",
+      "default": "./dist/relay.js"
+    },
+    "./pubsub-publisher": {
+      "types": "./dist/pubsub-publisher.d.ts",
+      "development": "./src/pubsub-publisher.ts",
+      "default": "./dist/pubsub-publisher.js"
+    }
+  },
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "dev": "node --conditions=development --import tsx src/main.ts",

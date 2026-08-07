@@ -11,6 +11,7 @@ export interface CompiledIngressOptions {
   readonly executionProfileRef?: string;
   readonly globalNonTerminalLimit?: number;
   readonly principalNonTerminalLimit?: number;
+  readonly streamPollIntervalMs?: number;
 }
 
 export class CompiledIngressStartError extends Data.TaggedError("CompiledIngressStartError")<{
@@ -82,6 +83,7 @@ export const startCompiledIngress = (options: CompiledIngressOptions) =>
         OSFO_EXECUTION_PROFILE_REF: options.executionProfileRef ?? "oz.process-test.v1",
         OSFO_GLOBAL_NON_TERMINAL_LIMIT: String(options.globalNonTerminalLimit ?? 8),
         OSFO_PRINCIPAL_NON_TERMINAL_LIMIT: String(options.principalNonTerminalLimit ?? 4),
+        OSFO_STREAM_POLL_INTERVAL_MS: String(options.streamPollIntervalMs ?? 250),
       },
       extendEnv: true,
       stdin: "ignore",

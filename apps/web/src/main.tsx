@@ -17,6 +17,7 @@ if (!(root instanceof HTMLElement)) {
 const config = decodeReferenceClientConfig({
   authenticationToken: import.meta.env.VITE_OSFO_AUTHENTICATION_TOKEN,
   baseUrl: globalThis.location.origin,
+  clientInstanceId: new URLSearchParams(globalThis.location.search).get("device") ?? "local",
   threadId: import.meta.env.VITE_OSFO_THREAD_ID,
 });
 
@@ -26,6 +27,7 @@ const application = Exit.match(config, {
     const chat = makeThreadChat({
       authenticationToken: referenceConfig.authenticationToken,
       baseUrl: referenceConfig.baseUrl.toString(),
+      clientInstanceId: referenceConfig.clientInstanceId,
       threadId: referenceConfig.threadId,
     });
     return (

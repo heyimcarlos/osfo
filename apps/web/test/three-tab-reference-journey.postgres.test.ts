@@ -1,0 +1,392 @@
+import {
+  makeAgentRunWorkerLayer,
+  makeDeterministicModelCallExecutorLayer,
+  makeOutboxRelayLayer,
+} from "@osfo/agent-run";
+import { runStreamingPullWorker, StreamingPullSource } from "@osfo/agent-run-worker";
+import { makeDeterministicAgentRuntimeLayer } from "@osfo/agent-runtime";
+import type { AcceptanceReceipt } from "@osfo/api";
+import { getThreadSnapshot } from "@osfo/api/client";
+import { makeAgentRunRepositoryLayer } from "@osfo/db";
+import {
+  referenceClientPrincipalId,
+  seedReferenceClientAuthority,
+} from "@osfo/db/reference-client";
+import { prepareMessageAdmissionFixture, readReferenceJourneyAuthority } from "@osfo/db/testing";
+import { startCompiledIngress } from "@osfo/ingress/testing";
+import { runOutboxRelay } from "@osfo/outbox-relay";
+import { makeGooglePubSubPublisherLayer } from "@osfo/outbox-relay/pubsub-publisher";
+import type { ThreadSnapshot } from "@osfo/session";
+import { describe, expect, it } from "@effect/vitest";
+import { Data, Effect, Layer } from "effect";
+import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { startGoogleChrome, startProductionReferenceClient } from "./reference-browser.js";
+import { makeReferencePubSubBoundary } from "./reference-pubsub.js";
+
+const databaseUrl = process.env.OSFO_TEST_DATABASE_URL;
+if (databaseUrl === undefined) {
+  throw new Error("OSFO_TEST_DATABASE_URL is required for the Oz Reference Journey");
+}
+
+const authenticationToken = "oz-three-tab-reference-session";
+const contents = ["First from Oz", "Second from Oz", "Third from Oz"] as const;
+const executionProfileRef = "oz.reference-journey.v1";
+const threadId = "6ef239bd-3f04-4c77-8976-1171e75ea0ab";
+
+export class ReferenceJourneyTimeout extends Data.TaggedError("ReferenceJourneyTimeout")<{
+  readonly position: string;
+}> {}
+
+const canonicalProjection = ({ throughCursor: _throughCursor, ...projection }: ThreadSnapshot) =>
+  projection;
+
+const resumedCursor = (eventRequestUrl: string) =>
+  new URL(eventRequestUrl).searchParams.get("after");
+
+const waitForAuthorityPosition = (origin: string, position: string) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const snapshot = yield* getThreadSnapshot({
+        authenticationToken,
+        baseUrl: origin,
+        threadId,
+      });
+      if (snapshot.throughPosition === position) return snapshot;
+      yield* Effect.sleep(25);
+    }
+    return yield* new ReferenceJourneyTimeout({ position });
+  });
+
+describe("three-tab Oz Reference Journey", () => {
+  it.live(
+    "replays three independent Chrome tabs through the composed durable path",
+    () =>
+      Effect.gen(function* () {
+        yield* prepareMessageAdmissionFixture(databaseUrl, { principals: [] });
+        yield* seedReferenceClientAuthority({ authenticationToken, databaseUrl, threadId });
+
+        const ingress = yield* startCompiledIngress({
+          databaseUrl,
+          executionProfileRef,
+          streamPollIntervalMs: 10,
+        });
+        const client = yield* startProductionReferenceClient({
+          authenticationToken,
+          ingressOrigin: ingress.origin,
+          threadId,
+        });
+        const chrome = yield* startGoogleChrome();
+        const tabA = yield* chrome.openTab(client.origin, "A");
+        const tabB = yield* chrome.openTab(client.origin, "B");
+        const tabC = yield* chrome.openTab(client.origin, "C");
+
+        for (const [tab, label] of [
+          [tabA, "A"],
+          [tabB, "B"],
+          [tabC, "C"],
+        ] as const) {
+          yield* tab.waitForText(`Tab ${label}`);
+          yield* tab.waitForText("Synchronized through 0");
+        }
+        yield* tabA.waitForProjection(threadId, "0");
+        const initialB = yield* tabB.waitForProjection(threadId, "0");
+        yield* tabC.waitForProjection(threadId, "0");
+
+        const pubsub = yield* makeReferencePubSubBoundary;
+        const repositoryLayer = makeAgentRunRepositoryLayer({ databaseUrl });
+        const workerLayer = makeAgentRunWorkerLayer({
+          executionProfileRef,
+          workerId: "reference-worker",
+          leaseDurationMs: 30_000,
+        }).pipe(
+          Layer.provide(repositoryLayer),
+          Layer.provide(
+            makeDeterministicAgentRuntimeLayer({
+              executionProfileRef,
+              modelBinding: "oz.deterministic.echo.v1",
+            }),
+          ),
+          Layer.provide(makeDeterministicModelCallExecutorLayer()),
+        );
+        yield* Effect.forkScoped(
+          runStreamingPullWorker({ executionSlots: 1 }).pipe(
+            Effect.provide(workerLayer),
+            Effect.provide(Layer.succeed(StreamingPullSource, pubsub.source)),
+          ),
+        );
+        yield* pubsub.sourceStarted;
+
+        const publisherLayer = makeGooglePubSubPublisherLayer({
+          projectId: "osfo-reference",
+          requestTimeoutMs: 5_000,
+          topicId: "agent-runs",
+        }).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, pubsub.httpClient)));
+        const relayLayer = makeOutboxRelayLayer({
+          relayId: "reference-relay",
+          leaseDurationMs: 30_000,
+          publicationWindowSize: 32,
+        }).pipe(Layer.provide(repositoryLayer), Layer.provide(publisherLayer));
+        yield* Effect.forkScoped(
+          runOutboxRelay({ idlePollIntervalMs: 10, publisherConcurrency: 1 }).pipe(
+            Effect.provide(relayLayer),
+          ),
+        );
+
+        const receipts: Array<AcceptanceReceipt> = [];
+
+        const tabBRequestCount = yield* tabB.eventRequestCount();
+        yield* tabB.disconnect();
+        const firstReceipt = yield* tabA.submitMessage(contents[0]);
+        receipts.push(firstReceipt);
+        expect(firstReceipt.threadPosition).toBe("1");
+        expect(yield* pubsub.waitForSettlement(0)).toBe("acknowledged");
+        const throughFive = yield* waitForAuthorityPosition(ingress.origin, "5");
+        yield* tabB.resume();
+        const tabBResponse = yield* tabB.waitForEventResponseAfter(tabBRequestCount);
+        expect(tabBResponse.status).toBe(200);
+        expect(resumedCursor(tabBResponse.url)).toBe(initialB.throughCursor);
+        const replayedB = yield* tabB.waitForProjection(threadId, "5");
+        expect(replayedB.throughPosition).not.toBe(initialB.throughPosition);
+        yield* tabB.waitForText("Echo: First from Oz");
+        yield* tabB.waitForText("Synchronized through 5");
+
+        const beforeC = yield* tabC.waitForProjection(threadId, "5");
+        const tabCRequestCount = yield* tabC.eventRequestCount();
+        yield* tabC.disconnect();
+        const secondReceipt = yield* tabB.submitMessage(contents[1]);
+        receipts.push(secondReceipt);
+        expect(secondReceipt.threadPosition).toBe("6");
+        expect(yield* pubsub.waitForSettlement(1)).toBe("acknowledged");
+        const throughTen = yield* waitForAuthorityPosition(ingress.origin, "10");
+        yield* tabC.resume();
+        const tabCResponse = yield* tabC.waitForEventResponseAfter(tabCRequestCount);
+        expect(tabCResponse.status).toBe(200);
+        expect(resumedCursor(tabCResponse.url)).toBe(beforeC.throughCursor);
+        const replayedC = yield* tabC.waitForProjection(threadId, "10");
+        expect(replayedC.throughPosition).not.toBe(beforeC.throughPosition);
+        yield* tabC.waitForText("Echo: Second from Oz");
+        yield* tabC.waitForText("Synchronized through 10");
+
+        const beforeA = yield* tabA.waitForProjection(threadId, "10");
+        const tabARequestCount = yield* tabA.eventRequestCount();
+        yield* tabA.disconnect();
+        const thirdReceipt = yield* tabC.submitMessage(contents[2]);
+        receipts.push(thirdReceipt);
+        expect(thirdReceipt.threadPosition).toBe("11");
+        expect(yield* pubsub.waitForSettlement(2)).toBe("acknowledged");
+        const throughFifteen = yield* waitForAuthorityPosition(ingress.origin, "15");
+        yield* tabA.resume();
+        const tabAResponse = yield* tabA.waitForEventResponseAfter(tabARequestCount);
+        expect(tabAResponse.status).toBe(200);
+        expect(resumedCursor(tabAResponse.url)).toBe(beforeA.throughCursor);
+        const replayedA = yield* tabA.waitForProjection(threadId, "15");
+        expect(replayedA.throughPosition).not.toBe(beforeA.throughPosition);
+        yield* tabA.waitForText("Echo: Third from Oz");
+        yield* tabA.waitForText("Synchronized through 15");
+
+        const finalProjections = yield* Effect.all([
+          Effect.succeed(replayedA),
+          tabB.waitForProjection(threadId, "15"),
+          tabC.waitForProjection(threadId, "15"),
+        ]);
+        const authoritativeProjection = canonicalProjection(throughFifteen);
+        expect(finalProjections.map(canonicalProjection)).toEqual([
+          authoritativeProjection,
+          authoritativeProjection,
+          authoritativeProjection,
+        ]);
+        for (const tab of [tabA, tabB, tabC]) {
+          for (const content of contents) {
+            yield* tab.waitForText(content);
+            yield* tab.waitForText(`Echo: ${content}`);
+          }
+          yield* tab.waitForText("Synchronized through 15");
+        }
+
+        expect(pubsub.publications).toHaveLength(3);
+        expect(pubsub.publications.map((publication) => publication.orderingKey)).toEqual([
+          threadId,
+          threadId,
+          threadId,
+        ]);
+
+        const authority = yield* readReferenceJourneyAuthority(databaseUrl);
+        expect(authority.principals).toEqual([{ principalId: referenceClientPrincipalId }]);
+        expect(authority.authenticationSessions).toEqual([
+          { principalId: referenceClientPrincipalId },
+        ]);
+        expect(authority.threads).toEqual([{ principalId: referenceClientPrincipalId, threadId }]);
+        expect(authority.receipts).toEqual(
+          receipts.map((receipt) => ({
+            agentRunId: receipt.agentRunId,
+            idempotencyKey: receipt.idempotencyKey,
+            principalId: referenceClientPrincipalId,
+            protocolVersion: 1,
+            receiptId: receipt.receiptId,
+            threadId,
+            threadPosition: receipt.threadPosition,
+            userMessageId: receipt.userMessageId,
+          })),
+        );
+        expect(authority.userMessages).toHaveLength(3);
+        expect(authority.userMessages).toEqual(
+          expect.arrayContaining(
+            receipts.map((receipt, index) => ({
+              content: contents[index],
+              principalId: referenceClientPrincipalId,
+              threadId,
+              userMessageId: receipt.userMessageId,
+            })),
+          ),
+        );
+        expect(authority.agentRuns).toHaveLength(3);
+        expect(authority.agentRuns).toEqual(
+          expect.arrayContaining(
+            receipts.map((receipt) => ({
+              agentRunId: receipt.agentRunId,
+              executionProfileRef,
+              principalId: referenceClientPrincipalId,
+              state: "succeeded",
+              threadId,
+              userMessageId: receipt.userMessageId,
+            })),
+          ),
+        );
+        expect(authority.reservations).toHaveLength(3);
+        expect(authority.reservations).toEqual(
+          expect.arrayContaining(
+            receipts.map((receipt) => ({
+              agentRunId: receipt.agentRunId,
+              principalId: referenceClientPrincipalId,
+              state: "released",
+            })),
+          ),
+        );
+        expect(authority.assistantOutputs).toHaveLength(3);
+        expect(
+          authority.assistantOutputs.map(({ agentRunId, state }) => ({ agentRunId, state })),
+        ).toEqual(
+          expect.arrayContaining(
+            receipts.map((receipt) => ({ agentRunId: receipt.agentRunId, state: "completed" })),
+          ),
+        );
+        expect(authority.modelCalls).toHaveLength(3);
+        expect(
+          authority.modelCalls.map(({ agentRunId, state }) => ({ agentRunId, state })),
+        ).toEqual(
+          expect.arrayContaining(
+            receipts.map((receipt) => ({ agentRunId: receipt.agentRunId, state: "succeeded" })),
+          ),
+        );
+        expect(authority.modelCallAttempts).toHaveLength(3);
+        expect(
+          authority.modelCallAttempts.map(({ agentRunId, attemptNumber, claimEpoch, state }) => ({
+            agentRunId,
+            attemptNumber,
+            claimEpoch,
+            state,
+          })),
+        ).toEqual(
+          expect.arrayContaining(
+            receipts.map((receipt) => ({
+              agentRunId: receipt.agentRunId,
+              attemptNumber: 1,
+              claimEpoch: "1",
+              state: "succeeded",
+            })),
+          ),
+        );
+        expect(authority.modelCallFragments).toHaveLength(6);
+        expect(
+          authority.modelCallFragments.map(({ agentRunId, fragmentIndex, text }) => ({
+            agentRunId,
+            fragmentIndex,
+            text,
+          })),
+        ).toEqual(
+          expect.arrayContaining(
+            receipts.flatMap((receipt, index) => [
+              { agentRunId: receipt.agentRunId, fragmentIndex: 0, text: "Echo: " },
+              { agentRunId: receipt.agentRunId, fragmentIndex: 1, text: contents[index] },
+            ]),
+          ),
+        );
+        expect(authority.globalCapacities).toEqual([{ reservedCount: 0 }]);
+        expect(authority.principalCapacities).toEqual([
+          { principalId: referenceClientPrincipalId, reservedCount: 0 },
+        ]);
+        expect(authority.relayPrincipals).toEqual([{ principalId: referenceClientPrincipalId }]);
+        expect(authority.relayThreads).toEqual([
+          { principalId: referenceClientPrincipalId, threadId },
+        ]);
+        expect(authority.relayDispatchCapacities).toEqual([{ activeCount: 0 }]);
+        expect(authority.relayPublicationTasks).toEqual([]);
+
+        const expectedEvents = receipts.flatMap((receipt, runIndex) =>
+          [
+            "UserMessageAppended",
+            "AssistantOutputAppended",
+            "AssistantOutputAppended",
+            "AssistantOutputCompleted",
+            "AgentRunSucceeded",
+          ].map((eventType, eventIndex) => ({
+            agentRunId: receipt.agentRunId,
+            eventType,
+            position: String(runIndex * 5 + eventIndex + 1),
+            principalId: referenceClientPrincipalId,
+            threadId,
+            userMessageId: receipt.userMessageId,
+          })),
+        );
+        expect(authority.events.map(({ eventId: _eventId, ...event }) => event)).toEqual(
+          expectedEvents,
+        );
+        expect(new Set(authority.events.map((event) => event.eventId)).size).toBe(15);
+        expect(authority.outbox).toHaveLength(3);
+        expect(
+          authority.outbox.map(({ outboxId: _outboxId, ...obligation }) => obligation),
+        ).toEqual(
+          expect.arrayContaining(
+            receipts.map((receipt, index) => ({
+              agentRunId: receipt.agentRunId,
+              principalId: referenceClientPrincipalId,
+              publicationEvidence: {
+                providerMessageId: `reference-pubsub-${index + 1}`,
+                type: "pubsub",
+              },
+              published: true,
+              threadId,
+            })),
+          ),
+        );
+        expect(new Set(authority.outbox.map((obligation) => obligation.outboxId)).size).toBe(3);
+        expect(authority.relayPublicationAttempts).toHaveLength(3);
+        expect(
+          authority.relayPublicationAttempts.map(
+            ({ providerMessageId, publicationEpoch, publicationOwner, state }) => ({
+              providerMessageId,
+              publicationEpoch,
+              publicationOwner,
+              state,
+            }),
+          ),
+        ).toEqual(
+          expect.arrayContaining(
+            receipts.map((_receipt, index) => ({
+              providerMessageId: `reference-pubsub-${index + 1}`,
+              publicationEpoch: "1",
+              publicationOwner: "reference-relay",
+              state: "confirmed",
+            })),
+          ),
+        );
+        expect(
+          new Set(authority.relayPublicationAttempts.map((attempt) => attempt.outboxId)),
+        ).toEqual(new Set(authority.outbox.map((obligation) => obligation.outboxId)));
+        expect(throughFive.throughPosition).toBe("5");
+        expect(throughTen.throughPosition).toBe("10");
+        expect(throughFifteen.activeState).toEqual([]);
+      }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer)),
+    90_000,
+  );
+});

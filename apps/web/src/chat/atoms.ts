@@ -18,11 +18,20 @@ import { synchronizeThreadOnce, type ThreadResumeTransport } from "./resume-thre
 export interface ThreadChatOptions {
   readonly authenticationToken: string;
   readonly baseUrl: string;
+  readonly clientInstanceId: string;
   readonly projectionStore?: ThreadProjectionStore;
   readonly resumeTransport?: ThreadResumeTransport;
   readonly threadId: string;
   readonly submitMessage?: typeof submitThreadMessage;
 }
+
+export type ThreadSynchronization =
+  | { readonly type: "synchronizing" }
+  | { readonly type: "reconnecting" }
+  | {
+      readonly type: "synchronized";
+      readonly throughPosition: string;
+    };
 
 export interface SubmitThreadChatMessage {
   readonly content: string;
@@ -117,6 +126,7 @@ const browserProjectionStore = (threadId: string) =>
 
 export const makeThreadChat = (options: ThreadChatOptions) => {
   const messages = Atom.make<ReadonlyArray<CanonicalThreadMessage>>([]);
+  const synchronization = Atom.make<ThreadSynchronization>({ type: "synchronizing" });
   const submitMessage = options.submitMessage ?? submitThreadMessage;
 
   const submit = Atom.fn<SubmitThreadChatMessage>()(
@@ -134,26 +144,53 @@ export const makeThreadChat = (options: ThreadChatOptions) => {
   const resumeThread = Effect.fn("ThreadChat.resume")(function* (context: Atom.AtomContext) {
     const store = options.projectionStore ?? (yield* browserProjectionStore(options.threadId));
     const transport = options.resumeTransport ?? makeApiResumeTransport(options);
-    const synchronize = synchronizeThreadOnce({
-      store,
-      transport,
-      onProjection: (snapshot) => context.set(messages, messagesFromSnapshot(snapshot)),
-    }).pipe(
-      Effect.andThen(Effect.sleep(250)),
-      Effect.catchIf(
-        () => true,
-        (error) =>
-          error instanceof InvalidThreadProjection && error.reason === "authorityConflict"
-            ? Effect.fail(error)
-            : Effect.sleep(250),
-      ),
-    );
+    const synchronize = Effect.suspend(() => {
+      let caughtUp = false;
+      return synchronizeThreadOnce({
+        store,
+        transport,
+        onProjection: (snapshot) => {
+          context.set(messages, messagesFromSnapshot(snapshot));
+          if (caughtUp) {
+            context.set(synchronization, {
+              type: "synchronized",
+              throughPosition: snapshot.throughPosition,
+            });
+          }
+        },
+        onCaughtUp: (checkpoint) => {
+          caughtUp = true;
+          context.set(synchronization, {
+            type: "synchronized",
+            throughPosition: checkpoint.throughPosition,
+          });
+        },
+      }).pipe(
+        Effect.andThen(Effect.sync(() => context.set(synchronization, { type: "reconnecting" }))),
+        Effect.andThen(Effect.sleep(250)),
+        Effect.catchIf(
+          () => true,
+          (error) =>
+            error instanceof InvalidThreadProjection && error.reason === "authorityConflict"
+              ? Effect.fail(error)
+              : Effect.sync(() => context.set(synchronization, { type: "reconnecting" })).pipe(
+                  Effect.andThen(Effect.sleep(250)),
+                ),
+        ),
+      );
+    });
     yield* Effect.forever(synchronize);
   });
 
   const resume = Atom.make(resumeThread);
 
-  return { messages, resume, submit };
+  return {
+    clientInstanceId: options.clientInstanceId,
+    messages,
+    resume,
+    submit,
+    synchronization,
+  };
 };
 
 export type ThreadChat = ReturnType<typeof makeThreadChat>;
