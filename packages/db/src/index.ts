@@ -39,3 +39,4 @@ export {
   ThreadResumeDatabaseConfigSchema,
   type ThreadResumeDatabaseConfig,
 } from "./thread-resume.js";
+export { makeToolCallRepositoryLayer } from "./tool-call-repository.js";

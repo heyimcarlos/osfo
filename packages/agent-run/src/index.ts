@@ -18,6 +18,8 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+export * from "./tool-call.js";
+
 const Identity = Schema.String.check(Schema.isUUID());
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const PositiveEpoch = Schema.String.check(Schema.isPattern(/^[1-9]\d*$/u));

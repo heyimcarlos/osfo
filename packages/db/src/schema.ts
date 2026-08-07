@@ -1,4 +1,11 @@
-import { modelCallObservationTextMaxLength } from "@osfo/agent-run";
+import {
+  modelCallObservationTextMaxLength,
+  toolCallBatchSizeMax,
+  toolCallProgressTextMaxLength,
+  toolCallResultTextMaxLength,
+  type ToolCallOutcome,
+  type ToolCallRequest,
+} from "@osfo/agent-run";
 import { sql } from "drizzle-orm";
 import type { ThreadEvent } from "@osfo/session";
 import {
@@ -20,6 +27,9 @@ import {
 
 const transactionTimestamp = sql`transaction_timestamp()`;
 const modelCallObservationTextMaxLengthSql = sql.raw(String(modelCallObservationTextMaxLength));
+const toolCallBatchSizeMaxSql = sql.raw(String(toolCallBatchSizeMax));
+const toolCallProgressTextMaxLengthSql = sql.raw(String(toolCallProgressTextMaxLength));
+const toolCallResultTextMaxLengthSql = sql.raw(String(toolCallResultTextMaxLength));
 
 type PublicationEvidence =
   | { readonly type: "pubsub"; readonly providerMessageId: string }
@@ -783,6 +793,210 @@ export const modelCallFragments = pgTable(
     check(
       "model_call_fragments_text_check",
       sql`text_utf16_code_units(${table.text}) BETWEEN 1 AND ${modelCallObservationTextMaxLengthSql}`,
+    ),
+  ],
+);
+
+export const toolCallBatches = pgTable(
+  "tool_call_batches",
+  {
+    toolCallBatchId: uuid("tool_call_batch_id").primaryKey(),
+    agentRunId: uuid("agent_run_id")
+      .notNull()
+      .references(() => agentRuns.agentRunId),
+    batchKey: text("batch_key").notNull(),
+    memberCount: integer("member_count").notNull(),
+    completedCount: integer("completed_count").notNull().default(0),
+    state: text("state").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true, mode: "string" }),
+  },
+  (table) => [
+    unique("tool_call_batches_batch_run_unique").on(table.toolCallBatchId, table.agentRunId),
+    unique("tool_call_batches_run_key_unique").on(table.agentRunId, table.batchKey),
+    check("tool_call_batches_key_check", sql`length(${table.batchKey}) BETWEEN 1 AND 128`),
+    check(
+      "tool_call_batches_members_check",
+      sql`${table.memberCount} BETWEEN 1 AND ${toolCallBatchSizeMaxSql}`,
+    ),
+    check(
+      "tool_call_batches_completed_count_check",
+      sql`${table.completedCount} BETWEEN 0 AND ${table.memberCount}`,
+    ),
+    check(
+      "tool_call_batches_state_check",
+      sql`${table.state} IN ('pending', 'succeeded', 'failed', 'canceled')`,
+    ),
+    check(
+      "tool_call_batches_terminal_check",
+      sql`((${table.state} = 'pending' AND ${table.completedAt} IS NULL)
+        OR (${table.state} <> 'pending' AND ${table.completedAt} IS NOT NULL))`,
+    ),
+  ],
+);
+
+export const toolCalls = pgTable(
+  "tool_calls",
+  {
+    toolCallId: text("tool_call_id").primaryKey(),
+    toolCallBatchId: uuid("tool_call_batch_id").notNull(),
+    agentRunId: uuid("agent_run_id").notNull(),
+    memberIndex: integer("member_index").notNull(),
+    executionMode: text("execution_mode").notNull(),
+    toolName: text("tool_name").notNull(),
+    attemptLimit: integer("attempt_limit").notNull(),
+    input: jsonb("input").$type<ToolCallRequest["input"]>().notNull(),
+    state: text("state").notNull().default("pending"),
+    currentProgress: jsonb("current_progress").$type<{
+      readonly observationIndex: number;
+      readonly message: string;
+    }>(),
+    outcome: jsonb("outcome").$type<ToolCallOutcome>(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true, mode: "string" }),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.toolCallBatchId, table.agentRunId],
+      foreignColumns: [toolCallBatches.toolCallBatchId, toolCallBatches.agentRunId],
+    }),
+    unique("tool_calls_batch_member_unique").on(table.toolCallBatchId, table.memberIndex),
+    unique("tool_calls_call_run_unique").on(table.toolCallId, table.agentRunId),
+    check(
+      "tool_calls_id_check",
+      sql`${table.toolCallId} ~ '^tool_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`,
+    ),
+    check("tool_calls_member_index_check", sql`${table.memberIndex} >= 0`),
+    check("tool_calls_execution_mode_check", sql`${table.executionMode} = 'nonAction'`),
+    check("tool_calls_name_check", sql`length(${table.toolName}) BETWEEN 1 AND 128`),
+    check("tool_calls_attempt_limit_check", sql`${table.attemptLimit} BETWEEN 1 AND 5`),
+    check(
+      "tool_calls_input_check",
+      sql`${table.input} = jsonb_build_object(
+          'type', 'text',
+          'text', ${table.input} ->> 'text'
+        )
+        AND length(${table.input} ->> 'text') BETWEEN 1 AND ${toolCallResultTextMaxLengthSql}`,
+    ),
+    check(
+      "tool_calls_state_check",
+      sql`${table.state} IN ('pending', 'running', 'succeeded', 'failed', 'canceled')`,
+    ),
+    check(
+      "tool_calls_progress_check",
+      sql`${table.currentProgress} IS NULL OR (
+        ${table.state} = 'running'
+        AND ${table.currentProgress} = jsonb_build_object(
+          'observationIndex', (${table.currentProgress} ->> 'observationIndex')::integer,
+          'message', ${table.currentProgress} ->> 'message'
+        )
+        AND (${table.currentProgress} ->> 'observationIndex')::integer >= 0
+        AND length(${table.currentProgress} ->> 'message') BETWEEN 1 AND ${toolCallProgressTextMaxLengthSql}
+      )`,
+    ),
+    check(
+      "tool_calls_terminal_check",
+      sql`((${table.state} IN ('pending', 'running')
+          AND ${table.outcome} IS NULL
+          AND ${table.completedAt} IS NULL)
+        OR (${table.state} IN ('succeeded', 'failed', 'canceled')
+          AND ${table.outcome} IS NOT NULL
+          AND ${table.completedAt} IS NOT NULL))`,
+    ),
+    check(
+      "tool_calls_outcome_check",
+      sql`${table.outcome} IS NULL OR (
+        ${table.outcome} = CASE ${table.outcome} ->> 'type'
+          WHEN 'succeeded' THEN jsonb_build_object(
+            'type', 'succeeded',
+            'result', jsonb_build_object(
+              'type', 'text',
+              'text', ${table.outcome} -> 'result' ->> 'text'
+            )
+          )
+          WHEN 'failed' THEN jsonb_build_object(
+            'type', 'failed',
+            'cause', ${table.outcome} ->> 'cause'
+          )
+          WHEN 'canceled' THEN jsonb_build_object('type', 'canceled')
+          ELSE NULL
+        END
+        AND CASE ${table.outcome} ->> 'type'
+          WHEN 'succeeded' THEN
+            length(${table.outcome} -> 'result' ->> 'text')
+              BETWEEN 1 AND ${toolCallResultTextMaxLengthSql}
+          WHEN 'failed' THEN ${table.outcome} ->> 'cause' IN (
+            'invalidInput', 'executionFailed', 'dependencyUnavailable'
+          )
+          WHEN 'canceled' THEN true
+          ELSE false
+        END
+      )`,
+    ),
+  ],
+);
+
+export const toolCallAttempts = pgTable(
+  "tool_call_attempts",
+  {
+    toolCallAttemptId: uuid("tool_call_attempt_id").primaryKey(),
+    toolCallId: text("tool_call_id").notNull(),
+    agentRunId: uuid("agent_run_id").notNull(),
+    attemptNumber: integer("attempt_number").notNull(),
+    claimEpoch: bigint("claim_epoch", { mode: "bigint" }).notNull(),
+    state: text("state").notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true, mode: "string" }).notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true, mode: "string" }),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.toolCallId, table.agentRunId],
+      foreignColumns: [toolCalls.toolCallId, toolCalls.agentRunId],
+    }),
+    unique("tool_call_attempts_call_number_unique").on(table.toolCallId, table.attemptNumber),
+    unique("tool_call_attempts_attempt_authority_unique").on(
+      table.toolCallAttemptId,
+      table.toolCallId,
+      table.agentRunId,
+    ),
+    check("tool_call_attempts_number_check", sql`${table.attemptNumber} > 0`),
+    check("tool_call_attempts_epoch_check", sql`${table.claimEpoch} > 0`),
+    check(
+      "tool_call_attempts_state_check",
+      sql`${table.state} IN ('started', 'succeeded', 'retryable', 'failed', 'canceled', 'stale')`,
+    ),
+    check(
+      "tool_call_attempts_finished_check",
+      sql`((${table.state} = 'started' AND ${table.finishedAt} IS NULL)
+        OR (${table.state} <> 'started' AND ${table.finishedAt} IS NOT NULL))`,
+    ),
+  ],
+);
+
+export const toolCallProgressEvents = pgTable(
+  "tool_call_progress_events",
+  {
+    toolCallId: text("tool_call_id").notNull(),
+    observationIndex: integer("observation_index").notNull(),
+    toolCallAttemptId: uuid("tool_call_attempt_id").notNull(),
+    agentRunId: uuid("agent_run_id").notNull(),
+    message: text("message").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.toolCallAttemptId, table.observationIndex] }),
+    foreignKey({
+      columns: [table.toolCallAttemptId, table.toolCallId, table.agentRunId],
+      foreignColumns: [
+        toolCallAttempts.toolCallAttemptId,
+        toolCallAttempts.toolCallId,
+        toolCallAttempts.agentRunId,
+      ],
+    }),
+    check("tool_call_progress_events_index_check", sql`${table.observationIndex} >= 0`),
+    check(
+      "tool_call_progress_events_message_check",
+      sql`length(${table.message}) BETWEEN 1 AND ${toolCallProgressTextMaxLengthSql}`,
     ),
   ],
 );
