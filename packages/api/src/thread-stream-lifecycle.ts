@@ -39,6 +39,7 @@ export interface ThreadStreamLifecycleStatus {
 }
 
 export interface ThreadStreamLifecycleTestHooks {
+  readonly afterProducerFork?: Effect.Effect<void>;
   readonly beforeProtect: Effect.Effect<void, ThreadResumeUnavailable>;
 }
 
@@ -62,6 +63,12 @@ type CloseReason =
   | "maximum_lifetime"
   | "slow_consumer"
   | "source_unavailable";
+
+type ConsumerState = "aborted" | "finished" | "handoff" | "running";
+
+interface ActiveConnection {
+  readonly shutdown: (reason: CloseReason) => Effect.Effect<void>;
+}
 
 export const threadStreamConnectionRetryAfterSeconds = 5;
 
@@ -91,27 +98,29 @@ const makeLifecycle = (
   hooks: ThreadStreamLifecycleTestHooks,
 ) =>
   Effect.gen(function* () {
-    const scope = yield* Scope.Scope;
+    const lifecycleScope = yield* Scope.Scope;
+    const supervisorScope = yield* Scope.fork(lifecycleScope, "parallel");
     const state = yield* Ref.make<LifecycleState>({
       accepting: true,
       activeConnections: 0,
       slowConsumerCloses: 0,
     });
-    const draining = yield* Deferred.make<void>();
     const fullyDrained = yield* Deferred.make<void>();
+    const connections = yield* Ref.make<ReadonlyMap<number, ActiveConnection>>(new Map());
+    const nextConnectionId = yield* Ref.make(0);
 
-    const drain = Ref.modify(state, (current) => [
-      current.activeConnections === 0,
-      { ...current, accepting: false },
-    ]).pipe(
-      Effect.flatMap((alreadyDrained) =>
-        Deferred.succeed(draining, undefined).pipe(
-          Effect.andThen(alreadyDrained ? Deferred.succeed(fullyDrained, undefined) : Effect.void),
-          Effect.andThen(Deferred.await(fullyDrained)),
-        ),
-      ),
-      Effect.asVoid,
-    );
+    const drain = Effect.gen(function* () {
+      const alreadyDrained = yield* Ref.modify(state, (current) => [
+        current.activeConnections === 0,
+        { ...current, accepting: false },
+      ]);
+      if (alreadyDrained) yield* Deferred.succeed(fullyDrained, undefined);
+      const active = yield* Ref.get(connections);
+      yield* Effect.forEach(active.values(), (connection) => connection.shutdown("drain"), {
+        concurrency: "unbounded",
+      });
+      yield* Deferred.await(fullyDrained);
+    });
 
     const releaseConnection = (slowConsumer: boolean) =>
       Ref.modify(state, (current) => {
@@ -133,33 +142,48 @@ const makeLifecycle = (
     const protect = (
       source: Stream.Stream<ThreadStreamEvent, ThreadResumeUnavailable>,
       releaseConnectionOnce: (slowConsumer: boolean) => Effect.Effect<void>,
-    ): Effect.Effect<Stream.Stream<ThreadStreamEvent, ThreadResumeUnavailable>> =>
+    ): Effect.Effect<{
+      readonly shutdown: (reason: CloseReason) => Effect.Effect<void>;
+      readonly stream: Stream.Stream<ThreadStreamEvent, ThreadResumeUnavailable>;
+    }> =>
       Effect.gen(function* () {
+        const connectionId = yield* Ref.getAndUpdate(nextConnectionId, (current) => current + 1);
+        const connectionScope = yield* Scope.make("sequential");
         const queue = yield* Queue.dropping<BufferedEvent, Cause.Done | ThreadResumeUnavailable>(
           config.maxBufferedEvents,
         );
         const buffer = yield* Ref.make<BufferState>({ bytes: 0, events: [] });
         const ageWatcherStarted = yield* Ref.make(false);
         const close = yield* Deferred.make<CloseReason>();
+        const consumerDone = yield* Deferred.make<void>();
+        const consumerState = yield* Ref.make<ConsumerState>("handoff");
+        const released = yield* Deferred.make<void>();
         let nextId = 0;
 
         const closeOnce = (reason: CloseReason) =>
-          Deferred.succeed(close, reason).pipe(
-            Effect.flatMap((closed) =>
-              closed ? releaseConnectionOnce(reason === "slow_consumer") : Effect.void,
-            ),
-            Effect.uninterruptible,
-          );
+          Deferred.succeed(close, reason).pipe(Effect.asVoid, Effect.uninterruptible);
 
-        yield* Deferred.await(draining).pipe(
-          Effect.andThen(closeOnce("drain")),
-          Effect.raceFirst(Deferred.await(close)),
-          Effect.forkIn(scope),
+        yield* Scope.addFinalizer(
+          connectionScope,
+          Deferred.await(close).pipe(
+            Effect.flatMap((reason) => releaseConnectionOnce(reason === "slow_consumer")),
+            Effect.andThen(
+              Ref.update(connections, (current) => {
+                const updated = new Map(current);
+                updated.delete(connectionId);
+                return updated;
+              }),
+            ),
+            Effect.andThen(Deferred.succeed(released, undefined)),
+            Effect.asVoid,
+          ),
         );
+        yield* Scope.addFinalizer(connectionScope, Queue.shutdown(queue));
+
         yield* Effect.sleep(config.maxConnectionLifetimeMs).pipe(
           Effect.andThen(closeOnce("maximum_lifetime")),
           Effect.raceFirst(Deferred.await(close)),
-          Effect.forkIn(scope),
+          Effect.forkIn(connectionScope),
         );
         const watchBufferAge = Effect.gen(function* () {
           while (true) {
@@ -206,7 +230,7 @@ const makeLifecycle = (
               if (!(yield* Ref.getAndSet(ageWatcherStarted, true))) {
                 yield* watchBufferAge.pipe(
                   Effect.raceFirst(Deferred.await(close)),
-                  Effect.forkIn(scope),
+                  Effect.forkIn(connectionScope),
                 );
               }
               const offered = yield* Queue.offer(queue, item);
@@ -231,9 +255,45 @@ const makeLifecycle = (
             onSuccess: () => Queue.end(queue),
           }),
         );
-        yield* Effect.forkIn(producer, scope);
+        yield* Effect.forkIn(producer, connectionScope);
 
-        return Stream.fromEffectRepeat(Queue.take(queue)).pipe(
+        const abortConsumerHandoff = Ref.modify(consumerState, (current) =>
+          current === "handoff" ? [true, "aborted" as const] : ([false, current] as const),
+        ).pipe(
+          Effect.flatMap((aborted) =>
+            aborted ? Deferred.succeed(consumerDone, undefined) : Effect.void,
+          ),
+          Effect.asVoid,
+        );
+
+        const shutdown = (reason: CloseReason) =>
+          closeOnce(reason).pipe(Effect.andThen(Deferred.await(released)), Effect.uninterruptible);
+
+        yield* Ref.update(connections, (current) => {
+          const updated = new Map(current);
+          updated.set(connectionId, { shutdown });
+          return updated;
+        });
+        yield* Deferred.await(close).pipe(
+          Effect.andThen(abortConsumerHandoff),
+          Effect.andThen(Deferred.await(consumerDone)),
+          Effect.andThen(Scope.close(connectionScope, Exit.void)),
+          Effect.forkIn(supervisorScope),
+        );
+
+        const beginConsumer = Ref.modify(consumerState, (current) =>
+          current === "handoff" ? [true, "running" as const] : ([false, current] as const),
+        );
+        const finishConsumer = closeOnce("client_disconnect").pipe(
+          Effect.andThen(
+            Ref.update(consumerState, (current) => (current === "running" ? "finished" : current)),
+          ),
+          Effect.andThen(Deferred.succeed(consumerDone, undefined)),
+          Effect.asVoid,
+          Effect.uninterruptible,
+        );
+
+        const consumer = Stream.fromEffectRepeat(Queue.take(queue)).pipe(
           Stream.mapEffect((item) =>
             Ref.update(buffer, (current) => ({
               bytes: current.bytes - item.bytes,
@@ -241,10 +301,12 @@ const makeLifecycle = (
             })).pipe(Effect.as(item.value)),
           ),
           Stream.interruptWhen(Deferred.await(close)),
-          Stream.ensuring(
-            closeOnce("client_disconnect").pipe(Effect.andThen(Queue.shutdown(queue))),
-          ),
         );
+        const stream = Stream.fromEffect(beginConsumer).pipe(
+          Stream.flatMap((started) => (started ? consumer : Stream.empty)),
+          Stream.ensuring(finishConsumer),
+        );
+        return { shutdown, stream };
       });
 
     const open = Effect.fn("ThreadStreamLifecycle.open")(function* (
@@ -276,9 +338,20 @@ const makeLifecycle = (
                 alreadyReleased ? Effect.void : releaseConnection(slowConsumer),
               ),
             );
-          return yield* restore(
-            hooks.beforeProtect.pipe(Effect.andThen(protect(source, releaseConnectionOnce))),
-          ).pipe(
+          return yield* Effect.gen(function* () {
+            yield* restore(hooks.beforeProtect);
+            const connection = yield* protect(source, releaseConnectionOnce);
+            yield* restore(hooks.afterProducerFork ?? Effect.void).pipe(
+              Effect.onExit((exit) =>
+                Exit.isSuccess(exit) ? Effect.void : connection.shutdown("client_disconnect"),
+              ),
+            );
+            if (!(yield* Ref.get(state)).accepting) {
+              yield* connection.shutdown("drain");
+              return yield* new ThreadResumeUnavailable();
+            }
+            return connection.stream;
+          }).pipe(
             Effect.onExit((exit) =>
               Exit.isSuccess(exit) ? Effect.void : releaseConnectionOnce(false),
             ),
