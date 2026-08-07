@@ -2,10 +2,11 @@
 
 ## Part 1: What was built and why
 
-Start with the user journey: device A sends one authenticated message, closes
-mid-response, and device B later resumes from its own last ThreadCursor. Every
-device is a view of one canonical Thread. Device identity never becomes
-conversation authority.
+Start with the user journey: every device is a view of one canonical Thread,
+and device identity never becomes conversation authority. The captured local
+journey proves that independently connected observer tabs can disconnect while
+another tab advances the Thread, then resume strictly from their own prior
+ThreadCursor. It does not exercise a sending tab closing mid-response.
 
 The protocol is ordinary authenticated HTTP for commands and cursor-based SSE
 for replay followed by live delivery. SSE fits the one-way server stream and
@@ -36,9 +37,10 @@ StreamingPull because work can outlive an HTTP request and the warm fixed fleet
 has predictable recovery capacity.
 
 The presentation packet includes the current architecture, exact 100k-DAU
-arithmetic, copied records from sealed load and failure lanes, five sealed v16
-Grafana views, and a verifier that fails closed on absent or changed artifacts.
-Every gate stays `PASS`, `FAIL`, or `MISSING` at its measured scope.
+arithmetic, copied records from sealed load and failure lanes, five sealed
+Grafana views, 13 deterministic post-run cards, a local authenticated
+three-tab recording, and a verifier that fails closed on absent or changed
+artifacts. Every gate stays `PASS`, `FAIL`, or `MISSING` at its measured scope.
 
 ## Part 2: What failed or was skipped, and how to test it
 
@@ -81,13 +83,14 @@ PostgreSQL backends and waits, table and index growth, WAL, checkpoint behavior,
 relay window use, worker streams, execution slots, and per-tier limits on one
 locked timeline.
 
-The authenticated three-tab recording is `MISSING`. Record real Chrome tabs A,
-B, and C using one Principal and Thread but separate session state, cursors, and
-local projections. Disconnect A during live output, advance B and C, reopen A,
-show replay beginning strictly after A's last applied cursor, then reconcile all
-three projections with PostgreSQL. Repeat with session expiry and authorization
-revocation. Store the recording in the indexed placeholder and update its
-checksum before changing the gate.
+The local authenticated three-tab recording is `PASS` for its exact scope.
+Real Chrome tabs A, B, and C use one Principal and Thread with independent tab
+state, cursors, and projections. Each observer tab disconnects, another tab
+advances the Thread, the observer resumes from its own cursor, and all three
+converge with PostgreSQL through position 15. The recording is not proof of a
+sending tab closing mid-response, session expiry, authorization revocation,
+target-load concurrency, or production behavior. Those stronger journeys must
+be exercised before making any stronger claim.
 
 The bounded Mailpit retry control passed, but a production external-action
 guarantee is `MISSING`. Test an exact committed Action, stable idempotency key,
@@ -95,9 +98,11 @@ attempt recorded before contact, lost acknowledgement after provider apply,
 duplicate delivery, and final ActionReceipt. Require one external effect and
 never blindly retry an unknown outcome.
 
-Dedicated screenshots or recordings for each selected load lane are also
-`MISSING`. Capture them only from the sealed run and fixed time range. A Grafana
-summary view does not substitute for the run-specific artifact.
+Thirteen run-specific cards are now present for the selected historical lanes.
+They are deterministic post-run renders from sealed records, not in-run screen
+captures. Each card exposes its run ID, timestamps, workload, exact scoped
+verdict, and original source-manifest hash. They improve reviewability without
+changing any load result or production qualification.
 
 ## Part 3: OpenPoke architecture and next improvements
 

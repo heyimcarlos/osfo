@@ -31,6 +31,7 @@ const ResponseBodySchema = Schema.Struct({
   base64Encoded: Schema.Boolean,
   body: Schema.String,
 });
+const ScreenshotSchema = Schema.Struct({ data: Schema.String });
 const CdpMessageFromJson = Schema.fromJsonString(
   Schema.Struct({
     error: Schema.optional(
@@ -67,6 +68,54 @@ const observeVisibleText = `(() => {
   const start = () => {
     record();
     new MutationObserver(record).observe(document.body, {
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start, { once: true });
+  } else {
+    start();
+  }
+})()`;
+const redactEvidenceIdentifiers = `(() => {
+  const redact = () => {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode()) !== null) {
+      const value = node.nodeValue;
+      if (value !== null) {
+        const redacted = value.replace(
+          /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/giu,
+          "redacted reference ID",
+        );
+        if (redacted !== value) node.nodeValue = redacted;
+      }
+    }
+    if (document.querySelector("[data-osfo-evidence-scope]") === null) {
+      const badge = document.createElement("div");
+      badge.dataset.osfoEvidenceScope = "true";
+      badge.textContent =
+        "Local PostgreSQL journey · stable identifiers redacted · independent resume only";
+      Object.assign(badge.style, {
+        background: "#16233a",
+        bottom: "0",
+        color: "white",
+        font: "600 11px system-ui, sans-serif",
+        left: "0",
+        padding: "6px 10px",
+        position: "fixed",
+        right: "0",
+        textAlign: "center",
+        zIndex: "2147483647",
+      });
+      document.body.append(badge);
+    }
+  };
+  const start = () => {
+    redact();
+    new MutationObserver(redact).observe(document.body, {
       characterData: true,
       childList: true,
       subtree: true,
@@ -488,6 +537,34 @@ class ChromeTab {
       : this.navigate(this.#resumeLocation);
 
   location = () => this.evaluate("globalThis.location.href", Schema.String);
+
+  configureEvidenceViewport = (width: number, height: number) =>
+    Effect.gen({ self: this }, function* () {
+      yield* this.connection.command(
+        "Page.addScriptToEvaluateOnNewDocument",
+        { source: redactEvidenceIdentifiers },
+        EmptyObject,
+      );
+      yield* this.connection.command(
+        "Runtime.evaluate",
+        { expression: redactEvidenceIdentifiers },
+        RuntimeEvaluationSchema,
+      );
+      yield* this.connection.command(
+        "Emulation.setDeviceMetricsOverride",
+        { deviceScaleFactor: 1, height, mobile: false, width },
+        EmptyObject,
+      );
+    });
+
+  captureEvidenceFrame = () =>
+    this.connection
+      .command(
+        "Page.captureScreenshot",
+        { captureBeyondViewport: false, format: "png", fromSurface: true },
+        ScreenshotSchema,
+      )
+      .pipe(Effect.map(({ data }) => Buffer.from(data, "base64")));
 
   submitMessage = (content: string) => {
     return Effect.gen({ self: this }, function* () {

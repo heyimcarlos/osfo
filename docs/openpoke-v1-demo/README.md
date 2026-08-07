@@ -25,13 +25,39 @@ authoritative final matrix summary. That summary is copied from its verified
 stable bundle. Its two provider roots passed their complete seals and recorded
 zero manifest-owned cloud residue after teardown.
 
+Thirteen deterministic PNG cards provide run-specific visual summaries. Every
+card says `post-run render from sealed records, not an in-run screen capture`
+and derives its run ID, timestamps, workload, verdict, and source-manifest hash
+from packet-owned verified records. The authenticated three-tab MP4 is a local
+PostgreSQL Chrome journey at 4 frames per second. It proves independent
+observer-tab disconnect and cursor resume, not sender closure mid-response,
+session expiry, production load, or production qualification.
+
 Run the packet verifier from the repository root:
 
 ```bash
 bun run demo:evidence:verify
 ```
 
-The required authenticated three-tab recording, per-load-run recordings, full
-`us-east4` production qualification, selected-topology saturation, full outage
-drain, and complete production cost remain `MISSING`. Their artifact-index
-placeholders are ready for later insertion without relabeling existing evidence.
+The deterministic cards can be reproduced only after that verifier passes.
+The renderer reads each sealed input through canonical, no-follow file handles,
+checks its indexed digest again, renders the complete set in temporary staging,
+and requires every PNG and the new manifest to match the indexed packet. It
+never overwrites the sealed packet:
+
+```bash
+bun run demo:evidence:cards
+```
+
+The live local journey is opt-in and writes to a new candidate directory. It
+never overwrites indexed bytes:
+
+```bash
+OSFO_THREE_TAB_OUTPUT_DIR=<new-empty-output-directory> \
+  bun run --env-file=.env demo:evidence:three-tab
+```
+
+Full `us-east4` production qualification, selected-topology saturation, full
+outage drain, production ActionReceipt proof, and complete production cost
+remain `MISSING`. The four artifact-index placeholders remain explicit and no
+local or historical evidence is promoted to those production scopes.

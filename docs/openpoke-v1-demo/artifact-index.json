@@ -8,7 +8,7 @@
       "artifactStatus": "PASS",
       "evidenceStatus": "PASS",
       "path": "README.md",
-      "sha256": "bbe2984ddd933fd83c5a64a4e362b36e9c9a24420fb09e42e09539df4b91c6f9",
+      "sha256": "7900d28160fc9aa2a35020e7b906a559630c5787341df448e5e6e75e694e5569",
       "description": "Packet entry point."
     },
     {
@@ -26,7 +26,7 @@
       "artifactStatus": "PASS",
       "evidenceStatus": "MISSING",
       "path": "evidence.md",
-      "sha256": "38a60cbe57196dbc489b9bd896cac2f0f03e7a37522d91d281cafebafdaa250f",
+      "sha256": "46d0b98ae7630adfc6ea1e27c997993bbdd3fb4769deb0454dd29ddf81700950",
       "description": "Complete matrix whose overall production gate remains MISSING."
     },
     {
@@ -35,7 +35,7 @@
       "artifactStatus": "PASS",
       "evidenceStatus": "PASS",
       "path": "walkthrough.md",
-      "sha256": "e04b066322e7308ce7d56db0d7a7638baaf58b6456d90f391bfb96f3119b4be5",
+      "sha256": "212e8d91823c20e017d3a64756f0be1d5771df64e2f273763ab7ed6143937652",
       "description": "Built, skipped or failed, and next-improvements walkthrough."
     },
     {
@@ -455,6 +455,86 @@
       "sourceManifestPath": "./audit.json"
     },
     {
+      "id": "matrix-a-source-manifest",
+      "kind": "source-manifest",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/runs/matrix-A-clean-current-wal/SOURCE-SHA256SUMS",
+      "sha256": "97cea4e7dbb5d23e7958c0562f53c18149fb7a27a3be7b679c948effcb7e30b6",
+      "description": "Original complete-bundle seal for final matrix cell A."
+    },
+    {
+      "id": "matrix-a-scenario",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/runs/matrix-A-clean-current-wal/scenario.json",
+      "sha256": "253d7403936b49c738f31a6428822474632bec83b2d8a8043fde15739d5d7d36",
+      "sourceManifestSha256": "97cea4e7dbb5d23e7958c0562f53c18149fb7a27a3be7b679c948effcb7e30b6",
+      "sourceManifestPath": "./scenario.json",
+      "description": "Timestamp-bearing final matrix cell A declaration."
+    },
+    {
+      "id": "matrix-b-source-manifest",
+      "kind": "source-manifest",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/runs/matrix-B-clean-larger-wal/SOURCE-SHA256SUMS",
+      "sha256": "89e7cf2f4aefabf8212149ada754b00d2a5f9a77a3516314bebfb2d14a244f21",
+      "description": "Original complete-bundle seal for final matrix cell B."
+    },
+    {
+      "id": "matrix-b-scenario",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/runs/matrix-B-clean-larger-wal/scenario.json",
+      "sha256": "df8f57ec70cf360a22fc04176daf7ae732a656955f5466b2f6ef20c4285ffde9",
+      "sourceManifestSha256": "89e7cf2f4aefabf8212149ada754b00d2a5f9a77a3516314bebfb2d14a244f21",
+      "sourceManifestPath": "./scenario.json",
+      "description": "Timestamp-bearing final matrix cell B declaration."
+    },
+    {
+      "id": "matrix-c-source-manifest",
+      "kind": "source-manifest",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/runs/matrix-C-preloaded-current-wal/SOURCE-SHA256SUMS",
+      "sha256": "f8c749c67688dae17fcfb5241208c14a2a7f725c387db5224b8a4682eec1d57e",
+      "description": "Original complete-bundle seal for final matrix cell C."
+    },
+    {
+      "id": "matrix-c-scenario",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/runs/matrix-C-preloaded-current-wal/scenario.json",
+      "sha256": "61509f6ace8449f965fbed87c0caefa54ef3056251e884aa6ae32325e788eee4",
+      "sourceManifestSha256": "f8c749c67688dae17fcfb5241208c14a2a7f725c387db5224b8a4682eec1d57e",
+      "sourceManifestPath": "./scenario.json",
+      "description": "Timestamp-bearing final matrix cell C declaration."
+    },
+    {
+      "id": "matrix-d-source-manifest",
+      "kind": "source-manifest",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/runs/matrix-D-preloaded-larger-wal/SOURCE-SHA256SUMS",
+      "sha256": "71c977a26a12fb02d26b7b3fb40ca8f00caae49ab4e0b35dd58618ee7bf75808",
+      "description": "Original complete-bundle seal for final matrix cell D."
+    },
+    {
+      "id": "matrix-d-scenario",
+      "kind": "sealed-run",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "evidence/runs/matrix-D-preloaded-larger-wal/scenario.json",
+      "sha256": "6473cdf60df01da5ee475a7652edb208502462c8482c7471c060d17b961d136a",
+      "sourceManifestSha256": "71c977a26a12fb02d26b7b3fb40ca8f00caae49ab4e0b35dd58618ee7bf75808",
+      "sourceManifestPath": "./scenario.json",
+      "description": "Timestamp-bearing final matrix cell D declaration."
+    },
+    {
       "id": "final-issue-87-matrix-summary",
       "kind": "sealed-run",
       "artifactStatus": "PASS",
@@ -465,130 +545,198 @@
       "source": "https://github.com/heyimcarlos/osfo/issues/87#issuecomment-5213382073"
     },
     {
+      "id": "post-run-cards-source-manifest",
+      "kind": "source-manifest",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/post-run/POST-RUN-CARDS-SHA256SUMS",
+      "sha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "description": "Packet seal for 13 deterministic post-run card renders."
+    },
+    {
       "id": "matrix-a-clean-current-wal-recording",
-      "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No dedicated final matrix cell A recording exists."
+      "kind": "post-run-render",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "assets/post-run/matrix-a.png",
+      "sha256": "95f0ea037f520d45c90e2bb45a555b7251ba946f116036059d63b33ed738d6e0",
+      "sourceManifestSha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "sourceManifestPath": "./matrix-a.png",
+      "description": "Matrix cell A post-run render from sealed records, not an in-run screen capture."
     },
     {
       "id": "matrix-b-clean-larger-wal-recording",
-      "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No dedicated final matrix cell B recording exists."
+      "kind": "post-run-render",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "assets/post-run/matrix-b.png",
+      "sha256": "539ce24cbd7ca9b272423234727661eceeb4903a1dd874139de1c97c8472cc84",
+      "sourceManifestSha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "sourceManifestPath": "./matrix-b.png",
+      "description": "Matrix cell B post-run render from sealed records, not an in-run screen capture."
     },
     {
       "id": "matrix-c-preloaded-current-wal-recording",
-      "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No dedicated final matrix cell C recording exists."
+      "kind": "post-run-render",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "assets/post-run/matrix-c.png",
+      "sha256": "b167c64963615083301fd30d9ac07c90e63921b5906bb0a1e456d494de40469d",
+      "sourceManifestSha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "sourceManifestPath": "./matrix-c.png",
+      "description": "Matrix cell C post-run render from sealed records, not an in-run screen capture."
     },
     {
       "id": "matrix-d-preloaded-larger-wal-recording",
-      "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No dedicated final matrix cell D recording exists."
+      "kind": "post-run-render",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "assets/post-run/matrix-d.png",
+      "sha256": "f9b768f3d3b1cb9a5e69341c54b2f781a6fcb95378cdc9408ebe3a10fca83422",
+      "sourceManifestSha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "sourceManifestPath": "./matrix-d.png",
+      "description": "Matrix cell D post-run render from sealed records, not an in-run screen capture."
     },
     {
       "id": "short-target-recording",
-      "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No dedicated short-target recording exists."
+      "kind": "post-run-render",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/post-run/short-target.png",
+      "sha256": "4a010e5d8f312f775e9deae14d503413fc3421ab90c9ff404c6e15e3c57ddd86",
+      "sourceManifestSha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "sourceManifestPath": "./short-target.png",
+      "description": "Short-target post-run render from sealed records, not an in-run screen capture."
     },
     {
       "id": "sustained-rep1-recording",
-      "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No dedicated sustained repetition 1 recording exists."
+      "kind": "post-run-render",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/post-run/sustained-rep1.png",
+      "sha256": "ad6a3ed6752c769ab6cb4d77d198b55bac2b6d1f66c7c14afe8a1c90c9c0e9e6",
+      "sourceManifestSha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "sourceManifestPath": "./sustained-rep1.png",
+      "description": "Sustained repetition 1 post-run render from sealed records, not an in-run screen capture."
     },
     {
       "id": "sustained-rep2-recording",
-      "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No dedicated failed repetition 2 recording exists."
+      "kind": "post-run-render",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "FAIL",
+      "path": "assets/post-run/sustained-rep2.png",
+      "sha256": "bab2eff073e707390ea106f5cb1ee7d39b621d57800a5298424fb1c61ec4fbf7",
+      "sourceManifestSha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "sourceManifestPath": "./sustained-rep2.png",
+      "description": "Failed sustained repetition 2 post-run render from sealed records, not an in-run screen capture."
     },
     {
       "id": "pre-admitted-recording",
-      "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No dedicated pre-admitted delivery recording exists."
+      "kind": "post-run-render",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/post-run/pre-admitted.png",
+      "sha256": "e4a52c66366fca2bf8e9848fdcd8544f35df5ca8a0cfa18d2d55cd1610a09a09",
+      "sourceManifestSha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "sourceManifestPath": "./pre-admitted.png",
+      "description": "Pre-admitted control post-run render from sealed records, not an in-run screen capture."
     },
     {
       "id": "recovery-rate-workers-4-recording",
-      "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No dedicated four-worker recovery-rate recording exists."
+      "kind": "post-run-render",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/post-run/recovery-4.png",
+      "sha256": "ffd0e0dc662c6a42af27eb6dadf7eaeccbfb4e76d873e657aafa3c58e5a3c628",
+      "sourceManifestSha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "sourceManifestPath": "./recovery-4.png",
+      "description": "Four-worker recovery post-run render from sealed records, not an in-run screen capture."
     },
     {
       "id": "recovery-rate-workers-6-recording",
-      "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No dedicated six-worker recovery-rate recording exists."
+      "kind": "post-run-render",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/post-run/recovery-6.png",
+      "sha256": "c67756950284d9282810816505409ca9c66556a2561cdbcf7974caed41d251c9",
+      "sourceManifestSha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "sourceManifestPath": "./recovery-6.png",
+      "description": "Six-worker recovery post-run render from sealed records, not an in-run screen capture."
     },
     {
       "id": "recovery-rate-workers-8-recording",
-      "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No dedicated eight-worker recovery-rate recording exists."
+      "kind": "post-run-render",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/post-run/recovery-8.png",
+      "sha256": "8c043bf3595f81e99b44693f6a608d367957f379eb47ae76b17a7e11fcacf615",
+      "sourceManifestSha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "sourceManifestPath": "./recovery-8.png",
+      "description": "Eight-worker recovery post-run render from sealed records, not an in-run screen capture."
     },
     {
       "id": "worker-loss-before-recording",
-      "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No dedicated before-claim process-loss recording exists."
+      "kind": "post-run-render",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/post-run/worker-loss-before-claim.png",
+      "sha256": "1c31b3c9dcee0b8cfa6645ee94dc05a9d9a19e31cc512379a512aa21d7d80a3f",
+      "sourceManifestSha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "sourceManifestPath": "./worker-loss-before-claim.png",
+      "description": "Before-claim worker-loss post-run render from sealed records, not an in-run screen capture."
     },
     {
       "id": "worker-loss-after-recording",
-      "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No dedicated after-claim process-loss recording exists."
+      "kind": "post-run-render",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/post-run/worker-loss-after-claim.png",
+      "sha256": "7ff69c2d7c3cfb28215b4c0a7ef341c7a7c8fca2d8ba325fe7b22d10263f048a",
+      "sourceManifestSha256": "3f8dcdd2361983fe89bbceaacf2e07a2f44c6cdd7d61a68e0b392abe79901400",
+      "sourceManifestPath": "./worker-loss-after-claim.png",
+      "description": "After-claim worker-loss post-run render from sealed records, not an in-run screen capture."
+    },
+    {
+      "id": "authenticated-three-tab-source-manifest",
+      "kind": "source-manifest",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/three-tab/THREE-TAB-SHA256SUMS",
+      "sha256": "2f6c099379d344abb9d4d48b02c0134c3fdb19ed9c236948d4d36e47cbb4858e",
+      "description": "Packet seal for the local authenticated three-tab journey assets."
+    },
+    {
+      "id": "authenticated-three-tab-journey",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/three-tab/journey.json",
+      "sha256": "bd0f3ec6ee70c1891df2cb3075fc22cbca59bb42263fc4f856ae04827e39e007",
+      "sourceManifestSha256": "2f6c099379d344abb9d4d48b02c0134c3fdb19ed9c236948d4d36e47cbb4858e",
+      "sourceManifestPath": "./journey.json",
+      "description": "Token-free semantic timeline for the local authenticated independent-resume journey."
+    },
+    {
+      "id": "authenticated-three-tab-ffprobe",
+      "kind": "document",
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/three-tab/ffprobe.json",
+      "sha256": "45d5a582f3caf33d75fe3f82949943fec2f23335bd0c68f0a7a818771f0d8895",
+      "sourceManifestSha256": "2f6c099379d344abb9d4d48b02c0134c3fdb19ed9c236948d4d36e47cbb4858e",
+      "sourceManifestPath": "./ffprobe.json",
+      "description": "ffprobe confirmation for the 1920x960 H.264 recording at four frames per second."
     },
     {
       "id": "authenticated-three-tab-recording",
       "kind": "recording",
-      "artifactStatus": "MISSING",
-      "evidenceStatus": "MISSING",
-      "path": null,
-      "sha256": null,
-      "description": "No authenticated Chrome tabs A, B, and C disconnect and resume recording exists."
+      "artifactStatus": "PASS",
+      "evidenceStatus": "PASS",
+      "path": "assets/three-tab/authenticated-three-tab-resume.mp4",
+      "sha256": "0688909bc6ae0e4639471e3346eeb8465251a091ca165726e4d9fbec3d003205",
+      "sourceManifestSha256": "2f6c099379d344abb9d4d48b02c0134c3fdb19ed9c236948d4d36e47cbb4858e",
+      "sourceManifestPath": "./authenticated-three-tab-resume.mp4",
+      "description": "Local PostgreSQL Chrome proof of authenticated independent observer-tab disconnect and cursor resume. Sender-close-mid-response is not exercised."
     },
     {
       "id": "production-saturation-bundle",
