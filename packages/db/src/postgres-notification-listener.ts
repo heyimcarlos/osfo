@@ -3,6 +3,7 @@ import { Cause, Effect, Option, Queue, Stream } from "effect";
 import { Client, type Notification } from "pg";
 
 const gracefulCloseTimeoutMs = 250;
+const notificationBufferSize = 1_024;
 
 export interface PostgresNotificationListenerOptions {
   readonly applicationName: string;
@@ -45,45 +46,47 @@ const closeClient = (
 };
 
 export const listenForPostgresNotifications = (options: PostgresNotificationListenerOptions) =>
-  Stream.callback<PostgresNotification, ThreadResumeUnavailable>((queue) =>
-    Effect.gen(function* () {
-      const client = new Client({
-        application_name: options.applicationName,
-        connectionString: options.databaseUrl,
-      });
-      const fail = () => Queue.failCauseUnsafe(queue, Cause.fail(new ThreadResumeUnavailable()));
-      const onEnd = () => fail();
-      const onError = () => fail();
-      const onNotification = (notification: Notification) => {
-        if (options.channels.includes(notification.channel)) {
-          Queue.offerUnsafe(queue, {
-            channel: notification.channel,
-            payload: notification.payload ?? "",
-          });
-        }
-      };
-      client.on("end", onEnd);
-      client.on("error", onError);
-      client.on("notification", onNotification);
-      yield* Effect.addFinalizer(() =>
-        closeClient(client, options.channels, options.beforeGracefulClose ?? Effect.void).pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              client.off("end", onEnd);
-              client.off("error", onError);
-              client.off("notification", onNotification);
-            }),
-          ),
-        ),
-      );
-      yield* Effect.tryPromise({
-        try: async () => {
-          await client.connect();
-          for (const channel of options.channels) {
-            await client.query(`LISTEN ${client.escapeIdentifier(channel)}`);
+  Stream.callback<PostgresNotification, ThreadResumeUnavailable>(
+    (queue) =>
+      Effect.gen(function* () {
+        const client = new Client({
+          application_name: options.applicationName,
+          connectionString: options.databaseUrl,
+        });
+        const fail = () => Queue.failCauseUnsafe(queue, Cause.fail(new ThreadResumeUnavailable()));
+        const onEnd = () => fail();
+        const onError = () => fail();
+        const onNotification = (notification: Notification) => {
+          if (options.channels.includes(notification.channel)) {
+            Queue.offerUnsafe(queue, {
+              channel: notification.channel,
+              payload: notification.payload ?? "",
+            });
           }
-        },
-        catch: () => new ThreadResumeUnavailable(),
-      });
-    }),
+        };
+        client.on("end", onEnd);
+        client.on("error", onError);
+        client.on("notification", onNotification);
+        yield* Effect.addFinalizer(() =>
+          closeClient(client, options.channels, options.beforeGracefulClose ?? Effect.void).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                client.off("end", onEnd);
+                client.off("error", onError);
+                client.off("notification", onNotification);
+              }),
+            ),
+          ),
+        );
+        yield* Effect.tryPromise({
+          try: async () => {
+            await client.connect();
+            for (const channel of options.channels) {
+              await client.query(`LISTEN ${client.escapeIdentifier(channel)}`);
+            }
+          },
+          catch: () => new ThreadResumeUnavailable(),
+        });
+      }),
+    { bufferSize: notificationBufferSize, strategy: "sliding" },
   );

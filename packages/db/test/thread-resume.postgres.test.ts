@@ -532,6 +532,133 @@ describe("PostgreSQL Thread resume", () => {
     );
   }, 20_000);
 
+  it("bounds queued notification hints and reconnects after overflow starves heartbeats", async () => {
+    const origin = (await run(ThreadResume.use((resume) => resume.snapshot(access)))).throughCursor;
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const listenerPids = sql<{ readonly pid: string }>`SELECT pid::text AS pid
+            FROM pg_stat_activity
+            WHERE application_name LIKE 'osfo-thread-resume-%'
+              AND query LIKE 'LISTEN %'`;
+          const baseline = new Set((yield* listenerPids).map((row) => row.pid));
+          const firstConsumerBlocked = yield* Latch.make();
+          const allowFirstConsumer = yield* Latch.make();
+          const secondConsumerBlocked = yield* Latch.make();
+          const lastSlidingHintObserved = yield* Latch.make();
+          const observedSlidingHints = yield* Ref.make(0);
+          const services = yield* Layer.build(
+            makeThreadResumeTestLayer(
+              { ...resumeConfig, maxConnections: 1, pollIntervalMs: 60_000 },
+              {
+                dropNotificationHint: (payload) => {
+                  if (payload === "block-first-notification-consumer") {
+                    return firstConsumerBlocked.open.pipe(
+                      Effect.andThen(allowFirstConsumer.await),
+                      Effect.as(true),
+                    );
+                  }
+                  if (payload === "block-second-notification-consumer") {
+                    return secondConsumerBlocked.open.pipe(
+                      Effect.andThen(Effect.never),
+                      Effect.as(true),
+                    );
+                  }
+                  if (payload.startsWith("overflow-one-") || payload === "overflow-one-last") {
+                    return Ref.update(observedSlidingHints, (count) => count + 1).pipe(
+                      Effect.andThen(
+                        payload === "overflow-one-last"
+                          ? lastSlidingHintObserved.open
+                          : Effect.void,
+                      ),
+                      Effect.as(true),
+                    );
+                  }
+                  return Effect.succeed(false);
+                },
+                onNotificationSubscription: () => Effect.void,
+              },
+            ),
+          );
+          const resume = Context.get(services, ThreadResume);
+          yield* listenerPids.pipe(
+            Effect.flatMap((rows) => {
+              const pid = rows.find((row) => !baseline.has(row.pid))?.pid;
+              return pid === undefined ? Effect.fail("listener not ready") : Effect.void;
+            }),
+            Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 200 }),
+            Effect.timeout("3 seconds"),
+          );
+
+          yield* sql`SELECT pg_notify(
+            'osfo_thread_events',
+            'block-first-notification-consumer'
+          )`;
+          yield* firstConsumerBlocked.await;
+          yield* sql`SELECT pg_notify(
+            'osfo_thread_events',
+            'overflow-one-' || value::text
+          ) FROM generate_series(1, 2048) AS value`;
+          yield* sql`SELECT pg_notify('osfo_thread_events', 'overflow-one-last')`;
+          yield* allowFirstConsumer.open;
+          yield* lastSlidingHintObserved.await.pipe(Effect.timeout("3 seconds"));
+          expect(yield* Ref.get(observedSlidingHints)).toBeLessThan(2_049);
+          const listenerBeforeStarvation = yield* listenerPids.pipe(
+            Effect.flatMap((rows) => {
+              const pid = rows.find((row) => !baseline.has(row.pid))?.pid;
+              return pid === undefined
+                ? Effect.fail("listener unavailable before overflow starvation")
+                : Effect.succeed(pid);
+            }),
+            Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 200 }),
+            Effect.timeout("3 seconds"),
+          );
+
+          const caughtUp = yield* Latch.make();
+          const stream = yield* resume.stream({ ...access, after: origin });
+          const collector = yield* stream.pipe(
+            Stream.tap((event) =>
+              event.event === "caught_up" ? caughtUp.open.pipe(Effect.asVoid) : Effect.void,
+            ),
+            Stream.take(2),
+            Stream.runCollect,
+            Effect.forkChild,
+          );
+          yield* caughtUp.await;
+          yield* sql`SELECT pg_notify(
+            'osfo_thread_events',
+            'block-second-notification-consumer'
+          )`;
+          yield* secondConsumerBlocked.await;
+          yield* sql`SELECT pg_notify(
+            'osfo_thread_events',
+            'overflow-two-' || value::text
+          ) FROM generate_series(1, 2048) AS value`;
+          yield* listenerPids.pipe(
+            Effect.filterOrFail(
+              (rows) =>
+                rows.some((row) => row.pid !== listenerBeforeStarvation && !baseline.has(row.pid)),
+              () => "notification listener did not reconnect after overflow",
+            ),
+            Effect.retry({ schedule: Schedule.spaced("25 millis"), times: 240 }),
+            Effect.timeout("7 seconds"),
+          );
+          yield* Effect.promise(() => accept("Delivered after notification queue overflow"));
+
+          const delivered = Array.from(
+            yield* Fiber.join(collector).pipe(Effect.timeout("3 seconds")),
+          );
+          expect(
+            delivered.flatMap((event) =>
+              event.event === "thread_event" ? [event.data.threadPosition] : [],
+            ),
+          ).toEqual(["1"]);
+        }),
+      ).pipe(Effect.provide(databaseLayer)),
+    );
+  }, 20_000);
+
   it("keeps unknown and unauthorized Threads indistinguishable", async () => {
     const unauthorized = await run(
       Effect.flip(
