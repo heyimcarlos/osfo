@@ -11,6 +11,7 @@ import {
   makeDeterministicModelCallWorkerSource,
   makeWorkerThreadModelCallExecutorLayer,
 } from "./worker-thread-model-call-executor.js";
+import { makeAgentRunWorkerIdConfig } from "./worker-identity.js";
 
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const NonNegativeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -53,9 +54,7 @@ const WorkerConfig = Config.all({
     PositiveInteger,
     "OSFO_AGENT_RUN_TERMINATION_DEADLINE_MS",
   ).pipe(Config.withDefault(1_000)),
-  workerId: Config.nonEmptyString("OSFO_AGENT_RUN_WORKER_ID").pipe(
-    Config.orElse(() => Config.nonEmptyString("HOSTNAME")),
-  ),
+  workerId: makeAgentRunWorkerIdConfig(),
 });
 
 class InvalidWorkerExecutionProfile extends Data.TaggedError("InvalidWorkerExecutionProfile")<{
