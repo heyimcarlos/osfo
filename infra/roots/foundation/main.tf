@@ -682,19 +682,16 @@ resource "google_project_iam_member" "platform_bucket_creator" {
   member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
 }
 
-resource "google_dns_managed_zone_iam_member" "development_platform_database_record" {
-  project      = google_project.environment["development"].project_id
-  managed_zone = "${var.development_environment_baseline.name_prefix}-private"
-  role         = google_project_iam_custom_role.platform_dns_record_manager.name
-  member       = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
+resource "google_project_iam_member" "development_platform_database_record" {
+  project = google_project.environment["development"].project_id
+  role    = google_project_iam_custom_role.platform_dns_record_manager.name
+  member  = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
 
   condition {
     title       = "exact_development_database_a_record"
-    description = "Restricts the disposable platform to database.temporal.internal. A while permitting safe parent-zone checks."
-    expression  = "(resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name.endsWith('/rrsets/database.temporal.internal./A')) || resource.type != 'dns.googleapis.com/ResourceRecordSet'"
+    description = "Restricts the disposable platform to the exact retained zone and database.temporal.internal. A while permitting prerequisite checks."
+    expression  = "(resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name == 'projects/${google_project.environment["development"].project_id}/managedZones/${module.development_environment_baseline.private_dns_managed_zone_id}/rrsets/database.temporal.internal./A') || resource.type != 'dns.googleapis.com/ResourceRecordSet'"
   }
-
-  depends_on = [module.development_environment_baseline]
 }
 
 resource "google_project_iam_member" "development_artifact_cleaner" {
@@ -791,6 +788,12 @@ resource "google_storage_bucket_iam_member" "development_evidence" {
     description = "Restricts development qualification evidence to its immutable prefix."
     expression  = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.qualification_evidence.name}/objects/roots/development/platform/')"
   }
+}
+
+resource "google_storage_bucket_iam_member" "development_evidence_list" {
+  bucket = google_storage_bucket.qualification_evidence.name
+  role   = google_project_iam_custom_role.state_object_lister.name
+  member = "serviceAccount:${google_service_account.terraform["development-platform"].email}"
 }
 
 resource "google_organization_iam_member" "foundation_org_policy_admin" {

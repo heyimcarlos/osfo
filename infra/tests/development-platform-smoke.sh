@@ -2,6 +2,16 @@
 
 set -euo pipefail
 
+smoke_stage=initialization
+report_smoke_failure() {
+  local status=$?
+  trap - ERR
+  printf 'FAIL: development smoke stage %s failed with status %s\n' \
+    "$smoke_stage" "$status" >&2
+  exit "$status"
+}
+trap report_smoke_failure ERR
+
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 root=$repo_root/infra/roots/development/platform
 varset=${TF_VARSET_FILE:-$root/development.tfvars.json}
@@ -24,6 +34,7 @@ cleanup_smoke() {
 }
 trap cleanup_smoke EXIT
 
+smoke_stage=terraform-output
 "$terraform_bin" -chdir="$root" output -json platform >"$scratch/platform.json"
 sql_instance=$(jq -r '.cloud_sql_connection_name | split(":")[-1]' "$scratch/platform.json")
 topic=$(jq -r '.pubsub_topic_id' "$scratch/platform.json")
@@ -34,8 +45,11 @@ static_egress_ip=$(jq -r '.static_egress_ip' "$scratch/platform.json")
 network_probe_job=$(jq -r '.qualification_probe_jobs.network' "$scratch/platform.json")
 denied_secret_probe_job=$(jq -r '.qualification_probe_jobs.denied_secret' "$scratch/platform.json")
 
+smoke_stage=cloud-sql-instance
 gcloud sql instances describe "$sql_instance" --project="$project_id" --format=json >"$scratch/sql.json"
+smoke_stage=cloud-sql-users
 gcloud sql users list --instance="$sql_instance" --project="$project_id" --format=json >"$scratch/sql-users.json"
+smoke_stage=cloud-sql-configuration
 jq -e --arg cost_owner "$cost_owner" '
   .state == "RUNNABLE"
   and ([.ipAddresses[].type] | all(. == "PRIVATE"))
@@ -43,6 +57,7 @@ jq -e --arg cost_owner "$cost_owner" '
   and .settings.userLabels.environment == "development"
   and .settings.userLabels.cost_owner == $cost_owner
 ' "$scratch/sql.json" >/dev/null
+smoke_stage=cloud-sql-iam-users
 jq -r '.runtime_service_accounts[] | sub("[.]gserviceaccount[.]com$"; "")' "$scratch/platform.json" \
   | while IFS= read -r database_user; do
       jq -e --arg database_user "$database_user" \
@@ -53,23 +68,30 @@ jq -r '.runtime_service_accounts[] | sub("[.]gserviceaccount[.]com$"; "")' "$scr
 ordering_key="smoke-$(date -u +%Y%m%dT%H%M%SZ)"
 smoke_subscription="$name_prefix-ordering-$RANDOM"
 export CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB="https://$region-pubsub.googleapis.com/"
+smoke_stage=pubsub-managed-subscription
 gcloud pubsub subscriptions describe "$subscription" --project="$project_id" \
   --format=json >"$scratch/managed-subscription.json"
-jq -e --arg topic "$topic" --arg retention "$(jq -r '.pubsub_message_retention_duration' "$varset")" '
+if ! jq -e --arg topic "$topic" --arg retention "$(jq -r '.pubsub_message_retention_duration' "$varset")" '
   .topic == $topic
   and .enableMessageOrdering == true
   and .messageRetentionDuration == $retention
-  and .retainAckedMessages == false
-' "$scratch/managed-subscription.json" >/dev/null
+  and (.retainAckedMessages // false) == false
+' "$scratch/managed-subscription.json" >/dev/null; then
+  printf 'FAIL: managed Pub/Sub subscription does not match the reviewed ordering and retention contract\n' >&2
+  exit 1
+fi
 # Delivery uses an isolated subscriber so qualification cannot lease or acknowledge
 # messages owned by a runtime consumer of the Terraform-managed subscription.
+smoke_stage=pubsub-isolated-subscription
 gcloud pubsub subscriptions create "$smoke_subscription" --project="$project_id" \
   --topic="$topic" --enable-message-ordering --expiration-period=1d >/dev/null
+smoke_stage=pubsub-ordered-publish
 gcloud pubsub topics publish "$topic" --project="$project_id" \
   --ordering-key="$ordering_key" --message=first >/dev/null
 gcloud pubsub topics publish "$topic" --project="$project_id" \
   --ordering-key="$ordering_key" --message=second >/dev/null
 printf '[]\n' >"$scratch/messages.json"
+smoke_stage=pubsub-ordered-delivery
 for _ in {1..12}; do
   gcloud pubsub subscriptions pull "$smoke_subscription" --project="$project_id" \
     --auto-ack --limit=10 --format=json >"$scratch/message-batch.json"
@@ -84,6 +106,7 @@ for _ in {1..12}; do
 done
 jq -e 'length >= 2 and ([.[0:2][].message.data | @base64d] == ["first", "second"])' \
   "$scratch/messages.json" >/dev/null
+smoke_stage=pubsub-regional-persistence
 gcloud pubsub topics describe "$topic" --project="$project_id" --format=json \
   | jq -e --arg cost_owner "$cost_owner" --arg region "$region" \
     '.labels.environment == "development"
@@ -93,10 +116,12 @@ gcloud pubsub subscriptions delete "$smoke_subscription" --project="$project_id"
 smoke_subscription=""
 unset CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB
 
+smoke_stage=artifact-create
 printf 'osfo development artifact smoke\n' >"$scratch/artifact"
 artifact_sha=$(sha256sum "$scratch/artifact" | cut -d' ' -f1)
 artifact_uri="gs://$artifact_bucket/sha256/$artifact_sha"
 gcloud storage cp --if-generation-match=0 "$scratch/artifact" "$artifact_uri" >/dev/null
+smoke_stage=artifact-overwrite-denial
 if gcloud storage cp "$scratch/artifact" "$artifact_uri" \
   >"$scratch/artifact-overwrite.out" 2>&1; then
   printf 'FAIL: IAM allowed an unconditional content-addressed artifact overwrite\n' >&2
@@ -104,14 +129,17 @@ if gcloud storage cp "$scratch/artifact" "$artifact_uri" \
 fi
 grep -Eq 'HTTPError 403|PERMISSION_DENIED' "$scratch/artifact-overwrite.out"
 grep -Fq 'storage.objects.delete' "$scratch/artifact-overwrite.out"
+smoke_stage=artifact-generation-count
 generation_count=$(gcloud storage ls --all-versions "$artifact_uri" | wc -l | tr -d ' ')
 if [[ "$generation_count" != 1 ]]; then
   printf 'FAIL: content-addressed artifact has %s generations\n' "$generation_count" >&2
   exit 1
 fi
+smoke_stage=artifact-readback
 gcloud storage cp "$artifact_uri" "$scratch/artifact.read" >/dev/null
 cmp "$scratch/artifact" "$scratch/artifact.read"
 
+smoke_stage="secret-writer-identity"
 printf 'osfo non-secret authorization smoke\n' >"$scratch/secret-payload"
 terraform_service_account=$(jq -r '.terraform_service_account_email' "$varset")
 effective_account=${CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT:-$(gcloud auth list --filter=status:ACTIVE --format='value(account)')}
@@ -120,17 +148,21 @@ if [[ "$effective_account" != "$terraform_service_account" ]]; then
     "$terraform_service_account" "$effective_account" >&2
   exit 1
 fi
+smoke_stage="secret-version-add"
 for secret_key in model-adapter temporal-cloud; do
   secret=$(jq -r --arg secret_key "$secret_key" '.secret_names[$secret_key]' "$scratch/platform.json")
   gcloud secrets versions add "$secret" --project="$project_id" \
     --data-file="$scratch/secret-payload" >/dev/null
 done
 
+smoke_stage=network-probe-execution
 gcloud run jobs execute "$network_probe_job" --project="$project_id" \
   --region="$region" --wait --format=json >"$scratch/network-execution.json"
+smoke_stage=denied-secret-probe-execution
 gcloud run jobs execute "$denied_secret_probe_job" --project="$project_id" \
   --region="$region" --wait --format=json >"$scratch/denied-secret-execution.json"
 
+smoke_stage=retained-network-configuration
 gcloud compute routers nats describe "$name_prefix-nat" --router="$name_prefix-router" \
   --region="$region" --project="$project_id" --format=json >"$scratch/nat.json"
 gcloud compute addresses describe "$name_prefix-egress" --region="$region" \
@@ -162,6 +194,7 @@ temporal_status=MISSING
 private_dns_record_status=MISSING
 temporal_attachment=""
 temporal_lookup_status=0
+smoke_stage=temporal-psc
 gcloud compute forwarding-rules describe "$name_prefix-temporal-psc" \
   --region="$region" --project="$project_id" --format=json \
   >"$scratch/temporal.json" 2>"$scratch/temporal.error" || temporal_lookup_status=$?
@@ -184,6 +217,7 @@ else
   exit 1
 fi
 
+smoke_stage=qualification-report
 test -f "$preflight_report"
 artifact_immutability=PASS
 authorized_secret_version_access=MISSING
@@ -237,8 +271,10 @@ jq -n \
   },
   temporal_service_attachment: $temporal_service_attachment}' >"$scratch/report.json"
 
+smoke_stage=evidence-store
 report_sha=$("$repo_root/infra/tests/store-development-evidence.sh" \
   "$scratch/report.json" "$evidence_bucket")
 
+trap - ERR
 printf 'qualification=%s temporal=%s evidence=%s\n' \
   "$managed_qualification" "$temporal_status" "$report_sha"

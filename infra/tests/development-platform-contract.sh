@@ -25,7 +25,7 @@ rg --fixed-strings --quiet 'ipv4_enabled    = false' infra/modules/data-authorit
 rg --quiet 'availability_type\s*=\s*"ZONAL"' infra/modules/data-authority/main.tf
 rg --quiet 'uniform_bucket_level_access\s*=\s*true' infra/modules/data-authority/main.tf
 rg --quiet 'public_access_prevention\s*=\s*"enforced"' infra/modules/data-authority/main.tf
-rg --quiet 'force_destroy\s*=\s*true' infra/modules/data-authority/main.tf
+rg --quiet 'force_destroy\s*=\s*false' infra/modules/data-authority/main.tf
 rg --fixed-strings --quiet 'google_compute_router_nat' infra/modules/environment-baseline/main.tf
 rg --fixed-strings --quiet 'google_compute_forwarding_rule' infra/modules/environment-baseline/main.tf
 rg --fixed-strings --quiet 'google_dns_managed_zone' infra/modules/environment-baseline/main.tf
@@ -141,6 +141,11 @@ rg --fixed-strings --quiet 'quota_requirement static_external_ipv4_addresses' in
 rg --fixed-strings --quiet 'quota_requirement pubsub_publisher_kb_per_minute' infra/tests/development-platform-preflight.sh
 rg --fixed-strings --quiet 'run.googleapis.com' infra/tests/development-platform-preflight.sh
 rg --fixed-strings --quiet 'managed_ordered_subscription_configuration: "PASS"' \
+  infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet '(.retainAckedMessages // false) == false' \
+  infra/tests/development-platform-smoke.sh
+rg --fixed-strings --quiet \
+  'FAIL: managed Pub/Sub subscription does not match the reviewed ordering and retention contract' \
   infra/tests/development-platform-smoke.sh
 rg --fixed-strings --quiet 'gcloud pubsub subscriptions describe "$subscription"' \
   infra/tests/development-platform-smoke.sh
@@ -304,21 +309,80 @@ grep -Fq "resource.name.startsWith('projects/_/buckets/\${local.development_arti
 rg --fixed-strings --quiet 'resource "google_project_iam_custom_role" "platform_dns_record_manager"' \
   infra/roots/foundation/main.tf
 dns_binding=$(sed -n \
-  '/resource "google_dns_managed_zone_iam_member" "development_platform_database_record"/,/resource "google_project_iam_member" "development_artifact_cleaner"/p' \
+  '/resource "google_project_iam_member" "development_platform_database_record"/,/resource "google_project_iam_member" "development_artifact_cleaner"/p' \
   infra/roots/foundation/main.tf)
 # The Terraform expression is intentionally matched as a literal string.
 # shellcheck disable=SC2016
 for exact_dns_boundary in \
-  'managed_zone = "${var.development_environment_baseline.name_prefix}-private"' \
   "resource.type == 'dns.googleapis.com/ResourceRecordSet'" \
-  "resource.name.endsWith('/rrsets/database.temporal.internal./A')"; do
+  'module.development_environment_baseline.private_dns_managed_zone_id' \
+  "/rrsets/database.temporal.internal./A'" \
+  "resource.type != 'dns.googleapis.com/ResourceRecordSet'"; do
   grep -Fq "$exact_dns_boundary" <<<"$dns_binding"
 done
+rg --fixed-strings --quiet \
+  'output "private_dns_managed_zone_id"' \
+  infra/modules/environment-baseline/main.tf
+if rg --fixed-strings --quiet \
+  'google_dns_managed_zone_iam_' \
+  infra/roots/foundation/main.tf; then
+  printf 'platform DNS record authority and one-off recovery reconciliation must not use durable zone IAM\n' >&2
+  exit 1
+fi
+if rg --fixed-strings --quiet 'dns.managedZones.setIamPolicy' infra/roots/foundation/main.tf; then
+  printf 'foundation must not receive durable zone IAM mutation authority for operator reconciliation\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet 'resource "google_project_iam_custom_role" "development_artifact_cleaner"' \
   infra/roots/foundation/main.tf
+artifact_cleaner_role=$(sed -n \
+  '/resource "google_project_iam_custom_role" "development_artifact_cleaner"/,/resource "google_project" "environment"/p' \
+  infra/roots/foundation/main.tf)
+for permission in \
+  storage.buckets.get \
+  storage.objects.delete \
+  storage.objects.get \
+  storage.objects.list; do
+  if [[ $(grep -Fc "\"$permission\"" <<<"$artifact_cleaner_role") != 1 ]]; then
+    printf 'foundation artifact recovery role must contain exact permission %s once\n' \
+      "$permission" >&2
+    exit 1
+  fi
+done
+if grep -Eq 'storage\.(buckets\.(create|delete|list|update)|objects\.(create|update))' \
+  <<<"$artifact_cleaner_role"; then
+  printf 'foundation artifact recovery role exceeds reviewed cleanup authority\n' >&2
+  exit 1
+fi
 rg --fixed-strings --quiet \
   "resource.name.startsWith('projects/_/buckets/\${local.development_artifact_bucket_name}/objects/')" \
   infra/roots/foundation/main.tf
+rg --fixed-strings --quiet 'infra/tests/development-platform-recovery-preflight.sh' \
+  .github/workflows/terraform.yml
+# Shell variables are intentionally matched as literal source text.
+# shellcheck disable=SC2016
+for recovery_preflight_contract in \
+  'gcloud dns managed-zones describe "$name_prefix-private"' \
+  'FAIL: exact project-level DNS record binding is not applied' \
+  'gcloud storage buckets get-iam-policy "gs://$evidence_bucket"' \
+  'FAIL: exact development evidence writer, reader, and lister bindings are not applied'; do
+  rg --fixed-strings --quiet "$recovery_preflight_contract" \
+    infra/tests/development-platform-recovery-preflight.sh
+done
+development_evidence_binding=$(sed -n \
+  '/resource "google_storage_bucket_iam_member" "development_evidence"/,/resource "google_organization_iam_member"/p' \
+  infra/roots/foundation/main.tf)
+# Terraform interpolation is intentionally matched as literal source text.
+# shellcheck disable=SC2016
+for evidence_contract in \
+  'bucket = google_storage_bucket.qualification_evidence.name' \
+  'role   = google_project_iam_custom_role.saved_plan_object_access.name' \
+  'role   = google_project_iam_custom_role.state_object_lister.name' \
+  'resource.name.startsWith('\''projects/_/buckets/${google_storage_bucket.qualification_evidence.name}/objects/roots/development/platform/'\'')'; do
+  grep -Fq "$evidence_contract" <<<"$development_evidence_binding"
+done
+rg --fixed-strings --quiet 'FAIL: development evidence lookup failed closed' \
+  infra/tests/store-development-evidence.sh
 rg --fixed-strings --quiet 'infra/tests/development-platform-prepare-cleanup.sh' \
   .github/workflows/terraform.yml .github/workflows/development-platform-recovery.yml
 

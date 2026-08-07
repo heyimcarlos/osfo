@@ -374,8 +374,7 @@ jobs:
     needs: [authorize, artifact-cleanup]
     if: >-
       always() &&
-      needs.authorize.outputs.recover == 'true' &&
-      needs.artifact-cleanup.result == 'success'
+      needs.authorize.outputs.recover == 'true'
     runs-on: ubuntu-24.04
     environment: development-platform
     permissions:
