@@ -301,7 +301,7 @@ const capacity = common("OpenPoke Capacity and PostgreSQL", "openpoke-capacity-p
   text(
     1,
     "Capacity question",
-    `${evidenceWarning}\n\nThe matrix isolates history state and WAL envelope. A = clean/current WAL, B = accumulated/current WAL, C = clean/larger WAL, D = accumulated/larger WAL. Rows remain **MISSING** until a sealed bundle is imported.`,
+    `${evidenceWarning}\n\nThe sealed final matrix defines A = clean/current WAL, B = clean/larger WAL, C = preloaded/current WAL, and D = preloaded/larger WAL. Rows remain **MISSING** until a qualifying sealed bundle is imported.`,
     grid(0, 0, 24, 4),
   ),
   table(

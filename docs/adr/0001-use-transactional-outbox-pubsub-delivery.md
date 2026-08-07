@@ -14,8 +14,8 @@ canonical Thread state. Pub/Sub owns runnable-work buffering, delivery, flow
 control, and redelivery.
 
 This split creates an atomicity boundary. PostgreSQL cannot commit AgentRun
-authority and publish to Pub/Sub in one transaction. Two candidates used the
-same authenticated Pub/Sub push worker seam:
+authority and publish to Pub/Sub in one transaction. The original B2 and B3
+comparison used the same authenticated Pub/Sub push worker seam:
 
 - B2 directly wrote PostgreSQL and published to Pub/Sub in either order or
   concurrently.
@@ -32,16 +32,18 @@ overload and recovery rather than promising that all offered work is accepted.
 Select B3. One PostgreSQL admission transaction commits the acceptance receipt,
 canonical input facts, AgentRuns, durable capacity reservations, and one outbox
 record per AgentRun. An isolated relay publishes minimal delivery identities to
-Pub/Sub. Authenticated Pub/Sub push workers claim AgentRuns by ID, execute only
-under a finite lease and monotonic claim epoch, commit authoritative outcomes
-under that fence, then acknowledge delivery.
+one ordered Pub/Sub subscription. A fixed fleet uses the official high-level
+asynchronous StreamingPull client, claims AgentRuns by ID, executes only under
+a finite lease and monotonic claim epoch, commits authoritative outcomes under
+that fence, then acknowledges delivery.
 
 ```text
 authenticated command
   -> PostgreSQL acceptance transaction
        -> receipt, ThreadEvent, AgentRun, budget reservation, outbox
   -> isolated confirmed-publication relay
-  -> Pub/Sub topic and authenticated push subscription
+  -> Pub/Sub topic and one ordered pull subscription
+  -> fixed StreamingPull worker fleet
   -> point-addressed PostgreSQL claim with lease and epoch
   -> AgentRun execution and fenced terminal transaction
        -> outcome and durable-budget release
@@ -51,6 +53,12 @@ authenticated command
 The message envelope contains `AgentRunId`, a stable delivery identity, and
 minimal routing metadata. Authoritative input and lifecycle state remain in
 PostgreSQL. Workers never scan PostgreSQL for runnable work.
+
+The current fixed-fleet candidate is six workers, four StreamingPull streams
+per worker, 32 execution slots per worker, an eight-connection PostgreSQL pool
+cap per worker, and explicit flow control. The fleet size is an IaC and operator
+input. Metric-triggered worker autoscaling is not part of the selected recovery
+contract. Production qualification remains evidence-gated.
 
 The outbox is append-oriented. Relay progress is monotonic and advances only
 after publication confirmation. A crash after broker confirmation but before
@@ -90,7 +98,7 @@ ghost delivery attempts, and 8,100 irreconcilable no-retry outcomes. It produced
 zero duplicate terminal commits, which confirms that fencing limits damage but
 cannot repair the missing atomic handoff.
 
-The selected B3 control accepted 139,200 incoming messages over ten minutes and
+The historical B3 push control accepted 139,200 incoming messages over ten minutes and
 completed all 208,800 AgentRuns. It recorded zero unknown outcomes, unpublished
 obligations, stranded runs, ghost authority, unfinished semantic attempts,
 duplicate terminal commits, or budget reconciliation mismatches. Worker loss,
@@ -147,8 +155,20 @@ Integrated capacity still failed. Corrected 60-second target controls varied
 the dispatch window, worker concurrency, worker ceiling, and warm floor. The
 best accepted 8,833 of 13,920 offered commands and completed all 12,595 derived
 AgentRuns exactly. A max-16 worker ceiling and a 12-worker warm floor did not
-close the gap. The short target gate remains `FAIL`, so longer target and
-Production Acceptance Corpus lanes remain `MISSING`.
+close the gap. That historical push short-target gate is `FAIL`; its longer
+target and Production Acceptance Corpus lanes remain `MISSING`.
+
+Issue 87 subsequently selected one ordered subscription and a fixed
+StreamingPull fleet. A 64-stripe 60-second control accepted all 13,920 commands
+and completed all 20,880 AgentRuns. Two 30-minute Montreal repetitions accepted
+all 417,600 commands and completed all 626,400 AgentRuns, but the second failed
+the receipt-latency gate. The smallest recovery-rate candidate with adequate
+tail headroom was six workers. The final `us-east4` A/B/C/D matrix then failed
+admission in every cell while reconciling accepted work exactly. Its retained
+history hypothesis is supported. A larger WAL envelope reduced WAL and
+checkpoint churn but did not qualify admission. Both provider roots tore down
+with zero manifest-owned cloud residue. Full `us-east4` production
+qualification remains `MISSING`.
 
 The checksummed comparison, exact call flows, reconciliation pointers,
 resource manifests, cost boundary, and teardown proof are in
@@ -165,12 +185,10 @@ qualification are in
 ## Cost boundary
 
 No complete B2/B3 lifecycle-cost comparison was measured, so this ADR makes no
-total-cost claim. At the 60-million incoming-message and 90-million AgentRun
-monthly model, the dated list-price lower bound for B3's incremental handoff is
-about USD 107.34: USD 63.07 for one continuously available 1-vCPU, 1-GiB relay,
-USD 6.71 for minimum-size Pub/Sub publication and delivery volume, USD 36.00
-for 90 million push requests, and about USD 1.56 for 15 ms synthetic worker
-compute at concurrency 32.
+total-cost claim. The historical push estimate included push-request pricing
+and does not price the selected fixed StreamingPull fleet. Current incremental
+relay, Pub/Sub, worker idle floor, worker execution, PostgreSQL, and monitoring
+cost remains `MISSING` until the selected production topology is measured.
 
 That lower bound excludes ingress, Cloud SQL, Temporal Cloud, outbox storage,
 WAL, backups, retention, logging, monitoring, networking, retry amplification,
@@ -186,16 +204,19 @@ deployment contract before production approval.
   fences make duplicates harmless.
 - The relay and outbox add observable operational state, WAL, retention,
   maintenance, and cost. They are not treated as free.
-- A long-lived authenticated push subscription and min-zero workers remain the
-  default. Warm worker floors were rejected because they added idle cost
-  without improving measured latency.
-- Retained history is not the cause of the observed Pub/Sub delivery tail, but
-  the integrated authenticated push path does not meet target throughput.
+- One ordered subscription and a fixed StreamingPull fleet are the selected
+  worker-delivery topology. Authenticated push, min-zero activation, CREMA, and
+  subscription sharding are rejected for the current contract.
+- Retained history was not the cause of the historical push delivery tail. The
+  selected StreamingPull topology still requires complete production-region
+  qualification.
 - Dispatch permits are publication flow control and release on durable provider
   confirmation. They are not held until AgentRun terminal completion.
 - Durable publication tasks with owner, lease, and epoch recovery replace the
   selector-wide publication lock.
-- Full production approval remains blocked. A delivery and worker activation
-  contract must meet the short target gate before longer target,
-  retained-corpus, Temporal, cost, and recovery evidence can qualify a final
-  manifest.
+- Full production approval remains blocked. The selected StreamingPull short
+  target passed, but the final `us-east4` matrix failed admission at the target
+  rate. Admission stability under exact retained history must pass before the
+  overload knee, 400,000-AgentRun reserve outage and drain, retained corpora,
+  user-visible SLO, bounded-resource, and complete-cost gates can qualify a
+  final production manifest.

@@ -17,6 +17,7 @@
     "db:studio": "bun run --env-file=.env --cwd packages/db db:studio",
     "db:up": "docker compose -f compose.postgres.yaml up -d --wait",
     "db:verify": "bash scripts/verify-migrations.sh",
+    "demo:evidence:verify": "bun observability/demo-packet-verifier.ts docs/openpoke-v1-demo/artifact-index.json",
     "dev": "bun run --env-file=.env turbo run dev",
     "dev:web": "turbo run dev --filter=@osfo/web",
     "format": "oxfmt .oxfmtrc.json package.json turbo.json tsconfig.json tsconfig.scripts.json tsconfig.infra.json compose.postgres.yaml README.md apps packages scripts infra observability .github",
