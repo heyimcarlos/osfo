@@ -1,6 +1,7 @@
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Drizzle from "alchemy/Drizzle";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type { AccountAgent } from "./src/account-agent.ts";
@@ -28,6 +29,7 @@ export default Alchemy.Stack(
       env: {
         ACCOUNT_AGENT: accountAgent,
         DIRECTORY: directory,
+        PROTOTYPE_TOKEN: Config.redacted("OZ_PROTOTYPE_TOKEN"),
       },
       main: "./src/worker.ts",
     });

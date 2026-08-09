@@ -117,14 +117,7 @@ const makeFoundationStoreLayer = (input: {
             agent
               .insert(foundationReceipts)
               .values({ ...receipt, recordedAt: Date.now() })
-              .onConflictDoUpdate({
-                set: {
-                  accepted: receipt.accepted,
-                  status: receipt.status,
-                  submissionId: receipt.submissionId,
-                },
-                target: foundationReceipts.messageId,
-              })
+              .onConflictDoNothing()
               .then(() => undefined),
           ),
         recordReminder: (reminderId, text) =>

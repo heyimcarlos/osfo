@@ -6,8 +6,12 @@ const usage = {
   outputTokens: { reasoning: 0, text: 6, total: 6 },
 };
 
-const includesSlowMarker = (options: Record<string, unknown>): boolean =>
-  JSON.stringify(options.prompt ?? []).includes("[slow]");
+const markerDelay = (options: Record<string, unknown>): number => {
+  const prompt = JSON.stringify(options.prompt ?? []);
+  if (prompt.includes("[recover]")) return 3_000;
+  if (prompt.includes("[slow]")) return 15_000;
+  return 0;
+};
 
 const waitUntilElapsedOrAborted = (milliseconds: number, signal: AbortSignal | undefined) =>
   new Promise<void>((resolve) => {
@@ -32,7 +36,8 @@ export const makePrototypeModel = (): LanguageModel => ({
     };
   },
   doStream(options: Record<string, unknown>) {
-    const slow = includesSlowMarker(options);
+    const delay = markerDelay(options);
+    const slow = delay > 0;
     const signal = (options as { readonly abortSignal?: AbortSignal }).abortSignal;
     const stream = new ReadableStream({
       async start(controller) {
@@ -44,7 +49,7 @@ export const makePrototypeModel = (): LanguageModel => ({
           type: "text-delta",
         });
         if (slow) {
-          await waitUntilElapsedOrAborted(15_000, signal);
+          await waitUntilElapsedOrAborted(delay, signal);
           if (signal?.aborted) {
             controller.close();
             return;

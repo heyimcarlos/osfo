@@ -32,6 +32,7 @@ const state: LabState = {
     "direct submission": "PENDING",
     "Drizzle D1 and DO migration": "PENDING",
     "Effect service adapter": "PENDING",
+    "in-flight turn recovery": "PENDING",
     "local cold-activation state": "PENDING",
     idempotency: "PENDING",
     interruption: "PENDING",
@@ -64,6 +65,7 @@ const startServer = async () => {
       CI: "1",
       CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000",
       CLOUDFLARE_API_TOKEN: "local-prototype-only",
+      OZ_PROTOTYPE_TOKEN: "local-prototype-only",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -183,6 +185,15 @@ const restart = async () => {
         : [],
     ) ?? [],
   );
+  const recoveryMessageId = `wamid.recover.${crypto.randomUUID()}`;
+  const recoveryReceipt = await run(
+    sendMessage({
+      channelIdentity,
+      messageId: recoveryMessageId,
+      text: "[recover] finish this turn after a cold activation.",
+    }),
+  );
+  await wait(500);
   await stopServer();
   await startServer();
   const recoveredReceipt = await run(
@@ -192,9 +203,25 @@ const restart = async () => {
       text: "Retry the original message after cold activation.",
     }),
   );
-  await refresh();
+  let recoveredSubmissionStatus: string | undefined;
+  for (let attempt = 0; attempt < 16; attempt++) {
+    await refresh();
+    recoveredSubmissionStatus = state.snapshot?.submissions.find(
+      (submission) => submission.submissionId === recoveryReceipt.receipt.submissionId,
+    )?.status;
+    if (recoveredSubmissionStatus === "completed") break;
+    await wait(500);
+  }
   const recovered = state.snapshot;
   const after = state.snapshot?.activationId;
+  const recoveryMessageCount =
+    recovered?.messages.filter(
+      (message) =>
+        typeof message === "object" &&
+        message !== null &&
+        "id" in message &&
+        String(message.id) === recoveryMessageId,
+    ).length ?? 0;
   state.checks["activation recovery"] =
     before !== after &&
     (recovered?.foundation.receipts.length ?? 0) >= receiptCount &&
@@ -213,12 +240,16 @@ const restart = async () => {
       ? "PASS"
       : "FAIL";
   state.checks["Drizzle D1 and DO migration"] = recovered?.foundation.activation ? "PASS" : "FAIL";
+  state.checks["in-flight turn recovery"] =
+    recoveredSubmissionStatus === "completed" && recoveryMessageCount === 1 ? "PASS" : "FAIL";
   const effectAdapterPassed =
     recovered !== null &&
     recovered.foundation.activation?.lastActivationId === after &&
     recovered.foundation.receipts.some((receipt) => receipt.messageId === stableMessageId);
   state.checks["Effect service adapter"] = effectAdapterPassed ? "PASS" : "FAIL";
-  state.lastAction = `restarted workerd, activation ${before} -> ${after}`;
+  state.lastAction =
+    `restarted during ${recoveryReceipt.receipt.submissionId}, ` +
+    `recovered=${recoveredSubmissionStatus}, activation ${before} -> ${after}`;
 };
 
 const runProbe = async () => {
@@ -244,7 +275,7 @@ const render = () => {
   console.log("\n\x1b[1mActions\x1b[0m");
   console.log("[b] bind  [m] message  [d] duplicate  [i] interrupt  [s] schedule");
   console.log("[r] restart and recover  [x] full probe  [q] quit");
-  console.log("\nMISSING  live Cloudflare eviction, wake, and placement checkpoint");
+  console.log("\nNOT RUN  live Cloudflare eviction and wake checkpoint (local command)");
 };
 
 const interactive = async () => {

@@ -1,12 +1,12 @@
 CREATE TABLE `activation_audit` (
 	`activation_count` integer DEFAULT 0 NOT NULL,
-	`agent_id` text PRIMARY KEY,
+	`agent_id` text PRIMARY KEY NOT NULL,
 	`last_activated_at` integer NOT NULL,
 	`last_activation_id` text NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE `channel_bindings` (
 	`agent_id` text NOT NULL,
-	`channel_identity` text PRIMARY KEY,
+	`channel_identity` text PRIMARY KEY NOT NULL,
 	`created_at` integer NOT NULL
 );

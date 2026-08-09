@@ -2,6 +2,9 @@ import * as Effect from "effect/Effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 const origin = "http://localhost:1337";
+const prototypeToken = "local-prototype-only";
+
+const authorize = HttpClientRequest.setHeader("authorization", `Bearer ${prototypeToken}`);
 
 const requestJson = <A>(request: HttpClientRequest.HttpClientRequest) =>
   Effect.gen(function* () {
@@ -18,7 +21,10 @@ export const bindChannel = (input: {
   readonly channelIdentity: string;
 }) =>
   requestJson<{ readonly bound: boolean }>(
-    HttpClientRequest.post(`${origin}/bindings`).pipe(HttpClientRequest.bodyJsonUnsafe(input)),
+    HttpClientRequest.post(`${origin}/bindings`).pipe(
+      authorize,
+      HttpClientRequest.bodyJsonUnsafe(input),
+    ),
   );
 
 export const sendMessage = (input: {
@@ -33,16 +39,22 @@ export const sendMessage = (input: {
       readonly status: string;
       readonly submissionId: string;
     };
-  }>(HttpClientRequest.post(`${origin}/messages`).pipe(HttpClientRequest.bodyJsonUnsafe(input)));
+  }>(
+    HttpClientRequest.post(`${origin}/messages`).pipe(
+      authorize,
+      HttpClientRequest.bodyJsonUnsafe(input),
+    ),
+  );
 
 export const readAgentState = (agentId: string) =>
   requestJson<FoundationState>(
-    HttpClientRequest.get(`${origin}/agents/${encodeURIComponent(agentId)}/state`),
+    HttpClientRequest.get(`${origin}/agents/${encodeURIComponent(agentId)}/state`).pipe(authorize),
   );
 
 export const cancelSubmission = (agentId: string, submissionId: string) =>
   requestJson<{ readonly cancelled: boolean }>(
     HttpClientRequest.post(`${origin}/agents/${encodeURIComponent(agentId)}/cancel`).pipe(
+      authorize,
       HttpClientRequest.bodyJsonUnsafe({ submissionId }),
     ),
   );
@@ -53,6 +65,7 @@ export const scheduleReminder = (
 ) =>
   requestJson<{ readonly schedule: { readonly id: string } }>(
     HttpClientRequest.post(`${origin}/agents/${encodeURIComponent(agentId)}/schedule`).pipe(
+      authorize,
       HttpClientRequest.bodyJsonUnsafe(input),
     ),
   );

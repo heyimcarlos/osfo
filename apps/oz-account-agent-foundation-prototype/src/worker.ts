@@ -1,19 +1,55 @@
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { channelBindings } from "./directory-schema.ts";
 import { AccountAgent } from "./account-agent.ts";
 import type { MessageAdmission, PrototypeEnv } from "./account-agent.ts";
 
 export { AccountAgent };
 
-type BindingInput = {
-  readonly agentId: string;
-  readonly channelIdentity: string;
-};
+const Identity = Schema.NonEmptyString.check(Schema.isMaxLength(512));
+const Text = Schema.NonEmptyString.check(Schema.isMaxLength(16_384));
+const BindingInput = Schema.Struct({ agentId: Identity, channelIdentity: Identity });
+const MessageInput = Schema.Struct({
+  channelIdentity: Identity,
+  messageId: Identity,
+  text: Text,
+});
+const CancellationInput = Schema.Struct({ submissionId: Identity });
+const ReminderInput = Schema.Struct({
+  delaySeconds: Schema.Int.check(Schema.isBetween({ maximum: 86_400, minimum: 1 })),
+  reminderId: Identity,
+  text: Text,
+});
 
-const jsonInput = async <A>(request: Request): Promise<A> => (await request.json()) as A;
+type DecodeResult<A> = { readonly _tag: "Invalid" } | { readonly _tag: "Valid"; readonly value: A };
+
+const invalid = <A>(): DecodeResult<A> => ({ _tag: "Invalid" });
+
+const decodeJson = <S extends Schema.ConstraintDecoder<unknown, never>>(
+  request: Request,
+  schema: S,
+) =>
+  Effect.tryPromise({
+    catch: (cause) => cause,
+    try: () => request.json(),
+  }).pipe(
+    Effect.map(Schema.decodeUnknownOption(schema, { onExcessProperty: "error" })),
+    Effect.map(
+      Option.match({
+        onNone: invalid<S["Type"]>,
+        onSome: (value): DecodeResult<S["Type"]> => ({ _tag: "Valid", value }),
+      }),
+    ),
+    Effect.catch(() => Effect.succeed(invalid<S["Type"]>())),
+    Effect.runPromise,
+  );
 
 const notFound = () => Response.json({ error: "not_found" }, { status: 404 });
+const badRequest = () => Response.json({ error: "invalid_request" }, { status: 400 });
+const unauthorized = () => Response.json({ error: "unauthorized" }, { status: 401 });
 
 export default {
   async fetch(request: Request, env: PrototypeEnv): Promise<Response> {
@@ -23,9 +59,14 @@ export default {
     if (request.method === "GET" && url.pathname === "/health") {
       return Response.json({ profile: "oz-account-agent-foundation-prototype", status: "ready" });
     }
+    if (request.headers.get("authorization") !== `Bearer ${env.PROTOTYPE_TOKEN}`) {
+      return unauthorized();
+    }
 
     if (request.method === "POST" && url.pathname === "/bindings") {
-      const input = await jsonInput<BindingInput>(request);
+      const decoded = await decodeJson(request, BindingInput);
+      if (decoded._tag === "Invalid") return badRequest();
+      const input = decoded.value;
       await directory
         .insert(channelBindings)
         .values({ ...input, createdAt: Date.now() })
@@ -37,7 +78,9 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/messages") {
-      const input = await jsonInput<MessageAdmission>(request);
+      const decoded = await decodeJson(request, MessageInput);
+      if (decoded._tag === "Invalid") return badRequest();
+      const input: MessageAdmission = decoded.value;
       const rows = await directory
         .select({ agentId: channelBindings.agentId })
         .from(channelBindings)
@@ -60,16 +103,16 @@ export default {
       return Response.json(await agent.inspectFoundation());
     }
     if (request.method === "POST" && action === "cancel") {
-      const input = await jsonInput<{ readonly submissionId: string }>(request);
+      const decoded = await decodeJson(request, CancellationInput);
+      if (decoded._tag === "Invalid") return badRequest();
+      const input = decoded.value;
       await agent.cancelTurn(input.submissionId);
       return Response.json({ cancelled: true, submissionId: input.submissionId });
     }
     if (request.method === "POST" && action === "schedule") {
-      const input = await jsonInput<{
-        readonly delaySeconds: number;
-        readonly reminderId: string;
-        readonly text: string;
-      }>(request);
+      const decoded = await decodeJson(request, ReminderInput);
+      if (decoded._tag === "Invalid") return badRequest();
+      const input = decoded.value;
       const schedule = await agent.scheduleReminder(input);
       return Response.json({ schedule });
     }

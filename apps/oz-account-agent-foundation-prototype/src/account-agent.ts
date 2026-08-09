@@ -16,6 +16,7 @@ import { makePrototypeModel } from "./prototype-model.ts";
 export interface PrototypeEnv extends Cloudflare.Env {
   readonly ACCOUNT_AGENT: DurableObjectNamespace<AccountAgent>;
   readonly DIRECTORY: D1Database;
+  readonly PROTOTYPE_TOKEN: string;
 }
 
 export type MessageAdmission = {
