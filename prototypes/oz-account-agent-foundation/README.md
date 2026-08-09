@@ -10,7 +10,7 @@ Oz runtime or queue state machine?
 From the repository root:
 
 ```sh
-bun run --cwd apps/oz-account-agent-foundation-prototype prototype
+bun run --cwd prototypes/oz-account-agent-foundation prototype
 ```
 
 Press `x` to drive the complete local acceptance journey, or use each shortcut
@@ -25,7 +25,7 @@ by the TUI. Every route except `/health` requires that token.
 For an automatic local observation pass:
 
 ```sh
-bun run --cwd apps/oz-account-agent-foundation-prototype prototype:probe
+bun run --cwd prototypes/oz-account-agent-foundation prototype:probe
 ```
 
 ## What the lab makes concrete
@@ -60,7 +60,7 @@ or placement behavior. After authenticating Wrangler, run:
 ```sh
 export OZ_PROTOTYPE_TOKEN="replace-with-a-random-secret"
 export OPENROUTER_API_KEY="replace-with-an-openrouter-key"
-ALCHEMY_STAGE=live bun run --cwd apps/oz-account-agent-foundation-prototype alchemy deploy --stage live
+ALCHEMY_STAGE=live bun run --cwd prototypes/oz-account-agent-foundation alchemy deploy --stage live
 ```
 
 Then drive the same HTTP routes against the exported URL and repeat the process
@@ -91,7 +91,7 @@ messages-per-second stress lane and a post-stress recovery lane.
 export OZ_LOAD_ORIGIN="https://replace-with-live-worker.workers.dev"
 export OZ_LOAD_TOKEN="$OZ_PROTOTYPE_TOKEN"
 export OZ_LOAD_SOURCE_REVISION="$(git rev-parse HEAD)"
-bun run --cwd apps/oz-account-agent-foundation-prototype prototype:load
+bun run --cwd prototypes/oz-account-agent-foundation prototype:load
 ```
 
 The live deployment uses the pinned `openai/gpt-5-nano` model through

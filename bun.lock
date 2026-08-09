@@ -79,7 +79,7 @@
         "vitest": "catalog:",
       },
     },
-    "apps/oz-account-agent-foundation-prototype": {
+    "prototypes/oz-account-agent-foundation": {
       "name": "@osfo/oz-account-agent-foundation-prototype",
       "version": "0.0.0",
       "dependencies": {
@@ -760,7 +760,7 @@
 
     "@osfo/outbox-relay": ["@osfo/outbox-relay@workspace:apps/outbox-relay"],
 
-    "@osfo/oz-account-agent-foundation-prototype": ["@osfo/oz-account-agent-foundation-prototype@workspace:apps/oz-account-agent-foundation-prototype"],
+    "@osfo/oz-account-agent-foundation-prototype": ["@osfo/oz-account-agent-foundation-prototype@workspace:prototypes/oz-account-agent-foundation"],
 
     "@osfo/session": ["@osfo/session@workspace:packages/session"],
 

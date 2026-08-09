@@ -3,7 +3,8 @@
   "private": true,
   "workspaces": [
     "apps/*",
-    "packages/*"
+    "packages/*",
+    "prototypes/oz-account-agent-foundation"
   ],
   "type": "module",
   "scripts": {
