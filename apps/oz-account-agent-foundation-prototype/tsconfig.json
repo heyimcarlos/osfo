@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "allowImportingTsExtensions": true,
+    "composite": true,
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": ["alchemy.run.ts", "src/**/*.ts", "src/**/*.d.ts", "src/**/*.js"]
+}

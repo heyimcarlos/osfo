@@ -1,0 +1,31 @@
+{
+  "name": "@osfo/oz-account-agent-foundation-prototype",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:server": "alchemy dev",
+    "prototype": "bun src/prototype-tui.ts",
+    "prototype:probe": "bun src/prototype-tui.ts --probe",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/think": "0.15.1",
+    "@effect/platform-bun": "4.0.0-beta.103",
+    "@effect/platform-node": "catalog:",
+    "@effect/sql-mysql2": "4.0.0-beta.103",
+    "agents": "0.20.1",
+    "ai": "7.0.58",
+    "alchemy": "2.0.0-beta.70",
+    "drizzle-orm": "catalog:",
+    "effect": "catalog:",
+    "mysql2": "3.15.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260809.1",
+    "@types/node": "catalog:",
+    "drizzle-kit": "catalog:",
+    "typescript": "catalog:"
+  }
+}
