@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json.schemastore.org/tsconfig",
+  "$schema": "./node_modules/@effect/language-service/schema.json",
   "compilerOptions": {
     "target": "ES2022",
     "module": "Preserve",

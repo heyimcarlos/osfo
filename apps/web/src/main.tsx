@@ -28,7 +28,9 @@ const application = Exit.match(storedAuthority, {
     const config = decodeReferenceClientConfig({
       ...authority,
       baseUrl: globalThis.location.origin,
-      clientInstanceId: new URLSearchParams(globalThis.location.search).get("device") ?? "local",
+      clientInstanceId:
+        new URLSearchParams(globalThis.location.search).get("device") ??
+        "local",
     });
     return Exit.match(config, {
       onFailure: () => <ConfigurationRequired />,

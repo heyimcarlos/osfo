@@ -1,14 +1,21 @@
 # Osfo Context
 
-Osfo defines reusable semantics for agent systems. Deployable products compose
-Osfo without making their product-specific rules part of Osfo.
+Osfo is the TypeScript integration library around Oz's selected Agent Harness.
+Oz is the product and owns its product-specific rules.
 
 ## Language
 
 **Osfo**:
-A reusable semantic foundation for building agent systems. Products depend on
-Osfo; they do not define its domain.
-_Avoid_: TryAgent backend, product application
+A TypeScript library that translates one selected Agent Harness into Effect
+and contains reusable agent-integration behavior needed by Oz. Osfo v1 does not
+promise harness portability or reproduce the selected harness's generic runtime.
+_Avoid_: Agent builder, universal harness abstraction, TryAgent backend, product application
+
+**Agent Harness**:
+The selected third-party TypeScript framework that owns generic model and tool
+loops, context behavior, delegation, and any native execution semantics Oz
+adopts. Oz and Osfo extend or translate it without rebuilding the same machinery.
+_Avoid_: Model provider, Osfo runtime, Messaging Adapter
 
 **Agent Application**:
 A deployable agent product that selects, configures, and constrains reusable
@@ -18,15 +25,15 @@ _Avoid_: Product Composition, Osfo instance, Osfo product
 
 **Reference Agent Application**:
 An Agent Application maintained to prove and document how reusable Osfo
-modules compose. Oz is the initial reference and remains a deployable product,
-not a temporary demonstration harness.
+modules compose, rather than to serve as the product being sold.
 _Avoid_: Reference Product Composition, Osfo core, throwaway sample
 
 **Oz**:
-The initial Reference Agent Application built with Osfo. Oz v1 is a
-Single-Thread Agent. Oz is a long-lived, deployable Agent Application, not a
-disposable demo or test harness.
-_Avoid_: Osfo, TryAgent
+The WhatsApp-first personal agent product for non-technical users, with Apple
+Messages as its second required channel. Each user has a durable, private
+identity, memory, files, skills, triggers, and connected accounts, while task
+compute is temporary and isolated.
+_Avoid_: Osfo, TryAgent, Reference Agent Application, dedicated Agent Box
 
 **Production Workload Envelope**:
 The topology-neutral demand model that relates incoming messages to derived
@@ -95,14 +102,83 @@ devices used to participate in it. The term describes conversational identity,
 not compute concurrency.
 _Avoid_: Single-threaded process, one worker per agent
 
+**Channel Identity**:
+A messaging-provider-asserted identifier for one sender, such as a WhatsApp
+sender ID. It authenticates the channel interaction but is not the user's
+durable Oz ownership identity or sole recovery credential.
+_Avoid_: Oz Account, Principal, phone-number account
+
+**Provisional Oz Identity**:
+The limited durable identity Oz creates when an unlinked Channel Identity first
+messages it. It owns the initial conversation state until a verified Oz Account
+claims it.
+_Avoid_: Guest session, anonymous Thread, permanent account
+
+**Oz Account**:
+The verified durable user identity that claims a Provisional Oz Identity and
+owns subscription entitlements, recovery, and connected accounts. Oz creates
+or binds it only after email verification.
+_Avoid_: Channel Identity, WhatsApp account, Stripe customer
+
+**Channel Binding**:
+A revocable association between a Channel Identity and an Oz Account. It lets
+messages from that provider identity act as the account without making the
+phone number the account or recovery authority. Adding or replacing a binding
+requires account recovery verification; replacing one revokes the obsolete
+binding. In v1, an Oz Account has at most one active binding for each messaging
+provider, while bindings for different providers may coexist. Oz may require
+renewed verification when risk signals change.
+_Avoid_: Authentication Session, permanent phone login, conversation ownership
+
+**Account Claim**:
+The onboarding transition in which a user verifies an email address, creates or
+recovers an Oz Account, and attaches the Provisional Oz Identity through a
+Channel Binding. The claim preserves the existing Thread and Managed Starter
+Allowance.
+_Avoid_: New conversation, phone-number registration, paid subscription
+
 **Principal**:
-The authenticated actor whose work shares admission limits and scheduler
-fairness policy. Oz v1 maps one authenticated user to one Principal.
+The actor whose work shares admission limits and scheduler fairness policy. A
+Provisional Oz Identity is the Principal before account claim; its verified Oz
+Account becomes the Principal after claim.
 _Avoid_: Thread, device, parent AgentRun, tenant hierarchy
+
+**Managed Starter Allowance**:
+A strict cost-weighted model-usage budget Oz grants to a Principal so the first
+conversation is immediately useful without a Provider Connection. It begins on
+the Provisional Oz Identity and follows the Principal when an Oz Account claims
+that identity. It is not a raw message count because different requests have
+materially different model and tool costs.
+_Avoid_: Message limit, unlimited free tier, provider credit
+
+**Provider Connection**:
+Revocable, user-owned model access that Oz verifies and stores outside
+conversation history. A connection may use a provider-supported authorization
+flow or a write-only API secret entered through an authenticated web surface.
+Oz never asks a user to paste provider secrets into WhatsApp.
+_Avoid_: Managed Starter Allowance, model picker, secret in chat
+
+**Model Access Policy**:
+The Oz-owned rule that chooses managed or user-connected model access for a
+request, applies its cost budget, and selects a declared fallback. A successful
+Provider Connection can become primary while managed access remains an
+explicit starter or fallback path.
+_Avoid_: Model Adapter, provider credential, hard-coded model
 
 **Authentication Session**:
 Independently revocable authentication state through which a client acts as one
-Principal. It does not own Thread identity, cursor progress, or device identity.
+Principal. Web account-management sessions are short-lived and renewable. A
+WhatsApp message is authenticated by its Channel Identity and authorized by its
+Channel Binding, not by placing a web token in the conversation. Authentication
+Sessions do not own Thread identity, cursor progress, or device identity.
+_Avoid_: Channel Binding, Oz Account, permanent bearer token
+
+**Verified Capability Gate**:
+The rule that requires Account Claim before Oz accepts cost-intensive or
+sensitive work, including delegated research, document generation, sandbox
+execution, and connected-account actions. Initial conversation, basic memory,
+and a bounded reminder remain available to a Provisional Oz Identity.
+_Avoid_: Payment gate, Managed Starter Allowance, blanket registration wall
 
 **Thread**:
 The canonical ordered conversational scope of a Single-Thread Agent, owned by
@@ -139,6 +215,26 @@ A versioned, complete, self-consistent client projection of one Thread through
 cursor H. It is derived from canonical ThreadEvents and can bootstrap or replace
 client-derived state. It is not canonical history and does not replace or
 rewrite ThreadEvents.
+
+**Oz Memory System**:
+The complete product capability that combines a Principal's Thread Memory and
+Knowledge Base to preserve continuity and personalize future work. The model's
+context window is a temporary projection of this system, not a durable memory
+store.
+_Avoid_: Knowledge Base, context window, memory provider
+
+**Thread Memory**:
+The Thread-scoped conversational record and working state needed to continue the
+canonical conversation, including messages, tool interactions, and bounded
+context projections. Knowledge promoted for durable personal recall belongs in
+the Knowledge Base instead.
+_Avoid_: Knowledge Base, user profile, model context
+
+**Knowledge Base**:
+The Principal's durable second brain containing learned memories and connected
+knowledge sources used for recall and personalization. Conversation history and
+compaction remain Thread Memory unless useful knowledge is promoted from them.
+_Avoid_: Thread history, context window, product database
 
 **Context Projection**:
 A versioned, rebuildable Thread-scoped derivation of canonical ThreadEvent
