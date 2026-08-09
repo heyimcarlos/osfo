@@ -1,0 +1,514 @@
+{
+  "services": [
+    {
+      "apiVersion": "serving.knative.dev/v1",
+      "kind": "Service",
+      "metadata": {
+        "annotations": {
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "569.0.0",
+          "run.googleapis.com/ingress": "all",
+          "run.googleapis.com/ingress-status": "all",
+          "run.googleapis.com/maxScale": "8",
+          "run.googleapis.com/operation-id": "23f4560f-53ff-4eb7-8808-4f5f262958bd",
+          "run.googleapis.com/urls": "[\"https://osfo-b3-152-mm-ingress-189278282706.northamerica-northeast1.run.app\",\"https://osfo-b3-152-mm-ingress-hzr7upuh7q-nn.a.run.app\"]"
+        },
+        "creationTimestamp": "2026-08-09T05:56:21.391286Z",
+        "generation": 1,
+        "labels": {
+          "cloud.googleapis.com/location": "northamerica-northeast1",
+          "run.googleapis.com/satisfiesPzs": "true"
+        },
+        "name": "osfo-b3-152-mm-ingress",
+        "namespace": "189278282706",
+        "resourceVersion": "AAZYluXu4YQ",
+        "selfLink": "/apis/serving.knative.dev/v1/namespaces/189278282706/services/osfo-b3-152-mm-ingress",
+        "uid": "6f5adb0c-a00c-49a8-b0c8-14cacd7f8b39"
+      },
+      "spec": {
+        "template": {
+          "metadata": {
+            "annotations": {
+              "run.googleapis.com/client-name": "gcloud",
+              "run.googleapis.com/client-version": "569.0.0",
+              "run.googleapis.com/cloudsql-instances": "even-affinity-497006-u6:northamerica-northeast1:osfo-b3-152-mm-sql",
+              "run.googleapis.com/cpu-throttling": "true",
+              "run.googleapis.com/startup-cpu-boost": "true"
+            },
+            "labels": {
+              "client.knative.dev/nonce": "svvjvblmsw",
+              "run.googleapis.com/startupProbeType": "Default"
+            }
+          },
+          "spec": {
+            "containerConcurrency": 80,
+            "containers": [
+              {
+                "command": [
+                  "/b3-ingress"
+                ],
+                "env": [
+                  {
+                    "name": "DB_POOL_SIZE",
+                    "value": "8"
+                  },
+                  {
+                    "name": "B3_SEQUENCE_STRIPES",
+                    "value": "64"
+                  },
+                  {
+                    "name": "B3_INFLIGHT_AGENT_RUNS",
+                    "value": "32768"
+                  },
+                  {
+                    "name": "B3_INFLIGHT_BUDGET_STRIPES",
+                    "value": "64"
+                  },
+                  {
+                    "name": "B3_FAIR_DISPATCH_WINDOW",
+                    "value": "0"
+                  },
+                  {
+                    "name": "B3_FAIR_PRINCIPAL_CAPACITY",
+                    "value": "4096"
+                  },
+                  {
+                    "name": "ADMISSION_SLOTS",
+                    "value": "0"
+                  },
+                  {
+                    "name": "CAPTURE_ATTEMPT_EVIDENCE",
+                    "value": "1"
+                  },
+                  {
+                    "name": "DATABASE_URL",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "latest",
+                        "name": "osfo-b3-152-mm-database-url"
+                      }
+                    }
+                  }
+                ],
+                "image": "northamerica-northeast1-docker.pkg.dev/even-affinity-497006-u6/osfo-b3-152-mm-repo/prototype:latest",
+                "ports": [
+                  {
+                    "containerPort": 8080,
+                    "name": "http1"
+                  }
+                ],
+                "resources": {
+                  "limits": {
+                    "cpu": "1",
+                    "memory": "1Gi"
+                  }
+                },
+                "startupProbe": {
+                  "failureThreshold": 1,
+                  "periodSeconds": 240,
+                  "tcpSocket": {
+                    "port": 8080
+                  },
+                  "timeoutSeconds": 240
+                }
+              }
+            ],
+            "serviceAccountName": "osfo-b3-152-mm-ingress@even-affinity-497006-u6.iam.gserviceaccount.com",
+            "timeoutSeconds": 60
+          }
+        },
+        "traffic": [
+          {
+            "latestRevision": true,
+            "percent": 100
+          }
+        ]
+      },
+      "status": {
+        "address": {
+          "url": "https://osfo-b3-152-mm-ingress-hzr7upuh7q-nn.a.run.app"
+        },
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-08-09T05:56:26.240388Z",
+            "status": "True",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-08-09T05:56:22.178245Z",
+            "status": "True",
+            "type": "ConfigurationsReady"
+          },
+          {
+            "lastTransitionTime": "2026-08-09T05:56:26.212393Z",
+            "status": "True",
+            "type": "RoutesReady"
+          }
+        ],
+        "latestCreatedRevisionName": "osfo-b3-152-mm-ingress-00001-hds",
+        "latestReadyRevisionName": "osfo-b3-152-mm-ingress-00001-hds",
+        "observedGeneration": 1,
+        "traffic": [
+          {
+            "latestRevision": true,
+            "percent": 100,
+            "revisionName": "osfo-b3-152-mm-ingress-00001-hds"
+          }
+        ],
+        "url": "https://osfo-b3-152-mm-ingress-hzr7upuh7q-nn.a.run.app"
+      }
+    },
+    {
+      "apiVersion": "serving.knative.dev/v1",
+      "kind": "Service",
+      "metadata": {
+        "annotations": {
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "569.0.0",
+          "run.googleapis.com/ingress": "all",
+          "run.googleapis.com/ingress-status": "all",
+          "run.googleapis.com/maxScale": "16",
+          "run.googleapis.com/operation-id": "aace5eb2-662a-4f91-86d0-cd4b55806dc3",
+          "run.googleapis.com/urls": "[\"https://osfo-b3-152-mm-worker-189278282706.northamerica-northeast1.run.app\",\"https://osfo-b3-152-mm-worker-hzr7upuh7q-nn.a.run.app\"]"
+        },
+        "creationTimestamp": "2026-08-09T05:56:06.073300Z",
+        "generation": 1,
+        "labels": {
+          "cloud.googleapis.com/location": "northamerica-northeast1",
+          "run.googleapis.com/satisfiesPzs": "true"
+        },
+        "name": "osfo-b3-152-mm-worker",
+        "namespace": "189278282706",
+        "resourceVersion": "AAZYluUrcws",
+        "selfLink": "/apis/serving.knative.dev/v1/namespaces/189278282706/services/osfo-b3-152-mm-worker",
+        "uid": "12a561b9-62a3-4d58-a8ea-46708804fccd"
+      },
+      "spec": {
+        "template": {
+          "metadata": {
+            "annotations": {
+              "run.googleapis.com/client-name": "gcloud",
+              "run.googleapis.com/client-version": "569.0.0",
+              "run.googleapis.com/cloudsql-instances": "even-affinity-497006-u6:northamerica-northeast1:osfo-b3-152-mm-sql",
+              "run.googleapis.com/cpu-throttling": "true",
+              "run.googleapis.com/startup-cpu-boost": "true"
+            },
+            "labels": {
+              "client.knative.dev/nonce": "oyxfnyztqk",
+              "run.googleapis.com/startupProbeType": "Default"
+            }
+          },
+          "spec": {
+            "containerConcurrency": 32,
+            "containers": [
+              {
+                "env": [
+                  {
+                    "name": "ROLE",
+                    "value": "push"
+                  },
+                  {
+                    "name": "DB_POOL_SIZE",
+                    "value": "4"
+                  },
+                  {
+                    "name": "WORKER_SLOTS",
+                    "value": "32"
+                  },
+                  {
+                    "name": "CLAIM_LEASE_SECONDS",
+                    "value": "15"
+                  },
+                  {
+                    "name": "MODEL_PROVIDER",
+                    "value": "openrouter"
+                  },
+                  {
+                    "name": "OPENROUTER_MODEL",
+                    "value": "openai/gpt-5-nano"
+                  },
+                  {
+                    "name": "DATABASE_URL",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "latest",
+                        "name": "osfo-b3-152-mm-database-url"
+                      }
+                    }
+                  },
+                  {
+                    "name": "OPENROUTER_API_KEY",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "latest",
+                        "name": "osfo-b3-152-mm-openrouter-api-key"
+                      }
+                    }
+                  }
+                ],
+                "image": "northamerica-northeast1-docker.pkg.dev/even-affinity-497006-u6/osfo-b3-152-mm-repo/prototype:latest",
+                "ports": [
+                  {
+                    "containerPort": 8080,
+                    "name": "http1"
+                  }
+                ],
+                "resources": {
+                  "limits": {
+                    "cpu": "1",
+                    "memory": "1Gi"
+                  }
+                },
+                "startupProbe": {
+                  "failureThreshold": 1,
+                  "periodSeconds": 240,
+                  "tcpSocket": {
+                    "port": 8080
+                  },
+                  "timeoutSeconds": 240
+                }
+              }
+            ],
+            "serviceAccountName": "osfo-b3-152-mm-worker@even-affinity-497006-u6.iam.gserviceaccount.com",
+            "timeoutSeconds": 600
+          }
+        },
+        "traffic": [
+          {
+            "latestRevision": true,
+            "percent": 100
+          }
+        ]
+      },
+      "status": {
+        "address": {
+          "url": "https://osfo-b3-152-mm-worker-hzr7upuh7q-nn.a.run.app"
+        },
+        "conditions": [
+          {
+            "lastTransitionTime": "2026-08-09T05:56:13.432587Z",
+            "status": "True",
+            "type": "Ready"
+          },
+          {
+            "lastTransitionTime": "2026-08-09T05:56:12.720874Z",
+            "status": "True",
+            "type": "ConfigurationsReady"
+          },
+          {
+            "lastTransitionTime": "2026-08-09T05:56:13.402073Z",
+            "status": "True",
+            "type": "RoutesReady"
+          }
+        ],
+        "latestCreatedRevisionName": "osfo-b3-152-mm-worker-00001-2r9",
+        "latestReadyRevisionName": "osfo-b3-152-mm-worker-00001-2r9",
+        "observedGeneration": 1,
+        "traffic": [
+          {
+            "latestRevision": true,
+            "percent": 100,
+            "revisionName": "osfo-b3-152-mm-worker-00001-2r9"
+          }
+        ],
+        "url": "https://osfo-b3-152-mm-worker-hzr7upuh7q-nn.a.run.app"
+      }
+    }
+  ],
+  "sql": [
+    {
+      "backendType": "SECOND_GEN",
+      "connectionName": "even-affinity-497006-u6:northamerica-northeast1:osfo-b3-152-mm-sql",
+      "createTime": "2026-08-09T05:51:02.342Z",
+      "databaseInstalledVersion": "POSTGRES_17_10",
+      "databaseVersion": "POSTGRES_17",
+      "etag": "279b9e7775229cb0ac7c2b29b90233103fa57199445d8584ffbea81875eb2291",
+      "gceZone": "northamerica-northeast1-c",
+      "geminiConfig": {
+        "activeQueryEnabled": false,
+        "entitled": false,
+        "googleVacuumMgmtEnabled": false,
+        "indexAdvisorEnabled": false,
+        "oomSessionCancelEnabled": true
+      },
+      "includeReplicasForMajorVersionUpgrade": false,
+      "instanceType": "CLOUD_SQL_INSTANCE",
+      "ipAddresses": [
+        {
+          "ipAddress": "35.203.59.38",
+          "type": "PRIMARY"
+        },
+        {
+          "ipAddress": "35.203.64.233",
+          "type": "OUTGOING"
+        }
+      ],
+      "kind": "sql#instance",
+      "maintenanceVersion": "POSTGRES_17_10.R20260319.07_22",
+      "name": "osfo-b3-152-mm-sql",
+      "project": "even-affinity-497006-u6",
+      "region": "northamerica-northeast1",
+      "satisfiesPzi": true,
+      "selfLink": "https://sqladmin.googleapis.com/sql/v1beta4/projects/even-affinity-497006-u6/instances/osfo-b3-152-mm-sql",
+      "serverCaCert": {
+        "cert": "-----BEGIN CERTIFICATE-----\nMIIDcTCCAlmgAwIBAgIBADANBgkqhkiG9w0BAQsFADBwMS0wKwYDVQQuEyQwOTlh\nY2ZkOS00YWUxLTRmOTEtOTY0NS0yYjIwY2NjNTkzYzUxHDAaBgNVBAMTE0Nsb3Vk\nIFNRTCBTZXJ2ZXIgQ0ExFDASBgNVBAoTC0dvb2dsZSwgSW5jMQswCQYDVQQGEwJV\nUzAeFw0yNjA4MDkwNTUwNDZaFw0zNjA4MDYwNTUxNDZaMHAxLTArBgNVBC4TJDA5\nOWFjZmQ5LTRhZTEtNGY5MS05NjQ1LTJiMjBjY2M1OTNjNTEcMBoGA1UEAxMTQ2xv\ndWQgU1FMIFNlcnZlciBDQTEUMBIGA1UEChMLR29vZ2xlLCBJbmMxCzAJBgNVBAYT\nAlVTMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwWRFqsoiPJODGJW1\nkI6Izdq9zCLBcO5CAtiE+EhrzXXRwSNUnhHNQLbnngNPr27/U2w0kIHdVIzuJuYm\nVgYDvR/cRND3GGN7evnA1nNCAj6oUC5H2k7lmbKM5Tl2zLphMdUqXj4dC9Ts8arZ\ndc0WauEjFgCgKQTWRSv2/MNcckLWyXwE4AAMLZ+3WWObrl7MusMVlmZjd7VSRV+t\n+8YmbDCJl+/C/dGAMLhjrrEBgOvacvVLzFZXJxrRLv+Yunz/TAPo/SMPx07ElPoq\nyjAYxJZnfJLz0YCbWac3eimr7QNDzcyFTIyqHmFHf7+t/mf0jQk3Cz26FwpXG4M1\ncfXJYQIDAQABoxYwFDASBgNVHRMBAf8ECDAGAQH/AgEAMA0GCSqGSIb3DQEBCwUA\nA4IBAQBf7Wi99fyE9IPJrkhNJ8AiLNaz/ooIaavWDMTYVTStWh+HlBKFMdvyORSI\nseG1rfHYRf1GvNdBZUVyDt18bwNwBnhjfW9y6weaG5sGsYA/HAZS7cDaISt7YmH1\nZREldRNT/xaJMopbTR0XxI9YWzycQUg+ANQzV6xG+wo9nK08z0gue3HE2WJH/yZt\n7qLe/UoRVS97Mdr7ZAAmgCtxkGPAcshz4YGQ4XO/Lc5cWrMwwcxyYatHSPCNjeiR\nDmokni/4csR5UfoFwnOfDhniJ+DPRyid7ESyW0VS3FkS4EwdSoL8hfEBkFfpWq5U\nAm++rHErMcHL+P/vExf6nyBK+3CJ\n-----END CERTIFICATE-----",
+        "certSerialNumber": "0",
+        "commonName": "C=US,O=Google\\, Inc,CN=Cloud SQL Server CA,dnQualifier=099acfd9-4ae1-4f91-9645-2b20ccc593c5",
+        "createTime": "2026-08-09T05:50:46.086Z",
+        "expirationTime": "2036-08-06T05:51:46.086Z",
+        "instance": "osfo-b3-152-mm-sql",
+        "kind": "sql#sslCert",
+        "sha1Fingerprint": "b10055c559ef278917c94e8a575d4ed57ba4f11e"
+      },
+      "serviceAccountEmailAddress": "p189278282706-v9y6is@gcp-sa-cloud-sql.iam.gserviceaccount.com",
+      "settings": {
+        "activationPolicy": "ALWAYS",
+        "availabilityType": "ZONAL",
+        "backupConfiguration": {
+          "backupRetentionSettings": {
+            "retainedBackups": 7,
+            "retentionUnit": "COUNT"
+          },
+          "backupTier": "STANDARD",
+          "enabled": false,
+          "kind": "sql#backupConfiguration",
+          "startTime": "10:00",
+          "transactionLogRetentionDays": 7,
+          "transactionalLogStorageState": "TRANSACTIONAL_LOG_STORAGE_STATE_UNSPECIFIED"
+        },
+        "connectorEnforcement": "NOT_REQUIRED",
+        "dataDiskSizeGb": "100",
+        "dataDiskType": "PD_SSD",
+        "deletionProtectionEnabled": false,
+        "edition": "ENTERPRISE",
+        "enableDataplexIntegration": true,
+        "ipConfiguration": {
+          "ipv4Enabled": true,
+          "requireSsl": false,
+          "serverCaMode": "GOOGLE_MANAGED_INTERNAL_CA",
+          "serverCertificateRotationMode": "SERVER_CERTIFICATE_ROTATION_MODE_UNSPECIFIED",
+          "sslMode": "ALLOW_UNENCRYPTED_AND_ENCRYPTED"
+        },
+        "kind": "sql#settings",
+        "locationPreference": {
+          "kind": "sql#locationPreference",
+          "zone": "northamerica-northeast1-c"
+        },
+        "pricingPlan": "PER_USE",
+        "replicationLagMaxSeconds": 31536000,
+        "replicationType": "SYNCHRONOUS",
+        "settingsVersion": "1",
+        "storageAutoResize": true,
+        "storageAutoResizeLimit": "0",
+        "tier": "db-custom-4-15360"
+      },
+      "sqlNetworkArchitecture": "NEW_NETWORK_ARCHITECTURE",
+      "state": "RUNNABLE"
+    }
+  ],
+  "topics": [
+    {
+      "name": "projects/even-affinity-497006-u6/topics/osfo-b3-152-mm-agent-runs"
+    }
+  ],
+  "subscriptions": [
+    {
+      "ackDeadlineSeconds": 10,
+      "enableMessageOrdering": true,
+      "expirationPolicy": {
+        "ttl": "2678400s"
+      },
+      "messageRetentionDuration": "604800s",
+      "name": "projects/even-affinity-497006-u6/subscriptions/osfo-b3-152-mm-agent-runs",
+      "pushConfig": {
+        "attributes": {
+          "x-goog-version": "v1"
+        },
+        "oidcToken": {
+          "audience": "https://osfo-b3-152-mm-worker-hzr7upuh7q-nn.a.run.app",
+          "serviceAccountEmail": "osfo-b3-152-mm-push-auth@even-affinity-497006-u6.iam.gserviceaccount.com"
+        },
+        "pushEndpoint": "https://osfo-b3-152-mm-worker-hzr7upuh7q-nn.a.run.app/v1/pubsub/push"
+      },
+      "retryPolicy": {
+        "maximumBackoff": "600s",
+        "minimumBackoff": "10s"
+      },
+      "state": "ACTIVE",
+      "topic": "projects/even-affinity-497006-u6/topics/osfo-b3-152-mm-agent-runs"
+    }
+  ],
+  "repositories": [
+    {
+      "createTime": "2026-08-09T05:50:59.828388Z",
+      "format": "DOCKER",
+      "mode": "STANDARD_REPOSITORY",
+      "name": "projects/even-affinity-497006-u6/locations/northamerica-northeast1/repositories/osfo-b3-152-mm-repo",
+      "satisfiesPzi": true,
+      "satisfiesPzs": true,
+      "sizeBytes": "62036795",
+      "updateTime": "2026-08-09T05:55:58.200432Z",
+      "vulnerabilityScanningConfig": {
+        "enablementState": "SCANNING_DISABLED",
+        "enablementStateReason": "API containerscanning.googleapis.com is not enabled.",
+        "lastEnableTime": "2026-08-09T05:50:59.088519059Z"
+      }
+    }
+  ],
+  "secrets": [
+    {
+      "createTime": "2026-08-09T05:53:57.822052Z",
+      "etag": "\"165896dd180444\"",
+      "name": "projects/189278282706/secrets/osfo-b3-152-mm-database-url",
+      "replication": {
+        "automatic": {}
+      }
+    },
+    {
+      "createTime": "2026-08-09T05:54:02.321777Z",
+      "etag": "\"165896dd5cb050\"",
+      "name": "projects/189278282706/secrets/osfo-b3-152-mm-openrouter-api-key",
+      "replication": {
+        "automatic": {}
+      }
+    }
+  ],
+  "service_accounts": [
+    {
+      "disabled": false,
+      "email": "osfo-b3-152-mm-ingress@even-affinity-497006-u6.iam.gserviceaccount.com",
+      "etag": "MDEwMjE5MjA=",
+      "name": "projects/even-affinity-497006-u6/serviceAccounts/osfo-b3-152-mm-ingress@even-affinity-497006-u6.iam.gserviceaccount.com",
+      "oauth2ClientId": "118269184961352400697",
+      "projectId": "even-affinity-497006-u6",
+      "uniqueId": "118269184961352400697"
+    },
+    {
+      "disabled": false,
+      "email": "osfo-b3-152-mm-worker@even-affinity-497006-u6.iam.gserviceaccount.com",
+      "etag": "MDEwMjE5MjA=",
+      "name": "projects/even-affinity-497006-u6/serviceAccounts/osfo-b3-152-mm-worker@even-affinity-497006-u6.iam.gserviceaccount.com",
+      "oauth2ClientId": "102717291517324311479",
+      "projectId": "even-affinity-497006-u6",
+      "uniqueId": "102717291517324311479"
+    },
+    {
+      "disabled": false,
+      "email": "osfo-b3-152-mm-relay@even-affinity-497006-u6.iam.gserviceaccount.com",
+      "etag": "MDEwMjE5MjA=",
+      "name": "projects/even-affinity-497006-u6/serviceAccounts/osfo-b3-152-mm-relay@even-affinity-497006-u6.iam.gserviceaccount.com",
+      "oauth2ClientId": "108175243412359067202",
+      "projectId": "even-affinity-497006-u6",
+      "uniqueId": "108175243412359067202"
+    },
+    {
+      "disabled": false,
+      "email": "osfo-b3-152-mm-push-auth@even-affinity-497006-u6.iam.gserviceaccount.com",
+      "etag": "MDEwMjE5MjA=",
+      "name": "projects/even-affinity-497006-u6/serviceAccounts/osfo-b3-152-mm-push-auth@even-affinity-497006-u6.iam.gserviceaccount.com",
+      "oauth2ClientId": "104357769184667267453",
+      "projectId": "even-affinity-497006-u6",
+      "uniqueId": "104357769184667267453"
+    }
+  ]
+}

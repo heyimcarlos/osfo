@@ -1,0 +1,95 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "delivery_type": "webhook",
+          "response_code": "ack_204",
+          "response_class": "ack"
+        },
+        "type": "pubsub.googleapis.com/subscription/push_request_count"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "subscription_id": "osfo-b3-152-mm-agent-runs",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-09T06:00:00Z",
+            "endTime": "2026-08-09T06:01:00Z"
+          },
+          "value": {
+            "int64Value": "5315"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "delivery_type": "webhook",
+          "response_code": "webhook_timeout",
+          "response_class": "deadline_exceeded"
+        },
+        "type": "pubsub.googleapis.com/subscription/push_request_count"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "subscription_id": "osfo-b3-152-mm-agent-runs"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-09T06:00:00Z",
+            "endTime": "2026-08-09T06:01:00Z"
+          },
+          "value": {
+            "int64Value": "3"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "delivery_type": "webhook",
+          "response_code": "url_4xx_error_403",
+          "response_class": "remote_server_4xx"
+        },
+        "type": "pubsub.googleapis.com/subscription/push_request_count"
+      },
+      "resource": {
+        "type": "pubsub_subscription",
+        "labels": {
+          "project_id": "even-affinity-497006-u6",
+          "subscription_id": "osfo-b3-152-mm-agent-runs"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-09T06:00:00Z",
+            "endTime": "2026-08-09T06:01:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

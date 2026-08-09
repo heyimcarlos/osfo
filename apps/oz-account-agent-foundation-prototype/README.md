@@ -82,7 +82,7 @@ claim that nondeterministic production observation.
 
 ## Live load characterization
 
-The load probe reuses the frozen GCP caller-to-durable-receipt contract: uniform
+The load probe reuses the GCP caller-to-durable-receipt contract: uniform
 open-loop arrivals at 232 messages per second, 100 percent acceptance, and at
 least 99.9 percent of receipts within one second. It adds a bounded 464
 messages-per-second stress lane and a post-stress recovery lane.
@@ -98,14 +98,19 @@ The live deployment uses the pinned `openai/gpt-5-nano` model through
 OpenRouter, limits each turn to eight output tokens, and records durable receipt
 latency separately from model-backed terminal completion latency. The local
 lifecycle probe alone retains the deterministic model so process interruption
-and recovery remain reproducible. The GCP workload derived 1.5 AgentRuns per
-incoming message, while this Cloudflare workload maps one message to one
-account-agent turn. Treat the result as a topology characterization, not
-production qualification.
+and recovery remain reproducible. The real-model GCP comparison maps one
+message to one AgentRun, just as Cloudflare maps one message to one
+account-agent turn. Cloudflare Think assembled accumulated account session
+history and distributed requests across 1,024 accounts. The reused GCP B3
+harness sent no prior session history and carried no Principal or Thread
+identity. Treat the result as a topology characterization, not production
+qualification.
 
 The checksummed [live model-backed evidence](./evidence/cloudflare-live-model-backed-20260809/EVIDENCE.md)
 accepted and completed all 21,340 turns without duplicates or terminal
 failures. The matched 232 messages-per-second target failed the historical
 receipt SLO: p95 was 1660.245 ms and p99 was 2272.104 ms, compared with the
-frozen GCP result of 20.435 ms and 91.173 ms. The 23 messages-per-second
-post-stress lane recovered to p95 307.057 ms and p99 379.278 ms.
+real-model GCP result of 58.820 ms and 140.839 ms. The older GCP result of
+20.435 ms and 91.173 ms used a synthetic 15 ms executor. The 23
+messages-per-second post-stress lane recovered to p95 307.057 ms and p99
+379.278 ms.

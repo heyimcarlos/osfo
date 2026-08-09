@@ -1,5 +1,19 @@
 {
-  "gcp": {
+  "gcpMatchedModel": {
+    "agentRunsPerMessage": 1,
+    "artifact": "prototypes/pubsub-worker-seam/evidence/b3-matched-model-152/results.json",
+    "callerToReceiptMs": {
+      "maximum": 376.425,
+      "p50": 35.422,
+      "p95": 58.82,
+      "p99": 140.839
+    },
+    "model": "openai/gpt-5-nano",
+    "offered": 13920,
+    "ratePerSecond": 232,
+    "verdict": "PASS"
+  },
+  "gcpHistoricalSynthetic": {
     "artifact": "prototypes/pubsub-worker-seam/evidence/b3-flow-control-8/load/warm-target-qualified-232-1/audit.json",
     "callerToReceiptMs": {
       "maximum": 385.255,
@@ -13,8 +27,11 @@
   },
   "limitations": [
     "Both target lanes measure caller-to-durable-receipt latency under open-loop arrivals.",
-    "The Cloudflare lane maps one message to one account-agent turn; the GCP lane derived 1.5 AgentRuns per incoming message.",
-    "The Cloudflare deployment uses OpenRouter with openai/gpt-5-nano and an eight-token output cap.",
+    "The real-model lanes use one agent turn per message, openai/gpt-5-nano, the same system instruction and current user message, and an eight-token output cap.",
+    "Cloudflare Think assembled accumulated account session history. The reused GCP B3 harness sent the fixed system and current user messages without prior session history.",
+    "The reused GCP lane carried no Principal or Thread identity. Cloudflare distributed requests across 1,024 account identities.",
+    "OpenRouter response token and cache telemetry is MISSING. Provider account usage deltas do not explain the latency difference by themselves.",
+    "The older GCP result is preserved as historical synthetic evidence and is not the real-model comparator.",
     "The client ran from the local Toronto development host; this is a characterization, not production qualification."
   ]
 }

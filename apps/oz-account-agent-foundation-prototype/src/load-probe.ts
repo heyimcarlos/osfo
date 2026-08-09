@@ -552,9 +552,9 @@ ${summaries
   )
   .join("\n")}
 
-The frozen GCP short target accepted 13,920 messages at 232/s with caller-to-receipt p95 20.435 ms and p99 91.173 ms. The matched Cloudflare target recorded p95 ${targetLane?.callerToReceiptMs.p95.toFixed(3) ?? "MISSING"} ms and p99 ${targetLane?.callerToReceiptMs.p99.toFixed(3) ?? "MISSING"} ms.
+The real-model GCP target accepted 13,920 messages at 232/s with caller-to-receipt p95 58.820 ms and p99 140.839 ms. The Cloudflare target recorded p95 ${targetLane?.callerToReceiptMs.p95.toFixed(3) ?? "MISSING"} ms and p99 ${targetLane?.callerToReceiptMs.p99.toFixed(3) ?? "MISSING"} ms.
 
-The terminal audit records acceptance-to-completion, queue, and model duration separately. The Cloudflare workload maps one message to one account-agent turn. The GCP workload derived 1.5 AgentRuns per incoming message. This run is a topology characterization from a Toronto client, not production qualification.
+Both candidates used one agent turn per message and the same external model, system instruction, current user message, output cap, and arrival lanes. Cloudflare Think assembled accumulated account session history and distributed requests across 1,024 accounts. The reused GCP B3 harness sent no prior session history and carried no Principal or Thread identity. This is a topology characterization from a Toronto client, not production qualification.
 
 Cloudflare provider CPU and duration telemetry, a server-side D1 versus Durable Object versus Think receipt-stage breakdown, Cloudflare infrastructure cost, multi-region clients, and sustained production qualification are **MISSING**. The measured cost is OpenRouter model usage only.
 `;
@@ -631,7 +631,16 @@ const program = Effect.gen(function* () {
   yield* Effect.promise(() => sleep(30_000));
   const usageAfter = yield* readOpenRouterUsage();
   const comparison = {
-    gcp: {
+    gcpMatchedModel: {
+      agentRunsPerMessage: 1,
+      artifact: "prototypes/pubsub-worker-seam/evidence/b3-matched-model-152/results.json",
+      callerToReceiptMs: { maximum: 376.425, p50: 35.422, p95: 58.82, p99: 140.839 },
+      model: "openai/gpt-5-nano",
+      offered: 13_920,
+      ratePerSecond: 232,
+      verdict: "PASS",
+    },
+    gcpHistoricalSynthetic: {
       artifact:
         "prototypes/pubsub-worker-seam/evidence/b3-flow-control-8/load/warm-target-qualified-232-1/audit.json",
       callerToReceiptMs: { maximum: 385.255, p50: 11.6865, p95: 20.435, p99: 91.17282 },
@@ -641,8 +650,11 @@ const program = Effect.gen(function* () {
     },
     limitations: [
       "Both target lanes measure caller-to-durable-receipt latency under open-loop arrivals.",
-      "The Cloudflare lane maps one message to one account-agent turn; the GCP lane derived 1.5 AgentRuns per incoming message.",
-      "The Cloudflare deployment uses OpenRouter with openai/gpt-5-nano and an eight-token output cap.",
+      "The real-model lanes use one agent turn per message, openai/gpt-5-nano, the same system instruction and current user message, and an eight-token output cap.",
+      "Cloudflare Think assembled accumulated account session history. The reused GCP B3 harness sent the fixed system and current user messages without prior session history.",
+      "The reused GCP lane carried no Principal or Thread identity. Cloudflare distributed requests across 1,024 account identities.",
+      "OpenRouter response token and cache telemetry is MISSING. Provider account usage deltas do not explain the latency difference by themselves.",
+      "The older GCP result is preserved as historical synthetic evidence and is not the real-model comparator.",
       "The client ran from the local Toronto development host; this is a characterization, not production qualification.",
     ],
   };

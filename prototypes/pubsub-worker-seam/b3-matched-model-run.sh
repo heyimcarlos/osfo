@@ -42,6 +42,17 @@ openrouter_usage() {
     jq -e '.data.usage'
 }
 
+receipt_slo() {
+  local lane=$1
+  gzip -cd "$evidence_root/load/$lane/caller-samples.jsonl.gz" |
+    jq -s '{
+      threshold_ms:1000,
+      within_threshold:([.[] | select(.latency_ms <= 1000)] | length),
+      within_threshold_ratio:(([.[] | select(.latency_ms <= 1000)] | length) / length),
+      verdict:(if (([.[] | select(.latency_ms <= 1000)] | length) / length) >= 0.999 then "PASS" else "FAIL" end)
+    }'
+}
+
 cleanup() {
   local status=$?
   trap - EXIT
@@ -73,6 +84,7 @@ b3 load post-stress-23 23 10 1
 
 sleep 30
 usage_after=$(openrouter_usage)
+source_revision=$(git -C "$prototype_dir/../.." rev-parse HEAD)
 jq -n \
   --argjson before "$usage_before" \
   --argjson after "$usage_after" \
@@ -87,14 +99,20 @@ jq -n \
   --slurpfile warmAudit "$evidence_root/load/warm-up-23-1/audit.json" \
   --slurpfile targetAudit "$evidence_root/load/target-232-1/audit.json" \
   --slurpfile stressAudit "$evidence_root/load/stress-464-1/audit.json" \
-  --slurpfile recoveryAudit "$evidence_root/load/post-stress-23-1/audit.json" '
-  def lane($name; $rate; $duration; $caller; $audit): {
+  --slurpfile recoveryAudit "$evidence_root/load/post-stress-23-1/audit.json" \
+  --arg sourceRevision "$source_revision" \
+  --argjson warmSlo "$(receipt_slo warm-up-23-1)" \
+  --argjson targetSlo "$(receipt_slo target-232-1)" \
+  --argjson stressSlo "$(receipt_slo stress-464-1)" \
+  --argjson recoverySlo "$(receipt_slo post-stress-23-1)" '
+  def lane($name; $rate; $duration; $caller; $audit; $slo): {
     name:$name,
     rate_per_second:$rate,
     duration_seconds:$duration,
     offered:$caller[0].count,
     accepted:($caller[0].outcomes | map(select(.outcome == "accepted") | .count) | add // 0),
     caller_to_receipt_ms:$caller[0].latency_ms,
+    receipt_slo:$slo,
     authoritative_agent_runs:$audit[0].authoritative_agent_runs,
     succeeded_agent_runs:$audit[0].succeeded_agent_runs,
     claim_to_terminal_ms:$audit[0].claim_to_terminal_ms,
@@ -104,16 +122,25 @@ jq -n \
   };
   {
     schema_version:1,
+    source_revision:$sourceRevision,
     candidate:"gcp-b3-transactional-outbox-openrouter",
     model:"openai/gpt-5-nano",
     system_prompt:"Reply with exactly OK and no other text.",
     output_token_cap:8,
     agent_runs_per_message:1,
+    limitations:[
+      "Both candidates used openai/gpt-5-nano, the same system instruction, current user message, eight-token output cap, one agent turn per message, and the same arrival lanes.",
+      "Cloudflare Think assembled accumulated account session history. The reused GCP B3 harness sent the fixed system and current user messages without prior session history.",
+      "OpenRouter response token and cache telemetry is MISSING. model-usage.json records only the immediate provider account usage delta.",
+      "The GCP candidate used the prior B3 transactional-outbox topology with at most 16 workers and 32 concurrent handlers per worker. Cloudflare used 1,024 named account-agent Durable Objects.",
+      "The reused GCP lane carried no Principal or Thread identity. Cloudflare distributed requests across 1,024 account identities.",
+      "The client ran from the local Toronto development host. This is a non-production characterization."
+    ],
     lanes:[
-      lane("warm-up-23";23;10;$warm;$warmAudit),
-      lane("target-232";232;60;$target;$targetAudit),
-      lane("stress-464";464;15;$stress;$stressAudit),
-      lane("post-stress-23";23;10;$recovery;$recoveryAudit)
+      lane("warm-up-23";23;10;$warm;$warmAudit;$warmSlo),
+      lane("target-232";232;60;$target;$targetAudit;$targetSlo),
+      lane("stress-464";464;15;$stress;$stressAudit;$stressSlo),
+      lane("post-stress-23";23;10;$recovery;$recoveryAudit;$recoverySlo)
     ]
   }
 ' >"$evidence_root/results.json"

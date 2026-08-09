@@ -1345,7 +1345,7 @@ capture_inventory() {
     --argjson repositories "$(gcloud artifacts repositories list --location="$region" --filter="name~$prefix" --format=json)" \
     --argjson secrets "$(gcloud secrets list --filter="name~$prefix" --format=json)" \
     --argjson service_accounts "$(gcloud iam service-accounts list --filter="email~$prefix" --format=json)" \
-    '{services:$services,sql:$sql,topics:$topics,subscriptions:$subscriptions,repositories:$repositories,secrets:$secrets,service_accounts:$service_accounts}' >"$destination"
+    '{services:($services | map(del(.metadata.annotations["serving.knative.dev/creator"], .metadata.annotations["serving.knative.dev/lastModifier"]))),sql:$sql,topics:$topics,subscriptions:$subscriptions,repositories:$repositories,secrets:$secrets,service_accounts:$service_accounts}' >"$destination"
 }
 
 seal_directory() {

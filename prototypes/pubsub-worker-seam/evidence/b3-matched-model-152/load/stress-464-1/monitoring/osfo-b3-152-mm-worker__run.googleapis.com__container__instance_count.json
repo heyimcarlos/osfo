@@ -1,0 +1,67 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "state": "active"
+        },
+        "type": "run.googleapis.com/container/instance_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-b3-152-mm-worker",
+          "revision_name": "osfo-b3-152-mm-worker-00001-2r9",
+          "configuration_name": "osfo-b3-152-mm-worker",
+          "location": "northamerica-northeast1",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-09T06:01:00Z",
+            "endTime": "2026-08-09T06:01:00Z"
+          },
+          "value": {
+            "int64Value": "15"
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "state": "idle"
+        },
+        "type": "run.googleapis.com/container/instance_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "configuration_name": "osfo-b3-152-mm-worker",
+          "location": "northamerica-northeast1",
+          "service_name": "osfo-b3-152-mm-worker",
+          "project_id": "even-affinity-497006-u6",
+          "revision_name": "osfo-b3-152-mm-worker-00001-2r9"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-09T06:01:00Z",
+            "endTime": "2026-08-09T06:01:00Z"
+          },
+          "value": {
+            "int64Value": "0"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}
