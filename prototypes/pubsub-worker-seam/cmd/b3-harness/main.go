@@ -44,6 +44,7 @@ func run(ctx context.Context, args []string) error {
 	agentRunText := flags.String("agent-run", "", "AgentRun UUID")
 	lane := flags.String("lane", "", "lane name")
 	expected := flags.Int("expected-incoming", 0, "expected incoming messages")
+	expectedAgentRuns := flags.Int("expected-agent-runs", 0, "expected AgentRuns, defaults to the historical 1.5 per message")
 	ordinal := flags.Int("ordinal", 0, "incoming-message ordinal")
 	attempt := flags.Int("attempt", 1, "caller attempt number")
 	fault := flags.String("fault", b3.NoFault, "injected admission or relay fault")
@@ -129,6 +130,9 @@ func run(ctx context.Context, args []string) error {
 	case "prepare":
 		if *lane == "" || *expected <= 0 {
 			return fmt.Errorf("--lane and positive --expected-incoming are required")
+		}
+		if *expectedAgentRuns > 0 {
+			return database.PrepareB3WithExpectedRuns(ctx, benchmarkID, "b3-transactional-outbox", *lane, *expected, *expectedAgentRuns)
 		}
 		return database.PrepareB3(ctx, benchmarkID, "b3-transactional-outbox", *lane, *expected)
 	case "admit":

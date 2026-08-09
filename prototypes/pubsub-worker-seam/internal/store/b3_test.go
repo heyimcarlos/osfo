@@ -41,3 +41,14 @@ func TestB3BudgetStripeDistributesAgentRunObligations(t *testing.T) {
 		}
 	}
 }
+
+func TestB3AgentRunIDsForCountSupportsMatchedModelLoad(t *testing.T) {
+	benchmarkID := uuid.MustParse("7b6019a3-bf9c-4b40-b39a-acde50fa07f8")
+	ids := B3AgentRunIDsForCount(benchmarkID, 7, 1)
+	if len(ids) != 1 {
+		t.Fatalf("AgentRun IDs = %d, want 1", len(ids))
+	}
+	if ids[0] != B3AgentRunIDsForCount(benchmarkID, 7, 1)[0] {
+		t.Fatal("matched AgentRun ID is not deterministic")
+	}
+}

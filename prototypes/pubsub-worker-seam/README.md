@@ -36,6 +36,23 @@ manifest. `collect` adds filtered Cloud Monitoring time series after their
 normal ingestion delay. Generated evidence is intentionally ignored until the
 selected results are sealed for the prototype branch.
 
+## Matched live-model comparison
+
+The ticket 152 comparison reuses the B3 GCP topology without repeating its
+historical fault and qualification campaigns. It changes only two workload
+inputs: one AgentRun per message and a real `openai/gpt-5-nano` OpenRouter call
+with the same prompt and eight-token cap as the Cloudflare prototype.
+
+```bash
+export OPENROUTER_API_KEY="replace-with-an-openrouter-key"
+./b3-matched-model-run.sh
+```
+
+The command provisions resources under the isolated `osfo-b3-152-mm` prefix,
+runs one provider smoke and the four matched load lanes, seals the evidence,
+and deletes every manifest-owned GCP resource. It does not rerun the earlier
+cut matrix, process-loss, fairness, retention, or saturation programs.
+
 ## Safety
 
 This prototype uses synthetic AgentRun IDs only. It never scans PostgreSQL for
