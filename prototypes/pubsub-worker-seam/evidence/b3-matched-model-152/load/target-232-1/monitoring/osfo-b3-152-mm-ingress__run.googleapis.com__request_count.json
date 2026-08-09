@@ -1,0 +1,47 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code": "201",
+          "response_code_class": "2xx",
+          "route": ""
+        },
+        "type": "run.googleapis.com/request_count"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-b3-152-mm-ingress",
+          "configuration_name": "osfo-b3-152-mm-ingress",
+          "location": "northamerica-northeast1",
+          "revision_name": "osfo-b3-152-mm-ingress-00001-hds",
+          "project_id": "even-affinity-497006-u6"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "INT64",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-09T05:59:00.001Z",
+            "endTime": "2026-08-09T06:00:00Z"
+          },
+          "value": {
+            "int64Value": "11624"
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-09T05:58:00.001Z",
+            "endTime": "2026-08-09T05:59:00Z"
+          },
+          "value": {
+            "int64Value": "2526"
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "1"
+}

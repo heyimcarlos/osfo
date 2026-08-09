@@ -1,0 +1,141 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "response_code_class": "2xx",
+          "route": "",
+          "response_code": "201"
+        },
+        "type": "run.googleapis.com/request_latencies"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "service_name": "osfo-b3-152-mm-ingress",
+          "configuration_name": "osfo-b3-152-mm-ingress",
+          "revision_name": "osfo-b3-152-mm-ingress-00001-hds",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-09T05:59:00.001Z",
+            "endTime": "2026-08-09T06:00:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "11624",
+              "mean": 18.896286500099954,
+              "sumOfSquaredDeviation": 5473659.7558829123,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "22",
+                "560",
+                "1961",
+                "2707",
+                "2268",
+                "1482",
+                "889",
+                "504",
+                "301",
+                "187",
+                "128",
+                "91",
+                "56",
+                "57",
+                "49",
+                "38",
+                "39",
+                "28",
+                "19",
+                "26",
+                "17",
+                "11",
+                "17",
+                "15",
+                "8",
+                "24",
+                "12",
+                "18",
+                "12",
+                "21",
+                "9",
+                "6",
+                "7",
+                "5",
+                "7",
+                "10",
+                "8",
+                "5"
+              ]
+            }
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-08-09T05:58:00.001Z",
+            "endTime": "2026-08-09T05:59:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "count": "2526",
+              "mean": 19.518254583961621,
+              "sumOfSquaredDeviation": 603947.95851169992,
+              "bucketOptions": {
+                "exponentialBuckets": {
+                  "numFiniteBuckets": 135,
+                  "growthFactor": 1.1,
+                  "scale": 10
+                }
+              },
+              "bucketCounts": [
+                "0",
+                "5",
+                "191",
+                "515",
+                "511",
+                "327",
+                "238",
+                "153",
+                "129",
+                "84",
+                "81",
+                "58",
+                "41",
+                "25",
+                "21",
+                "15",
+                "14",
+                "12",
+                "14",
+                "13",
+                "13",
+                "13",
+                "8",
+                "6",
+                "7",
+                "8",
+                "11",
+                "10",
+                "3"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "ms"
+}

@@ -26,7 +26,7 @@ func TestOfferRetriesServerFailureWithSameLogicalRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result := offer(context.Background(), server.Client(), server.URL, "", uuid.New(), 1, time.Now(), "", "")
+	result := offer(context.Background(), server.Client(), server.URL, "", uuid.New(), 1, time.Now(), "", "", 0)
 	if result.CallerOutcome != "accepted" || result.HTTPAttempts != 2 || requests.Load() != 2 {
 		t.Fatalf("result = %#v, requests = %d", result, requests.Load())
 	}
@@ -42,7 +42,7 @@ func TestOfferDoesNotRetryTypedOverload(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result := offer(context.Background(), server.Client(), server.URL, "", uuid.New(), 1, time.Now(), "", "")
+	result := offer(context.Background(), server.Client(), server.URL, "", uuid.New(), 1, time.Now(), "", "", 0)
 	if result.CallerOutcome != "rejected" || result.RetryAfterMS != 250 || result.HTTPAttempts != 1 || requests.Load() != 1 {
 		t.Fatalf("result = %#v, requests = %d", result, requests.Load())
 	}

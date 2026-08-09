@@ -33,6 +33,7 @@ type Handler struct {
 	Lease    time.Duration
 	Slots    chan struct{}
 	Logger   *slog.Logger
+	Model    ModelExecutor
 }
 
 type Result string
@@ -97,24 +98,30 @@ func (h Handler) HandleAt(ctx context.Context, envelope Envelope, messageID stri
 		os.Exit(86)
 	}
 	runtime := agentruntime.Standard{}
+	model := h.Model
+	if model == nil {
+		model = SyntheticModelExecutor{}
+	}
 	proposal, err := runtime.ProposeNextStep(agentruntime.CurrentState{})
 	if err != nil || proposal.Kind != agentruntime.ProposeModelCall {
 		record(ctx, "runtime_proposal_rejected")
 		return Nack
 	}
-	modelAttempt, err := h.Store.CommitModelCallAttempt(ctx, *claim.Run, proposal.NormalizedIntent)
+	modelAttempt, err := h.Store.CommitModelCallAttemptWithBinding(
+		ctx,
+		*claim.Run,
+		proposal.NormalizedIntent,
+		model.BindingRef(),
+	)
 	if err != nil {
 		h.Logger.Error("model intent commit failed", "run_id", envelope.AgentRunID, "error", err)
 		record(ctx, "model_intent_commit_failed")
 		return Nack
 	}
-	timer := time.NewTimer(claim.Run.Workload)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		record(context.Background(), "context_canceled")
+	if err := model.Execute(ctx, claim.Run.Workload); err != nil {
+		h.Logger.Error("model execution failed", "run_id", envelope.AgentRunID, "error", err)
+		record(context.Background(), "model_execution_failed")
 		return Nack
-	case <-timer.C:
 	}
 	proposal, err = runtime.ProposeNextStep(agentruntime.CurrentState{ModelCallCommitted: true, ModelCallSucceeded: true})
 	if err != nil || proposal.Kind != agentruntime.ProposeAgentRunSuccess {

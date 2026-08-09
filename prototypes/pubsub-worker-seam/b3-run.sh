@@ -25,6 +25,10 @@ ack_deadline=${B3_ACK_DEADLINE:-10}
 reset_subscription_before_lane=${B3_RESET_SUBSCRIPTION:-1}
 load_principal_count=${B3_LOAD_PRINCIPAL_COUNT:-0}
 load_threads_per_principal=${B3_LOAD_THREADS_PER_PRINCIPAL:-1}
+model_provider=${B3_MODEL_PROVIDER:-synthetic}
+openrouter_model=${B3_OPENROUTER_MODEL:-openai/gpt-5-nano}
+agent_runs_per_message=${B3_AGENT_RUNS_PER_MESSAGE:-0}
+capture_full_topology=${B3_CAPTURE_FULL_TOPOLOGY:-1}
 case "$sequence_stripes" in
   4|16|64) ;;
   *) echo "B3_SEQUENCE_STRIPES must be 4, 16, or 64" >&2; exit 2 ;;
@@ -86,6 +90,18 @@ if [[ ! "$load_principal_count" =~ ^[0-9]+$ ]] || [[ ! "$load_threads_per_princi
   echo "B3_LOAD_PRINCIPAL_COUNT must be non-negative and B3_LOAD_THREADS_PER_PRINCIPAL must be positive" >&2
   exit 2
 fi
+case "$model_provider" in
+  synthetic|openrouter) ;;
+  *) echo "B3_MODEL_PROVIDER must be synthetic or openrouter" >&2; exit 2 ;;
+esac
+if [[ ! "$agent_runs_per_message" =~ ^[0-9]+$ ]] || (( agent_runs_per_message > 8 )); then
+  echo "B3_AGENT_RUNS_PER_MESSAGE must be from 0 through 8" >&2
+  exit 2
+fi
+case "$capture_full_topology" in
+  0|1) ;;
+  *) echo "B3_CAPTURE_FULL_TOPOLOGY must be 0 or 1" >&2; exit 2 ;;
+esac
 if [[ "$experiment" == "transactional-outbox" ]]; then
   state_file="$prototype_dir/.b3-run.env"
   default_prefix=osfo-b3-38
@@ -102,6 +118,7 @@ else
     qualification-runtime-budget) default_prefix="osfo-b3-38-qrb" ;;
     fairness-window) default_prefix="osfo-b3-50-fair" ;;
     fairness-window-v2) default_prefix="osfo-b3-50-fair2" ;;
+    matched-model-152) default_prefix="osfo-b3-152-mm" ;;
     *) default_prefix="osfo-b3-38-$experiment" ;;
   esac
 fi
@@ -123,6 +140,7 @@ relay_service="$prefix-relay"
 topic_id="$prefix-agent-runs"
 subscription_id="$prefix-agent-runs"
 database_secret="$prefix-database-url"
+openrouter_secret="$prefix-openrouter-api-key"
 proxy_port=55438
 proxy_pid=""
 
@@ -236,6 +254,16 @@ provision() {
     gcloud secrets add-iam-policy-binding "$database_secret" \
       --member="serviceAccount:$account" --role=roles/secretmanager.secretAccessor --condition=None --quiet >/dev/null
   done
+  if [[ "$model_provider" == "openrouter" ]]; then
+    : "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required for the matched model lane}"
+    if gcloud secrets describe "$openrouter_secret" >/dev/null 2>&1; then
+      printf '%s' "$OPENROUTER_API_KEY" | gcloud secrets versions add "$openrouter_secret" --data-file=- >/dev/null
+    else
+      printf '%s' "$OPENROUTER_API_KEY" | gcloud secrets create "$openrouter_secret" --replication-policy=automatic --data-file=- >/dev/null
+    fi
+    gcloud secrets add-iam-policy-binding "$openrouter_secret" \
+      --member="serviceAccount:$worker_service_account" --role=roles/secretmanager.secretAccessor --condition=None --quiet >/dev/null
+  fi
 
   umask 077
   {
@@ -249,12 +277,16 @@ provision() {
   gcloud builds submit "$prototype_dir" --tag="$image_uri" --project="$project_id"
 
   gcloud pubsub topics describe "$topic_id" >/dev/null 2>&1 || gcloud pubsub topics create "$topic_id"
+  local worker_secret_bindings="DATABASE_URL=$database_secret:latest"
+  if [[ "$model_provider" == "openrouter" ]]; then
+    worker_secret_bindings+=",OPENROUTER_API_KEY=$openrouter_secret:latest"
+  fi
   gcloud run deploy "$worker_service" --image="$image_uri" --region="$region" --project="$project_id" \
     --service-account="$worker_service_account" --no-allow-unauthenticated --cpu=1 --memory=1Gi \
     --concurrency="$worker_concurrency" --min="$worker_min_instances" --max="$worker_max_instances" --cpu-throttling --timeout=600 \
     --add-cloudsql-instances="$sql_connection_name" \
-    --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="ROLE=push,DB_POOL_SIZE=$worker_db_pool,WORKER_SLOTS=$worker_slots,CLAIM_LEASE_SECONDS=15"
+    --set-secrets="$worker_secret_bindings" \
+    --set-env-vars="ROLE=push,DB_POOL_SIZE=$worker_db_pool,WORKER_SLOTS=$worker_slots,CLAIM_LEASE_SECONDS=15,MODEL_PROVIDER=$model_provider,OPENROUTER_MODEL=$openrouter_model"
   gcloud run services add-iam-policy-binding "$worker_service" --region="$region" \
     --member="serviceAccount:$push_auth_service_account" --role=roles/run.invoker --condition=None --quiet >/dev/null
   worker_url=$(gcloud run services describe "$worker_service" --region="$region" --format='value(status.url)')
@@ -275,18 +307,24 @@ provision() {
     --member="user:$active_account" --role=roles/run.invoker --condition=None --quiet >/dev/null
 
   capture_inventory "$evidence_root/provisioned-inventory.json"
-  capture_frozen_topology "$evidence_root/frozen-topology"
+  if [[ "$capture_full_topology" == "1" ]]; then
+    capture_frozen_topology "$evidence_root/frozen-topology"
+  fi
 }
 
 deploy_images() {
   load_state
   gcloud builds submit "$prototype_dir" --tag="$image_uri" --project="$project_id"
+  local worker_secret_bindings="DATABASE_URL=$database_secret:latest"
+  if [[ "$model_provider" == "openrouter" ]]; then
+    worker_secret_bindings+=",OPENROUTER_API_KEY=$openrouter_secret:latest"
+  fi
   gcloud run deploy "$worker_service" --image="$image_uri" --region="$region" --project="$project_id" \
     --service-account="$worker_service_account" --no-allow-unauthenticated --cpu=1 --memory=1Gi \
     --concurrency="$worker_concurrency" --min="$worker_min_instances" --max="$worker_max_instances" --cpu-throttling --timeout=600 \
     --add-cloudsql-instances="$sql_connection_name" \
-    --set-secrets="DATABASE_URL=$database_secret:latest" \
-    --set-env-vars="ROLE=push,DB_POOL_SIZE=$worker_db_pool,WORKER_SLOTS=$worker_slots,CLAIM_LEASE_SECONDS=15"
+    --set-secrets="$worker_secret_bindings" \
+    --set-env-vars="ROLE=push,DB_POOL_SIZE=$worker_db_pool,WORKER_SLOTS=$worker_slots,CLAIM_LEASE_SECONDS=15,MODEL_PROVIDER=$model_provider,OPENROUTER_MODEL=$openrouter_model"
   gcloud run deploy "$ingress_service" --image="$image_uri" --command=/b3-ingress \
     --region="$region" --project="$project_id" --service-account="$ingress_service_account" \
     --no-allow-unauthenticated --cpu=1 --memory=1Gi --concurrency="$ingress_concurrency" \
@@ -360,7 +398,9 @@ run_cut_matrix() {
   start_proxy
   local destination="$evidence_root/cut-matrix"
   mkdir -p "$destination"
-  capture_frozen_topology "$destination/topology"
+  if [[ "$capture_full_topology" == "1" ]]; then
+    capture_frozen_topology "$destination/topology"
+  fi
   local started_at
   started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   (cd "$prototype_dir" && \
@@ -648,11 +688,18 @@ load_lane() {
     reset_subscription
   fi
   start_proxy
+  local prepare_args=()
+  if (( agent_runs_per_message > 0 )); then
+    prepare_args=(--expected-agent-runs="$((count * agent_runs_per_message))")
+  fi
   (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness prepare \
-    --benchmark="$benchmark_id" --lane="$lane-$repetition" --expected-incoming="$count")
+    --benchmark="$benchmark_id" --lane="$lane-$repetition" --expected-incoming="$count" \
+    "${prepare_args[@]}")
   (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness diagnostics \
     --benchmark="$benchmark_id") >"$destination/database-before.json"
-  capture_frozen_topology "$destination/topology"
+  if [[ "$capture_full_topology" == "1" ]]; then
+    capture_frozen_topology "$destination/topology"
+  fi
   ingress_url=$(gcloud run services describe "$ingress_service" --region="$region" --format='value(status.url)')
   local identity_token
   identity_token=$(gcloud auth print-identity-token)
@@ -662,16 +709,38 @@ load_lane() {
   if (( load_principal_count > 0 )); then
     identity_args=(--principal-count="$load_principal_count" --thread-count="$load_threads_per_principal")
   fi
+  local agent_run_args=()
+  if (( agent_runs_per_message > 0 )); then
+    agent_run_args=(--agent-runs-per-message="$agent_runs_per_message")
+  fi
   (cd "$prototype_dir" && GCP_IDENTITY_TOKEN="$identity_token" go run ./cmd/b3-load \
     --url="$ingress_url" --benchmark="$benchmark_id" --rate="$rate" --end-rate="$end_rate" \
-    --duration="${duration}s" --count="$count" "${identity_args[@]}" \
+    --duration="${duration}s" --count="$count" "${identity_args[@]}" "${agent_run_args[@]}" \
     >"$destination/caller-samples.jsonl" 2>"$destination/load-client.log")
   summarize_caller_samples "$destination/caller-samples.jsonl" "$destination/caller-summary.json"
   local offer_ended_at
   offer_ended_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  sleep 60
-  (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness audit \
-    --benchmark="$benchmark_id" --expected-incoming="$count") >"$destination/audit.json"
+  if [[ "$model_provider" == "openrouter" ]]; then
+    local drain_deadline=$((SECONDS + 900))
+    while true; do
+      (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness audit \
+        --benchmark="$benchmark_id" --expected-incoming="$count") >"$destination/audit.json"
+      if jq -e \
+        '.nonterminal_agent_runs == 0 and .model_calls == .authoritative_agent_runs' \
+        "$destination/audit.json" >/dev/null; then
+        break
+      fi
+      if (( SECONDS >= drain_deadline )); then
+        echo "$destination did not drain model-backed work within 900 seconds" >&2
+        break
+      fi
+      sleep 10
+    done
+  else
+    sleep 60
+    (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness audit \
+      --benchmark="$benchmark_id" --expected-incoming="$count") >"$destination/audit.json"
+  fi
   if (( fair_dispatch_window > 0 )); then
     (cd "$prototype_dir" && DATABASE_URL=$(local_database_url) go run ./cmd/b3-harness fair-snapshot \
       --benchmark="$benchmark_id") >"$destination/final-fairness-snapshot.json"
@@ -1276,7 +1345,7 @@ capture_inventory() {
     --argjson repositories "$(gcloud artifacts repositories list --location="$region" --filter="name~$prefix" --format=json)" \
     --argjson secrets "$(gcloud secrets list --filter="name~$prefix" --format=json)" \
     --argjson service_accounts "$(gcloud iam service-accounts list --filter="email~$prefix" --format=json)" \
-    '{services:$services,sql:$sql,topics:$topics,subscriptions:$subscriptions,repositories:$repositories,secrets:$secrets,service_accounts:$service_accounts}' >"$destination"
+    '{services:($services | map(del(.metadata.annotations["serving.knative.dev/creator"], .metadata.annotations["serving.knative.dev/lastModifier"]))),sql:$sql,topics:$topics,subscriptions:$subscriptions,repositories:$repositories,secrets:$secrets,service_accounts:$service_accounts}' >"$destination"
 }
 
 seal_directory() {
@@ -1310,6 +1379,7 @@ teardown() {
   gcloud pubsub subscriptions delete "$subscription_id" --quiet
   gcloud pubsub topics delete "$topic_id" --quiet
   gcloud secrets delete "$database_secret" --quiet
+  gcloud secrets delete "$openrouter_secret" --quiet
   gcloud sql instances delete "$sql_instance" --quiet
   gcloud artifacts repositories delete "$artifact_repository" --location="$region" --quiet
   gcloud iam service-accounts delete "$worker_service_account" --quiet

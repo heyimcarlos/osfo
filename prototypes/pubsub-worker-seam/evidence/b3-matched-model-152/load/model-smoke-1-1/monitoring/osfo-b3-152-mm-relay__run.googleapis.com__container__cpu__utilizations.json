@@ -1,0 +1,40 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "type": "run.googleapis.com/container/cpu/utilizations"
+      },
+      "resource": {
+        "type": "cloud_run_revision",
+        "labels": {
+          "revision_name": "osfo-b3-152-mm-relay-00001-8sj",
+          "service_name": "osfo-b3-152-mm-relay",
+          "project_id": "even-affinity-497006-u6",
+          "location": "northamerica-northeast1",
+          "configuration_name": "osfo-b3-152-mm-relay"
+        }
+      },
+      "metricKind": "DELTA",
+      "valueType": "DISTRIBUTION",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-08-09T05:56:00.001Z",
+            "endTime": "2026-08-09T05:57:00Z"
+          },
+          "value": {
+            "distributionValue": {
+              "bucketOptions": {
+                "linearBuckets": {
+                  "numFiniteBuckets": 100,
+                  "width": 0.01
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "10^2.%"
+}

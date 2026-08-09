@@ -272,6 +272,10 @@ func (s *Store) tryClaim(ctx context.Context, connection *pgxpool.Conn, runID, b
 }
 
 func (s *Store) CommitModelCallAttempt(ctx context.Context, run Run, normalizedIntent string) (CommittedModelCallAttempt, error) {
+	return s.CommitModelCallAttemptWithBinding(ctx, run, normalizedIntent, "benchmark/deterministic-binding-v1")
+}
+
+func (s *Store) CommitModelCallAttemptWithBinding(ctx context.Context, run Run, normalizedIntent, bindingRef string) (CommittedModelCallAttempt, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return CommittedModelCallAttempt{}, err
@@ -301,10 +305,9 @@ func (s *Store) CommitModelCallAttempt(ctx context.Context, run Run, normalizedI
 		INSERT INTO model_call_attempts
 			(id, model_call_id, agent_run_id, claim_epoch, attempt_ordinal, binding_ref,
 			 adapter_compatibility_identity, idempotency_key)
-		VALUES ($1, $2, $3, $4, $5, 'benchmark/deterministic-binding-v1',
-		        'deterministic-go/v1', $6)
+		VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
 		ON CONFLICT (id) DO NOTHING`, attemptID, modelCallID, run.ID, run.ClaimEpoch,
-		int(run.ClaimEpoch), idempotencyKey); err != nil {
+		int(run.ClaimEpoch), bindingRef, idempotencyKey); err != nil {
 		return CommittedModelCallAttempt{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -312,7 +315,7 @@ func (s *Store) CommitModelCallAttempt(ctx context.Context, run Run, normalizedI
 	}
 	return CommittedModelCallAttempt{
 		ID: attemptID, ModelCallID: modelCallID, AgentRunID: run.ID,
-		ClaimEpoch: run.ClaimEpoch, BindingRef: "benchmark/deterministic-binding-v1",
+		ClaimEpoch: run.ClaimEpoch, BindingRef: bindingRef,
 		IdempotencyKey: idempotencyKey,
 	}, nil
 }

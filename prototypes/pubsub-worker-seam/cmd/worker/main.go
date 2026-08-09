@@ -49,6 +49,17 @@ func run(logger *slog.Logger) error {
 		Lease: time.Duration(leaseSeconds) * time.Second,
 		Slots: make(chan struct{}, slots), Logger: logger,
 	}
+	switch value("MODEL_PROVIDER", "synthetic") {
+	case "synthetic":
+		handler.Model = worker.SyntheticModelExecutor{}
+	case "openrouter":
+		handler.Model = worker.NewOpenRouterModelExecutor(
+			required("OPENROUTER_API_KEY"),
+			value("OPENROUTER_MODEL", worker.MatchedOpenRouterModel),
+		)
+	default:
+		return fmt.Errorf("invalid MODEL_PROVIDER %q", os.Getenv("MODEL_PROVIDER"))
+	}
 	switch role {
 	case "push":
 		server := &http.Server{Addr: ":" + value("PORT", "8080"), Handler: handler.HTTPHandler(), ReadHeaderTimeout: 5 * time.Second}

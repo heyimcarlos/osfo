@@ -56,6 +56,7 @@ func run(ctx context.Context) error {
 	threadPrefix := flags.String("thread-prefix", "thread", "Thread identity prefix for the fairness lane")
 	threadCount := flags.Int("thread-count", 1, "number of Threads used by each Principal")
 	ordinalOffset := flags.Int("ordinal-offset", 0, "ordinal offset for concurrent Principal streams")
+	agentRunsPerMessage := flags.Int("agent-runs-per-message", 0, "fixed AgentRun count per message, defaults to the historical replay distribution")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -109,7 +110,7 @@ func run(ctx context.Context) error {
 			defer func() { <-semaphore }()
 			ordinal := *ordinalOffset + streamOrdinal
 			principalIdentity, thread := loadIdentity(streamOrdinal, *principal, *principalCount, *threadPrefix, *threadCount)
-			samples <- offer(ctx, client, *url, *accessToken, benchmarkID, ordinal, scheduledAt, principalIdentity, thread)
+			samples <- offer(ctx, client, *url, *accessToken, benchmarkID, ordinal, scheduledAt, principalIdentity, thread, *agentRunsPerMessage)
 		}(streamOrdinal, scheduledAt)
 	}
 	wait.Wait()
@@ -149,13 +150,14 @@ func scheduledOffset(ordinal, count int, duration time.Duration, startRate, endR
 	return time.Duration(seconds * float64(time.Second))
 }
 
-func offer(ctx context.Context, client *http.Client, url, accessToken string, benchmarkID uuid.UUID, ordinal int, scheduledAt time.Time, principal, thread string) sample {
+func offer(ctx context.Context, client *http.Client, url, accessToken string, benchmarkID uuid.UUID, ordinal int, scheduledAt time.Time, principal, thread string, agentRunCount int) sample {
 	offeredAt := time.Now().UTC()
 	identity := fmt.Sprintf("%s/%d", benchmarkID, ordinal)
 	requestBody := store.B3Request{
 		BenchmarkID: benchmarkID, Ordinal: ordinal, Attempt: 1,
 		Idempotency: "b3/" + identity, RequestHash: "sha256:b3/" + identity,
 		Fault: "none", Principal: principal, Thread: thread,
+		AgentRunCount: agentRunCount,
 	}
 	body, _ := json.Marshal(requestBody)
 	const attempts = 3

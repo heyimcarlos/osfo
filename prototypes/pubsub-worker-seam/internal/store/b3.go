@@ -26,15 +26,16 @@ var ErrB3FairDispatchUnavailable = errors.New("Principal-first dispatch window i
 var ErrB3PrincipalBudgetExhausted = errors.New("Principal durable-obligation budget exhausted")
 
 type B3Request struct {
-	BenchmarkID uuid.UUID `json:"benchmark_id"`
-	Ordinal     int       `json:"ordinal"`
-	Attempt     int       `json:"attempt"`
-	Idempotency string    `json:"idempotency_key"`
-	RequestHash string    `json:"request_hash"`
-	Fault       string    `json:"fault"`
-	HardCrash   bool      `json:"hard_crash"`
-	Principal   string    `json:"principal_key,omitempty"`
-	Thread      string    `json:"thread_key,omitempty"`
+	BenchmarkID   uuid.UUID `json:"benchmark_id"`
+	Ordinal       int       `json:"ordinal"`
+	Attempt       int       `json:"attempt"`
+	Idempotency   string    `json:"idempotency_key"`
+	RequestHash   string    `json:"request_hash"`
+	Fault         string    `json:"fault"`
+	HardCrash     bool      `json:"hard_crash"`
+	Principal     string    `json:"principal_key,omitempty"`
+	Thread        string    `json:"thread_key,omitempty"`
+	AgentRunCount int       `json:"agent_run_count,omitempty"`
 }
 
 type B3Receipt struct {
@@ -161,11 +162,18 @@ type B3Audit struct {
 }
 
 func B3AgentRunIDs(benchmarkID uuid.UUID, ordinal int) []uuid.UUID {
-	namespace := uuid.NewSHA1(uuid.NameSpaceURL, []byte("osfo-b3/"+benchmarkID.String()))
 	count := 1
 	if ordinal%2 == 1 {
 		count = 2
 	}
+	return B3AgentRunIDsForCount(benchmarkID, ordinal, count)
+}
+
+func B3AgentRunIDsForCount(benchmarkID uuid.UUID, ordinal, count int) []uuid.UUID {
+	if count <= 0 {
+		return nil
+	}
+	namespace := uuid.NewSHA1(uuid.NameSpaceURL, []byte("osfo-b3/"+benchmarkID.String()))
 	ids := make([]uuid.UUID, 0, count)
 	for run := 0; run < count; run++ {
 		ids = append(ids, uuid.NewSHA1(namespace, []byte(fmt.Sprintf("%d/%d", ordinal, run))))
@@ -276,7 +284,10 @@ func (s *Store) ConfigureB3InFlightBudget(ctx context.Context, totalCapacity, st
 }
 
 func (s *Store) PrepareB3(ctx context.Context, id uuid.UUID, candidate, lane string, expectedIncoming int) error {
-	expectedRuns := expectedIncoming + expectedIncoming/2
+	return s.PrepareB3WithExpectedRuns(ctx, id, candidate, lane, expectedIncoming, expectedIncoming+expectedIncoming/2)
+}
+
+func (s *Store) PrepareB3WithExpectedRuns(ctx context.Context, id uuid.UUID, candidate, lane string, expectedIncoming, expectedRuns int) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO benchmarks (id, candidate, lane, expected_runs)
 		VALUES ($1, $2, $3, $4)
@@ -360,6 +371,9 @@ func (s *Store) AcceptB3(ctx context.Context, request B3Request, sequenceStripes
 	}
 
 	ids := B3AgentRunIDs(request.BenchmarkID, request.Ordinal)
+	if request.AgentRunCount > 0 {
+		ids = B3AgentRunIDsForCount(request.BenchmarkID, request.Ordinal, request.AgentRunCount)
+	}
 	budgetStripe := B3BudgetStripe(request.Idempotency, budgetStripes)
 	principalBudgetStripe := B3BudgetStripe(request.Idempotency, B3PrincipalBudgetStripes)
 	var acceptedAt time.Time
@@ -917,10 +931,9 @@ func (s *Store) B3FairSnapshot(ctx context.Context, benchmarkID uuid.UUID) (B3Fa
 func (s *Store) AuditB3(ctx context.Context, benchmarkID uuid.UUID, expectedIncoming int) (B3Audit, error) {
 	a := B3Audit{
 		BenchmarkID: benchmarkID, ExpectedIncoming: int64(expectedIncoming),
-		ExpectedAgentRuns:       int64(expectedIncoming + expectedIncoming/2),
 		DeliveryAttemptOutcomes: make(map[string]int64), RelayProgress: make(map[int]int64),
 	}
-	if err := s.pool.QueryRow(ctx, `SELECT candidate, lane FROM benchmarks WHERE id = $1`, benchmarkID).Scan(&a.Candidate, &a.Lane); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT candidate, lane, expected_runs FROM benchmarks WHERE id = $1`, benchmarkID).Scan(&a.Candidate, &a.Lane, &a.ExpectedAgentRuns); err != nil {
 		return B3Audit{}, err
 	}
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM b3_admissions WHERE benchmark_id = $1`, benchmarkID).Scan(&a.AcceptedIncoming); err != nil {
