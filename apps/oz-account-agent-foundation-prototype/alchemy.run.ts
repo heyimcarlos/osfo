@@ -10,7 +10,7 @@ export default Alchemy.Stack(
   "OzAccountAgentFoundationPrototype",
   {
     providers: Layer.mergeAll(Cloudflare.providers(), Drizzle.providers()),
-    state: Alchemy.localState(),
+    state: process.env.ALCHEMY_STAGE === "live" ? Cloudflare.state() : Alchemy.localState(),
   },
   Effect.gen(function* () {
     const directorySchema = yield* Drizzle.Schema("DirectorySchema", {

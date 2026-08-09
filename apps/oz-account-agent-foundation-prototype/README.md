@@ -59,7 +59,7 @@ or placement behavior. After authenticating Wrangler, run:
 
 ```sh
 export OZ_PROTOTYPE_TOKEN="replace-with-a-random-secret"
-bun run --cwd apps/oz-account-agent-foundation-prototype alchemy deploy
+ALCHEMY_STAGE=live bun run --cwd apps/oz-account-agent-foundation-prototype alchemy deploy --stage live
 ```
 
 Then drive the same HTTP routes against the exported URL and repeat the process
@@ -68,8 +68,10 @@ $OZ_PROTOTYPE_TOKEN` on every non-health request. A live deploy is required
 before claiming production hibernation, regional placement, or Alchemy
 resource recovery as passing evidence.
 
-The ticket's live observation pass completed on 2026-08-09. Alchemy created the
-Worker, D1 database, secret binding, and account-agent Durable Object namespace.
+The `live` stage uses Alchemy's Cloudflare-backed state store; other stages keep
+throwaway state locally. The ticket's live observation pass completed on
+2026-08-09. Alchemy created the Worker, D1 database, secret binding, and
+account-agent Durable Object namespace.
 The authenticated route journey proved direct submission, immutable acceptance
 receipts, idempotent retry, cancellation, and alarm delivery. Cloudflare then
 reactivated the same named Durable Object with a new activation ID while its
