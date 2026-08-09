@@ -1,0 +1,35 @@
+{
+  "derivation": "Count accepted caller samples at or below the 1000 ms durable receipt threshold.",
+  "runs": [
+    {
+      "caller_samples_sha256": "758bb3c4beb8a7d65d3937ca7c93e1b0520fb2538c9689fd809488a481696146",
+      "over_threshold": 84,
+      "run": "warm-up-23",
+      "total": 230,
+      "within_threshold_ratio": 0.6347826086956522
+    },
+    {
+      "caller_samples_sha256": "cd525844633af6d39aa35755150eab11da75b725559084aabf7002b47f874a71",
+      "over_threshold": 1847,
+      "run": "target-232",
+      "total": 13920,
+      "within_threshold_ratio": 0.8673132183908046
+    },
+    {
+      "caller_samples_sha256": "aeb1cd2fcf4fbf77b464c95441ea33c268466e16eb4f16927507b5b5b9ec181e",
+      "over_threshold": 6527,
+      "run": "stress-464",
+      "total": 6960,
+      "within_threshold_ratio": 0.06221264367816092
+    },
+    {
+      "caller_samples_sha256": "38d17f2bd3197d596d843d2b412c377a9413b8e6b1300d1a419dbfec4d4680e5",
+      "over_threshold": 0,
+      "run": "post-stress-23",
+      "total": 230,
+      "within_threshold_ratio": 1
+    }
+  ],
+  "schema_version": 1,
+  "threshold_ms": 1000
+}

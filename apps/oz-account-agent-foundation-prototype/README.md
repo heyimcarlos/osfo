@@ -102,3 +102,10 @@ and recovery remain reproducible. The GCP workload derived 1.5 AgentRuns per
 incoming message, while this Cloudflare workload maps one message to one
 account-agent turn. Treat the result as a topology characterization, not
 production qualification.
+
+The checksummed [live model-backed evidence](./evidence/cloudflare-live-model-backed-20260809/EVIDENCE.md)
+accepted and completed all 21,340 turns without duplicates or terminal
+failures. The matched 232 messages-per-second target failed the historical
+receipt SLO: p95 was 1660.245 ms and p99 was 2272.104 ms, compared with the
+frozen GCP result of 20.435 ms and 91.173 ms. The 23 messages-per-second
+post-stress lane recovered to p95 307.057 ms and p99 379.278 ms.

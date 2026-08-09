@@ -1,0 +1,20 @@
+{
+  "gcp": {
+    "artifact": "prototypes/pubsub-worker-seam/evidence/b3-flow-control-8/load/warm-target-qualified-232-1/audit.json",
+    "callerToReceiptMs": {
+      "maximum": 385.255,
+      "p50": 11.6865,
+      "p95": 20.435,
+      "p99": 91.17282
+    },
+    "offered": 13920,
+    "ratePerSecond": 232,
+    "verdict": "PASS"
+  },
+  "limitations": [
+    "Both target lanes measure caller-to-durable-receipt latency under open-loop arrivals.",
+    "The Cloudflare lane maps one message to one account-agent turn; the GCP lane derived 1.5 AgentRuns per incoming message.",
+    "The Cloudflare deployment uses OpenRouter with openai/gpt-5-nano and an eight-token output cap.",
+    "The client ran from the local Toronto development host; this is a characterization, not production qualification."
+  ]
+}

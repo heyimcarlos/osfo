@@ -1,0 +1,12 @@
+{
+  "benchmark_id": "ab7d479d-a89b-466c-b11f-da425fc4dc45",
+  "candidate": "cloudflare-think-account-agent",
+  "completed_at": "2026-08-09T04:53:34.103Z",
+  "environment": "live-cloudflare-non-production",
+  "model": "openai/gpt-5-nano",
+  "output_token_cap": 8,
+  "schema_version": 1,
+  "source_revision": "3bb0377",
+  "started_at": "2026-08-09T04:50:27.487Z",
+  "verdict": "FAIL"
+}

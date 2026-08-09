@@ -290,6 +290,7 @@ const runLane = async (input: {
 const collectTerminalAudit = (input: {
   readonly accounts: readonly { readonly agentId: string }[];
   readonly expected: number;
+  readonly laneNames: readonly string[];
   readonly readState: ReturnType<typeof makeReadState>;
   readonly runId: string;
 }) =>
@@ -329,6 +330,14 @@ const collectTerminalAudit = (input: {
     const completed = submissions.filter(
       (submission) => submission.status === "completed" && submission.completedAt !== undefined,
     );
+    const completedByLane = Object.fromEntries(
+      input.laneNames.map((laneName) => [
+        laneName,
+        completed.filter((submission) =>
+          submission.idempotencyKey.startsWith(`whatsapp:${input.runId}:${laneName}:`),
+        ).length,
+      ]),
+    );
     const terminalDurationMs = completed.map(
       (submission) => (submission.completedAt ?? submission.createdAt) - submission.createdAt,
     );
@@ -353,6 +362,7 @@ const collectTerminalAudit = (input: {
     ).length;
     return {
       completed: completed.length,
+      completedByLane,
       duplicateSubmissionIds: matching.length - submissions.length,
       expected: input.expected,
       failed,
@@ -385,6 +395,7 @@ const writeEvidenceBundle = (input: {
   readonly startedAt: string;
   readonly terminalAudit: Record<string, unknown> & {
     readonly completed: number;
+    readonly completedByLane: Readonly<Record<string, number>>;
   };
   readonly verdict: string;
 }) =>
@@ -508,7 +519,7 @@ const writeEvidenceBundle = (input: {
                   }
                 : undefined,
               comparison: input.comparison,
-              completed: input.terminalAudit.completed,
+              completed: input.terminalAudit.completedByLane["target-232"],
               duration_seconds: target?.durationSeconds,
               lanes: summaries,
               modelUsage: input.modelUsage,
@@ -517,6 +528,7 @@ const writeEvidenceBundle = (input: {
               rejected_or_failed:
                 target === undefined ? undefined : target.offered - target.accepted,
               runId: input.runId,
+              terminal_completed_all_lanes: input.terminalAudit.completed,
               terminalAudit: input.terminalAudit,
               verdict: input.verdict,
             };
@@ -543,6 +555,8 @@ ${summaries
 The frozen GCP short target accepted 13,920 messages at 232/s with caller-to-receipt p95 20.435 ms and p99 91.173 ms. The matched Cloudflare target recorded p95 ${targetLane?.callerToReceiptMs.p95.toFixed(3) ?? "MISSING"} ms and p99 ${targetLane?.callerToReceiptMs.p99.toFixed(3) ?? "MISSING"} ms.
 
 The terminal audit records acceptance-to-completion, queue, and model duration separately. The Cloudflare workload maps one message to one account-agent turn. The GCP workload derived 1.5 AgentRuns per incoming message. This run is a topology characterization from a Toronto client, not production qualification.
+
+Cloudflare provider CPU and duration telemetry, a server-side D1 versus Durable Object versus Think receipt-stage breakdown, Cloudflare infrastructure cost, multi-region clients, and sustained production qualification are **MISSING**. The measured cost is OpenRouter model usage only.
 `;
       files.set("EVIDENCE.md", Buffer.from(evidenceMarkdown));
 
@@ -607,7 +621,13 @@ const program = Effect.gen(function* () {
   }
 
   const expected = laneRuns.reduce((total, laneRun) => total + laneRun.summary.offered, 0);
-  const terminalAudit = yield* collectTerminalAudit({ accounts, expected, readState, runId });
+  const terminalAudit = yield* collectTerminalAudit({
+    accounts,
+    expected,
+    laneNames: selectedLanes.map((lane) => lane.name),
+    readState,
+    runId,
+  });
   yield* Effect.promise(() => sleep(30_000));
   const usageAfter = yield* readOpenRouterUsage();
   const comparison = {
