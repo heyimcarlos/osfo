@@ -65,6 +65,7 @@ const startServer = async () => {
       CI: "1",
       CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000",
       CLOUDFLARE_API_TOKEN: "local-prototype-only",
+      OPENROUTER_API_KEY: "local-prototype-only",
       OZ_PROTOTYPE_TOKEN: "local-prototype-only",
     },
     stdio: ["ignore", "pipe", "pipe"],

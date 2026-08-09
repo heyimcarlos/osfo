@@ -6,10 +6,12 @@
   "scripts": {
     "dev:server": "alchemy dev",
     "prototype": "bun src/prototype-tui.ts",
+    "prototype:load": "bun src/load-probe.ts",
     "prototype:probe": "bun src/prototype-tui.ts --probe",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ai-sdk/openai": "4.0.36",
     "@cloudflare/think": "0.15.1",
     "@effect/platform-bun": "4.0.0-beta.103",
     "@effect/platform-node": "catalog:",

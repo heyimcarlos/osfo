@@ -1,5 +1,6 @@
 import { Think } from "@cloudflare/think";
 import type { ThinkSubmissionInspection } from "@cloudflare/think";
+import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
 import type { UIMessage } from "ai";
 import { AccountAgentRuntime } from "./account-agent-runtime.ts";
@@ -16,6 +17,9 @@ import { makePrototypeModel } from "./prototype-model.ts";
 export interface PrototypeEnv extends Cloudflare.Env {
   readonly ACCOUNT_AGENT: DurableObjectNamespace<AccountAgent>;
   readonly DIRECTORY: D1Database;
+  readonly MODEL_PROVIDER: "openrouter" | "prototype";
+  readonly OPENROUTER_API_KEY: string;
+  readonly OPENROUTER_MODEL: string;
   readonly PROTOTYPE_TOKEN: string;
 }
 
@@ -28,6 +32,7 @@ export type MessageAdmission = {
 export class AccountAgent extends Think<PrototypeEnv> {
   readonly #activationId = crypto.randomUUID();
   readonly #runtime: AccountAgentRuntime;
+  #openRouterModel: LanguageModel | undefined;
 
   override chatRecovery = {
     maxAttempts: 3,
@@ -43,11 +48,21 @@ export class AccountAgent extends Think<PrototypeEnv> {
   }
 
   override getModel(): LanguageModel {
-    return makePrototypeModel();
+    if (this.env.MODEL_PROVIDER === "prototype") return makePrototypeModel();
+    this.#openRouterModel ??= createOpenAI({
+      apiKey: this.env.OPENROUTER_API_KEY,
+      baseURL: "https://openrouter.ai/api/v1",
+      name: "openrouter",
+    }).chat(this.env.OPENROUTER_MODEL);
+    return this.#openRouterModel;
   }
 
   override getSystemPrompt(): string {
-    return "You are the deterministic Oz account-agent foundation prototype.";
+    return "Reply with exactly OK and no other text.";
+  }
+
+  override beforeTurn() {
+    return { maxOutputTokens: 8, maxRetries: 0 };
   }
 
   override async onStart(): Promise<void> {

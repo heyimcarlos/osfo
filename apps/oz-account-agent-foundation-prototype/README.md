@@ -59,6 +59,7 @@ or placement behavior. After authenticating Wrangler, run:
 
 ```sh
 export OZ_PROTOTYPE_TOKEN="replace-with-a-random-secret"
+export OPENROUTER_API_KEY="replace-with-an-openrouter-key"
 ALCHEMY_STAGE=live bun run --cwd apps/oz-account-agent-foundation-prototype alchemy deploy --stage live
 ```
 
@@ -78,3 +79,26 @@ reactivated the same named Durable Object with a new activation ID while its
 Session messages and submission ledger remained durable. The live deployment
 remains available for human inspection; the local command does not rerun or
 claim that nondeterministic production observation.
+
+## Live load characterization
+
+The load probe reuses the frozen GCP caller-to-durable-receipt contract: uniform
+open-loop arrivals at 232 messages per second, 100 percent acceptance, and at
+least 99.9 percent of receipts within one second. It adds a bounded 464
+messages-per-second stress lane and a post-stress recovery lane.
+
+```sh
+export OZ_LOAD_ORIGIN="https://replace-with-live-worker.workers.dev"
+export OZ_LOAD_TOKEN="$OZ_PROTOTYPE_TOKEN"
+export OZ_LOAD_SOURCE_REVISION="$(git rev-parse HEAD)"
+bun run --cwd apps/oz-account-agent-foundation-prototype prototype:load
+```
+
+The live deployment uses the pinned `openai/gpt-5-nano` model through
+OpenRouter, limits each turn to eight output tokens, and records durable receipt
+latency separately from model-backed terminal completion latency. The local
+lifecycle probe alone retains the deterministic model so process interruption
+and recovery remain reproducible. The GCP workload derived 1.5 AgentRuns per
+incoming message, while this Cloudflare workload maps one message to one
+account-agent turn. Treat the result as a topology characterization, not
+production qualification.

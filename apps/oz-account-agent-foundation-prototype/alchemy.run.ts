@@ -29,6 +29,9 @@ export default Alchemy.Stack(
       env: {
         ACCOUNT_AGENT: accountAgent,
         DIRECTORY: directory,
+        MODEL_PROVIDER: process.env.ALCHEMY_STAGE === "live" ? "openrouter" : "prototype",
+        OPENROUTER_API_KEY: Config.redacted("OPENROUTER_API_KEY"),
+        OPENROUTER_MODEL: "openai/gpt-5-nano",
         PROTOTYPE_TOKEN: Config.redacted("OZ_PROTOTYPE_TOKEN"),
       },
       main: "./src/worker.ts",

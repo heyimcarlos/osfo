@@ -83,6 +83,7 @@
       "name": "@osfo/oz-account-agent-foundation-prototype",
       "version": "0.0.0",
       "dependencies": {
+        "@ai-sdk/openai": "4.0.36",
         "@cloudflare/think": "0.15.1",
         "@effect/platform-bun": "4.0.0-beta.103",
         "@effect/platform-node": "catalog:",
