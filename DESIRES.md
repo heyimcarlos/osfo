@@ -19,3 +19,24 @@ becomes planned work, investigate component constraints, authorization,
 accessibility, lifecycle and deletion, action approval, hostile generated
 content, and whether the interaction materially improves on ordinary links or
 documents.
+
+# Agent capability request tool
+
+Date captured: 2026-08-10
+Horizon: design during tool-calling work
+
+Give the agent a tool that reports a missing capability. The agent calls this
+tool when a user asks it to do something that it cannot do because no suitable
+tool or supported workflow exists. The report becomes an input to a feature
+proposal list, where the team can review it and either plan the capability or
+implement it.
+
+The tool should capture enough context to make the request useful without
+copying private conversation data by default. Candidate fields include the
+requested outcome, the missing capability, the reason current tools cannot
+complete it, the user impact, and a safe summary of the relevant context.
+
+Before implementation, define how the agent distinguishes a real product gap
+from a temporary tool failure, missing authorization, missing user input, or a
+request that policy does not allow. Also define deduplication, privacy, user
+visibility, review state, and the path from a report to a feature proposal.
