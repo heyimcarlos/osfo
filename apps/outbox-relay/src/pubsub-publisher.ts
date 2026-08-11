@@ -1,5 +1,6 @@
 import {
   encodeRunnableDeliveryData,
+  type RunnableAgentRunDelivery,
   RunnableDeliveryPublisher,
   RunnableDeliveryPublisherUnavailable,
 } from "@osfo/agent-run";
@@ -88,39 +89,40 @@ const publisherLayer = (config: GooglePubSubPublisherConfig) =>
       });
       const publishUrl = `https://pubsub.googleapis.com/v1/projects/${encodeURIComponent(config.projectId)}/topics/${encodeURIComponent(config.topicId)}:publish`;
 
-      const publishRequest = Effect.fn("GooglePubSubPublisher.publishRequest")(
-        function* (delivery) {
-          const token = yield* accessToken;
-          const request = yield* HttpClientRequest.post(publishUrl).pipe(
-            HttpClientRequest.bearerToken(token.access_token),
-            HttpClientRequest.bodyJson({
-              messages: [
-                {
-                  data: encodeRunnableDeliveryData(delivery),
-                  attributes: { executionProfileRef: delivery.executionProfileRef },
-                  orderingKey: delivery.threadId,
-                },
-              ],
-            }),
-            Effect.mapError((cause) => new RunnableDeliveryPublisherUnavailable({ cause })),
-          );
-          const response = yield* withRequestTimeout(
-            "publish",
-            client
-              .execute(request)
-              .pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(PublishResponseSchema))),
-          );
-          const providerMessageId = response.messageIds[0];
-          if (providerMessageId === undefined) {
-            return yield* new RunnableDeliveryPublisherUnavailable({
-              cause: "Pub/Sub confirmation omitted the provider message identity",
-            });
-          }
-          return { providerMessageId };
-        },
-      );
-      const publish = Effect.fn("GooglePubSubPublisher.publish")((delivery) =>
-        withRequestTimeout("publication", publishRequest(delivery)),
+      const publishRequest = Effect.fn("GooglePubSubPublisher.publishRequest")(function* (
+        delivery: RunnableAgentRunDelivery,
+      ) {
+        const token = yield* accessToken;
+        const request = yield* HttpClientRequest.post(publishUrl).pipe(
+          HttpClientRequest.bearerToken(token.access_token),
+          HttpClientRequest.bodyJson({
+            messages: [
+              {
+                data: encodeRunnableDeliveryData(delivery),
+                attributes: { executionProfileRef: delivery.executionProfileRef },
+                orderingKey: delivery.threadId,
+              },
+            ],
+          }),
+          Effect.mapError((cause) => new RunnableDeliveryPublisherUnavailable({ cause })),
+        );
+        const response = yield* withRequestTimeout(
+          "publish",
+          client
+            .execute(request)
+            .pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(PublishResponseSchema))),
+        );
+        const providerMessageId = response.messageIds[0];
+        if (providerMessageId === undefined) {
+          return yield* new RunnableDeliveryPublisherUnavailable({
+            cause: "Pub/Sub confirmation omitted the provider message identity",
+          });
+        }
+        return { providerMessageId };
+      });
+      const publish = Effect.fn("GooglePubSubPublisher.publish")(
+        (delivery: RunnableAgentRunDelivery) =>
+          withRequestTimeout("publication", publishRequest(delivery)),
       );
 
       return RunnableDeliveryPublisher.of({ publish });

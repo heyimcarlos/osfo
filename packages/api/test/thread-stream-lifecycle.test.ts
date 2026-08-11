@@ -128,9 +128,11 @@ describe("Thread stream lifecycle", () => {
       const lifecycle = yield* ThreadStreamLifecycle;
       const request = yield* Effect.scoped(
         Effect.gen(function* () {
-          yield* lifecycle.open(Stream.never.pipe(Stream.ensuring(sourceFinalized.open)));
+          yield* lifecycle
+            .open(Stream.never.pipe(Stream.ensuring(sourceFinalized.open)))
+            .pipe(Effect.asVoid);
           yield* opened.open;
-          yield* Effect.never;
+          return yield* Effect.never;
         }),
       ).pipe(Effect.forkChild);
 

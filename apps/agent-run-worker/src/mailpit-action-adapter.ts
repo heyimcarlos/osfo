@@ -1,4 +1,8 @@
-import { ActionExternalAdapter, type ActionExternalResult } from "@osfo/agent-run";
+import {
+  type ActionAttempt,
+  ActionExternalAdapter,
+  type ActionExternalResult,
+} from "@osfo/agent-run";
 import { createHash } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 import { Data, Effect, Layer, Schema } from "effect";
@@ -209,11 +213,11 @@ const adapterLayer = (config: MailpitActionAdapterConfig) =>
           return uncertain;
         });
 
-      const reconcile = Effect.fn("MailpitActionAdapter.reconcile")((attempt) =>
+      const reconcile = Effect.fn("MailpitActionAdapter.reconcile")((attempt: ActionAttempt) =>
         reconcileByToolCallId(attempt.action.toolCallId),
       );
 
-      const dispatch = Effect.fn("MailpitActionAdapter.dispatch")((attempt) =>
+      const dispatch = Effect.fn("MailpitActionAdapter.dispatch")((attempt: ActionAttempt) =>
         Effect.gen(function* () {
           if (ambiguousToolCallIds.has(attempt.action.toolCallId)) {
             return yield* reconcileByToolCallId(attempt.action.toolCallId);

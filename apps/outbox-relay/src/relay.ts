@@ -106,6 +106,6 @@ export const runOutboxRelay = (config: OutboxRelayProcessConfig) =>
       );
       yield* wakeAll;
       yield* Effect.logInfo("OSFO_OUTBOX_RELAY_READY");
-      yield* Effect.never;
+      return yield* Effect.never;
     }),
   );

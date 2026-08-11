@@ -219,7 +219,7 @@ export const makeThreadChat = (options: ThreadChatOptions) => {
         ),
       );
     });
-    yield* Effect.forever(synchronize);
+    return yield* Effect.forever(synchronize);
   });
 
   const resume = Atom.make(resumeThread);
