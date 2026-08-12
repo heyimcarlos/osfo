@@ -1,22 +1,27 @@
-# ADR 0003: Select Cloudflare as the Oz v1 account-agent foundation
+# ADR 0003: Select Cloudflare as the Oz v1 User-agent foundation
 
 Date: 2026-08-08
 
-Status: Accepted, qualification pending
+Status: Accepted, production qualification pending
 
 Oz v1 will use Cloudflare as its application and agent-runtime foundation. One
-account-scoped Agent backed by a Durable Object will own the canonical Thread's
-private operational state, while Workers handle ingress, R2 holds files, and
-alarms provide ordinary reminders. Cloudflare Think is the selected harness
-candidate, subject to the agreed acceptance prototype, and Supermemory remains
-the separate Knowledge Base provider.
+User-scoped Oz Agent backed by a Durable Object will host the canonical Think
+Thread and private operational state, while Workers handle ingress, R2 holds files, and
+Scheduled Tasks provide ordinary reminders. The accepted foundation prototype
+selects Cloudflare Think as the Agent Harness. Supermemory remains a separate,
+rebuildable retrieval projection.
 
-This choice favors iteration speed, TypeScript, isolated scale-to-zero account
+This choice favors iteration speed, TypeScript, isolated scale-to-zero User
 state, and a single operated platform over LangGraph's greater maturity and
 portability. It supersedes the GCP, Pub/Sub, fixed-worker, Cloud SQL, and
 hand-rolled runtime direction for Oz v1 in ADRs 0001 and 0002. Their durable
 semantics remain historical evidence and may be retained only where the
 selected harness does not already provide the required behavior.
+
+The accepted prototype proved direct durable submission, D1 and Agent SQLite
+migrations, interruption recovery, scheduling, idempotency, Effect integration,
+and activation recovery. Its load evidence does not qualify production. The
+production SLO, recovery, model-quality, and cost gates remain mandatory.
 
 Alchemy is the selected infrastructure-as-code system for provisioning the
 Cloudflare stack, declaring bindings, applying deploy-time D1 migrations, and

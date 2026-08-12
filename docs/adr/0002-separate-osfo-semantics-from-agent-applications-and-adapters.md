@@ -2,7 +2,7 @@
 
 Date: 2026-08-07
 
-Status: Accepted
+Status: Superseded for Oz v1 by ADRs 0003 and 0004
 
 ## Context
 
@@ -72,3 +72,8 @@ variation.
   Profile. It never continues from an in-memory agent object.
 - Oz application composition becomes an explicit implementation surface rather
   than implicit wiring scattered across reusable packages.
+
+For Oz v1, ADR 0003 replaces the hand-built Agent Runtime and AgentRun driver
+with Think. ADR 0004 makes Think the sole Thread and turn authority. This ADR's
+separation of product policy from external provider adapters remains an accepted
+design invariant. Its AgentRun and PostgreSQL implementation is historical.

@@ -29,11 +29,20 @@ modules compose, rather than to serve as the product being sold.
 _Avoid_: Reference Product Composition, Osfo core, throwaway sample
 
 **Oz**:
-The WhatsApp-first personal agent product for non-technical users, with Apple
-Messages as its second required channel. Each user has a durable, private
-identity, memory, files, skills, triggers, and connected accounts, while task
-compute is temporary and isolated.
+The WhatsApp-only v1 personal agent product for non-technical users. Each user
+has a durable, private identity, memory, files, skills, triggers, and connected
+accounts, while task compute is temporary and isolated. Later messaging
+channels are separate product efforts.
 _Avoid_: Osfo, TryAgent, Reference Agent Application, dedicated Agent Box
+
+**Registration Turn**:
+An ephemeral pre-registration interaction that presents the same visible Oz
+persona to an unregistered visitor and conducts the natural part of a
+Registration Dialogue. It has no stable AgentId, canonical Thread, User memory,
+tools, entitlements, or external authority and is deleted after registration or
+expiry.
+_Avoid_: Company Oz Agent, anonymous personal Agent, registration authority,
+Agent handoff
 
 **Production Workload Envelope**:
 The topology-neutral demand model that relates incoming messages to derived
@@ -44,7 +53,8 @@ _Avoid_: Benchmark target, AgentRun throughput target, DAU target
 
 **Reference Workload Trace**:
 A versioned, reproducible incoming-message trace whose observed work mix and
-amplification represent production-shaped Oz behavior.
+amplification represent production-shaped Oz behavior. Before beta evidence
+exists, its declared assumptions derive from Plan mix and Usage Allowances.
 _Avoid_: Synthetic benchmark, worst-case workload
 
 **Challenge Lane**:
@@ -62,11 +72,43 @@ A mandatory deeper-history or wider-identity retained-data shape used to test
 correctness and scaling behavior without inventing v1 latency or cost SLOs.
 _Avoid_: Production acceptance corpus, capacity promise
 
+**Bounded Beta Acceptance**:
+The production gate that permits Oz to serve only a declared limited cohort
+after every beta correctness, reliability, and cost requirement passes.
+_Avoid_: Public launch, prototype acceptance, partial production pass
+
+**Scale-Qualified Public Launch**:
+The production gate that permits Oz to remove its beta cohort bound only after
+every declared scale, retained-corpus, recovery, and cost requirement passes.
+_Avoid_: Bounded beta, best-effort launch, benchmark completion
+
+**Cold Oz Agent Activation**:
+An Oz Agent request handled by a new observed runtime activation identity. First
+use, idle eviction, deployment, and fault recovery remain separate cold causes.
+_Avoid_: Slow request, inactive User, cold database query
+
+**Warm Oz Agent Activation**:
+An Oz Agent request handled by the same observed runtime activation identity as
+its preceding request.
+_Avoid_: Fast request, cached response, recently active User
+
+**Oz Contribution Margin**:
+Subscription revenue less attributable platform, vendor, payment, observability,
+support, and expected GM Summon costs for the same cohort and allowance periods.
+_Avoid_: Vendor allowance, gross revenue, per-request model cost
+
 **Good Root Outcome**:
 The authoritative root outcome for one accepted incoming message that passes
-its Reference Workload Trace journey's versioned acceptance assertions before
-that journey's Evaluation Deadline.
-_Avoid_: Useful Completion, successful AgentRun, terminal response
+its Reference Workload Trace journey's versioned reproducible acceptance
+assertions before that journey's Evaluation Deadline. Subjective model quality
+evaluation is separate.
+_Avoid_: Useful Completion, successful AgentRun, terminal response, model score
+
+**Model Quality Gate**:
+The release verdict for one complete Oz behavior configuration, evaluated with
+independent journey and risk-class floors plus a non-regression comparison. It
+remains separate from Good Root Outcome, Delivery, and system error budgets.
+_Avoid_: Model benchmark, combined quality score, production SLO
 
 **Good Root Outcome Ratio**:
 Good Root Outcomes divided by accepted incoming messages whose evaluation
@@ -90,10 +132,10 @@ recovery backlog within its deadline. It is proven through goodput and backlog
 slope rather than inferred from provisioned resources or autoscaling limits.
 _Avoid_: Spare instance count, autoscaling maximum, nominal headroom
 
-**First Meaningful ThreadEvent**:
-The first durable client-visible ThreadEvent after message acceptance that
-provides output, progress, an approval request, a declared wait, or a terminal
-outcome.
+**First Meaningful User Update**:
+The first durable response, progress update, Approval request, Declared Wait,
+Workflow Milestone, or terminal outcome committed after message acceptance.
+Delivery timing remains a separate measurement.
 _Avoid_: Heartbeat, non-durable model token, transport notification
 
 **Single-Thread Agent**:
@@ -105,119 +147,268 @@ _Avoid_: Single-threaded process, one worker per agent
 **Channel Identity**:
 A messaging-provider-asserted identifier for one sender, such as a WhatsApp
 sender ID. It authenticates the channel interaction but is not the user's
-durable Oz ownership identity or sole recovery credential.
-_Avoid_: Oz Account, Principal, phone-number account
+durable Oz ownership identity or sole recovery credential; an equal phone
+number in a Phone Account remains separate verified evidence.
+_Avoid_: User, Account, Phone Account
 
-**Provisional Oz Identity**:
-The limited durable identity Oz creates when an unlinked Channel Identity first
-messages it. It owns the initial conversation state until a verified Oz Account
-claims it.
-_Avoid_: Guest session, anonymous Thread, permanent account
+**User**:
+The durable Oz identity for one registered person, created only after User
+Registration verifies its first Phone Account. A User owns one Oz Agent in v1
+and scopes ownership, admission, fairness, allowances, entitlements, and memory.
+_Avoid_: Account, Channel Identity, Principal
 
-**Oz Account**:
-The verified durable user identity that claims a Provisional Oz Identity and
-owns subscription entitlements, recovery, and connected accounts. Oz creates
-or binds it only after email verification.
-_Avoid_: Channel Identity, WhatsApp account, Stripe customer
+**Account**:
+A reusable authentication method linked to a User, such as SMS-verified phone,
+passwordless email, federated identity, or passkey. Oz v1 implements exactly one
+Phone Account per User. Other Account types are later product decisions; none
+is the User or a messaging identity.
+_Avoid_: User, Channel Binding, subscription, Stripe customer
+
+**Phone Account**:
+An Account established by verifying control of one E.164 phone number through
+an SMS challenge. Oz v1 requires exactly one active Phone Account, which may be
+replaced but not removed without a Deletion Case.
+_Avoid_: User, Channel Identity, WhatsApp account, phone-number primary key
+
+**User Registration**:
+The transition that creates a User after an SMS challenge verifies its first
+Phone Account. It also establishes its AuthSession, Oz Agent, Thread, and Free
+Plan without deriving their identities from the phone number.
+_Avoid_: Provisional User, Channel Binding, paid subscription
+
+**Registration Invitation**:
+A finite-lived invitation issued to an unbound Channel Identity or web
+onboarding flow. It owns a Registration Token digest, expiry, and consumption
+state and ends only as Consumed or Expired, but creates no User, Oz Agent,
+Thread, memory, or allowance.
+_Avoid_: Provisional User, Registration Token, anonymous conversation
+
+**Registration Dialogue**:
+The temporary pre-registration exchange presented as Oz to an unbound Channel
+Identity under one Registration Invitation. It contains at most one natural
+Registration Turn, is not a Thread, User memory, or authority source, and is
+deleted after registration or expiry.
+_Avoid_: Anonymous Thread, Provisional User, Agent handoff
+
+**Registration Token**:
+The high-entropy secret carried in `/verify/<token>` that continues one
+Registration Invitation. Oz stores only its digest; it is not an Account,
+AuthSession, or reusable authentication credential.
+_Avoid_: UserId, OTP, permanent bearer token
+
+**Phone Verification**:
+The finite-lived SMS challenge that proves current control of one E.164 phone
+number for registration or replacement. A successful challenge is consumed
+exactly once without creating a Channel Binding or making the phone number a
+UserId.
+_Avoid_: Phone Account, Channel Identity, AuthSession
 
 **Channel Binding**:
-A revocable association between a Channel Identity and an Oz Account. It lets
-messages from that provider identity act as the account without making the
-phone number the account or recovery authority. Adding or replacing a binding
-requires account recovery verification; replacing one revokes the obsolete
-binding. In v1, an Oz Account has at most one active binding for each messaging
-provider, while bindings for different providers may coexist. Oz may require
-renewed verification when risk signals change.
-_Avoid_: Authentication Session, permanent phone login, conversation ownership
+A revocable association between a Channel Identity and a User. It lets messages
+from that provider identity act as the User without making the provider identity
+a reusable Account or recovery authority. In v1, a User has at most one active
+WhatsApp binding. Conflicts fail closed to manual support.
+_Avoid_: AuthSession, permanent phone login, conversation ownership
 
-**Account Claim**:
-The onboarding transition in which a user verifies an email address, creates or
-recovers an Oz Account, and attaches the Provisional Oz Identity through a
-Channel Binding. The claim preserves the existing Thread and Managed Starter
-Allowance.
-_Avoid_: New conversation, phone-number registration, paid subscription
+**Free Plan**:
+The no-cost Subscription established by User Registration. It gives a
+registered User a bounded set of capabilities and managed usage without giving
+unregistered contacts product access.
+_Avoid_: Free trial, provisional access, unlimited free tier
 
-**Principal**:
-The actor whose work shares admission limits and scheduler fairness policy. A
-Provisional Oz Identity is the Principal before account claim; its verified Oz
-Account becomes the Principal after claim.
-_Avoid_: Thread, device, parent AgentRun, tenant hierarchy
+**Adventurer Plan**:
+The sole paid Subscription at Oz v1 launch. It grants recurring, sensitive,
+and higher-cost capabilities within bounded monthly Usage Allowances.
+_Avoid_: Premium Plan, Pro Plan, unlimited plan, usage add-on
 
-**Managed Starter Allowance**:
-A strict cost-weighted model-usage budget Oz grants to a Principal so the first
-conversation is immediately useful without a Provider Connection. It begins on
-the Provisional Oz Identity and follows the Principal when an Oz Account claims
-that identity. It is not a raw message count because different requests have
-materially different model and tool costs.
-_Avoid_: Message limit, unlimited free tier, provider credit
+**Usage Allowance**:
+A Plan-scoped quantity or cost budget that bounds eligible work without
+granting authority. It is separate from Plan Entitlement and never creates an
+overage charge.
+_Avoid_: Plan Entitlement, message quota, pay-as-you-go balance
 
-**Provider Connection**:
-Revocable, user-owned model access that Oz verifies and stores outside
-conversation history. A connection may use a provider-supported authorization
-flow or a write-only API secret entered through an authenticated web surface.
-Oz never asks a user to paste provider secrets into WhatsApp.
-_Avoid_: Managed Starter Allowance, model picker, secret in chat
+**Integration Connection**:
+Revocable authority for Oz to read or act through a third-party product such as
+Gmail or Google Calendar. It remains separate from an Account even when one
+OAuth consent flow explicitly establishes both.
+_Avoid_: Account, implicit OAuth scope, Approval
 
 **Model Access Policy**:
-The Oz-owned rule that chooses managed or user-connected model access for a
-request, applies its cost budget, and selects a declared fallback. A successful
-Provider Connection can become primary while managed access remains an
-explicit starter or fallback path.
+The Oz-owned rule that chooses a managed model route for a request and applies
+its Plan and cost budget. V1 does not expose model choice or a Provider
+Connection.
 _Avoid_: Model Adapter, provider credential, hard-coded model
 
-**Authentication Session**:
-Independently revocable authentication state through which a client acts as one
-Principal. Web account-management sessions are short-lived and renewable. A
-WhatsApp message is authenticated by its Channel Identity and authorized by its
-Channel Binding, not by placing a web token in the conversation. Authentication
-Sessions do not own Thread identity, cursor progress, or device identity.
-_Avoid_: Channel Binding, Oz Account, permanent bearer token
+**AuthSession**:
+Short-lived, renewable authentication state through which a web client acts as
+one User. It is Active until it ends as Expired or Revoked; rotating renewal
+credentials cannot own Thread identity, Channel identity, or device identity.
+_Avoid_: Channel Binding, Account, permanent bearer token
 
-**Verified Capability Gate**:
-The rule that requires Account Claim before Oz accepts cost-intensive or
-sensitive work, including delegated research, document generation, sandbox
-execution, and connected-account actions. Initial conversation, basic memory,
-and a bounded reminder remain available to a Provisional Oz Identity.
-_Avoid_: Payment gate, Managed Starter Allowance, blanket registration wall
+**User Suspension**:
+A named denial fact that blocks a User's protected operations without changing
+or replacing the User. Recovery and deletion remain separate manual policies.
+_Avoid_: User lifecycle status, AuthSession revocation, allowance exhaustion
+
+**Channel Binding Revocation**:
+The durable end of one Channel Binding's authority to act as or deliver to a
+User. It does not revoke the Phone Account or another Channel Binding.
+_Avoid_: AuthSession revocation, User Suspension, channel delivery failure
+
+**Plan Entitlement**:
+A positive Subscription fact that makes one capability eligible for a User. It
+does not by itself grant authority over an action or resource.
+_Avoid_: Usage Allowance, Approval, paid User status
+
+**Authorization Policy**:
+The small deterministic default-deny table that decides whether one v1 launch
+action is allowed for a User, resource, and current context. It uses exact Plan,
+allowance, ownership, Integration Connection, Approval, and denial facts.
+_Avoid_: Agent judgment, generic permission framework, tool visibility
+
+**Subscription**:
+The User's commercial state that controls paid entitlements without changing
+User Registration, Accounts, Channel Bindings, or AuthSessions.
+_Avoid_: Account, registration state, identity revocation
+
+**Problem**:
+One unresolved User goal or obstacle in a Thread that groups its distinct
+Resolution Attempts. It references evidence in Think without copying the
+conversation or owning Thread history.
+_Avoid_: Thread, model topic, support ticket
+
+**Resolution Attempt**:
+One distinct proposed or performed solution for a Problem with durable evidence
+in Think. It counts as failed only after explicit User feedback or objective
+failure evidence.
+_Avoid_: Model Call Attempt, Delivery Attempt, unsupported model judgment
+
+**GM Summon**:
+A paid User's explicitly confirmed request for privileged human escalation
+after three failed Resolution Attempts for one open Problem in the same Thread.
+At most one GM Summon may be active per Thread, and it promises no response time.
+_Avoid_: HELP response, automatic escalation, support-time guarantee
+
+**Deletion Case**:
+The explicit administrative process that closes a User and applies the accepted
+deletion and retention policy. A request immediately revokes access, but v1 does
+not expose a general User lifecycle or automated deletion workflow.
+_Avoid_: User Suspension, Account removal, immediate hard delete
+
+**Security Audit Fact**:
+An immutable record of an identity or authority transition, including its actor,
+command identity, evidence type, resource, typed result, reason, and time. It
+remains outside the Thread and never contains authentication secrets.
+_Avoid_: Thread history, operational log, raw credential record
+
+**Oz Agent**:
+The durable personal agent owned by exactly one User. It has one stable AgentId
+and owns one canonical Thread in v1.
+_Avoid_: User, Agent Harness, Durable Object instance
+
+**AgentId**:
+The stable internal identity of one Oz Agent, minted when the Agent is created
+during User Registration. It is not derived from an Account or Channel Identity.
+_Avoid_: UserId, ThreadId, provider account ID
 
 **Thread**:
-The canonical ordered conversational scope of a Single-Thread Agent, owned by
-exactly one Principal. Every authorized client observes and resumes the same
-Thread order; accounts and devices do not define competing conversation
-sequences.
+The canonical ordered conversational scope owned by exactly one Oz Agent, with
+Think Session history as its sole conversational authority. Accounts, channels,
+and devices do not define competing histories.
 _Avoid_: Account timeline, device thread
 
 **ThreadEvent**:
-An immutable, per-Thread sequenced record of a conversational fact required for
-durable replay, reconstruction, or explanation.
-_Avoid_: Runtime log, provider event
+The historical Osfo-owned per-Thread event record. Oz v1 does not maintain a
+parallel ThreadEvent stream beside canonical Think Session history.
+_Avoid_: Think Session record, current Oz conversation authority
 
 **UserMessage**:
-One immutable client-submitted input accepted into a Thread. Its identity is
-distinct from the ThreadEvent that records it, the AgentRun it creates, and its
-Acceptance Receipt.
+One immutable client-submitted input accepted into a Thread and identified by an
+Oz-owned UserMessageId. Its identity is distinct from its Channel Message Key,
+Think Submission, and Acceptance Receipt.
+
+**Channel Message Key**:
+The transport-scoped identity formed from one Channel Binding and the messaging
+provider's message identifier. It deduplicates provider delivery without
+becoming the UserMessageId.
+_Avoid_: UserMessageId, Think SubmissionId, global provider message ID
 
 **UserMessageAppended**:
-A ThreadEvent recording that one UserMessage was durably added to a Thread and
-correlated with its resulting AgentRun.
+The historical ThreadEvent recording that one UserMessage was durably added to
+a Thread. Oz v1 represents the accepted message in Think Session history and
+correlates it through its Acceptance Receipt instead.
+
+**Think Submission**:
+The Think-owned bounded execution of one interactive or proactive turn. One
+accepted UserMessage creates exactly one stable Think Submission; Think owns its
+lifecycle, serialization, idempotency, cancellation, and crash recovery.
+Duration alone does not create another work identity or require a Workflow.
+_Avoid_: AgentRun, Durable Object activation, Oz execution record
+
+**Scheduled Task**:
+An Agent-managed durable trigger for one future or recurring callback. Each
+occurrence has a stable idempotency key and creates one proactive Think
+Submission only when conversational work is required.
+_Avoid_: Raw alarm, Think Submission, Workflow
+
+**Agent Queue Task**:
+An Agent-local durable callback for short, immediate, sequential,
+non-conversational work. It is not a multi-step process, cross-Agent transport,
+or Thread ordering authority.
+_Avoid_: Think Submission, Scheduled Task, Cloudflare Queue, Workflow
+
+**Cloudflare Queue Message**:
+An at-least-once system-wide asynchronous delivery for work outside one Oz
+Agent's local execution. Oz v1 introduces it only for a concrete cross-Agent or
+system-wide workload, never for interactive admission or Thread ordering.
+_Avoid_: Agent Queue Task, Think Submission, Thread event
+
+**Delivery**:
+The durable obligation to send one committed Think response through a Channel
+Binding. It owns one or more ordered Delivery Parts, and its ledger remains
+authoritative after delivery work completes; a Delivery problem never changes
+the committed response in the Thread.
+_Avoid_: Think Submission, provider message, managed Fiber
+
+**Delivery Part**:
+One stable ordered send unit within a Delivery. It owns one or more Delivery
+Attempts, while provider message identities belong to those attempts.
+_Avoid_: Separate Delivery, Delivery Attempt, Thread message
+
+**Managed Delivery Fiber**:
+The idempotent Agent-managed job that sends one Delivery's ordered Delivery
+Parts and recovers application execution. It stops after rejection or ambiguity
+and never waits for later provider status webhooks.
+_Avoid_: AgentRun, Delivery ledger, Think Submission, Workflow
+
+**Delivery Attempt**:
+One durably recorded provider call for a Delivery Part. It owns its optional
+provider message identity and accepted, rejected, or ambiguous outcome; an
+ambiguous outcome blocks automatic retry.
+_Avoid_: Delivery, provider status webhook, blind retry
+
+**Provider Delivery Status**:
+A distinct provider-reported observation correlated to a Delivery Attempt by
+its provider message identity. Confirmed progress never moves backward; failure
+evidence and conflicting evidence remain explicit.
+_Avoid_: Delivery Attempt result, Fiber status, Thread history
 
 **ThreadPosition**:
-The stable, monotonically increasing order of a committed ThreadEvent within
-one Thread.
-_Avoid_: Timestamp order, provider sequence
+The historical position of one committed ThreadEvent. Oz v1 uses Think Session
+ordering rather than allocating a parallel ThreadEvent sequence.
+_Avoid_: Think Session order, timestamp order, provider sequence
 
 **ThreadCursor**:
-An opaque resume token representing the last ThreadPosition a client applied.
-_Avoid_: Provider cursor, pagination token
+The historical resume token for a ThreadEvent projection. Oz v1 clients resume
+through Think Session rather than an Oz-owned ThreadEvent cursor.
+_Avoid_: Think Session resume state, provider cursor, pagination token
 
 **Thread Snapshot**:
-A versioned, complete, self-consistent client projection of one Thread through
-cursor H. It is derived from canonical ThreadEvents and can bootstrap or replace
-client-derived state. It is not canonical history and does not replace or
-rewrite ThreadEvents.
+The historical client projection derived from canonical ThreadEvents. Oz v1
+does not maintain this projection beside Think Session history.
 
 **Oz Memory System**:
-The complete product capability that combines a Principal's Thread Memory and
+The complete product capability that combines a User's Thread Memory and
 Knowledge Base to preserve continuity and personalize future work. The model's
 context window is a temporary projection of this system, not a durable memory
 store.
@@ -225,27 +416,90 @@ _Avoid_: Knowledge Base, context window, memory provider
 
 **Thread Memory**:
 The Thread-scoped conversational record and working state needed to continue the
-canonical conversation, including messages, tool interactions, and bounded
-context projections. Knowledge promoted for durable personal recall belongs in
-the Knowledge Base instead.
+canonical Think Session conversation, including messages, tool interactions,
+and bounded context projections. Knowledge promoted for durable personal recall
+belongs in the Knowledge Base instead.
 _Avoid_: Knowledge Base, user profile, model context
 
 **Knowledge Base**:
-The Principal's durable second brain containing learned memories and connected
+The User's durable second brain containing learned memories and connected
 knowledge sources used for recall and personalization. Conversation history and
 compaction remain Thread Memory unless useful knowledge is promoted from them.
 _Avoid_: Thread history, context window, product database
 
+**Knowledge Space**:
+The private scope that contains one Oz Agent's Knowledge Base and all of its
+canonical sources, claims, schemas, projections, exports, and derived retrieval
+generations. Its opaque identity is never supplied by a caller or the model.
+_Avoid_: Supermemory container, R2 prefix, UserId
+
+**Knowledge Source**:
+An addressable item of evidence in a User's Knowledge Base, such as a Thread
+message, file, email, page, or action receipt. It preserves origin and time so a
+Memory Claim can be inspected, corrected, exported, or deleted without making a
+derived retrieval result authoritative.
+_Avoid_: Memory Claim, search result, copied Thread
+
+**Memory Claim**:
+An addressable assertion promoted into a User's Knowledge Base with provenance,
+current status, and one trust level: Explicit when the User directly supplied or
+requested it, Observed when clear source evidence supports it, or Inferred when
+it is an uncertain synthesis. An Inferred claim remains a candidate until it is
+confirmed, repeated, or reconciled, and only an Explicit claim can become a
+durable instruction without confirmation.
+_Avoid_: Knowledge Source, model assumption, Supermemory memory
+
+**Core Profile**:
+A small, bounded, user-readable projection of current Memory Claims selected for
+frequent personalization. It is rebuilt from the Knowledge Base and never
+becomes the authority for a claim.
+_Avoid_: user profile database, context window, canonical memory file
+
+**Memory Suppression Marker**:
+The opaque record left when a User forgets a Memory Claim. It prevents the same
+claim from being extracted again without retaining its readable content or
+deleting the Knowledge Source that once supported it.
+_Avoid_: soft-deleted memory, source deletion, correction history
+
+**Knowledge Export**:
+A portable User-readable and machine-readable package built from the canonical
+Thread and Knowledge Base. It contains source files and provenance but excludes
+provider-owned indexes and other rebuildable retrieval data.
+_Avoid_: database backup, Supermemory export, temporary download link
+
+**Erasure Receipt**:
+A content-free durable fact that a Message Redaction, source deletion, Thread
+Reset, or account deletion removed named private data. Recovery reapplies it
+before restored state can serve work, so a backup cannot revive erased content.
+_Avoid_: deleted content, Security Audit Fact, backup record
+
+**Message Redaction**:
+The User-requested removal of one Thread message's readable content and every
+derived compaction, Memory Claim, and retrieval record. It preserves only an
+opaque structural tombstone needed for Thread ordering and receipt integrity.
+_Avoid_: Memory Claim forgetting, hidden message, account deletion
+
+**Thread Reset**:
+The User-requested removal of all Thread content and compactions while
+preserving the User, Oz Agent, AgentId, and canonical Thread identity.
+_Avoid_: new Thread, account deletion, context compaction
+
+**Schema Pack**:
+The versioned vocabulary that defines the entity types, fields, relationships,
+and validation rules available in one User's Knowledge Base. Oz supplies a small
+core vocabulary and the User may extend it without creating another physical
+memory store.
+_Avoid_: database schema, prompt, unvalidated custom field
+
 **Context Projection**:
-A versioned, rebuildable Thread-scoped derivation of canonical ThreadEvent
-history used to assemble bounded context for future Agent Runtime input. It is
-not AgentRun recovery authority and never replaces canonical history.
+A versioned, rebuildable Thread-scoped derivation of canonical Think Session
+history used to assemble bounded model context. It never replaces canonical
+history or becomes Think Submission recovery authority.
 _Avoid_: RuntimeCheckpointRef, canonical summary, memory record
 
 **ContextProjectionRef**:
-An immutable reference selected during AgentRun context preparation and
-recorded before Agent Runtime evaluation. It identifies the exact Context
-Projection generation used as that evaluation's historical base.
+An immutable reference identifying the exact Context Projection generation used
+as one bounded model evaluation's historical base.
 _Avoid_: RuntimeCheckpointRef, admission-time snapshot, mutable context pointer
 
 **AgentEvent**:
@@ -273,15 +527,10 @@ together with its cause.
 _Avoid_: Completed output, client disconnect
 
 **AgentRun**:
-The durable, bounded unit of conversational work created for an accepted
-message. Any compatible worker may execute it; it is not a process, container,
-or dedicated compute resource, and it may wait and later continue without
-changing identity. Its lifecycle and ordered typed interaction history are the
-authority for logical recovery. It pins the versioned semantic configuration
-needed to interpret those records throughout its lifetime. It terminates only
-as succeeded, failed, or canceled; interruption describes an incomplete
-interaction rather than an AgentRun terminal state.
-_Avoid_: Worker, process, Temporal Workflow, Agent Runtime state machine
+The historical Osfo-owned durable execution lifecycle for one bounded unit of
+work. Oz v1 does not create AgentRuns or use them as recovery authority; Think
+Submission owns that lifecycle.
+_Avoid_: Think Submission, current Oz execution record
 
 **AgentRunSucceeded**:
 The terminal ThreadEvent stating that one AgentRun completed successfully.
@@ -447,7 +696,7 @@ _Avoid_: Bash terminal, AgentRun workspace, persistent workspace, subagent runti
 An isolated E2B execution environment owned by exactly one RunCode ToolCall.
 It never owns AgentRun lifecycle, recovery authority, durable waits, ChildJoin
 coordination, or authoritative artifacts.
-_Avoid_: Thread workspace, Principal workspace, worker environment, Agent Runtime
+_Avoid_: Thread workspace, User workspace, worker environment, Agent Runtime
 
 **Sandbox Profile**:
 An immutable, versioned declaration of the sandbox capabilities, resource and
@@ -531,43 +780,36 @@ One private durably recorded attempt to execute an Action. It is recorded
 before any external call; an unknown outcome blocks blind retry.
 _Avoid_: Action, network connection
 
-**WorkflowInstance**:
-Independently durable work that may wait, retry, or outlive the AgentRun that
-started it. Temporal owns its internal execution lifecycle; Osfo owns its
-correlation to AgentRuns and Threads and accepts its typed outcomes. Its
-invocation mode is Awaited or Detached.
-Osfo durably assigns the WorkflowInstance identity and records the start intent
-before requesting its idempotent creation in Temporal.
-Temporal reports stably identified typed facts through Osfo and never writes
-AgentRun state or canonical ThreadEvents directly. Intermediate progress is
-operational by default and becomes a ThreadEvent only through an explicitly
-user-visible event family.
-_Avoid_: Long-running AgentRun, background thread
+**Workflow**:
+An independently durable Cloudflare process whose steps, dependencies, waits,
+approvals, or retryable side effects matter. It has a stable WorkflowId and may
+invoke Think for bounded reasoning without owning Thread history or Think
+Submission lifecycle.
+_Avoid_: Think Submission, Agent Queue Task, Scheduled Task, long model response
 
-**Awaited Workflow**:
-A ToolCall-to-WorkflowInstance invocation mode in which the ToolCall remains
-open and its AgentRun waits. The accepted terminal workflow outcome completes
-the ToolCall and wakes the same AgentRun. Canceling the AgentRun terminalizes
-the ToolCall as canceled and requests cancellation of the WorkflowInstance.
-_Avoid_: WorkflowInstance type, continuation AgentRun, paused worker
+**Workflow Outcome**:
+The terminal result of a Workflow: Success, Failure, or Canceled. These outcomes
+remain distinct so follow-up behavior does not treat cancellation as failure.
+_Avoid_: Workflow status update, Delivery outcome, Think Submission outcome
 
-**Detached Workflow**:
-A ToolCall-to-WorkflowInstance invocation mode in which durable workflow
-acceptance completes the ToolCall with a WorkflowInstanceRef. The original
-AgentRun does not wait or later resume for its outcome. A later workflow trigger
-may admit a new proactive AgentRun. The workflow remains owned, correlated, and
-observable. Canceling or completing the originating AgentRun does not cancel
-the WorkflowInstance. A later workflow failure never rewrites the completed
-ToolCall; it is a terminal workflow fact and may admit a Proactive AgentRun for
-user notification.
-_Avoid_: Fire-and-forget task, untracked background work, Waiting AgentRun
+**Workflow Follow-up Policy**:
+The User-intent rule that selects when a terminal Workflow outcome creates a
+proactive Think Submission: Never follows no outcome, OnFailure follows only
+Failure, and Always follows Success, Failure, and Canceled. Every outcome is
+recorded first; enabled follow-up is the only path from the outcome into the
+Thread.
+_Avoid_: Workflow callback, resumed Think Submission, direct Thread write
 
-**Workflow Completion Policy**:
-The declared rule for delivering a Detached Workflow's terminal outcome.
-`RecordOnly` preserves the terminal workflow fact without creating
-conversational work. `AdmitProactiveAgentRun` idempotently admits a new AgentRun
-under normal authorization, admission, fairness, and capacity controls.
-_Avoid_: Implicit notification, direct assistant message, resumed AgentRun
+**Workflow Progress**:
+The Workflow-owned, nonterminal operational state of one Workflow. It remains
+outside the Thread and is inspected when a User asks for status.
+_Avoid_: Thread history, Workflow Outcome, Workflow Milestone
+
+**Workflow Milestone**:
+One of a small declared set of user-visible facts that a Workflow can reach
+before its terminal outcome. Each reached milestone creates at most one
+proactive Think Submission and never writes directly to the Thread.
+_Avoid_: Raw Workflow Progress, Workflow Outcome, direct Thread event
 
 **Channel Endpoint**:
 An external messaging address through which a person reaches a Single-Thread
@@ -576,7 +818,7 @@ _Avoid_: Agent identity, Thread
 
 **Messaging Adapter**:
 A reusable Adapter implementation that translates one external messaging
-transport to and from Osfo's transport-neutral conversation semantics. It does
+transport to and from Oz's transport-neutral conversation semantics. It does
 not own the Thread or agent identity.
 _Avoid_: Channel Edge, messaging provider, conversation store
 
@@ -606,9 +848,10 @@ _Avoid_: Native Thread Transport, Web Adapter, OpenAI-Compatible Adapter,
 Messaging Adapter
 
 **Acceptance Receipt**:
-Immutable evidence that Osfo durably accepted one idempotent API operation.
-Identical retries return the same receipt without creating another canonical
-transition.
+Immutable evidence that Oz durably accepted one Channel Message Key as one
+UserMessage and correlated its UserMessageId with one Think SubmissionId.
+Identical retries return the same receipt, and ingress returns success only when
+both Think acceptance and this mapping are recoverable.
 
 **ActionReceipt**:
 Immutable terminal, client-safe evidence of the final knowledge state of one

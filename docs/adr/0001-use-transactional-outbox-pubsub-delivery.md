@@ -2,7 +2,7 @@
 
 Date: 2026-08-05
 
-Status: Accepted authority model, worker delivery transport superseded
+Status: Superseded for Oz v1 by ADR 0003
 
 Supersedes: ADR 0001, Retain Cloud SQL direct AgentRun dispatch
 
@@ -10,8 +10,14 @@ Delivery correction: The approved GCP deployment contract in issue 45 replaces
 the authenticated push worker transport below with one ordered StreamingPull
 subscription and a reviewed fixed worker fleet. The transactional outbox,
 PostgreSQL authority, point claims, ordering, redelivery, and fencing decisions
-remain accepted. Production fleet qualification remains evidence-gated by issue
-87. The push-specific text below is retained as the historical evidence context.
+remain accepted. Production fleet qualification remains evidence-gated by issue 87. The push-specific text below is retained as the historical evidence context.
+
+Terminology note: Oz v1 now uses User as the ownership, admission, fairness,
+allowance, and entitlement scope. References to Principal below describe the
+superseded GCP scheduler and are retained as historical evidence. Oz retains
+the commit-before-effect, idempotency, ambiguity, bounded-work, and recovery
+invariants. It does not retain this PostgreSQL, outbox, Pub/Sub, StreamingPull,
+or AgentRun implementation.
 
 ## Context
 
