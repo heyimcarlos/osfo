@@ -789,6 +789,24 @@ prototype evidence, and still-valid invariants remain as history.
 
 ## Required acceptance journeys
 
+Implementation builds acceptance evidence through the repository contract in
+`docs/agents/implementation-feedback-loop.md`. Every implementation ticket
+declares an applicability matrix before code changes, exercises its applicable
+production-shaped targets, and records only PASS, FAIL, or MISSING verdicts.
+Changed public interfaces require source diagnostics, type-level contract tests,
+and runtime boundary tests where applicable. Two independent reviews check
+repository Standards and specification fit. User feedback on a running vertical
+slice becomes a new acceptance case and enters the same repair loop.
+
+Oz grows one transparent end-to-end scenario package. The same Effect scenario
+body runs against applicable local, preview, and live targets through target
+Layers. Each run records a machine-readable result, explicit missing-capability
+results for applicable targets, `NOT_APPLICABLE` target rows with reasons and no
+verdict, and relevant review artifacts. The first harness slice standardizes
+the interface and one representative smoke scenario. Later implementation
+tickets add their journeys to that package. This ticket-level evidence supports
+but does not replace the complete production and Model Quality gates.
+
 Implementation evidence must include at least:
 
 - every web and WhatsApp onboarding path, recovery, consent, expiry, and
@@ -823,3 +841,4 @@ specification leaves open.
 - [Define the Oz phone-first onboarding and setup journey](https://github.com/heyimcarlos/osfo/issues/162)
 - [Verify provider erasure and backup-retention guarantees](https://github.com/heyimcarlos/osfo/issues/163)
 - [Define Oz model-quality evaluation and release gates](https://github.com/heyimcarlos/osfo/issues/165)
+- [Define the implementation feedback, type-test, and review contract](https://github.com/heyimcarlos/osfo/issues/193)

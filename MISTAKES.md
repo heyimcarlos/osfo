@@ -84,6 +84,7 @@
 - 2026-08-03: A binary-only Rust container build still compiles the package
   library. Copy every `include_str!` input, including `schema.sql`, into the
   builder context even when the selected binary never calls that code path.
+
 ## 2026-08-03: Reusing a stale Cloud SQL Auth Proxy checksum
 
 The earlier issue 13 evidence recorded a Cloud SQL Auth Proxy 2.24.1 checksum that does not match the checksum published in the official 2.24.1 release. The release also publishes binaries from `storage.googleapis.com/cloud-sql-connectors`, not GitHub release assets. Resolve and verify the exact release URL and checksum from the pinned release before every evidence run.
@@ -267,3 +268,21 @@ The live smoke expected the Cloud Run v2 `scaling.manualInstanceCount` field,
 but the installed `gcloud beta run worker-pools describe` command returns the
 Knative-style manual count annotation. Normalize both documented output shapes
 before asserting the fixed fleet size.
+
+## 2026-08-12: Closing the implementation map without a recursive quality loop
+
+The first Oz implementation map gave tickets local acceptance criteria, but it
+did not define type-level contract tests, a scenario-by-target test matrix,
+running-system feedback, independent standards and specification reviews, or
+the repair loop after a failed check. Treat the quality loop as a product-wide
+contract before sequencing implementation tickets. A ticket is not complete
+while any required check is FAIL or MISSING.
+
+## 2026-08-12: Treating a working-tree inventory as reproducible evidence
+
+The evidence catalog counted every local regular file under historical
+prototype directories. Later tracked changes did not regenerate the committed
+coverage report, while ignored local evidence could produce a different count
+from a clean checkout. A committed derived inventory must use a manifest-owned
+or repository-owned file set, ignore machine-local artifacts, and have a drift
+test that reproduces from both clean and locally populated checkouts.
