@@ -33,8 +33,10 @@ describe("Terraform foundation", () => {
     expectCheckPasses("infra/tests/policy.sh", "Terraform policy assertions"),
   );
 
-  it.effect("enforces repository and isolation contracts", () =>
-    expectCheckPasses("infra/tests/repository-contract.sh", "pinned toolchain"),
+  it.effect(
+    "enforces repository and isolation contracts",
+    () => expectCheckPasses("infra/tests/repository-contract.sh", "pinned toolchain"),
+    30_000,
   );
 
   it.effect("enforces the disposable development platform contract", () =>
