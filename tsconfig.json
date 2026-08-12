@@ -9,6 +9,7 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "noErrorTruncation": true,
     "verbatimModuleSyntax": true,
     "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
@@ -19,8 +20,20 @@
     "plugins": [
       {
         "name": "@effect/language-service",
+        "namespaceImportPackages": ["effect", "@effect/*"],
+        "diagnosticSeverity": {
+          "floatingEffect": "error",
+          "floatingEffectInVitest": "error",
+          "missingEffectContext": "error",
+          "missingEffectError": "error",
+          "missingLayerContext": "error",
+          "missingReturnYieldStar": "error",
+          "missingStarInYieldEffectGen": "error"
+        },
+        "includeSuggestionsInTsc": false,
+        "ignoreEffectErrorsInTscExitCode": false,
         "ignoreEffectSuggestionsInTscExitCode": true,
-        "ignoreEffectWarningsInTscExitCode": true
+        "ignoreEffectWarningsInTscExitCode": false
       }
     ]
   },

@@ -13,14 +13,16 @@ const repos = [
 
 await mkdir(REFERENCE_DIR, { recursive: true });
 
-for (const repo of repos) {
-  const dest = join(REFERENCE_DIR, repo.name);
-  if (existsSync(dest)) {
-    console.log(`Pulling ${repo.name}...`);
-    await $`git -C ${dest} pull --ff-only`.quiet();
-  } else {
-    console.log(`Cloning ${repo.name}...`);
-    await $`git clone --depth 1 ${repo.url} ${dest}`.quiet();
-  }
-  console.log(`  ✓ ${repo.name}`);
-}
+await Promise.all(
+  repos.map(async (repo) => {
+    const dest = join(REFERENCE_DIR, repo.name);
+    if (existsSync(dest)) {
+      console.log(`Pulling ${repo.name}...`);
+      await $`git -C ${dest} pull --ff-only`.quiet();
+    } else {
+      console.log(`Cloning ${repo.name}...`);
+      await $`git clone --depth 1 ${repo.url} ${dest}`.quiet();
+    }
+    console.log(`  ✓ ${repo.name}`);
+  }),
+);
