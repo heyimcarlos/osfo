@@ -5,19 +5,8 @@ in `docs/adr/`, and active work in GitHub Issues.
 
 ## Verification and evidence
 
-- Every implementation ticket follows
-  `docs/agents/implementation-feedback-loop.md`. Write its acceptance matrix
-  before implementation. A failed check returns the ticket to diagnosis, a
-  regression test, a fix, and the affected checks.
 - Tests use Effect Vitest. Run scoped tests with `vitest run ...` or the
   package script. Never use `bun test`.
-- Use Effect TypeScript diagnostics for source correctness, dedicated type tests
-  for changed public type behavior, and Effect Vitest for runtime boundaries.
-  One layer does not replace another.
-- Before independent review, inventory the current diff against every local
-  `.agents/skills/wrdn-*/SKILL.md` trigger. Run every applicable WRDN skill,
-  record applicability and PASS, FAIL, or MISSING evidence, and return every
-  actionable finding to the repair loop.
 - Use the narrowest meaningful verification while iterating. Merge-ready gates
   are `bun run format:check`, `lint`, `typecheck`, and `test`.
 - Changes to migrations, PostgreSQL configuration, or database access also run
@@ -27,10 +16,6 @@ in `docs/adr/`, and active work in GitHub Issues.
 - User-visible web changes require the relevant `@osfo/web` test, a production
   build, and inspection in the browser development instance. Record the exact
   commands and observable evidence in the issue or PR.
-- Before ticket completion, two fresh reviewer agents independently review the
-  diff. One reviews repository Standards. One reviews the ticket, acceptance
-  matrix, specification, and ADRs. Any actionable finding returns the ticket to
-  the repair loop. A reviewer does not approve its own implementation.
 - Report required gates as PASS, FAIL, or MISSING. Never present an omitted or
   skipped gate as passing evidence.
 
@@ -46,9 +31,7 @@ in `docs/adr/`, and active work in GitHub Issues.
 
 Repos in `.reference` (effect, executor, AnswerOverflow, flue, ...) are available
 for patterns. Clone a given Git URL into `.reference` and pull latest before using
-it. Before an unfamiliar Effect pattern or a new pattern decision, update the
-relevant clean reference, search it, and record the selected revision and file
-path in the issue or PR.
+it.
 
 ## Engineering boundaries
 
@@ -66,9 +49,6 @@ path in the issue or PR.
 - `packages/ui`: shared React DOM, Tailwind CSS, and shadcn/ui components,
   styles, hooks, and UI utilities. Every consumable path has an explicit
   package export. These artifacts are not native-mobile components.
-- `packages/session`: closed, versioned canonical ThreadEvent schemas and
-  constructors shared by transport, persistence, and future client folds. It
-  contains no process wiring or PostgreSQL access.
 - `packages/api`: schema-first HTTP endpoint groups, generated client behavior,
   handlers, and Effect-native domain interfaces. It contains no Node process
   construction, database access, or Agent Application configuration.
@@ -92,12 +72,6 @@ Use the five canonical labels unchanged. See `docs/agents/triage-labels.md`.
 
 This is a single-context repo: root `CONTEXT.md` and `docs/adr/`. See
 `docs/agents/domain.md`.
-
-### Implementation feedback
-
-Every implementation ticket uses the recursive verification, independent
-review, running-system feedback, and scenario evidence contract in
-`docs/agents/implementation-feedback-loop.md`.
 
 Record mistakes in `MISTAKES.md`, missing capabilities in `DESIRES.md`, and
 environment discoveries in `LEARNINGS.md`.

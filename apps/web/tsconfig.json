@@ -2,14 +2,10 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "composite": true,
-    "declaration": true,
     "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "noEmit": false,
-    "outDir": ".typescript",
-    "rootDir": ".",
+    "noEmit": true,
     "types": ["vite/client", "vitest/globals"]
   },
-  "include": ["src", "test", "vite.config.ts"],
-  "references": [{ "path": "../../packages/ui" }]
+  "include": ["src", "vite.config.ts"]
 }

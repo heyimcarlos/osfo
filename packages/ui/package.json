@@ -34,6 +34,7 @@
     "@effect/vitest": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
+    "effect": "catalog:",
     "react-dom": "catalog:",
     "shadcn": "4.16.1",
     "tailwindcss": "catalog:",

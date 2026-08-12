@@ -1,1 +1,0 @@
-CREATE INDEX "agent_runs_nonterminal_capacity_idx" ON "agent_runs" ("principal_id","agent_run_id") WHERE "state" NOT IN ('succeeded', 'failed', 'canceled');

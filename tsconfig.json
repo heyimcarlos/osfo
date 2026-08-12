@@ -25,16 +25,5 @@
     ]
   },
   "files": [],
-  "references": [
-    { "path": "./packages/agent-runtime" },
-    { "path": "./packages/agent-run" },
-    { "path": "./apps/agent-run-worker" },
-    { "path": "./apps/outbox-relay" },
-    { "path": "./apps/web" },
-    { "path": "./apps/ingress" },
-    { "path": "./packages/db" },
-    { "path": "./packages/api" },
-    { "path": "./packages/session" },
-    { "path": "./packages/ui" }
-  ]
+  "references": [{ "path": "./packages/ui" }, { "path": "./apps/web" }]
 }

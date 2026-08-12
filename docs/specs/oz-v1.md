@@ -780,35 +780,22 @@ The following invariants remain and must be re-proved through Cloudflare:
 - provider-neutral product facts and testable adapter seams;
 - fail-closed qualification with PASS, FAIL, and MISSING.
 
-After equivalent Cloudflare behavior passes, implementation removes the old
-GCP composition roots, Pub/Sub and StreamingPull code, PostgreSQL Thread and
-AgentRun persistence, GCP Terraform and scripts, and packages that have no
-remaining consumer. It does not translate old migrations, preserve a dual
-runtime, or keep historical source as a compatibility shim. Research, ADRs,
-prototype evidence, and still-valid invariants remain as history.
+The retired implementation is absent from the current tree. Git history
+preserves it. New work must not restore a dual runtime or retain old source as a
+compatibility shim.
 
 ## Required acceptance journeys
 
-Implementation builds acceptance evidence through the repository contract in
-`docs/agents/implementation-feedback-loop.md`. Every implementation ticket
-declares an applicability matrix before code changes, exercises its applicable
-production-shaped targets, and records only PASS, FAIL, or MISSING verdicts.
-Changed public interfaces require source diagnostics, type-level contract tests,
-and runtime boundary tests where applicable. Each ticket inventories the final
-diff against every installed local WRDN skill, runs each triggered skill, and
-repairs every actionable finding before independent review. Two independent
-reviews check repository Standards and specification fit. User feedback on a
-running vertical slice becomes a new acceptance case and enters the same repair
-loop.
+Each implementation ticket adds ordinary tests for its behavior and failure
+boundaries. Use Effect TypeScript diagnostics for source correctness, focused
+type tests only for real public compile-time behavior, and Effect Vitest for
+runtime behavior. User feedback on a running vertical slice becomes a
+regression case.
 
-Oz grows one transparent end-to-end scenario package. The same Effect scenario
-body runs against applicable local, preview, and live targets through target
-Layers. Each run records a machine-readable result, explicit missing-capability
-results for applicable targets, `NOT_APPLICABLE` target rows with reasons and no
-verdict, and relevant review artifacts. The first harness slice standardizes
-the interface and one representative smoke scenario. Later implementation
-tickets add their journeys to that package. This ticket-level evidence supports
-but does not replace the complete production and Model Quality gates.
+Every change must pass the root install, format, lint, typecheck, test, and build
+commands. Production-facing work also records the applicable system,
+provider, browser, migration, SLO, cost, and Model Quality evidence required by
+this specification. Report each required result as PASS, FAIL, or MISSING.
 
 Implementation evidence must include at least:
 
@@ -844,4 +831,3 @@ specification leaves open.
 - [Define the Oz phone-first onboarding and setup journey](https://github.com/heyimcarlos/osfo/issues/162)
 - [Verify provider erasure and backup-retention guarantees](https://github.com/heyimcarlos/osfo/issues/163)
 - [Define Oz model-quality evaluation and release gates](https://github.com/heyimcarlos/osfo/issues/165)
-- [Define the implementation feedback, type-test, and review contract](https://github.com/heyimcarlos/osfo/issues/193)
