@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -129,6 +129,10 @@ describe("local WRDN pass", () => {
     const root = await mkdtemp(join(tmpdir(), "osfo-wrdn-manifest-"));
     temporaryRoots.add(root);
     const manifest = join(root, "reviews.json");
+    const marker = join(root, "lint-invoked");
+    const bunStub = join(root, "bun");
+    await writeFile(bunStub, `#!/bin/sh\ntouch '${marker}'\nexit 99\n`);
+    await chmod(bunStub, 0o755);
     await writeFile(
       manifest,
       JSON.stringify({
@@ -153,6 +157,7 @@ describe("local WRDN pass", () => {
         encoding: "utf8",
         env: {
           ...process.env,
+          PATH: `${root}:${process.env.PATH ?? ""}`,
           WRDN_BASE_REF: "origin/main",
           WRDN_REVIEW_FILE: manifest,
         },
@@ -161,6 +166,7 @@ describe("local WRDN pass", () => {
 
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}${result.stderr}`).toContain('Expected "PASS" | "FAIL"');
+    await expect(access(marker)).rejects.toThrow();
   });
 
   it("fails closed when the lint evidence command does not complete successfully", () => {

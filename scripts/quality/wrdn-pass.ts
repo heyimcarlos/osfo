@@ -430,14 +430,14 @@ export const requireWrdnLintOutput = (lint: {
 
 const main = async () => {
   const repoRoot = resolve(import.meta.dirname, "../..");
-  const lint = spawnSync("bun", ["run", "lint"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
   const reviewPath = process.env.WRDN_REVIEW_FILE
     ? resolve(repoRoot, process.env.WRDN_REVIEW_FILE)
     : join(repoRoot, ".wrdn-reviews.json");
   const reviewFile = parseWrdnReviewManifest(await readFile(reviewPath, "utf8"));
+  const lint = spawnSync("bun", ["run", "lint"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
   const changedContent = await collectChangedContent(
     repoRoot,
     resolveWrdnBaseRef(repoRoot, process.env.WRDN_BASE_REF),

@@ -37,7 +37,7 @@
         "scripts/quality/wrdn-pass.test.ts"
       ],
       "verdict": "PASS",
-      "diffDigest": "48b8e5c9923e53d7076ab0dd6bc81eab3fd6a38cdc8a66d058a35ed576286cba",
+      "diffDigest": "aae1d76896d1016860ad3f1e76d562f3e3bf139ed27a4723e51e3c43f2de71cf",
       "evidence": "Every changed runtime test imports Effect Vitest and uses unconditional deterministic assertions. The scoped Effect Vitest lint commands and the runtime suites pass."
     }
   ]
