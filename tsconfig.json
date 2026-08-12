@@ -38,5 +38,9 @@
     ]
   },
   "files": [],
-  "references": [{ "path": "./packages/ui" }, { "path": "./apps/web" }]
+  "references": [
+    { "path": "./tools/oxlint" },
+    { "path": "./packages/ui" },
+    { "path": "./apps/web" }
+  ]
 }

@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "composite": true,
+    "lib": ["ES2022"],
+    "noEmit": true,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["index.ts", "rules/**/*.ts", "shared/**/*.ts", "test/**/*.ts"]
+}

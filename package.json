@@ -13,15 +13,17 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint --deny-warnings .",
     "prepare": "effect-tsgo patch --typescript --oxlint",
-    "test": "bun run --cwd packages/ui test && bun run --cwd apps/web test",
-    "typecheck": "bun run --cwd packages/ui typecheck && bun run --cwd apps/web typecheck"
+    "test": "vitest run tools/oxlint/test && bun run --cwd packages/ui test && bun run --cwd apps/web test",
+    "typecheck": "tsc --project tools/oxlint/tsconfig.json && bun run --cwd packages/ui typecheck && bun run --cwd apps/web typecheck"
   },
   "devDependencies": {
     "@effect/tsgo": "0.36.4",
     "@effect/vitest": "catalog:",
     "@oxlint/plugins": "1.77.0",
+    "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
+    "effect": "catalog:",
     "oxfmt": "0.44.0",
     "oxlint": "1.77.0",
     "oxlint-tsgolint": "7.0.2001",
@@ -37,6 +39,7 @@
     "@tailwindcss/vite": "4.2.2",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@types/node": "24.13.3",
     "@vitejs/plugin-react": "6.0.1",
     "effect": "4.0.0-beta.103",
     "lucide-react": "1.24.0",

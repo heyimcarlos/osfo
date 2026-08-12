@@ -1,5 +1,5 @@
 import { Chat, type ChatMessage } from "@osfo/ui/components/chat";
-import { useRef, useState } from "react";
+import { useState } from "react";
 
 const initialMessages: ReadonlyArray<ChatMessage> = [
   {
@@ -23,18 +23,15 @@ const initialMessages: ReadonlyArray<ChatMessage> = [
 export function App() {
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState(initialMessages);
-  const nextMessageId = useRef(initialMessages.length);
 
   const submit = () => {
     const content = draft.trim();
     if (content.length === 0) return;
 
-    const id = `preview-${nextMessageId.current}`;
-    nextMessageId.current += 1;
     setMessages((current) => [
       ...current,
       {
-        id,
+        id: globalThis.crypto.randomUUID(),
         role: "user",
         content,
       },
