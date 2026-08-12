@@ -1,8 +1,0 @@
-catalog-records	openpoke_catalog_record_info
-catalog-status	openpoke_catalog_status
-catalog-facts	openpoke_catalog_fact
-catalog-requirements	openpoke_catalog_requirement_status
-coverage-sources	openpoke_catalog_source_info
-production-qualification	openpoke_catalog_status{environment="production",gate="production_qualification"}
-development-runtime	openpoke_catalog_status{environment="development"}
-matrix-admission	openpoke_catalog_status{record=~"matrix-[ABCD].*",gate="admission"}
