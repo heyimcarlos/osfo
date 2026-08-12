@@ -794,9 +794,12 @@ Implementation builds acceptance evidence through the repository contract in
 declares an applicability matrix before code changes, exercises its applicable
 production-shaped targets, and records only PASS, FAIL, or MISSING verdicts.
 Changed public interfaces require source diagnostics, type-level contract tests,
-and runtime boundary tests where applicable. Two independent reviews check
-repository Standards and specification fit. User feedback on a running vertical
-slice becomes a new acceptance case and enters the same repair loop.
+and runtime boundary tests where applicable. Each ticket inventories the final
+diff against every installed local WRDN skill, runs each triggered skill, and
+repairs every actionable finding before independent review. Two independent
+reviews check repository Standards and specification fit. User feedback on a
+running vertical slice becomes a new acceptance case and enters the same repair
+loop.
 
 Oz grows one transparent end-to-end scenario package. The same Effect scenario
 body runs against applicable local, preview, and live targets through target

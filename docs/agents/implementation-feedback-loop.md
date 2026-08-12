@@ -24,6 +24,7 @@ acceptance matrix
   -> failing focused test or type test
   -> implementation
   -> focused checks
+  -> applicable WRDN skill checks
   -> production-shaped running system
   -> machine-readable evidence
   -> independent Standards review and Spec review
@@ -99,7 +100,33 @@ A change to a public TypeScript interface requires a type test. A change to a
 runtime boundary requires a runtime schema or adapter test. One does not replace
 the other.
 
-## 4. Repair recursively
+## 4. Run the WRDN skill pass
+
+Discover the current WRDN skills from `.agents/skills/wrdn-*/SKILL.md`. Compare
+the complete ticket diff and lint findings with every skill trigger. Read and
+run each applicable skill. The skill file owns its trace, exclusions, severity,
+fix shape, and output requirements.
+
+Record one row for every installed WRDN skill. This makes applicability explicit
+and lets later skills join the loop without copying a fixed list into this
+contract.
+
+```markdown
+| WRDN skill | Trigger evidence        | Applicable | Evidence                       | Verdict |
+| ---------- | ----------------------- | ---------- | ------------------------------ | ------- |
+| wrdn-name  | changed path or finding | Yes        | finding report or clean review | MISSING |
+```
+
+Use `NOT_APPLICABLE` only in the applicability field and give a reason. An
+applicable skill reports `PASS`, `FAIL`, or `MISSING`. Any actionable finding is
+`FAIL`. Fix it through the recursive repair loop, then rerun that skill and every
+affected check. Rerun the full WRDN inventory after a material diff change.
+
+The WRDN pass is ticket-scoped. It does not turn each ticket into a whole-repo
+audit, and it does not replace lint, type tests, runtime tests, or independent
+review.
+
+## 5. Repair recursively
 
 Run the narrowest meaningful check after each change. If it fails:
 
@@ -114,7 +141,7 @@ Do not bypass a check, weaken an assertion, add an unverified ignore, or commit
 partial work as complete. Stop only for a real blocker that needs new authority,
 external access, or a product decision.
 
-## 5. Test the running implementation
+## 6. Test the running implementation
 
 Runtime work must include a production-shaped execution on every applicable
 deterministic target. Test the built artifact when packaging or deployment can
@@ -129,7 +156,7 @@ User feedback becomes a new matrix row. Reproduce it as a failing automated
 check when the behavior is deterministic. If automation is not possible, record
 the repeatable manual procedure and observable result.
 
-## 6. Run independent reviews
+## 7. Run independent reviews
 
 Two fresh reviewer agents review the completed diff independently:
 
@@ -143,7 +170,7 @@ findings and verdict. Do not merge the two axes into one score. Any actionable
 finding makes that review `FAIL` and returns the implementation to the repair
 loop. Rerun both reviews after a material fix.
 
-## 7. Run the applicable gates
+## 8. Run the applicable gates
 
 Every ticket runs the repository merge-ready gates:
 
@@ -151,6 +178,7 @@ Every ticket runs the repository merge-ready gates:
 - `bun run lint`;
 - `bun run typecheck`;
 - dedicated type tests when public type behavior changes;
+- every WRDN skill triggered by the final diff or lint findings;
 - `bun run test`.
 
 Also run these gates when applicable:
@@ -209,6 +237,7 @@ The issue or PR records:
 - exact commands and targets;
 - the tested revision;
 - structured result and artifact paths;
+- the WRDN applicability table and final skill verdicts;
 - Standards and Spec review verdicts;
 - user feedback and resulting regression cases, when present;
 - every remaining `FAIL` or `MISSING` item.
