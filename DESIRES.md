@@ -40,3 +40,18 @@ Before implementation, define how the agent distinguishes a real product gap
 from a temporary tool failure, missing authorization, missing user input, or a
 request that policy does not allow. Also define deduplication, privacy, user
 visibility, review state, and the path from a report to a feature proposal.
+
+# Simple website creation and deployment
+
+Date captured: 2026-08-12
+Horizon: future product direction
+
+Let Osfo users create and deploy websites with very little setup. The experience
+should feel as simple as products such as ChatGPT Sites and AMP Orbs: a user can
+describe or build a site, publish it, and receive a working public URL without
+needing to configure hosting infrastructure.
+
+This is a future product desire, not a current commitment. Before it becomes
+planned work, investigate site generation and editing, preview and publishing,
+custom domains, authentication, storage, deployment isolation, abuse controls,
+usage limits, observability, rollback, and ownership of generated content.
