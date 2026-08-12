@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import type { UIMessage } from "ai";
 
 const origin = "http://localhost:1337";
 const prototypeToken = "local-prototype-only";
@@ -85,7 +86,7 @@ export type FoundationState = {
     }>;
     readonly reminders: ReadonlyArray<{ readonly reminderId: string; readonly text: string }>;
   };
-  readonly messages: ReadonlyArray<unknown>;
+  readonly messages: ReadonlyArray<UIMessage>;
   readonly submissions: ReadonlyArray<{
     readonly status: string;
     readonly submissionId: string;

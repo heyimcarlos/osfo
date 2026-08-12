@@ -238,12 +238,7 @@ export const closeStreamingPullSource = (
 const googleSourceLayer = (config: GoogleStreamingPullConfig) =>
   Layer.effect(
     StreamingPullSource,
-    Effect.acquireRelease(makeGoogleSource(config), (source) =>
-      source.close().pipe(
-        // oxlint-disable-next-line osfo/no-untyped-effect-errors -- boundary: an Effect finalizer cannot return a typed failure
-        Effect.orDie,
-      ),
-    ),
+    Effect.acquireRelease(makeGoogleSource(config), (source) => source.close().pipe(Effect.orDie)),
   );
 
 export const makeGoogleStreamingPullSourceLayer = (config: GoogleStreamingPullConfig) =>

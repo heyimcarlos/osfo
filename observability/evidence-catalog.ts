@@ -50,27 +50,33 @@ type GateStatus = typeof StatusSchema.Type;
 type ManifestSource = typeof ManifestSourceSchema.Type;
 export type EvidenceCatalogManifest = typeof EvidenceCatalogManifestSchema.Type;
 
+const JsonObjectSchema = Schema.Record(Schema.String, Schema.Json);
+const isJsonObject: (value: Schema.Json | undefined) => value is Schema.JsonObject =
+  Schema.is(JsonObjectSchema);
+const isJsonString: (value: Schema.Json | undefined) => value is string = Schema.is(Schema.String);
+const isJsonNumber: (value: Schema.Json | undefined) => value is number = Schema.is(Schema.Number);
+const isJsonBoolean: (value: Schema.Json | undefined) => value is boolean = Schema.is(
+  Schema.Boolean,
+);
+
 const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const textValue = (record: Record<string, unknown>, key: string) => {
+const textValue = (record: Schema.JsonObject, key: string) => {
   const value = record[key];
-  return typeof value === "string" ? value : undefined;
+  return isJsonString(value) ? value : undefined;
 };
 
-const numberValue = (record: Record<string, unknown>, key: string) => {
+const numberValue = (record: Schema.JsonObject, key: string) => {
   const value = record[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return isJsonNumber(value) && Number.isFinite(value) ? value : undefined;
 };
 
-const recordValue = (record: Record<string, unknown>, key: string) => {
+const recordValue = (record: Schema.JsonObject, key: string) => {
   const value = record[key];
-  return isRecord(value) ? value : undefined;
+  return isJsonObject(value) ? value : undefined;
 };
 
-const statusValue = (value: unknown): GateStatus =>
+const statusValue = (value: Schema.Json | undefined): GateStatus =>
   value === "PASS" || value === "FAIL" || value === "MISSING" ? value : "MISSING";
 
 const minStatus = (values: ReadonlyArray<GateStatus>): GateStatus =>
@@ -204,9 +210,9 @@ interface IndexedArtifact {
   readonly path: string | null;
   readonly sha256: string | null;
   readonly description: string;
-  readonly source?: string;
-  readonly sourceManifestSha256?: string;
-  readonly sourceManifestPath?: string;
+  readonly source: string | undefined;
+  readonly sourceManifestSha256: string | undefined;
+  readonly sourceManifestPath: string | undefined;
 }
 
 const unsafePathPattern = /(?:^|\/)(?:\.env(?:\.|$)|\.git(?:\/|$)|node_modules(?:\/|$))/u;
@@ -283,13 +289,13 @@ const readRegularFile = async (root: string, path: string) => {
   return readFile(canonical);
 };
 
-const decodeJson = async (repoRoot: string, path: string): Promise<unknown> => {
+const decodeJson = async (repoRoot: string, path: string): Promise<Schema.Json> => {
   const bytes = await readRegularFile(repoRoot, path);
   return decodeJsonBytes(bytes, relative(repoRoot, path));
 };
 
-const decodeJsonBytes = (bytes: Buffer, path: string): unknown => {
-  const decoded = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown))(
+const decodeJsonBytes = (bytes: Buffer, path: string): Schema.Json => {
+  const decoded = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Json))(
     bytes.toString("utf8"),
   );
   if (Exit.isFailure(decoded)) {
@@ -298,8 +304,8 @@ const decodeJsonBytes = (bytes: Buffer, path: string): unknown => {
   return decoded.value;
 };
 
-const requiredRecord = (value: unknown, path: string) => {
-  if (!isRecord(value)) {
+const requiredRecord = (value: Schema.Json, path: string): Schema.JsonObject => {
+  if (!isJsonObject(value)) {
     throw new EvidenceCatalogError("INVALID_SOURCE", path, "expected a JSON object");
   }
   return value;
@@ -340,7 +346,7 @@ const validateManifest = async (manifestPath: string) => {
   return decoded.value;
 };
 
-const indexedArtifactFrom = (value: unknown): IndexedArtifact => {
+const indexedArtifactFrom = (value: Schema.Json): IndexedArtifact => {
   const record = requiredRecord(value, "artifact-index.json");
   const artifactStatus = statusValue(record.artifactStatus);
   const evidenceStatus = statusValue(record.evidenceStatus);
@@ -356,10 +362,13 @@ const indexedArtifactFrom = (value: unknown): IndexedArtifact => {
   }
   const path = record.path === null ? null : textValue(record, "path");
   const digest = record.sha256 === null ? null : textValue(record, "sha256");
+  const source = textValue(record, "source");
+  const sourceManifestSha256 = textValue(record, "sourceManifestSha256");
+  const sourceManifestPath = textValue(record, "sourceManifestPath");
   if (
     (artifactStatus === "MISSING" && (path !== null || digest !== null)) ||
     (artifactStatus !== "MISSING" && (path === undefined || digest === undefined)) ||
-    (typeof digest === "string" && !/^[a-f0-9]{64}$/u.test(digest))
+    (digest !== null && digest !== undefined && !/^[a-f0-9]{64}$/u.test(digest))
   ) {
     throw new EvidenceCatalogError(
       "INVALID_SOURCE",
@@ -375,13 +384,9 @@ const indexedArtifactFrom = (value: unknown): IndexedArtifact => {
     path: path ?? null,
     sha256: digest ?? null,
     description,
-    ...(textValue(record, "source") === undefined ? {} : { source: textValue(record, "source")! }),
-    ...(textValue(record, "sourceManifestSha256") === undefined
-      ? {}
-      : { sourceManifestSha256: textValue(record, "sourceManifestSha256")! }),
-    ...(textValue(record, "sourceManifestPath") === undefined
-      ? {}
-      : { sourceManifestPath: textValue(record, "sourceManifestPath")! }),
+    source,
+    sourceManifestSha256,
+    sourceManifestPath,
   };
 };
 
@@ -507,7 +512,7 @@ const fact = (
 
 const numericFacts = (
   domain: CatalogFact["domain"],
-  record: Record<string, unknown> | undefined,
+  record: Schema.JsonObject | undefined,
   fields: ReadonlyArray<readonly [string, string, string | null]>,
 ) =>
   fields.flatMap(([key, name, unit]) => {
@@ -767,9 +772,9 @@ const indexedJson = async (context: CompilerContext, path: string) => {
 };
 
 const runFacts = (
-  scenario: Record<string, unknown>,
-  audit: Record<string, unknown> | undefined,
-  caller: Record<string, unknown> | undefined,
+  scenario: Schema.JsonObject,
+  audit: Schema.JsonObject | undefined,
+  caller: Schema.JsonObject | undefined,
 ) => {
   const callerLatency = caller === undefined ? undefined : recordValue(caller, "latency_ms");
   const receiptLatency =
@@ -1138,7 +1143,7 @@ const receiptSloAdapter = async (
 };
 
 const safeSnapshotFacts = (
-  raw: Record<string, unknown>,
+  raw: Schema.JsonObject,
   domain: CatalogFact["domain"],
   prefix = "",
 ): CatalogFact[] => {
@@ -1147,16 +1152,16 @@ const safeSnapshotFacts = (
     left.localeCompare(right),
   )) {
     const name = slug(prefix.length === 0 ? key : `${prefix}-${key}`).replaceAll("-", "_");
-    if (typeof value === "number" && Number.isFinite(value)) facts.push(fact(domain, name, value));
-    else if (typeof value === "boolean") facts.push(fact(domain, name, value));
+    if (isJsonNumber(value) && Number.isFinite(value)) facts.push(fact(domain, name, value));
+    else if (isJsonBoolean(value)) facts.push(fact(domain, name, value));
     else if (
-      typeof value === "string" &&
+      isJsonString(value) &&
       ["executionprofile", "modelbinding", "cancellationoutcome", "imagedigest"].includes(
         slug(key).replaceAll("-", ""),
       )
     ) {
       facts.push(fact(domain, name, value.slice(0, 160)));
-    } else if (isRecord(value)) facts.push(...safeSnapshotFacts(value, domain, name));
+    } else if (isJsonObject(value)) facts.push(...safeSnapshotFacts(value, domain, name));
   }
   return facts;
 };
@@ -1201,7 +1206,7 @@ const developmentRuntimeAdapter = async (
     ],
     explanation: "Sanitized snapshot of the current bounded development smoke.",
     limitations: Array.isArray(raw.limitations)
-      ? raw.limitations.filter((item): item is string => typeof item === "string")
+      ? raw.limitations.filter(isJsonString)
       : ["Development scope only."],
   });
   const prior = Array.isArray(raw.priorAttempts) ? raw.priorAttempts : [];
@@ -1240,7 +1245,7 @@ const developmentRuntimeAdapter = async (
           : "FAIL",
     ],
     ["cancellation_completion", "MISSING"],
-    ["current_image_digest", typeof facts?.imageDigest === "string" ? "PASS" : "MISSING"],
+    ["current_image_digest", isJsonString(facts?.imageDigest) ? "PASS" : "MISSING"],
   ];
   const records: CatalogRecord[] = [
     main,
@@ -1357,7 +1362,7 @@ const developmentSseAdapter = async (
       requirements,
       explanation: "Sanitized bounded development SSE attempt, including failures.",
       limitations: Array.isArray(attempt.limitations)
-        ? attempt.limitations.filter((item): item is string => typeof item === "string")
+        ? attempt.limitations.filter(isJsonString)
         : ["Development scope only."],
     });
   });
@@ -1405,12 +1410,12 @@ const developmentSseAdapter = async (
       authority: "sanitized-unsealed-development-snapshot",
       explanation: "Development SSE evidence explicitly cannot qualify production.",
       limitations: Array.isArray(raw.outstandingGates)
-        ? raw.outstandingGates.filter((item): item is string => typeof item === "string")
+        ? raw.outstandingGates.filter(isJsonString)
         : [],
     }),
   );
   const outstanding = Array.isArray(raw.outstandingGates)
-    ? raw.outstandingGates.filter((item): item is string => typeof item === "string")
+    ? raw.outstandingGates.filter(isJsonString)
     : [];
   for (const gate of new Set(["target_load_streaming", ...outstanding])) {
     records.push(
@@ -1466,7 +1471,7 @@ const developmentCloudAdapter = async (
         ...safeSnapshotFacts(recordValue(raw, "database") ?? {}, "postgres"),
         ...safeSnapshotFacts(recordValue(raw, "subscription") ?? {}, "provider"),
         ...services.flatMap((value) =>
-          isRecord(value)
+          isJsonObject(value)
             ? safeSnapshotFacts(value, "fleet", textValue(value, "alias") ?? "service")
             : [],
         ),
@@ -1474,7 +1479,7 @@ const developmentCloudAdapter = async (
       explanation:
         "Read-only development metadata. Provider payloads and resource identifiers are excluded.",
       limitations: Array.isArray(raw.limitations)
-        ? raw.limitations.filter((item): item is string => typeof item === "string")
+        ? raw.limitations.filter(isJsonString)
         : ["Development metadata does not certify production."],
     }),
     baseRecord(source, {
@@ -1701,8 +1706,7 @@ const prototypeResultAdapter = async (
   ];
   if (source.id === "historical-four-device") {
     for (const [key, value] of Object.entries(raw)) {
-      if (typeof value === "boolean")
-        facts.push(fact("sse", slug(key).replaceAll("-", "_"), value));
+      if (isJsonBoolean(value)) facts.push(fact("sse", slug(key).replaceAll("-", "_"), value));
     }
   }
   if (source.id === "historical-mailpit-action") {
@@ -1758,46 +1762,48 @@ const prototypeResultAdapter = async (
   };
 };
 
-const trackedDirectoryFileCount = async (repoRoot: string, sourcePath: string): Promise<number> => {
-  let output: string;
-  try {
-    output = execFileSync("git", ["-C", repoRoot, "ls-files", "-z", "--", sourcePath], {
-      encoding: "utf8",
-      maxBuffer: 16 * 1024 * 1024,
-    });
-  } catch {
-    throw new EvidenceCatalogError(
-      "INVALID_SOURCE",
-      sourcePath,
-      "tracked inventory requires a readable Git index",
-    );
-  }
-  const trackedPaths = output.split("\0").filter((path) => path.length > 0);
-  for (const trackedPath of trackedPaths) {
-    const absolute = resolve(repoRoot, trackedPath);
-    if (!isInside(repoRoot, absolute)) {
+const physicalDirectoryFileCount = async (repoRoot: string, root: string): Promise<number> => {
+  let count = 0;
+  const entries = await readdir(root, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) {
       throw new EvidenceCatalogError(
         "INVALID_SOURCE",
-        trackedPath,
-        "tracked path escapes repository",
+        relative(repoRoot, resolve(root, entry.name)),
+        "inventory symlink is forbidden",
       );
     }
-    const metadata = await lstat(absolute).catch(() => {
+    if (entry.isDirectory()) {
+      count += await physicalDirectoryFileCount(repoRoot, resolve(root, entry.name));
+    } else if (entry.isFile()) count += 1;
+  }
+  return count;
+};
+
+const directoryFileCount = async (repoRoot: string, root: string): Promise<number> => {
+  const hasGitMetadata = await access(resolve(repoRoot, ".git")).then(
+    () => true,
+    () => false,
+  );
+  if (!hasGitMetadata) return physicalDirectoryFileCount(repoRoot, root);
+
+  const trackedEntries = execFileSync(
+    "git",
+    ["-C", repoRoot, "ls-files", "--stage", "-z", "--", relative(repoRoot, root)],
+    { encoding: "utf8" },
+  )
+    .split("\0")
+    .filter((entry) => entry.length > 0);
+  for (const entry of trackedEntries) {
+    if (entry.startsWith("120000 ")) {
       throw new EvidenceCatalogError(
         "INVALID_SOURCE",
-        trackedPath,
-        "tracked inventory file is missing",
-      );
-    });
-    if (!metadata.isFile() || metadata.isSymbolicLink()) {
-      throw new EvidenceCatalogError(
-        "INVALID_SOURCE",
-        trackedPath,
-        "tracked inventory entry must be a regular file",
+        entry.slice(entry.indexOf("\t") + 1),
+        "inventory symlink is forbidden",
       );
     }
   }
-  return trackedPaths.length;
+  return trackedEntries.length;
 };
 
 const adaptSource = async (
@@ -1839,9 +1845,9 @@ const adaptSource = async (
     case "directory-inventory":
       return {
         records: [],
-        count: await trackedDirectoryFileCount(context.repoRoot, source.path),
+        count: await directoryFileCount(context.repoRoot, path),
         integrityProvenance:
-          "Git index tracked regular-file inventory; ignored and untracked files are excluded.",
+          "Recursive regular-file inventory; excluded files are not qualification inputs.",
       };
     case "file-inventory":
       await readRegularFile(context.repoRoot, path);
@@ -1876,7 +1882,7 @@ const displayFact = (record: CatalogRecord, names: ReadonlyArray<string>) => {
     (item) => names.includes(item.name) && item.status !== "MISSING" && item.value !== null,
   )?.value;
   if (value === undefined) return "MISSING";
-  if (typeof value === "boolean") return value ? "PASS" : "FAIL";
+  if (isJsonBoolean(value)) return value ? "PASS" : "FAIL";
   return String(value).slice(0, 160);
 };
 
@@ -1959,7 +1965,7 @@ const renderMetrics = (
       })} ${metricStatusValue(record.status)}`,
     );
     for (const item of record.facts) {
-      if (typeof item.value !== "number" || item.status === "MISSING") continue;
+      if (!isJsonNumber(item.value) || item.status === "MISSING") continue;
       lines.push(
         `openpoke_catalog_fact${metricLabels({
           alias: common.alias,
@@ -2152,7 +2158,7 @@ export const compileEvidenceCatalog = async (
     .filter((line) => !line.startsWith("#"))
     .map((line) => (presentationTimestamp === 0 ? line : `${line} ${presentationTimestamp}`))
     .join("\n")}\n# EOF\n`;
-  const statusCounts: Record<GateStatus, number> = { PASS: 0, FAIL: 0, MISSING: 0 };
+  const statusCounts = { PASS: 0, FAIL: 0, MISSING: 0 } satisfies Record<GateStatus, number>;
   for (const record of catalog) statusCounts[record.status] += 1;
   const importReport = {
     schemaVersion: 1 as const,

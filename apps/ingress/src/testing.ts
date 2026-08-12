@@ -140,28 +140,30 @@ const waitForReady = (
 
 export const startCompiledIngress = (options: CompiledIngressOptions) =>
   Effect.gen(function* () {
+    const baseEnv = {
+      OSFO_ADMISSION_CAPACITY_RECONCILIATION_INTERVAL_MS: String(
+        options.admissionCapacityReconciliationIntervalMs ?? 30_000,
+      ),
+      OSFO_INGRESS_PORT: String(options.port ?? 0),
+      OSFO_TEST_LIFECYCLE_TELEMETRY: "true",
+      OSFO_DATABASE_URL: options.databaseUrl,
+      OSFO_EXECUTION_PROFILE_REF: options.executionProfileRef ?? "oz.process-test.v1",
+      OSFO_GLOBAL_NON_TERMINAL_LIMIT: String(options.globalNonTerminalLimit ?? 8),
+      OSFO_MAX_STREAM_BUFFERED_AGE_MS: String(options.maxStreamBufferedAgeMs ?? 5_000),
+      OSFO_MAX_STREAM_BUFFERED_BYTES: String(options.maxStreamBufferedBytes ?? 1_048_576),
+      OSFO_MAX_STREAM_BUFFERED_EVENTS: String(options.maxStreamBufferedEvents ?? 64),
+      OSFO_MAX_STREAM_CONNECTION_LIFETIME_MS: String(
+        options.maxStreamConnectionLifetimeMs ?? 1_800_000,
+      ),
+      OSFO_MAX_STREAM_CONNECTIONS: String(options.maxStreamConnections ?? 64),
+      OSFO_PRINCIPAL_NON_TERMINAL_LIMIT: String(options.principalNonTerminalLimit ?? 4),
+      OSFO_STREAM_POLL_INTERVAL_MS: String(options.streamPollIntervalMs ?? 250),
+    };
+    const env =
+      options.webRoot === undefined ? baseEnv : { ...baseEnv, OSFO_WEB_ROOT: options.webRoot };
     const handle = yield* ChildProcess.make(process.execPath, ["dist/main.js"], {
       cwd: packageDirectory,
-      env: {
-        OSFO_ADMISSION_CAPACITY_RECONCILIATION_INTERVAL_MS: String(
-          options.admissionCapacityReconciliationIntervalMs ?? 30_000,
-        ),
-        OSFO_INGRESS_PORT: String(options.port ?? 0),
-        OSFO_TEST_LIFECYCLE_TELEMETRY: "true",
-        OSFO_DATABASE_URL: options.databaseUrl,
-        OSFO_EXECUTION_PROFILE_REF: options.executionProfileRef ?? "oz.process-test.v1",
-        OSFO_GLOBAL_NON_TERMINAL_LIMIT: String(options.globalNonTerminalLimit ?? 8),
-        OSFO_MAX_STREAM_BUFFERED_AGE_MS: String(options.maxStreamBufferedAgeMs ?? 5_000),
-        OSFO_MAX_STREAM_BUFFERED_BYTES: String(options.maxStreamBufferedBytes ?? 1_048_576),
-        OSFO_MAX_STREAM_BUFFERED_EVENTS: String(options.maxStreamBufferedEvents ?? 64),
-        OSFO_MAX_STREAM_CONNECTION_LIFETIME_MS: String(
-          options.maxStreamConnectionLifetimeMs ?? 1_800_000,
-        ),
-        OSFO_MAX_STREAM_CONNECTIONS: String(options.maxStreamConnections ?? 64),
-        OSFO_PRINCIPAL_NON_TERMINAL_LIMIT: String(options.principalNonTerminalLimit ?? 4),
-        OSFO_STREAM_POLL_INTERVAL_MS: String(options.streamPollIntervalMs ?? 250),
-        ...(options.webRoot === undefined ? {} : { OSFO_WEB_ROOT: options.webRoot }),
-      },
+      env,
       extendEnv: true,
       stdin: "ignore",
       forceKillAfter: "3 seconds",

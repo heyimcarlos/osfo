@@ -86,7 +86,6 @@ const OpenRouterEventSchema = Schema.Union([ChatCompletionChunkSchema, ProviderE
 const OpenRouterEventFromJson = Schema.fromJsonString(OpenRouterEventSchema);
 type ChatCompletionChunk = typeof ChatCompletionChunkSchema.Type;
 type OpenRouterEvent = typeof OpenRouterEventSchema.Type;
-type ProviderErrorEvent = typeof ProviderErrorSchema.Type;
 type ChatCompletionDelta = typeof DeltaSchema.Type;
 
 type StreamEnvelope =
@@ -130,9 +129,6 @@ const hasUnsupportedDeltaOutput = (delta: ChatCompletionDelta) =>
   (delta.refusal?.length ?? 0) > 0 ||
   (delta.reasoning?.length ?? 0) > 0 ||
   (delta.reasoning_details?.length ?? 0) > 0;
-
-const isProviderErrorEvent = (event: OpenRouterEvent): event is ProviderErrorEvent =>
-  Object.hasOwn(event, "error");
 
 const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig) =>
   Layer.effect(
@@ -339,7 +335,7 @@ const executorLayer = (config: OpenRouterChatCompletionsModelCallExecutorConfig)
               if (phase.type === "completed") {
                 return yield* executionError(session, "Provider emitted an event after [DONE]");
               }
-              if (isProviderErrorEvent(envelope.event)) {
+              if ("error" in envelope.event) {
                 return yield* executionError(session, "Provider emitted a stream error");
               }
               return yield* handleChunk(envelope.event);

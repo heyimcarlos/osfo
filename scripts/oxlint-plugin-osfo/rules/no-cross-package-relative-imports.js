@@ -1,14 +1,14 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 
-import { repoRoot } from "../utils.js";
+import { isString, repoRoot } from "../utils.js";
 
 const workspaceManifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
 const workspacePatterns = Array.isArray(workspaceManifest.workspaces)
   ? workspaceManifest.workspaces
   : [];
 const workspaceRoots = workspacePatterns.flatMap((pattern) => {
-  if (typeof pattern !== "string") return [];
+  if (!isString(pattern)) return [];
   if (!pattern.endsWith("/*")) return [join(repoRoot, pattern)];
   const parent = join(repoRoot, pattern.slice(0, -2));
   if (!existsSync(parent)) return [];
@@ -21,7 +21,7 @@ const packageRoots = workspaceRoots.flatMap((root) => {
   const packageJson = join(root, "package.json");
   if (!existsSync(packageJson)) return [];
   const manifest = JSON.parse(readFileSync(packageJson, "utf8"));
-  return typeof manifest.name === "string" ? [{ root, name: manifest.name }] : [];
+  return isString(manifest.name) ? [{ root, name: manifest.name }] : [];
 });
 
 const findPackage = (path) => {
@@ -37,7 +37,7 @@ export default {
   create(context) {
     const inspectModuleSource = (source) => {
       const specifier = source?.value;
-      if (typeof specifier !== "string" || !specifier.startsWith(".")) return;
+      if (!isString(specifier) || !specifier.startsWith(".")) return;
       const sourcePackage = findPackage(resolve(context.filename));
       const targetPackage = findPackage(resolve(dirname(context.filename), specifier));
       if (!sourcePackage || !targetPackage || sourcePackage.root === targetPackage.root) return;

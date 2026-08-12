@@ -180,11 +180,7 @@ const restart = async () => {
   const before = state.snapshot?.activationId;
   const receiptCount = state.snapshot?.foundation.receipts.length ?? 0;
   const messageIds = new Set(
-    state.snapshot?.messages.flatMap((message) =>
-      typeof message === "object" && message !== null && "id" in message
-        ? [String(message.id)]
-        : [],
-    ) ?? [],
+    state.snapshot?.messages.map((message) => message.id) ?? [],
   );
   const recoveryMessageId = `wamid.recover.${crypto.randomUUID()}`;
   const recoveryReceipt = await run(
@@ -216,24 +212,12 @@ const restart = async () => {
   const recovered = state.snapshot;
   const after = state.snapshot?.activationId;
   const recoveryMessageCount =
-    recovered?.messages.filter(
-      (message) =>
-        typeof message === "object" &&
-        message !== null &&
-        "id" in message &&
-        String(message.id) === recoveryMessageId,
-    ).length ?? 0;
+    recovered?.messages.filter((message) => message.id === recoveryMessageId).length ?? 0;
   state.checks["activation recovery"] =
     before !== after &&
     (recovered?.foundation.receipts.length ?? 0) >= receiptCount &&
     messageIds.has(stableMessageId) &&
-    recovered?.messages.some(
-      (message) =>
-        typeof message === "object" &&
-        message !== null &&
-        "id" in message &&
-        String(message.id) === stableMessageId,
-    )
+    recovered?.messages.some((message) => message.id === stableMessageId)
       ? "PASS"
       : "FAIL";
   state.checks["local cold-activation state"] =

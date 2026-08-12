@@ -4,7 +4,10 @@
     "typeAware": true,
   },
   "plugins": ["eslint", "unicorn", "typescript", "oxc", "vitest"],
-  "jsPlugins": [{ "name": "osfo", "specifier": "./scripts/oxlint-plugin-osfo.js" }],
+  "jsPlugins": [
+    { "name": "anti-slop", "specifier": "./tools/oxlint/anti-slop/index.ts" },
+    { "name": "osfo", "specifier": "./scripts/oxlint-plugin-osfo.js" },
+  ],
   "rules": {
     "no-restricted-imports": [
       "error",
@@ -36,19 +39,20 @@
     // These rules do not recognize Effect Vitest's it.effect callback as a test boundary.
     "vitest/no-standalone-expect": "off",
     "vitest/require-to-throw-message": "off",
+    "anti-slop/no-chained-type-assertions": "error",
+    "anti-slop/no-conditional-empty-object-spread": "error",
+    "anti-slop/no-known-value-widening": "error",
+    "anti-slop/no-object-parameters": "error",
+    "anti-slop/no-runtime-typeof": "error",
+    "anti-slop/no-shape-in-symbol-names": "error",
+    "anti-slop/no-unknown-parameters": "error",
+    "anti-slop/no-unknown-type-aliases": "error",
+    "anti-slop/no-unsafe-dictionary-type": "error",
+    "anti-slop/no-widen-then-assert": "error",
     "osfo/no-cross-package-relative-imports": "error",
     "osfo/no-raw-fetch": "error",
-    "osfo/no-unknown-shape-probing": "error",
-    "osfo/no-untyped-effect-errors": "error",
   },
   "overrides": [
-    {
-      // Browser DOM host boundary: missing root markup must stop startup synchronously.
-      "files": ["apps/web/src/main.ts", "apps/web/src/main.tsx"],
-      "rules": {
-        "osfo/no-untyped-effect-errors": "off",
-      },
-    },
     {
       // React act has sync and async overloads that the type-aware rules do not distinguish here.
       "files": ["apps/web/src/App.test.tsx", "apps/web/src/configuration-required.test.tsx"],

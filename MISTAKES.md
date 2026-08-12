@@ -286,26 +286,3 @@ coverage report, while ignored local evidence could produce a different count
 from a clean checkout. A committed derived inventory must use a manifest-owned
 or repository-owned file set, ignore machine-local artifacts, and have a drift
 test that reproduces from both clean and locally populated checkouts.
-
-## 2026-08-12: Using an application entry point as a lint fixture
-
-A lint-policy test wrote a seeded failure to a valid application entry-point
-path and deleted that path afterward. This could destroy a tracked file or
-leave invalid source after interruption. Quality fixtures must use unique
-temporary paths and remove their complete temporary roots. A boundary override
-test can inspect an existing boundary file without changing it.
-
-## 2026-08-12: Omitting the WRDN contract from the first implementation pass
-
-The first ticket 194 implementation covered the static rules but missed the
-explicit requirement to discover, classify, and run installed WRDN skills. Map
-every issue contract item into the acceptance matrix before implementation,
-including agent-process requirements that do not look like source-code gates.
-
-## 2026-08-12: Treating local build outputs and tools as CI prerequisites
-
-The first clean quality workflow failed because local `dist` outputs made
-type-aware checks pass, while local Terraform and ripgrep installations made
-infrastructure tests pass. An isolated CI job must materialize required workspace
-declarations and install its command dependencies. CI contract tests must cover
-these clean-job prerequisites, not only the final gate command.

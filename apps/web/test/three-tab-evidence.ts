@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { Data, Effect, Fiber, Option, Ref, Schema } from "effect";
+import { Data, Effect, Fiber, Option, Predicate, Ref, Schema, Scope } from "effect";
 
 const IsoTimestampSchema = Schema.String.check(
   Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u),
@@ -54,10 +54,30 @@ interface CapturableTab {
   readonly captureEvidenceFrame: () => Effect.Effect<Buffer, unknown, never>;
 }
 
+const CapturableTabBoundarySchema = Schema.Array(
+  Schema.Struct({
+    label: TabLabelSchema,
+    configureEvidenceViewport: Schema.declare(Predicate.isFunction),
+    captureEvidenceFrame: Schema.declare(Predicate.isFunction),
+  }),
+);
+const isCapturableTabBoundary = Schema.is(CapturableTabBoundarySchema);
+const hasCapturableTabBoundary = (tabs: ReadonlyArray<CapturableTab>): boolean =>
+  isCapturableTabBoundary(tabs);
+
 interface JourneyEventDetails {
   readonly tab?: TabLabel;
   readonly fromPosition?: string;
   readonly toPosition?: string;
+}
+
+interface ThreeTabEvidenceCapture {
+  readonly enabled: boolean;
+  readonly mark: (
+    step: JourneyStep,
+    details: JourneyEventDetails,
+  ) => Effect.Effect<void, never, never>;
+  readonly stop: Effect.Effect<void, ThreeTabEvidenceError, never>;
 }
 
 export class ThreeTabEvidenceError extends Data.TaggedError("ThreeTabEvidenceError")<{
@@ -80,30 +100,13 @@ const writeFrame = (path: string, bytes: Buffer) =>
 export const startThreeTabEvidenceCapture = (input: {
   readonly directory: string | undefined;
   readonly tabs: ReadonlyArray<CapturableTab>;
-}) => {
+}): Effect.Effect<ThreeTabEvidenceCapture, ThreeTabEvidenceError, Scope.Scope> => {
   const directory = input.directory;
   if (directory === undefined) return Effect.succeed(noOpCapture);
 
   return Effect.gen(function* () {
-    const tabs = yield* Schema.decodeUnknownEffect(
-      Schema.Array(
-        Schema.Struct({
-          label: TabLabelSchema,
-          configureEvidenceViewport: Schema.declare(
-            (value): value is CapturableTab["configureEvidenceViewport"] =>
-              typeof value === "function",
-          ),
-          captureEvidenceFrame: Schema.declare(
-            (value): value is CapturableTab["captureEvidenceFrame"] => typeof value === "function",
-          ),
-        }),
-      ),
-    )(input.tabs).pipe(
-      Effect.mapError(
-        (cause) => new ThreeTabEvidenceError({ operation: "decode capturable tabs", cause }),
-      ),
-    );
-    if (new Set(tabs.map((tab) => tab.label)).size !== 3) {
+    const tabs = input.tabs;
+    if (!hasCapturableTabBoundary(tabs) || new Set(tabs.map((tab) => tab.label)).size !== 3) {
       return yield* new ThreeTabEvidenceError({ operation: "require distinct tabs A, B, and C" });
     }
     const framesDirectory = join(directory, "frames");
@@ -171,14 +174,15 @@ export const startThreeTabEvidenceCapture = (input: {
     const mark = (step: JourneyStep, details: JourneyEventDetails) =>
       Effect.gen(function* () {
         const currentFrame = yield* Ref.get(frame);
-        const event = {
+        let event: typeof ThreeTabJourneyEventSchema.Type = {
           step,
           at: new Date().toISOString(),
           frame: currentFrame,
-          ...(details.tab === undefined ? {} : { tab: details.tab }),
-          ...(details.fromPosition === undefined ? {} : { fromPosition: details.fromPosition }),
-          ...(details.toPosition === undefined ? {} : { toPosition: details.toPosition }),
         };
+        if (details.tab !== undefined) event = { ...event, tab: details.tab };
+        if (details.fromPosition !== undefined)
+          event = { ...event, fromPosition: details.fromPosition };
+        if (details.toPosition !== undefined) event = { ...event, toPosition: details.toPosition };
         yield* Ref.update(events, (current) => [...current, event]);
         yield* Effect.sleep(500);
       });

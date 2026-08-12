@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 import { describe, expect, it } from "@effect/vitest";
+import { Schema } from "effect";
 
 import { importEvidenceBundles } from "./evidence-importer.js";
 
@@ -99,11 +100,10 @@ const completeCorrectnessFields = {
   principal_budget_mismatch: 0,
 } as const;
 
-const fullPassingFiles = (
-  benchmarkId: string,
-  scenarioFields: Readonly<Record<string, unknown>> = {},
-): Readonly<Record<string, string>> => {
-  const rootOutcomes = typeof scenarioFields.count === "number" ? scenarioFields.count : 10;
+type ScenarioFields = Readonly<Record<string, Schema.Json | undefined>>;
+
+const fullPassingFiles = (benchmarkId: string, scenarioFields: ScenarioFields = {}) => {
+  const rootOutcomes = Schema.is(Schema.Number)(scenarioFields.count) ? scenarioFields.count : 10;
   return {
     "audit.json": JSON.stringify({
       ...completeCorrectnessFields,
@@ -759,10 +759,7 @@ describe("sealed evidence importer", () => {
       worker_pull_streams: 4,
       worker_slots: 32,
     } as const;
-    const bundlesFor = async (
-      prefix: string,
-      fieldsFor: (repetition: number) => Readonly<Record<string, unknown>>,
-    ) =>
+    const bundlesFor = async (prefix: string, fieldsFor: (repetition: number) => ScenarioFields) =>
       Promise.all(
         [1, 2, 3].map(async (repetition) => {
           const run = `${prefix}-${repetition}`;

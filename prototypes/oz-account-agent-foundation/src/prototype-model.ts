@@ -1,12 +1,14 @@
 import type { LanguageModel } from "ai";
 
+type PrototypeLanguageModel = Extract<LanguageModel, { readonly specificationVersion: "v3" }>;
+
 const finishReason = { raw: undefined, unified: "stop" as const };
 const usage = {
   inputTokens: { cacheRead: 0, cacheWrite: 0, noCache: 8, total: 8 },
   outputTokens: { reasoning: 0, text: 6, total: 6 },
 };
 
-const markerDelay = (options: Record<string, unknown>): number => {
+const markerDelay = (options: Parameters<PrototypeLanguageModel["doStream"]>[0]): number => {
   const prompt = JSON.stringify(options.prompt ?? []);
   if (prompt.includes("[recover]")) return 3_000;
   if (prompt.includes("[slow]")) return 15_000;
@@ -26,7 +28,7 @@ const waitUntilElapsedOrAborted = (milliseconds: number, signal: AbortSignal | u
     );
   });
 
-export const makePrototypeModel = (): LanguageModel => ({
+export const makePrototypeModel = (): PrototypeLanguageModel => ({
   async doGenerate() {
     return {
       content: [{ text: "Oz prototype response", type: "text" as const }],
@@ -35,10 +37,10 @@ export const makePrototypeModel = (): LanguageModel => ({
       warnings: [],
     };
   },
-  doStream(options: Record<string, unknown>) {
+  doStream(options) {
     const delay = markerDelay(options);
     const slow = delay > 0;
-    const signal = (options as { readonly abortSignal?: AbortSignal }).abortSignal;
+    const signal = options.abortSignal;
     const stream = new ReadableStream({
       async start(controller) {
         controller.enqueue({ type: "stream-start", warnings: [] });

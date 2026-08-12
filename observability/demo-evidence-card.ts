@@ -157,7 +157,7 @@ export class EvidenceCardError extends Data.TaggedError("EvidenceCardError")<{
   readonly operation: string;
 }> {}
 
-const decode = <A>(schema: Schema.Decoder<A>, value: unknown, operation: string) =>
+const decode = <A>(schema: Schema.Decoder<A>, value: Schema.Json, operation: string) =>
   Schema.decodeUnknownEffect(schema)(value).pipe(
     Effect.mapError(() => new EvidenceCardError({ operation })),
   );
@@ -177,8 +177,8 @@ const matchingBenchmark = (left: string, right: string) =>
 export const buildMatrixCardModel = (input: {
   readonly cell: string;
   readonly sourceManifestSha256: string;
-  readonly scenario: unknown;
-  readonly summary: unknown;
+  readonly scenario: Schema.Json;
+  readonly summary: Schema.Json;
 }) =>
   Effect.gen(function* () {
     const scenario = yield* decode(LoadScenarioSchema, input.scenario, "decode matrix scenario");
@@ -231,10 +231,10 @@ export const buildReceiptCardModel = (input: {
   readonly id: string;
   readonly title: string;
   readonly sourceManifestSha256: string;
-  readonly scenario: unknown;
-  readonly audit: unknown;
-  readonly callerSummary: unknown;
-  readonly receiptSlo: unknown;
+  readonly scenario: Schema.Json;
+  readonly audit: Schema.Json;
+  readonly callerSummary: Schema.Json;
+  readonly receiptSlo: Schema.Json | undefined;
 }) =>
   Effect.gen(function* () {
     const scenario = yield* decode(LoadScenarioSchema, input.scenario, "decode receipt scenario");
@@ -317,8 +317,8 @@ export const buildDeliveryCardModel = (input: {
   readonly id: string;
   readonly title: string;
   readonly sourceManifestSha256: string;
-  readonly scenario: unknown;
-  readonly audit: unknown;
+  readonly scenario: Schema.Json;
+  readonly audit: Schema.Json;
 }) =>
   Effect.gen(function* () {
     const scenario = yield* decode(
@@ -371,8 +371,8 @@ export const buildDeliveryCardModel = (input: {
 export const buildWorkerLossCardModel = (input: {
   readonly phase: "before-claim" | "after-claim";
   readonly sourceManifestSha256: string;
-  readonly scenario: unknown;
-  readonly audit: unknown;
+  readonly scenario: Schema.Json;
+  readonly audit: Schema.Json;
 }) =>
   Effect.gen(function* () {
     const scenario = yield* decode(

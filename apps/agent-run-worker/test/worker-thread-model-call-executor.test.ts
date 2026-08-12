@@ -1,7 +1,7 @@
 import { ModelCallExecutor, type ModelCallAttempt } from "@osfo/agent-run";
 import { describe, expect, it } from "@effect/vitest";
 import { BroadcastChannel } from "node:worker_threads";
-import { Deferred, Effect, Exit, Fiber, Stream } from "effect";
+import { Deferred, Effect, Exit, Fiber, Schema, Stream } from "effect";
 import { makeWorkerThreadModelCallExecutorLayer } from "../src/worker-thread-model-call-executor.js";
 
 const attempt = {
@@ -13,6 +13,9 @@ const attempt = {
   prompt: "complete",
   usage: { type: "unknown" },
 } as const satisfies ModelCallAttempt;
+
+const isBroadcastMessage = Schema.is(Schema.instanceOf(MessageEvent));
+const isWaitingMessage = Schema.is(Schema.Literal("waiting"));
 
 const workerSource = String.raw`
   const { BroadcastChannel, parentPort, workerData } = require("node:worker_threads");
@@ -84,19 +87,19 @@ const withPrompt = (prompt: string, modelCallAttemptId: string = attempt.modelCa
   prompt,
 });
 
-const makeLayer = (onActiveSessionCountChange?: (count: number) => void) =>
-  makeWorkerThreadModelCallExecutorLayer({
+const makeLayer = (onActiveSessionCountChange?: (count: number) => void) => {
+  const config = {
     cancellationGraceMs: 10,
-    ...(onActiveSessionCountChange === undefined ? {} : { onActiveSessionCountChange }),
     source: workerSource,
     terminationDeadlineMs: 1_000,
-  });
+  };
+  return onActiveSessionCountChange === undefined
+    ? makeWorkerThreadModelCallExecutorLayer(config)
+    : makeWorkerThreadModelCallExecutorLayer({ ...config, onActiveSessionCountChange });
+};
 
 const execute = (executor: ModelCallExecutor["Service"], value: ModelCallAttempt) =>
   Stream.unwrap(executor.execute(value));
-
-const isBroadcastMessage = (value: unknown): value is { readonly data: unknown } =>
-  typeof value === "object" && value !== null && "data" in value;
 
 describe("worker-thread ModelCall executor", () => {
   it.live("holds deterministic output until the qualification gate is released", () =>
@@ -105,7 +108,7 @@ describe("worker-thread ModelCall executor", () => {
       const waiting = yield* Deferred.make<void>();
       const control = new BroadcastChannel(attempt.modelCallAttemptId);
       control.onmessage = (message) => {
-        if (isBroadcastMessage(message) && message.data === "waiting") {
+        if (isBroadcastMessage(message) && isWaitingMessage(message.data)) {
           Deferred.doneUnsafe(waiting, Effect.void);
         }
       };

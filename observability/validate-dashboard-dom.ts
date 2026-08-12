@@ -7,6 +7,11 @@ interface ExpectedDashboardContext {
   readonly range: string;
 }
 
+interface DashboardDomValidation {
+  readonly panelCount: number;
+  readonly visibleText: string;
+}
+
 const visibleTextFrom = (html: string): string =>
   html
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, " ")
@@ -24,7 +29,7 @@ const uuidPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 export const validateDashboardDom = (
   html: string,
   expected: ExpectedDashboardContext,
-): { readonly panelCount: number; readonly visibleText: string } => {
+): DashboardDomValidation => {
   const visibleText = visibleTextFrom(html);
   const failures: string[] = [];
   if (!visibleText.includes(expected.alias)) failures.push("human evidence alias is absent");

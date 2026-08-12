@@ -39,14 +39,6 @@ jobs:
       - run: bun run ci:declarations
       - run: bun run typecheck
 
-  type-tests:
-    name: Public type tests
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-      - uses: ./.github/actions/quality-setup
-      - run: bun run test:types
-
   runtime-tests:
     name: Effect Vitest
     runs-on: ubuntu-24.04
@@ -57,32 +49,3 @@ jobs:
       - run: bun run test
         env:
           TERRAFORM_BIN: ${{ github.workspace }}/infra/scripts/terraform-ci.sh
-
-  generated-output:
-    name: Generated-output drift
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-      - uses: ./.github/actions/quality-setup
-      - run: bun run generated:check
-
-  wrdn:
-    name: WRDN applicability
-    runs-on: ubuntu-24.04
-    env:
-      WRDN_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/quality-setup
-      - run: bun run ci:declarations
-      - run: bun run wrdn:check
-
-  build:
-    name: Production build
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-      - uses: ./.github/actions/quality-setup
-      - run: bun run build

@@ -147,14 +147,19 @@ const threadResumeLayer = (config: ThreadResumeDatabaseConfig, hooks: ThreadResu
       const listenForNotificationHints = Effect.scoped(
         Effect.gen(function* () {
           yield* hooks.beforeNotificationListenerConnect ?? Effect.void;
-          yield* listenForPostgresNotifications({
+          const listenerOptions = {
             applicationName,
             channels: [threadEventsNotificationChannel, heartbeatChannel],
             databaseUrl: config.databaseUrl,
-            ...(hooks.beforeNotificationListenerGracefulClose === undefined
-              ? {}
-              : { beforeGracefulClose: hooks.beforeNotificationListenerGracefulClose }),
-          }).pipe(
+          };
+          const notifications =
+            hooks.beforeNotificationListenerGracefulClose === undefined
+              ? listenForPostgresNotifications(listenerOptions)
+              : listenForPostgresNotifications({
+                  ...listenerOptions,
+                  beforeGracefulClose: hooks.beforeNotificationListenerGracefulClose,
+                });
+          yield* notifications.pipe(
             Stream.runForEach(({ channel, payload }) =>
               Ref.get(pendingHeartbeat).pipe(
                 Effect.flatMap((heartbeat) =>

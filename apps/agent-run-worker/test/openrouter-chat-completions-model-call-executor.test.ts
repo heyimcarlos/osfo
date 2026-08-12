@@ -4,7 +4,7 @@ import {
   type ModelCallAttempt,
 } from "@osfo/agent-run";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Exit, Stream } from "effect";
+import { Effect, Exit, Schema, Stream } from "effect";
 import {
   HttpClient,
   HttpClientError,
@@ -32,10 +32,7 @@ const layer = makeOpenRouterChatCompletionsModelCallExecutorLayer({
   profile: liveOpenRouterExecutionProfile,
 });
 
-const chunk = (
-  choices: ReadonlyArray<unknown>,
-  overrides: Readonly<Record<string, unknown>> = {},
-) => ({
+const chunk = (choices: ReadonlyArray<Schema.Json>, overrides: Schema.JsonObject = {}) => ({
   id: "gen-123",
   model: "minimax/minimax-m3",
   object: "chat.completion.chunk",
@@ -51,10 +48,10 @@ const terminalUsage = {
   completion_tokens_details: { reasoning_tokens: 7 },
 };
 
-const sse = (...events: ReadonlyArray<unknown>) =>
-  events
-    .map((event) => (typeof event === "string" ? event : `data: ${JSON.stringify(event)}\n`))
-    .join("\n");
+const isString = Schema.is(Schema.String);
+
+const sse = (...events: ReadonlyArray<Schema.Json>) =>
+  events.map((event) => (isString(event) ? event : `data: ${JSON.stringify(event)}\n`)).join("\n");
 
 const successfulTextSse = (text: string) =>
   sse(

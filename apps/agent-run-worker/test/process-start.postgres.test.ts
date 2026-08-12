@@ -2,7 +2,7 @@ import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
-import { Effect, Option, Stream } from "effect";
+import { Effect, Option, Schema, Stream } from "effect";
 import { ChildProcess } from "effect/unstable/process";
 
 const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
@@ -10,6 +10,8 @@ const databaseUrl = process.env.OSFO_TEST_DATABASE_URL;
 if (databaseUrl === undefined) {
   throw new Error("OSFO_TEST_DATABASE_URL is required for the worker process integration test");
 }
+
+const isTcpAddress = Schema.is(Schema.Struct({ port: Schema.Number }));
 
 const startUnresponsiveBroker = Effect.acquireRelease(
   Effect.tryPromise({
@@ -35,7 +37,7 @@ describe("AgentRun worker process role", () => {
     Effect.gen(function* () {
       const broker = yield* startUnresponsiveBroker;
       const address = broker.address();
-      if (typeof address !== "object" || address === null) {
+      if (!isTcpAddress(address)) {
         return yield* Effect.die("Expected a TCP broker address");
       }
       const handle = yield* ChildProcess.make(

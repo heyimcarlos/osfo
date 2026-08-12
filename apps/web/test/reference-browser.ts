@@ -20,12 +20,12 @@ const chromeCandidates = [
 
 const ThreadSnapshotFromJson = Schema.fromJsonString(ThreadSnapshotSchema);
 const AcceptanceReceiptFromJson = Schema.fromJsonString(AcceptanceReceipt);
-const EmptyObject = Schema.Record(Schema.String, Schema.Unknown);
+const EmptyObject = Schema.Record(Schema.String, Schema.Json);
 const ChromeTargetSchema = Schema.Struct({
   webSocketDebuggerUrl: Schema.String,
 });
 const RuntimeEvaluationSchema = Schema.Struct({
-  result: Schema.Struct({ value: Schema.optional(Schema.Unknown) }),
+  result: Schema.Struct({ value: Schema.optional(Schema.Json) }),
 });
 const ResponseBodySchema = Schema.Struct({
   base64Encoded: Schema.Boolean,
@@ -42,8 +42,8 @@ const CdpMessageFromJson = Schema.fromJsonString(
     ),
     id: Schema.optional(Schema.Number),
     method: Schema.optional(Schema.String),
-    params: Schema.optional(Schema.Unknown),
-    result: Schema.optional(Schema.Unknown),
+    params: Schema.optional(Schema.Json),
+    result: Schema.optional(Schema.Json),
   }),
 );
 const RequestWillBeSentSchema = Schema.Struct({
@@ -55,6 +55,7 @@ const ResponseReceivedSchema = Schema.Struct({
   response: Schema.Struct({ status: Schema.Number }),
 });
 const LoadingFinishedSchema = Schema.Struct({ requestId: Schema.String });
+const isTcpAddress = Schema.is(Schema.Struct({ port: Schema.Number }));
 const observeVisibleText = `(() => {
   const observed = [];
   Object.defineProperty(globalThis, "__osfoObservedText", { value: observed });
@@ -140,7 +141,7 @@ const availablePort = Effect.tryPromise({
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => {
         const address = server.address();
-        if (typeof address !== "object" || address === null) {
+        if (!isTcpAddress(address)) {
           server.close();
           reject(new ReferenceBrowserError({ operation: "resolve ephemeral port" }));
           return;
@@ -275,7 +276,7 @@ export const startProductionReferenceClient = (options: ProductionReferenceClien
 
 interface PendingCommand {
   readonly reject: (cause: unknown) => void;
-  readonly resolve: (value: unknown) => void;
+  readonly resolve: (value: Schema.Json | undefined) => void;
 }
 
 class CdpConnection {
@@ -315,7 +316,6 @@ class CdpConnection {
     });
 
   private onMessage(event: MessageEvent) {
-    if (typeof event.data !== "string") return;
     const decoded = Schema.decodeUnknownOption(CdpMessageFromJson)(event.data);
     if (Option.isNone(decoded)) return;
     const message = decoded.value;
@@ -368,10 +368,10 @@ class CdpConnection {
     }
   }
 
-  command = <A>(method: string, params: unknown, schema: Schema.Decoder<A>) =>
+  command = <A>(method: string, params: Schema.Json, schema: Schema.Decoder<A>) =>
     Effect.tryPromise({
       try: () =>
-        new Promise<unknown>((resolve, reject) => {
+        new Promise<Schema.Json | undefined>((resolve, reject) => {
           const id = this.#nextId;
           this.#nextId += 1;
           this.#pending.set(id, { reject, resolve });

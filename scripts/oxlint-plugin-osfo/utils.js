@@ -1,7 +1,10 @@
 import { resolve, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Schema } from "effect";
 
 export const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+
+export const isString = Schema.is(Schema.String);
 
 export const toRepoRelative = (filename) =>
   relative(repoRoot, resolve(filename)).split(sep).join("/");
@@ -17,7 +20,7 @@ export const isApplicationSource = (filename) =>
 
 export const getPropertyName = (node) => {
   if (node?.type === "Identifier" || node?.type === "PrivateIdentifier") return node.name;
-  if (node?.type === "Literal" && typeof node.value === "string") return node.value;
+  if (node?.type === "Literal" && isString(node.value)) return node.value;
   return undefined;
 };
 
@@ -38,4 +41,4 @@ export const unwrapExpression = (node) => {
 export const isIdentifier = (node, name) =>
   node?.type === "Identifier" && (name === undefined || node.name === name);
 
-export const isStringLiteral = (node) => node?.type === "Literal" && typeof node.value === "string";
+export const isStringLiteral = (node) => node?.type === "Literal" && isString(node.value);

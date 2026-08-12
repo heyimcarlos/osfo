@@ -380,20 +380,30 @@ const collectTerminalAudit = (input: {
     } as const;
   });
 
-const json = (value: unknown): Buffer => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+type JsonStringifiable =
+  | null
+  | boolean
+  | number
+  | string
+  | undefined
+  | ReadonlyArray<JsonStringifiable>
+  | { readonly [key: string]: JsonStringifiable };
+
+const json = (value: JsonStringifiable): Buffer =>
+  Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 const sha256 = (value: Uint8Array): string => createHash("sha256").update(value).digest("hex");
 
 const writeEvidenceBundle = (input: {
   readonly accountCount: number;
   readonly completedAt: string;
-  readonly comparison: Record<string, unknown>;
+  readonly comparison: Schema.JsonObject;
   readonly laneRuns: ReadonlyArray<Awaited<ReturnType<typeof runLane>>>;
-  readonly modelUsage: Record<string, unknown>;
+  readonly modelUsage: Schema.JsonObject;
   readonly outputDirectory: string;
   readonly runId: string;
   readonly sourceRevision: string;
   readonly startedAt: string;
-  readonly terminalAudit: Record<string, unknown> & {
+  readonly terminalAudit: Schema.JsonObject & {
     readonly completed: number;
     readonly completedByLane: Readonly<Record<string, number>>;
   };

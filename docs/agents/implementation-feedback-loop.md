@@ -96,35 +96,16 @@ Use three separate type and boundary layers when they apply:
 3. Effect Vitest verifies runtime schemas, Layers, failures, interruption, time,
    concurrency, and observable behavior.
 
-A change to a public TypeScript interface requires a type test. A change to a
-runtime boundary requires a runtime schema or adapter test. One does not replace
-the other.
+A public API change needs a type test when it has compile-time behavior that a
+runtime test cannot prove. A change to a runtime boundary requires a runtime
+schema or adapter test. One does not replace the other.
 
-## 4. Run the WRDN skill pass
+## 4. Use contextual review skills
 
-Discover the current WRDN skills from `.agents/skills/wrdn-*/SKILL.md`. Compare
-the complete ticket diff and lint findings with every skill trigger. Read and
-run each applicable skill. The skill file owns its trace, exclusions, severity,
-fix shape, and output requirements.
-
-Record one row for every installed WRDN skill. This makes applicability explicit
-and lets later skills join the loop without copying a fixed list into this
-contract.
-
-```markdown
-| WRDN skill | Trigger evidence        | Applicable | Evidence                       | Verdict |
-| ---------- | ----------------------- | ---------- | ------------------------------ | ------- |
-| wrdn-name  | changed path or finding | Yes        | finding report or clean review | MISSING |
-```
-
-Use `NOT_APPLICABLE` only in the applicability field and give a reason. An
-applicable skill reports `PASS`, `FAIL`, or `MISSING`. Any actionable finding is
-`FAIL`. Fix it through the recursive repair loop, then rerun that skill and every
-affected check. Rerun the full WRDN inventory after a material diff change.
-
-The WRDN pass is ticket-scoped. It does not turn each ticket into a whole-repo
-audit, and it does not replace lint, type tests, runtime tests, or independent
-review.
+When a local WRDN skill's documented trigger matches the current change, use the
+skill as contextual guidance. Fix each actionable finding through the recursive
+repair loop. Skills guide agent and human judgment. Direct lint, typecheck, test,
+and independent review remain the executable evidence.
 
 ## 5. Repair recursively
 

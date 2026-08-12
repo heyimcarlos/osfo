@@ -94,8 +94,8 @@ const isDefiniteReconciliationResult = Schema.is(
   Schema.Union([AdmissionNotAccepted, IdempotencyConflict, ThreadNotFound]),
 );
 
-const isAmbiguousClientFailure = (error: unknown) =>
-  HttpClientError.isHttpClientError(error) || Schema.isSchemaError(error);
+const isAmbiguousClientFailure = (cause: unknown) =>
+  HttpClientError.isHttpClientError(cause) || Schema.isSchemaError(cause);
 
 export const submitThreadMessage = Effect.fn("OsfoApiClient.submitThreadMessage")(function* (
   command: SubmitThreadMessage,

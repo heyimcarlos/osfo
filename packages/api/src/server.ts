@@ -100,15 +100,15 @@ export const ThreadsHandlers = HttpApiBuilder.group(OsfoApi, "threads", (handler
           const lifecycle = yield* ThreadStreamLifecycle;
           return yield* lifecycle.open(source);
         }
-        return yield* resume.history({
+        const historyRequest = {
           afterPosition: query.afterPosition ?? "0",
           authenticationToken,
           limit: query.limit ?? 100,
           threadId: params.threadId,
-          ...(query.throughPosition === undefined
-            ? {}
-            : { throughPosition: query.throughPosition }),
-        });
+        };
+        return yield* query.throughPosition === undefined
+          ? resume.history(historyRequest)
+          : resume.history({ ...historyRequest, throughPosition: query.throughPosition });
       }),
     ),
 ).pipe(Layer.provide([AuthenticationLive, RequestValidationLive]));

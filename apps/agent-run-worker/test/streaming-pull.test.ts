@@ -4,7 +4,7 @@ import {
   type RunnableAgentRunDelivery,
 } from "@osfo/agent-run";
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Logger, Option } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Logger, Option, Schema } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import {
   beginStreamingPullSubscriptionClose,
@@ -34,11 +34,13 @@ const deliveries = {
   },
 } as const;
 
-const makeMessage = (id: string, value: unknown, orderingKey: string | undefined = id) => {
+const isString = Schema.is(Schema.String);
+
+const makeMessage = (id: string, value: Schema.Json, orderingKey: string | undefined = id) => {
   const acknowledged = Deferred.makeUnsafe<void>();
   const nacked = Deferred.makeUnsafe<void>();
   const message: StreamingPullMessage = {
-    data: Buffer.from(typeof value === "string" ? value : JSON.stringify(value)),
+    data: Buffer.from(isString(value) ? value : JSON.stringify(value)),
     id,
     orderingKey,
     acknowledge: () => {
@@ -50,9 +52,6 @@ const makeMessage = (id: string, value: unknown, orderingKey: string | undefined
   };
   return { acknowledged, message, nacked };
 };
-
-const renderLogMessage = (message: unknown): string =>
-  Array.isArray(message) ? message.map(String).join(" ") : String(message);
 
 const makeSource = () => {
   const started = Deferred.makeUnsafe<void>();
@@ -251,7 +250,7 @@ describe("StreamingPull AgentRun delivery", () => {
       const settlementFailed = yield* Deferred.make<void>();
       const logMessages: Array<string> = [];
       const logger = Logger.make(({ message }) => {
-        const text = renderLogMessage(message);
+        const text = Array.isArray(message) ? message.map(String).join(" ") : String(message);
         logMessages.push(text);
         if (text.includes("StreamingPull message settlement failed")) {
           Deferred.doneUnsafe(settlementFailed, Effect.void);

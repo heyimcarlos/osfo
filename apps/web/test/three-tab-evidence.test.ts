@@ -29,6 +29,28 @@ describe("three-tab evidence capture seam", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("rejects invalid tab labels at the capture boundary", () =>
+    Effect.gen(function* () {
+      const tabs = ["X", "Y", "Z"].map((label) => ({
+        label,
+        configureEvidenceViewport: () => Effect.void,
+        captureEvidenceFrame: () => Effect.succeed(Buffer.from("not a real frame")),
+      }));
+
+      const operation = yield* startThreeTabEvidenceCapture({
+        directory: "/tmp/osfo-invalid-three-tab-labels",
+        tabs,
+      }).pipe(
+        Effect.match({
+          onFailure: (failure) => failure.operation,
+          onSuccess: () => "unexpected success",
+        }),
+      );
+
+      expect(operation).toBe("require distinct tabs A, B, and C");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("rejects authentication tokens in semantic journey output", () =>
     Effect.gen(function* () {
       const result = yield* Effect.exit(

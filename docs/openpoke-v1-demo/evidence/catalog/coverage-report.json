@@ -144,7 +144,7 @@
     "issueOrRequirement": [
       "five Grafana captures"
     ],
-    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
+    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
   },
   {
     "sourceId": "historical-breaking-464",
@@ -224,7 +224,7 @@
     "issueOrRequirement": [
       "complete packet evidence inventory"
     ],
-    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
+    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
   },
   {
     "sourceId": "packet-index",
@@ -273,7 +273,7 @@
     "issueOrRequirement": [
       "13 post-run cards"
     ],
-    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
+    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
   },
   {
     "sourceId": "prototype-agent-run-inventory",
@@ -289,7 +289,7 @@
     "issueOrRequirement": [
       "historical inventory completeness"
     ],
-    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
+    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
   },
   {
     "sourceId": "prototype-dispatch-inventory",
@@ -305,7 +305,7 @@
     "issueOrRequirement": [
       "historical inventory completeness"
     ],
-    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
+    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
   },
   {
     "sourceId": "prototype-pubsub-inventory",
@@ -321,7 +321,7 @@
     "issueOrRequirement": [
       "historical inventory completeness"
     ],
-    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
+    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
   },
   {
     "sourceId": "receipt-slo",
@@ -353,6 +353,6 @@
     "issueOrRequirement": [
       "authenticated three-tab journey"
     ],
-    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
+    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
   }
 ]

@@ -66,14 +66,14 @@ const readJson = (path: string, operation: string) =>
     catch: () => new EvidenceCardRendererError({ operation }),
   }).pipe(
     Effect.andThen((text) =>
-      Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
+      Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(text).pipe(
         Effect.mapError(() => new EvidenceCardRendererError({ operation })),
       ),
     ),
   );
 
 const decodeJsonBytes = (bytes: Buffer, operation: string) =>
-  Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(bytes.toString("utf8")).pipe(
+  Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(bytes.toString("utf8")).pipe(
     Effect.mapError(() => new EvidenceCardRendererError({ operation })),
   );
 

@@ -164,7 +164,7 @@ const workerThreadModelCallExecutorLayer = (config: WorkerThreadModelCallExecuto
             };
             sessions.set(session.attemptId, session);
             config.onActiveSessionCountChange?.(sessions.size);
-            worker.on("message", (message: unknown) => {
+            worker.on("message", (message: Schema.Json) => {
               const decoded = Schema.decodeUnknownExit(WorkerResponseSchema)(message);
               if (Exit.isSuccess(decoded)) acceptResponse(session, decoded.value);
               else failSession(session, decoded.cause);

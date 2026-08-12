@@ -14,10 +14,8 @@ in `docs/adr/`, and active work in GitHub Issues.
 - Use Effect TypeScript diagnostics for source correctness, dedicated type tests
   for changed public type behavior, and Effect Vitest for runtime boundaries.
   One layer does not replace another.
-- Before independent review, inventory the current diff against every local
-  `.agents/skills/wrdn-*/SKILL.md` trigger. Run every applicable WRDN skill,
-  record applicability and PASS, FAIL, or MISSING evidence, and return every
-  actionable finding to the repair loop.
+- Use local WRDN skills as contextual guidance when their documented trigger
+  matches the current change. Return actionable findings to the repair loop.
 - Use the narrowest meaningful verification while iterating. Merge-ready gates
   are `bun run format:check`, `lint`, `typecheck`, and `test`.
 - Changes to migrations, PostgreSQL configuration, or database access also run

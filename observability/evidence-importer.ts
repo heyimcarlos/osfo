@@ -303,9 +303,6 @@ const pathEntryExists = async (path: string) => {
 
 const sha256 = (contents: string | Buffer) => createHash("sha256").update(contents).digest("hex");
 
-const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
 const decodeArtifact = <S extends Schema.Top & Schema.ConstraintDecoder<unknown>>(
   schema: S,
   contents: Buffer | undefined,
@@ -532,8 +529,8 @@ const statusValue = (status: GateStatus) => (status === "PASS" ? 1 : status === 
 
 const slugPattern = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 
-const validateBoundedSlug = (value: unknown, field: string, sourcePath: string) => {
-  if (typeof value !== "string" || !slugPattern.test(value)) {
+const validateBoundedSlug = (value: string | undefined, field: string, sourcePath: string) => {
+  if (value === undefined || !slugPattern.test(value)) {
     throw new EvidenceImportError(
       "INVALID_REQUEST",
       sourcePath,
@@ -567,10 +564,7 @@ const importBundle = async (
   input: EvidenceBundleInput,
   selectedRegion: string,
 ): Promise<ImportedRun> => {
-  if (!isRecord(input)) {
-    throw new EvidenceImportError("INVALID_REQUEST", "bundles", "each bundle must be an object");
-  }
-  if (typeof input.root !== "string" || input.root.length === 0) {
+  if (input.root.length === 0) {
     throw new EvidenceImportError("INVALID_REQUEST", "bundles", "root must be a non-empty path");
   }
   if (!slugPattern.test(input.run)) {
@@ -845,7 +839,7 @@ const importBundle = async (
           firstMeaningfulEventArtifact.within_10_seconds_ratio >= 0.99
         ? "PASS"
         : "FAIL";
-  const recoveryRequirementStatuses: Readonly<Record<string, GateStatus>> = {
+  const recoveryRequirementStatuses = {
     dependency_outage: recoveryArtifact?.requirements?.dependency_outage ?? "MISSING",
     backlog_accumulation:
       recoveryArtifact === undefined
@@ -879,8 +873,8 @@ const importBundle = async (
             recoveryArtifact.process_cut_timeline_seconds !== undefined
           ? "PASS"
           : "MISSING",
-  };
-  const multiDeviceRequirementStatuses: Readonly<Record<string, GateStatus>> = {
+  } satisfies Readonly<Record<string, GateStatus>>;
+  const multiDeviceRequirementStatuses = {
     concurrent_sse_connections:
       multiDeviceArtifact?.requirements?.concurrent_sse_connections === "FAIL" ||
       (multiDeviceArtifact?.concurrent_sse_connections !== undefined &&
@@ -932,7 +926,7 @@ const importBundle = async (
         : multiDeviceArtifact.converged
           ? "PASS"
           : "FAIL",
-  };
+  } satisfies Readonly<Record<string, GateStatus>>;
   const recoveryStatus: GateStatus =
     recoveryArtifact === undefined
       ? "MISSING"
@@ -1138,6 +1132,8 @@ const qualificationRequirementNames = [
   "total_cost",
 ] as const;
 
+type QualificationRequirementStatuses = Readonly<Record<string, GateStatus>>;
+
 const statusesFor = (
   runs: ReadonlyArray<ImportedRun>,
   predicate: (run: ImportedRun) => boolean,
@@ -1216,7 +1212,7 @@ const controlWorkloadStatus = (
 const qualificationRequirementsFor = (
   selectedRun: ImportedRun,
   runs: ReadonlyArray<ImportedRun>,
-): Readonly<Record<string, GateStatus>> => {
+): QualificationRequirementStatuses => {
   if (!selectedRun.qualifying) {
     return Object.fromEntries(
       qualificationRequirementNames.map((requirement) => [requirement, "MISSING"] as const),
@@ -1265,7 +1261,7 @@ const qualificationRequirementsFor = (
     temporal: "MISSING",
     aggregate_sse: "MISSING",
     total_cost: "MISSING",
-  };
+  } satisfies QualificationRequirementStatuses;
 };
 
 const renderMetrics = (runs: ReadonlyArray<ImportedRun>) => {
@@ -1513,12 +1509,10 @@ export const importEvidenceBundles = async (
   }
   const seenRuns = new Set<string>();
   for (const bundle of request.bundles) {
-    if (isRecord(bundle) && typeof bundle.run === "string") {
-      if (seenRuns.has(bundle.run)) {
-        throw new EvidenceImportError("INVALID_REQUEST", bundle.run, "run slug is duplicated");
-      }
-      seenRuns.add(bundle.run);
+    if (seenRuns.has(bundle.run)) {
+      throw new EvidenceImportError("INVALID_REQUEST", bundle.run, "run slug is duplicated");
     }
+    seenRuns.add(bundle.run);
   }
   const runs = await Promise.all(
     request.bundles.map((bundle) => importBundle(bundle, selectedRegion)),
