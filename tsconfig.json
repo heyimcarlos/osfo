@@ -20,7 +20,7 @@
       {
         "name": "@effect/language-service",
         "diagnosticSeverity": {
-          "effectInEffectFailure": "error",
+          "effectInFailure": "error",
           "floatingEffect": "error",
           "floatingEffectInVitest": "error",
           "globalErrorInEffectFailure": "warning",

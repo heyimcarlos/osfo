@@ -15,9 +15,10 @@ const isRecordedRepair = (
   attempt: GateAttempt,
 ): attempt is Extract<GateAttempt, { readonly kind: "repair-verification" }> =>
   attempt.kind === "repair-verification" &&
-  attempt.diagnosis.length > 0 &&
-  attempt.regressionTest.length > 0 &&
-  attempt.fix.length > 0;
+  attempt.verdict === "PASS" &&
+  attempt.diagnosis.trim().length > 0 &&
+  attempt.regressionTest.trim().length > 0 &&
+  attempt.fix.trim().length > 0;
 
 export const resolveGateVerdict = (attempts: ReadonlyArray<GateAttempt>): EvidenceVerdict => {
   const initial = attempts[0];
@@ -25,8 +26,11 @@ export const resolveGateVerdict = (attempts: ReadonlyArray<GateAttempt>): Eviden
 
   let verdict = initial.verdict;
   for (const attempt of attempts.slice(1)) {
-    if (attempt.kind === "evidence-retry" && attempt.verdict === "FAIL") verdict = "FAIL";
-    if (isRecordedRepair(attempt)) verdict = attempt.verdict;
+    if (attempt.verdict === "FAIL") {
+      verdict = "FAIL";
+    } else if (isRecordedRepair(attempt)) {
+      verdict = attempt.verdict;
+    }
   }
   return verdict;
 };

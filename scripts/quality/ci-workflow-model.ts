@@ -11,21 +11,25 @@ export const workflowJobBlock = (workflow: string, job: string) => {
 export const workflowCommands = (
   workflow: string,
   jobs: readonly string[],
-): Readonly<Record<string, string>> =>
+): Readonly<Record<string, readonly string[]>> =>
   Object.fromEntries(
-    jobs.map((job) => {
-      const command = /^\s+- run:\s+(.+)$/mu.exec(workflowJobBlock(workflow, job))?.[1];
-      return [job, command ?? ""];
-    }),
+    jobs.map((job) => [
+      job,
+      [...workflowJobBlock(workflow, job).matchAll(/^\s+- run:\s+(.+)$/gmu)].map(
+        (match) => match[1] ?? "",
+      ),
+    ]),
   );
 
 export const executeWorkflowModel = (
-  commands: Readonly<Record<string, string>>,
+  commands: Readonly<Record<string, readonly string[]>>,
   execute: (job: string, command: string) => number,
 ): Readonly<Record<string, GateStatus>> =>
   Object.fromEntries(
-    Object.entries(commands).map(([job, command]) => [
-      job,
-      execute(job, command) === 0 ? "PASS" : "FAIL",
-    ]),
+    Object.entries(commands).map(([job, jobCommands]) => {
+      for (const command of jobCommands) {
+        if (execute(job, command) !== 0) return [job, "FAIL"];
+      }
+      return [job, "PASS"];
+    }),
   );

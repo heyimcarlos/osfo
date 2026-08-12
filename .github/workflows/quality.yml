@@ -27,6 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - uses: ./.github/actions/quality-setup
+      - run: bun run ci:declarations
       - run: bun run lint
 
   typecheck:
@@ -35,6 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - uses: ./.github/actions/quality-setup
+      - run: bun run ci:declarations
       - run: bun run typecheck
 
   type-tests:
@@ -51,7 +53,10 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - uses: ./.github/actions/quality-setup
+      - run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - run: bun run test
+        env:
+          TERRAFORM_BIN: ${{ github.workspace }}/infra/scripts/terraform-ci.sh
 
   generated-output:
     name: Generated-output drift
@@ -71,6 +76,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/quality-setup
+      - run: bun run ci:declarations
       - run: bun run wrdn:check
 
   build:

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { describe, expect, it } from "@effect/vitest";
@@ -17,6 +17,16 @@ const gates = {
   wrdn: "bun run wrdn:check",
   build: "bun run build",
 } as const;
+
+const declarationJobs = ["lint", "typecheck", "wrdn"] as const;
+
+const expectedCommands = (job: keyof typeof gates) => [
+  ...(declarationJobs.includes(job as (typeof declarationJobs)[number])
+    ? ["bun run ci:declarations"]
+    : []),
+  ...(job === "runtime-tests" ? ["sudo apt-get update && sudo apt-get install --yes ripgrep"] : []),
+  gates[job],
+];
 
 describe("pull-request quality workflow", () => {
   it("has valid YAML syntax", () => {
@@ -64,6 +74,50 @@ describe("pull-request quality workflow", () => {
     expect(setup).toContain("bun install --frozen-lockfile");
   });
 
+  it("materializes declarations visibly for isolated type-aware jobs", async () => {
+    const workflow = await readFile(resolve(repoRoot, ".github/workflows/quality.yml"), "utf8");
+
+    for (const job of declarationJobs) {
+      const block = workflowJobBlock(workflow, job);
+      expect(block).toContain("- run: bun run ci:declarations");
+      expect(block).not.toContain("- run: bun run build");
+    }
+  });
+
+  it("materializes every workspace export that resolves types from dist", async () => {
+    const rootPackage = JSON.parse(await readFile(resolve(repoRoot, "package.json"), "utf8")) as {
+      readonly scripts: Readonly<Record<string, string>>;
+    };
+    const declarationCommand = rootPackage.scripts["ci:declarations"] ?? "";
+    const workspaceRoots = await Promise.all(
+      ["apps", "packages"].map(async (parent) =>
+        (await readdir(resolve(repoRoot, parent), { withFileTypes: true }))
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => `${parent}/${entry.name}`),
+      ),
+    );
+
+    for (const workspace of workspaceRoots.flat()) {
+      const packagePath = resolve(repoRoot, workspace, "package.json");
+      const source = await readFile(packagePath, "utf8").catch(() => "");
+      if (!source.includes('"types": "./dist/')) continue;
+      expect(declarationCommand).toContain(
+        `${workspace}/tsconfig.build.json --emitDeclarationOnly --noCheck`,
+      );
+    }
+    expect(declarationCommand.split(" && ").every((command) => command.endsWith("--noCheck"))).toBe(
+      true,
+    );
+  });
+
+  it("provides the pinned infrastructure tools to the runtime test job", async () => {
+    const workflow = await readFile(resolve(repoRoot, ".github/workflows/quality.yml"), "utf8");
+    const block = workflowJobBlock(workflow, "runtime-tests");
+
+    expect(block).toContain("sudo apt-get update && sudo apt-get install --yes ripgrep");
+    expect(block).toContain("TERRAFORM_BIN: ${{ github.workspace }}/infra/scripts/terraform-ci.sh");
+  });
+
   for (const failedJob of Object.keys(gates)) {
     it(`keeps a seeded ${failedJob} command failure attributable to that job`, async () => {
       const workflow = await readFile(resolve(repoRoot, ".github/workflows/quality.yml"), "utf8");
@@ -71,20 +125,42 @@ describe("pull-request quality workflow", () => {
       const executed: Array<{ readonly job: string; readonly command: string }> = [];
       const results = executeWorkflowModel(commands, (job, command) => {
         executed.push({ job, command });
-        return job === failedJob ? 1 : 0;
+        return job === failedJob && command === gates[failedJob as keyof typeof gates] ? 1 : 0;
       });
 
       expect(Object.entries(results).filter(([, verdict]) => verdict === "FAIL")).toEqual([
         [failedJob, "FAIL"],
       ]);
-      expect(executed).toEqual(Object.entries(gates).map(([job, command]) => ({ job, command })));
+      expect(executed).toEqual(
+        Object.keys(gates).flatMap((job) =>
+          expectedCommands(job as keyof typeof gates).map((command) => ({ job, command })),
+        ),
+      );
+    });
+  }
+
+  for (const failedJob of declarationJobs) {
+    it(`attributes a seeded declaration prerequisite failure to ${failedJob}`, async () => {
+      const workflow = await readFile(resolve(repoRoot, ".github/workflows/quality.yml"), "utf8");
+      const commands = workflowCommands(workflow, Object.keys(gates));
+      const executed: string[] = [];
+      const results = executeWorkflowModel(commands, (job, command) => {
+        if (job === failedJob) executed.push(command);
+        return job === failedJob && command === "bun run ci:declarations" ? 1 : 0;
+      });
+
+      expect(Object.entries(results).filter(([, verdict]) => verdict === "FAIL")).toEqual([
+        [failedJob, "FAIL"],
+      ]);
+      expect(executed).toEqual(["bun run ci:declarations"]);
     });
   }
 
   it("makes a seeded failing Effect Vitest test exit nonzero", async () => {
-    const fixtureRoot = join(repoRoot, ".tmp/quality-tests/failing-vitest");
+    const fixtureParent = join(repoRoot, ".tmp/quality-tests");
+    await mkdir(fixtureParent, { recursive: true });
+    const fixtureRoot = await mkdtemp(join(fixtureParent, "failing-vitest-"));
     const fixturePath = join(fixtureRoot, "seeded-failure.test.ts");
-    await mkdir(fixtureRoot, { recursive: true });
     await writeFile(
       fixturePath,
       'import { expect, it } from "@effect/vitest";\nit("seeded failure", () => { expect("actual").toBe("expected"); });\n',
@@ -92,7 +168,7 @@ describe("pull-request quality workflow", () => {
     try {
       const result = spawnSync(
         resolve(repoRoot, "node_modules/.bin/vitest"),
-        ["run", fixturePath, "--exclude", "**/.worktrees/**"],
+        ["run", "--root", fixtureRoot, "seeded-failure.test.ts"],
         { cwd: repoRoot, encoding: "utf8" },
       );
 

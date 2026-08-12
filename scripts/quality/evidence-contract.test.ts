@@ -26,6 +26,51 @@ describe("implementation evidence contract", () => {
     ).toBe("FAIL");
   });
 
+  it("keeps an incomplete failed repair verification visible", () => {
+    expect(
+      resolveGateVerdict([
+        { kind: "initial", verdict: "PASS" },
+        {
+          kind: "repair-verification",
+          verdict: "FAIL",
+          diagnosis: "",
+          regressionTest: "",
+          fix: "",
+        },
+      ]),
+    ).toBe("FAIL");
+  });
+
+  it("does not clear failure with whitespace-only repair evidence", () => {
+    expect(
+      resolveGateVerdict([
+        { kind: "initial", verdict: "FAIL" },
+        {
+          kind: "repair-verification",
+          verdict: "PASS",
+          diagnosis: " ",
+          regressionTest: " ",
+          fix: " ",
+        },
+      ]),
+    ).toBe("FAIL");
+  });
+
+  it("does not replace failure with a missing repair verification", () => {
+    expect(
+      resolveGateVerdict([
+        { kind: "initial", verdict: "FAIL" },
+        {
+          kind: "repair-verification",
+          verdict: "MISSING",
+          diagnosis: "Cause understood.",
+          regressionTest: "Regression added.",
+          fix: "Repair applied.",
+        },
+      ]),
+    ).toBe("FAIL");
+  });
+
   it("accepts PASS only after a recorded repair verification", () => {
     expect(
       resolveGateVerdict([

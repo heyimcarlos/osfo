@@ -10,6 +10,7 @@
   "scripts": {
     "build": "turbo run build",
     "check": "bun run format:check && bun run lint && bun run typecheck && bun run test:types && bun run test && bun run wrdn:check && bun run db:check",
+    "ci:declarations": "tsc --project packages/session/tsconfig.build.json --emitDeclarationOnly --noCheck && tsc --project packages/agent-runtime/tsconfig.build.json --emitDeclarationOnly --noCheck && tsc --project packages/ui/tsconfig.build.json --emitDeclarationOnly --noCheck && tsc --project packages/agent-run/tsconfig.build.json --emitDeclarationOnly --noCheck && tsc --project packages/api/tsconfig.build.json --emitDeclarationOnly --noCheck && tsc --project packages/db/tsconfig.build.json --emitDeclarationOnly --noCheck && tsc --project apps/agent-run-worker/tsconfig.build.json --emitDeclarationOnly --noCheck && tsc --project apps/outbox-relay/tsconfig.build.json --emitDeclarationOnly --noCheck && tsc --project apps/ingress/tsconfig.build.json --emitDeclarationOnly --noCheck",
     "db:bootstrap-access": "node --env-file=.env --conditions=development --import tsx scripts/db/bootstrap-access.ts",
     "db:check": "bun run --cwd packages/db db:check",
     "db:down": "docker compose -f compose.postgres.yaml down --volumes",

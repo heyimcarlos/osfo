@@ -1,24 +1,49 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { Schema } from "effect";
 
 export interface WrdnSkill {
   readonly name: string;
   readonly path: string;
 }
 
-export interface WrdnReview {
-  readonly skill: string;
-  readonly targets: readonly string[];
-  readonly verdict: "PASS" | "FAIL";
-  readonly evidence: string;
-  readonly diffDigest: string;
-}
+const WrdnReviewSchema = Schema.Struct({
+  skill: Schema.String,
+  targets: Schema.Array(Schema.String),
+  verdict: Schema.Union([Schema.Literal("PASS"), Schema.Literal("FAIL")]),
+  evidence: Schema.String,
+  diffDigest: Schema.String,
+});
+
+const WrdnReviewManifestSchema = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  reviews: Schema.Array(WrdnReviewSchema),
+});
+
+export type WrdnReview = typeof WrdnReviewSchema.Type;
+
+export const parseWrdnReviewManifest = (source: string) => {
+  const manifest = Schema.decodeUnknownSync(Schema.fromJsonString(WrdnReviewManifestSchema), {
+    onExcessProperty: "error",
+  })(source);
+  const skills = new Set<string>();
+  for (const review of manifest.reviews) {
+    if (skills.has(review.skill)) {
+      throw new Error(`WRDN review manifest contains duplicate skill: ${review.skill}`);
+    }
+    skills.add(review.skill);
+  }
+  return manifest;
+};
 
 export interface WrdnInput {
   readonly changedContent: Readonly<Record<string, string>>;
+  readonly changedFileContent?: Readonly<Record<string, string>>;
   readonly lintOutput: string;
   readonly reviews: readonly WrdnReview[];
 }
@@ -35,7 +60,7 @@ export interface WrdnResult {
 
 interface WrdnDefinition {
   readonly name: string;
-  readonly matches: (path: string, content: string) => boolean;
+  readonly matches: (path: string, added: string, final: string) => boolean;
   readonly ruleNames: readonly string[];
   readonly trigger: string;
 }
@@ -76,11 +101,11 @@ export const wrdnDefinitions: readonly WrdnDefinition[] = [
     name: "wrdn-effect-raw-fetch-boundary",
     ruleNames: ["osfo/no-raw-fetch"],
     trigger: "networked protocol or provider boundary changed",
-    matches: (path, content) =>
+    matches: (path, content, final) =>
       applicationSource.test(path) &&
       (/(?:^|[^.\w])fetch\s*\(/mu.test(content) ||
-        (/(?:provider|protocol|http)/iu.test(path) &&
-          /HttpClient|Request|Response/u.test(content))),
+        (/(?:provider|protocol|http|openrouter)/iu.test(path) &&
+          /HttpClient|Request|Response/u.test(final))),
   },
   {
     name: "wrdn-effect-schema-boundaries",
@@ -94,10 +119,12 @@ export const wrdnDefinitions: readonly WrdnDefinition[] = [
     name: "wrdn-effect-schema-inferred-types",
     ruleNames: [],
     trigger: "schema and manual shape changed together",
-    matches: (path, content) =>
+    matches: (path, content, final) =>
       applicationSource.test(path) &&
-      /Schema\.(?:Struct|Union|TaggedStruct)/u.test(content) &&
-      /(?:interface|type)\s+\w+\s*(?:=\s*\{|\{)/u.test(content),
+      ((/Schema\.(?:Struct|Union|TaggedStruct)/u.test(content) &&
+        /(?:interface|type)\s+\w+\s*(?:=\s*\{|\{)/u.test(final)) ||
+        (/(?:interface|type)\s+\w+\s*(?:=\s*\{|\{)/u.test(content) &&
+          /Schema\.(?:Struct|Union|TaggedStruct)/u.test(final))),
   },
   {
     name: "wrdn-effect-typed-errors",
@@ -113,10 +140,12 @@ export const wrdnDefinitions: readonly WrdnDefinition[] = [
     name: "wrdn-effect-value-inferred-types",
     ruleNames: [],
     trigger: "object factory and manual API shape changed together",
-    matches: (path, content) =>
+    matches: (path, content, final) =>
       applicationSource.test(path) &&
-      /(?:interface|type)\s+\w+\s*(?:=\s*\{|\{)/u.test(content) &&
-      /return\s*\{|=>\s*\(\{/u.test(content),
+      ((/(?:interface|type)\s+\w+\s*(?:=\s*\{|\{)/u.test(content) &&
+        /return\s*\{|=>\s*\(\{/u.test(final)) ||
+        (/return\s*\{|=>\s*\(\{/u.test(content) &&
+          /(?:interface|type)\s+\w+\s*(?:=\s*\{|\{)/u.test(final))),
   },
   {
     name: "wrdn-effect-vitest-tests",
@@ -192,7 +221,11 @@ export const evaluateWrdnPass = (
         ([path, content]) =>
           (definition.name === "wrdn-effect-vitest-tests" ||
             path !== "scripts/quality/wrdn-pass.test.ts") &&
-          definition.matches(path, addedContent(content)),
+          definition.matches(
+            path,
+            addedContent(content),
+            input.changedFileContent?.[path] ?? addedContent(content),
+          ),
       )
       .map(([path]) => path)
       .sort();
@@ -207,7 +240,8 @@ export const evaluateWrdnPass = (
         targets: [],
       };
     }
-    const targets = matchingFiles.length > 0 ? matchingFiles : ["."];
+    const targets =
+      matchingFiles.length > 0 ? matchingFiles : Object.keys(input.changedContent).sort();
     const review = input.reviews.find((candidate) => candidate.skill === skill.name);
     const validReview =
       review !== undefined &&
@@ -261,7 +295,7 @@ export const executeWrdnPass = (
   });
 
 const addedContent = (content: string) =>
-  content.includes("diff --git")
+  content.startsWith("diff --git ")
     ? content
         .split("\n")
         .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
@@ -269,42 +303,38 @@ const addedContent = (content: string) =>
         .join("\n")
     : content;
 
-const reviewContent = (content: string) =>
-  content.includes("diff --git")
-    ? content
-        .split("\n")
-        .filter(
-          (line) =>
-            (line.startsWith("+") && !line.startsWith("+++")) ||
-            (line.startsWith("-") && !line.startsWith("---")),
-        )
-        .join("\n")
-    : content
-        .replace(/\n$/u, "")
-        .split("\n")
-        .map((line) => `+${line}`)
-        .join("\n");
+const reviewContent = (content: string) => content.replace(/\r\n/gu, "\n").replace(/\n$/u, "");
+
+export const requireWrdnTrackedDiff = (
+  result: {
+    readonly status: number | null;
+    readonly stdout: string;
+    readonly error?: Error | undefined;
+  },
+  path: string,
+) => {
+  if (result.error || result.status !== 0) {
+    throw new Error(`Could not inspect tracked file ${path}.`);
+  }
+  return result.stdout;
+};
 
 export const collectChangedContent = async (repoRoot: string, baseRef?: string) => {
+  if (!baseRef) throw new Error("WRDN_BASE_REF is required for every WRDN pass.");
   const status = spawnSync("git", ["status", "--porcelain"], {
     cwd: repoRoot,
     encoding: "utf8",
   });
   if (status.status !== 0) throw new Error("Could not inspect repository status.");
   const dirty = status.stdout.trim().length > 0;
-  if (!dirty && !baseRef) {
-    throw new Error("WRDN_BASE_REF is required for a clean checkout.");
-  }
-  const mergeBase = baseRef
-    ? spawnSync("git", ["merge-base", baseRef, "HEAD"], {
-        cwd: repoRoot,
-        encoding: "utf8",
-      })
-    : undefined;
-  if (mergeBase && mergeBase.status !== 0) {
+  const mergeBase = spawnSync("git", ["merge-base", baseRef, "HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if (mergeBase.status !== 0) {
     throw new Error(`Could not resolve the merge base for ${baseRef}.`);
   }
-  const range = mergeBase?.stdout.trim() || "HEAD";
+  const range = mergeBase.stdout.trim();
   const trackedArgs = ["diff", "--name-only", range];
   const tracked = spawnSync("git", trackedArgs, {
     cwd: repoRoot,
@@ -328,11 +358,51 @@ export const collectChangedContent = async (repoRoot: string, baseRef?: string) 
           cwd: repoRoot,
           encoding: "utf8",
         });
-        const content = diff.stdout || (await readFile(join(repoRoot, path), "utf8"));
+        const trackedDiff = requireWrdnTrackedDiff(diff, path);
+        const untrackedDiff = trackedDiff
+          ? undefined
+          : spawnSync("git", ["diff", "--no-index", "--", "/dev/null", path], {
+              cwd: repoRoot,
+              encoding: "utf8",
+            });
+        if (untrackedDiff && untrackedDiff.status !== 0 && untrackedDiff.status !== 1) {
+          throw new Error(`Could not inspect untracked file ${path}.`);
+        }
+        const content = trackedDiff || untrackedDiff?.stdout || "";
         return [path, content] as const;
       }),
     ),
   );
+};
+
+export const collectChangedFileContent = async (
+  repoRoot: string,
+  paths: readonly string[],
+): Promise<Readonly<Record<string, string>>> =>
+  Object.fromEntries(
+    await Promise.all(
+      paths.map(async (path) => [
+        path,
+        existsSync(join(repoRoot, path)) ? await readFile(join(repoRoot, path), "utf8") : "",
+      ]),
+    ),
+  );
+
+export const resolveWrdnBaseRef = (repoRoot: string, explicit?: string) => {
+  if (explicit) return explicit;
+  const remoteHead = spawnSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if (remoteHead.status === 0) return remoteHead.stdout.trim();
+  for (const candidate of ["origin/main", "origin/master"]) {
+    const resolved = spawnSync("git", ["rev-parse", "--verify", candidate], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    if (resolved.status === 0) return candidate;
+  }
+  throw new Error("WRDN_BASE_REF is required because no remote default branch was found.");
 };
 
 const renderTable = (results: readonly WrdnResult[]) =>
@@ -345,18 +415,37 @@ const renderTable = (results: readonly WrdnResult[]) =>
     ),
   ].join("\n");
 
+export const requireWrdnLintOutput = (lint: {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}) => {
+  const output = `${lint.stdout}${lint.stderr}`;
+  if (lint.status !== 0) {
+    const detail = output.trim() || `lint command exited with status ${lint.status ?? "unknown"}`;
+    throw new Error(`WRDN lint evidence is MISSING: ${detail}`);
+  }
+  return output;
+};
+
 const main = async () => {
   const repoRoot = resolve(import.meta.dirname, "../..");
   const lint = spawnSync("bun", ["run", "lint"], {
     cwd: repoRoot,
     encoding: "utf8",
   });
-  const reviewFile = JSON.parse(await readFile(join(repoRoot, ".wrdn-reviews.json"), "utf8")) as {
-    readonly reviews: readonly WrdnReview[];
-  };
+  const reviewPath = process.env.WRDN_REVIEW_FILE
+    ? resolve(repoRoot, process.env.WRDN_REVIEW_FILE)
+    : join(repoRoot, ".wrdn-reviews.json");
+  const reviewFile = parseWrdnReviewManifest(await readFile(reviewPath, "utf8"));
+  const changedContent = await collectChangedContent(
+    repoRoot,
+    resolveWrdnBaseRef(repoRoot, process.env.WRDN_BASE_REF),
+  );
   const applicability = evaluateWrdnPass(await discoverWrdnSkills(repoRoot), {
-    changedContent: await collectChangedContent(repoRoot, process.env.WRDN_BASE_REF),
-    lintOutput: `${lint.stdout}${lint.stderr}`,
+    changedContent,
+    changedFileContent: await collectChangedFileContent(repoRoot, Object.keys(changedContent)),
+    lintOutput: requireWrdnLintOutput(lint),
     reviews: reviewFile.reviews,
   });
   const results = executeWrdnPass(applicability, (args) => {

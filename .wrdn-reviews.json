@@ -2,17 +2,24 @@
   "schemaVersion": 1,
   "reviews": [
     {
+      "skill": "wrdn-effect-raw-fetch-boundary",
+      "targets": ["apps/agent-run-worker/src/openrouter-chat-completions-model-call-executor.ts"],
+      "verdict": "PASS",
+      "diffDigest": "580a12d9970b08efc6a91f92de309224cdc116d5a4e87a270a01f3869932cffa",
+      "evidence": "The changed OpenRouter executor keeps network access inside the injected Effect HttpClient boundary. The scoped raw-fetch lint command passes."
+    },
+    {
       "skill": "wrdn-effect-schema-boundaries",
       "targets": ["apps/agent-run-worker/src/openrouter-chat-completions-model-call-executor.ts"],
       "verdict": "PASS",
-      "diffDigest": "4f296327bbb47658db03aab22ac4bebef9270a026c445795e8974a912763ef1d",
+      "diffDigest": "580a12d9970b08efc6a91f92de309224cdc116d5a4e87a270a01f3869932cffa",
       "evidence": "The new named isProviderErrorEvent guard narrows the provider event before domain code reads its error field. The scoped schema-boundary lint command passes."
     },
     {
       "skill": "wrdn-effect-typed-errors",
       "targets": ["apps/agent-run-worker/src/streaming-pull.ts"],
       "verdict": "PASS",
-      "diffDigest": "1a7943c28fa133120e2e3574bb6f79beb81dce335ef516e544d345c9c1a99df1",
+      "diffDigest": "a42cc4bdc5e2e66e8ff1d392ceba891733c2e9685b8c2db8cb5e05f19b3b5e70",
       "evidence": "The only new defect conversion is the release finalizer boundary. Its exact-line suppression explains why a finalizer cannot return a typed failure. The scoped typed-error lint command passes."
     },
     {
@@ -30,7 +37,7 @@
         "scripts/quality/wrdn-pass.test.ts"
       ],
       "verdict": "PASS",
-      "diffDigest": "88ecc31a561a67c60b758d84b6f97af075153349bc5d8d956ba127faa30a92cb",
+      "diffDigest": "48b8e5c9923e53d7076ab0dd6bc81eab3fd6a38cdc8a66d058a35ed576286cba",
       "evidence": "Every changed runtime test imports Effect Vitest and uses unconditional deterministic assertions. The scoped Effect Vitest lint commands and the runtime suites pass."
     }
   ]

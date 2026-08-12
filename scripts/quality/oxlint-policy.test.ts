@@ -60,6 +60,28 @@ const cases = [
     valid: 'import { OsfoApi } from "@osfo/api";\nvoid OsfoApi;\n',
   },
   {
+    policy: "package boundary re-export",
+    rule: "osfo(no-cross-package-relative-imports)",
+    name: "cross-package-re-export.ts",
+    invalid: 'export { OsfoApi } from "../../../api/src/index.js";\n',
+    valid: 'export { OsfoApi } from "@osfo/api";\n',
+  },
+  {
+    policy: "package boundary dynamic import",
+    rule: "osfo(no-cross-package-relative-imports)",
+    name: "cross-package-dynamic-import.ts",
+    invalid: 'export const api = import("../../../api/src/index.js");\n',
+    valid: 'export const api = import("@osfo/api");\n',
+  },
+  {
+    policy: "prototype workspace package boundary",
+    rule: "osfo(no-cross-package-relative-imports)",
+    name: "prototype-package-boundary.ts",
+    invalid:
+      'export const prototype = import("../../../../prototypes/oz-account-agent-foundation/src/index.js");\n',
+    valid: 'export const prototype = import("@osfo/oz-account-agent-foundation-prototype");\n',
+  },
+  {
     policy: "TypeScript escape hatch",
     rule: "typescript(ban-ts-comment)",
     name: "type-bypass.ts",

@@ -301,3 +301,11 @@ The first ticket 194 implementation covered the static rules but missed the
 explicit requirement to discover, classify, and run installed WRDN skills. Map
 every issue contract item into the acceptance matrix before implementation,
 including agent-process requirements that do not look like source-code gates.
+
+## 2026-08-12: Treating local build outputs and tools as CI prerequisites
+
+The first clean quality workflow failed because local `dist` outputs made
+type-aware checks pass, while local Terraform and ripgrep installations made
+infrastructure tests pass. An isolated CI job must materialize required workspace
+declarations and install its command dependencies. CI contract tests must cover
+these clean-job prerequisites, not only the final gate command.
