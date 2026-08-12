@@ -1,6 +1,7 @@
 # Osfo policy
 
-Stable contracts live here. Product truth lives in `CONTEXT.md`, durable decisions in `docs/adr/`, and active work in GitHub Issues.
+Stable contracts live here. Product truth lives in `CONTEXT.md`, durable decisions
+in `docs/adr/`, and active work in GitHub Issues.
 
 ## Verification and evidence
 
@@ -20,13 +21,17 @@ Stable contracts live here. Product truth lives in `CONTEXT.md`, durable decisio
 
 ## Collaboration Notes
 
-- The user uses speech-to-text; infer likely intent from odd wording, ask only when needed.
+- The user uses speech-to-text; infer likely intent from odd wording, ask only when
+  needed.
 - Code is cheap to write: no time estimates, implementation time isn't a blocker.
 - Never use em-dashes anywhere. Use commas, colons, parentheses, or separate sentences.
+- Always reply in ASD-STE100 Simplified Technical English
 
 ## Reference Repositories
 
-Repos in `.reference` (effect, executor, AnswerOverflow, flue, ...) are available for patterns. Clone a given Git URL into `.reference` and pull latest before using it.
+Repos in `.reference` (effect, executor, AnswerOverflow, flue, ...) are available
+for patterns. Clone a given Git URL into `.reference` and pull latest before using
+it.
 
 ## Engineering boundaries
 
