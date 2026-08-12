@@ -1,0 +1,85 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "options": {
+    "typeAware": true,
+  },
+  "plugins": ["eslint", "unicorn", "typescript", "oxc", "vitest"],
+  "jsPlugins": [{ "name": "osfo", "specifier": "./scripts/oxlint-plugin-osfo.js" }],
+  "rules": {
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "vitest",
+            "message": "Use @effect/vitest for deterministic Effect-aware tests.",
+          },
+        ],
+      },
+    ],
+    "typescript/ban-ts-comment": [
+      "error",
+      {
+        "ts-expect-error": true,
+        "ts-ignore": true,
+        "ts-nocheck": true,
+        "ts-check": false,
+      },
+    ],
+    "typescript/await-thenable": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/no-redundant-type-constituents": "error",
+    "typescript/unbound-method": "error",
+    "vitest/no-conditional-expect": "error",
+    // These rules do not recognize Effect Vitest's it.effect callback as a test boundary.
+    "vitest/no-standalone-expect": "off",
+    "vitest/require-to-throw-message": "off",
+    "osfo/no-cross-package-relative-imports": "error",
+    "osfo/no-raw-fetch": "error",
+    "osfo/no-unknown-shape-probing": "error",
+    "osfo/no-untyped-effect-errors": "error",
+  },
+  "overrides": [
+    {
+      // Browser DOM host boundary: missing root markup must stop startup synchronously.
+      "files": ["apps/web/src/main.ts", "apps/web/src/main.tsx"],
+      "rules": {
+        "osfo/no-untyped-effect-errors": "off",
+      },
+    },
+    {
+      // React act has sync and async overloads that the type-aware rules do not distinguish here.
+      "files": ["apps/web/src/App.test.tsx", "apps/web/src/configuration-required.test.tsx"],
+      "rules": {
+        "typescript/await-thenable": "off",
+      },
+    },
+    {
+      // The DOM value setter is deliberately called with its receiver through Function.call.
+      "files": ["apps/web/src/configuration-required.test.tsx"],
+      "rules": {
+        "typescript/unbound-method": "off",
+      },
+    },
+    {
+      // Cloudflare Durable Object RPC methods are awaitable at runtime across the generated stub.
+      "files": ["prototypes/oz-account-agent-foundation/src/worker.ts"],
+      "rules": {
+        "typescript/await-thenable": "off",
+      },
+    },
+  ],
+  "ignorePatterns": [
+    ".reference/",
+    ".references/",
+    ".tmp/",
+    ".turbo/",
+    ".worktrees/",
+    "dist/",
+    "node_modules/",
+    "bun.lock",
+    "*.tsbuildinfo",
+  ],
+}

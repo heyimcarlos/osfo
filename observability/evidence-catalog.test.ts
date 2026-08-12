@@ -1,11 +1,22 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { describe, expect, it } from "@effect/vitest";
+import { afterEach, describe, expect, it } from "@effect/vitest";
 
+import { runGeneratedCatalog } from "../scripts/quality/evidence-catalog-generated.js";
 import { compileEvidenceCatalog, EvidenceCatalogError } from "./evidence-catalog.js";
+
+const fixtureRoots = new Set<string>();
+
+afterEach(async () => {
+  const roots = [...fixtureRoots];
+  await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+  for (const root of roots) await expect(access(root)).rejects.toThrow();
+  fixtureRoots.clear();
+});
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -41,10 +52,47 @@ const source = (
   required: true,
 });
 
+const addInventorySource = async (fixture: {
+  readonly root: string;
+  readonly manifestPath: string;
+}) => {
+  const inventoryRoot = join(fixture.root, "inventory");
+  await mkdir(inventoryRoot, { recursive: true });
+  await writeFile(join(inventoryRoot, "tracked.txt"), "tracked\n");
+  const manifest = JSON.parse(await readFile(fixture.manifestPath, "utf8")) as {
+    sources: unknown[];
+  };
+  manifest.sources.push({
+    id: "tracked-inventory",
+    adapter: "directory-inventory",
+    category: "inventory",
+    path: "inventory",
+    publicUrl: null,
+    structure: "tracked files",
+    seal: "git-index",
+    scope: "fixture",
+    disposition: "exclude",
+    exclusionReason: "Fixture inventory is not qualification evidence.",
+    issueOrRequirement: ["tracked inventory"],
+    required: true,
+  });
+  await writeFile(
+    fixture.manifestPath,
+    JSON.stringify({ schemaVersion: 1, repositoryUrl: "https://example.test/", ...manifest }),
+  );
+  await writeFile(join(fixture.root, ".gitignore"), "inventory/local.tmp\n");
+  const initialized = spawnSync("git", ["init", "--quiet", fixture.root], { encoding: "utf8" });
+  expect(initialized.status).toBe(0);
+  const added = spawnSync("git", ["-C", fixture.root, "add", "."], { encoding: "utf8" });
+  expect(added.status).toBe(0);
+  return inventoryRoot;
+};
+
 const writeFixture = async (
   options: { readonly tamper?: boolean; readonly duplicate?: boolean } = {},
 ) => {
   const root = await mkdtemp(join(tmpdir(), "osfo-evidence-catalog-"));
+  fixtureRoots.add(root);
   const packet = join(root, "docs/openpoke-v1-demo");
   const artifacts: FixtureArtifact[] = [];
 
@@ -252,6 +300,71 @@ describe("manifest-driven evidence catalog", () => {
     expect(result.metrics).not.toContain('fact="workload.offered"');
     expect(JSON.stringify(result)).not.toContain(fixture.root);
     expect(result.openMetrics).toMatch(/# EOF\n$/u);
+  });
+
+  it("excludes ignored machine-local files from generated inventory evidence", async () => {
+    const fixture = await writeFixture();
+    const inventoryRoot = await addInventorySource(fixture);
+    const before = await compileEvidenceCatalog(fixture.manifestPath, { repoRoot: fixture.root });
+
+    await writeFile(join(inventoryRoot, "local.tmp"), "machine-local\n");
+    const after = await compileEvidenceCatalog(fixture.manifestPath, { repoRoot: fixture.root });
+
+    expect(before.coverage.find((item) => item.sourceId === "tracked-inventory")?.count).toBe(1);
+    expect(after.coverage).toEqual(before.coverage);
+  });
+
+  it("changes generated inventory evidence when a tracked file is added", async () => {
+    const fixture = await writeFixture();
+    const inventoryRoot = await addInventorySource(fixture);
+    const before = await compileEvidenceCatalog(fixture.manifestPath, { repoRoot: fixture.root });
+    const addedPath = join(inventoryRoot, "added.txt");
+
+    await writeFile(addedPath, "tracked later\n");
+    const added = spawnSync("git", ["-C", fixture.root, "add", "inventory/added.txt"], {
+      encoding: "utf8",
+    });
+    expect(added.status).toBe(0);
+    const after = await compileEvidenceCatalog(fixture.manifestPath, { repoRoot: fixture.root });
+
+    expect(after.coverage.find((item) => item.sourceId === "tracked-inventory")?.count).toBe(2);
+    expect(after.coverage).not.toEqual(before.coverage);
+  });
+
+  it("fails the generated check after tracked drift until regeneration", async () => {
+    const fixture = await writeFixture();
+    const inventoryRoot = await addInventorySource(fixture);
+    const catalogRoot = join(fixture.root, "generated-catalog");
+    await mkdir(catalogRoot, { recursive: true });
+    const options = {
+      repoRoot: fixture.root,
+      manifestPath: fixture.manifestPath,
+      catalogRoot,
+    } as const;
+
+    expect(await runGeneratedCatalog({ ...options, mode: "--write" })).toMatchObject({
+      status: 0,
+    });
+    expect(await runGeneratedCatalog({ ...options, mode: "--check" })).toMatchObject({
+      status: 0,
+    });
+
+    await writeFile(join(inventoryRoot, "drift.txt"), "tracked drift\n");
+    const added = spawnSync("git", ["-C", fixture.root, "add", "inventory/drift.txt"], {
+      encoding: "utf8",
+    });
+    expect(added.status).toBe(0);
+    expect(await runGeneratedCatalog({ ...options, mode: "--check" })).toMatchObject({
+      status: 1,
+      message: expect.stringContaining("coverage-report.json"),
+    });
+
+    expect(await runGeneratedCatalog({ ...options, mode: "--write" })).toMatchObject({
+      status: 0,
+    });
+    expect(await runGeneratedCatalog({ ...options, mode: "--check" })).toMatchObject({
+      status: 0,
+    });
   });
 
   it("rejects duplicate artifact identifiers before producing a catalog", async () => {

@@ -83,6 +83,9 @@ const runExit = (body: string) =>
     Effect.exit,
   );
 
+const failureReasons = <A, E>(result: Exit.Exit<A, E>) =>
+  Exit.isFailure(result) ? result.cause.reasons : [];
+
 describe("OpenRouter Chat Completions ModelCall executor", () => {
   it.effect("sends the pinned request and normalizes text, identity, and usage", () =>
     Effect.gen(function* () {
@@ -211,18 +214,16 @@ describe("OpenRouter Chat Completions ModelCall executor", () => {
       );
 
       expect(Exit.isFailure(result)).toBe(true);
-      if (Exit.isFailure(result)) {
-        expect(result.cause.reasons).toContainEqual(
-          expect.objectContaining({
-            _tag: "Fail",
-            error: expect.objectContaining({
-              _tag: "ModelCallExecutionError",
-              cause: "Provider generation identity changed",
-              dispatchEvidence: { type: "confirmed", providerRequestId: "gen-123" },
-            }),
+      expect(failureReasons(result)).toContainEqual(
+        expect.objectContaining({
+          _tag: "Fail",
+          error: expect.objectContaining({
+            _tag: "ModelCallExecutionError",
+            cause: "Provider generation identity changed",
+            dispatchEvidence: { type: "confirmed", providerRequestId: "gen-123" },
           }),
-        );
-      }
+        }),
+      );
     }),
   );
 
@@ -497,23 +498,21 @@ describe("OpenRouter Chat Completions ModelCall executor", () => {
       );
 
       expect(Exit.isFailure(result)).toBe(true);
-      if (Exit.isFailure(result)) {
-        expect(result.cause.reasons).toContainEqual(
-          expect.objectContaining({
-            _tag: "Fail",
-            error: expect.objectContaining({
-              _tag: "ModelCallExecutionError",
-              dispatchEvidence: { type: "confirmed", providerRequestId: "gen-123" },
-              usage: {
-                type: "reported",
-                inputUnits: 4,
-                outputUnits: 5,
-                reasoningUnits: 7,
-              },
-            }),
+      expect(failureReasons(result)).toContainEqual(
+        expect.objectContaining({
+          _tag: "Fail",
+          error: expect.objectContaining({
+            _tag: "ModelCallExecutionError",
+            dispatchEvidence: { type: "confirmed", providerRequestId: "gen-123" },
+            usage: {
+              type: "reported",
+              inputUnits: 4,
+              outputUnits: 5,
+              reasoningUnits: 7,
+            },
           }),
-        );
-      }
+        }),
+      );
     }),
   );
 
@@ -536,18 +535,16 @@ describe("OpenRouter Chat Completions ModelCall executor", () => {
       );
 
       expect(Exit.isFailure(result)).toBe(true);
-      if (Exit.isFailure(result)) {
-        expect(result.cause.reasons).toContainEqual(
-          expect.objectContaining({
-            _tag: "Fail",
-            error: expect.objectContaining({
-              _tag: "ModelCallExecutionError",
-              cause: "Provider emitted a stream error",
-              dispatchEvidence: { type: "confirmed", providerRequestId: "gen-123" },
-            }),
+      expect(failureReasons(result)).toContainEqual(
+        expect.objectContaining({
+          _tag: "Fail",
+          error: expect.objectContaining({
+            _tag: "ModelCallExecutionError",
+            cause: "Provider emitted a stream error",
+            dispatchEvidence: { type: "confirmed", providerRequestId: "gen-123" },
           }),
-        );
-      }
+        }),
+      );
     }),
   );
 
@@ -570,18 +567,16 @@ describe("OpenRouter Chat Completions ModelCall executor", () => {
 
       expect(requestCount).toBe(1);
       expect(Exit.isFailure(result)).toBe(true);
-      if (Exit.isFailure(result)) {
-        expect(result.cause.reasons).toContainEqual(
-          expect.objectContaining({
-            _tag: "Fail",
-            error: expect.objectContaining({
-              _tag: "ModelCallExecutionError",
-              dispatchEvidence: { type: "confirmed" },
-              usage: { type: "unknown" },
-            }),
+      expect(failureReasons(result)).toContainEqual(
+        expect.objectContaining({
+          _tag: "Fail",
+          error: expect.objectContaining({
+            _tag: "ModelCallExecutionError",
+            dispatchEvidence: { type: "confirmed" },
+            usage: { type: "unknown" },
           }),
-        );
-      }
+        }),
+      );
     }),
   );
 
@@ -609,18 +604,16 @@ describe("OpenRouter Chat Completions ModelCall executor", () => {
 
       expect(requestCount).toBe(1);
       expect(Exit.isFailure(result)).toBe(true);
-      if (Exit.isFailure(result)) {
-        expect(result.cause.reasons).toContainEqual(
-          expect.objectContaining({
-            _tag: "Fail",
-            error: expect.objectContaining({
-              _tag: "ModelCallExecutionError",
-              dispatchEvidence: { type: "uncertain" },
-              usage: { type: "unknown" },
-            }),
+      expect(failureReasons(result)).toContainEqual(
+        expect.objectContaining({
+          _tag: "Fail",
+          error: expect.objectContaining({
+            _tag: "ModelCallExecutionError",
+            dispatchEvidence: { type: "uncertain" },
+            usage: { type: "unknown" },
           }),
-        );
-      }
+        }),
+      );
     }),
   );
 });

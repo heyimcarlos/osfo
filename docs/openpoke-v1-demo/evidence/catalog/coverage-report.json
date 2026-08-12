@@ -144,7 +144,7 @@
     "issueOrRequirement": [
       "five Grafana captures"
     ],
-    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
+    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
   },
   {
     "sourceId": "historical-breaking-464",
@@ -224,7 +224,7 @@
     "issueOrRequirement": [
       "complete packet evidence inventory"
     ],
-    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
+    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
   },
   {
     "sourceId": "packet-index",
@@ -273,14 +273,14 @@
     "issueOrRequirement": [
       "13 post-run cards"
     ],
-    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
+    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
   },
   {
     "sourceId": "prototype-agent-run-inventory",
     "category": "prototype-inventory",
     "path": "prototypes/agent-run-lifecycle/evidence",
     "publicUrl": "https://github.com/heyimcarlos/osfo/tree/main/prototypes/agent-run-lifecycle/evidence",
-    "count": 454,
+    "count": 451,
     "structure": "recursive evidence files",
     "seal": "mixed-per-bundle",
     "scope": "historical-prototype",
@@ -289,14 +289,14 @@
     "issueOrRequirement": [
       "historical inventory completeness"
     ],
-    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
+    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
   },
   {
     "sourceId": "prototype-dispatch-inventory",
     "category": "prototype-inventory",
     "path": "prototypes/dispatch-topology/evidence",
     "publicUrl": "https://github.com/heyimcarlos/osfo/tree/main/prototypes/dispatch-topology/evidence",
-    "count": 6,
+    "count": 5,
     "structure": "recursive evidence files",
     "seal": "mixed-per-bundle",
     "scope": "historical-prototype",
@@ -305,14 +305,14 @@
     "issueOrRequirement": [
       "historical inventory completeness"
     ],
-    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
+    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
   },
   {
     "sourceId": "prototype-pubsub-inventory",
     "category": "prototype-inventory",
     "path": "prototypes/pubsub-worker-seam/evidence",
     "publicUrl": "https://github.com/heyimcarlos/osfo/tree/main/prototypes/pubsub-worker-seam/evidence",
-    "count": 397,
+    "count": 610,
     "structure": "recursive evidence files",
     "seal": "mixed-per-bundle",
     "scope": "historical-prototype",
@@ -321,7 +321,7 @@
     "issueOrRequirement": [
       "historical inventory completeness"
     ],
-    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
+    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
   },
   {
     "sourceId": "receipt-slo",
@@ -353,6 +353,6 @@
     "issueOrRequirement": [
       "authenticated three-tab journey"
     ],
-    "integrityProvenance": "Recursive regular-file inventory; excluded files are not qualification inputs."
+    "integrityProvenance": "Git index tracked regular-file inventory; ignored and untracked files are excluded."
   }
 ]

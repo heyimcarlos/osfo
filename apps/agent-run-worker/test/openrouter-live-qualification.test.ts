@@ -26,14 +26,13 @@ describe("OpenRouter live qualification reporting", () => {
     });
 
     expect(evaluation.type).toBe("pass");
-    if (evaluation.type === "pass") {
-      expect(evaluation.evidence.exactExpectedText).toBe(true);
-      const report = renderOpenRouterLiveQualificationPass(evaluation.evidence);
-      expect(report).toContain("PASS ");
-      expect(report).toContain('"exactExpectedText":true');
-      expect(report).not.toContain("secret-generation-id");
-      expect(report).not.toContain('"qualified"');
-    }
+    const evidence = evaluation.type === "pass" ? evaluation.evidence : undefined;
+    expect(evidence?.exactExpectedText).toBe(true);
+    const report = evidence === undefined ? "" : renderOpenRouterLiveQualificationPass(evidence);
+    expect(report).toContain("PASS ");
+    expect(report).toContain('"exactExpectedText":true');
+    expect(report).not.toContain("secret-generation-id");
+    expect(report).not.toContain('"qualified"');
   });
 
   it("rejects nonempty normalized text that does not match the fixed expectation", () => {

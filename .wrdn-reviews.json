@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "reviews": [
+    {
+      "skill": "wrdn-effect-schema-boundaries",
+      "targets": ["apps/agent-run-worker/src/openrouter-chat-completions-model-call-executor.ts"],
+      "verdict": "PASS",
+      "diffDigest": "4f296327bbb47658db03aab22ac4bebef9270a026c445795e8974a912763ef1d",
+      "evidence": "The new named isProviderErrorEvent guard narrows the provider event before domain code reads its error field. The scoped schema-boundary lint command passes."
+    },
+    {
+      "skill": "wrdn-effect-typed-errors",
+      "targets": ["apps/agent-run-worker/src/streaming-pull.ts"],
+      "verdict": "PASS",
+      "diffDigest": "1a7943c28fa133120e2e3574bb6f79beb81dce335ef516e544d345c9c1a99df1",
+      "evidence": "The only new defect conversion is the release finalizer boundary. Its exact-line suppression explains why a finalizer cannot return a typed failure. The scoped typed-error lint command passes."
+    },
+    {
+      "skill": "wrdn-effect-vitest-tests",
+      "targets": [
+        "apps/agent-run-worker/test/openrouter-chat-completions-model-call-executor.test.ts",
+        "apps/agent-run-worker/test/openrouter-live-qualification.test.ts",
+        "observability/dashboard-generation.test.ts",
+        "observability/evidence-catalog.test.ts",
+        "packages/db/test/tool-call-repository.postgres.test.ts",
+        "scripts/quality/ci-contract.test.ts",
+        "scripts/quality/effect-diagnostics.test.ts",
+        "scripts/quality/evidence-contract.test.ts",
+        "scripts/quality/oxlint-policy.test.ts",
+        "scripts/quality/wrdn-pass.test.ts"
+      ],
+      "verdict": "PASS",
+      "diffDigest": "88ecc31a561a67c60b758d84b6f97af075153349bc5d8d956ba127faa30a92cb",
+      "evidence": "Every changed runtime test imports Effect Vitest and uses unconditional deterministic assertions. The scoped Effect Vitest lint commands and the runtime suites pass."
+    }
+  ]
+}

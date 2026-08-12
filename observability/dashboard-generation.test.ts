@@ -172,16 +172,16 @@ describe("manifest-driven evidence catalog dashboards", () => {
         for (const field of rawFields) {
           expect(organize?.options?.excludeByName?.[field]).toBe(true);
         }
-        if (panel.title !== "Raw provenance, below fold") {
-          const intentionalFields = new Set([
-            ...Object.keys(organize?.options?.indexByName ?? {}),
-            ...Object.keys(organize?.options?.renameByName ?? {}),
-          ]);
-          for (const field of catalogFields) {
-            if (!intentionalFields.has(field)) {
-              expect(organize?.options?.excludeByName?.[field]).toBe(true);
-            }
-          }
+        const intentionalFields = new Set([
+          ...Object.keys(organize?.options?.indexByName ?? {}),
+          ...Object.keys(organize?.options?.renameByName ?? {}),
+        ]);
+        const fieldsThatMustBeHidden =
+          panel.title === "Raw provenance, below fold"
+            ? []
+            : catalogFields.filter((field) => !intentionalFields.has(field));
+        for (const field of fieldsThatMustBeHidden) {
+          expect(organize?.options?.excludeByName?.[field]).toBe(true);
         }
         const valueHidden = organize?.options?.excludeByName?.Value === true;
         const valueRenamed =

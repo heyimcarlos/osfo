@@ -144,12 +144,11 @@ describe("PostgreSQL non-Action ToolCall authority", () => {
     );
 
     expect(state.type).toBe("succeeded");
-    if (state.type === "succeeded") {
-      expect(state.outcomes.map((item) => item.outcome)).toEqual([
-        { type: "succeeded", result: { type: "text", text: "first" } },
-        { type: "succeeded", result: { type: "text", text: "second" } },
-      ]);
-    }
+    const outcomes = state.type === "succeeded" ? state.outcomes.map((item) => item.outcome) : [];
+    expect(outcomes).toEqual([
+      { type: "succeeded", result: { type: "text", text: "first" } },
+      { type: "succeeded", result: { type: "text", text: "second" } },
+    ]);
     expect(evidence).toEqual({ progress: 4, terminal: 2 });
   });
 

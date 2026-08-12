@@ -234,7 +234,7 @@ export const buildReceiptCardModel = (input: {
   readonly scenario: unknown;
   readonly audit: unknown;
   readonly callerSummary: unknown;
-  readonly receiptSlo: unknown | undefined;
+  readonly receiptSlo: unknown;
 }) =>
   Effect.gen(function* () {
     const scenario = yield* decode(LoadScenarioSchema, input.scenario, "decode receipt scenario");

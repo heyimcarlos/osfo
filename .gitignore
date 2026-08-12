@@ -5,6 +5,7 @@ target/
 .take-home/
 .worktrees/
 /tmp/
+/.tmp/
 .env
 node_modules/
 dist/

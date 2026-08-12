@@ -42,7 +42,7 @@ interface WorkerSession {
   readonly canceled: Deferred.Deferred<ModelCallCancellationDisposition, ModelCallExecutionError>;
   readonly exited: Deferred.Deferred<void>;
   completed: boolean;
-  failureCause: unknown | undefined;
+  failureCause: unknown;
   terminating: boolean;
 }
 

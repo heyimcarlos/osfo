@@ -19,6 +19,27 @@
     "plugins": [
       {
         "name": "@effect/language-service",
+        "diagnosticSeverity": {
+          "effectInEffectFailure": "error",
+          "floatingEffect": "error",
+          "floatingEffectInVitest": "error",
+          "globalErrorInEffectFailure": "warning",
+          "globalFetch": "warning",
+          "globalFetchInEffect": "warning",
+          "missingEffectContext": "error",
+          "missingEffectError": "error",
+          "missingLayerContext": "error",
+          "missingReturnYieldStar": "error",
+          "missingStarInYieldEffectGen": "error",
+          "multipleEffectProvide": "warning",
+          "nonObjectEffectServiceType": "error",
+          "promiseInEffectSuccess": "warning",
+          "tryCatchInEffectGen": "warning",
+          "unknownInEffectCatch": "warning",
+          "unsafeEffectTypeAssertion": "error"
+        },
+        "includeSuggestionsInTsc": true,
+        "ignoreEffectErrorsInTscExitCode": false,
         "ignoreEffectSuggestionsInTscExitCode": true,
         "ignoreEffectWarningsInTscExitCode": true
       }

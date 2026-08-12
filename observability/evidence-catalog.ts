@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { constants } from "node:fs";
 import { access, lstat, open, readdir, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -1757,21 +1758,46 @@ const prototypeResultAdapter = async (
   };
 };
 
-const directoryFileCount = async (repoRoot: string, root: string): Promise<number> => {
-  let count = 0;
-  const entries = await readdir(root, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isSymbolicLink()) {
+const trackedDirectoryFileCount = async (repoRoot: string, sourcePath: string): Promise<number> => {
+  let output: string;
+  try {
+    output = execFileSync("git", ["-C", repoRoot, "ls-files", "-z", "--", sourcePath], {
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch {
+    throw new EvidenceCatalogError(
+      "INVALID_SOURCE",
+      sourcePath,
+      "tracked inventory requires a readable Git index",
+    );
+  }
+  const trackedPaths = output.split("\0").filter((path) => path.length > 0);
+  for (const trackedPath of trackedPaths) {
+    const absolute = resolve(repoRoot, trackedPath);
+    if (!isInside(repoRoot, absolute)) {
       throw new EvidenceCatalogError(
         "INVALID_SOURCE",
-        relative(repoRoot, resolve(root, entry.name)),
-        "inventory symlink is forbidden",
+        trackedPath,
+        "tracked path escapes repository",
       );
     }
-    if (entry.isDirectory()) count += await directoryFileCount(repoRoot, resolve(root, entry.name));
-    else if (entry.isFile()) count += 1;
+    const metadata = await lstat(absolute).catch(() => {
+      throw new EvidenceCatalogError(
+        "INVALID_SOURCE",
+        trackedPath,
+        "tracked inventory file is missing",
+      );
+    });
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new EvidenceCatalogError(
+        "INVALID_SOURCE",
+        trackedPath,
+        "tracked inventory entry must be a regular file",
+      );
+    }
   }
-  return count;
+  return trackedPaths.length;
 };
 
 const adaptSource = async (
@@ -1813,9 +1839,9 @@ const adaptSource = async (
     case "directory-inventory":
       return {
         records: [],
-        count: await directoryFileCount(context.repoRoot, path),
+        count: await trackedDirectoryFileCount(context.repoRoot, source.path),
         integrityProvenance:
-          "Recursive regular-file inventory; excluded files are not qualification inputs.",
+          "Git index tracked regular-file inventory; ignored and untracked files are excluded.",
       };
     case "file-inventory":
       await readRegularFile(context.repoRoot, path);

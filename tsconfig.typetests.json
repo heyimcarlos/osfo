@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@osfo/agent-run": ["./packages/agent-run/src/index.ts"],
+      "@osfo/agent-runtime": ["./packages/agent-runtime/src/index.ts"]
+    },
+    "types": ["node"]
+  },
+  "include": ["typetests/**/*.tst.ts"]
+}
