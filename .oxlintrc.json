@@ -19,14 +19,19 @@
     "osfo/no-conditional-empty-object-spread": "error",
     "osfo/no-cross-package-relative-imports": "error",
     "osfo/no-known-value-widening": "error",
+    "osfo/no-module-mocking": "error",
     "osfo/no-object-parameters": "error",
     "osfo/no-raw-fetch": "error",
+    "osfo/no-reflect-apply": "error",
+    "osfo/no-reflect-get": "error",
     "osfo/no-runtime-typeof": "error",
     "osfo/no-shape-in-symbol-names": "error",
     "osfo/no-unknown-parameters": "error",
+    "osfo/no-unknown-returns": "error",
     "osfo/no-unknown-type-aliases": "error",
     "osfo/no-unsafe-dictionary-type": "error",
-    "osfo/no-widen-then-assert": "error"
+    "osfo/no-widen-then-assert": "error",
+    "osfo/require-safety-comment-for-type-assertion": "error"
   },
   "overrides": [
     {

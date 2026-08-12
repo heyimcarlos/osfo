@@ -13,6 +13,7 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint --deny-warnings .",
     "prepare": "effect-tsgo patch --typescript --oxlint",
+    "pull:references": "bun run scripts/pull-references.ts",
     "test": "vitest run tools/oxlint/test && bun run --cwd packages/ui test && bun run --cwd apps/web test",
     "typecheck": "tsc --project tools/oxlint/tsconfig.json && bun run --cwd packages/ui typecheck && bun run --cwd apps/web typecheck"
   },
