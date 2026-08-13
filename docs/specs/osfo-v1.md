@@ -157,8 +157,8 @@ fields can enter the new User profile.
 ```
 
 The WhatsApp-first path uses a high-entropy, single-use Registration Token at
-`/verify/<token>`. Osfo stores only its digest. The page shows a masked invited
-number and requires an explicit `Send code` action.
+`https://osfo.ai/verify/<token>`. Osfo stores only its digest. The page shows a
+masked invited number and requires an explicit `Send code` action.
 
 Phone Verification uses a six-digit, single-use code, a ten-minute lifetime, at
 most five entry attempts, resend after 30 seconds, and at most five sends per

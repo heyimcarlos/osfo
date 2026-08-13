@@ -175,8 +175,8 @@ deleted after registration or expiry.
 _Avoid_: Anonymous Thread, Provisional User, Agent handoff
 
 **Registration Token**:
-The high-entropy secret carried in `/verify/<token>` that continues one
-Registration Invitation. Osfo stores only its digest; it is not an Account,
+The high-entropy secret carried in `https://osfo.ai/verify/<token>` that continues
+one Registration Invitation. Osfo stores only its digest; it is not an Account,
 AuthSession, or reusable authentication credential.
 _Avoid_: UserId, OTP, permanent bearer token
 
@@ -580,9 +580,9 @@ provider protocol and normalizes provider observations and outcomes back into
 Osfo-owned values through ModelCallExecutor. It owns protocol translation and
 provider conformance, but never AgentRun lifecycle, retry policy, canonical
 Thread state, credentials in durable records, or provider selection policy.
-OpenRouter is one Model Adapter available to an Agent Application, not an Osfo
-runtime dependency or the identity of Osfo.
-_Avoid_: Agent Runtime, model router, Agent Application, provider SDK wrapper
+OpenRouter is one Model Adapter that Osfo can select, not an Osfo runtime
+dependency or the identity of Osfo.
+_Avoid_: Agent Runtime, model router, provider SDK wrapper
 
 **ToolCall**:
 One identified logical tool operation within an AgentRun. Its durable intent is
@@ -603,10 +603,9 @@ state.
 _Avoid_: Agent provider, model provider, AgentRun manager, worker
 
 **ExecutionProfileRef**:
-An immutable versioned reference pinned by an AgentRun to the Agent
-Application's runtime behavior, model policy, prompt rules, tool schemas, and
-initial execution limits. Osfo owns the manifest schema and interpretation;
-the Agent Application owns each concrete profile.
+An immutable versioned reference pinned by an AgentRun to Osfo's runtime
+behavior, model policy, prompt rules, tool schemas, and initial execution limits.
+Osfo owns each concrete profile, its manifest schema, and its interpretation.
 _Avoid_: RuntimeCheckpointRef, mutable configuration, credential reference
 
 **AgentRunAttempt**:
@@ -706,16 +705,16 @@ _Avoid_: Sandbox path, SandboxRef, RuntimeCheckpointRef
 **Operation Gate**:
 The effective authorization outcome for one exact committed Action:
 `deny`, `require approval`, or `permit`, ordered from strictest to weakest. The
-Agent Application sets the governing policy; the Agent Runtime may require a
-stricter outcome from instruction evidence but can never weaken policy. An
-instruction such as "do not confirm" is not authority.
+Osfo-owned Authorization Policy sets the governing policy; the Agent Runtime may
+require a stricter outcome from instruction evidence but can never weaken policy.
+An instruction such as "do not confirm" is not authority.
 
 **Approval**:
 An authorized decision bound to one exact committed Action that passed an
 Operation Gate requiring approval. A material change creates a new Action
-and requires a new approval; the Agent Application determines who may approve.
-Approval satisfies human consent but does not replace the current authorization
-check required before a new external call.
+and requires a new approval; Osfo determines who may approve. Approval satisfies
+human consent but does not replace the current authorization check required
+before a new external call.
 _Avoid_: Authorization policy, reusable consent, approval of mutable intent
 
 **Approval Request**:
@@ -807,8 +806,8 @@ not own the Thread or agent identity.
 _Avoid_: Channel Edge, messaging provider, conversation store
 
 **AdapterId**:
-The stable identity of one configured Adapter in an Agent Application. It
-scopes conversation keys and routing, not conversational authority.
+The stable identity of one Adapter configured in Osfo. It scopes conversation
+keys and routing, not conversational authority.
 _Avoid_: AdapterInstallationId, provider account ID, ThreadId
 
 **ConversationKey**:
@@ -818,9 +817,8 @@ default.
 _Avoid_: ProviderConversationKey, provider thread ID, ThreadId
 
 **Thread Binding**:
-The Agent Application association from an AdapterId and ConversationKey to a
-Thread. Sharing or moving a Thread across Adapters requires an explicit binding
-decision.
+Osfo's association from an AdapterId and ConversationKey to a Thread. Sharing or
+moving a Thread across Adapters requires an explicit binding decision.
 _Avoid_: Provider conversation, automatic account merge
 
 **Osfo API**:
