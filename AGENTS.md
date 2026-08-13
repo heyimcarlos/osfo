@@ -26,7 +26,7 @@ in `docs/adr/`, and active work in GitHub Issues.
 
 ## Reference Repositories
 
-Repos in `.reference` (effect, executor, AnswerOverflow, flue, ...) are available
+Repos in `.reference` (effect, executor, opencode, ...) are available
 for patterns. Clone a given Git URL into `.reference` and pull latest before using
 it.
 
