@@ -9,9 +9,6 @@ in `docs/adr/`, and active work in GitHub Issues.
   package script. Never use `bun test`.
 - Use the narrowest meaningful verification while iterating. Merge-ready gates
   are `bun run format:check`, `lint`, `typecheck`, and `test`.
-- Changes to migrations, PostgreSQL configuration, or database access also run
-  `bun run db:verify` against the digest-pinned real PostgreSQL service.
-  In-memory substitutes do not certify PostgreSQL behavior.
 - Run `bun run format` before a PR and include only files owned by the branch.
 - User-visible web changes require the relevant `@osfo/web` test, a production
   build, and inspection in the browser development instance. Record the exact
