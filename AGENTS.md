@@ -48,15 +48,13 @@ it.
 
 - `packages/ui`: shared React DOM, Tailwind CSS, and shadcn/ui components,
   styles, hooks, and UI utilities. Every consumable path has an explicit
-  package export. These artifacts are not native-mobile components.
-- `packages/api`: schema-first HTTP endpoint groups, generated client behavior,
-  handlers, and Effect-native domain interfaces. It contains no Node process
-  construction, database access, or Agent Application configuration.
-- `packages/db`: Drizzle schema and migrations, PostgreSQL connection ownership,
-  database adapters, and database integration test support. It exposes domain
-  interfaces rather than raw database clients. Migrations do not contain product
-  behavior.
-- `apps/{web}`: product composition roots.
+  package export. Keep Osfo-specific behavior in `apps/web`.
+- `apps/worker`: Osfo product behavior, Cloudflare runtime composition, provider
+  adapters, and authority-specific D1, Agent SQLite, and R2 modules.
+- `apps/web`: Osfo-specific web behavior and the browser composition root.
+- Extract a workspace package only after a second consumer or supported public
+  interface proves the seam. Create `packages/api` only when Worker and web share
+  a real wire contract.
 
 ## Agent skills
 

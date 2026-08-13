@@ -1,47 +1,31 @@
 # Osfo Context
 
-Osfo is the TypeScript integration library around Oz's selected Agent Harness.
-Oz is the product and owns its product-specific rules.
+Osfo is a personal AI agent product for non-technical users. Osfo owns the
+product rules, application behavior, and public identity described here.
 
 ## Language
 
 **Osfo**:
-A TypeScript library that translates one selected Agent Harness into Effect
-and contains reusable agent-integration behavior needed by Oz. Osfo v1 does not
-promise harness portability or reproduce the selected harness's generic runtime.
-_Avoid_: Agent builder, universal harness abstraction, TryAgent backend, product application
+The WhatsApp-only v1 personal agent product. Each User has one durable, private
+Osfo Agent with memory, files, skills, triggers, and connected accounts, while
+task compute is temporary and isolated. Later messaging channels are separate
+product efforts.
+_Avoid_: Integration library, agent builder, universal harness abstraction,
+reference application
 
 **Agent Harness**:
 The selected third-party TypeScript framework that owns generic model and tool
-loops, context behavior, delegation, and any native execution semantics Oz
-adopts. Oz and Osfo extend or translate it without rebuilding the same machinery.
+loops, context behavior, delegation, and any native execution semantics Osfo
+adopts. Osfo extends or translates it without rebuilding the same machinery.
 _Avoid_: Model provider, Osfo runtime, Messaging Adapter
 
-**Agent Application**:
-A deployable agent product that selects, configures, and constrains reusable
-Osfo modules and Adapter implementations for a particular use case. TryAgent
-and Oz are separate Agent Applications.
-_Avoid_: Product Composition, Osfo instance, Osfo product
-
-**Reference Agent Application**:
-An Agent Application maintained to prove and document how reusable Osfo
-modules compose, rather than to serve as the product being sold.
-_Avoid_: Reference Product Composition, Osfo core, throwaway sample
-
-**Oz**:
-The WhatsApp-only v1 personal agent product for non-technical users. Each user
-has a durable, private identity, memory, files, skills, triggers, and connected
-accounts, while task compute is temporary and isolated. Later messaging
-channels are separate product efforts.
-_Avoid_: Osfo, TryAgent, Reference Agent Application, dedicated Agent Box
-
 **Registration Turn**:
-An ephemeral pre-registration interaction that presents the same visible Oz
+An ephemeral pre-registration interaction that presents the same visible Osfo
 persona to an unregistered visitor and conducts the natural part of a
 Registration Dialogue. It has no stable AgentId, canonical Thread, User memory,
 tools, entitlements, or external authority and is deleted after registration or
 expiry.
-_Avoid_: Company Oz Agent, anonymous personal Agent, registration authority,
+_Avoid_: Company Osfo Agent, anonymous personal Agent, registration authority,
 Agent handoff
 
 **Production Workload Envelope**:
@@ -53,7 +37,7 @@ _Avoid_: Benchmark target, AgentRun throughput target, DAU target
 
 **Reference Workload Trace**:
 A versioned, reproducible incoming-message trace whose observed work mix and
-amplification represent production-shaped Oz behavior. Before beta evidence
+amplification represent production-shaped Osfo behavior. Before beta evidence
 exists, its declared assumptions derive from Plan mix and Usage Allowances.
 _Avoid_: Synthetic benchmark, worst-case workload
 
@@ -73,26 +57,26 @@ correctness and scaling behavior without inventing v1 latency or cost SLOs.
 _Avoid_: Production acceptance corpus, capacity promise
 
 **Bounded Beta Acceptance**:
-The production gate that permits Oz to serve only a declared limited cohort
+The production gate that permits Osfo to serve only a declared limited cohort
 after every beta correctness, reliability, and cost requirement passes.
 _Avoid_: Public launch, prototype acceptance, partial production pass
 
 **Scale-Qualified Public Launch**:
-The production gate that permits Oz to remove its beta cohort bound only after
+The production gate that permits Osfo to remove its beta cohort bound only after
 every declared scale, retained-corpus, recovery, and cost requirement passes.
 _Avoid_: Bounded beta, best-effort launch, benchmark completion
 
-**Cold Oz Agent Activation**:
-An Oz Agent request handled by a new observed runtime activation identity. First
+**Cold Osfo Agent Activation**:
+An Osfo Agent request handled by a new observed runtime activation identity. First
 use, idle eviction, deployment, and fault recovery remain separate cold causes.
 _Avoid_: Slow request, inactive User, cold database query
 
-**Warm Oz Agent Activation**:
-An Oz Agent request handled by the same observed runtime activation identity as
+**Warm Osfo Agent Activation**:
+An Osfo Agent request handled by the same observed runtime activation identity as
 its preceding request.
 _Avoid_: Fast request, cached response, recently active User
 
-**Oz Contribution Margin**:
+**Osfo Contribution Margin**:
 Subscription revenue less attributable platform, vendor, payment, observability,
 support, and expected GM Summon costs for the same cohort and allowance periods.
 _Avoid_: Vendor allowance, gross revenue, per-request model cost
@@ -105,7 +89,7 @@ evaluation is separate.
 _Avoid_: Useful Completion, successful AgentRun, terminal response, model score
 
 **Model Quality Gate**:
-The release verdict for one complete Oz behavior configuration, evaluated with
+The release verdict for one complete Osfo behavior configuration, evaluated with
 independent journey and risk-class floors plus a non-regression comparison. It
 remains separate from Good Root Outcome, Delivery, and system error budgets.
 _Avoid_: Model benchmark, combined quality score, production SLO
@@ -147,44 +131,44 @@ _Avoid_: Single-threaded process, one worker per agent
 **Channel Identity**:
 A messaging-provider-asserted identifier for one sender, such as a WhatsApp
 sender ID. It authenticates the channel interaction but is not the user's
-durable Oz ownership identity or sole recovery credential; an equal phone
+durable Osfo ownership identity or sole recovery credential; an equal phone
 number in a Phone Account remains separate verified evidence.
 _Avoid_: User, Account, Phone Account
 
 **User**:
-The durable Oz identity for one registered person, created only after User
-Registration verifies its first Phone Account. A User owns one Oz Agent in v1
+The durable Osfo identity for one registered person, created only after User
+Registration verifies its first Phone Account. A User owns one Osfo Agent in v1
 and scopes ownership, admission, fairness, allowances, entitlements, and memory.
 _Avoid_: Account, Channel Identity, Principal
 
 **Account**:
 A reusable authentication method linked to a User, such as SMS-verified phone,
-passwordless email, federated identity, or passkey. Oz v1 implements exactly one
+passwordless email, federated identity, or passkey. Osfo v1 implements exactly one
 Phone Account per User. Other Account types are later product decisions; none
 is the User or a messaging identity.
 _Avoid_: User, Channel Binding, subscription, Stripe customer
 
 **Phone Account**:
 An Account established by verifying control of one E.164 phone number through
-an SMS challenge. Oz v1 requires exactly one active Phone Account, which may be
+an SMS challenge. Osfo v1 requires exactly one active Phone Account, which may be
 replaced but not removed without a Deletion Case.
 _Avoid_: User, Channel Identity, WhatsApp account, phone-number primary key
 
 **User Registration**:
 The transition that creates a User after an SMS challenge verifies its first
-Phone Account. It also establishes its AuthSession, Oz Agent, Thread, and Free
+Phone Account. It also establishes its AuthSession, Osfo Agent, Thread, and Free
 Plan without deriving their identities from the phone number.
 _Avoid_: Provisional User, Channel Binding, paid subscription
 
 **Registration Invitation**:
 A finite-lived invitation issued to an unbound Channel Identity or web
 onboarding flow. It owns a Registration Token digest, expiry, and consumption
-state and ends only as Consumed or Expired, but creates no User, Oz Agent,
+state and ends only as Consumed or Expired, but creates no User, Osfo Agent,
 Thread, memory, or allowance.
 _Avoid_: Provisional User, Registration Token, anonymous conversation
 
 **Registration Dialogue**:
-The temporary pre-registration exchange presented as Oz to an unbound Channel
+The temporary pre-registration exchange presented as Osfo to an unbound Channel
 Identity under one Registration Invitation. It contains at most one natural
 Registration Turn, is not a Thread, User memory, or authority source, and is
 deleted after registration or expiry.
@@ -192,7 +176,7 @@ _Avoid_: Anonymous Thread, Provisional User, Agent handoff
 
 **Registration Token**:
 The high-entropy secret carried in `/verify/<token>` that continues one
-Registration Invitation. Oz stores only its digest; it is not an Account,
+Registration Invitation. Osfo stores only its digest; it is not an Account,
 AuthSession, or reusable authentication credential.
 _Avoid_: UserId, OTP, permanent bearer token
 
@@ -217,7 +201,7 @@ unregistered contacts product access.
 _Avoid_: Free trial, provisional access, unlimited free tier
 
 **Adventurer Plan**:
-The sole paid Subscription at Oz v1 launch. It grants recurring, sensitive,
+The sole paid Subscription at Osfo v1 launch. It grants recurring, sensitive,
 and higher-cost capabilities within bounded monthly Usage Allowances.
 _Avoid_: Premium Plan, Pro Plan, unlimited plan, usage add-on
 
@@ -228,13 +212,13 @@ overage charge.
 _Avoid_: Plan Entitlement, message quota, pay-as-you-go balance
 
 **Integration Connection**:
-Revocable authority for Oz to read or act through a third-party product such as
+Revocable authority for Osfo to read or act through a third-party product such as
 Gmail or Google Calendar. It remains separate from an Account even when one
 OAuth consent flow explicitly establishes both.
 _Avoid_: Account, implicit OAuth scope, Approval
 
 **Model Access Policy**:
-The Oz-owned rule that chooses a managed model route for a request and applies
+The Osfo-owned rule that chooses a managed model route for a request and applies
 its Plan and cost budget. V1 does not expose model choice or a Provider
 Connection.
 _Avoid_: Model Adapter, provider credential, hard-coded model
@@ -301,30 +285,30 @@ command identity, evidence type, resource, typed result, reason, and time. It
 remains outside the Thread and never contains authentication secrets.
 _Avoid_: Thread history, operational log, raw credential record
 
-**Oz Agent**:
+**Osfo Agent**:
 The durable personal agent owned by exactly one User. It has one stable AgentId
 and owns one canonical Thread in v1.
 _Avoid_: User, Agent Harness, Durable Object instance
 
 **AgentId**:
-The stable internal identity of one Oz Agent, minted when the Agent is created
+The stable internal identity of one Osfo Agent, minted when the Agent is created
 during User Registration. It is not derived from an Account or Channel Identity.
 _Avoid_: UserId, ThreadId, provider account ID
 
 **Thread**:
-The canonical ordered conversational scope owned by exactly one Oz Agent, with
+The canonical ordered conversational scope owned by exactly one Osfo Agent, with
 Think Session history as its sole conversational authority. Accounts, channels,
 and devices do not define competing histories.
 _Avoid_: Account timeline, device thread
 
 **ThreadEvent**:
-The historical Osfo-owned per-Thread event record. Oz v1 does not maintain a
+The historical Osfo-owned per-Thread event record. Osfo v1 does not maintain a
 parallel ThreadEvent stream beside canonical Think Session history.
-_Avoid_: Think Session record, current Oz conversation authority
+_Avoid_: Think Session record, current Osfo conversation authority
 
 **UserMessage**:
 One immutable client-submitted input accepted into a Thread and identified by an
-Oz-owned UserMessageId. Its identity is distinct from its Channel Message Key,
+Osfo-owned UserMessageId. Its identity is distinct from its Channel Message Key,
 Think Submission, and Acceptance Receipt.
 
 **Channel Message Key**:
@@ -335,7 +319,7 @@ _Avoid_: UserMessageId, Think SubmissionId, global provider message ID
 
 **UserMessageAppended**:
 The historical ThreadEvent recording that one UserMessage was durably added to
-a Thread. Oz v1 represents the accepted message in Think Session history and
+a Thread. Osfo v1 represents the accepted message in Think Session history and
 correlates it through its Acceptance Receipt instead.
 
 **Think Submission**:
@@ -343,7 +327,7 @@ The Think-owned bounded execution of one interactive or proactive turn. One
 accepted UserMessage creates exactly one stable Think Submission; Think owns its
 lifecycle, serialization, idempotency, cancellation, and crash recovery.
 Duration alone does not create another work identity or require a Workflow.
-_Avoid_: AgentRun, Durable Object activation, Oz execution record
+_Avoid_: AgentRun, Durable Object activation, Osfo execution record
 
 **Scheduled Task**:
 An Agent-managed durable trigger for one future or recurring callback. Each
@@ -358,8 +342,8 @@ or Thread ordering authority.
 _Avoid_: Think Submission, Scheduled Task, Cloudflare Queue, Workflow
 
 **Cloudflare Queue Message**:
-An at-least-once system-wide asynchronous delivery for work outside one Oz
-Agent's local execution. Oz v1 introduces it only for a concrete cross-Agent or
+An at-least-once system-wide asynchronous delivery for work outside one Osfo
+Agent's local execution. Osfo v1 introduces it only for a concrete cross-Agent or
 system-wide workload, never for interactive admission or Thread ordering.
 _Avoid_: Agent Queue Task, Think Submission, Thread event
 
@@ -394,20 +378,20 @@ evidence and conflicting evidence remain explicit.
 _Avoid_: Delivery Attempt result, Fiber status, Thread history
 
 **ThreadPosition**:
-The historical position of one committed ThreadEvent. Oz v1 uses Think Session
+The historical position of one committed ThreadEvent. Osfo v1 uses Think Session
 ordering rather than allocating a parallel ThreadEvent sequence.
 _Avoid_: Think Session order, timestamp order, provider sequence
 
 **ThreadCursor**:
-The historical resume token for a ThreadEvent projection. Oz v1 clients resume
-through Think Session rather than an Oz-owned ThreadEvent cursor.
+The historical resume token for a ThreadEvent projection. Osfo v1 clients resume
+through Think Session rather than an Osfo-owned ThreadEvent cursor.
 _Avoid_: Think Session resume state, provider cursor, pagination token
 
 **Thread Snapshot**:
-The historical client projection derived from canonical ThreadEvents. Oz v1
+The historical client projection derived from canonical ThreadEvents. Osfo v1
 does not maintain this projection beside Think Session history.
 
-**Oz Memory System**:
+**Osfo Memory System**:
 The complete product capability that combines a User's Thread Memory and
 Knowledge Base to preserve continuity and personalize future work. The model's
 context window is a temporary projection of this system, not a durable memory
@@ -428,7 +412,7 @@ compaction remain Thread Memory unless useful knowledge is promoted from them.
 _Avoid_: Thread history, context window, product database
 
 **Knowledge Space**:
-The private scope that contains one Oz Agent's Knowledge Base and all of its
+The private scope that contains one Osfo Agent's Knowledge Base and all of its
 canonical sources, claims, schemas, projections, exports, and derived retrieval
 generations. Its opaque identity is never supplied by a caller or the model.
 _Avoid_: Supermemory container, R2 prefix, UserId
@@ -481,12 +465,12 @@ _Avoid_: Memory Claim forgetting, hidden message, account deletion
 
 **Thread Reset**:
 The User-requested removal of all Thread content and compactions while
-preserving the User, Oz Agent, AgentId, and canonical Thread identity.
+preserving the User, Osfo Agent, AgentId, and canonical Thread identity.
 _Avoid_: new Thread, account deletion, context compaction
 
 **Schema Pack**:
 The versioned vocabulary that defines the entity types, fields, relationships,
-and validation rules available in one User's Knowledge Base. Oz supplies a small
+and validation rules available in one User's Knowledge Base. Osfo supplies a small
 core vocabulary and the User may extend it without creating another physical
 memory store.
 _Avoid_: database schema, prompt, unvalidated custom field
@@ -528,9 +512,9 @@ _Avoid_: Completed output, client disconnect
 
 **AgentRun**:
 The historical Osfo-owned durable execution lifecycle for one bounded unit of
-work. Oz v1 does not create AgentRuns or use them as recovery authority; Think
+work. Osfo v1 does not create AgentRuns or use them as recovery authority; Think
 Submission owns that lifecycle.
-_Avoid_: Think Submission, current Oz execution record
+_Avoid_: Think Submission, current Osfo execution record
 
 **AgentRunSucceeded**:
 The terminal ThreadEvent stating that one AgentRun completed successfully.
@@ -597,7 +581,7 @@ Osfo-owned values through ModelCallExecutor. It owns protocol translation and
 provider conformance, but never AgentRun lifecycle, retry policy, canonical
 Thread state, credentials in durable records, or provider selection policy.
 OpenRouter is one Model Adapter available to an Agent Application, not an Osfo
-runtime dependency or the identity of Oz.
+runtime dependency or the identity of Osfo.
 _Avoid_: Agent Runtime, model router, Agent Application, provider SDK wrapper
 
 **ToolCall**:
@@ -818,7 +802,7 @@ _Avoid_: Agent identity, Thread
 
 **Messaging Adapter**:
 A reusable Adapter implementation that translates one external messaging
-transport to and from Oz's transport-neutral conversation semantics. It does
+transport to and from Osfo's transport-neutral conversation semantics. It does
 not own the Thread or agent identity.
 _Avoid_: Channel Edge, messaging provider, conversation store
 
@@ -848,7 +832,7 @@ _Avoid_: Native Thread Transport, Web Adapter, OpenAI-Compatible Adapter,
 Messaging Adapter
 
 **Acceptance Receipt**:
-Immutable evidence that Oz durably accepted one Channel Message Key as one
+Immutable evidence that Osfo durably accepted one Channel Message Key as one
 UserMessage and correlated its UserMessageId with one Think SubmissionId.
 Identical retries return the same receipt, and ingress returns success only when
 both Think acceptance and this mapping are recoverable.

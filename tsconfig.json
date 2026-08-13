@@ -41,6 +41,7 @@
   "references": [
     { "path": "./tools/oxlint" },
     { "path": "./packages/ui" },
+    { "path": "./apps/worker" },
     { "path": "./apps/web" }
   ]
 }

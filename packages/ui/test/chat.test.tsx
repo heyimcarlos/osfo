@@ -14,12 +14,13 @@ describe("Chat", () => {
         onDraftChange={() => undefined}
         onSubmit={() => undefined}
         status="Ready"
-        title="Oz"
+        title="Chat"
       />,
     );
 
     expect(html).toContain('data-slot="chat"');
     expect(html).toContain("How can I help?");
+    expect(html).toContain('placeholder="Write a message"');
     expect(html).toContain("Plan my day.");
     expect(html).toContain("Ready");
   });

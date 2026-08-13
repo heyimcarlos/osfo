@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "osfo-test",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "OSFO_STAGE": "test",
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "OSFO_AGENT", "class_name": "OsfoAgent" },
+      {
+        "name": "REGISTRATION_DIALOGUE",
+        "class_name": "RegistrationDialogue",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["OsfoAgent", "RegistrationDialogue"],
+    },
+  ],
+  "workflows": [
+    {
+      "binding": "EXECUTION_UNIT_WORKFLOW",
+      "name": "osfo-test-execution-unit",
+      "class_name": "ExecutionUnitWorkflow",
+    },
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 1 },
+  },
+}
