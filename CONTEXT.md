@@ -22,7 +22,7 @@ _Avoid_: Model provider, Osfo runtime, Messaging Adapter
 **Registration Turn**:
 An ephemeral pre-registration interaction that presents the same visible Osfo
 persona to an unregistered visitor and conducts the natural part of a
-Registration Dialogue. It has no stable AgentId, canonical Thread, User memory,
+Registration Dialogue. It has no stable AgentId, Session, User memory,
 tools, entitlements, or external authority and is deleted after registration or
 expiry.
 _Avoid_: Company Osfo Agent, anonymous personal Agent, registration authority,
@@ -122,12 +122,6 @@ Workflow Milestone, or terminal outcome committed after message acceptance.
 Delivery timing remains a separate measurement.
 _Avoid_: Heartbeat, non-durable model token, transport notification
 
-**Single-Thread Agent**:
-An agent reached through one canonical ordered conversation, independent of the
-devices used to participate in it. The term describes conversational identity,
-not compute concurrency.
-_Avoid_: Single-threaded process, one worker per agent
-
 **Channel Identity**:
 A messaging-provider-asserted identifier for one sender, such as a WhatsApp
 sender ID. It authenticates the channel interaction but is not the user's
@@ -156,23 +150,24 @@ _Avoid_: User, Channel Identity, WhatsApp account, phone-number primary key
 
 **User Registration**:
 The transition that creates a User after an SMS challenge verifies its first
-Phone Account. It also establishes its AuthSession, Osfo Agent, Thread, and Free
-Plan without deriving their identities from the phone number.
+Phone Account. It also establishes its AuthSession, Osfo Agent, primary
+conversation route, primary Session, and Free Plan without deriving their
+identities from the phone number.
 _Avoid_: Provisional User, Channel Binding, paid subscription
 
 **Registration Invitation**:
 A finite-lived invitation issued to an unbound Channel Identity or web
 onboarding flow. It owns a Registration Token digest, expiry, and consumption
 state and ends only as Consumed or Expired, but creates no User, Osfo Agent,
-Thread, memory, or allowance.
+Session, memory, or allowance.
 _Avoid_: Provisional User, Registration Token, anonymous conversation
 
 **Registration Dialogue**:
 The temporary pre-registration exchange presented as Osfo to an unbound Channel
 Identity under one Registration Invitation. It contains at most one natural
-Registration Turn, is not a Thread, User memory, or authority source, and is
+Registration Turn, is not a Session, User memory, or authority source, and is
 deleted after registration or expiry.
-_Avoid_: Anonymous Thread, Provisional User, Agent handoff
+_Avoid_: Anonymous Session, Provisional User, Agent handoff
 
 **Registration Token**:
 The high-entropy secret carried in `https://osfo.ai/verify/<token>` that continues
@@ -226,7 +221,7 @@ _Avoid_: Model Adapter, provider credential, hard-coded model
 **AuthSession**:
 Short-lived, renewable authentication state through which a web client acts as
 one User. It is Active until it ends as Expired or Revoked; rotating renewal
-credentials cannot own Thread identity, Channel identity, or device identity.
+credentials cannot own Session identity, Channel identity, or device identity.
 _Avoid_: Channel Binding, Account, permanent bearer token
 
 **User Suspension**:
@@ -256,10 +251,10 @@ User Registration, Accounts, Channel Bindings, or AuthSessions.
 _Avoid_: Account, registration state, identity revocation
 
 **Problem**:
-One unresolved User goal or obstacle in a Thread that groups its distinct
+One unresolved User goal or obstacle in a Session that groups its distinct
 Resolution Attempts. It references evidence in Think without copying the
-conversation or owning Thread history.
-_Avoid_: Thread, model topic, support ticket
+conversation or owning Session history.
+_Avoid_: Session, model topic, support ticket
 
 **Resolution Attempt**:
 One distinct proposed or performed solution for a Problem with durable evidence
@@ -269,8 +264,8 @@ _Avoid_: Model Call Attempt, Delivery Attempt, unsupported model judgment
 
 **GM Summon**:
 A paid User's explicitly confirmed request for privileged human escalation
-after three failed Resolution Attempts for one open Problem in the same Thread.
-At most one GM Summon may be active per Thread, and it promises no response time.
+after three failed Resolution Attempts for one open Problem in the same Session.
+At most one GM Summon may be active per Session, and it promises no response time.
 _Avoid_: HELP response, automatic escalation, support-time guarantee
 
 **Deletion Case**:
@@ -282,32 +277,32 @@ _Avoid_: User Suspension, Account removal, immediate hard delete
 **Security Audit Fact**:
 An immutable record of an identity or authority transition, including its actor,
 command identity, evidence type, resource, typed result, reason, and time. It
-remains outside the Thread and never contains authentication secrets.
-_Avoid_: Thread history, operational log, raw credential record
+remains outside Session Memory and never contains authentication secrets.
+_Avoid_: Session history, operational log, raw credential record
 
 **Osfo Agent**:
 The durable personal agent owned by exactly one User. It has one stable AgentId
-and owns one canonical Thread in v1.
+and can own several conversation routes and Sessions.
 _Avoid_: User, Agent Harness, Durable Object instance
 
 **AgentId**:
 The stable internal identity of one Osfo Agent, minted when the Agent is created
 during User Registration. It is not derived from an Account or Channel Identity.
-_Avoid_: UserId, ThreadId, provider account ID
+_Avoid_: UserId, SessionId, provider account ID
 
-**Thread**:
-The canonical ordered conversational scope owned by exactly one Osfo Agent, with
-Think Session history as its sole conversational authority. Accounts, channels,
-and devices do not define competing histories.
-_Avoid_: Account timeline, device thread
+**Conversation Route**:
+A stable conversational address owned by one Osfo Agent. Each route has exactly
+one current Session and can have historical Sessions.
+_Avoid_: Session, Account, device
 
-**ThreadEvent**:
-The historical Osfo-owned per-Thread event record. Osfo v1 does not maintain a
-parallel ThreadEvent stream beside canonical Think Session history.
-_Avoid_: Think Session record, current Osfo conversation authority
+**Session**:
+The durable ordered conversation history for one conversation route. A Session
+survives context compaction and becomes historical only after an explicit reset
+or another product action replaces it as the route's current Session.
+_Avoid_: Model context window, fixed time window, message topic
 
 **UserMessage**:
-One immutable client-submitted input accepted into a Thread and identified by an
+One immutable client-submitted input accepted into a Session and identified by an
 Osfo-owned UserMessageId. Its identity is distinct from its Channel Message Key,
 Think Submission, and Acceptance Receipt.
 
@@ -318,8 +313,8 @@ becoming the UserMessageId.
 _Avoid_: UserMessageId, Think SubmissionId, global provider message ID
 
 **UserMessageAppended**:
-The historical ThreadEvent recording that one UserMessage was durably added to
-a Thread. Osfo v1 represents the accepted message in Think Session history and
+The historical event name for recording that one UserMessage was durably added
+to a conversation. Osfo v1 represents the accepted message in Session history and
 correlates it through its Acceptance Receipt instead.
 
 **Think Submission**:
@@ -338,26 +333,26 @@ _Avoid_: Raw alarm, Think Submission, Workflow
 **Agent Queue Task**:
 An Agent-local durable callback for short, immediate, sequential,
 non-conversational work. It is not a multi-step process, cross-Agent transport,
-or Thread ordering authority.
+or Session ordering authority.
 _Avoid_: Think Submission, Scheduled Task, Cloudflare Queue, Workflow
 
 **Cloudflare Queue Message**:
 An at-least-once system-wide asynchronous delivery for work outside one Osfo
 Agent's local execution. Osfo v1 introduces it only for a concrete cross-Agent or
-system-wide workload, never for interactive admission or Thread ordering.
-_Avoid_: Agent Queue Task, Think Submission, Thread event
+system-wide workload, never for interactive admission or Session ordering.
+_Avoid_: Agent Queue Task, Think Submission, Session event
 
 **Delivery**:
 The durable obligation to send one committed Think response through a Channel
 Binding. It owns one or more ordered Delivery Parts, and its ledger remains
 authoritative after delivery work completes; a Delivery problem never changes
-the committed response in the Thread.
+the committed response in the Session.
 _Avoid_: Think Submission, provider message, managed Fiber
 
 **Delivery Part**:
 One stable ordered send unit within a Delivery. It owns one or more Delivery
 Attempts, while provider message identities belong to those attempts.
-_Avoid_: Separate Delivery, Delivery Attempt, Thread message
+_Avoid_: Separate Delivery, Delivery Attempt, Session message
 
 **Managed Delivery Fiber**:
 The idempotent Agent-managed job that sends one Delivery's ordered Delivery
@@ -375,121 +370,80 @@ _Avoid_: Delivery, provider status webhook, blind retry
 A distinct provider-reported observation correlated to a Delivery Attempt by
 its provider message identity. Confirmed progress never moves backward; failure
 evidence and conflicting evidence remain explicit.
-_Avoid_: Delivery Attempt result, Fiber status, Thread history
-
-**ThreadPosition**:
-The historical position of one committed ThreadEvent. Osfo v1 uses Think Session
-ordering rather than allocating a parallel ThreadEvent sequence.
-_Avoid_: Think Session order, timestamp order, provider sequence
-
-**ThreadCursor**:
-The historical resume token for a ThreadEvent projection. Osfo v1 clients resume
-through Think Session rather than an Osfo-owned ThreadEvent cursor.
-_Avoid_: Think Session resume state, provider cursor, pagination token
-
-**Thread Snapshot**:
-The historical client projection derived from canonical ThreadEvents. Osfo v1
-does not maintain this projection beside Think Session history.
+_Avoid_: Delivery Attempt result, Fiber status, Session history
 
 **Osfo Memory System**:
-The complete product capability that combines a User's Thread Memory and
-Knowledge Base to preserve continuity and personalize future work. The model's
-context window is a temporary projection of this system, not a durable memory
-store.
-_Avoid_: Knowledge Base, context window, memory provider
+The complete product capability that combines Native Memory and the Knowledge
+Base to preserve continuity and personalize future work. A model context window
+is a temporary view of this system, not durable memory.
+_Avoid_: Knowledge Base, model context window, MemoryProvider
 
-**Thread Memory**:
-The Thread-scoped conversational record and working state needed to continue the
-canonical Think Session conversation, including messages, tool interactions,
-and bounded context projections. Knowledge promoted for durable personal recall
-belongs in the Knowledge Base instead.
-_Avoid_: Knowledge Base, user profile, model context
+**Native Memory**:
+The memory owned by one Osfo Agent. It contains Core Memory, Session Memory, and
+Session Recall.
+_Avoid_: Knowledge Base, MemoryProvider index, model context window
+
+**Core Memory**:
+The bounded Agent-wide memory included in every turn. It contains User Context
+and Agent Notes.
+_Avoid_: Session summary, Knowledge Base, provider profile
+
+**User Context**:
+The Agent's bounded and user-readable working model of the User's current
+identity, durable preferences, communication style, and standing constraints.
+It can contain direct facts and reasonable durable inferences.
+_Avoid_: unquestionable truth record, full User profile, Session transcript
+
+**Agent Notes**:
+The Agent's bounded and user-readable working memory for current goals,
+commitments, environment facts, and continuity that should be visible in every
+turn.
+_Avoid_: hidden reasoning, task log, Session transcript
+
+**Session Memory**:
+The messages, human-visible tool interactions, branches, and compaction overlays
+owned by a Session. The Session persists while its bounded context view rolls
+forward.
+_Avoid_: Core Memory, Knowledge Base, model context window
+
+**Session Recall**:
+The model-invoked search of current and historical Session Memory for exact or
+lexical conversation evidence.
+_Avoid_: automatic every-turn retrieval, Knowledge Base recall, provider search
 
 **Knowledge Base**:
-The User's durable second brain containing learned memories and connected
-knowledge sources used for recall and personalization. Conversation history and
-compaction remain Thread Memory unless useful knowledge is promoted from them.
-_Avoid_: Thread history, context window, product database
+The User-scoped semantic memory used for broad personalization and
+query-relevant recall across the User's Sessions and routes. It is evidence for
+the Agent, not the canonical record of what happened.
+_Avoid_: Session transcript, Core Memory, product database
 
-**Knowledge Space**:
-The private scope that contains one Osfo Agent's Knowledge Base and all of its
-canonical sources, claims, schemas, projections, exports, and derived retrieval
-generations. Its opaque identity is never supplied by a caller or the model.
-_Avoid_: Supermemory container, R2 prefix, UserId
+**MemoryProvider**:
+The replaceable external capability that maintains and recalls the Knowledge
+Base from committed conversation updates. Provider failure never blocks normal
+conversation.
+_Avoid_: Native Memory, model provider, canonical truth store
 
-**Knowledge Source**:
-An addressable item of evidence in a User's Knowledge Base, such as a Thread
-message, file, email, page, or action receipt. It preserves origin and time so a
-Memory Claim can be inspected, corrected, exported, or deleted without making a
-derived retrieval result authoritative.
-_Avoid_: Memory Claim, search result, copied Thread
+**SupermemoryMemoryProvider**:
+The v1 MemoryProvider adapter. It maps `UserId` to the provider permission scope
+and `SessionId` to the provider conversation identity without exposing provider
+SDK types to Osfo callers.
+_Avoid_: MemoryProvider interface, canonical memory store, generic document API
 
-**Memory Claim**:
-An addressable assertion promoted into a User's Knowledge Base with provenance,
-current status, and one trust level: Explicit when the User directly supplied or
-requested it, Observed when clear source evidence supports it, or Inferred when
-it is an uncertain synthesis. An Inferred claim remains a candidate until it is
-confirmed, repeated, or reconciled, and only an Explicit claim can become a
-durable instruction without confirmation.
-_Avoid_: Knowledge Source, model assumption, Supermemory memory
+**Forget Knowledge**:
+The User-requested removal of a remembered conclusion from Core Memory and the
+Knowledge Base while preserving the original Session transcript.
+_Avoid_: Delete Session, message deletion, account deletion
 
-**Core Profile**:
-A small, bounded, user-readable projection of current Memory Claims selected for
-frequent personalization. It is rebuilt from the Knowledge Base and never
-becomes the authority for a claim.
-_Avoid_: user profile database, context window, canonical memory file
-
-**Memory Suppression Marker**:
-The opaque record left when a User forgets a Memory Claim. It prevents the same
-claim from being extracted again without retaining its readable content or
-deleting the Knowledge Source that once supported it.
-_Avoid_: soft-deleted memory, source deletion, correction history
-
-**Knowledge Export**:
-A portable User-readable and machine-readable package built from the canonical
-Thread and Knowledge Base. It contains source files and provenance but excludes
-provider-owned indexes and other rebuildable retrieval data.
-_Avoid_: database backup, Supermemory export, temporary download link
-
-**Erasure Receipt**:
-A content-free durable fact that a Message Redaction, source deletion, Thread
-Reset, or account deletion removed named private data. Recovery reapplies it
-before restored state can serve work, so a backup cannot revive erased content.
-_Avoid_: deleted content, Security Audit Fact, backup record
-
-**Message Redaction**:
-The User-requested removal of one Thread message's readable content and every
-derived compaction, Memory Claim, and retrieval record. It preserves only an
-opaque structural tombstone needed for Thread ordering and receipt integrity.
-_Avoid_: Memory Claim forgetting, hidden message, account deletion
-
-**Thread Reset**:
-The User-requested removal of all Thread content and compactions while
-preserving the User, Osfo Agent, AgentId, and canonical Thread identity.
-_Avoid_: new Thread, account deletion, context compaction
-
-**Schema Pack**:
-The versioned vocabulary that defines the entity types, fields, relationships,
-and validation rules available in one User's Knowledge Base. Osfo supplies a small
-core vocabulary and the User may extend it without creating another physical
-memory store.
-_Avoid_: database schema, prompt, unvalidated custom field
-
-**Context Projection**:
-A versioned, rebuildable Thread-scoped derivation of canonical Think Session
-history used to assemble bounded model context. It never replaces canonical
-history or becomes Think Submission recovery authority.
-_Avoid_: RuntimeCheckpointRef, canonical summary, memory record
-
-**ContextProjectionRef**:
-An immutable reference identifying the exact Context Projection generation used
-as one bounded model evaluation's historical base.
-_Avoid_: RuntimeCheckpointRef, admission-time snapshot, mutable context pointer
+**Delete Session**:
+The User-requested permanent deletion of one Session from Native Memory and the
+Knowledge Base. Deleting a current Session first creates its replacement for the
+same route.
+_Avoid_: New Session, Forget Knowledge, context compaction
 
 **AgentEvent**:
 An event emitted while an AgentRun executes. An AgentEvent becomes a
-ThreadEvent only when it represents a durable conversational fact.
-_Avoid_: ThreadEvent, provider event
+Session event only when it represents a durable conversational fact.
+_Avoid_: Session history, provider event
 
 **AssistantOutput**:
 One identified, client-visible assistant response attempt within an AgentRun.
@@ -497,16 +451,16 @@ It terminates as completed or interrupted; a retry is a new AssistantOutput.
 _Avoid_: Provider response, final result, output chunk
 
 **AssistantOutputAppended**:
-A ThreadEvent recording a committed fragment added to one AssistantOutput.
+A historical event name for a committed fragment added to one AssistantOutput.
 _Avoid_: AssistantOutputChunk, provider delta
 
 **AssistantOutputCompleted**:
-The terminal ThreadEvent stating that one AssistantOutput finished
+The terminal event stating that one AssistantOutput finished
 successfully.
-_Avoid_: Thread completed, AgentRun completed
+_Avoid_: Session completed, AgentRun completed
 
 **AssistantOutputInterrupted**:
-The terminal ThreadEvent stating that one AssistantOutput cannot continue,
+The terminal event stating that one AssistantOutput cannot continue,
 together with its cause.
 _Avoid_: Completed output, client disconnect
 
@@ -517,10 +471,10 @@ Submission owns that lifecycle.
 _Avoid_: Think Submission, current Osfo execution record
 
 **AgentRunSucceeded**:
-The terminal ThreadEvent stating that one AgentRun completed successfully.
+The terminal event stating that one AgentRun completed successfully.
 
 **AgentRunFailed**:
-The terminal ThreadEvent stating that one AgentRun failed with a normalized,
+The terminal event stating that one AgentRun failed with a normalized,
 client-safe cause.
 
 **Proactive AgentRun**:
@@ -536,7 +490,7 @@ atomically with its typed input and join membership and is independently
 dispatchable within the root run's delegation limits. It receives an immutable,
 versioned input contract and exposes one typed terminal outcome; its parent does
 not consume the child's internal interaction history or execution state. Its
-ModelCalls, ToolCalls, and assistant text are not canonical parent Thread
+ModelCalls, ToolCalls, and assistant text are not canonical parent Session
 conversation; only explicit child lifecycle facts may be promoted.
 _Avoid_: In-process task, continuation AgentRun, WorkflowInstance
 
@@ -579,7 +533,7 @@ A concrete integration that translates one Osfo-owned ModelCallAttempt into a
 provider protocol and normalizes provider observations and outcomes back into
 Osfo-owned values through ModelCallExecutor. It owns protocol translation and
 provider conformance, but never AgentRun lifecycle, retry policy, canonical
-Thread state, credentials in durable records, or provider selection policy.
+Session state, credentials in durable records, or provider selection policy.
 OpenRouter is one Model Adapter that Osfo can select, not an Osfo runtime
 dependency or the identity of Osfo.
 _Avoid_: Agent Runtime, model router, provider SDK wrapper
@@ -598,7 +552,7 @@ _Avoid_: Tool execution attempt, tool result, WorkflowInstance
 **Agent Runtime**:
 The authority-free decision module that examines a derived view of recorded
 AgentRun state and proposes one typed next step. It never invokes models,
-executes tools, or directly commits AgentRun lifecycle or canonical Thread
+executes tools, or directly commits AgentRun lifecycle or canonical Session
 state.
 _Avoid_: Agent provider, model provider, AgentRun manager, worker
 
@@ -679,7 +633,7 @@ _Avoid_: Bash terminal, AgentRun workspace, persistent workspace, subagent runti
 An isolated E2B execution environment owned by exactly one RunCode ToolCall.
 It never owns AgentRun lifecycle, recovery authority, durable waits, ChildJoin
 coordination, or authoritative artifacts.
-_Avoid_: Thread workspace, User workspace, worker environment, Agent Runtime
+_Avoid_: Session workspace, User workspace, worker environment, Agent Runtime
 
 **Sandbox Profile**:
 An immutable, versioned declaration of the sandbox capabilities, resource and
@@ -750,7 +704,8 @@ _Avoid_: Mutable summary, raw Action payload, approval hash
 **Client Content**:
 Client-safe content represented as bounded inline text or an immutable stored
 content reference carrying a stable ContentId, media type, byte length, and
-SHA-256 digest. Referenced bytes are retrieved under Thread authorization.
+SHA-256 digest. Referenced bytes are retrieved under User and Session
+authorization.
 _Avoid_: Provider file ID, expiring download URL, raw storage location
 
 **ContentId**:
@@ -766,7 +721,7 @@ _Avoid_: Action, network connection
 **Workflow**:
 An independently durable Cloudflare process whose steps, dependencies, waits,
 approvals, or retryable side effects matter. It has a stable WorkflowId and may
-invoke Think for bounded reasoning without owning Thread history or Think
+invoke Think for bounded reasoning without owning Session history or Think
 Submission lifecycle.
 _Avoid_: Think Submission, Agent Queue Task, Scheduled Task, long model response
 
@@ -780,53 +735,54 @@ The User-intent rule that selects when a terminal Workflow outcome creates a
 proactive Think Submission: Never follows no outcome, OnFailure follows only
 Failure, and Always follows Success, Failure, and Canceled. Every outcome is
 recorded first; enabled follow-up is the only path from the outcome into the
-Thread.
-_Avoid_: Workflow callback, resumed Think Submission, direct Thread write
+requesting Session.
+_Avoid_: Workflow callback, resumed Think Submission, direct Session write
 
 **Workflow Progress**:
 The Workflow-owned, nonterminal operational state of one Workflow. It remains
-outside the Thread and is inspected when a User asks for status.
-_Avoid_: Thread history, Workflow Outcome, Workflow Milestone
+outside Session Memory and is inspected when a User asks for status.
+_Avoid_: Session history, Workflow Outcome, Workflow Milestone
 
 **Workflow Milestone**:
 One of a small declared set of user-visible facts that a Workflow can reach
 before its terminal outcome. Each reached milestone creates at most one
-proactive Think Submission and never writes directly to the Thread.
-_Avoid_: Raw Workflow Progress, Workflow Outcome, direct Thread event
+proactive Think Submission and never writes directly to a Session.
+_Avoid_: Raw Workflow Progress, Workflow Outcome, direct Session event
 
 **Channel Endpoint**:
-An external messaging address through which a person reaches a Single-Thread
-Agent. The endpoint is a transport boundary, not the agent or its conversation.
-_Avoid_: Agent identity, Thread
+An external messaging address through which a person reaches an Osfo Agent. The
+endpoint is a transport boundary, not the Agent or its conversation.
+_Avoid_: Agent identity, Session
 
 **Messaging Adapter**:
 A reusable Adapter implementation that translates one external messaging
 transport to and from Osfo's transport-neutral conversation semantics. It does
-not own the Thread or agent identity.
+not own the Session or Agent identity.
 _Avoid_: Channel Edge, messaging provider, conversation store
 
 **AdapterId**:
 The stable identity of one Adapter configured in Osfo. It scopes conversation
 keys and routing, not conversational authority.
-_Avoid_: AdapterInstallationId, provider account ID, ThreadId
+_Avoid_: AdapterInstallationId, provider account ID, SessionId
 
 **ConversationKey**:
 An opaque, AdapterId-scoped identity for one conversation on an external
-protocol. Each `(AdapterId, ConversationKey)` maps to a separate Thread by
+protocol. Each `(AdapterId, ConversationKey)` maps to a separate Conversation Route by
 default.
-_Avoid_: ProviderConversationKey, provider thread ID, ThreadId
+_Avoid_: ProviderConversationKey, provider conversation ID, SessionId
 
-**Thread Binding**:
-Osfo's association from an AdapterId and ConversationKey to a Thread. Sharing or
-moving a Thread across Adapters requires an explicit binding decision.
+**Conversation Route Binding**:
+Osfo's association from an AdapterId and ConversationKey to a Conversation
+Route. Sharing or moving a route across Adapters requires an explicit binding
+decision.
 _Avoid_: Provider conversation, automatic account merge
 
 **Osfo API**:
-Osfo's direct HTTP interface for adding input to a Thread and observing its
-canonical ThreadEvents across live delivery and durable resume. It is the
-default interface for Osfo-owned clients, not an Adapter for an external
-protocol.
-_Avoid_: Native Thread Transport, Web Adapter, OpenAI-Compatible Adapter,
+Osfo's direct HTTP interface for adding input to a Conversation Route's current
+Session and observing Session history across live delivery and durable resume.
+It is the default interface for Osfo-owned clients, not an Adapter for an
+external protocol.
+_Avoid_: Native Session Transport, Web Adapter, OpenAI-Compatible Adapter,
 Messaging Adapter
 
 **Acceptance Receipt**:
@@ -849,5 +805,5 @@ _Avoid_: Acceptance Receipt, mutable status, provider response
 A reusable Adapter implementation that exposes selected Osfo behavior through
 OpenAI-compatible HTTP protocols for third-party clients and web interfaces.
 Compatibility does not make client-supplied history authoritative over a
-Thread.
+Session.
 _Avoid_: Web Messaging Adapter, canonical Osfo protocol

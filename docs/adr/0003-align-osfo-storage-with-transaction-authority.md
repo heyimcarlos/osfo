@@ -2,17 +2,19 @@
 
 Date: 2026-08-12
 
-Status: Accepted
+Status: Accepted, memory and restore rules superseded by ADR 0006
 
-Osfo v1 stores cross-Agent directory, identity, Subscription, and administration
-facts in D1; private Thread and Osfo product facts in each Agent's Durable Object
-SQLite database; large immutable content in R2; and rebuildable retrieval data
-in Supermemory. Drizzle owns schema declarations, typed queries, and generated
-migrations for D1 and Agent SQLite. No cross-store transaction exists.
+Osfo v1 stores cross-Agent identity, Agent routing, Subscription, and administration
+facts in D1; private Session and Osfo product facts in each Agent's Durable
+Object SQLite database; large immutable content in R2; and the User-scoped
+Knowledge Base through MemoryProvider. Drizzle owns schema declarations, typed
+queries, and generated migrations for D1 and Osfo-owned Agent SQLite tables. No
+cross-store transaction exists.
 
 Each deep product operation commits its semantic evidence with its product fact
 inside the same local transaction. Cross-store work uses stable identities and
-reconciliation. Content-free Erasure Receipts live outside restore targets and
-must be replayed before restored state can serve work. This split follows real
-failure and transaction scopes instead of creating one database abstraction or
-a second canonical copy.
+reconciliation. MemoryProvider appends and deletion obligations use an
+Agent-local durable outbox. V1 has no product backup, point-in-time restore, or
+independent Erasure Receipt ledger. This split follows real failure and
+transaction scopes instead of creating one database abstraction or a second
+canonical copy.
