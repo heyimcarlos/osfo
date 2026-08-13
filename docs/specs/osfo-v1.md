@@ -25,17 +25,20 @@ If these sources conflict, implementation stops until the conflict is corrected.
 ## Product boundary
 
 Osfo v1 is a WhatsApp-only personal agent for non-technical Users. Each registered
-User owns one stable Osfo Agent, one AgentId, one canonical Thread, and one private
-Knowledge Space. The Agent and its data are durable. Compute is temporary.
+User owns one stable Osfo Agent and one AgentId. The Agent can own several
+conversation routes. Each route has exactly one current Session and can have
+historical Sessions. V1 has one WhatsApp direct-message route, so the User
+experiences one continuous primary Session. The Agent and its data are durable.
+Compute is temporary.
 
 Osfo v1 uses:
 
 - TypeScript and Effect for product behavior;
 - Cloudflare Workers, Durable Objects, D1, R2, and Workflows;
-- Think as the selected Agent Harness and canonical Thread authority;
+- Think as the selected Agent Harness and Session authority;
 - Drizzle for schema declarations, typed queries, and migration generation;
 - Alchemy for Cloudflare infrastructure composition;
-- Supermemory as a rebuildable retrieval projection;
+- Supermemory as the v1 adapter behind MemoryProvider;
 - the official Meta WhatsApp Cloud API as the only launch messaging transport.
 
 Osfo v1 does not include Apple Messages, a universal agent builder, harness
@@ -53,7 +56,7 @@ Meta webhook or Osfo web request
      -> named Osfo Agent Durable Object by AgentId
         -> Think Session and Think Submission authority
         -> Osfo product facts in namespaced Agent SQLite tables
-        -> managed model, memory, scheduling, and Delivery
+        -> Native Memory, managed model, scheduling, and Delivery
      -> R2 content
      -> Cloudflare Workflow when independent durable work is required
      -> external adapters: Meta, SMS, Supermemory, Gmail, search, model, task compute
@@ -72,16 +75,19 @@ never become product authority.
 - A `UserId` identifies one registered person.
 - One User owns one Osfo Agent in v1.
 - An `AgentId` identifies that Osfo Agent and routes its Durable Object.
-- One Osfo Agent owns one canonical Thread and one Knowledge Space.
-- UserId, AgentId, Thread identity, and Knowledge Space identity are random,
-  stable, internal values. They are not derived from a phone number, Account,
-  Channel Identity, or provider identifier.
+- One Osfo Agent can own several conversation routes and Sessions.
+- Each conversation route has exactly one current Session and can have
+  historical Sessions.
+- V1 has one WhatsApp direct-message route with one current primary Session.
+- UserId, AgentId, route identity, and SessionId are stable internal values. They
+  are not derived from a phone number, Account, Channel Identity, or provider
+  identifier.
 - A Durable Object activation identity is disposable. It is not an AgentId.
 
 User is the scope for ownership, admission, fairness, Subscription, allowances,
 and memory. Phone replacement, approved recovery, Subscription changes, channel
-revocation, and runtime activation must not replace stable User, Agent, Thread,
-or Knowledge Space identities.
+revocation, and runtime activation must not replace stable User or Agent
+identities. They do not replace a route's current Session.
 
 ### Separate authentication facts
 
@@ -126,7 +132,7 @@ tool visibility, earlier acceptance, and an earlier Approval are not authority.
 
 The implementation records minimum content-free security audit facts for
 registration, authentication, binding, revocation, suspension, deletion,
-Approval, and protected effects. It does not record secrets in the Thread,
+Approval, and protected effects. It does not record secrets in Session Memory,
 telemetry, or audit data.
 
 ## Phone-first registration and onboarding
@@ -134,7 +140,7 @@ telemetry, or audit data.
 Osfo presents one visible persona. An unregistered WhatsApp sender may receive one
 natural Registration Turn. This turn can identify language, ask what help the
 person wants, and issue a Registration Invitation. It has no stable AgentId,
-Thread, memory, tools, entitlements, or external authority. More unregistered
+Session, memory, tools, entitlements, or external authority. More unregistered
 messages receive a deterministic registration prompt.
 
 The Registration Dialogue and its temporary transcript are deleted after
@@ -169,7 +175,7 @@ A new verified phone causes one idempotent registration operation to establish:
 
 - the User and Phone Account;
 - an AuthSession and Free Plan;
-- the personal Osfo Agent, AgentId, canonical Thread, and empty Knowledge Space;
+- the personal Osfo Agent, AgentId, WhatsApp route, and primary Session;
 - the invited WhatsApp Channel Binding only after explicit consent.
 
 A verified phone that already belongs to a User signs in to that User. It does
@@ -181,8 +187,8 @@ is not a conversational UserMessage.
 Before completion, Osfo states: "You are starting on Free. No card is required.
 You get 30 messages every 30 days." The full Plan details remain linked.
 
-The first personal response is a normal committed response in the new canonical
-Thread. It uses the chosen language and only accepted setup facts. It asks for
+The first personal response is a normal committed response in the new primary
+Session. It uses the chosen language and only accepted setup facts. It asks for
 the first task. It does not start work, show a tutorial, or request payment.
 
 The web flow must meet WCAG 2.2 AA. It must support keyboard use, visible focus,
@@ -191,10 +197,25 @@ international phone input, and SMS code paste and autofill. Before Phone
 Verification it must explain AI processing, message storage, WhatsApp
 involvement, Channel Binding, and how to stop proactive messages.
 
-## Thread, Think, and execution
+## Sessions, Think, and execution
 
-Think Session history is the sole canonical Thread record. Osfo does not maintain
-a parallel ThreadEvent stream, AgentRun lifecycle, or execution state machine.
+Think Session history is the sole canonical conversation record. Osfo does not
+maintain a parallel conversation event stream, AgentRun lifecycle, or execution
+state machine.
+
+One primary Think Session has a rolling context view. The Session is durable
+conversation history, not one model context window. Compaction changes the
+bounded view sent to the model and does not normally end the Session or remove
+its original SQLite history. Osfo does not classify messages as work or
+personal, switch Sessions from message content, or reset the primary Session on
+a fixed time window. Explicit `/new` replaces the current Session for the same
+route. The previous Session remains historical and searchable.
+
+Future web conversations, Discord threads, group conversations, cron work, and
+sub-agents can use separate Sessions. A future web Home route shares the
+WhatsApp Session only after an explicit product decision. Core Memory is
+Agent-wide, Session transcripts are route-scoped, and sub-agent Sessions are
+isolated and return bounded results to the requesting Session.
 
 One accepted UserMessage creates one stable Think Submission. Think owns its
 serialization, idempotency, cancellation, lifecycle, and crash recovery. Long
@@ -284,7 +305,7 @@ hash(phone_number_id, wamid, status, timestamp, recipient_id, normalized_errors)
 
 Confirmed progress does not move backward. Failure, deletion, malformed, and
 contradictory observations stay explicit. A Delivery problem never changes the
-committed Thread response. A User or operator can approve a new attempt only
+committed Session response. A User or operator can approve a new attempt only
 after an explicit duplicate-risk warning.
 
 The next successful User contact after an earlier failed or ambiguous Delivery
@@ -300,7 +321,7 @@ commit order before the response to the new UserMessage.
 
 A suspended WhatsApp endpoint acknowledges valid webhooks, admits no work that
 cannot receive a response, stops invitations and sends, and retains all pending
-or ambiguous evidence. Suspension does not change User, Agent, Thread, memory,
+or ambiguous evidence. Suspension does not change User, Agent, Sessions, memory,
 or Subscription identity. Recovery does not replay missed inbound events or
 blindly retry ambiguous sends.
 
@@ -356,7 +377,7 @@ These actions need one exact Approval:
 - creation or material change of a recurring reminder;
 - every Workflow start or material change;
 - GM Summon;
-- destructive memory, file, message, Thread, or account-data action;
+- destructive memory, file, Session, or account-data action;
 - Adventurer work estimated above US$0.50.
 
 Approval is bound to one immutable Action Presentation. A material change to a
@@ -372,63 +393,126 @@ stored, dormant, and revocable. Existing User data is not silently deleted.
 
 ### Memory
 
-Think Session history is canonical Thread Memory. The Osfo Memory module owns one
-canonical, user-visible Knowledge Space. Supermemory is only a rebuildable
-retrieval projection.
+The Osfo Memory System has two layers:
 
-| Store                        | Canonical ownership                                                                                                                      |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Think tables in Agent SQLite | Thread messages, tool interactions, branches, working context, search, and compaction overlays                                           |
-| Osfo tables in Agent SQLite  | Knowledge Sources, Memory Claims, Schema Packs, Core Profile, suppression markers, provider mappings, index generations, and sync outbox |
-| D1                           | Directory, identity, registration, channel, Subscription, administration, and content-free erasure facts                                 |
-| R2                           | User files, large normalized sources, generated files, and temporary exports                                                             |
-| Supermemory                  | Rebuildable documents, memories, chunks, embeddings, graph, profile, and ranking                                                         |
+| Layer          | Authority                                                                            |
+| -------------- | ------------------------------------------------------------------------------------ |
+| Native Memory  | Agent-owned Core Memory, Session Memory, and Session Recall in Durable Object SQLite |
+| Knowledge Base | User-scoped semantic memory behind the application-owned MemoryProvider seam         |
 
-A Memory Claim is versioned, addressable, and linked to one or more Knowledge
-Sources. Its trust is Explicit, Observed, or Inferred. Only an Explicit claim can
-be a durable instruction without confirmation. Assistant text alone is not
-evidence. Memory cannot grant authority or Approval.
+Think owns Sessions, message order, human-visible tool interactions, branches,
+compaction overlays, and FTS5 indexes. Session history is the canonical record
+of what happened. Core Memory is the Agent's bounded working model. Supermemory
+owns its semantic extraction, provider profile, graph, and retrieval mechanics.
+MemoryProvider recall is evidence, not canonical product truth. D1 contains no
+private Session or memory content.
 
-Each turn loads the local Core Profile and local search, requests Supermemory
-under a short deadline, rejects results without current same-space provenance,
-and runs with a bounded context. Provider failure does not fail the turn. After
-a committed response, the module records one stable turn source and enqueues
-extraction and provider ingestion.
+Core Memory contains two independently bounded, user-readable blocks that are
+included in every turn:
 
-Remember, correct, forget, source delete, Message Redaction, Thread Reset,
-export, and account deletion commit canonical local facts before confirmation.
-Correction creates a new Explicit claim and supersedes the old version.
-Forgetting suppresses recall without deleting its source. Source deletion removes
-claims supported only by that source. Conflicts keep separate provenance until
-an explicit correction or clear time update resolves them.
+- User Context records the Agent's current model of the User's identity, durable
+  preferences, communication style, and standing constraints.
+- Agent Notes record current goals, commitments, environment and workflow facts,
+  and continuity.
 
-Think owns non-destructive compaction. Osfo sets thresholds and validates output.
-Compaction never enters the Knowledge Base. Age alone does not remove canonical
-Thread history, active claims, or User sources.
+The User can inspect, correct, clear, and independently bound both blocks. They
+never contain hidden reasoning or chain-of-thought. Their initial budgets are
+implementation defaults that prompt-utilization evidence can change.
 
-A Knowledge Export is built from Think, Agent SQLite, and R2, never from
-Supermemory. A Supermemory rebuild writes a new opaque generation, validates it,
-switches atomically, and deletes the old generation.
+The User does not need to say "remember this." The Agent records direct durable
+facts and reasonable useful inferences proactively. It saves the narrowest
+durable conclusion that explains the evidence and will probably improve future
+behavior. A correction immediately replaces or removes the wrong conclusion.
+The Agent does not add situational explanatory baggage or maintain a local claim
+graph, typed confidence, provenance, reconciliation, or suppression machinery.
+Sensitive or high-impact assumptions about health, religion, politics,
+sexuality, legal status, or financial condition need strong direct evidence or
+User confirmation.
 
-### Erasure and recovery
+Conflicting context uses this precedence:
 
-Osfo can promise deletion from live product reads after provider operations,
-independent absence checks, recreation fences, and Erasure Receipt replay. It
-must not promise immediate physical destruction or complete provider backup
-purge.
+```text
+current User correction
+  > current direct User statement
+  > User Context
+  > MemoryProvider recall
+  > weak behavioral inference
+```
 
-The User disclosure states that Durable Object point-in-time recovery can retain
-prior content for up to 30 days. D1 Time Travel retains 30 days on Workers Paid
-and 7 days on Workers Free. R2 live deletion is strongly consistent, subject to
-separate cache and bucket-lock controls. Supermemory public contracts are not
-enough to prove deletion of every derived value, replica, queue, or backup.
+Each incoming User message automatically assembles Core Memory, the rolling
+Think context view, the current provider profile, query-relevant provider recall,
+and the current User input. Provider recall has a strict timeout and fails open.
+Session Recall is a separate model-invoked FTS5 search across current and
+historical Sessions. Osfo does not run FTS5 automatically on each turn and does
+not add a heuristic prefetch layer in v1. Some overlap between Core Memory and
+provider context is acceptable until measurements justify deduplication.
 
-Every Message Redaction, source deletion, Thread Reset, and account deletion has
-an opaque deletion manifest, provider-operation evidence, absence checks, and a
-fence against queued recreation. Content-free Erasure Receipts live outside the
-state that they protect. A restored Agent or directory stays closed until all
-applicable receipts are replayed, revived content is removed, provider deletion
-is reissued, and live absence is verified.
+The complete assembled prompt also includes Agent instructions, tool
+definitions, compaction summaries, and recent Session history. Tool results can
+extend it during the turn. Session Recall results join only after the model
+invokes Session Recall.
+
+MemoryProvider exposes Osfo-owned conversation operations, not generic document
+storage. SupermemoryMemoryProvider is the v1 adapter. It maps `containerTag` to
+`UserId` and `conversationId` to `SessionId`. This makes the Knowledge Base
+User-scoped across Sessions and routes. If one User owns several Agents later,
+they share this scope until a separate product decision changes it. After each
+completed turn, Think commits the User and final assistant messages before an
+Agent-local ordered outbox records a delta-only provider append. Outbox records
+are synchronization machinery, not memory. The adapter sends only newly
+committed messages for that Session. It never mixes full-transcript and delta
+updates, creates fixed time windows, or runs another LLM before ingestion.
+Human-readable tool outcomes and supported human-visible source details can be
+included. Hidden reasoning, raw tool traces, credentials, secrets, aborted
+output, and infrastructure records are excluded.
+
+The caller-shaped interface has five operations: recall User-scoped context,
+append one ordered Session delta, forget derived knowledge, delete one Session
+conversation, and delete all knowledge for one User. Application-owned request,
+result, and typed failure values isolate callers from Supermemory SDK types.
+Provider selection is an internal composition decision, not a User setting.
+
+Provider append failure never rolls back a committed Think turn. Failed appends
+retry in Session order with stable append identities. Provider deletion
+obligations also retry, and deletion remains pending until the provider confirms
+it. Observability records provider latency, recall failures, retry count, and the
+oldest pending append age. Osfo tells the User about degraded memory only when it
+affects the requested task.
+
+Compaction thresholds and safety headroom are configurable per model. The 50 to
+60 percent context target is a measurement hypothesis, not a product rule.
+Think's proactive overflow handling and bounded reactive compact-and-retry are
+safety mechanisms. Osfo measures model context size, input utilization before
+each model step, peak utilization, utilization before and after compaction,
+tokens by prompt category where practical, compaction frequency, overflow and
+retry events, output tokens, and tool-heavy turn growth.
+
+Current and historical Sessions are retained indefinitely by default. Osfo does
+not prune a current Session, apply a fixed age rule, or silently delete history
+under storage pressure. Explicit `/new` creates a replacement current Session
+and deletes nothing. Forget Knowledge updates Core Memory and asks
+MemoryProvider to forget matching derived memory while preserving the original
+Session transcript. Delete Session removes local messages, branches,
+compactions, and search entries, settles related pending append work, and
+permanently deletes the provider conversation. If it is current, Osfo creates
+its replacement first. Account deletion fences the Agent, permanently deletes
+all provider memory under the UserId scope, and deletes Agent SQLite as part of
+the broader deletion flow. Individual-message deletion is not supported in v1.
+
+Arbitrary files, web pages, and connected sources are not forced through the v1
+conversation interface. A later source-ingestion operation needs a real product
+caller and a separate decision. Knowledge Export also needs a separate decision
+before implementation.
+
+### Deletion and recovery
+
+V1 has no product-level Agent backup, point-in-time restoration, or arbitrary
+operator rollback. Worker restart, eviction, and normal Durable Object recovery
+are not product restoration. Osfo does not restore an Agent to a point before a
+confirmed privacy deletion. There is no independent Erasure Receipt database or
+authority. Pending provider deletion is outbox or account-deletion state. A
+future backup or restore feature must separately define logical export and import
+or an independent deletion journal and restore gate.
 
 ### Files, research, documents, and Gmail
 
@@ -460,7 +544,7 @@ Adventurer exposes exactly these Workflows:
 
 All three use `Always` Workflow Follow-up Policy. Success, Failure, and Canceled
 remain distinct. Each terminal outcome is recorded before at most one proactive
-Think Submission is created. Workflow progress stays outside the Thread.
+Think Submission is created. Workflow progress stays outside Session Memory.
 
 Osfo admits at most three milestone Think Submissions for one User in 24 hours.
 Current authority is checked before each protected effect. Authority loss causes
@@ -472,11 +556,11 @@ reserve when User allowance is no longer available.
 `HELP` and `HUMAN` always return a real support web path. They do not create a GM
 Summon.
 
-A Problem groups distinct Resolution Attempts in one Thread without copying
+A Problem groups distinct Resolution Attempts in one Session without copying
 Think history. An attempt counts as failed only after explicit User feedback or
 objective failure evidence. Osfo can offer GM Summon only when one open Problem
 has three distinct failed attempts, the User has active Adventurer entitlement,
-no summon is active for the Thread, and the allowance-period limit is available.
+no summon is active for the Session, and the allowance-period limit is available.
 The User must confirm. One stable summon identity survives safe retries. Osfo
 promises no response time.
 
@@ -494,20 +578,25 @@ infra/cloudflare/
   observability.ts
 
 apps/worker/
-  src/{worker,env,router,layers}.ts
-  src/agent/
+  src/worker.ts
+  src/app.ts
+  src/authorization.ts
+  src/agents/
+  src/services/
+  src/db/
+    schema/
+    migrations/
   src/registration-dialogue/
   src/workflows/
   src/adapters/
   src/integrations/
     think/
+    supermemory/
   src/identity/
-  src/authorization/
   src/messaging/
   src/memory/
   src/delivery/
   src/allowances/
-  src/directory/
   src/content/
   test/
 
@@ -545,20 +634,20 @@ package seam. A future `packages/api` is created only when the Worker and web
 application share a real wire contract. `packages/ui` contains generic shared
 visual modules and no Osfo-specific product behavior.
 
-Authority-specific modules own their Drizzle schemas, typed queries, migration
-artifacts, Effect database Layers, and storage test support. They implement three
-internal atomic ports:
+The Worker-local `db` module owns D1 initialization, Drizzle schemas, the flat
+forward-only migration chain, and storage test support. Product operations live
+outside it in caller-focused modules such as registration, directory, and
+authorization. Agent SQLite and R2 remain separate transaction authorities:
 
 ```text
-DirectoryStore: D1 cross-Agent transactions
-AgentStore: one Agent SQLite transaction authority
-ContentStore: R2 immutable object operations
+D1: shared cross-Agent transactions
+Agent SQLite: one Agent transaction authority
+R2: immutable object operations
 ```
 
-Directory storage lives with the D1 transaction authority, Agent storage lives
-with the Durable Object SQLite authority, and content operations live with R2.
-No port exposes raw Drizzle clients or one CRUD Interface for each table. There
-is no horizontal persistence package.
+D1 access stays inside `apps/worker`; the web application does not import the
+database. Agent storage lives with the Durable Object SQLite authority, and
+content operations live with R2. There is no horizontal persistence package.
 
 ### Runtime lifetime
 
@@ -580,14 +669,15 @@ from its own bindings, identity, and durable inputs.
 ### Storage and transactions
 
 D1 owns cross-Agent identity, registration, channel, Subscription, allowance,
-Agent directory, deletion progress, Erasure Receipt, administration, and
-security-audit facts. D1 contains no private Thread or memory content.
+Agent directory, deletion progress, administration, and security-audit facts.
+D1 contains no private Session or memory content.
 
-Think tables in each Agent SQLite database own Thread and Think execution facts.
-Namespaced Osfo tables in the same database own Acceptance Receipts, Delivery,
-memory, Supermemory outbox, Workflow correlation, proactive receipts, and
-Agent-local allowance evidence. Osfo migrations never inspect or modify Think
-tables. R2 owns large or immutable content.
+Think tables in each Agent SQLite database own Sessions, messages, branches,
+compactions, context blocks, FTS5 search, and Think execution facts. Namespaced
+Osfo tables in the same database own Acceptance Receipts, Delivery,
+MemoryProvider outbox, Workflow correlation, proactive receipts, and Agent-local
+allowance evidence. Osfo migrations never inspect or modify Think tables. R2
+owns large or immutable content.
 
 There is no transaction across D1, Agent SQLite, R2, Think, Workflow, or an
 external provider. Recovery uses stable identities and reconciliation.
@@ -598,8 +688,8 @@ The committed-turn projection is idempotent:
 stable Think committed-turn reference
   -> one Agent SQLite transaction
      + Delivery obligation and stored parts
-     + committed-turn Knowledge Source
-     + required outbox records
+     + ordered MemoryProvider append record
+     + required operational records
 ```
 
 An Agent activation reconciles committed Think turns that lack an Osfo projection.
@@ -809,8 +899,9 @@ Implementation evidence must include at least:
   support, and GM Summon;
 - the full entitlement, allowance, cost reservation, Approval, downgrade,
   reminder, Workflow, and authority-loss matrix;
-- memory provenance, correction, conflict, forgetting, deletion, export,
-  Supermemory outage and rebuild, cross-space rejection, and restore replay;
+- Core Memory inference and correction, Session replacement, Session Recall,
+  forgetting, Session and account deletion, ordered delta capture,
+  MemoryProvider timeout, outage, and retry;
 - D1 and Agent SQLite migration chains, interruption, old Agent activation,
   Think-table isolation, and Worker-to-Agent recovery;
 - provider conformance and focused live qualification for Meta, SMS, managed
@@ -824,9 +915,9 @@ specification leaves open.
 ## Decision sources
 
 - [Prove the Cloudflare account-agent foundation](https://github.com/heyimcarlos/osfo/issues/152)
-- [Define Osfo Agent identity, Thread, and execution dispatch](https://github.com/heyimcarlos/osfo/issues/153)
+- [Define Osfo Agent identity, Session, and execution dispatch](https://github.com/heyimcarlos/osfo/issues/153)
 - [Define Osfo User registration, authentication, recovery, and capability enforcement](https://github.com/heyimcarlos/osfo/issues/154)
-- [Define the Osfo Memory System and Supermemory contract](https://github.com/heyimcarlos/osfo/issues/155)
+- [Define the Osfo Memory System and MemoryProvider contract](https://github.com/heyimcarlos/osfo/issues/155)
 - [Define the WhatsApp launch transport and delivery contract](https://github.com/heyimcarlos/osfo/issues/156)
 - [Freeze Osfo launch capabilities, approvals, allowances, and plan economics](https://github.com/heyimcarlos/osfo/issues/157)
 - [Define Osfo module ownership, Drizzle persistence, and GCP migration](https://github.com/heyimcarlos/osfo/issues/158)

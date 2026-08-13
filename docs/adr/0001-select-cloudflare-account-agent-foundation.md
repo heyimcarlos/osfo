@@ -5,11 +5,11 @@ Date: 2026-08-08
 Status: Accepted, production qualification pending
 
 Osfo v1 will use Cloudflare as its application and agent-runtime foundation. One
-User-scoped Osfo Agent backed by a Durable Object will host the canonical Think
-Thread and private operational state, while Workers handle ingress, R2 holds files, and
+User-scoped Osfo Agent backed by a Durable Object will host Native Memory and
+private operational state, while Workers handle ingress, R2 holds files, and
 Scheduled Tasks provide ordinary reminders. The accepted foundation prototype
-selects Cloudflare Think as the Agent Harness. Supermemory remains a separate,
-rebuildable retrieval projection.
+selects Cloudflare Think as the Agent Harness. Supermemory remains the v1
+adapter behind the replaceable MemoryProvider seam.
 
 This choice favors iteration speed, TypeScript, isolated scale-to-zero User
 state, and one operated platform over LangGraph's greater maturity and
