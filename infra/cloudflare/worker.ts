@@ -3,11 +3,13 @@ import * as Effect from "effect/Effect";
 
 import type { OsfoStage } from "@osfo/worker/env";
 import type { WorkerObservability } from "alchemy/Cloudflare";
+import type { dataResources } from "./data";
 import type { workflowResources } from "./workflows";
 
 /** Provision the Osfo Worker and its execution-unit bindings. */
 export const workerResources = (
   stage: OsfoStage,
+  data: Effect.Success<ReturnType<typeof dataResources>>,
   executionUnitWorkflow: ReturnType<typeof workflowResources>["executionUnit"],
   observability: WorkerObservability,
 ) =>
@@ -24,6 +26,7 @@ export const workerResources = (
         flags: ["nodejs_compat"],
       },
       env: {
+        DB: data.db,
         EXECUTION_UNIT_WORKFLOW: executionUnitWorkflow,
         OSFO_AGENT: osfoAgent,
         OSFO_STAGE: stage,

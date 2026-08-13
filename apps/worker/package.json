@@ -8,16 +8,20 @@
   },
   "scripts": {
     "build": "wrangler deploy --dry-run --outdir dist",
+    "db:generate": "drizzle-kit generate",
     "test": "vitest run",
     "typecheck": "wrangler types --check && tsc --noEmit"
   },
   "dependencies": {
+    "@effect/sql-d1": "4.0.0-beta.105",
+    "drizzle-orm": "1.0.0-rc.5-ab785fc",
     "effect": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@effect/vitest": "catalog:",
+    "drizzle-kit": "1.0.0-rc.5-ab785fc",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"
