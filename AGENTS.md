@@ -9,9 +9,6 @@ in `docs/adr/`, and active work in GitHub Issues.
   package script. Never use `bun test`.
 - Use the narrowest meaningful verification while iterating. Merge-ready gates
   are `bun run format:check`, `lint`, `typecheck`, and `test`.
-- Changes to migrations, PostgreSQL configuration, or database access also run
-  `bun run db:verify` against the digest-pinned real PostgreSQL service.
-  In-memory substitutes do not certify PostgreSQL behavior.
 - Run `bun run format` before a PR and include only files owned by the branch.
 - User-visible web changes require the relevant `@osfo/web` test, a production
   build, and inspection in the browser development instance. Record the exact
@@ -29,7 +26,7 @@ in `docs/adr/`, and active work in GitHub Issues.
 
 ## Reference Repositories
 
-Repos in `.reference` (effect, executor, AnswerOverflow, flue, ...) are available
+Repos in `.reference` (effect, executor, opencode, ...) are available
 for patterns. Clone a given Git URL into `.reference` and pull latest before using
 it.
 
@@ -48,15 +45,13 @@ it.
 
 - `packages/ui`: shared React DOM, Tailwind CSS, and shadcn/ui components,
   styles, hooks, and UI utilities. Every consumable path has an explicit
-  package export. These artifacts are not native-mobile components.
-- `packages/api`: schema-first HTTP endpoint groups, generated client behavior,
-  handlers, and Effect-native domain interfaces. It contains no Node process
-  construction, database access, or Agent Application configuration.
-- `packages/db`: Drizzle schema and migrations, PostgreSQL connection ownership,
-  database adapters, and database integration test support. It exposes domain
-  interfaces rather than raw database clients. Migrations do not contain product
-  behavior.
-- `apps/{web}`: product composition roots.
+  package export. Keep Osfo-specific behavior in `apps/web`.
+- `apps/worker`: Osfo product behavior, Cloudflare runtime composition, provider
+  adapters, and authority-specific D1, Agent SQLite, and R2 modules.
+- `apps/web`: Osfo-specific web behavior and the browser composition root.
+- Extract a workspace package only after a second consumer or supported public
+  interface proves the seam. Create `packages/api` only when Worker and web share
+  a real wire contract.
 
 ## Agent skills
 

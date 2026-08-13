@@ -1,14 +1,14 @@
-# Oz v1 product and architecture specification
+# Osfo v1 product and architecture specification
 
 Status: Approved implementation contract
 
-Wayfinder map: [Specify the Cloudflare-first Oz v1](https://github.com/heyimcarlos/osfo/issues/151)
+Wayfinder map: [Specify the Cloudflare-first Osfo v1](https://github.com/heyimcarlos/osfo/issues/151)
 
-Implementation map: [Implement the Cloudflare-first Oz v1](https://github.com/heyimcarlos/osfo/issues/167)
+Implementation map: [Implement the Cloudflare-first Osfo v1](https://github.com/heyimcarlos/osfo/issues/167)
 
 ## Authority and purpose
 
-This specification defines the Oz v1 product and its Cloudflare implementation
+This specification defines the Osfo v1 product and its Cloudflare implementation
 contract. An implementation issue can select local code details, but it must not
 change a product rule, authority owner, identity, state transition, package seam,
 or production gate in this document.
@@ -24,11 +24,11 @@ If these sources conflict, implementation stops until the conflict is corrected.
 
 ## Product boundary
 
-Oz v1 is a WhatsApp-only personal agent for non-technical Users. Each registered
-User owns one stable Oz Agent, one AgentId, one canonical Thread, and one private
+Osfo v1 is a WhatsApp-only personal agent for non-technical Users. Each registered
+User owns one stable Osfo Agent, one AgentId, one canonical Thread, and one private
 Knowledge Space. The Agent and its data are durable. Compute is temporary.
 
-Oz v1 uses:
+Osfo v1 uses:
 
 - TypeScript and Effect for product behavior;
 - Cloudflare Workers, Durable Objects, D1, R2, and Workflows;
@@ -38,7 +38,7 @@ Oz v1 uses:
 - Supermemory as a rebuildable retrieval projection;
 - the official Meta WhatsApp Cloud API as the only launch messaging transport.
 
-Oz v1 does not include Apple Messages, a universal agent builder, harness
+Osfo v1 does not include Apple Messages, a universal agent builder, harness
 portability, one permanent VM for each User, recursive child-agent orchestration,
 a general sandbox product, arbitrary connectors, or a second GCP production
 runtime. Production implementation starts through the issue map linked from this
@@ -47,31 +47,32 @@ specification.
 ## System shape
 
 ```text
-Meta webhook or Oz web request
-  -> Oz Worker
+Meta webhook or Osfo web request
+  -> Osfo Worker
      -> D1 directory, identity, policy, and cross-Agent facts
-     -> named Oz Agent Durable Object by AgentId
+     -> named Osfo Agent Durable Object by AgentId
         -> Think Session and Think Submission authority
-        -> Oz product facts in namespaced Agent SQLite tables
+        -> Osfo product facts in namespaced Agent SQLite tables
         -> managed model, memory, scheduling, and Delivery
      -> R2 content
      -> Cloudflare Workflow when independent durable work is required
      -> external adapters: Meta, SMS, Supermemory, Gmail, search, model, task compute
 ```
 
-The Worker routes work. It does not own product policy. The named Oz Agent owns
-private User-scoped product behavior. Think owns conversation and bounded turn
-execution. A Workflow owns its own independent durable steps and waits. External
-providers never become product authority.
+The Worker entry point routes work and does not decide product policy. Focused
+modules inside `apps/worker` own that policy. The named Osfo Agent owns private
+User-scoped product behavior. Think owns conversation and bounded turn execution.
+A Workflow owns its own independent durable steps and waits. External providers
+never become product authority.
 
 ## Identities and authority
 
 ### Stable ownership
 
 - A `UserId` identifies one registered person.
-- One User owns one Oz Agent in v1.
-- An `AgentId` identifies that Oz Agent and routes its Durable Object.
-- One Oz Agent owns one canonical Thread and one Knowledge Space.
+- One User owns one Osfo Agent in v1.
+- An `AgentId` identifies that Osfo Agent and routes its Durable Object.
+- One Osfo Agent owns one canonical Thread and one Knowledge Space.
 - UserId, AgentId, Thread identity, and Knowledge Space identity are random,
   stable, internal values. They are not derived from a phone number, Account,
   Channel Identity, or provider identifier.
@@ -89,7 +90,7 @@ SMS-verified authentication evidence. An AuthSession lets a web client act as a
 User. A Channel Binding lets one provider identity act as and receive messages
 for one User. These facts remain separate.
 
-Oz v1 supports:
+Osfo v1 supports:
 
 - exactly one active Phone Account for a User;
 - short-lived renewable AuthSessions with rotating renewal credentials;
@@ -130,14 +131,14 @@ telemetry, or audit data.
 
 ## Phone-first registration and onboarding
 
-Oz presents one visible persona. An unregistered WhatsApp sender may receive one
+Osfo presents one visible persona. An unregistered WhatsApp sender may receive one
 natural Registration Turn. This turn can identify language, ask what help the
 person wants, and issue a Registration Invitation. It has no stable AgentId,
 Thread, memory, tools, entitlements, or external authority. More unregistered
 messages receive a deterministic registration prompt.
 
 The Registration Dialogue and its temporary transcript are deleted after
-registration or invitation expiry. Oz creates no handoff summary. Only a
+registration or invitation expiry. Osfo creates no handoff summary. Only a
 preferred name and help areas that the person explicitly enters as registration
 fields can enter the new User profile.
 
@@ -152,12 +153,12 @@ fields can enter the new User profile.
   -> Free Plan confirmation
   -> User Registration or existing-User sign-in
   -> explicit Continue in WhatsApp enrollment
-  -> personal Oz welcome
+  -> personal Osfo welcome
 ```
 
 The WhatsApp-first path uses a high-entropy, single-use Registration Token at
-`/verify/<token>`. Oz stores only its digest. The page shows a masked invited
-number and requires an explicit `Send code` action.
+`https://osfo.ai/verify/<token>`. Osfo stores only its digest. The page shows a
+masked invited number and requires an explicit `Send code` action.
 
 Phone Verification uses a six-digit, single-use code, a ten-minute lifetime, at
 most five entry attempts, resend after 30 seconds, and at most five sends per
@@ -168,7 +169,7 @@ A new verified phone causes one idempotent registration operation to establish:
 
 - the User and Phone Account;
 - an AuthSession and Free Plan;
-- the personal Oz Agent, AgentId, canonical Thread, and empty Knowledge Space;
+- the personal Osfo Agent, AgentId, canonical Thread, and empty Knowledge Space;
 - the invited WhatsApp Channel Binding only after explicit consent.
 
 A verified phone that already belongs to a User signs in to that User. It does
@@ -177,7 +178,7 @@ The web-first `Continue in WhatsApp` flow completes binding only after a
 provider-authenticated inbound enrollment event. The enrollment control message
 is not a conversational UserMessage.
 
-Before completion, Oz states: "You are starting on Free. No card is required.
+Before completion, Osfo states: "You are starting on Free. No card is required.
 You get 30 messages every 30 days." The full Plan details remain linked.
 
 The first personal response is a normal committed response in the new canonical
@@ -192,7 +193,7 @@ involvement, Channel Binding, and how to stop proactive messages.
 
 ## Thread, Think, and execution
 
-Think Session history is the sole canonical Thread record. Oz does not maintain
+Think Session history is the sole canonical Thread record. Osfo does not maintain
 a parallel ThreadEvent stream, AgentRun lifecycle, or execution state machine.
 
 One accepted UserMessage creates one stable Think Submission. Think owns its
@@ -211,7 +212,7 @@ InboundWhatsAppEventKey
   -> Acceptance Receipt
 ```
 
-Interactive ingress calls the named Oz Agent directly. No Cloudflare Queue or
+Interactive ingress calls the named Osfo Agent directly. No Cloudflare Queue or
 Workflow is on this path. Provider success is returned only after Think has
 accepted the stable Submission and the Acceptance Receipt mapping is
 recoverable.
@@ -227,13 +228,13 @@ The accepted Cloudflare work roles are:
 | Workflow         | Independent durable steps, waits, approvals, or retryable side effects |
 | Cloudflare Queue | Deferred until a concrete cross-Agent or system-wide workload exists   |
 
-Every stable occurrence and callback has an idempotency identity. Oz stores
+Every stable occurrence and callback has an idempotency identity. Osfo stores
 correlation and side-effect evidence. It does not copy the execution history of
 Think, a Workflow, or a Managed Fiber.
 
 ## WhatsApp transport and Delivery
 
-Oz uses the official Meta WhatsApp Cloud API directly. Production has one Meta
+Osfo uses the official Meta WhatsApp Cloud API directly. Production has one Meta
 business portfolio, one WhatsApp Business Account, one Meta app, and one
 dedicated phone number. Development and test use separate credentials and a
 separate number. Launch operations must recheck Meta approval, policy, and legal
@@ -247,7 +248,7 @@ The Worker:
 4. records `InboundWhatsAppEventKey = (phone_number_id, provider_message_id)`
    before Channel Binding resolution;
 5. fixes the first resolved Channel Binding for that event;
-6. routes accepted direct messages to the named Oz Agent.
+6. routes accepted direct messages to the named Osfo Agent.
 
 V1 accepts one-to-one text and supported button replies. It rejects group and
 status interactions. Unsupported direct content receives a deterministic
@@ -270,10 +271,10 @@ after rejection or ambiguity. Each pre-recorded Delivery Attempt returns:
 - `Rejected(reason)` for proven non-acceptance;
 - `Ambiguous(reason)` when acceptance cannot be proved or disproved.
 
-Oz can retry automatically only when no request bytes left the process or Meta
+Osfo can retry automatically only when no request bytes left the process or Meta
 returned an allowlisted synchronous pre-acceptance rejection. A timeout or lost
 response after write is Ambiguous and blocks automatic retry. A returned `wamid`
-is provider acceptance. Oz does not resend it after a later failed status.
+is provider acceptance. Osfo does not resend it after a later failed status.
 
 Meta status observations use this idempotency key:
 
@@ -291,10 +292,10 @@ adds a deterministic notice to the next canonical response. It states that the
 earlier reply may be incomplete and was not resent because that could create a
 duplicate. It then offers only safe actions for the affected part.
 
-Within 24 hours after the latest User message, Oz can send free-form responses.
+Within 24 hours after the latest User message, Osfo can send free-form responses.
 Outside the window, it uses only approved, opted-in utility wake-up templates.
 The template contains no private result. At most one wake-up is active for a
-User. A reply opens the service window. Oz then sends pending Deliveries in
+User. A reply opens the service window. Osfo then sends pending Deliveries in
 commit order before the response to the new UserMessage.
 
 A suspended WhatsApp endpoint acknowledges valid webhooks, admits no work that
@@ -311,7 +312,7 @@ must implement the same Interface without changing product authority.
 
 ## Plans, capabilities, and cost controls
 
-Oz has two launch Plans. Free has no charge. Adventurer costs CA$25 each month,
+Osfo has two launch Plans. Free has no charge. Adventurer costs CA$25 each month,
 plus tax. V1 has no annual billing, trial, overage, usage add-on, or user-selected
 model. Managed models serve all launch work. Provider Connections are deferred.
 
@@ -342,11 +343,11 @@ Allowances do not roll over. Safety, account, billing, usage, cancellation,
 revocation, deletion, and data-right actions stay available after normal usage
 is exhausted.
 
-A versioned price book converts expected and reported provider use to USD. Oz
+A versioned price book converts expected and reported provider use to USD. Osfo
 reserves the conservative maximum cost and category quantities before work.
 Completion reconciles actual or conservative estimated use and releases the
 unused reservation. Concurrent work cannot reserve the same remainder. A retry
-keeps the same work identity and allowance reservation. Oz never creates an
+keeps the same work identity and allowance reservation. Osfo never creates an
 overage charge.
 
 These actions need one exact Approval:
@@ -371,14 +372,14 @@ stored, dormant, and revocable. Existing User data is not silently deleted.
 
 ### Memory
 
-Think Session history is canonical Thread Memory. The Oz Memory module owns one
+Think Session history is canonical Thread Memory. The Osfo Memory module owns one
 canonical, user-visible Knowledge Space. Supermemory is only a rebuildable
 retrieval projection.
 
 | Store                        | Canonical ownership                                                                                                                      |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | Think tables in Agent SQLite | Thread messages, tool interactions, branches, working context, search, and compaction overlays                                           |
-| Oz tables in Agent SQLite    | Knowledge Sources, Memory Claims, Schema Packs, Core Profile, suppression markers, provider mappings, index generations, and sync outbox |
+| Osfo tables in Agent SQLite  | Knowledge Sources, Memory Claims, Schema Packs, Core Profile, suppression markers, provider mappings, index generations, and sync outbox |
 | D1                           | Directory, identity, registration, channel, Subscription, administration, and content-free erasure facts                                 |
 | R2                           | User files, large normalized sources, generated files, and temporary exports                                                             |
 | Supermemory                  | Rebuildable documents, memories, chunks, embeddings, graph, profile, and ranking                                                         |
@@ -401,7 +402,7 @@ Forgetting suppresses recall without deleting its source. Source deletion remove
 claims supported only by that source. Conflicts keep separate provenance until
 an explicit correction or clear time update resolves them.
 
-Think owns non-destructive compaction. Oz sets thresholds and validates output.
+Think owns non-destructive compaction. Osfo sets thresholds and validates output.
 Compaction never enters the Knowledge Base. Age alone does not remove canonical
 Thread history, active claims, or User sources.
 
@@ -411,7 +412,7 @@ switches atomically, and deletes the old generation.
 
 ### Erasure and recovery
 
-Oz can promise deletion from live product reads after provider operations,
+Osfo can promise deletion from live product reads after provider operations,
 independent absence checks, recreation fences, and Erasure Receipt replay. It
 must not promise immediate physical destruction or complete provider backup
 purge.
@@ -461,7 +462,7 @@ All three use `Always` Workflow Follow-up Policy. Success, Failure, and Canceled
 remain distinct. Each terminal outcome is recorded before at most one proactive
 Think Submission is created. Workflow progress stays outside the Thread.
 
-Oz admits at most three milestone Think Submissions for one User in 24 hours.
+Osfo admits at most three milestone Think Submissions for one User in 24 hours.
 Current authority is checked before each protected effect. Authority loss causes
 Canceled, not Failure. The terminal follow-up uses a small company continuity
 reserve when User allowance is no longer available.
@@ -473,10 +474,10 @@ Summon.
 
 A Problem groups distinct Resolution Attempts in one Thread without copying
 Think history. An attempt counts as failed only after explicit User feedback or
-objective failure evidence. Oz can offer GM Summon only when one open Problem
+objective failure evidence. Osfo can offer GM Summon only when one open Problem
 has three distinct failed attempts, the User has active Adventurer entitlement,
 no summon is active for the Thread, and the allowance-period limit is available.
-The User must confirm. One stable summon identity survives safe retries. Oz
+The User must confirm. One stable summon identity survives safe retries. Osfo
 promises no response time.
 
 ## Module and persistence design
@@ -487,52 +488,44 @@ promises no response time.
 alchemy.run.ts
 infra/cloudflare/
   data.ts
-  oz.ts
+  worker.ts
   workflows.ts
   web.ts
   observability.ts
 
-apps/oz/
+apps/worker/
   src/{worker,env,router,layers}.ts
   src/agent/
   src/registration-dialogue/
   src/workflows/
   src/adapters/
+  src/integrations/
+    think/
+  src/identity/
+  src/authorization/
+  src/messaging/
+  src/memory/
+  src/delivery/
+  src/allowances/
+  src/directory/
+  src/content/
   test/
 
-packages/think/
-packages/oz/
-packages/oz-persistence/
 packages/ui/
 ```
 
-Public package exports are limited to:
-
-```text
-@osfo/think: integration, testing
-@osfo/oz: interfaces, http, client, testing
-@osfo/oz-persistence: layers, migrations, testing
-```
-
-`apps/oz` is the sole Cloudflare composition root. It owns Cloudflare class
+`apps/worker` is the sole Cloudflare composition root. It owns Cloudflare class
 exports, binding conversion, environment decoding, concrete provider adapters,
-Effect Layer assembly, Alchemy binding, and host Promise-to-Effect conversion.
-It does not own product policy.
-
-`@osfo/think` owns only the selected Think integration. It provides stable
-Submission acceptance and lookup, canonical Session reads, committed-turn
-references and hooks, integration helpers, and deterministic test support. It
-does not wrap every Think method or reproduce Think execution behavior.
-
-`@osfo/oz` owns product behavior. Its explicit internal modules cover identity,
-registration, onboarding, recovery, authorization, memory, messaging, Delivery,
-allowances, integrations, background work, and semantic evidence. These remain
-cohesive behind the public deep Effect Interfaces:
+Effect Layer assembly, Alchemy binding, host Promise-to-Effect conversion, and
+product behavior. Its internal modules cover identity, registration, onboarding,
+recovery, authorization, memory, messaging, Delivery, allowances, integrations,
+background work, and semantic evidence. These remain cohesive behind deep Effect
+Interfaces:
 
 ```text
 UserLifecycle
 Authorization
-OzMemory
+OsfoMemory
 MessagingAdmission
 Delivery
 Allowances
@@ -540,14 +533,21 @@ IntegrationAuthority
 WorkflowCorrelation
 ```
 
-The Messaging Adapter Interface is part of `@osfo/oz`. Persistence ports and
-provider adapters remain internal. A package or public seam is allowed only when
-it hides substantial behavior, protects a real authority, or has demonstrated
-variation. Public Interfaces and observable outcomes are the test surface.
+The Messaging Adapter Interface, persistence ports, and provider adapters remain
+internal to `apps/worker`. A workspace package or public seam is allowed only
+when it hides substantial behavior, protects a real authority, or has a second
+consumer or demonstrated variation. Module Interfaces and observable outcomes
+are the test surface.
 
-`@osfo/oz-persistence` owns Drizzle schemas, typed queries, migration artifacts,
-Effect database Layers, and storage test support. It implements three internal
-atomic ports:
+The future Think adapter belongs in `apps/worker/src/integrations/think/`. It is
+extracted only after a second consumer or supported public Interface proves the
+package seam. A future `packages/api` is created only when the Worker and web
+application share a real wire contract. `packages/ui` contains generic shared
+visual modules and no Osfo-specific product behavior.
+
+Authority-specific modules own their Drizzle schemas, typed queries, migration
+artifacts, Effect database Layers, and storage test support. They implement three
+internal atomic ports:
 
 ```text
 DirectoryStore: D1 cross-Agent transactions
@@ -555,15 +555,18 @@ AgentStore: one Agent SQLite transaction authority
 ContentStore: R2 immutable object operations
 ```
 
-No port exposes raw Drizzle clients or one CRUD Interface for each table.
+Directory storage lives with the D1 transaction authority, Agent storage lives
+with the Durable Object SQLite authority, and content operations live with R2.
+No port exposes raw Drizzle clients or one CRUD Interface for each table. There
+is no horizontal persistence package.
 
 ### Runtime lifetime
 
 ```text
-Oz Worker
+Osfo Worker
 ├── WorkerRuntime, one request or safe invocation scope
-├── OzAgent Durable Object
-│   └── OzAgentRuntime, one AgentId activation
+├── OsfoAgent Durable Object
+│   └── OsfoAgentRuntime, one AgentId activation
 ├── RegistrationDialogue Durable Object
 │   └── restricted runtime, one invitation activation
 └── Workflow classes
@@ -581,9 +584,9 @@ Agent directory, deletion progress, Erasure Receipt, administration, and
 security-audit facts. D1 contains no private Thread or memory content.
 
 Think tables in each Agent SQLite database own Thread and Think execution facts.
-Namespaced Oz tables in the same database own Acceptance Receipts, Delivery,
+Namespaced Osfo tables in the same database own Acceptance Receipts, Delivery,
 memory, Supermemory outbox, Workflow correlation, proactive receipts, and
-Agent-local allowance evidence. Oz migrations never inspect or modify Think
+Agent-local allowance evidence. Osfo migrations never inspect or modify Think
 tables. R2 owns large or immutable content.
 
 There is no transaction across D1, Agent SQLite, R2, Think, Workflow, or an
@@ -599,12 +602,12 @@ stable Think committed-turn reference
      + required outbox records
 ```
 
-An Agent activation reconciles committed Think turns that lack an Oz projection.
+An Agent activation reconciles committed Think turns that lack an Osfo projection.
 Workflow outcomes and milestones use stable RPC to the named Agent. The Agent
 records correlation and creates at most one proactive Submission.
 
 D1 migrations are forward-only. Alchemy applies them before updated traffic.
-Failure aborts deployment. Agent SQLite carries the complete immutable Oz
+Failure aborts deployment. Agent SQLite carries the complete immutable Osfo
 migration chain because an Agent can sleep across releases. Initialization runs
 migrations under Durable Object exclusion. Each migration has a version and
 digest. Failure blocks only that Agent. Destructive changes use expand, migrate,
@@ -614,7 +617,7 @@ and contract releases.
 
 The root `alchemy.run.ts` selects Stack, stage, provider state, resource groups,
 and safe outputs. It contains no product behavior. `infra/cloudflare` groups
-data, Oz compute, Workflows, web, and observability by lifecycle. Development,
+data, Osfo compute, Workflows, web, and observability by lifecycle. Development,
 test, and production use separate resources and secrets. Secrets never enter
 stage outputs.
 
@@ -644,7 +647,7 @@ reminders, 4% Gmail, 3% Research Report, 2% Document Build, 1% Scheduled Email,
 and 5% account, billing, safety, and data-right work. Rare journeys also run in
 isolated Challenge Lanes.
 
-After 30 production days and 25,000 accepted registered messages, Oz replaces
+After 30 production days and 25,000 accepted registered messages, Osfo replaces
 the assumed trace with a version based on observed Plans, journeys, geography,
 cold activation, history, amplification, and cost. The historical 232/s and
 464/s lanes remain characterization only.
@@ -762,10 +765,10 @@ All acceptance verdicts use this order:
 
 ## Historical architecture disposition
 
-Cloudflare is the only Oz v1 production architecture. ADR 0003 supersedes the
+Cloudflare is the only Osfo v1 production architecture. ADR 0003 supersedes the
 GCP, Cloud SQL, PostgreSQL ThreadEvent, AgentRun driver, transactional outbox,
 Pub/Sub, StreamingPull, Temporal, Native Thread Transport, fixed-worker, and GCP
-Terraform implementation direction for Oz v1.
+Terraform implementation direction for Osfo v1.
 
 The following invariants remain and must be re-proved through Cloudflare:
 
@@ -821,13 +824,13 @@ specification leaves open.
 ## Decision sources
 
 - [Prove the Cloudflare account-agent foundation](https://github.com/heyimcarlos/osfo/issues/152)
-- [Define Oz Agent identity, Thread, and execution dispatch](https://github.com/heyimcarlos/osfo/issues/153)
-- [Define Oz User registration, authentication, recovery, and capability enforcement](https://github.com/heyimcarlos/osfo/issues/154)
-- [Define the Oz Memory System and Supermemory contract](https://github.com/heyimcarlos/osfo/issues/155)
+- [Define Osfo Agent identity, Thread, and execution dispatch](https://github.com/heyimcarlos/osfo/issues/153)
+- [Define Osfo User registration, authentication, recovery, and capability enforcement](https://github.com/heyimcarlos/osfo/issues/154)
+- [Define the Osfo Memory System and Supermemory contract](https://github.com/heyimcarlos/osfo/issues/155)
 - [Define the WhatsApp launch transport and delivery contract](https://github.com/heyimcarlos/osfo/issues/156)
-- [Freeze Oz launch capabilities, approvals, allowances, and plan economics](https://github.com/heyimcarlos/osfo/issues/157)
-- [Define Oz module ownership, Drizzle persistence, and GCP migration](https://github.com/heyimcarlos/osfo/issues/158)
-- [Define Oz production SLOs, workload, observability, and cost gates](https://github.com/heyimcarlos/osfo/issues/161)
-- [Define the Oz phone-first onboarding and setup journey](https://github.com/heyimcarlos/osfo/issues/162)
+- [Freeze Osfo launch capabilities, approvals, allowances, and plan economics](https://github.com/heyimcarlos/osfo/issues/157)
+- [Define Osfo module ownership, Drizzle persistence, and GCP migration](https://github.com/heyimcarlos/osfo/issues/158)
+- [Define Osfo production SLOs, workload, observability, and cost gates](https://github.com/heyimcarlos/osfo/issues/161)
+- [Define the Osfo phone-first onboarding and setup journey](https://github.com/heyimcarlos/osfo/issues/162)
 - [Verify provider erasure and backup-retention guarantees](https://github.com/heyimcarlos/osfo/issues/163)
-- [Define Oz model-quality evaluation and release gates](https://github.com/heyimcarlos/osfo/issues/165)
+- [Define Osfo model-quality evaluation and release gates](https://github.com/heyimcarlos/osfo/issues/165)

@@ -1,11 +1,11 @@
-# ADR 0005: Align Oz storage with transaction authority
+# ADR 0005: Align Osfo storage with transaction authority
 
 Date: 2026-08-12
 
 Status: Accepted
 
-Oz v1 stores cross-Agent directory, identity, Subscription, and administration
-facts in D1; private Thread and Oz product facts in each Agent's Durable Object
+Osfo v1 stores cross-Agent directory, identity, Subscription, and administration
+facts in D1; private Thread and Osfo product facts in each Agent's Durable Object
 SQLite database; large immutable content in R2; and rebuildable retrieval data
 in Supermemory. Drizzle owns schema declarations, typed queries, and generated
 migrations for D1 and Agent SQLite. No cross-store transaction exists.

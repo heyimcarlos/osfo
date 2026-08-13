@@ -5,7 +5,7 @@ const initialMessages: ReadonlyArray<ChatMessage> = [
   {
     id: "welcome",
     role: "assistant",
-    content: "Hi, I am Oz. What would you like to work on?",
+    content: "Hi, I am Osfo. What would you like to work on?",
   },
   {
     id: "example",
@@ -48,8 +48,9 @@ export function App() {
         messages={messages}
         onDraftChange={setDraft}
         onSubmit={submit}
+        placeholder="Message Osfo"
         status="UI preview"
-        title="Oz"
+        title="Osfo"
       />
     </main>
   );

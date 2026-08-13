@@ -1,4 +1,4 @@
 # Mistakes
 
-Record mistakes that can affect the current Oz implementation. Keep each entry
+Record mistakes that can affect the current Osfo implementation. Keep each entry
 short, specific, and actionable.

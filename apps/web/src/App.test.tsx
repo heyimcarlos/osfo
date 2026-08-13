@@ -8,6 +8,8 @@ describe("App", () => {
     const html = renderToStaticMarkup(<App />);
 
     expect(html).toContain("Reusable chat interface");
+    expect(html).toContain("Hi, I am Osfo.");
+    expect(html).toContain('placeholder="Message Osfo"');
     expect(html).toContain("What would you like to work on?");
     expect(html).toContain("UI preview");
   });

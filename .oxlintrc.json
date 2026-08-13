@@ -41,6 +41,12 @@
       }
     },
     {
+      "files": ["apps/worker/test/**/*.test.ts"],
+      "rules": {
+        "vitest/no-standalone-expect": "off"
+      }
+    },
+    {
       "files": ["tools/oxlint/**/*.ts"],
       "rules": {
         "effecttsgo/node-builtin-import": "off"
@@ -62,6 +68,7 @@
     "**/dist/",
     "**/node_modules/",
     "**/*.tsbuildinfo",
+    "apps/worker/worker-configuration.d.ts",
     "bun.lock"
   ]
 }

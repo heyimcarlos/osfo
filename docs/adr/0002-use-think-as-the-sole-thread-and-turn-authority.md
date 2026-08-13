@@ -4,8 +4,8 @@ Date: 2026-08-12
 
 Status: Accepted
 
-Oz v1 uses Think Session history as its only canonical Thread and one stable
-Think Submission as the lifecycle owner for each conversational turn. Oz stores
+Osfo v1 uses Think Session history as its only canonical Thread and one stable
+Think Submission as the lifecycle owner for each conversational turn. Osfo stores
 product correlation, Delivery, memory, allowance, and side-effect evidence, but
 it does not create a parallel ThreadEvent stream, AgentRun, or execution state
 machine. This prevents two recovery authorities from disagreeing and lets the

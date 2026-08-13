@@ -52,7 +52,7 @@ function Chat({
   messages,
   onDraftChange,
   onSubmit,
-  placeholder = "Message Oz",
+  placeholder = "Write a message",
   status,
   title,
   ...props
