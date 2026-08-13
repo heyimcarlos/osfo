@@ -61,8 +61,7 @@ if [ -n "$git_common_dir" ] && [ -d "$git_common_dir/info" ]; then
   if ! grep -qxF ".reference" "$git_common_dir/info/exclude"; then
     printf "\n.reference\n" >> "$git_common_dir/info/exclude"
   fi
-fi
-'''
+fi'''
 
 [[actions]]
 name = "Install"
