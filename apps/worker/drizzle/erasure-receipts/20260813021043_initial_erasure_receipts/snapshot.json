@@ -1,0 +1,111 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "id": "c5bfbbde-0670-4958-b3aa-1eaa15c66e08",
+  "prevIds": ["00000000-0000-0000-0000-000000000000"],
+  "ddl": [
+    {
+      "name": "erasure_commands",
+      "entityType": "tables"
+    },
+    {
+      "name": "erasure_receipts",
+      "entityType": "tables"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "command_id",
+      "entityType": "columns",
+      "table": "erasure_commands"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "completed_at",
+      "entityType": "columns",
+      "table": "erasure_commands"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "request_digest",
+      "entityType": "columns",
+      "table": "erasure_commands"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "manifest_digest",
+      "entityType": "columns",
+      "table": "erasure_receipts"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "receipt_id",
+      "entityType": "columns",
+      "table": "erasure_receipts"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "recorded_at",
+      "entityType": "columns",
+      "table": "erasure_receipts"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "resource_id",
+      "entityType": "columns",
+      "table": "erasure_receipts"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "scope",
+      "entityType": "columns",
+      "table": "erasure_receipts"
+    },
+    {
+      "columns": ["command_id"],
+      "nameExplicit": false,
+      "name": "erasure_commands_pk",
+      "table": "erasure_commands",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["receipt_id"],
+      "nameExplicit": false,
+      "name": "erasure_receipts_pk",
+      "table": "erasure_receipts",
+      "entityType": "pks"
+    }
+  ],
+  "renames": []
+}

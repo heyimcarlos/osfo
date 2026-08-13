@@ -1,6 +1,6 @@
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Config, Effect, Schema } from "effect";
+import { Config, ConfigProvider, Effect, Schema } from "effect";
 
 import { OsfoStage } from "@osfo/worker/env";
 import { dataResources } from "./infra/cloudflare/data";
@@ -21,10 +21,25 @@ export default Alchemy.Stack(
     const stage = yield* Schema.decodeUnknownEffect(OsfoStage)(rawStage).pipe(
       Effect.mapError((error) => new Config.ConfigError(error)),
     );
-    const data = dataResources(stage);
+    const data = yield* dataResources(stage).pipe(
+      Effect.mapError(
+        (error) =>
+          new Config.ConfigError(
+            new ConfigProvider.SourceError({
+              cause: error,
+              message: "D1 migration integrity verification failed",
+            }),
+          ),
+      ),
+    );
     const workflows = workflowResources(stage);
     const web = webResources(stage);
-    const worker = yield* workerResources(stage, workflows.executionUnit, workerObservability);
+    const worker = yield* workerResources(
+      stage,
+      data,
+      workflows.executionUnit,
+      workerObservability,
+    );
 
     return {
       groups: {

@@ -7,6 +7,20 @@
   "vars": {
     "OSFO_STAGE": "test",
   },
+  "d1_databases": [
+    {
+      "binding": "DIRECTORY_DB",
+      "database_name": "osfo-test-directory",
+      "database_id": "00000000-0000-0000-0000-000000000001",
+      "migrations_dir": "drizzle/directory",
+    },
+    {
+      "binding": "ERASURE_RECEIPTS_DB",
+      "database_name": "osfo-test-erasure-receipts",
+      "database_id": "00000000-0000-0000-0000-000000000002",
+      "migrations_dir": "drizzle/erasure-receipts",
+    },
+  ],
   "durable_objects": {
     "bindings": [
       { "name": "OSFO_AGENT", "class_name": "OsfoAgent" },
