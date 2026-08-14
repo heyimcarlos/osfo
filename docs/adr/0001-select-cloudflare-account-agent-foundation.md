@@ -1,4 +1,4 @@
-# ADR 0003: Select Cloudflare as the Osfo v1 User-agent foundation
+# ADR 0001: Select Cloudflare as the Osfo v1 User-agent foundation
 
 Date: 2026-08-08
 

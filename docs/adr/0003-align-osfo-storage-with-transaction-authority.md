@@ -1,4 +1,4 @@
-# ADR 0005: Align Osfo storage with transaction authority
+# ADR 0003: Align Osfo storage with transaction authority
 
 Date: 2026-08-12
 

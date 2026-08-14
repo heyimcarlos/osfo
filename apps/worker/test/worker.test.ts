@@ -78,20 +78,6 @@ describe("Osfo Cloudflare host", () => {
     }),
   );
 
-  it.effect("preserves technical route method and not-found responses", () =>
-    Effect.gen(function* () {
-      const methodNotAllowed = yield* Effect.promise(() =>
-        exports.default.fetch(new Request("https://osfo.test/health", { method: "POST" })),
-      );
-      const notFound = yield* Effect.promise(() =>
-        exports.default.fetch(new Request("https://osfo.test/not-found")),
-      );
-
-      expect(methodNotAllowed.status).toBe(405);
-      expect(notFound.status).toBe(404);
-    }),
-  );
-
   it.effect("creates and disposes one runtime for each Workflow callback", () =>
     Effect.gen(function* () {
       const firstResult = yield* Effect.promise(() =>

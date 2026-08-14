@@ -56,9 +56,7 @@ export const make = (env: Bindings, config: RuntimeConfig, options?: MakeOptions
       "/registration-dialogues/:identity/health",
       registrationDialogueProbe(env),
     ),
-    HttpRouter.add("*", "*", (request) =>
-      Effect.succeed(isTechnicalRoute(request.url) ? methodNotAllowed : notFound),
-    ),
+    HttpRouter.add("*", "*", notFound),
   );
   const webHandler = HttpRouter.toWebHandler(appLayer, { disableLogger: true });
 
@@ -135,17 +133,3 @@ const runtimeProbeResponse = (result: RuntimeProbeResult): HttpServerResponse.Ht
       );
 
 const notFound = HttpServerResponse.jsonUnsafe({ error: "Not found" }, { status: 404 });
-
-const methodNotAllowed = HttpServerResponse.jsonUnsafe(
-  { error: "Method not allowed" },
-  { status: 405 },
-);
-
-const isTechnicalRoute = (url: string) => {
-  const pathname = new URL(url, "https://osfo.invalid").pathname;
-  return (
-    pathname === "/health" ||
-    /^\/agents\/[^/]+\/health$/.test(pathname) ||
-    /^\/registration-dialogues\/[^/]+\/health$/.test(pathname)
-  );
-};

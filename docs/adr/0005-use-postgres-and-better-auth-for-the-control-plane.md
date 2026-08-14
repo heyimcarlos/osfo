@@ -1,4 +1,4 @@
-# ADR 0007: Use PostgreSQL and Better Auth for the control plane
+# ADR 0005: Use PostgreSQL and Better Auth for the control plane
 
 Date: 2026-08-13
 
