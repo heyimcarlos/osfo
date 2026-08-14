@@ -2,13 +2,15 @@ import { Effect, Layer, Schema, type ManagedRuntime } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
 import * as Db from "./db";
-import type { OsfoStage } from "./env";
+import type { RuntimeConfig } from "./env";
+import * as TwilioVerify from "./integrations/twilio/verify";
 import {
   type ExecutionUnit,
   makeWorkerRuntime,
   probeExecutionUnit,
   type RuntimeProbeResult,
 } from "./layers";
+import * as AuthRoutes from "./routes/auth";
 
 class CloudflareHostUnavailable extends Schema.TaggedError<CloudflareHostUnavailable>()(
   "CloudflareHostUnavailable",
@@ -19,11 +21,34 @@ class CloudflareHostUnavailable extends Schema.TaggedError<CloudflareHostUnavail
   },
 ) {}
 
+interface RuntimeProbeStub {
+  readonly probeRuntime: () => Promise<RuntimeProbeResult>;
+}
+
+interface RuntimeProbeNamespace {
+  readonly getByName: (identity: string) => RuntimeProbeStub;
+}
+
+/** Cloudflare bindings used by the Worker HTTP application. */
+export interface Bindings {
+  readonly DB: Pick<Hyperdrive, "connectionString">;
+  readonly OSFO_AGENT: RuntimeProbeNamespace;
+  readonly REGISTRATION_DIALOGUE: RuntimeProbeNamespace;
+}
+
+/** Optional concrete dependency choices for application composition. */
+export interface MakeOptions {
+  readonly authDependencies?: AuthRoutes.AuthDependencies;
+}
+
 /** Build one request-scoped Effect HTTP application. */
-export const make = (env: Env, stage: OsfoStage) => {
-  const runtime = makeWorkerRuntime(stage);
+export const make = (env: Bindings, config: RuntimeConfig, options?: MakeOptions) => {
+  const runtime = makeWorkerRuntime(config.stage);
+  const authDependencies =
+    options?.authDependencies ??
+    Layer.merge(Db.layer({ db: env.DB }), TwilioVerify.layer(config.twilioVerify));
   const appLayer = Layer.mergeAll(
-    Db.layer({ db: env.DB }),
+    AuthRoutes.layer({ config: config.auth, dependencies: authDependencies }),
     HttpRouter.add("GET", "/health", workerProbe(runtime)),
     HttpRouter.add("GET", "/agents/:identity/health", agentProbe(env)),
     HttpRouter.add(
@@ -43,16 +68,21 @@ export const make = (env: Env, stage: OsfoStage) => {
   };
 };
 
-/** Convert an invalid environment result into a technical HTTP response. */
-export const environmentErrorResponse = (result: RuntimeProbeResult): Response =>
-  HttpServerResponse.toWeb(runtimeProbeResponse(result));
+/** Convert invalid Worker bindings into a safe technical HTTP response. */
+export const environmentErrorResponse = (): Response =>
+  HttpServerResponse.toWeb(
+    HttpServerResponse.jsonUnsafe(
+      { error: "The Worker runtime configuration is invalid" },
+      { status: 500 },
+    ),
+  );
 
 const workerProbe = (runtime: ManagedRuntime.ManagedRuntime<ExecutionUnit, never>) =>
   Effect.promise(() => runtime.runPromise(probeExecutionUnit)).pipe(
     Effect.map(runtimeProbeResponse),
   );
 
-const agentProbe = (env: Env) =>
+const agentProbe = (env: Bindings) =>
   HttpRouter.params.pipe(
     Effect.flatMap(({ identity }) =>
       identity === undefined
@@ -61,7 +91,7 @@ const agentProbe = (env: Env) =>
     ),
   );
 
-const registrationDialogueProbe = (env: Env) =>
+const registrationDialogueProbe = (env: Bindings) =>
   HttpRouter.params.pipe(
     Effect.flatMap(({ identity }) =>
       identity === undefined

@@ -37,7 +37,7 @@ export class DbUnavailable extends Schema.TaggedError<DbUnavailable>()("DbUnavai
 
 /** Cloudflare Hyperdrive binding used by the Worker database. */
 export interface Options {
-  readonly db: Hyperdrive;
+  readonly db: Pick<Hyperdrive, "connectionString">;
 }
 
 export type { Database } from "@osfo/db";

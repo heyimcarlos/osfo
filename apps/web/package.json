@@ -11,8 +11,12 @@
   },
   "dependencies": {
     "@osfo/ui": "workspace:*",
+    "@tanstack/react-form": "1.33.5",
+    "better-auth": "1.6.28",
+    "lucide-react": "catalog:",
     "react": "catalog:",
-    "react-dom": "catalog:"
+    "react-dom": "catalog:",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

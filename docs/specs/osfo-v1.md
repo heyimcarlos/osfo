@@ -101,6 +101,11 @@ Better Auth also owns `sessions`, `accounts`, `verifications`, and
 `rate_limits`. The phone-number plugin and Twilio Verify provide the selected
 SMS path.
 
+Development temporarily enables Better Auth email-and-password sign-up and
+sign-in so the web and control-plane integration can be exercised without an
+SMS dependency. This is not a launch authentication method. Remove the
+credential UI and disable `emailAndPassword` before the bounded beta.
+
 Osfo v1 supports:
 
 - exactly one active Phone Account for a User;
@@ -126,19 +131,24 @@ registered User
   + current Usage Allowance
   + exact resource ownership or Integration Connection
   + exact Approval when required
-  - current denial facts
+  - User Suspension, revoked AuthSession or Channel Binding, or deletion access revocation
   = launch authorization result
 ```
 
 Ingress checks the Channel Binding, User suspension, Plan access, and allowance.
 Every protected external effect checks the exact User, action, resource,
-Integration Connection, Approval, and current denial facts again. Model output,
-tool visibility, earlier acceptance, and an earlier Approval are not authority.
+Integration Connection, Approval, User Suspension, binding and session
+revocation, and deletion access revocation again. Missing ownership, Plan
+entitlement, allowance, Integration Connection, or Approval also denies the
+operation. Model output, tool visibility, earlier acceptance, and an earlier
+Approval are not authority. Osfo does not store these decisions in one generic
+denial-facts table.
 
-The implementation records minimum content-free security audit facts for
-registration, authentication, binding, revocation, suspension, deletion,
-Approval, and protected effects. It does not record secrets in Session Memory,
-telemetry, or audit data.
+The initial control plane does not store a generic security audit table.
+Registration state is recoverable from current product facts. Application logs
+support early operational debugging. A future security workflow adds its own
+purpose-built history, such as User suspension and restoration events. Osfo can
+extract a shared audit model only after several concrete workflows need it.
 
 ## Phone-first registration and onboarding
 
@@ -369,6 +379,18 @@ Free periods are 30 days from registration. Adventurer uses its billing period.
 Allowances do not roll over. Safety, account, billing, usage, cancellation,
 revocation, deletion, and data-right actions stay available after normal usage
 is exhausted.
+
+An allowance period is `scheduled` before its start, `active` during its
+half-open `[startsAt, endsAt)` interval, and `expired` at or after its end. Only
+one period for one User and allowance kind can be active at a time. A work
+identity can create at most one reservation in that period. A reservation moves
+once from `reserved` to `committed` or `released`. Expiry prevents new
+reservations but does not erase committed use or unresolved reservation
+evidence. Authorization reads available quantity as the period limit minus
+committed and currently reserved quantity. Reservation, commit, release, and
+reconciliation arrive with allowance enforcement in Phase 5; the initial
+allowance-period table remains now because registration already establishes the
+first Free period.
 
 A versioned price book converts expected and reported provider use to USD. Osfo
 reserves the conservative maximum cost and category quantities before work.
@@ -652,9 +674,10 @@ consumer or demonstrated variation. Module Interfaces and observable outcomes
 are the test surface.
 
 `packages/auth` is the private authentication module. It owns the Better Auth
-policy, phone plugin configuration, request-scoped factory, and schema-generation
-entrypoint. It accepts a Drizzle database and provider callbacks. It does not
-read runtime bindings or open a database connection.
+policy, Dashboard plugin, phone plugin configuration, request-scoped factory,
+and schema-generation entrypoint. It accepts a Drizzle database, Dashboard API
+key, and provider callbacks. It does not read runtime bindings or open a
+database connection.
 
 `packages/db` is the private PostgreSQL module. It owns the shared Drizzle
 schema, database construction, migrations, and migration tests. The Worker owns
@@ -704,7 +727,7 @@ from its own bindings, identity, and durable inputs.
 
 Control-plane PostgreSQL owns Better Auth data, cross-Agent identity,
 registration, channel, Subscription, allowance, Agent directory, deletion
-progress, administration, and security-audit facts. It contains no private
+progress, and administration facts. It contains no private
 Session or memory content.
 
 Think tables in each Agent SQLite database own Sessions, messages, branches,
@@ -716,6 +739,17 @@ owns large or immutable content.
 
 There is no transaction across PostgreSQL, Agent SQLite, R2, Think, Workflow, or an
 external provider. Recovery uses stable identities and reconciliation.
+
+Phone Verification and Better Auth complete before the Osfo product
+registration transaction. Better Auth first commits the User, Phone Account
+fields, and AuthSession. One later PostgreSQL transaction establishes or
+recovers the Subscription, first allowance period, Agent route, registration
+completion marker, and one Agent-initialization outbox obligation. The outbox
+then calls the named Agent with a stable initialization
+identity. Agent SQLite applies that initialization idempotently. Activation and
+reconciliation recover a Better Auth User without product facts, a committed
+outbox without Agent initialization, and an initialized Agent whose outbox
+completion was not recorded.
 
 The committed-turn projection is idempotent:
 

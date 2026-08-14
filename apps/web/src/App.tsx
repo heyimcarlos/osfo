@@ -1,5 +1,9 @@
 import { Chat, type ChatMessage } from "@osfo/ui/components/chat";
+import { Button } from "@osfo/ui/components/button";
 import { useState } from "react";
+
+import { AuthScreen } from "./components/auth-screen";
+import { authClient } from "./lib/auth-client";
 
 const initialMessages: ReadonlyArray<ChatMessage> = [
   {
@@ -20,7 +24,33 @@ const initialMessages: ReadonlyArray<ChatMessage> = [
   },
 ];
 
+/** Osfo browser composition root. */
 export function App() {
+  const session = authClient.useSession();
+
+  if (session.isPending) {
+    return (
+      <main className="grid min-h-dvh place-items-center bg-background text-sm text-muted-foreground">
+        Loading Osfo...
+      </main>
+    );
+  }
+
+  if (!session.data) {
+    return (
+      <AuthScreen
+        onAuthenticated={() => {
+          void session.refetch();
+        }}
+      />
+    );
+  }
+
+  return <ChatPreview userLabel={session.data.user.email} />;
+}
+
+/** Presentation-only chat shown after authentication succeeds. */
+export function ChatPreview({ userLabel = "Test user" }: { readonly userLabel?: string }) {
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState(initialMessages);
 
@@ -49,7 +79,21 @@ export function App() {
         onDraftChange={setDraft}
         onSubmit={submit}
         placeholder="Message Osfo"
-        status="UI preview"
+        status={
+          <span className="flex items-center gap-2">
+            <span className="hidden sm:inline">{userLabel}</span>
+            <Button
+              size="xs"
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                void authClient.signOut();
+              }}
+            >
+              Sign out
+            </Button>
+          </span>
+        }
         title="Osfo"
       />
     </main>

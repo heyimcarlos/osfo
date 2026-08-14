@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@better-auth/infra": "0.3.7",
     "@osfo/db": "workspace:*",
     "better-auth": "1.6.28",
     "drizzle-orm": "0.45.2"

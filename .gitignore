@@ -2,9 +2,14 @@
 .worktrees/
 /tmp/
 .env
+.env.*
+!.env.example
+.dev.vars*
 node_modules/
 dist/
 coverage/
 .typescript/
 .alchemy/
+.turbo/
+.wrangler/
 *.tsbuildinfo

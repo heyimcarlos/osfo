@@ -1,8 +1,7 @@
-import { Option } from "effect";
+import { Result } from "effect";
 
 import * as App from "./app";
-import { decodeOsfoStage } from "./env";
-import { invalidOsfoEnvironment } from "./layers";
+import { decodeRuntimeConfig } from "./env";
 
 export { OsfoAgent } from "./agents/osfo/agent";
 export { RegistrationDialogue } from "./agents/registration/registration";
@@ -11,11 +10,11 @@ export { ExecutionUnitWorkflow } from "./workflows/runtime";
 /** Osfo Cloudflare Worker host. */
 const worker = {
   fetch(request: Request, env: Env): Promise<Response> {
-    const stage = decodeOsfoStage(env.OSFO_STAGE);
+    const config = decodeRuntimeConfig(env);
 
-    return Option.match(stage, {
-      onNone: () => Promise.resolve(App.environmentErrorResponse(invalidOsfoEnvironment)),
-      onSome: (parsedStage) => fetchApp(request, App.make(env, parsedStage)),
+    return Result.match(config, {
+      onFailure: () => Promise.resolve(App.environmentErrorResponse()),
+      onSuccess: (parsedConfig) => fetchApp(request, App.make(env, parsedConfig)),
     });
   },
 } satisfies ExportedHandler<Env>;

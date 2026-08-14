@@ -18,9 +18,13 @@ path. Twilio Verify will send and verify codes when runtime authentication is
 implemented. The private `@osfo/auth` package owns this Better Auth policy and
 accepts a request-scoped Drizzle database. The Worker owns the Hyperdrive
 connection, runtime configuration, Twilio adapter, and HTTP route.
+Better Auth Dashboard access uses the `dash` plugin and a Worker-supplied,
+redacted API key. Dashboard activity tracking is disabled, so it adds no local
+audit or activity table. Email-and-password authentication is enabled only as a
+temporary development entrypoint and is not part of the v1 launch contract.
 
-The control-plane schema also owns Agent routing, Subscription, allowance
-period, and security-audit facts. It does not own private Session content,
+The control-plane schema also owns Agent routing, Subscription, and allowance
+period facts. It does not own private Session content,
 memory, or Agent-local execution facts. Each User-scoped Agent keeps those facts
 in its Durable Object SQLite database. R2 remains the large immutable content
 store. There is no transaction across PostgreSQL, Agent SQLite, R2, Workflows,

@@ -26,17 +26,17 @@ email-first Better Auth implementation.
 
 ## Provider comparison
 
-| Question | Better Auth with Twilio | Clerk | WorkOS AuthKit |
-| --- | --- | --- | --- |
-| Phone-only sign-up and sign-in | Yes, through the phone-number plugin | Yes | No |
-| E.164 enforcement | Osfo must add a validator | Required by Clerk | No global phone login |
-| Email needed | Yes, the plugin requires a generated temporary email | No | Yes |
-| OTP owner | Better Auth or Twilio Verify, based on configuration | Clerk | Not applicable to phone login |
-| Session owner | Osfo, through Better Auth and Postgres | Clerk | WorkOS plus an application cookie |
-| Local auth tables | `user`, `session`, `account`, `verification`, and optional `rateLimit` | Provider identity mapping only | Provider identity mapping and optional refresh-token storage |
-| Cloudflare Workers | Viable, but Osfo must prove the full Worker, Drizzle, Postgres, and SMS build | Supported through Web API SDKs and JWT validation | Worker export exists, but the product does not fit |
-| Lost-phone recovery | Osfo policy required | Osfo policy or another Clerk factor required | No phone-first recovery |
-| Main burden | Self-hosted auth security and SMS abuse controls | Vendor dependency and external identity mapping | A separate phone auth system would still be required |
+| Question                       | Better Auth with Twilio                                                       | Clerk                                             | WorkOS AuthKit                                               |
+| ------------------------------ | ----------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------ |
+| Phone-only sign-up and sign-in | Yes, through the phone-number plugin                                          | Yes                                               | No                                                           |
+| E.164 enforcement              | Osfo must add a validator                                                     | Required by Clerk                                 | No global phone login                                        |
+| Email needed                   | Yes, the plugin requires a generated temporary email                          | No                                                | Yes                                                          |
+| OTP owner                      | Better Auth or Twilio Verify, based on configuration                          | Clerk                                             | Not applicable to phone login                                |
+| Session owner                  | Osfo, through Better Auth and Postgres                                        | Clerk                                             | WorkOS plus an application cookie                            |
+| Local auth tables              | `user`, `session`, `account`, `verification`, and optional `rateLimit`        | Provider identity mapping only                    | Provider identity mapping and optional refresh-token storage |
+| Cloudflare Workers             | Viable, but Osfo must prove the full Worker, Drizzle, Postgres, and SMS build | Supported through Web API SDKs and JWT validation | Worker export exists, but the product does not fit           |
+| Lost-phone recovery            | Osfo policy required                                                          | Osfo policy or another Clerk factor required      | No phone-first recovery                                      |
+| Main burden                    | Self-hosted auth security and SMS abuse controls                              | Vendor dependency and external identity mapping   | A separate phone auth system would still be required         |
 
 ## Better Auth
 
@@ -218,8 +218,8 @@ on the Better Auth User. [Better Auth update and remove phone](https://better-au
 
 This is not enough for a signed-out User who lost the only phone. Osfo must
 choose a recovery policy. Safe options include a second verified factor,
-recovery codes, or a manual support process with strong evidence and immutable
-audit facts. A phone number must not transfer to another Osfo User only because
+recovery codes, or a manual support process with strong evidence and
+purpose-built recovery history. A phone number must not transfer to another Osfo User only because
 the carrier reassigned it.
 
 Better Auth provides lifecycle hooks and a verification callback, but these
@@ -331,7 +331,7 @@ Registration Invitation
   -> Better Auth creates the Osfo User and AuthSession
   -> Osfo completeRegistration validates invitation and authenticated User
   -> one Postgres transaction creates Agent route, Free Subscription,
-     first usage period, audit fact, and outbox record
+     first usage period, and outbox record
 ```
 
 The proof must answer these questions:
