@@ -1,14 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
 import { Option } from "effect";
 
-import { runHostEffect } from "../adapters/host";
-import { decodeOsfoStage } from "../env";
+import { decodeOsfoStage } from "../../env";
 import {
   invalidOsfoEnvironment,
   makeOsfoAgentRuntime,
   probeExecutionUnit,
   type RuntimeProbeResult,
-} from "../layers";
+} from "../../layers";
 
 /** User-scoped Durable Object host for the future Think integration. */
 export class OsfoAgent extends DurableObject<Env> {
@@ -20,7 +19,7 @@ export class OsfoAgent extends DurableObject<Env> {
   probeRuntime(): Promise<RuntimeProbeResult> {
     return Option.match(this.#runtime, {
       onNone: () => Promise.resolve(invalidOsfoEnvironment),
-      onSome: (runtime) => runHostEffect(runtime, probeExecutionUnit, "activation"),
+      onSome: (runtime) => runtime.runPromise(probeExecutionUnit),
     });
   }
 }

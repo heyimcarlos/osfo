@@ -1,43 +1,30 @@
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Config, Effect, Schema } from "effect";
+import * as Neon from "alchemy/Neon";
+import { Effect, Layer } from "effect";
 
-import { OsfoStage } from "@osfo/worker/env";
-import { dataResources } from "./infra/cloudflare/data";
-import { workerObservability } from "./infra/cloudflare/observability";
-import { workerResources } from "./infra/cloudflare/worker";
-import { webResources } from "./infra/cloudflare/web";
-import { workflowResources } from "./infra/cloudflare/workflows";
+import { Db, Hyperdrive } from "./infra/cloudflare/Db";
+import Worker from "./infra/cloudflare/Worker";
 
 /** Stage-separated Osfo Cloudflare stack. */
 export default Alchemy.Stack(
   "Osfo",
   {
-    providers: Cloudflare.providers(),
+    providers: Cloudflare.providers().pipe(Layer.provideMerge(Neon.providers())),
     state: Cloudflare.state(),
   },
   Effect.gen(function* () {
-    const rawStage = yield* Alchemy.Stage;
-    const stage = yield* Schema.decodeUnknownEffect(OsfoStage)(rawStage).pipe(
-      Effect.mapError((error) => new Config.ConfigError(error)),
-    );
-    const data = dataResources(stage);
-    const workflows = workflowResources(stage);
-    const web = webResources(stage);
-    const worker = yield* workerResources(stage, workflows.executionUnit, workerObservability);
+    const { stage } = yield* Alchemy.Stack;
+    const { branchId } = yield* Db;
+    const db = yield* Hyperdrive;
+    const worker = yield* Worker;
 
     return {
-      groups: {
-        data: data.stage,
-        observability: workerObservability,
-        worker: {
-          url: worker.worker.url.as<string>(),
-          worker: worker.worker.workerName,
-        },
-        web: web.stage,
-        workflows: workflows.stage,
-      },
+      branchId,
+      hyperdriveId: db.hyperdriveId,
       stage,
+      url: worker.url.as<string>(),
+      workerName: worker.workerName,
     };
   }),
 );

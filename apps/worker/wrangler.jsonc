@@ -7,6 +7,24 @@
   "vars": {
     "OSFO_STAGE": "test",
   },
+  "secrets": {
+    "required": [
+      "BETTER_AUTH_API_KEY",
+      "BETTER_AUTH_BASE_URL",
+      "BETTER_AUTH_SECRET",
+      "BETTER_AUTH_TRUSTED_ORIGINS",
+      "TWILIO_ACCOUNT_SID",
+      "TWILIO_AUTH_TOKEN",
+      "TWILIO_VERIFY_SERVICE_SID",
+    ],
+  },
+  "hyperdrive": [
+    {
+      "binding": "DB",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "localConnectionString": "postgres://osfo:osfo@127.0.0.1:5432/osfo_test",
+    },
+  ],
   "durable_objects": {
     "bindings": [
       { "name": "OSFO_AGENT", "class_name": "OsfoAgent" },

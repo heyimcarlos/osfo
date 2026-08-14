@@ -1,30 +1,32 @@
-import { Option } from "effect";
+import { Result } from "effect";
 
-import { runHostEffect } from "./adapters/host";
-import { decodeOsfoStage } from "./env";
-import { invalidOsfoEnvironment, makeWorkerRuntime, probeExecutionUnit } from "./layers";
-import { routeRequest, runtimeProbeResponse } from "./router";
+import * as App from "./app";
+import { decodeRuntimeConfig } from "./env";
 
-export { OsfoAgent } from "./agent/osfo-agent";
-export { RegistrationDialogue } from "./registration-dialogue/registration-dialogue";
+export { OsfoAgent } from "./agents/osfo/agent";
+export { RegistrationDialogue } from "./agents/registration/registration";
 export { ExecutionUnitWorkflow } from "./workflows/runtime";
 
 /** Osfo Cloudflare Worker host. */
 const worker = {
   fetch(request: Request, env: Env): Promise<Response> {
-    const stage = decodeOsfoStage(env.OSFO_STAGE);
+    const config = decodeRuntimeConfig(env);
 
-    return Option.match(stage, {
-      onNone: () => Promise.resolve(runtimeProbeResponse(invalidOsfoEnvironment)),
-      onSome: (parsedStage) => {
-        const runtime = makeWorkerRuntime(parsedStage);
-        const response = routeRequest(request, env, probeExecutionUnit);
-
-        return runHostEffect(runtime, response, "invocation");
-      },
+    return Result.match(config, {
+      onFailure: () => Promise.resolve(App.environmentErrorResponse()),
+      onSuccess: (parsedConfig) => fetchApp(request, App.make(env, parsedConfig)),
     });
   },
 } satisfies ExportedHandler<Env>;
 
 /** Default Cloudflare Worker entry point. */
 export default worker;
+
+// oxlint-disable-next-line effecttsgo/async-function -- The Cloudflare fetch boundary owns handler cleanup.
+const fetchApp = async (request: Request, app: ReturnType<typeof App.make>): Promise<Response> => {
+  try {
+    return await app.handler(request);
+  } finally {
+    await app.dispose();
+  }
+};

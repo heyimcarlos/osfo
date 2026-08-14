@@ -8,16 +8,23 @@
   },
   "scripts": {
     "build": "wrangler deploy --dry-run --outdir dist",
-    "test": "vitest run",
+    "dev": "bun --env-file=.env run dev:wrangler",
+    "dev:wrangler": "CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB=\"$DATABASE_URL\" wrangler dev --port \"${PORT:-8787}\"",
+    "test": "vitest run --config vitest.config.ts && vitest run --config vitest.db.config.ts",
     "typecheck": "wrangler types --check && tsc --noEmit"
   },
   "dependencies": {
-    "effect": "catalog:"
+    "@osfo/auth": "workspace:*",
+    "@osfo/db": "workspace:*",
+    "drizzle-orm": "0.45.2",
+    "effect": "catalog:",
+    "postgres": "3.4.9"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@effect/vitest": "catalog:",
+    "@electric-sql/pglite": "0.5.5",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

@@ -34,7 +34,8 @@ Compute is temporary.
 Osfo v1 uses:
 
 - TypeScript and Effect for product behavior;
-- Cloudflare Workers, Durable Objects, D1, R2, and Workflows;
+- Cloudflare Workers, Durable Objects, Hyperdrive, R2, and Workflows;
+- Neon PostgreSQL for shared control-plane facts;
 - Think as the selected Agent Harness and Session authority;
 - Drizzle for schema declarations, typed queries, and migration generation;
 - Alchemy for Cloudflare infrastructure composition;
@@ -52,7 +53,7 @@ specification.
 ```text
 Meta webhook or Osfo web request
   -> Osfo Worker
-     -> D1 directory, identity, policy, and cross-Agent facts
+     -> PostgreSQL directory, identity, policy, auth, and cross-Agent facts
      -> named Osfo Agent Durable Object by AgentId
         -> Think Session and Think Submission authority
         -> Osfo product facts in namespaced Agent SQLite tables
@@ -94,7 +95,16 @@ identities. They do not replace a route's current Session.
 A Channel Identity is provider-asserted messaging identity. A Phone Account is
 SMS-verified authentication evidence. An AuthSession lets a web client act as a
 User. A Channel Binding lets one provider identity act as and receive messages
-for one User. These facts remain separate.
+for one User. These facts remain separate. Better Auth owns authentication. Its
+`users` table is the Osfo control-plane User table, not a separate auth copy.
+Better Auth also owns `sessions`, `accounts`, `verifications`, and
+`rate_limits`. The phone-number plugin and Twilio Verify provide the selected
+SMS path.
+
+Development temporarily enables Better Auth email-and-password sign-up and
+sign-in so the web and control-plane integration can be exercised without an
+SMS dependency. This is not a launch authentication method. Remove the
+credential UI and disable `emailAndPassword` before the bounded beta.
 
 Osfo v1 supports:
 
@@ -121,27 +131,33 @@ registered User
   + current Usage Allowance
   + exact resource ownership or Integration Connection
   + exact Approval when required
-  - current denial facts
+  - User Suspension, revoked AuthSession or Channel Binding, or deletion access revocation
   = launch authorization result
 ```
 
 Ingress checks the Channel Binding, User suspension, Plan access, and allowance.
 Every protected external effect checks the exact User, action, resource,
-Integration Connection, Approval, and current denial facts again. Model output,
-tool visibility, earlier acceptance, and an earlier Approval are not authority.
+Integration Connection, Approval, User Suspension, binding and session
+revocation, and deletion access revocation again. Missing ownership, Plan
+entitlement, allowance, Integration Connection, or Approval also denies the
+operation. Model output, tool visibility, earlier acceptance, and an earlier
+Approval are not authority. Osfo does not store these decisions in one generic
+denial-facts table.
 
-The implementation records minimum content-free security audit facts for
-registration, authentication, binding, revocation, suspension, deletion,
-Approval, and protected effects. It does not record secrets in Session Memory,
-telemetry, or audit data.
+The initial control plane does not store a generic security audit table.
+Registration state is recoverable from current product facts. Application logs
+support early operational debugging. A future security workflow adds its own
+purpose-built history, such as User suspension and restoration events. Osfo can
+extract a shared audit model only after several concrete workflows need it.
 
 ## Phone-first registration and onboarding
 
 Osfo presents one visible persona. An unregistered WhatsApp sender may receive one
 natural Registration Turn. This turn can identify language, ask what help the
-person wants, and issue a Registration Invitation. It has no stable AgentId,
-Session, memory, tools, entitlements, or external authority. More unregistered
-messages receive a deterministic registration prompt.
+person wants, and issue a Registration Invitation. It may use registration-scoped
+tools and skills. It has no stable AgentId, Session, memory, entitlements, or
+external authority. More unregistered messages receive a deterministic
+registration prompt.
 
 The Registration Dialogue and its temporary transcript are deleted after
 registration or invitation expiry. Osfo creates no handoff summary. Only a
@@ -364,6 +380,18 @@ Allowances do not roll over. Safety, account, billing, usage, cancellation,
 revocation, deletion, and data-right actions stay available after normal usage
 is exhausted.
 
+An allowance period is `scheduled` before its start, `active` during its
+half-open `[startsAt, endsAt)` interval, and `expired` at or after its end. Only
+one period for one User and allowance kind can be active at a time. A work
+identity can create at most one reservation in that period. A reservation moves
+once from `reserved` to `committed` or `released`. Expiry prevents new
+reservations but does not erase committed use or unresolved reservation
+evidence. Authorization reads available quantity as the period limit minus
+committed and currently reserved quantity. Reservation, commit, release, and
+reconciliation arrive with allowance enforcement in Phase 5; the initial
+allowance-period table remains now because registration already establishes the
+first Free period.
+
 A versioned price book converts expected and reported provider use to USD. Osfo
 reserves the conservative maximum cost and category quantities before work.
 Completion reconciles actual or conservative estimated use and releases the
@@ -404,7 +432,7 @@ Think owns Sessions, message order, human-visible tool interactions, branches,
 compaction overlays, and FTS5 indexes. Session history is the canonical record
 of what happened. Core Memory is the Agent's bounded working model. Supermemory
 owns its semantic extraction, provider profile, graph, and retrieval mechanics.
-MemoryProvider recall is evidence, not canonical product truth. D1 contains no
+MemoryProvider recall is evidence, not canonical product truth. Control-plane PostgreSQL contains no
 private Session or memory content.
 
 Core Memory contains two independently bounded, user-readable blocks that are
@@ -581,12 +609,23 @@ apps/worker/
   src/worker.ts
   src/app.ts
   src/authorization.ts
+  src/routes/
+    auth.ts
   src/agents/
+    osfo/
+      agent.ts
+      config.ts
+      memory/
+      storage/
+      tools/
+      skills/
+    registration/
+      agent.ts
+      registration.ts
+      tools/
+      skills/
   src/services/
   src/db/
-    schema/
-    migrations/
-  src/registration-dialogue/
   src/workflows/
   src/adapters/
   src/integrations/
@@ -594,13 +633,19 @@ apps/worker/
     supermemory/
   src/identity/
   src/messaging/
-  src/memory/
   src/delivery/
   src/allowances/
   src/content/
   test/
 
 packages/ui/
+packages/auth/
+  src/index.ts
+  src/schema-generator.ts
+packages/db/
+  src/index.ts
+  src/schema/
+  src/migrations/
 ```
 
 `apps/worker` is the sole Cloudflare composition root. It owns Cloudflare class
@@ -628,26 +673,38 @@ when it hides substantial behavior, protects a real authority, or has a second
 consumer or demonstrated variation. Module Interfaces and observable outcomes
 are the test surface.
 
+`packages/auth` is the private authentication module. It owns the Better Auth
+policy, Dashboard plugin, phone plugin configuration, request-scoped factory,
+and schema-generation entrypoint. It accepts a Drizzle database, Dashboard API
+key, and provider callbacks. It does not read runtime bindings or open a
+database connection.
+
+`packages/db` is the private PostgreSQL module. It owns the shared Drizzle
+schema, database construction, migrations, and migration tests. The Worker owns
+the Hyperdrive resource lifecycle, Effect database Adapter, typed persistence
+failures, Twilio Adapter, HTTP route, and product operations. Authentication and
+product modules import only the schema area they use.
+
 The future Think adapter belongs in `apps/worker/src/integrations/think/`. It is
 extracted only after a second consumer or supported public Interface proves the
 package seam. A future `packages/api` is created only when the Worker and web
 application share a real wire contract. `packages/ui` contains generic shared
 visual modules and no Osfo-specific product behavior.
 
-The Worker-local `db` module owns D1 initialization, Drizzle schemas, the flat
-forward-only migration chain, and storage test support. Product operations live
-outside it in caller-focused modules such as registration, directory, and
-authorization. Agent SQLite and R2 remain separate transaction authorities:
+The Worker-local `db` module owns the Hyperdrive PostgreSQL connection and its
+Effect lifecycle. Product operations live outside it in caller-focused modules
+such as registration, directory, and authorization. Agent SQLite and R2 remain
+separate transaction authorities:
 
 ```text
-D1: shared cross-Agent transactions
+PostgreSQL: shared control-plane transactions
 Agent SQLite: one Agent transaction authority
 R2: immutable object operations
 ```
 
-D1 access stays inside `apps/worker`; the web application does not import the
-database. Agent storage lives with the Durable Object SQLite authority, and
-content operations live with R2. There is no horizontal persistence package.
+PostgreSQL access stays inside `apps/worker`; the web application does not import
+the database. Agent storage lives with the Durable Object SQLite authority, and
+content operations live with R2.
 
 ### Runtime lifetime
 
@@ -668,9 +725,10 @@ from its own bindings, identity, and durable inputs.
 
 ### Storage and transactions
 
-D1 owns cross-Agent identity, registration, channel, Subscription, allowance,
-Agent directory, deletion progress, administration, and security-audit facts.
-D1 contains no private Session or memory content.
+Control-plane PostgreSQL owns Better Auth data, cross-Agent identity,
+registration, channel, Subscription, allowance, Agent directory, deletion
+progress, and administration facts. It contains no private
+Session or memory content.
 
 Think tables in each Agent SQLite database own Sessions, messages, branches,
 compactions, context blocks, FTS5 search, and Think execution facts. Namespaced
@@ -679,8 +737,19 @@ MemoryProvider outbox, Workflow correlation, proactive receipts, and Agent-local
 allowance evidence. Osfo migrations never inspect or modify Think tables. R2
 owns large or immutable content.
 
-There is no transaction across D1, Agent SQLite, R2, Think, Workflow, or an
+There is no transaction across PostgreSQL, Agent SQLite, R2, Think, Workflow, or an
 external provider. Recovery uses stable identities and reconciliation.
+
+Phone Verification and Better Auth complete before the Osfo product
+registration transaction. Better Auth first commits the User, Phone Account
+fields, and AuthSession. One later PostgreSQL transaction establishes or
+recovers the Subscription, first allowance period, Agent route, registration
+completion marker, and one Agent-initialization outbox obligation. The outbox
+then calls the named Agent with a stable initialization
+identity. Agent SQLite applies that initialization idempotently. Activation and
+reconciliation recover a Better Auth User without product facts, a committed
+outbox without Agent initialization, and an initialized Agent whose outbox
+completion was not recorded.
 
 The committed-turn projection is idempotent:
 
@@ -696,7 +765,7 @@ An Agent activation reconciles committed Think turns that lack an Osfo projectio
 Workflow outcomes and milestones use stable RPC to the named Agent. The Agent
 records correlation and creates at most one proactive Submission.
 
-D1 migrations are forward-only. Alchemy applies them before updated traffic.
+PostgreSQL migrations are forward-only. Alchemy applies them before updated traffic.
 Failure aborts deployment. Agent SQLite carries the complete immutable Osfo
 migration chain because an Agent can sleep across releases. Initialization runs
 migrations under Durable Object exclusion. Each migration has a version and
@@ -705,11 +774,12 @@ and contract releases.
 
 ### Infrastructure
 
-The root `alchemy.run.ts` selects Stack, stage, provider state, resource groups,
-and safe outputs. It contains no product behavior. `infra/cloudflare` groups
-data, Osfo compute, Workflows, web, and observability by lifecycle. Development,
-test, and production use separate resources and secrets. Secrets never enter
-stage outputs.
+The root `alchemy.run.ts` selects Stack, stage, provider state, concrete resources,
+and safe outputs. It contains no product behavior. `infra/cloudflare` declares
+the database, Osfo Worker, and execution-unit Workflow. One retained Neon project
+owns the production branch. Development uses a retained child branch, and each
+pull-request preview uses an expiring child branch. Each deployed stage owns its
+Cloudflare resources and secrets. Secrets never enter stage outputs.
 
 Product facts and required semantic evidence commit in the same local
 transaction. There is no cross-store evidence transaction. Telemetry exports
@@ -902,7 +972,7 @@ Implementation evidence must include at least:
 - Core Memory inference and correction, Session replacement, Session Recall,
   forgetting, Session and account deletion, ordered delta capture,
   MemoryProvider timeout, outage, and retry;
-- D1 and Agent SQLite migration chains, interruption, old Agent activation,
+- PostgreSQL and Agent SQLite migration chains, interruption, old Agent activation,
   Think-table isolation, and Worker-to-Agent recovery;
 - provider conformance and focused live qualification for Meta, SMS, managed
   models, Supermemory, Gmail, search, and temporary compute;

@@ -1,4 +1,4 @@
-# ADR 0006: Use Native Memory with a replaceable MemoryProvider
+# ADR 0004: Use Native Memory with a replaceable MemoryProvider
 
 Date: 2026-08-13
 

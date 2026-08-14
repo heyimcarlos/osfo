@@ -1,9 +1,9 @@
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option, Result, Schema } from "effect";
 
-import { runHostEffect } from "../src/adapters/host";
-import { decodeOsfoStage } from "../src/env";
+import { runInvocationEffect } from "../src/adapters/host";
+import { decodeOsfoStage, decodeRuntimeConfig } from "../src/env";
 import { makeWorkflowRuntime, probeExecutionUnit, RuntimeProbe } from "../src/layers";
 
 describe("Osfo Cloudflare host", () => {
@@ -81,10 +81,10 @@ describe("Osfo Cloudflare host", () => {
   it.effect("creates and disposes one runtime for each Workflow callback", () =>
     Effect.gen(function* () {
       const firstResult = yield* Effect.promise(() =>
-        runHostEffect(makeWorkflowRuntime("workflow-1", "test"), probeExecutionUnit, "invocation"),
+        runInvocationEffect(makeWorkflowRuntime("workflow-1", "test"), probeExecutionUnit),
       );
       const secondResult = yield* Effect.promise(() =>
-        runHostEffect(makeWorkflowRuntime("workflow-1", "test"), probeExecutionUnit, "invocation"),
+        runInvocationEffect(makeWorkflowRuntime("workflow-1", "test"), probeExecutionUnit),
       );
 
       expect(firstResult).toMatchObject({
@@ -96,8 +96,31 @@ describe("Osfo Cloudflare host", () => {
     }),
   );
 
-  it("rejects an invalid stage before runtime construction", () => {
-    expect(Option.isNone(decodeOsfoStage("preview"))).toBe(true);
+  it("accepts preview behavior but rejects infrastructure stage names", () => {
+    expect(Option.isSome(decodeOsfoStage("preview"))).toBe(true);
+    expect(Option.isNone(decodeOsfoStage("pr-212"))).toBe(true);
+  });
+
+  it("decodes complete authentication configuration without exposing secrets", () => {
+    const decoded = decodeRuntimeConfig({
+      BETTER_AUTH_API_KEY: "test-only-better-auth-dashboard-api-key",
+      BETTER_AUTH_BASE_URL: "https://osfo.test",
+      BETTER_AUTH_SECRET: "test-only-better-auth-secret-32-characters",
+      BETTER_AUTH_TRUSTED_ORIGINS: '["https://osfo.test"]',
+      OSFO_STAGE: "test",
+      TWILIO_ACCOUNT_SID: `AC${"1".repeat(32)}`,
+      TWILIO_AUTH_TOKEN: "test-only-twilio-token",
+      TWILIO_VERIFY_SERVICE_SID: `VA${"2".repeat(32)}`,
+    });
+
+    expect(Result.isSuccess(decoded)).toBe(true);
+    expect(String(decoded)).not.toContain("test-only-better-auth-dashboard-api-key");
+    expect(String(decoded)).not.toContain("test-only-twilio-token");
+    expect(String(decoded)).not.toContain("test-only-better-auth-secret");
+  });
+
+  it("rejects incomplete authentication configuration", () => {
+    expect(Result.isFailure(decodeRuntimeConfig({ OSFO_STAGE: "test" }))).toBe(true);
   });
 });
 

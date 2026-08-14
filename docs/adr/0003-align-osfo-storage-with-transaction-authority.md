@@ -1,14 +1,14 @@
-# ADR 0005: Align Osfo storage with transaction authority
+# ADR 0003: Align Osfo storage with transaction authority
 
 Date: 2026-08-12
 
-Status: Accepted, memory and restore rules superseded by ADR 0006
+Status: Accepted, control-plane storage superseded by ADR 0007, memory and restore rules superseded by ADR 0006
 
 Osfo v1 stores cross-Agent identity, Agent routing, Subscription, and administration
-facts in D1; private Session and Osfo product facts in each Agent's Durable
+facts in a shared control-plane database; private Session and Osfo product facts in each Agent's Durable
 Object SQLite database; large immutable content in R2; and the User-scoped
 Knowledge Base through MemoryProvider. Drizzle owns schema declarations, typed
-queries, and generated migrations for D1 and Osfo-owned Agent SQLite tables. No
+queries, and generated migrations for the control plane and Osfo-owned Agent SQLite tables. No
 cross-store transaction exists.
 
 Each deep product operation commits its semantic evidence with its product fact

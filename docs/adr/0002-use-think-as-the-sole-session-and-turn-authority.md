@@ -1,4 +1,4 @@
-# ADR 0004: Use Think as the sole Session and turn authority
+# ADR 0002: Use Think as the sole Session and turn authority
 
 Date: 2026-08-12
 

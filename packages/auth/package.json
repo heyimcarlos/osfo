@@ -1,0 +1,23 @@
+{
+  "name": "@osfo/auth",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "db:auth-schema": "auth generate --config src/schema-generator.ts --output ../db/src/schema/auth.ts --yes && cd ../db && oxfmt src/schema/auth.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@better-auth/infra": "0.3.7",
+    "@osfo/db": "workspace:*",
+    "better-auth": "1.6.28",
+    "drizzle-orm": "0.45.2"
+  },
+  "devDependencies": {
+    "auth": "1.6.28",
+    "typescript": "catalog:"
+  }
+}
