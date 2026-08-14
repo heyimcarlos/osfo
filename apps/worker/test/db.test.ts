@@ -1,8 +1,11 @@
-import { env } from "cloudflare:test";
 import { expect, layer } from "@effect/vitest";
+import { applyMigrations, makeTestDatabase } from "@osfo/db/testing";
+import { securityAuditFacts } from "@osfo/db/schema/security-audit";
+import { users } from "@osfo/db/schema/auth";
+import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 
-import { DbTimestamp, layer as dbLayer } from "../src/db";
+import { database, DbTimestamp, dbUnavailable, layerFromDatabase } from "../src/db";
 import {
   AgentId,
   AllowancePeriodId,
@@ -14,11 +17,13 @@ import {
 import * as AgentDirectory from "../src/services/agent-directory";
 import * as Registration from "../src/services/registration";
 
-const databaseLayer = dbLayer({ db: env.DB });
+const fixture = Effect.runSync(makeTestDatabase);
+await Effect.runPromise(applyMigrations(fixture.client));
 
-layer(databaseLayer)("Db", (it) => {
+layer(layerFromDatabase(fixture.database))("Db", (it) => {
   it.effect("atomically establishes registration and stable Agent routing", () =>
     Effect.gen(function* () {
+      yield* seedUser(UserId.make("user-001"));
       const created = yield* Registration.register({
         agentId: AgentId.make("agent-001"),
         allowancePeriodId: AllowancePeriodId.make("allowance-period-001"),
@@ -47,6 +52,7 @@ layer(databaseLayer)("Db", (it) => {
 
   it.effect("returns one registration when the same Registration arrives concurrently", () =>
     Effect.gen(function* () {
+      yield* seedUser(UserId.make("user-duplicate"));
       const input = {
         agentId: AgentId.make("agent-duplicate"),
         allowancePeriodId: AllowancePeriodId.make("allowance-period-duplicate"),
@@ -82,6 +88,8 @@ layer(databaseLayer)("Db", (it) => {
 
   it.effect("rolls back every registration fact when an Agent route conflicts", () =>
     Effect.gen(function* () {
+      yield* seedUser(UserId.make("user-route-owner"));
+      yield* seedUser(UserId.make("user-route-conflict"));
       const first = {
         agentId: AgentId.make("agent-route-conflict"),
         allowancePeriodId: AllowancePeriodId.make("allowance-period-route-owner"),
@@ -118,15 +126,37 @@ layer(databaseLayer)("Db", (it) => {
         _tag: "AgentRouteNotFound",
         userId: "user-route-conflict",
       });
-      expect(failedAudit).toBeNull();
+      expect(failedAudit).toBeUndefined();
       expect(retried.userId).toBe("user-route-conflict");
     }),
   );
 });
 
+const seedUser = (userId: UserId) =>
+  Effect.gen(function* () {
+    const db = yield* database;
+    yield* Effect.tryPromise({
+      try: () =>
+        db.insert(users).values({
+          email: `${userId}@invalid.example`,
+          id: userId,
+          name: "Test User",
+        }),
+      catch: (cause) => dbUnavailable("establishRegistration", cause),
+    });
+  });
+
 const readAudit = (operationId: string) =>
-  Effect.promise(() =>
-    env.DB.prepare("SELECT action, outcome FROM security_audit_facts WHERE operation_id = ?")
-      .bind(operationId)
-      .first<{ readonly action: string; readonly outcome: string }>(),
-  );
+  Effect.gen(function* () {
+    const db = yield* database;
+    const rows = yield* Effect.tryPromise({
+      try: () =>
+        db
+          .select({ action: securityAuditFacts.action, outcome: securityAuditFacts.outcome })
+          .from(securityAuditFacts)
+          .where(eq(securityAuditFacts.operationId, RegistrationId.make(operationId)))
+          .limit(1),
+      catch: (cause) => dbUnavailable("establishRegistration", cause),
+    });
+    return rows[0];
+  });

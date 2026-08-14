@@ -1,8 +1,8 @@
+import { agents } from "@osfo/db/schema/agents";
 import { eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
-import { database, dbUnavailable, decodeRow } from "../db";
-import { agents } from "../db/schema";
+import { database, decodeRow, execute } from "../db";
 import { AgentId, UserId } from "../domain";
 
 /** Stable route from a User to the User-scoped Osfo Agent. */
@@ -23,12 +23,14 @@ export class AgentRouteNotFound extends Schema.TaggedError<AgentRouteNotFound>()
 /** Resolve the stable Agent route for one User. */
 export const resolveAgent = Effect.fn("AgentDirectory.resolveAgent")(function* (userId: UserId) {
   const db = yield* database;
-  const rows = yield* db
-    .select({ agentId: agents.agentId, userId: agents.userId })
-    .from(agents)
-    .where(eq(agents.userId, userId))
-    .limit(1)
-    .pipe(Effect.mapError((cause) => dbUnavailable("resolveAgent", cause)));
+  const rows = yield* execute("resolveAgent", () =>
+    db
+      .select({ agentId: agents.agentId, userId: agents.userId })
+      .from(agents)
+      .where(eq(agents.userId, userId))
+      .limit(1)
+      .execute(),
+  );
   const route = rows[0];
   if (route === undefined) {
     return yield* new AgentRouteNotFound({

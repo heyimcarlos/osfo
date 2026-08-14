@@ -4,8 +4,8 @@ import * as App from "./app";
 import { decodeOsfoStage } from "./env";
 import { invalidOsfoEnvironment } from "./layers";
 
-export { OsfoAgent } from "./agent/osfo-agent";
-export { RegistrationDialogue } from "./registration-dialogue/registration-dialogue";
+export { OsfoAgent } from "./agents/osfo/agent";
+export { RegistrationDialogue } from "./agents/registration/registration";
 export { ExecutionUnitWorkflow } from "./workflows/runtime";
 
 /** Osfo Cloudflare Worker host. */

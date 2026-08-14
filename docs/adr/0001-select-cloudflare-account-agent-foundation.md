@@ -2,7 +2,7 @@
 
 Date: 2026-08-08
 
-Status: Accepted, production qualification pending
+Status: Accepted, control-plane storage superseded by ADR 0007, production qualification pending
 
 Osfo v1 will use Cloudflare as its application and agent-runtime foundation. One
 User-scoped Osfo Agent backed by a Durable Object will host Native Memory and
@@ -16,13 +16,13 @@ state, and one operated platform over LangGraph's greater maturity and
 portability. It supersedes the first application architecture. Git history
 preserves that implementation. Current source must use the selected foundation.
 
-The decision research proved direct durable submission, D1 and Agent SQLite
+The decision research proved direct durable submission, shared database and Agent SQLite
 migrations, interruption recovery, scheduling, idempotency, Effect integration,
 and activation recovery. This does not qualify production. The production SLO,
 recovery, model-quality, and cost gates remain mandatory.
 
 Alchemy is the selected infrastructure-as-code system for provisioning the
-Cloudflare stack, declaring bindings, applying deploy-time D1 migrations, and
+Cloudflare stack, declaring bindings, applying deploy-time database migrations, and
 composing stage outputs. Osfo accepts Alchemy's pre-stable release risk for v1 in
 exchange for faster iteration and Effect-native infrastructure composition.
 Alchemy does not become the Agent Harness or own Osfo runtime behavior. The

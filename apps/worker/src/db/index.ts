@@ -1,6 +1,6 @@
-import * as D1Client from "@effect/sql-d1/D1Client";
-import * as SQLiteD1Drizzle from "drizzle-orm/effect-d1";
+import { createDb, type Database } from "@osfo/db";
 import { Context, DateTime, Effect, Layer, Option, Result, Schema } from "effect";
+import postgres, { type Sql } from "postgres";
 
 /** UTC timestamp stored as an ISO 8601 string. */
 export const DbTimestamp = Schema.String.check(
@@ -20,7 +20,7 @@ export const DbOperation = Schema.Literals(["establishRegistration", "resolveAge
 /** Database operations used in safe failures and telemetry. */
 export type DbOperation = typeof DbOperation.Type;
 
-/** Expected failure when D1 rejects one atomic product operation. */
+/** Expected failure when Postgres rejects one atomic product operation. */
 export class DbWriteRejected extends Schema.TaggedError<DbWriteRejected>()("DbWriteRejected", {
   cause: Schema.Defect(),
   message: Schema.String,
@@ -35,28 +35,18 @@ export class DbUnavailable extends Schema.TaggedError<DbUnavailable>()("DbUnavai
   operation: DbOperation,
 }) {}
 
-/** Cloudflare D1 binding used by the Worker database. */
+/** Cloudflare Hyperdrive binding used by the Worker database. */
 export interface Options {
-  readonly db: D1Database;
+  readonly db: Hyperdrive;
 }
 
-/** Drizzle database and Effect D1 client acquired once for a database Layer. */
-export type Database = SQLiteD1Drizzle.EffectSQLiteD1Database & {
-  readonly $client: D1Client.D1Client;
-};
+export type { Database } from "@osfo/db";
 
 interface DbService {
   readonly database: Database;
 }
 
-interface DrizzleQuery {
-  readonly toSQL: () => {
-    readonly params: ReadonlyArray<unknown>;
-    readonly sql: string;
-  };
-}
-
-/** Worker-local access to the shared D1 database. */
+/** Worker-local access to the shared Postgres database. */
 export class Db extends Context.Service<Db, DbService>()("@osfo/worker/Db") {}
 
 /** Acquire the shared Drizzle database from the current Effect context. */
@@ -65,22 +55,34 @@ export const database: Effect.Effect<Database, never, Db> = Effect.map(
   (service) => service.database,
 );
 
-/** Construct the Worker database from the provided D1 client. */
-export const make = Effect.fn("Db.make")(function* () {
-  const drizzle = yield* SQLiteD1Drizzle.makeWithDefaults({});
-  return Db.of({ database: drizzle });
+/** Construct the Worker database from one request-scoped Postgres client. */
+export const make = (client: Sql): DbService => ({
+  database: createDb(client),
 });
 
-/** Database Layer that preserves its D1 client requirement for composition. */
-export const layerWithoutDependencies = Layer.effect(Db, make());
+/** Database Layer backed by one provided Postgres client. */
+export const layerFromClient = (client: Sql) => Layer.succeed(Db, make(client));
 
-/** Production database Layer backed by one Cloudflare D1 binding. */
+/** Database Layer backed by one provided Drizzle PostgreSQL database. */
+export const layerFromDatabase = (provided: Database) => Layer.succeed(Db, { database: provided });
+
+/** Production database Layer backed by one Cloudflare Hyperdrive binding. */
 export const layer = (options: Options) =>
-  layerWithoutDependencies.pipe(
-    Layer.provide(D1Client.layer({ db: options.db }).pipe(Layer.orDie)),
+  Layer.effect(
+    Db,
+    Effect.acquireRelease(
+      Effect.sync(() =>
+        postgres(options.db.connectionString, {
+          fetch_types: false,
+          max: 5,
+          prepare: true,
+        }),
+      ),
+      (client) => Effect.promise(() => client.end()),
+    ).pipe(Effect.map(make)),
   );
 
-/** Translate an unknown D1 failure into a safe database failure. */
+/** Translate an unknown Postgres failure into a safe database failure. */
 export const dbUnavailable = (operation: DbOperation, cause: unknown) =>
   new DbUnavailable({
     cause,
@@ -88,13 +90,20 @@ export const dbUnavailable = (operation: DbOperation, cause: unknown) =>
     operation,
   });
 
-/** Create the typed failure for an atomic write rejected by D1. */
+/** Create the typed failure for an atomic write rejected by Postgres. */
 export const dbWriteRejected = (operation: DbOperation, operationId: string, cause: unknown) =>
   new DbWriteRejected({
     cause,
     message: `The database rejected the atomic ${operation} facts`,
     operation,
     operationId,
+  });
+
+/** Run one Postgres promise and translate its failure. */
+export const execute = <A>(operation: DbOperation, query: () => Promise<A>) =>
+  Effect.tryPromise({
+    try: query,
+    catch: (cause) => dbUnavailable(operation, cause),
   });
 
 /** Decode one database row into a trusted application value. */
@@ -118,9 +127,3 @@ export const decodeOptionalRow = <A, Encoded extends object>(
   Effect.gen(function* () {
     return row === undefined ? undefined : yield* decodeRow(schema, row, operation);
   });
-
-/** Compile one Drizzle query into an Effect D1 statement for an atomic batch. */
-export const toD1Statement = (db: Database, query: DrizzleQuery) => {
-  const compiled = query.toSQL();
-  return db.$client.unsafe(compiled.sql, compiled.params);
-};

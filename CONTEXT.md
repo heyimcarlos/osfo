@@ -23,8 +23,8 @@ _Avoid_: Model provider, Osfo runtime, Messaging Adapter
 An ephemeral pre-registration interaction that presents the same visible Osfo
 persona to an unregistered visitor and conducts the natural part of a
 Registration Dialogue. It has no stable AgentId, Session, User memory,
-tools, entitlements, or external authority and is deleted after registration or
-expiry.
+entitlements, or external authority. It may use registration-scoped tools and
+skills, and is deleted after registration or expiry.
 _Avoid_: Company Osfo Agent, anonymous personal Agent, registration authority,
 Agent handoff
 

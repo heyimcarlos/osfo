@@ -46,8 +46,14 @@ it.
 - `packages/ui`: shared React DOM, Tailwind CSS, and shadcn/ui components,
   styles, hooks, and UI utilities. Every consumable path has an explicit
   package export. Keep Osfo-specific behavior in `apps/web`.
+- `packages/auth`: private Better Auth policy and its request-scoped factory.
+  Keep runtime configuration, database connections, and provider adapters in
+  `apps/worker`.
+- `packages/db`: private PostgreSQL schema, migrations, Drizzle construction,
+  and database test support. Keep Cloudflare bindings, Effect integration,
+  typed application failures, and product operations in `apps/worker`.
 - `apps/worker`: Osfo product behavior, Cloudflare runtime composition, provider
-  adapters, and authority-specific D1, Agent SQLite, and R2 modules.
+  adapters, and authority-specific PostgreSQL, Agent SQLite, and R2 modules.
 - `apps/web`: Osfo-specific web behavior and the browser composition root.
 - Extract a workspace package only after a second consumer or supported public
   interface proves the seam. Create `packages/api` only when Worker and web share

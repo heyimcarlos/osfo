@@ -2,7 +2,7 @@ import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
 
-import { runHostEffect } from "../src/adapters/host";
+import { runInvocationEffect } from "../src/adapters/host";
 import { decodeOsfoStage } from "../src/env";
 import { makeWorkflowRuntime, probeExecutionUnit, RuntimeProbe } from "../src/layers";
 
@@ -95,10 +95,10 @@ describe("Osfo Cloudflare host", () => {
   it.effect("creates and disposes one runtime for each Workflow callback", () =>
     Effect.gen(function* () {
       const firstResult = yield* Effect.promise(() =>
-        runHostEffect(makeWorkflowRuntime("workflow-1", "test"), probeExecutionUnit, "invocation"),
+        runInvocationEffect(makeWorkflowRuntime("workflow-1", "test"), probeExecutionUnit),
       );
       const secondResult = yield* Effect.promise(() =>
-        runHostEffect(makeWorkflowRuntime("workflow-1", "test"), probeExecutionUnit, "invocation"),
+        runInvocationEffect(makeWorkflowRuntime("workflow-1", "test"), probeExecutionUnit),
       );
 
       expect(firstResult).toMatchObject({

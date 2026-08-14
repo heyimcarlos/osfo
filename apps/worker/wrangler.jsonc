@@ -7,13 +7,11 @@
   "vars": {
     "OSFO_STAGE": "test",
   },
-  "d1_databases": [
+  "hyperdrive": [
     {
       "binding": "DB",
-      "database_name": "osfo-test-db",
-      "database_id": "00000000-0000-0000-0000-000000000001",
-      "migrations_dir": "src/db/migrations",
-      "migrations_pattern": "src/db/migrations/*/migration.sql",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "localConnectionString": "postgres://osfo:osfo@127.0.0.1:5432/osfo_test",
     },
   ],
   "durable_objects": {

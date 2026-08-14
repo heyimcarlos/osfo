@@ -26,7 +26,7 @@ export const workerResources = (
         flags: ["nodejs_compat"],
       },
       env: {
-        DB: data.db,
+        DB: data.hyperdrive,
         EXECUTION_UNIT_WORKFLOW: executionUnitWorkflow,
         OSFO_AGENT: osfoAgent,
         OSFO_STAGE: stage,

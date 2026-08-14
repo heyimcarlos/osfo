@@ -1,7 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent } from "cloudflare:workers";
 import { Option } from "effect";
 
-import { runHostEffect } from "../adapters/host";
+import { runInvocationEffect } from "../adapters/host";
 import { decodeOsfoStage } from "../env";
 import {
   invalidOsfoEnvironment,
@@ -19,11 +19,7 @@ export class ExecutionUnitWorkflow extends WorkflowEntrypoint<Env, null> {
     return Option.match(stage, {
       onNone: () => Promise.resolve(invalidOsfoEnvironment),
       onSome: (parsedStage) =>
-        runHostEffect(
-          makeWorkflowRuntime(event.instanceId, parsedStage),
-          probeExecutionUnit,
-          "invocation",
-        ),
+        runInvocationEffect(makeWorkflowRuntime(event.instanceId, parsedStage), probeExecutionUnit),
     });
   }
 }

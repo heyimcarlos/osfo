@@ -1,16 +1,15 @@
 import { DurableObject } from "cloudflare:workers";
 import { Option } from "effect";
 
-import { runHostEffect } from "../adapters/host";
-import { decodeOsfoStage } from "../env";
+import { decodeOsfoStage } from "../../env";
 import {
   invalidOsfoEnvironment,
   makeRegistrationDialogueRuntime,
   probeExecutionUnit,
   type RuntimeProbeResult,
-} from "../layers";
+} from "../../layers";
 
-/** Invitation-scoped Durable Object with no User or Agent authority. */
+/** Invitation-scoped Durable Object that hosts the restricted Registration Agent. */
 export class RegistrationDialogue extends DurableObject<Env> {
   readonly #runtime = Option.map(decodeOsfoStage(this.env.OSFO_STAGE), (stage) =>
     makeRegistrationDialogueRuntime(this.ctx.id.name ?? this.ctx.id.toString(), stage),
@@ -20,7 +19,7 @@ export class RegistrationDialogue extends DurableObject<Env> {
   probeRuntime(): Promise<RuntimeProbeResult> {
     return Option.match(this.#runtime, {
       onNone: () => Promise.resolve(invalidOsfoEnvironment),
-      onSome: (runtime) => runHostEffect(runtime, probeExecutionUnit, "activation"),
+      onSome: (runtime) => runtime.runPromise(probeExecutionUnit),
     });
   }
 }

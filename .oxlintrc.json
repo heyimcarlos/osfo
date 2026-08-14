@@ -41,9 +41,21 @@
       }
     },
     {
-      "files": ["apps/worker/test/**/*.test.ts"],
+      "files": ["apps/worker/test/**/*.test.ts", "packages/db/test/**/*.test.ts"],
       "rules": {
         "vitest/no-standalone-expect": "off"
+      }
+    },
+    {
+      "files": ["packages/db/src/schema/auth.ts"],
+      "rules": {
+        "effecttsgo/global-date": "off"
+      }
+    },
+    {
+      "files": ["packages/db/test/postgres-fixture.ts"],
+      "rules": {
+        "effecttsgo/async-function": "off"
       }
     },
     {
