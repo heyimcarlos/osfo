@@ -774,11 +774,12 @@ and contract releases.
 
 ### Infrastructure
 
-The root `alchemy.run.ts` selects Stack, stage, provider state, resource groups,
-and safe outputs. It contains no product behavior. `infra/cloudflare` groups
-data, Osfo compute, Workflows, web, and observability by lifecycle. Development,
-test, and production use separate resources and secrets. Secrets never enter
-stage outputs.
+The root `alchemy.run.ts` selects Stack, stage, provider state, concrete resources,
+and safe outputs. It contains no product behavior. `infra/cloudflare` declares
+the database, Osfo Worker, and execution-unit Workflow. One retained Neon project
+owns the production branch. Development uses a retained child branch, and each
+pull-request preview uses an expiring child branch. Each deployed stage owns its
+Cloudflare resources and secrets. Secrets never enter stage outputs.
 
 Product facts and required semantic evidence commit in the same local
 transaction. There is no cross-store evidence transaction. Telemetry exports

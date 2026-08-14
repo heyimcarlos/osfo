@@ -110,8 +110,9 @@ describe("Osfo Cloudflare host", () => {
     }),
   );
 
-  it("rejects an invalid stage before runtime construction", () => {
-    expect(Option.isNone(decodeOsfoStage("preview"))).toBe(true);
+  it("accepts preview behavior but rejects infrastructure stage names", () => {
+    expect(Option.isSome(decodeOsfoStage("preview"))).toBe(true);
+    expect(Option.isNone(decodeOsfoStage("pr-212"))).toBe(true);
   });
 
   it("decodes complete authentication configuration without exposing secrets", () => {

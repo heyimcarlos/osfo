@@ -44,12 +44,33 @@ environment files.
 
 The Worker uses stage-local Cloudflare bindings declared in
 `apps/worker/wrangler.jsonc`. For local Worker development, set `DATABASE_URL`
-in `apps/worker/.env` to the direct PostgreSQL connection string. The Worker
-development command maps it to Wrangler's local Hyperdrive binding. To provision
-a development stack with the same Worker configuration, run:
+in `apps/worker/.env` to the development branch connection string. The Worker
+development command maps it to Wrangler's local Hyperdrive binding.
+
+Alchemy owns one PostgreSQL 18 Neon project named `osfo.ai`. Deploy production
+first because that stage owns the project and its default `production` branch.
+Set `NEON_ORG_ID` to the Osfo Neon organization ID, then inspect and apply the
+production plan:
 
 ```sh
-bunx alchemy dev --env-file apps/worker/.env
+bunx alchemy deploy --dry-run --stage production --env-file apps/worker/.env
+bunx alchemy deploy --stage production --env-file apps/worker/.env
+```
+
+The development stage references that project and creates the retained
+`development` branch:
+
+```sh
+bunx alchemy dev --stage development --env-file apps/worker/.env
+```
+
+A `pr-<number>` stage creates a Neon branch named `preview/pr-<number>`. The
+branch expires seven days after its latest deployment. Destroy the stage when
+the pull request closes so its Worker and Hyperdrive are also removed:
+
+```sh
+bunx alchemy deploy --stage pr-212 --env-file apps/worker/.env
+bunx alchemy destroy --stage pr-212 --env-file apps/worker/.env
 ```
 
 Production deployment receives these values from CI or the deployment secret
@@ -66,10 +87,10 @@ bun run db:push
 bun run db:studio
 ```
 
-Use `db:migrate` for committed migrations. Use `db:push` only for disposable
-local development. Alchemy applies the same committed migration files to the
-Neon databases it manages, so do not run both migration systems against the
-same database.
+Use `db:migrate` for a database that Alchemy does not manage. Use `db:push` only
+for disposable local development. Alchemy applies committed migration files to
+the production project and every child branch, so do not run both migration
+systems against the same database.
 
 The selected Twilio Verify Service must define the programmable rate-limit key
 `phone_number`. Configure one bucket for one send per 30 seconds and one bucket
