@@ -225,8 +225,9 @@ credentials cannot own Session identity, Channel identity, or device identity.
 _Avoid_: Channel Binding, Account, permanent bearer token
 
 **User Suspension**:
-A named denial fact that blocks a User's protected operations without changing
-or replacing the User. Recovery and deletion remain separate manual policies.
+A durable administrative fact that blocks a User's protected operations without
+changing or replacing the User. Recovery and deletion remain separate manual
+policies.
 _Avoid_: User lifecycle status, AuthSession revocation, allowance exhaustion
 
 **Channel Binding Revocation**:
@@ -242,7 +243,8 @@ _Avoid_: Usage Allowance, Approval, paid User status
 **Authorization Policy**:
 The small deterministic default-deny table that decides whether one v1 launch
 action is allowed for a User, resource, and current context. It uses exact Plan,
-allowance, ownership, Integration Connection, Approval, and denial facts.
+allowance, ownership, Integration Connection, Approval, User Suspension,
+AuthSession revocation, Channel Binding revocation, and deletion-access facts.
 _Avoid_: Agent judgment, generic permission framework, tool visibility
 
 **Subscription**:
@@ -273,12 +275,6 @@ The explicit administrative process that closes a User and applies the accepted
 deletion and retention policy. A request immediately revokes access, but v1 does
 not expose a general User lifecycle or automated deletion workflow.
 _Avoid_: User Suspension, Account removal, immediate hard delete
-
-**Security Audit Fact**:
-An immutable record of an identity or authority transition, including its actor,
-command identity, evidence type, resource, typed result, reason, and time. It
-remains outside Session Memory and never contains authentication secrets.
-_Avoid_: Session history, operational log, raw credential record
 
 **Osfo Agent**:
 The durable personal agent owned by exactly one User. It has one stable AgentId

@@ -73,14 +73,6 @@ CREATE TABLE "allowance_periods" (
 	"user_id" text NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "security_audit_facts" (
-	"action" text NOT NULL,
-	"occurred_at" text NOT NULL,
-	"operation_id" text PRIMARY KEY NOT NULL,
-	"outcome" text NOT NULL,
-	"user_id" text NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE "subscriptions" (
 	"created_at" text NOT NULL,
 	"plan" text NOT NULL,
@@ -93,7 +85,6 @@ ALTER TABLE "accounts" ADD CONSTRAINT "accounts_user_id_users_id_fk" FOREIGN KEY
 ALTER TABLE "sessions" ADD CONSTRAINT "sessions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agents" ADD CONSTRAINT "agents_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "allowance_periods" ADD CONSTRAINT "allowance_periods_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "security_audit_facts" ADD CONSTRAINT "security_audit_facts_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "subscriptions" ADD CONSTRAINT "subscriptions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "accounts_userId_idx" ON "accounts" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "sessions_userId_idx" ON "sessions" USING btree ("user_id");--> statement-breakpoint

@@ -34,7 +34,6 @@ describe("Postgres migrations", () => {
             "allowance_periods",
             "migrations",
             "rate_limits",
-            "security_audit_facts",
             "sessions",
             "subscriptions",
             "users",

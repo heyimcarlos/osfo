@@ -1,8 +1,6 @@
 import { expect, layer } from "@effect/vitest";
 import { applyMigrations, makeTestDatabase } from "@osfo/db/testing";
-import { securityAuditFacts } from "@osfo/db/schema/security-audit";
 import { users } from "@osfo/db/schema/auth";
-import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 
 import { database, DbTimestamp, dbUnavailable, layerFromDatabase } from "../src/db";
@@ -36,7 +34,6 @@ layer(layerFromDatabase(fixture.database))("Db", (it) => {
         userId: UserId.make("user-001"),
       });
       const route = yield* AgentDirectory.resolveAgent(UserId.make("user-001"));
-      const audit = yield* readAudit("registration-001");
 
       expect(created).toEqual({
         agentId: "agent-001",
@@ -46,7 +43,6 @@ layer(layerFromDatabase(fixture.database))("Db", (it) => {
         userId: "user-001",
       });
       expect(route).toEqual({ agentId: "agent-001", userId: "user-001" });
-      expect(audit).toEqual({ action: "registration_established", outcome: "applied" });
     }),
   );
 
@@ -112,7 +108,6 @@ layer(layerFromDatabase(fixture.database))("Db", (it) => {
       yield* Registration.register(first);
       const failedCreate = yield* Effect.flip(Registration.register(second));
       const missingRoute = yield* Effect.flip(AgentDirectory.resolveAgent(second.userId));
-      const failedAudit = yield* readAudit("registration-route-conflict");
       const retried = yield* Registration.register({
         ...second,
         agentId: AgentId.make("agent-route-retry"),
@@ -126,7 +121,6 @@ layer(layerFromDatabase(fixture.database))("Db", (it) => {
         _tag: "AgentRouteNotFound",
         userId: "user-route-conflict",
       });
-      expect(failedAudit).toBeUndefined();
       expect(retried.userId).toBe("user-route-conflict");
     }),
   );
@@ -144,19 +138,4 @@ const seedUser = (userId: UserId) =>
         }),
       catch: (cause) => dbUnavailable("establishRegistration", cause),
     });
-  });
-
-const readAudit = (operationId: string) =>
-  Effect.gen(function* () {
-    const db = yield* database;
-    const rows = yield* Effect.tryPromise({
-      try: () =>
-        db
-          .select({ action: securityAuditFacts.action, outcome: securityAuditFacts.outcome })
-          .from(securityAuditFacts)
-          .where(eq(securityAuditFacts.operationId, RegistrationId.make(operationId)))
-          .limit(1),
-      catch: (cause) => dbUnavailable("establishRegistration", cause),
-    });
-    return rows[0];
   });

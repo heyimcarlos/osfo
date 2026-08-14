@@ -1,8 +1,7 @@
 import { agents } from "@osfo/db/schema/agents";
 import { users } from "@osfo/db/schema/auth";
-import { securityAuditFacts } from "@osfo/db/schema/security-audit";
 import { allowancePeriods, subscriptions } from "@osfo/db/schema/billing";
-import { and, asc, eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { DateTime, Effect, Option, Schema } from "effect";
 
 import {
@@ -22,7 +21,6 @@ import {
   SubscriptionId,
   UserId,
 } from "../domain";
-import * as SecurityAudit from "./security-audit";
 
 /** Result of atomically establishing the launch registration facts. */
 export const RegistrationEstablished = Schema.Struct({
@@ -52,7 +50,7 @@ export const RegisterInput = Schema.Struct({
 /** Complete deterministic input for the atomic launch registration operation. */
 export type RegisterInput = typeof RegisterInput.Type;
 
-/** Expected failure when one Registration identity is reused for different facts. */
+/** Expected failure when completed registration facts differ from the request. */
 export class RegistrationConflict extends Schema.TaggedError<RegistrationConflict>()(
   "RegistrationConflict",
   {
@@ -78,7 +76,6 @@ const StoredRegistration = Schema.Struct({
   occurredAt: DbTimestamp,
   plan: Plan,
   planPolicyVersion: PlanPolicyVersion,
-  registrationId: RegistrationId,
   subscriptionId: SubscriptionId,
   userId: UserId,
 });
@@ -138,7 +135,6 @@ export const register = Effect.fn("Registration.register")(function* (input: Reg
           startsAt: input.allowancePeriodStartsAt,
           userId: input.userId,
         });
-        await SecurityAudit.registrationEstablished(transaction, input);
         const completedAt = DateTime.make(input.occurredAt);
         if (Option.isNone(completedAt)) {
           return { kind: "inconsistent" };
@@ -202,10 +198,9 @@ const findRegistrationQuery = (db: RegistrationReader, userId: UserId) =>
       allowancePeriodEndsAt: allowancePeriods.endsAt,
       allowancePeriodId: allowancePeriods.allowancePeriodId,
       allowancePeriodStartsAt: allowancePeriods.startsAt,
-      occurredAt: securityAuditFacts.occurredAt,
+      occurredAt: agents.createdAt,
       plan: subscriptions.plan,
       planPolicyVersion: subscriptions.planPolicyVersion,
-      registrationId: securityAuditFacts.operationId,
       subscriptionId: subscriptions.subscriptionId,
       userId: agents.userId,
     })
@@ -213,13 +208,6 @@ const findRegistrationQuery = (db: RegistrationReader, userId: UserId) =>
     .innerJoin(agents, eq(agents.userId, users.id))
     .innerJoin(subscriptions, eq(subscriptions.userId, users.id))
     .innerJoin(allowancePeriods, eq(allowancePeriods.userId, users.id))
-    .innerJoin(
-      securityAuditFacts,
-      and(
-        eq(securityAuditFacts.userId, users.id),
-        eq(securityAuditFacts.action, "registration_established"),
-      ),
-    )
     .where(eq(users.id, userId))
     .orderBy(asc(allowancePeriods.startsAt))
     .limit(1)
@@ -245,7 +233,7 @@ const recoverExistingRegistration = (input: RegisterInput, existing: StoredRegis
     ? Effect.succeed(registrationEstablished(existing))
     : Effect.fail(
         new RegistrationConflict({
-          message: "The Registration identity was already used for different facts",
+          message: "Registration already completed with different facts",
           registrationId: input.registrationId,
         }),
       );
@@ -258,7 +246,6 @@ const matchesInput = (existing: StoredRegistration, input: RegisterInput) =>
   existing.occurredAt === input.occurredAt &&
   existing.plan === "free" &&
   existing.planPolicyVersion === input.planPolicyVersion &&
-  existing.registrationId === input.registrationId &&
   existing.subscriptionId === input.subscriptionId &&
   existing.userId === input.userId;
 
