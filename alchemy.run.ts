@@ -1,7 +1,7 @@
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Neon from "alchemy/Neon";
-import { Config, ConfigProvider, Effect, Layer, Schema } from "effect";
+import { Config, Effect, Layer, Schema } from "effect";
 
 import { OsfoStage } from "@osfo/worker/env";
 import { dataResources } from "./infra/cloudflare/data";
@@ -22,17 +22,7 @@ export default Alchemy.Stack(
     const stage = yield* Schema.decodeUnknownEffect(OsfoStage)(rawStage).pipe(
       Effect.mapError((error) => new Config.ConfigError(error)),
     );
-    const data = yield* dataResources(stage).pipe(
-      Effect.mapError(
-        (error) =>
-          new Config.ConfigError(
-            new ConfigProvider.SourceError({
-              cause: error,
-              message: "Postgres migration integrity verification failed",
-            }),
-          ),
-      ),
-    );
+    const data = yield* dataResources(stage);
     const workflows = workflowResources(stage);
     const web = webResources(stage);
     const worker = yield* workerResources(
