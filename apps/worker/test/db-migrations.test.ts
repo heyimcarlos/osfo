@@ -21,8 +21,6 @@ describe("D1 migrations", () => {
       expect(applicationTables.results.map(({ name }) => name)).toEqual([
         "agents",
         "allowance_periods",
-        "commands",
-        "denial_facts",
         "migrations",
         "security_audit_facts",
         "subscriptions",

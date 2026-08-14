@@ -2,8 +2,8 @@ import { hashMigrations } from "alchemy/SQL/SqlFile";
 import { Effect, Schema } from "effect";
 
 const dbMigrationDigests = {
-  "20260813224000_redundant_pyro/migration.sql":
-    "beea34b73f3eb535bac94f09e7ea9efd9b3508e0a10e482b7fcfab504a4e735b",
+  "20260814003547_pruned_control_plane/migration.sql":
+    "ed0afb956bf9e8ec4f3730b26b99db7a359112a955fb87433638a7a326094cd3",
 } as const;
 
 /** Deployment failure when a released forward-only migration was edited or removed. */

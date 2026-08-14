@@ -2,16 +2,16 @@ import { env } from "cloudflare:test";
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 
-import { DbCommandId, DbTimestamp, layer as dbLayer } from "../src/db";
+import { DbTimestamp, layer as dbLayer } from "../src/db";
 import {
   AgentId,
   AllowancePeriodId,
   PlanPolicyVersion,
+  RegistrationId,
   SubscriptionId,
   UserId,
 } from "../src/domain";
 import * as AgentDirectory from "../src/services/agent-directory";
-import * as DenialFacts from "../src/services/denial-facts";
 import * as Registration from "../src/services/registration";
 
 const databaseLayer = dbLayer({ db: env.DB });
@@ -24,14 +24,14 @@ layer(databaseLayer)("Db", (it) => {
         allowancePeriodId: AllowancePeriodId.make("allowance-period-001"),
         allowancePeriodStartsAt: DbTimestamp.make("2026-08-01T00:00:00.000Z"),
         allowancePeriodEndsAt: DbTimestamp.make("2026-09-01T00:00:00.000Z"),
-        commandId: DbCommandId.make("command-establish-registration-001"),
         occurredAt: DbTimestamp.make("2026-08-12T15:00:00.000Z"),
         planPolicyVersion: PlanPolicyVersion.make("launch-2026-08-12"),
+        registrationId: RegistrationId.make("registration-001"),
         subscriptionId: SubscriptionId.make("subscription-001"),
         userId: UserId.make("user-001"),
       });
       const route = yield* AgentDirectory.resolveAgent(UserId.make("user-001"));
-      const audit = yield* readAudit("command-establish-registration-001");
+      const audit = yield* readAudit("registration-001");
 
       expect(created).toEqual({
         agentId: "agent-001",
@@ -45,16 +45,16 @@ layer(databaseLayer)("Db", (it) => {
     }),
   );
 
-  it.effect("returns one registration when the same command arrives concurrently", () =>
+  it.effect("returns one registration when the same Registration arrives concurrently", () =>
     Effect.gen(function* () {
       const input = {
         agentId: AgentId.make("agent-duplicate"),
         allowancePeriodId: AllowancePeriodId.make("allowance-period-duplicate"),
         allowancePeriodStartsAt: DbTimestamp.make("2026-08-01T00:00:00.000Z"),
         allowancePeriodEndsAt: DbTimestamp.make("2026-09-01T00:00:00.000Z"),
-        commandId: DbCommandId.make("command-registration-duplicate"),
         occurredAt: DbTimestamp.make("2026-08-12T15:01:00.000Z"),
         planPolicyVersion: PlanPolicyVersion.make("launch-2026-08-12"),
+        registrationId: RegistrationId.make("registration-duplicate"),
         subscriptionId: SubscriptionId.make("subscription-duplicate"),
         userId: UserId.make("user-duplicate"),
       };
@@ -74,8 +74,8 @@ layer(databaseLayer)("Db", (it) => {
       expect(duplicate).toEqual(first);
       expect(exactDuplicate).toEqual(first);
       expect(conflict).toMatchObject({
-        _tag: "DbCommandConflict",
-        commandId: "command-registration-duplicate",
+        _tag: "RegistrationConflict",
+        registrationId: "registration-duplicate",
       });
     }),
   );
@@ -87,16 +87,16 @@ layer(databaseLayer)("Db", (it) => {
         allowancePeriodId: AllowancePeriodId.make("allowance-period-route-owner"),
         allowancePeriodStartsAt: DbTimestamp.make("2026-08-01T00:00:00.000Z"),
         allowancePeriodEndsAt: DbTimestamp.make("2026-09-01T00:00:00.000Z"),
-        commandId: DbCommandId.make("command-route-owner"),
         occurredAt: DbTimestamp.make("2026-08-12T15:01:30.000Z"),
         planPolicyVersion: PlanPolicyVersion.make("launch-2026-08-12"),
+        registrationId: RegistrationId.make("registration-route-owner"),
         subscriptionId: SubscriptionId.make("subscription-route-owner"),
         userId: UserId.make("user-route-owner"),
       };
       const second = {
         ...first,
         allowancePeriodId: AllowancePeriodId.make("allowance-period-route-conflict"),
-        commandId: DbCommandId.make("command-route-conflict"),
+        registrationId: RegistrationId.make("registration-route-conflict"),
         subscriptionId: SubscriptionId.make("subscription-route-conflict"),
         userId: UserId.make("user-route-conflict"),
       };
@@ -104,7 +104,7 @@ layer(databaseLayer)("Db", (it) => {
       yield* Registration.register(first);
       const failedCreate = yield* Effect.flip(Registration.register(second));
       const missingRoute = yield* Effect.flip(AgentDirectory.resolveAgent(second.userId));
-      const failedAudit = yield* readAudit("command-route-conflict");
+      const failedAudit = yield* readAudit("registration-route-conflict");
       const retried = yield* Registration.register({
         ...second,
         agentId: AgentId.make("agent-route-retry"),
@@ -112,7 +112,7 @@ layer(databaseLayer)("Db", (it) => {
 
       expect(failedCreate).toMatchObject({
         _tag: "DbWriteRejected",
-        commandId: "command-route-conflict",
+        operationId: "registration-route-conflict",
       });
       expect(missingRoute).toMatchObject({
         _tag: "AgentRouteNotFound",
@@ -122,45 +122,11 @@ layer(databaseLayer)("Db", (it) => {
       expect(retried.userId).toBe("user-route-conflict");
     }),
   );
-
-  it.effect("records content-free denial facts for authorization", () =>
-    Effect.gen(function* () {
-      yield* Registration.register({
-        agentId: AgentId.make("agent-denial"),
-        allowancePeriodId: AllowancePeriodId.make("allowance-period-denial"),
-        allowancePeriodStartsAt: DbTimestamp.make("2026-08-01T00:00:00.000Z"),
-        allowancePeriodEndsAt: DbTimestamp.make("2026-09-01T00:00:00.000Z"),
-        commandId: DbCommandId.make("command-registration-denial"),
-        occurredAt: DbTimestamp.make("2026-08-12T15:02:00.000Z"),
-        planPolicyVersion: PlanPolicyVersion.make("launch-2026-08-12"),
-        subscriptionId: SubscriptionId.make("subscription-denial"),
-        userId: UserId.make("user-denial"),
-      });
-      const denialInput = {
-        commandId: DbCommandId.make("command-denial-001"),
-        denialFactId: DenialFacts.DenialFactId.make("denial-001"),
-        kind: DenialFacts.DenialKind.make("user_suspension"),
-        occurredAt: DbTimestamp.make("2026-08-12T15:03:00.000Z"),
-        resourceId: DenialFacts.DeniedResourceId.make("user-denial"),
-        userId: UserId.make("user-denial"),
-      };
-      const [recorded, duplicate] = yield* Effect.all(
-        [DenialFacts.record(denialInput), DenialFacts.record(denialInput)],
-        { concurrency: "unbounded" },
-      );
-      const facts = yield* DenialFacts.readForUser(UserId.make("user-denial"));
-      const audit = yield* readAudit("command-denial-001");
-
-      expect(duplicate).toEqual(recorded);
-      expect(facts).toEqual([recorded]);
-      expect(audit).toEqual({ action: "denial_recorded", outcome: "applied" });
-    }),
-  );
 });
 
-const readAudit = (commandId: string) =>
+const readAudit = (operationId: string) =>
   Effect.promise(() =>
-    env.DB.prepare("SELECT action, outcome FROM security_audit_facts WHERE command_id = ?")
-      .bind(commandId)
+    env.DB.prepare("SELECT action, outcome FROM security_audit_facts WHERE operation_id = ?")
+      .bind(operationId)
       .first<{ readonly action: string; readonly outcome: string }>(),
   );

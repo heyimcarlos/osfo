@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "e9e23f04-5507-4a47-a3bd-6c95c5db4860",
+  "id": "eb37991e-394e-49db-887d-0ed4d8b43f24",
   "prevIds": ["00000000-0000-0000-0000-000000000000"],
   "ddl": [
     {
@@ -10,14 +10,6 @@
     },
     {
       "name": "allowance_periods",
-      "entityType": "tables"
-    },
-    {
-      "name": "commands",
-      "entityType": "tables"
-    },
-    {
-      "name": "denial_facts",
       "entityType": "tables"
     },
     {
@@ -124,96 +116,6 @@
     },
     {
       "type": "text",
-      "notNull": false,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "command_id",
-      "entityType": "columns",
-      "table": "commands"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "completed_at",
-      "entityType": "columns",
-      "table": "commands"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "operation",
-      "entityType": "columns",
-      "table": "commands"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "request_digest",
-      "entityType": "columns",
-      "table": "commands"
-    },
-    {
-      "type": "text",
-      "notNull": false,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "denial_fact_id",
-      "entityType": "columns",
-      "table": "denial_facts"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "kind",
-      "entityType": "columns",
-      "table": "denial_facts"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "occurred_at",
-      "entityType": "columns",
-      "table": "denial_facts"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "resource_id",
-      "entityType": "columns",
-      "table": "denial_facts"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "user_id",
-      "entityType": "columns",
-      "table": "denial_facts"
-    },
-    {
-      "type": "text",
       "notNull": true,
       "autoincrement": false,
       "default": null,
@@ -224,21 +126,21 @@
     },
     {
       "type": "text",
-      "notNull": false,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "command_id",
-      "entityType": "columns",
-      "table": "security_audit_facts"
-    },
-    {
-      "type": "text",
       "notNull": true,
       "autoincrement": false,
       "default": null,
       "generated": null,
       "name": "occurred_at",
+      "entityType": "columns",
+      "table": "security_audit_facts"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "operation_id",
       "entityType": "columns",
       "table": "security_audit_facts"
     },
@@ -324,6 +226,16 @@
     },
     {
       "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "registration_id",
+      "entityType": "columns",
+      "table": "users"
+    },
+    {
+      "type": "text",
       "notNull": false,
       "autoincrement": false,
       "default": null,
@@ -353,17 +265,6 @@
       "name": "fk_allowance_periods_user_id_users_user_id_fk",
       "entityType": "fks",
       "table": "allowance_periods"
-    },
-    {
-      "columns": ["user_id"],
-      "tableTo": "users",
-      "columnsTo": ["user_id"],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "nameExplicit": false,
-      "name": "fk_denial_facts_user_id_users_user_id_fk",
-      "entityType": "fks",
-      "table": "denial_facts"
     },
     {
       "columns": ["user_id"],
@@ -402,21 +303,7 @@
       "entityType": "pks"
     },
     {
-      "columns": ["command_id"],
-      "nameExplicit": false,
-      "name": "commands_pk",
-      "table": "commands",
-      "entityType": "pks"
-    },
-    {
-      "columns": ["denial_fact_id"],
-      "nameExplicit": false,
-      "name": "denial_facts_pk",
-      "table": "denial_facts",
-      "entityType": "pks"
-    },
-    {
-      "columns": ["command_id"],
+      "columns": ["operation_id"],
       "nameExplicit": false,
       "name": "security_audit_facts_pk",
       "table": "security_audit_facts",
@@ -491,24 +378,6 @@
         {
           "value": "user_id",
           "isExpression": false
-        },
-        {
-          "value": "occurred_at",
-          "isExpression": false
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "origin": "manual",
-      "name": "denial_facts_user_occurred_index",
-      "entityType": "indexes",
-      "table": "denial_facts"
-    },
-    {
-      "columns": [
-        {
-          "value": "user_id",
-          "isExpression": false
         }
       ],
       "isUnique": true,
@@ -517,6 +386,20 @@
       "name": "subscriptions_user_id_unique",
       "entityType": "indexes",
       "table": "subscriptions"
+    },
+    {
+      "columns": [
+        {
+          "value": "registration_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "users_registration_id_unique",
+      "entityType": "indexes",
+      "table": "users"
     }
   ],
   "renames": []

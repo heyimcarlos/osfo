@@ -5,17 +5,22 @@ import type {
   AllowancePeriodId,
   Plan,
   PlanPolicyVersion,
+  RegistrationId,
   SubscriptionId,
   UserId,
 } from "../domain";
-import type { DenialFactId, DenialKind, DeniedResourceId } from "../services/denial-facts";
-import type { DbCommandId, DbRequestDigest, DbTimestamp } from "./index";
+import type { DbTimestamp } from "./index";
 
 /** Content-free stable User identities. */
-export const users = sqliteTable("users", {
-  createdAt: text("created_at").$type<DbTimestamp>().notNull(),
-  userId: text("user_id").$type<UserId>().notNull().primaryKey(),
-});
+export const users = sqliteTable(
+  "users",
+  {
+    createdAt: text("created_at").$type<DbTimestamp>().notNull(),
+    registrationId: text("registration_id").$type<RegistrationId>().notNull(),
+    userId: text("user_id").$type<UserId>().notNull().primaryKey(),
+  },
+  (table) => [uniqueIndex("users_registration_id_unique").on(table.registrationId)],
+);
 
 /** Stable routing from one User to one User-scoped Agent. */
 export const agents = sqliteTable(
@@ -75,51 +80,14 @@ export const allowancePeriods = sqliteTable(
   ],
 );
 
-/** Idempotency records for atomic database commands. */
-export const commands = sqliteTable("commands", {
-  commandId: text("command_id").$type<DbCommandId>().notNull().primaryKey(),
-  completedAt: text("completed_at").$type<DbTimestamp>().notNull(),
-  operation: text("operation", {
-    enum: ["establish_registration", "record_denial_fact"],
-  }).notNull(),
-  requestDigest: text("request_digest").$type<DbRequestDigest>().notNull(),
-});
-
 /** Content-free facts that explain security-sensitive database changes. */
 export const securityAuditFacts = sqliteTable("security_audit_facts", {
-  action: text("action", {
-    enum: ["denial_recorded", "registration_established"],
-  }).notNull(),
-  commandId: text("command_id").$type<DbCommandId>().notNull().primaryKey(),
+  action: text("action", { enum: ["registration_established"] }).notNull(),
   occurredAt: text("occurred_at").$type<DbTimestamp>().notNull(),
+  operationId: text("operation_id").$type<RegistrationId>().notNull().primaryKey(),
   outcome: text("outcome", { enum: ["applied"] }).notNull(),
   userId: text("user_id")
     .$type<UserId>()
     .notNull()
     .references(() => users.userId, { onDelete: "cascade" }),
 });
-
-/** Current named denial facts used by deterministic authorization. */
-export const denialFacts = sqliteTable(
-  "denial_facts",
-  {
-    denialFactId: text("denial_fact_id").$type<DenialFactId>().notNull().primaryKey(),
-    kind: text("kind", {
-      enum: [
-        "auth_session_revocation",
-        "channel_binding_revocation",
-        "deletion_request",
-        "user_suspension",
-      ],
-    })
-      .$type<DenialKind>()
-      .notNull(),
-    occurredAt: text("occurred_at").$type<DbTimestamp>().notNull(),
-    resourceId: text("resource_id").$type<DeniedResourceId>().notNull(),
-    userId: text("user_id")
-      .$type<UserId>()
-      .notNull()
-      .references(() => users.userId, { onDelete: "cascade" }),
-  },
-  (table) => [index("denial_facts_user_occurred_index").on(table.userId, table.occurredAt)],
-);

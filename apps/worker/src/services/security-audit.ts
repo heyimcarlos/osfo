@@ -1,10 +1,10 @@
-import type { Database, DbCommandId, DbTimestamp } from "../db";
+import type { Database, DbTimestamp } from "../db";
 import { securityAuditFacts } from "../db/schema";
-import type { UserId } from "../domain";
+import type { RegistrationId, UserId } from "../domain";
 
 interface SecurityAuditInput {
-  readonly commandId: DbCommandId;
   readonly occurredAt: DbTimestamp;
+  readonly registrationId: RegistrationId;
   readonly userId: UserId;
 }
 
@@ -12,18 +12,8 @@ interface SecurityAuditInput {
 export const registrationEstablished = (database: Database, input: SecurityAuditInput) =>
   database.insert(securityAuditFacts).values({
     action: "registration_established",
-    commandId: input.commandId,
     occurredAt: input.occurredAt,
-    outcome: "applied",
-    userId: input.userId,
-  });
-
-/** Build the Security Audit Fact that joins one atomic denial batch. */
-export const denialRecorded = (database: Database, input: SecurityAuditInput) =>
-  database.insert(securityAuditFacts).values({
-    action: "denial_recorded",
-    commandId: input.commandId,
-    occurredAt: input.occurredAt,
+    operationId: input.registrationId,
     outcome: "applied",
     userId: input.userId,
   });

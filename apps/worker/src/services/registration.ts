@@ -2,27 +2,24 @@ import { asc, eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
 import {
+  database,
+  type Database,
+  DbTimestamp,
+  dbUnavailable,
+  dbWriteRejected,
+  decodeOptionalRow,
+  toD1Statement,
+} from "../db";
+import { agents, allowancePeriods, subscriptions, users } from "../db/schema";
+import {
   AgentId,
   AllowancePeriodId,
   Plan,
   PlanPolicyVersion,
+  RegistrationId,
   SubscriptionId,
   UserId,
 } from "../domain";
-import {
-  database,
-  DbCommandId,
-  DbTimestamp,
-  dbCommandConflict,
-  dbUnavailable,
-  decodeRow,
-  findCommand,
-  fingerprintCommand,
-  recoverConcurrentCommand,
-  toD1Statement,
-} from "../db";
-import { agents, allowancePeriods, commands, subscriptions, users } from "../db/schema";
-import * as AgentDirectory from "./agent-directory";
 import * as SecurityAudit from "./security-audit";
 
 /** Result of atomically establishing the launch registration facts. */
@@ -43,9 +40,9 @@ export const RegisterInput = Schema.Struct({
   allowancePeriodEndsAt: DbTimestamp,
   allowancePeriodId: AllowancePeriodId,
   allowancePeriodStartsAt: DbTimestamp,
-  commandId: DbCommandId,
   occurredAt: DbTimestamp,
   planPolicyVersion: PlanPolicyVersion,
+  registrationId: RegistrationId,
   subscriptionId: SubscriptionId,
   userId: UserId,
 });
@@ -53,44 +50,44 @@ export const RegisterInput = Schema.Struct({
 /** Complete deterministic input for the atomic launch registration operation. */
 export type RegisterInput = typeof RegisterInput.Type;
 
-const SubscriptionSelection = Schema.Struct({
+/** Expected failure when one Registration identity is reused for different facts. */
+export class RegistrationConflict extends Schema.TaggedError<RegistrationConflict>()(
+  "RegistrationConflict",
+  {
+    message: Schema.String,
+    registrationId: RegistrationId,
+  },
+) {}
+
+const StoredRegistration = Schema.Struct({
+  agentId: AgentId,
+  allowancePeriodEndsAt: DbTimestamp,
   allowancePeriodId: AllowancePeriodId,
+  allowancePeriodStartsAt: DbTimestamp,
+  occurredAt: DbTimestamp,
   plan: Plan,
+  planPolicyVersion: PlanPolicyVersion,
+  registrationId: RegistrationId,
   subscriptionId: SubscriptionId,
+  userId: UserId,
 });
+
+type StoredRegistration = typeof StoredRegistration.Type;
 
 /** Atomically establish one User, Agent route, Free Plan, allowance, and audit fact. */
 export const register = Effect.fn("Registration.register")(function* (input: RegisterInput) {
   const db = yield* database;
-  const command = yield* fingerprintCommand("establishRegistration", input.commandId, [
-    "establish_registration",
-    input.agentId,
-    input.allowancePeriodEndsAt,
-    input.allowancePeriodId,
-    input.allowancePeriodStartsAt,
-    input.occurredAt,
-    input.planPolicyVersion,
-    input.subscriptionId,
-    input.userId,
-  ]);
-  const existingCommand = yield* findCommand(db, input.commandId, "establishRegistration").pipe(
-    Effect.mapError((cause) => dbUnavailable("establishRegistration", cause)),
-  );
-  if (existingCommand !== undefined) {
-    if (existingCommand.requestDigest !== command.requestDigest) {
-      return yield* dbCommandConflict(input.commandId);
-    }
-    return yield* readRegistration(input.userId);
+  const existing = yield* findRegistration(db, input.registrationId);
+  if (existing !== undefined) {
+    return yield* recoverExistingRegistration(input, existing);
   }
 
   const inserts = [
-    db.insert(commands).values({
-      commandId: input.commandId,
-      completedAt: input.occurredAt,
-      operation: "establish_registration",
-      requestDigest: command.requestDigest,
+    db.insert(users).values({
+      createdAt: input.occurredAt,
+      registrationId: input.registrationId,
+      userId: input.userId,
     }),
-    db.insert(users).values({ createdAt: input.occurredAt, userId: input.userId }),
     db.insert(agents).values({
       agentId: input.agentId,
       createdAt: input.occurredAt,
@@ -114,54 +111,76 @@ export const register = Effect.fn("Registration.register")(function* (input: Reg
     SecurityAudit.registrationEstablished(db, input),
   ];
 
-  const concurrentResult = yield* db.$client
-    .batch(inserts.map((query) => toD1Statement(db, query)))
-    .pipe(
-      Effect.as<RegistrationEstablished | undefined>(undefined),
-      Effect.catch((cause) =>
-        recoverConcurrentCommand(
-          findCommand(db, input.commandId, "establishRegistration"),
-          command,
-          cause,
-          "establishRegistration",
-          readRegistration(input.userId),
-        ),
-      ),
-    );
-  return concurrentResult ?? registrationEstablished(input);
+  return yield* db.$client.batch(inserts.map((query) => toD1Statement(db, query))).pipe(
+    Effect.as(registrationEstablished(input)),
+    Effect.catch((cause) => recoverConcurrentRegistration(db, input, cause)),
+  );
 });
 
-const readRegistration = (userId: UserId) =>
-  Effect.all([AgentDirectory.resolveAgent(userId), readSubscription(userId)]).pipe(
-    Effect.map(([route, subscription]) => ({ ...route, ...subscription })),
-  );
+const findRegistration = (db: Database, registrationId: RegistrationId) =>
+  db
+    .select({
+      agentId: agents.agentId,
+      allowancePeriodEndsAt: allowancePeriods.endsAt,
+      allowancePeriodId: allowancePeriods.allowancePeriodId,
+      allowancePeriodStartsAt: allowancePeriods.startsAt,
+      occurredAt: users.createdAt,
+      plan: subscriptions.plan,
+      planPolicyVersion: subscriptions.planPolicyVersion,
+      registrationId: users.registrationId,
+      subscriptionId: subscriptions.subscriptionId,
+      userId: users.userId,
+    })
+    .from(users)
+    .innerJoin(agents, eq(agents.userId, users.userId))
+    .innerJoin(subscriptions, eq(subscriptions.userId, users.userId))
+    .innerJoin(allowancePeriods, eq(allowancePeriods.userId, users.userId))
+    .where(eq(users.registrationId, registrationId))
+    .orderBy(asc(allowancePeriods.startsAt))
+    .limit(1)
+    .pipe(
+      Effect.mapError((cause) => dbUnavailable("establishRegistration", cause)),
+      Effect.flatMap((rows) =>
+        decodeOptionalRow(StoredRegistration, rows[0], "establishRegistration"),
+      ),
+    );
 
-const readSubscription = (userId: UserId) =>
+const recoverConcurrentRegistration = (db: Database, input: RegisterInput, cause: unknown) =>
   Effect.gen(function* () {
-    const db = yield* database;
-    const rows = yield* db
-      .select({
-        allowancePeriodId: allowancePeriods.allowancePeriodId,
-        plan: subscriptions.plan,
-        subscriptionId: subscriptions.subscriptionId,
-      })
-      .from(subscriptions)
-      .innerJoin(allowancePeriods, eq(allowancePeriods.userId, subscriptions.userId))
-      .where(eq(subscriptions.userId, userId))
-      .orderBy(asc(allowancePeriods.startsAt))
-      .limit(1)
-      .pipe(Effect.mapError((cause) => dbUnavailable("establishRegistration", cause)));
-    const subscription = rows[0];
-    if (subscription === undefined) {
-      return yield* dbUnavailable(
-        "establishRegistration",
-        "No Subscription and allowance period exist for the User",
-      );
+    const existing = yield* findRegistration(db, input.registrationId).pipe(
+      Effect.mapError(() => dbUnavailable("establishRegistration", cause)),
+    );
+    if (existing === undefined) {
+      return yield* dbWriteRejected("establishRegistration", input.registrationId, cause);
     }
-    return yield* decodeRow(SubscriptionSelection, subscription, "establishRegistration");
+    return yield* recoverExistingRegistration(input, existing);
   });
 
-const registrationEstablished = (input: RegisterInput): RegistrationEstablished => ({
+const recoverExistingRegistration = (input: RegisterInput, existing: StoredRegistration) =>
+  matchesInput(existing, input)
+    ? Effect.succeed(registrationEstablished(existing))
+    : Effect.fail(
+        new RegistrationConflict({
+          message: "The Registration identity was already used for different facts",
+          registrationId: input.registrationId,
+        }),
+      );
+
+const matchesInput = (existing: StoredRegistration, input: RegisterInput) =>
+  existing.agentId === input.agentId &&
+  existing.allowancePeriodEndsAt === input.allowancePeriodEndsAt &&
+  existing.allowancePeriodId === input.allowancePeriodId &&
+  existing.allowancePeriodStartsAt === input.allowancePeriodStartsAt &&
+  existing.occurredAt === input.occurredAt &&
+  existing.plan === "free" &&
+  existing.planPolicyVersion === input.planPolicyVersion &&
+  existing.registrationId === input.registrationId &&
+  existing.subscriptionId === input.subscriptionId &&
+  existing.userId === input.userId;
+
+const registrationEstablished = (
+  input: RegisterInput | StoredRegistration,
+): RegistrationEstablished => ({
   agentId: input.agentId,
   allowancePeriodId: input.allowancePeriodId,
   plan: "free",
