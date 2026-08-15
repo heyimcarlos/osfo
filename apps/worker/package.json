@@ -14,6 +14,7 @@
     "typecheck": "wrangler types --check && tsc --noEmit"
   },
   "dependencies": {
+    "@osfo/api": "workspace:*",
     "@osfo/auth": "workspace:*",
     "@osfo/db": "workspace:*",
     "drizzle-orm": "0.45.2",

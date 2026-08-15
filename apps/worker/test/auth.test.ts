@@ -6,10 +6,10 @@ import { Effect, Layer, Redacted, Schema } from "effect";
 import { HttpRouter } from "effect/unstable/http";
 
 import * as App from "../src/app";
+import * as AuthRoutes from "../src/auth";
 import * as Db from "../src/db";
 import type { RuntimeConfig } from "../src/env";
 import * as TwilioVerify from "../src/integrations/twilio/verify";
-import * as AuthRoutes from "../src/routes/auth";
 
 const authConfig = {
   baseURL: "https://osfo.test/",

@@ -40,6 +40,7 @@
   "files": [],
   "references": [
     { "path": "./tools/oxlint" },
+    { "path": "./packages/api" },
     { "path": "./packages/auth" },
     { "path": "./packages/db" },
     { "path": "./packages/ui" },

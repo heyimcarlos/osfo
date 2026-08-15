@@ -599,18 +599,20 @@ promises no response time.
 ```text
 alchemy.run.ts
 infra/cloudflare/
-  data.ts
-  worker.ts
-  workflows.ts
-  web.ts
-  observability.ts
+  Db.ts
+  ExecutionUnitWorkflow.ts
+  Worker.ts
 
 apps/worker/
   src/worker.ts
   src/app.ts
-  src/authorization.ts
-  src/routes/
-    auth.ts
+  src/auth.ts
+  src/cors.ts
+  src/handlers.ts
+  src/routes.ts
+  src/handlers/
+    health.ts
+  src/middleware/
   src/agents/
     osfo/
       agent.ts
@@ -639,6 +641,12 @@ apps/worker/
   test/
 
 packages/ui/
+packages/api/
+  src/api.ts
+  src/groups/
+    health.ts
+  src/middleware/
+    auth.ts
 packages/auth/
   src/index.ts
   src/schema-generator.ts
@@ -687,9 +695,8 @@ product modules import only the schema area they use.
 
 The future Think adapter belongs in `apps/worker/src/integrations/think/`. It is
 extracted only after a second consumer or supported public Interface proves the
-package seam. A future `packages/api` is created only when the Worker and web
-application share a real wire contract. `packages/ui` contains generic shared
-visual modules and no Osfo-specific product behavior.
+package seam. `packages/api` owns the shared HTTP contract. `packages/ui`
+contains generic shared visual modules and no Osfo-specific product behavior.
 
 The Worker-local `db` module owns the Hyperdrive PostgreSQL connection and its
 Effect lifecycle. Product operations live outside it in caller-focused modules
