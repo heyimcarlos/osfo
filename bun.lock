@@ -52,6 +52,7 @@
       "name": "@osfo/worker",
       "version": "0.0.0",
       "dependencies": {
+        "@osfo/api": "workspace:*",
         "@osfo/auth": "workspace:*",
         "@osfo/db": "workspace:*",
         "drizzle-orm": "0.45.2",
@@ -66,6 +67,16 @@
         "typescript": "catalog:",
         "vitest": "catalog:",
         "wrangler": "catalog:",
+      },
+    },
+    "packages/api": {
+      "name": "@osfo/api",
+      "version": "0.0.0",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "typescript": "catalog:",
       },
     },
     "packages/auth": {
@@ -619,6 +630,8 @@
     "@opentelemetry/api": ["@opentelemetry/api@1.9.1", "", {}, "sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q=="],
 
     "@opentelemetry/semantic-conventions": ["@opentelemetry/semantic-conventions@1.43.0", "", {}, "sha512-eSYWTm620tTk45EKSedaUL8MFYI8hW164hIXsgIHyxu3VobUB3fFCu5t0hQby6OoWRPsG1KkKUG2M5UadiLiVg=="],
+
+    "@osfo/api": ["@osfo/api@workspace:packages/api"],
 
     "@osfo/auth": ["@osfo/auth@workspace:packages/auth"],
 

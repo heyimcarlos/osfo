@@ -2,12 +2,14 @@ import { agents } from "@osfo/db/schema/agents";
 import { users } from "@osfo/db/schema/auth";
 import { allowancePeriods, subscriptions } from "@osfo/db/schema/billing";
 import { asc, eq } from "drizzle-orm";
-import { DateTime, Effect, Option, Schema } from "effect";
+import { Context, DateTime, Effect, Layer, Option, Schema } from "effect";
 
 import {
   database,
   type Database,
   DbTimestamp,
+  type DbUnavailable,
+  type DbWriteRejected,
   dbUnavailable,
   dbWriteRejected,
   decodeOptionalRow,
@@ -92,9 +94,41 @@ type RegistrationTransactionResult =
   | { readonly kind: "recovered"; readonly value: RegistrationEstablished }
   | { readonly kind: "user-not-found" };
 
-/** Atomically establish the product facts for one Better Auth User. */
-export const register = Effect.fn("Registration.register")(function* (input: RegisterInput) {
+/** Expected failures from the registration authority. */
+export type RegistrationError =
+  | DbUnavailable
+  | DbWriteRejected
+  | RegistrationConflict
+  | RegistrationUserNotFound;
+
+/** Registration authority operations. */
+export interface Interface {
+  readonly complete: (
+    input: RegisterInput,
+  ) => Effect.Effect<RegistrationEstablished, RegistrationError>;
+}
+
+/** Authority that establishes every durable registration fact. */
+export class Service extends Context.Service<Service, Interface>()("@osfo/Registration") {}
+
+/** Construct registration from the current request-scoped database. */
+export const make = Effect.gen(function* () {
   const db = yield* database;
+
+  const complete = Effect.fn("Registration.complete")((input: RegisterInput) =>
+    completeRegistration(db, input),
+  );
+
+  return Service.of({ complete });
+});
+
+/** Registration Layer that preserves its database requirement. */
+export const layerWithoutDependencies = Layer.effect(Service, make);
+
+const completeRegistration = Effect.fn("Registration.completeRegistration")(function* (
+  db: Database,
+  input: RegisterInput,
+) {
   const result = yield* Effect.tryPromise({
     try: () =>
       // oxlint-disable-next-line effecttsgo/async-function -- Drizzle owns this Promise transaction boundary.

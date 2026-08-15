@@ -1,44 +1,23 @@
-import { Effect, Layer, Schema, type ManagedRuntime } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { Layer } from "effect";
+import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 
+import type * as Auth from "./auth";
 import * as Db from "./db";
 import type { RuntimeConfig } from "./env";
 import * as TwilioVerify from "./integrations/twilio/verify";
-import {
-  type ExecutionUnit,
-  makeWorkerRuntime,
-  probeExecutionUnit,
-  type RuntimeProbeResult,
-} from "./layers";
-import * as AuthRoutes from "./routes/auth";
-
-class CloudflareHostUnavailable extends Schema.TaggedError<CloudflareHostUnavailable>()(
-  "CloudflareHostUnavailable",
-  {
-    cause: Schema.Defect(),
-    executionUnit: Schema.Literals(["osfo-agent", "registration-dialogue"]),
-    message: Schema.String,
-  },
-) {}
-
-interface RuntimeProbeStub {
-  readonly probeRuntime: () => Promise<RuntimeProbeResult>;
-}
-
-interface RuntimeProbeNamespace {
-  readonly getByName: (identity: string) => RuntimeProbeStub;
-}
+import { makeWorkerRuntime } from "./layers";
+import * as Routes from "./routes";
 
 /** Cloudflare bindings used by the Worker HTTP application. */
 export interface Bindings {
   readonly DB: Pick<Hyperdrive, "connectionString">;
-  readonly OSFO_AGENT: RuntimeProbeNamespace;
-  readonly REGISTRATION_DIALOGUE: RuntimeProbeNamespace;
+  readonly OSFO_AGENT: Routes.Bindings["OSFO_AGENT"];
+  readonly REGISTRATION_DIALOGUE: Routes.Bindings["REGISTRATION_DIALOGUE"];
 }
 
 /** Optional concrete dependency choices for application composition. */
 export interface MakeOptions {
-  readonly authDependencies?: AuthRoutes.AuthDependencies;
+  readonly authDependencies?: Auth.AuthDependencies;
 }
 
 /** Build one request-scoped Effect HTTP application. */
@@ -47,16 +26,8 @@ export const make = (env: Bindings, config: RuntimeConfig, options?: MakeOptions
   const authDependencies =
     options?.authDependencies ??
     Layer.merge(Db.layer({ db: env.DB }), TwilioVerify.layer(config.twilioVerify));
-  const appLayer = Layer.mergeAll(
-    AuthRoutes.layer({ config: config.auth, dependencies: authDependencies }),
-    HttpRouter.add("GET", "/health", workerProbe(runtime)),
-    HttpRouter.add("GET", "/agents/:identity/health", agentProbe(env)),
-    HttpRouter.add(
-      "GET",
-      "/registration-dialogues/:identity/health",
-      registrationDialogueProbe(env),
-    ),
-    HttpRouter.add("*", "*", notFound),
+  const appLayer = Routes.layer({ authDependencies, config, env, runtime }).pipe(
+    Layer.provide(HttpServer.layerServices),
   );
   const webHandler = HttpRouter.toWebHandler(appLayer, { disableLogger: true });
 
@@ -74,62 +45,3 @@ export const environmentErrorResponse = (): Response =>
       { status: 500 },
     ),
   );
-
-const workerProbe = (runtime: ManagedRuntime.ManagedRuntime<ExecutionUnit, never>) =>
-  Effect.promise(() => runtime.runPromise(probeExecutionUnit)).pipe(
-    Effect.map(runtimeProbeResponse),
-  );
-
-const agentProbe = (env: Bindings) =>
-  HttpRouter.params.pipe(
-    Effect.flatMap(({ identity }) =>
-      identity === undefined
-        ? Effect.succeed(notFound)
-        : callProbe("osfo-agent", () => env.OSFO_AGENT.getByName(identity).probeRuntime()),
-    ),
-  );
-
-const registrationDialogueProbe = (env: Bindings) =>
-  HttpRouter.params.pipe(
-    Effect.flatMap(({ identity }) =>
-      identity === undefined
-        ? Effect.succeed(notFound)
-        : callProbe("registration-dialogue", () =>
-            env.REGISTRATION_DIALOGUE.getByName(identity).probeRuntime(),
-          ),
-    ),
-  );
-
-const callProbe = (
-  executionUnit: "osfo-agent" | "registration-dialogue",
-  invoke: () => Promise<RuntimeProbeResult>,
-) =>
-  Effect.tryPromise({
-    try: invoke,
-    catch: (cause) =>
-      new CloudflareHostUnavailable({
-        cause,
-        executionUnit,
-        message: "Cloudflare execution unit is unavailable",
-      }),
-  }).pipe(
-    Effect.map(runtimeProbeResponse),
-    Effect.catchTag("CloudflareHostUnavailable", (error) =>
-      Effect.succeed(
-        HttpServerResponse.jsonUnsafe(
-          { error: error.message, executionUnit: error.executionUnit },
-          { status: 503 },
-        ),
-      ),
-    ),
-  );
-
-const runtimeProbeResponse = (result: RuntimeProbeResult): HttpServerResponse.HttpServerResponse =>
-  "kind" in result
-    ? HttpServerResponse.jsonUnsafe(result)
-    : HttpServerResponse.jsonUnsafe(
-        { error: result.message, binding: result.binding },
-        { status: 500 },
-      );
-
-const notFound = HttpServerResponse.jsonUnsafe({ error: "Not found" }, { status: 404 });

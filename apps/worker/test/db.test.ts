@@ -1,7 +1,7 @@
 import { expect, layer } from "@effect/vitest";
 import { applyMigrations, makeTestDatabase } from "@osfo/db/testing";
 import { users } from "@osfo/db/schema/auth";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 
 import { database, DbTimestamp, dbUnavailable, layerFromDatabase } from "../src/db";
 import {
@@ -17,12 +17,19 @@ import * as Registration from "../src/services/registration";
 
 const fixture = Effect.runSync(makeTestDatabase);
 await Effect.runPromise(applyMigrations(fixture.client));
+const dbLayer = layerFromDatabase(fixture.database);
+const serviceLayer = Layer.merge(
+  Registration.layerWithoutDependencies,
+  AgentDirectory.layerWithoutDependencies,
+).pipe(Layer.provideMerge(dbLayer));
 
-layer(layerFromDatabase(fixture.database))("Db", (it) => {
+layer(serviceLayer)("Control-plane services", (it) => {
   it.effect("atomically establishes registration and stable Agent routing", () =>
     Effect.gen(function* () {
+      const agentDirectory = yield* AgentDirectory.Service;
+      const registration = yield* Registration.Service;
       yield* seedUser(UserId.make("user-001"));
-      const created = yield* Registration.register({
+      const created = yield* registration.complete({
         agentId: AgentId.make("agent-001"),
         allowancePeriodId: AllowancePeriodId.make("allowance-period-001"),
         allowancePeriodStartsAt: DbTimestamp.make("2026-08-01T00:00:00.000Z"),
@@ -33,7 +40,7 @@ layer(layerFromDatabase(fixture.database))("Db", (it) => {
         subscriptionId: SubscriptionId.make("subscription-001"),
         userId: UserId.make("user-001"),
       });
-      const route = yield* AgentDirectory.resolveAgent(UserId.make("user-001"));
+      const route = yield* agentDirectory.resolve(UserId.make("user-001"));
 
       expect(created).toEqual({
         agentId: "agent-001",
@@ -48,6 +55,7 @@ layer(layerFromDatabase(fixture.database))("Db", (it) => {
 
   it.effect("returns one registration when the same Registration arrives concurrently", () =>
     Effect.gen(function* () {
+      const registration = yield* Registration.Service;
       yield* seedUser(UserId.make("user-duplicate"));
       const input = {
         agentId: AgentId.make("agent-duplicate"),
@@ -62,12 +70,12 @@ layer(layerFromDatabase(fixture.database))("Db", (it) => {
       };
 
       const [first, duplicate] = yield* Effect.all(
-        [Registration.register(input), Registration.register(input)],
+        [registration.complete(input), registration.complete(input)],
         { concurrency: "unbounded" },
       );
-      const exactDuplicate = yield* Registration.register(input);
+      const exactDuplicate = yield* registration.complete(input);
       const conflict = yield* Effect.flip(
-        Registration.register({
+        registration.complete({
           ...input,
           planPolicyVersion: PlanPolicyVersion.make("conflicting-policy-version"),
         }),
@@ -84,6 +92,8 @@ layer(layerFromDatabase(fixture.database))("Db", (it) => {
 
   it.effect("rolls back every registration fact when an Agent route conflicts", () =>
     Effect.gen(function* () {
+      const agentDirectory = yield* AgentDirectory.Service;
+      const registration = yield* Registration.Service;
       yield* seedUser(UserId.make("user-route-owner"));
       yield* seedUser(UserId.make("user-route-conflict"));
       const first = {
@@ -105,10 +115,10 @@ layer(layerFromDatabase(fixture.database))("Db", (it) => {
         userId: UserId.make("user-route-conflict"),
       };
 
-      yield* Registration.register(first);
-      const failedCreate = yield* Effect.flip(Registration.register(second));
-      const missingRoute = yield* Effect.flip(AgentDirectory.resolveAgent(second.userId));
-      const retried = yield* Registration.register({
+      yield* registration.complete(first);
+      const failedCreate = yield* Effect.flip(registration.complete(second));
+      const missingRoute = yield* Effect.flip(agentDirectory.resolve(second.userId));
+      const retried = yield* registration.complete({
         ...second,
         agentId: AgentId.make("agent-route-retry"),
       });

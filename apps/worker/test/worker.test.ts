@@ -30,6 +30,21 @@ describe("Osfo Cloudflare host", () => {
     }),
   );
 
+  it.effect("publishes the typed health contract in OpenAPI", () =>
+    Effect.gen(function* () {
+      const response = yield* Effect.promise(() =>
+        exports.default.fetch(new Request("https://osfo.test/openapi.json")),
+      );
+      const document = yield* Effect.promise(() => response.json());
+
+      expect(response.status).toBe(200);
+      expect(document).toMatchObject({
+        info: { title: "Osfo API", version: "0.1.0" },
+        paths: { "/health": { get: { operationId: "health.get" } } },
+      });
+    }),
+  );
+
   it.effect("reuses one runtime inside an Osfo Agent activation", () =>
     Effect.gen(function* () {
       const first = yield* Effect.promise(() =>
