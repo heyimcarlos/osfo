@@ -1,8 +1,9 @@
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { expect, layer } from "@effect/vitest";
 import { agents } from "@osfo/db/schema/agents";
+import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { users as usersTable } from "@osfo/db/schema/auth";
-import { allowancePeriods, subscriptions } from "@osfo/db/schema/billing";
+import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { applyMigrations, makeTestDatabase } from "@osfo/db/testing";
 import { eq } from "drizzle-orm";
 import { DateTime, Effect, Layer } from "effect";
@@ -133,7 +134,8 @@ layer(serviceLayer)("Control-plane services", (it) => {
 
       const failed = yield* Effect.flip(registration.complete(userId));
       const storedSubscriptions = yield* Effect.tryPromise({
-        try: () => db.select().from(subscriptions).where(eq(subscriptions.userId, userId)),
+        try: () =>
+          db.select().from(billingSubscriptions).where(eq(billingSubscriptions.userId, userId)),
         catch: (cause) => dbUnavailable("completeRegistration", cause),
       });
       const storedPeriods = yield* Effect.tryPromise({

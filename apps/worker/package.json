@@ -12,6 +12,7 @@
     "build": "wrangler deploy --dry-run --outdir dist",
     "dev": "bun --cwd ../..  alchemy dev --stage development --env-file apps/worker/.env",
     "test": "vitest run --config vitest.config.ts && vitest run --config vitest.db.config.ts",
+    "test:postgres": "vitest run --config vitest.real-db.config.ts",
     "typecheck": "wrangler types --check && tsc --noEmit"
   },
   "dependencies": {
