@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect";
 
 import initialMigrationSql from "./migrations/0000_silky_goblin_queen.sql";
+import modelCallUsageMigrationSql from "./migrations/0001_youthful_dreadnoughts.sql";
 import {
   AgentMigrationDefinitionMismatch,
   AgentMigrationDigestMismatch,
@@ -22,6 +23,11 @@ export const agentMigrations: ReadonlyArray<AgentMigration> = [
     digest: "sha256:6cc13367470fba28ea86d561b868283b79e218cf50dc759796821e49a3a76b2c",
     sql: initialMigrationSql,
     version: 1,
+  },
+  {
+    digest: "sha256:3b6a404b5be6818b7a5dd39f264164e1e586574a066e25ab6b9fa5cf79e56be3",
+    sql: modelCallUsageMigrationSql,
+    version: 2,
   },
 ];
 

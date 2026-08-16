@@ -24,6 +24,8 @@ export default defineConfig({
   test: {
     fileParallelism: false,
     include: [
+      "test/action-approval.test.ts",
+      "test/model-access-policy.test.ts",
       "test/osfo-agent.test.ts",
       "test/registration-dialogue.test.ts",
       "test/worker.test.ts",

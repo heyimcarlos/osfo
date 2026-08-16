@@ -42,6 +42,18 @@ export const ThinkRequestId = Schema.String.pipe(Schema.brand("ThinkRequestId"))
 /** Stable identity for one Think response request. */
 export type ThinkRequestId = typeof ThinkRequestId.Type;
 
+/** Stable identity of one Think-owned bounded Submission. */
+export const ThinkSubmissionId = Schema.String.check(
+  Schema.makeFilter(
+    (value) =>
+      (value.length > 0 && value.length <= 160 && !value.includes(":")) ||
+      "must be a bounded Think Submission identity without a colon",
+  ),
+).pipe(Schema.brand("ThinkSubmissionId"));
+
+/** Stable identity of one Think-owned bounded Submission. */
+export type ThinkSubmissionId = typeof ThinkSubmissionId.Type;
+
 /** Stable identity for one billing Subscription. */
 export const BillingSubscriptionId = Schema.String.pipe(Schema.brand("BillingSubscriptionId"));
 
