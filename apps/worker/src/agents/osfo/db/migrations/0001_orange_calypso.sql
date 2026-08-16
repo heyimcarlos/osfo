@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `osfo_committed_turn_think_request_unique` ON `osfo_committed_turns` (`think_request_id`) WHERE "osfo_committed_turns"."think_request_id" IS NOT NULL;

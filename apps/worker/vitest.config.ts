@@ -19,5 +19,9 @@ export default defineConfig({
       wrangler: { configPath: "./wrangler.jsonc" },
     }),
   ],
-  test: { include: ["test/worker.test.ts"], testTimeout: 15_000 },
+  test: {
+    fileParallelism: false,
+    include: ["test/osfo-agent.test.ts", "test/worker.test.ts"],
+    testTimeout: 30_000,
+  },
 });

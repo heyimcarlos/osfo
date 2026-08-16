@@ -7,25 +7,32 @@
     "./env": "./src/env.ts"
   },
   "scripts": {
+    "agent-db:check": "drizzle-kit check --config drizzle.agent.config.ts",
+    "agent-db:generate": "drizzle-kit generate --config drizzle.agent.config.ts",
     "build": "wrangler deploy --dry-run --outdir dist",
     "dev": "bun --cwd ../..  alchemy dev --stage development --env-file apps/worker/.env",
     "test": "vitest run --config vitest.config.ts && vitest run --config vitest.db.config.ts",
     "typecheck": "wrangler types --check && tsc --noEmit"
   },
   "dependencies": {
+    "@cloudflare/think": "0.15.1",
     "@effect/platform-browser": "catalog:",
     "@osfo/api": "workspace:*",
     "@osfo/auth": "workspace:*",
     "@osfo/db": "workspace:*",
+    "agents": "0.20.1",
+    "ai": "7.0.66",
     "drizzle-orm": "0.45.2",
     "effect": "catalog:",
-    "postgres": "3.4.9"
+    "postgres": "3.4.9",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@effect/vitest": "catalog:",
     "@electric-sql/pglite": "0.5.5",
+    "drizzle-kit": "0.31.8",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"
