@@ -2,7 +2,7 @@
 
 Date: 2026-08-14
 
-Status: Accepted
+Status: Accepted, allowance reservation rules superseded by ADR 0007
 
 Osfo does not use a generic `denial_facts` table. Launch authorization denies by
 default from explicit current facts: User Suspension, AuthSession revocation,

@@ -2,7 +2,7 @@
 
 Date: 2026-08-12
 
-Status: Accepted, control-plane storage superseded by ADR 0007, memory and restore rules superseded by ADR 0006
+Status: Accepted, control-plane storage superseded by ADR 0005, memory and restore rules superseded by ADR 0006
 
 Osfo v1 stores cross-Agent identity, Agent routing, Subscription, and administration
 facts in a shared control-plane database; private Session and Osfo product facts in each Agent's Durable

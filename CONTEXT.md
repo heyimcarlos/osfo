@@ -201,10 +201,17 @@ and higher-cost capabilities within bounded monthly Usage Allowances.
 _Avoid_: Premium Plan, Pro Plan, unlimited plan, usage add-on
 
 **Usage Allowance**:
-A Plan-scoped quantity or cost budget that bounds eligible work without
-granting authority. It is separate from Plan Entitlement and never creates an
-overage charge.
+A Plan-scoped quantity or cost budget that stops new ordinary work after
+recorded consumption reaches its limit without granting authority. Work already
+admitted may complete with bounded overshoot, and it never creates an overage
+charge.
 _Avoid_: Plan Entitlement, message quota, pay-as-you-go balance
+
+**Allowance Consumption**:
+One idempotently recorded quantity attributed to an existing product or effect
+identity and one Usage Allowance period. It records known-at-start or observed
+use without becoming a reservation or a new work identity.
+_Avoid_: Allowance reservation, billing charge, generic usage event
 
 **Integration Connection**:
 Revocable authority for Osfo to read or act through a third-party product such as
@@ -720,6 +727,21 @@ approvals, or retryable side effects matter. It has a stable WorkflowId and may
 invoke Think for bounded reasoning without owning Session history or Think
 Submission lifecycle.
 _Avoid_: Think Submission, Agent Queue Task, Scheduled Task, long model response
+
+**Research Report Workflow**:
+The Adventurer Workflow that gathers bounded web sources and produces one cited
+Research Report.
+_Avoid_: Web search ToolCall, general research agent
+
+**Document Build Workflow**:
+The Adventurer Workflow that analyzes supplied content and produces one PDF or
+DOCX artifact.
+_Avoid_: File analysis ToolCall, general document editor
+
+**Scheduled Email Workflow**:
+The Adventurer Workflow that prepares, receives Approval for, waits for, and
+sends one exact Gmail message.
+_Avoid_: Reminder, automatic reply, recurring email campaign
 
 **Workflow Outcome**:
 The terminal result of a Workflow: Success, Failure, or Canceled. These outcomes
