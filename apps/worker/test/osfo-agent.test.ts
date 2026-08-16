@@ -7,11 +7,13 @@ import { Effect, Schema } from "effect";
 import {
   AgentId,
   AgentInitializationId,
+  AllowancePeriodId,
   AssistantMessageId,
   ConversationRouteId,
   SessionId,
   ThinkRequestId,
 } from "../src/domain";
+import { ModelCallAttemptId } from "../src/domain/model-call-attempt";
 import { DbTimestamp } from "../src/db";
 import { makeAgentDb } from "../src/agents/osfo/db/client";
 import {
@@ -79,6 +81,49 @@ describe("Osfo Agent and Think Session foundation", () => {
       );
 
       expect(canceled).toBeNull();
+    }),
+  );
+
+  it.effect("keeps a missing AI Gateway cost pending before conservative settlement", () =>
+    Effect.gen(function* () {
+      const agent = env.OSFO_AGENT.getByName(
+        Schema.decodeUnknownSync(AgentId)("agent-gateway-cost-settlement"),
+      );
+      yield* Effect.promise(() =>
+        agent.settleGatewayModelUsage({
+          allowancePeriodId: AllowancePeriodId.make("period-gateway-cost"),
+          attemptId: ModelCallAttemptId.make("model-call-attempt:submission-gateway-cost:1"),
+          conservativeVendorUsdMicros: 5_000,
+          gatewayLogId: "missing-gateway-log",
+          lookupAttempt: 1,
+        }),
+      );
+
+      const state = yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance) => ({
+          delayed: (await instance.listSchedules({ type: "delayed" })).map(
+            ({ callback, payload, type }) => ({ callback, payload, type }),
+          ),
+          usageRows: instance.sql<{ count: number }>`
+            SELECT COUNT(*) AS count FROM osfo_model_call_usage_evidence
+          `,
+        })),
+      );
+
+      expect(state.delayed).toEqual([
+        {
+          callback: "settleGatewayModelUsage",
+          payload: {
+            allowancePeriodId: "period-gateway-cost",
+            attemptId: "model-call-attempt:submission-gateway-cost:1",
+            conservativeVendorUsdMicros: 5_000,
+            gatewayLogId: "missing-gateway-log",
+            lookupAttempt: 2,
+          },
+          type: "delayed",
+        },
+      ]);
+      expect(state.usageRows).toEqual([{ count: 0 }]);
     }),
   );
 

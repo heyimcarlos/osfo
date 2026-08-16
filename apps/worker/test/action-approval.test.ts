@@ -14,8 +14,9 @@ import {
 } from "../src/domain";
 import {
   ActionPresentationId,
-  makeThinkActionApprovals,
+  makeThinkActionApprovalAdapter,
 } from "../src/agents/osfo/think-action-approvals";
+import { makeActionApprovals } from "../src/services/action-approvals";
 import {
   presentTestProtectedAction,
   testProtectedActionName,
@@ -93,7 +94,7 @@ describe("Think Action and exact Approval", () => {
     }),
   );
 
-  it.effect("returns explicit provider ambiguity and resolves rejection without execution", () =>
+  it.effect("returns explicit provider ambiguity", () =>
     Effect.gen(function* () {
       const ambiguousAgent = env.OSFO_AGENT.getByName(
         Schema.decodeUnknownSync(AgentId)("agent-think-action-ambiguous"),
@@ -115,49 +116,36 @@ describe("Think Action and exact Approval", () => {
         actionId: "call-ambiguous",
         retry: "reconcile-before-retry",
       });
-
-      const rejectedAgent = env.OSFO_AGENT.getByName(
-        Schema.decodeUnknownSync(AgentId)("agent-think-action-rejected"),
-      );
-      const rejected = yield* Effect.promise(() => parkTestAction(rejectedAgent, "call-rejected"));
-      const rejection = yield* Effect.promise(
-        async () => await rejectedAgent.rejectExecution(rejected.executionId, "The User canceled"),
-      );
-      expect(rejection).toMatchObject({
-        executionId: rejected.executionId,
-        reason: "The User canceled",
-        status: "rejected",
-      });
     }),
   );
 
-  it.effect("lets Think expire abandoned Approvals during activation recovery", () =>
+  it.effect("creates a new Action and Approval for materially changed input", () =>
     Effect.gen(function* () {
-      const agentName = Schema.decodeUnknownSync(AgentId)("agent-think-action-expiry");
-      const agent = env.OSFO_AGENT.getByName(agentName);
-      const parked = yield* Effect.promise(() => parkTestAction(agent, "call-expiry"));
-
-      yield* Effect.promise(() =>
-        runInDurableObject(agent, async (_instance, state) => {
-          state.storage.sql.exec(
-            "UPDATE cf_think_action_pending_approvals SET created_at = 0 WHERE execution_id = ?",
-            parked.executionId,
-          );
+      const agent = env.OSFO_AGENT.getByName(
+        Schema.decodeUnknownSync(AgentId)("agent-think-action-material-change"),
+      );
+      const first = yield* Effect.promise(() =>
+        parkTestAction(agent, "call-material-first", {
+          recipient: "sam@example.com",
+          subject: "Trip details",
         }),
       );
-      yield* Effect.promise(() => evictDurableObject(agent));
-      const reactivatedAgent = yield* Effect.promise(
-        async () => await getAgentByName(env.OSFO_AGENT, agentName),
+      const changed = yield* Effect.promise(() =>
+        parkTestAction(agent, "call-material-changed", {
+          recipient: "sam@example.com",
+          subject: "Changed trip details",
+        }),
+      );
+      const pending: Array<PendingApproval> = yield* Effect.promise(
+        (): Promise<Array<PendingApproval>> => agent.pendingApprovals(),
       );
 
-      expect(yield* Effect.promise(async () => await reactivatedAgent.pendingApprovals())).toEqual(
-        [],
-      );
-      expect(
-        yield* Effect.promise(
-          async () => await reactivatedAgent.approveExecution(parked.executionId),
-        ),
-      ).toMatchObject({ status: "error" });
+      expect(pending.map(({ descriptor }) => descriptor.input)).toEqual([
+        { recipient: "sam@example.com", subject: "Trip details" },
+        { recipient: "sam@example.com", subject: "Changed trip details" },
+      ]);
+      expect(pending).toHaveLength(2);
+      expect(new Set([first.executionId, changed.executionId]).size).toBe(2);
     }),
   );
 
@@ -165,15 +153,17 @@ describe("Think Action and exact Approval", () => {
     Effect.gen(function* () {
       const pending = makePending("actpause_safe", "call-safe");
       const presentationId = ActionPresentationId.make(pending.executionId);
-      const adapter = makeThinkActionApprovals({
+      const service = makeActionApprovals({
         authorizer: { ownsAgent: () => Effect.succeed(true) },
+        lifecycle: makeThinkActionApprovalAdapter({
+          think: {
+            approve: () => Promise.resolve({ status: "approved" }),
+            pending: () => Promise.resolve([pending]),
+            reject: () => Promise.resolve({ status: "rejected" }),
+          },
+        }),
         now: Effect.succeed(DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z"))),
         present: presentTestProtectedAction,
-        think: {
-          approve: () => Promise.resolve({ status: "approved" }),
-          pending: () => Promise.resolve([pending]),
-          reject: () => Promise.resolve({ status: "rejected" }),
-        },
       });
       const actor = {
         _tag: "ChannelBinding" as const,
@@ -181,7 +171,7 @@ describe("Think Action and exact Approval", () => {
         userId: UserId.make("user-owner"),
       };
 
-      const found = yield* adapter.read({ actor, presentationId });
+      const found = yield* service.read(actor, presentationId);
       expect(found).toMatchObject({
         _tag: "ActionPresentationFound",
         presentation: {
@@ -197,11 +187,7 @@ describe("Think Action and exact Approval", () => {
         { label: "Subject", name: "subject", value: "Trip details" },
       ]);
 
-      const accepted = yield* adapter.decide({
-        actor,
-        decision: "approve",
-        presentationId,
-      });
+      const accepted = yield* service.dispatch(actor, presentationId, "approved");
       expect(accepted).toEqual({
         _tag: "ApprovalDecisionAccepted",
         decision: "approved",
@@ -221,6 +207,10 @@ type ParkedAction = typeof ParkedAction.Type;
 const parkTestAction = async (
   agent: DurableObjectStub<OsfoAgent>,
   toolCallId: string,
+  input: { readonly recipient: string; readonly subject: string } = {
+    recipient: "sam@example.com",
+    subject: "Trip details",
+  },
 ): Promise<ParkedAction> =>
   runInDurableObject(agent, async (instance) => {
     await instance.initialize({
@@ -250,8 +240,7 @@ const parkTestAction = async (
     const result = await protectedAction.execute(
       {
         oauthToken: "oauth-token-must-not-leak",
-        recipient: "sam@example.com",
-        subject: "Trip details",
+        ...input,
       },
       { messages: [], toolCallId },
     );

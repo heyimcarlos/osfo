@@ -1,5 +1,5 @@
 import type { PendingApproval } from "@cloudflare/think";
-import { Effect, Option, Predicate, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 import { UserId } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
@@ -165,13 +165,6 @@ const ThinkDispatchError = Schema.Struct({
 /** Parsed pending Think Action used only inside the Approval adapter. */
 export type PendingThinkAction = typeof ThinkPendingApproval.Type;
 
-/** Application-owned authority check required by the Think Approval adapter. */
-export interface ApprovalActorAuthorizer {
-  readonly ownsAgent: (
-    userId: UserId,
-  ) => Effect.Effect<boolean, ApprovalActorAuthorizationUnavailable>;
-}
-
 /** Think methods used by the client-safe Approval adapter. */
 export interface ThinkApprovalPort {
   // oxlint-disable-next-line osfo/no-unknown-returns -- Think owns the result shape. This adapter classifies its error envelope before use.
@@ -181,29 +174,8 @@ export interface ThinkApprovalPort {
   readonly reject: (executionId: ActionPresentationId, reason?: string) => Promise<unknown>;
 }
 
-/** Project one registered Think Action into its definition-owned safe presentation. */
-export type PresentAction = (
-  pending: PendingThinkAction,
-) => Effect.Effect<ActionPresentation, ActionPresentationUnavailable>;
-
-/** Build the thin client-safe adapter over Think's native Approval lifecycle. */
-export const makeThinkActionApprovals = (options: {
-  readonly authorizer: ApprovalActorAuthorizer;
-  readonly now: Effect.Effect<Date>;
-  readonly present: PresentAction;
-  readonly think: ThinkApprovalPort;
-}) => {
-  const authorize = (actor: ApprovalActor, presentationId: ActionPresentationId) =>
-    Effect.gen(function* () {
-      const now = yield* options.now;
-      if (Predicate.isTagged(actor, "AuthSession") && actor.expiresAt.getTime() <= now.getTime()) {
-        return yield* unauthorized(actor.userId, presentationId);
-      }
-      const ownsAgent = yield* options.authorizer.ownsAgent(actor.userId);
-      if (!ownsAgent) return yield* unauthorized(actor.userId, presentationId);
-      return undefined;
-    });
-
+/** Build the thin protocol adapter over Think's native Approval lifecycle. */
+export const makeThinkActionApprovalAdapter = (options: { readonly think: ThinkApprovalPort }) => {
   const findPending = (presentationId: ActionPresentationId) =>
     callThink("pendingApprovals", () => options.think.pending(presentationId)).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(ThinkPendingApproval))),
@@ -229,43 +201,20 @@ export const makeThinkActionApprovals = (options: {
       }),
     );
 
-  const read = (request: ReadActionPresentationRequest) =>
-    Schema.decodeEffect(ReadActionPresentationRequest)(request).pipe(
-      Effect.mapError(
-        () =>
-          new ActionApprovalRequestInvalid({
-            message: "The Action Presentation request is invalid",
-            operation: "readActionPresentation",
-          }),
-      ),
-      Effect.flatMap((input) =>
-        authorize(input.actor, input.presentationId).pipe(
-          Effect.andThen(findPending(input.presentationId)),
-          Effect.flatMap(options.present),
-          Effect.map((presentation) => ActionPresentationFound.make({ presentation })),
-        ),
-      ),
-    );
-
-  const dispatch = (
-    actor: ApprovalActor,
+  const resolve = (
     presentationId: ActionPresentationId,
     decision: "approved" | "rejected" | "canceled",
     reason?: string,
   ) =>
-    authorize(actor, presentationId).pipe(
-      Effect.andThen(findPending(presentationId)),
-      Effect.andThen(
-        callThink(decision === "approved" ? "approveExecution" : "rejectExecution", () =>
-          decision === "approved"
-            ? options.think.approve(presentationId)
-            : options.think.reject(presentationId, reason),
-        ),
-      ),
+    callThink(decision === "approved" ? "approveExecution" : "rejectExecution", () =>
+      decision === "approved"
+        ? options.think.approve(presentationId)
+        : options.think.reject(presentationId, reason),
+    ).pipe(
       Effect.flatMap((result) => {
         const rejected = Schema.decodeUnknownOption(ThinkDispatchError)(result);
         return Option.isNone(rejected)
-          ? Effect.succeed(ApprovalDecisionAccepted.make({ decision, presentationId }))
+          ? Effect.void
           : Effect.fail(
               new ApprovalAlreadyResolved({
                 message: rejected.value.error,
@@ -275,40 +224,7 @@ export const makeThinkActionApprovals = (options: {
       }),
     );
 
-  const decide = (request: DecideActionApprovalRequest) =>
-    Schema.decodeEffect(DecideActionApprovalRequest)(request).pipe(
-      Effect.mapError(
-        () =>
-          new ActionApprovalRequestInvalid({
-            message: "The Action Approval decision is invalid",
-            operation: "decideActionApproval",
-          }),
-      ),
-      Effect.flatMap((input) =>
-        dispatch(
-          input.actor,
-          input.presentationId,
-          input.decision === "approve" ? "approved" : "rejected",
-          input.reason,
-        ),
-      ),
-    );
-
-  const cancel = (request: CancelActionApprovalRequest) =>
-    Schema.decodeEffect(CancelActionApprovalRequest)(request).pipe(
-      Effect.mapError(
-        () =>
-          new ActionApprovalRequestInvalid({
-            message: "The Action Approval cancellation is invalid",
-            operation: "cancelActionApproval",
-          }),
-      ),
-      Effect.flatMap((input) =>
-        dispatch(input.actor, input.presentationId, "canceled", input.reason),
-      ),
-    );
-
-  return { cancel, decide, read };
+  return { findPending, resolve };
 };
 
 const callThink = <A>(operation: string, run: () => Promise<A>) =>
@@ -320,11 +236,4 @@ const callThink = <A>(operation: string, run: () => Promise<A>) =>
         message: "Think Approval storage is unavailable",
         operation,
       }),
-  });
-
-const unauthorized = (userId: UserId, presentationId: ActionPresentationId) =>
-  new ApprovalActorUnauthorized({
-    message: "The authenticated actor does not own this Agent",
-    presentationId,
-    userId,
   });

@@ -6,23 +6,23 @@ import {
   type ChatResponseResult,
   type PrepareStepContext,
   type PendingApproval,
-  type SessionMessage,
   type StepContext,
   type SubmitMessagesResult,
   type ThinkSubmissionInspection,
   type TurnConfig,
   type TurnContext,
 } from "@cloudflare/think";
+import { createCompactFunction } from "agents/experimental/memory/utils";
 import { DateTime, Effect, Option, Predicate, Result, Schema } from "effect";
 
 import type { AssistantMessageId as AssistantMessageIdType, SessionId, UserId } from "../../domain";
 import {
   AgentId,
+  AllowancePeriodId,
   AssistantMessageId,
   ConversationRouteId as ConversationRouteIdSchema,
   SessionId as SessionIdSchema,
   ThinkRequestId,
-  ThinkSubmissionId,
 } from "../../domain";
 import { database as workerDatabase } from "../../db";
 import * as Billing from "../../db/billing";
@@ -33,9 +33,11 @@ import {
 } from "../../domain/managed-conversation";
 import {
   ModelCallUsageDispatchUnavailable,
+  ModelCallAttemptId,
   ModelStepNumber,
   conservativeVendorCostForStep,
   modelCallAttemptId,
+  type ModelCallEvidence,
   type PendingModelCallUsage,
 } from "../../domain/model-call-attempt";
 import {
@@ -47,7 +49,7 @@ import {
   launchModelAccessPolicy,
   type ManagedRouteUnavailable,
 } from "../../domain/model-access-policy";
-import { retainedCatalog } from "../../domain/plan-policy";
+import { currentPolicy, retainedCatalog, type PlanPolicyNotFound } from "../../domain/plan-policy";
 import * as AgentDirectory from "../../services/agent-directory";
 import {
   invalidOsfoEnvironment,
@@ -57,6 +59,7 @@ import {
 } from "../../layers";
 import { makeAgentDb } from "./db/client";
 import * as Allowances from "../../services/allowances";
+import { makeActionApprovals } from "../../services/action-approvals";
 import { makeDurableModelCallUsage } from "../../services/model-call-usage";
 import {
   type AgentInitializationConflict,
@@ -88,15 +91,15 @@ import {
   type ActionPresentationFound,
   type ActionPresentationNotFound,
   type ActionPresentationUnavailable,
-  type ActionApprovalRequestInvalid,
+  ActionApprovalRequestInvalid,
   ApprovalActorAuthorizationUnavailable,
   type ApprovalActorUnauthorized,
   type ApprovalAlreadyResolved,
   type ApprovalDecisionAccepted,
-  type CancelActionApprovalRequest,
-  type DecideActionApprovalRequest,
-  makeThinkActionApprovals,
-  type ReadActionPresentationRequest,
+  CancelActionApprovalRequest,
+  DecideActionApprovalRequest,
+  makeThinkActionApprovalAdapter,
+  ReadActionPresentationRequest,
   type ThinkApprovalUnavailable,
 } from "./think-action-approvals";
 import {
@@ -111,6 +114,8 @@ import {
 
 const pendingSessionId = "__osfo_uninitialized__";
 const gatewayId = "default";
+const modelCallUsageRetryDelaySeconds = 60;
+const gatewayCostMaximumLookups = 3;
 const defaultTestProtectedActionState: TestProtectedActionState = {
   authority: "active",
   providerOutcome: "applied",
@@ -123,6 +128,15 @@ const GatewayProviderMetadata = Schema.Struct({
     }),
   ),
 });
+
+const GatewayCostSettlement = Schema.Struct({
+  allowancePeriodId: AllowancePeriodId,
+  attemptId: ModelCallAttemptId,
+  conservativeVendorUsdMicros: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0)),
+  gatewayLogId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+  lookupAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
+});
+type GatewayCostSettlement = typeof GatewayCostSettlement.Type;
 
 /** RPC representation of one managed conversation submission. */
 export type SubmitManagedConversationRequest = typeof SubmitManagedConversationInput.Encoded;
@@ -188,7 +202,7 @@ export class OsfoAgent extends Think<Env> {
   override sendReasoning = false;
 
   /** Free policy is the safe class fallback. Every admitted turn overrides it from metadata. */
-  override maxSteps = launchModelAccessPolicy.plans.free.maxSteps;
+  override maxSteps = Number(currentPolicy.plans.free.operationLimits.modelStepsPerRequest);
 
   /** Never replay an uncertain external effect from an abandoned pending ledger row. */
   override actionLedgerPendingRetryLeaseMs = false as const;
@@ -208,15 +222,17 @@ export class OsfoAgent extends Think<Env> {
   readonly #db = makeAgentDb(this.ctx.storage);
   #activeModelStepNumber = ModelStepNumber.make(1);
   readonly #completedModelSteps = new Set<number>();
-  readonly #actionApprovals = makeThinkActionApprovals({
+  readonly #actionApprovals = makeActionApprovals({
     authorizer: { ownsAgent: (userId) => this.#userOwnsAgent(userId) },
+    lifecycle: makeThinkActionApprovalAdapter({
+      think: {
+        approve: (executionId) => this.approveExecution(executionId),
+        pending: (executionId) => this.pendingApprovals(executionId),
+        reject: (executionId, reason) => this.rejectExecution(executionId, reason),
+      },
+    }),
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
     present: presentTestProtectedAction,
-    think: {
-      approve: (executionId) => this.approveExecution(executionId),
-      pending: (executionId) => this.pendingApprovals(executionId),
-      reject: (executionId, reason) => this.rejectExecution(executionId, reason),
-    },
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
   readonly #modelCallUsage = makeDurableModelCallUsage({
@@ -325,22 +341,44 @@ export class OsfoAgent extends Think<Env> {
       );
       return;
     }
-    const attemptId = modelCallAttemptId(
-      ThinkSubmissionId.make(metadata.value.submissionId),
-      stepNumber,
+    const attemptId = modelCallAttemptId(metadata.value.submissionId, stepNumber);
+    if (step !== undefined) {
+      const evidence = await this.#readStepEvidence(metadata.value, stepNumber, step);
+      if (Predicate.isTagged(evidence, "GatewayCostPending")) {
+        await this.#scheduleGatewayCostSettlement(evidence.settlement);
+        return;
+      }
+      await this.#recordModelCallUsage(
+        metadata.value.allowancePeriodId,
+        attemptId,
+        evidence.evidence,
+      );
+      return;
+    }
+    await this.#recordModelCallUsage(
+      metadata.value.allowancePeriodId,
+      attemptId,
+      conservativeStepEvidence(metadata.value, stepNumber),
     );
-    const evidence =
-      step === undefined
-        ? conservativeStepEvidence(metadata.value, stepNumber)
-        : await this.#readStepEvidence(metadata.value, stepNumber, step);
+  }
+
+  async #recordModelCallUsage(
+    allowancePeriodId: AllowancePeriodId,
+    attemptId: ModelCallAttemptId,
+    evidence: ModelCallEvidence,
+  ): Promise<void> {
     await Effect.runPromise(
-      this.#modelCallUsage.record(metadata.value.allowancePeriodId, attemptId, evidence).pipe(
-        Effect.catch(() =>
-          Effect.logError("Managed model usage recording remains pending").pipe(
-            Effect.annotateLogs({
-              attemptId,
-              failureTag: "ModelCallUsageRecordingFailure",
-            }),
+      this.#modelCallUsage.record(allowancePeriodId, attemptId, evidence).pipe(
+        Effect.catchTag("ModelCallUsageDispatchUnavailable", () =>
+          Effect.promise(() => this.#scheduleModelCallUsageReconciliation()).pipe(
+            Effect.andThen(
+              Effect.logError("Managed model usage recording remains pending").pipe(
+                Effect.annotateLogs({
+                  attemptId,
+                  failureTag: "ModelCallUsageRecordingFailure",
+                }),
+              ),
+            ),
           ),
         ),
       ),
@@ -353,15 +391,50 @@ export class OsfoAgent extends Think<Env> {
     const current = await Effect.runPromise(this.#readOptionalPrimarySessionId());
     return session
       .forSession(Option.getOrElse(current, () => pendingSessionId))
-      .onCompaction(compactManagedSession)
+      .onCompaction(
+        createCompactFunction({
+          summarize: summarizeManagedSession,
+        }),
+      )
       .compactAfter(launchModelAccessPolicy.plans.free.context.targetInputTokens);
   }
 
   /** Reconcile committed Think messages when a new Agent activation starts. */
   override async onStart(): Promise<void> {
     await this.#migrationsReady;
-    await Effect.runPromise(this.#modelCallUsage.reconcile);
+    await this.#reconcileModelCallUsageOrSchedule();
     await Effect.runPromise(this.#reconcileCommittedTurns());
+  }
+
+  /** Retry durable model usage that has not reached PostgreSQL Allowances. */
+  async reconcileModelCallUsage(): Promise<void> {
+    await this.#migrationsReady;
+    await this.#reconcileModelCallUsageOrSchedule();
+  }
+
+  /** Settle one delayed AI Gateway cost lookup without creating another execution lifecycle. */
+  async settleGatewayModelUsage(input: GatewayCostSettlement): Promise<void> {
+    await this.#migrationsReady;
+    const settlement = await Effect.runPromise(Schema.decodeEffect(GatewayCostSettlement)(input));
+    const vendorUsdMicros = await this.#readGatewayVendorCost(settlement.gatewayLogId);
+    if (Option.isSome(vendorUsdMicros)) {
+      await this.#recordModelCallUsage(settlement.allowancePeriodId, settlement.attemptId, {
+        _tag: "Observed",
+        vendorUsdMicros: vendorUsdMicros.value,
+      });
+      return;
+    }
+    if (settlement.lookupAttempt >= gatewayCostMaximumLookups) {
+      await this.#recordModelCallUsage(settlement.allowancePeriodId, settlement.attemptId, {
+        _tag: "Ambiguous",
+        conservativeVendorUsdMicros: BigInt(settlement.conservativeVendorUsdMicros),
+      });
+      return;
+    }
+    await this.#scheduleGatewayCostSettlement({
+      ...settlement,
+      lookupAttempt: settlement.lookupAttempt + 1,
+    });
   }
 
   /** Idempotently establish the initialization fact, primary route, and current Session. */
@@ -400,6 +473,7 @@ export class OsfoAgent extends Think<Env> {
     | AgentRequestInvalid
     | ManagedConversationDenied
     | ManagedRouteUnavailable
+    | PlanPolicyNotFound
     | SubmitMessagesResult
     | ThinkSubmissionUnavailable
   > {
@@ -454,7 +528,18 @@ export class OsfoAgent extends Think<Env> {
     | ThinkApprovalUnavailable
   > {
     await this.#migrationsReady;
-    return runRpc(this.#actionApprovals.read(input));
+    return runRpc(
+      Schema.decodeEffect(ReadActionPresentationRequest)(input).pipe(
+        Effect.mapError(
+          () =>
+            new ActionApprovalRequestInvalid({
+              message: "The Action Presentation request is invalid",
+              operation: "readActionPresentation",
+            }),
+        ),
+        Effect.flatMap((parsed) => this.#actionApprovals.read(parsed.actor, parsed.presentationId)),
+      ),
+    );
   }
 
   /** Record the first authenticated exact Approval decision and dispatch it to Think. */
@@ -470,7 +555,25 @@ export class OsfoAgent extends Think<Env> {
     | ThinkApprovalUnavailable
   > {
     await this.#migrationsReady;
-    return runRpc(this.#actionApprovals.decide(input));
+    return runRpc(
+      Schema.decodeEffect(DecideActionApprovalRequest)(input).pipe(
+        Effect.mapError(
+          () =>
+            new ActionApprovalRequestInvalid({
+              message: "The Action Approval decision is invalid",
+              operation: "decideActionApproval",
+            }),
+        ),
+        Effect.flatMap((parsed) =>
+          this.#actionApprovals.dispatch(
+            parsed.actor,
+            parsed.presentationId,
+            parsed.decision === "approve" ? "approved" : "rejected",
+            parsed.reason,
+          ),
+        ),
+      ),
+    );
   }
 
   /** Cancel one pending Approval and its owning Think execution. */
@@ -486,7 +589,25 @@ export class OsfoAgent extends Think<Env> {
     | ThinkApprovalUnavailable
   > {
     await this.#migrationsReady;
-    return runRpc(this.#actionApprovals.cancel(input));
+    return runRpc(
+      Schema.decodeEffect(CancelActionApprovalRequest)(input).pipe(
+        Effect.mapError(
+          () =>
+            new ActionApprovalRequestInvalid({
+              message: "The Action Approval cancellation is invalid",
+              operation: "cancelActionApproval",
+            }),
+        ),
+        Effect.flatMap((parsed) =>
+          this.#actionApprovals.dispatch(
+            parsed.actor,
+            parsed.presentationId,
+            "canceled",
+            parsed.reason,
+          ),
+        ),
+      ),
+    );
   }
 
   /** Look up the stable initialization fact and current primary Session. */
@@ -662,22 +783,83 @@ export class OsfoAgent extends Think<Env> {
     step: StepContext,
   ) {
     const logId = readAiGatewayLogId(step.response.headers, step.providerMetadata);
-    if (Option.isNone(logId)) return conservativeStepEvidence(metadata, stepNumber);
-    const cost = await Effect.runPromise(
-      Effect.tryPromise({
-        try: () => this.env.AI.gateway(gatewayId).getLog(logId.value),
-        catch: () => null,
-      }),
-    );
-    if (cost === null || cost.cost === undefined || !Number.isFinite(cost.cost) || cost.cost < 0) {
-      return conservativeStepEvidence(metadata, stepNumber);
+    if (Option.isNone(logId)) {
+      return {
+        _tag: "StepEvidenceReady" as const,
+        evidence: conservativeStepEvidence(metadata, stepNumber),
+      };
+    }
+    const cost = await this.#readGatewayVendorCost(logId.value);
+    if (Option.isNone(cost)) {
+      return {
+        _tag: "GatewayCostPending" as const,
+        settlement: GatewayCostSettlement.make({
+          allowancePeriodId: metadata.allowancePeriodId,
+          attemptId: modelCallAttemptId(metadata.submissionId, stepNumber),
+          conservativeVendorUsdMicros: Number(
+            conservativeStepEvidence(metadata, stepNumber).conservativeVendorUsdMicros,
+          ),
+          gatewayLogId: logId.value,
+          lookupAttempt: 1,
+        }),
+      };
     }
     return {
-      _tag: "Observed" as const,
-      supermemoryIngestionTokens: 0n,
-      supermemoryRetrievals: 0n,
-      vendorUsdMicros: BigInt(Math.ceil(cost.cost * 1_000_000)),
+      _tag: "StepEvidenceReady" as const,
+      evidence: {
+        _tag: "Observed" as const,
+        vendorUsdMicros: cost.value,
+      },
     };
+  }
+
+  async #readGatewayVendorCost(logId: string): Promise<Option.Option<bigint>> {
+    const read = await Effect.runPromise(
+      Effect.option(
+        Effect.tryPromise({
+          try: () => this.env.AI.gateway(gatewayId).getLog(logId),
+          catch: () => undefined,
+        }),
+      ),
+    );
+    if (Option.isNone(read)) return Option.none();
+    const log = read.value;
+    return log.cost === undefined || !Number.isFinite(log.cost) || log.cost < 0
+      ? Option.none()
+      : Option.some(BigInt(Math.ceil(log.cost * 1_000_000)));
+  }
+
+  async #scheduleGatewayCostSettlement(settlement: GatewayCostSettlement): Promise<void> {
+    const delaySeconds = 10 * 3 ** (settlement.lookupAttempt - 1);
+    await this.schedule(delaySeconds, "settleGatewayModelUsage", settlement, {
+      idempotent: true,
+      retry: { baseDelayMs: 500, maxAttempts: 3, maxDelayMs: 5_000 },
+    });
+  }
+
+  async #scheduleModelCallUsageReconciliation(): Promise<void> {
+    await this.schedule(modelCallUsageRetryDelaySeconds, "reconcileModelCallUsage", undefined, {
+      idempotent: true,
+      retry: { baseDelayMs: 500, maxAttempts: 3, maxDelayMs: 5_000 },
+    });
+  }
+
+  async #reconcileModelCallUsageOrSchedule(): Promise<void> {
+    await Effect.runPromise(
+      this.#modelCallUsage.reconcile.pipe(
+        Effect.catch(() =>
+          Effect.promise(() => this.#scheduleModelCallUsageReconciliation()).pipe(
+            Effect.andThen(
+              Effect.logError("Model-call usage reconciliation remains pending").pipe(
+                Effect.annotateLogs({
+                  failureTag: "ModelCallUsageReconciliationFailure",
+                }),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   #userOwnsAgent(userId: UserId) {
@@ -836,41 +1018,18 @@ const readAiGatewayLogId = (
   );
 };
 
-const CompactableMessage = Schema.StructWithRest(
-  Schema.Struct({
-    id: Schema.String,
-    parts: Schema.Array(
-      Schema.StructWithRest(Schema.Struct({ type: Schema.String }), [
-        Schema.Record(Schema.String, Schema.Unknown),
-      ]),
-    ),
-    role: Schema.String,
-  }),
-  [Schema.Record(Schema.String, Schema.Unknown)],
-);
-
-const TextPart = Schema.Struct({ text: Schema.String, type: Schema.Literal("text") });
-
-const compactManagedSession = async (messages: ReadonlyArray<SessionMessage>) => {
-  const protectedTail = 4;
-  if (messages.length <= protectedTail + 1) return null;
-  const compacted = messages.slice(0, -protectedTail);
-  const parsed = Schema.decodeUnknownOption(Schema.Array(CompactableMessage))(compacted);
-  if (Option.isNone(parsed)) return null;
-  const lines = parsed.value.flatMap((message) =>
-    message.parts.flatMap((part) => {
-      const text = Schema.decodeUnknownOption(TextPart)(part);
-      return Option.isSome(text) ? [`${message.role}: ${text.value.text}`] : [];
-    }),
+const summarizeManagedSession = (prompt: string): Promise<string> => {
+  const initialMarker = "CONVERSATION TO SUMMARIZE:\n";
+  const updateMarker = "PREVIOUS SUMMARY:\n";
+  const startMarker = prompt.includes(initialMarker) ? initialMarker : updateMarker;
+  const start = prompt.indexOf(startMarker);
+  const bodyStart = start < 0 ? 0 : start + startMarker.length;
+  const initialEnd = prompt.indexOf("\n\nUse this structure:", bodyStart);
+  const updateEnd = prompt.indexOf("\n\nUpdate the summary.", bodyStart);
+  const bodyEnd = initialEnd >= 0 ? initialEnd : updateEnd >= 0 ? updateEnd : prompt.length;
+  return Promise.resolve(
+    `[Earlier conversation]\n${prompt.slice(bodyStart, bodyEnd).slice(-8_000)}`,
   );
-  const first = parsed.value[0];
-  const last = parsed.value.at(-1);
-  if (first === undefined || last === undefined) return null;
-  return {
-    fromMessageId: first.id,
-    summary: `[Earlier conversation]\n${lines.join("\n").slice(-8_000)}`,
-    toMessageId: last.id,
-  };
 };
 
 const readThinkHistory = (session: Session, sessionId: SessionId) =>

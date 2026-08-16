@@ -1,6 +1,5 @@
 import { action } from "@cloudflare/think";
 import { DateTime, Effect, Option, Schema } from "effect";
-import { z } from "zod";
 
 import { PlanPolicyVersion, UserId } from "../../domain";
 import {
@@ -9,7 +8,10 @@ import {
   type ActionExecutionResult,
 } from "../../domain/action-execution";
 import { retainedCatalog } from "../../domain/plan-policy";
-import { executeApprovedAction } from "../../services/action-executor";
+import {
+  ThinkApprovedActionExecution,
+  executeThinkApprovedAction,
+} from "../../services/action-executor";
 import { AuthorizationContext, make as makeAuthorization } from "../../services/authorization";
 import {
   ActionPresentation,
@@ -20,14 +22,15 @@ import {
 
 const actionName = "osfoTestGmailSend";
 const testUserId = UserId.make("test-protected-action-user");
-const inputSchema = z.object({
-  recipient: z.string().email().max(320),
-  subject: z.string().min(1).max(200),
-});
 const TestActionInput = Schema.Struct({
-  recipient: Schema.String.check(Schema.isMinLength(3), Schema.isMaxLength(320)),
+  recipient: Schema.String.check(
+    Schema.isMinLength(3),
+    Schema.isMaxLength(320),
+    Schema.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/),
+  ),
   subject: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
 });
+const inputSchema = Schema.toStandardSchemaV1(TestActionInput);
 type TestActionInput = typeof TestActionInput.Type;
 
 /** Test-only current authority and provider state used to verify the real Think Action path. */
@@ -51,10 +54,14 @@ export const makeTestProtectedAction = (options: TestProtectedActionOptions) =>
     // oxlint-disable-next-line effecttsgo/async-function -- Think Actions require a Promise-returning execute callback.
     execute: async (input, context) =>
       Effect.runPromise(
-        executeApprovedAction(
+        executeThinkApprovedAction(
           makeAuthorization(retainedCatalog),
           currentAuthorization(options.readState()),
-          { actionId: context.toolCallId, kind: "gmail.send" },
+          ThinkApprovedActionExecution.make({
+            _tag: "ThinkApprovedActionExecution",
+            actionId: ActionId.make(context.toolCallId),
+            operation: "gmail.send",
+          }),
           (actionId) => contactTestProvider(options.readState(), actionId, input.recipient),
         ),
       ),

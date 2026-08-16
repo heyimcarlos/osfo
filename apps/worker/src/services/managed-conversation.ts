@@ -1,7 +1,12 @@
 import { Effect, Predicate, Schema } from "effect";
 
 import { ThinkSubmissionId } from "../domain";
-import { retainedCatalog } from "../domain/plan-policy";
+import {
+  policyFor,
+  policyForVersion,
+  retainedCatalog,
+  type PlanPolicyNotFound,
+} from "../domain/plan-policy";
 import {
   launchModelAccessPolicy,
   type ManagedRouteUnavailable,
@@ -49,18 +54,22 @@ export const admitManagedConversation = (
   input: SubmitManagedConversation,
 ): Effect.Effect<
   ManagedConversationAdmitted | ManagedConversationDenied,
-  ManagedRouteUnavailable
+  ManagedRouteUnavailable | PlanPolicyNotFound
 > =>
   Effect.gen(function* () {
     const plan = input.authorization.subscription.plan;
     const planPolicyVersion = input.authorization.subscription.planPolicyVersion;
     const profile = yield* selectManagedRoute(launchModelAccessPolicy, plan, planPolicyVersion);
+    const planPolicy = yield* policyForVersion(retainedCatalog, planPolicyVersion);
+    const operationLimits = policyFor(planPolicy, plan).operationLimits;
+    const maxSteps = Number(operationLimits.modelStepsPerRequest);
+    const maxVendorUsdMicros = operationLimits.vendorUsdMicrosPerRequest;
     const admission = makeAuthorization(retainedCatalog).admit(
-      { ...input.authorization, requestVendorUsdMicros: profile.maxVendorUsdMicros },
+      { ...input.authorization, requestVendorUsdMicros: maxVendorUsdMicros },
       {
         actionId: input.submissionId,
         kind: "conversation.run",
-        modelSteps: BigInt(profile.maxSteps),
+        modelSteps: operationLimits.modelStepsPerRequest,
       },
     );
     if (!Predicate.isTagged(admission, "Admitted")) {
@@ -84,11 +93,11 @@ export const admitManagedConversation = (
       metadata: ManagedTurnMetadata.make({
         _tag: "OsfoManagedTurn",
         allowancePeriodId: admission.allowancePeriod.allowancePeriodId,
-        conservativeVendorUsdMicros: Number(profile.maxVendorUsdMicros),
+        conservativeVendorUsdMicros: Number(maxVendorUsdMicros),
         maxInputTokens: profile.context.maxInputTokens,
         maxOutputTokens: profile.context.maxOutputTokens,
         maxRetries: profile.maxRetries,
-        maxSteps: profile.maxSteps,
+        maxSteps,
         plan,
         planPolicyVersion,
         route: profile.route,

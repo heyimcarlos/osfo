@@ -2,11 +2,12 @@ import { describe, expect, it } from "@effect/vitest";
 import { DateTime, Effect, Predicate, Schema } from "effect";
 
 import { AllowancePeriodId, PlanPolicyVersion, ThinkSubmissionId } from "../src/domain";
-import { Recorded, type AllowanceItem, type AllowanceSource } from "../src/domain/allowance";
+import type { AllowanceItem, AllowanceSource } from "../src/domain/allowance";
 import { launchModelAccessPolicy, selectManagedRoute } from "../src/domain/model-access-policy";
 import { ActionId, ambiguousActionResult } from "../src/domain/action-execution";
 import {
   ModelCallUsageDispatchUnavailable,
+  ModelCallUsageStoreUnavailable,
   ModelStepNumber,
   conservativeVendorCostForStep,
   modelCallAttemptId,
@@ -14,10 +15,13 @@ import {
   type PendingModelCallUsage,
 } from "../src/domain/model-call-attempt";
 import { AuthorizationContext, make as makeAuthorization } from "../src/services/authorization";
-import { retainedCatalog } from "../src/domain/plan-policy";
-import { executeApprovedAction } from "../src/services/action-executor";
+import { currentPolicy, retainedCatalog } from "../src/domain/plan-policy";
+import {
+  ThinkApprovedActionExecution,
+  executeThinkApprovedAction,
+} from "../src/services/action-executor";
 import { admitManagedConversation } from "../src/services/managed-conversation";
-import { makeDurableModelCallUsage, recordModelCallUsage } from "../src/services/model-call-usage";
+import { makeDurableModelCallUsage } from "../src/services/model-call-usage";
 
 describe("managed model access policy", () => {
   it.effect("selects bounded server-owned routes for both launch Plans", () =>
@@ -40,8 +44,6 @@ describe("managed model access policy", () => {
           targetInputTokens: 18_000,
         },
         maxRetries: 0,
-        maxSteps: 6,
-        maxVendorUsdMicros: 30_000n,
         route: "dynamic/osfo-free-v1",
       });
       expect(adventurer).toEqual({
@@ -51,8 +53,6 @@ describe("managed model access policy", () => {
           targetInputTokens: 72_000,
         },
         maxRetries: 0,
-        maxSteps: 12,
-        maxVendorUsdMicros: 750_000n,
         route: "dynamic/osfo-adventurer-v1",
       });
     }),
@@ -114,18 +114,13 @@ describe("managed model access policy", () => {
   );
 
   it("partitions conservative fallback cost across steps without multiplying the request ceiling", () => {
-    for (const profile of [
-      launchModelAccessPolicy.plans.free,
-      launchModelAccessPolicy.plans.adventurer,
-    ]) {
-      const total = Array.from({ length: profile.maxSteps }, (_, index) =>
-        conservativeVendorCostForStep(
-          profile.maxVendorUsdMicros,
-          profile.maxSteps,
-          ModelStepNumber.make(index + 1),
-        ),
+    for (const rules of [currentPolicy.plans.free, currentPolicy.plans.adventurer]) {
+      const maxSteps = Number(rules.operationLimits.modelStepsPerRequest);
+      const maximum = rules.operationLimits.vendorUsdMicrosPerRequest;
+      const total = Array.from({ length: maxSteps }, (_, index) =>
+        conservativeVendorCostForStep(maximum, maxSteps, ModelStepNumber.make(index + 1)),
       ).reduce((sum, value) => sum + value, 0n);
-      expect(total).toBe(profile.maxVendorUsdMicros);
+      expect(total).toBe(maximum);
     }
   });
 
@@ -175,36 +170,42 @@ describe("managed model access policy", () => {
     });
   });
 
-  it.effect("records available model evidence and skips proven no-use", () =>
+  it.effect("records available model evidence through the durable production seam", () =>
     Effect.gen(function* () {
       const records: Array<{
         readonly items: ReadonlyArray<AllowanceItem>;
         readonly source: AllowanceSource;
       }> = [];
-      const allowances = {
-        inspect: () => Effect.die("Inspection is outside this recording boundary"),
-        record: (
-          _allowancePeriodId: AllowancePeriodId,
-          source: AllowanceSource,
-          items: ReadonlyArray<AllowanceItem>,
-        ) => {
-          records.push({ items, source });
-          return Effect.succeed(Recorded.make({}));
+      const service = makeDurableModelCallUsage({
+        dispatch: {
+          record: (usage) =>
+            Effect.sync(() => {
+              records.push({
+                items: usage.items,
+                source: { sourceId: usage.attemptId, sourceType: "ModelCallAttempt" },
+              });
+            }),
         },
-      };
+        now: Effect.succeed(date("2026-08-16T00:00:00.000Z")),
+        persistence: {
+          commit: () => Effect.void,
+          markDispatched: () => Effect.void,
+          readPending: Effect.succeed([]),
+        },
+      });
       const attemptId = modelCallAttemptId(
         ThinkSubmissionId.make("submission-recording"),
         ModelStepNumber.make(2),
       );
       const periodId = AllowancePeriodId.make("period-free");
 
-      yield* recordModelCallUsage(allowances, periodId, attemptId, {
+      yield* service.record(periodId, attemptId, {
         _tag: "Observed",
         supermemoryIngestionTokens: 120n,
         supermemoryRetrievals: 1n,
         vendorUsdMicros: 900n,
       });
-      const noUse = yield* recordModelCallUsage(allowances, periodId, attemptId, {
+      const noUse = yield* service.record(periodId, attemptId, {
         _tag: "NotContacted",
       });
 
@@ -284,11 +285,55 @@ describe("managed model access policy", () => {
     }),
   );
 
+  it.effect("propagates local evidence persistence failure before dispatch", () =>
+    Effect.gen(function* () {
+      const attemptId = modelCallAttemptId(
+        ThinkSubmissionId.make("submission-local-persistence-failure"),
+        ModelStepNumber.make(1),
+      );
+      let dispatches = 0;
+      const service = makeDurableModelCallUsage({
+        dispatch: {
+          record: () =>
+            Effect.sync(() => {
+              dispatches += 1;
+            }),
+        },
+        now: Effect.succeed(date("2026-08-16T00:00:00.000Z")),
+        persistence: {
+          commit: () =>
+            Effect.fail(
+              new ModelCallUsageStoreUnavailable({
+                cause: "sqlite unavailable",
+                message: "The local evidence commit failed",
+                operation: "commitModelCallUsage",
+              }),
+            ),
+          markDispatched: () => Effect.void,
+          readPending: Effect.succeed([]),
+        },
+      });
+
+      const failure = yield* Effect.flip(
+        service.record(AllowancePeriodId.make("period-local-failure"), attemptId, {
+          _tag: "Ambiguous",
+          conservativeVendorUsdMicros: 30_000n,
+        }),
+      );
+
+      expect(failure).toMatchObject({
+        _tag: "ModelCallUsageStoreUnavailable",
+        operation: "commitModelCallUsage",
+      });
+      expect(dispatches).toBe(0);
+    }),
+  );
+
   it.effect("rechecks the original acting authority immediately before provider contact", () =>
     Effect.gen(function* () {
       let contacts = 0;
       const context = authorizationContext("adventurer");
-      const denied = yield* executeApprovedAction(
+      const denied = yield* executeThinkApprovedAction(
         makeAuthorization(retainedCatalog),
         {
           ...context,
@@ -305,7 +350,11 @@ describe("managed model access policy", () => {
           gmailConnection: { _tag: "Connected", userId: context.user.userId },
           originatingAuthority: { _tag: "AuthSession", authSessionId: "auth-managed" },
         },
-        { actionId: "send-action", kind: "gmail.send" },
+        ThinkApprovedActionExecution.make({
+          _tag: "ThinkApprovedActionExecution",
+          actionId: ActionId.make("send-action"),
+          operation: "gmail.send",
+        }),
         (actionId) => {
           contacts += 1;
           return Effect.succeed({

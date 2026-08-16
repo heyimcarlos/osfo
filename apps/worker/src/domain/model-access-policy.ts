@@ -31,8 +31,6 @@ export const ManagedContextPolicy = Schema.Struct({
 export const ManagedRouteProfile = Schema.Struct({
   context: ManagedContextPolicy,
   maxRetries: Schema.Literal(0),
-  maxSteps: PositiveInteger,
-  maxVendorUsdMicros: Schema.BigInt.check(Schema.isGreaterThanBigInt(0n)),
   route: ManagedModelRoute,
 });
 
@@ -72,8 +70,6 @@ export const launchModelAccessPolicy = Schema.decodeSync(ModelAccessPolicy)({
         targetInputTokens: 72_000,
       },
       maxRetries: 0,
-      maxSteps: 12,
-      maxVendorUsdMicros: 750_000n,
       route: "dynamic/osfo-adventurer-v1",
     },
     free: {
@@ -83,8 +79,6 @@ export const launchModelAccessPolicy = Schema.decodeSync(ModelAccessPolicy)({
         targetInputTokens: 18_000,
       },
       maxRetries: 0,
-      maxSteps: 6,
-      maxVendorUsdMicros: 30_000n,
       route: "dynamic/osfo-free-v1",
     },
   },

@@ -3,7 +3,6 @@ import { Schema } from "effect";
 import { AllowancePeriodId, Plan, PlanPolicyVersion, ThinkSubmissionId } from "../domain";
 import { ManagedModelRoute } from "./model-access-policy";
 
-const boundedIdentity = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
 const positiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0));
 
 /** Trusted cancellation of one Think-owned managed conversation Submission. */
@@ -23,7 +22,7 @@ export const ManagedTurnMetadata = Schema.TaggedStruct("OsfoManagedTurn", {
   plan: Plan,
   planPolicyVersion: PlanPolicyVersion,
   route: ManagedModelRoute,
-  submissionId: boundedIdentity,
+  submissionId: ThinkSubmissionId,
   targetInputTokens: positiveInteger,
 });
 

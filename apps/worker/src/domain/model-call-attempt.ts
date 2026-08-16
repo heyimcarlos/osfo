@@ -28,9 +28,13 @@ export type ModelStepNumber = typeof ModelStepNumber.Type;
 /** Trusted provider evidence available after one model call attempt. */
 export const ModelCallEvidence = Schema.Union([
   Schema.TaggedStruct("Observed", {
-    supermemoryIngestionTokens: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
-    supermemoryRetrievals: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
-    vendorUsdMicros: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+    supermemoryIngestionTokens: Schema.optional(
+      Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+    ),
+    supermemoryRetrievals: Schema.optional(
+      Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+    ),
+    vendorUsdMicros: Schema.optional(Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n))),
   }),
   Schema.TaggedStruct("NotContacted", {}),
   Schema.TaggedStruct("Ambiguous", {
@@ -101,9 +105,9 @@ export const normalizeModelCallUsage = (
 
 const usageItem = (
   allowanceKind: AllowanceItem["allowanceKind"],
-  quantity: bigint,
+  quantity: bigint | undefined,
 ): AllowanceItem | null =>
-  quantity === 0n ? null : { allowanceKind, basis: "observed", quantity };
+  quantity === undefined || quantity === 0n ? null : { allowanceKind, basis: "observed", quantity };
 
 /** Conflict when one ModelCallAttempt is reused with changed normalized evidence. */
 export class ModelCallUsageConflict extends Schema.TaggedError<ModelCallUsageConflict>()(

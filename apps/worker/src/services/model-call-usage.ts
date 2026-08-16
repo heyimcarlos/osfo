@@ -9,27 +9,12 @@ import type {
   PendingModelCallUsage,
 } from "../domain/model-call-attempt";
 import { normalizeModelCallUsage } from "../domain/model-call-attempt";
-import type { ExistingUsage, Recorded } from "../domain/allowance";
-import type { Interface as Allowances } from "./allowances";
 
 /** Proven no-use outcome that creates no Allowance Consumption record. */
 export const NoModelCallUsage = Schema.TaggedStruct("NoModelCallUsage", {});
 
 /** Proven no-use outcome that creates no Allowance Consumption record. */
 export type NoModelCallUsage = typeof NoModelCallUsage.Type;
-
-/** Record normalized model-provider evidence against the admitted period and attempt identity. */
-export const recordModelCallUsage = (
-  allowances: Allowances,
-  allowancePeriodId: AllowancePeriodId,
-  attemptId: ModelCallAttemptId,
-  evidence: ModelCallEvidence,
-) => {
-  const normalized = normalizeModelCallUsage(attemptId, evidence);
-  return normalized.items.length === 0
-    ? Effect.succeed<NoModelCallUsage | ExistingUsage | Recorded>(NoModelCallUsage.make({}))
-    : allowances.record(allowancePeriodId, normalized.source, normalized.items);
-};
 
 /** Agent SQLite evidence operations required for lossless cross-store recording. */
 export interface ModelCallUsagePersistence {
@@ -83,11 +68,6 @@ export const makeDurableModelCallUsage = <E>(options: {
   const reconcile = options.persistence.readPending.pipe(
     Effect.flatMap((pending) =>
       Effect.forEach(pending, dispatch, { concurrency: 1, discard: true }),
-    ),
-    Effect.catch(() =>
-      Effect.logError("Model-call usage reconciliation remains pending").pipe(
-        Effect.annotateLogs({ failureTag: "ModelCallUsageReconciliationFailure" }),
-      ),
     ),
   );
 
