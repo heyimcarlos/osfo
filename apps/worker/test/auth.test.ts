@@ -353,7 +353,7 @@ describe("phone authentication", () => {
 });
 
 describe("authentication dependency scope", () => {
-  it.effect("acquires Postgres only for an authentication request and releases it", () =>
+  it.effect("shares one dependency graph across typed and raw routes", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
       (fixture) =>
@@ -390,7 +390,7 @@ describe("authentication dependency scope", () => {
 
           expect(health.status).toBe(200);
           expect(notFound.status).toBe(404);
-          expect(acquisitions).toBe(0);
+          expect(acquisitions).toBe(1);
           expect(releases).toBe(0);
 
           const auth = yield* request(app.handler, "/auth/phone-number/send-otp", {
@@ -399,9 +399,10 @@ describe("authentication dependency scope", () => {
 
           expect(auth.status).toBe(200);
           expect(acquisitions).toBe(1);
-          expect(releases).toBe(1);
+          expect(releases).toBe(0);
 
           yield* Effect.promise(app.dispose);
+          expect(releases).toBe(1);
         }),
       closeTestDatabase,
     ),

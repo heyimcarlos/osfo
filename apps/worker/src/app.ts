@@ -1,3 +1,4 @@
+import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { Layer } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 
@@ -27,6 +28,7 @@ export const make = (env: Bindings, config: RuntimeConfig, options?: MakeOptions
     options?.authDependencies ??
     Layer.merge(Db.layer({ db: env.DB }), TwilioVerify.layer(config.twilioVerify));
   const appLayer = Routes.layer({ authDependencies, config, env, runtime }).pipe(
+    Layer.provide(BrowserCrypto.layer),
     Layer.provide(HttpServer.layerServices),
   );
   const webHandler = HttpRouter.toWebHandler(appLayer, { disableLogger: true });

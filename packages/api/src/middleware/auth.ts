@@ -1,4 +1,4 @@
-import { Context } from "effect";
+import { Context, Schema } from "effect";
 import { HttpApiError, HttpApiMiddleware } from "effect/unstable/httpapi";
 
 /** Authenticated User available to protected API handlers. */
@@ -14,8 +14,15 @@ export class CurrentUser extends Context.Service<CurrentUser, CurrentUserValue>(
 /** Safe response when a request has no valid Better Auth session. */
 export const Unauthorized = HttpApiError.Unauthorized;
 
+/** Safe response when the authentication authority is unavailable. */
+export class AuthenticationUnavailable extends Schema.TaggedError<AuthenticationUnavailable>()(
+  "AuthenticationUnavailable",
+  { message: Schema.String },
+  { httpApiStatus: 503 },
+) {}
+
 /** Authentication requirement for protected API groups. */
 export class Auth extends HttpApiMiddleware.Service<Auth, { readonly provides: CurrentUser }>()(
   "@osfo/api/Auth",
-  { error: Unauthorized },
+  { error: [Unauthorized, AuthenticationUnavailable] },
 ) {}

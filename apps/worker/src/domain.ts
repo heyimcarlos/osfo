@@ -6,12 +6,6 @@ export const UserId = Schema.String.pipe(Schema.brand("UserId"));
 /** Stable identity for one registered User. */
 export type UserId = typeof UserId.Type;
 
-/** Stable identity for one completed User Registration. */
-export const RegistrationId = Schema.String.pipe(Schema.brand("RegistrationId"));
-
-/** Stable identity for one completed User Registration. */
-export type RegistrationId = typeof RegistrationId.Type;
-
 /** Stable identity for one User-scoped Osfo Agent. */
 export const AgentId = Schema.String.pipe(Schema.brand("AgentId"));
 
