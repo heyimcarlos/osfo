@@ -1,5 +1,6 @@
 import { Session, Think, type ChatResponseResult } from "@cloudflare/think";
 import { Effect, Option, Schema } from "effect";
+import { HelpArea, OnboardingLocale } from "@osfo/api";
 
 import type { AssistantMessageId as AssistantMessageIdType, SessionId } from "../../domain";
 import {
@@ -85,17 +86,8 @@ export type SessionHistoryRead = SessionHistoryFound | SessionHistoryNotFound;
 
 const PersonalWelcomeInput = Schema.Struct({
   channelBindingId: ChannelBindingId,
-  helpAreas: Schema.Array(
-    Schema.Literals([
-      "writing-email",
-      "scheduling-reminders",
-      "research",
-      "files-documents",
-      "money-planning",
-      "something-else",
-    ]),
-  ),
-  locale: Schema.Literals(["en", "es"]),
+  helpAreas: Schema.Array(HelpArea),
+  locale: OnboardingLocale,
   preferredName: Schema.NullOr(Schema.String),
 });
 type PersonalWelcomeEncoded = typeof PersonalWelcomeInput.Encoded;

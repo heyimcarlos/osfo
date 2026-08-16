@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { check, index, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 import { users } from "./auth";
 
@@ -13,8 +13,6 @@ export const registrationInvitations = pgTable(
     provider: text("provider").notNull(),
     channelIdentity: text("channel_identity"),
     invitedPhoneNumber: text("invited_phone_number"),
-    preferredName: text("preferred_name"),
-    helpAreas: jsonb("help_areas").$type<ReadonlyArray<string>>().default([]).notNull(),
     locale: text("locale").notNull(),
     state: text("state").default("live").notNull(),
     expiryReason: text("expiry_reason"),

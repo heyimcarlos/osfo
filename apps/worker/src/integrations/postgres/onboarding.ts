@@ -4,13 +4,7 @@ import { channelBindings, registrationInvitations } from "@osfo/db/schema/onboar
 import { and, eq, isNull, lt, or } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 
-import {
-  database,
-  decodeOptionalRow,
-  dbUnavailable,
-  dbWriteRejected,
-  type Database,
-} from "../../db";
+import { database, decodeOptionalRow, type Database } from "../../db";
 import { AgentId } from "../../domain";
 import * as Onboarding from "../../services/onboarding";
 
@@ -61,11 +55,12 @@ export const make = Effect.gen(function* () {
           .from(registrationInvitations)
           .where(eq(registrationInvitations.tokenDigest, digest))
           .limit(1),
-      catch: (cause) => dbUnavailable("inspectRegistrationInvitation", cause),
+      catch: (cause) => unavailable("findByDigest", cause),
     }).pipe(
       Effect.flatMap((rows) =>
         decodeOptionalRow(InvitationRecord, rows[0], "inspectRegistrationInvitation"),
       ),
+      Effect.mapError((cause) => unavailable("findByDigest", cause)),
       Effect.map((record) => record ?? null),
     );
 
@@ -83,7 +78,7 @@ export const make = Effect.gen(function* () {
             ),
           )
           .limit(1),
-      catch: (cause) => dbUnavailable("issueRegistrationInvitation", cause),
+      catch: (cause) => unavailable("findLiveWhatsApp", cause),
     }).pipe(
       Effect.flatMap((rows) =>
         decodeOptionalRow(
@@ -92,6 +87,7 @@ export const make = Effect.gen(function* () {
           "issueRegistrationInvitation",
         ),
       ),
+      Effect.mapError((cause) => unavailable("findLiveWhatsApp", cause)),
       Effect.map((record) => record?.invitationId ?? null),
     );
 
@@ -110,11 +106,12 @@ export const make = Effect.gen(function* () {
           .from(users)
           .where(eq(users.id, userId))
           .limit(1),
-      catch: (cause) => dbUnavailable("completeOnboarding", cause),
+      catch: (cause) => unavailable("readUser", cause),
     }).pipe(
       Effect.flatMap((rows) =>
         decodeOptionalRow(OnboardingUserRecord, rows[0], "completeOnboarding"),
       ),
+      Effect.mapError((cause) => unavailable("readUser", cause)),
       Effect.map((record) =>
         record === undefined
           ? null
@@ -145,9 +142,10 @@ export const make = Effect.gen(function* () {
           .innerJoin(users, eq(users.id, agents.userId))
           .where(eq(agents.userId, userId))
           .limit(1),
-      catch: (cause) => dbUnavailable("enrollWhatsApp", cause),
+      catch: (cause) => unavailable("readWelcomeRoute", cause),
     }).pipe(
       Effect.flatMap((rows) => decodeOptionalRow(WelcomeRouteRecord, rows[0], "enrollWhatsApp")),
+      Effect.mapError((cause) => unavailable("readWelcomeRoute", cause)),
       Effect.map((record) =>
         record === undefined
           ? null
@@ -166,27 +164,27 @@ export const make = Effect.gen(function* () {
     complete: (input, decide) =>
       Effect.tryPromise({
         try: () => completeTransaction(db, input, decide),
-        catch: (cause) => dbWriteRejected("completeOnboarding", input.userId, cause),
+        catch: (cause) => rejected("complete", input.userId, cause),
       }),
     createWebEnrollment: (input) =>
       Effect.tryPromise({
         try: () => createWebEnrollmentTransaction(db, input),
-        catch: (cause) => dbWriteRejected("issueRegistrationInvitation", input.invitationId, cause),
+        catch: (cause) => rejected("createWebEnrollment", input.invitationId, cause),
       }),
     enroll: (input, decide) =>
       Effect.tryPromise({
         try: () => enrollTransaction(db, input, decide),
-        catch: (cause) => dbWriteRejected("enrollWhatsApp", input.invitationId, cause),
+        catch: (cause) => rejected("enroll", input.invitationId, cause),
       }),
     expireByDigest: (digest, now) =>
       Effect.tryPromise({
         try: () => expireByDigest(db, digest, now),
-        catch: (cause) => dbUnavailable("expireRegistrationInvitation", cause),
+        catch: (cause) => unavailable("expireByDigest", cause),
       }).pipe(Effect.asVoid),
     expireLive: (now) =>
       Effect.tryPromise({
         try: () => expireLive(db, now),
-        catch: (cause) => dbUnavailable("expireRegistrationInvitation", cause),
+        catch: (cause) => unavailable("expireLive", cause),
       }),
     findByDigest,
     findLiveWhatsApp,
@@ -204,7 +202,7 @@ export const make = Effect.gen(function* () {
             .returning({ invitationId: registrationInvitations.invitationId });
           return inserted.length > 0;
         },
-        catch: (cause) => dbWriteRejected("issueRegistrationInvitation", input.invitationId, cause),
+        catch: (cause) => rejected("insertWhatsApp", input.invitationId, cause),
       }),
     isCurrentBinding: (channelBindingId, channelIdentity, userId) =>
       Effect.tryPromise({
@@ -220,7 +218,7 @@ export const make = Effect.gen(function* () {
               ),
             )
             .limit(1),
-        catch: (cause) => dbUnavailable("enrollWhatsApp", cause),
+        catch: (cause) => unavailable("isCurrentBinding", cause),
       }).pipe(Effect.map((rows) => rows[0]?.channelIdentity === channelIdentity)),
     readUser,
     readWelcomeRoute,
@@ -229,6 +227,12 @@ export const make = Effect.gen(function* () {
 
 /** Postgres onboarding adapter Layer that preserves its request-scoped database requirement. */
 export const layerWithoutDependencies = Layer.effect(Onboarding.Persistence, make);
+
+const unavailable = (operation: string, cause: unknown) =>
+  new Onboarding.OnboardingPersistenceUnavailable({ cause, operation });
+
+const rejected = (operation: string, operationId: string, cause: unknown) =>
+  new Onboarding.OnboardingPersistenceRejected({ cause, operation, operationId });
 
 const completeTransaction = async (
   db: Database,
@@ -308,9 +312,7 @@ const completeTransaction = async (
         channelIdentity: null,
         consumedAt: input.now,
         consumptionDigest: input.requestDigest,
-        helpAreas: [],
         invitedPhoneNumber: null,
-        preferredName: null,
         state: "consumed",
         userId: input.userId,
       })
@@ -351,7 +353,6 @@ const enrollTransaction = async (
         channelBindingId: channel.channelBindingId,
         consumedAt: input.now,
         consumptionDigest: input.enrollmentDigest,
-        helpAreas: [],
         state: "consumed",
       })
       .where(eq(registrationInvitations.invitationId, input.invitationId));
@@ -387,7 +388,7 @@ const createWebEnrollmentTransaction = async (
     if (existing !== undefined) {
       await transaction
         .update(registrationInvitations)
-        .set({ expiryReason: "replaced", helpAreas: [], state: "expired", userId: null })
+        .set({ expiryReason: "replaced", state: "expired", userId: null })
         .where(eq(registrationInvitations.invitationId, existing.invitationId));
     }
     await transaction.insert(registrationInvitations).values({
@@ -482,9 +483,7 @@ const expireLive = async (db: Database, now: Date) => {
 const expiredInvitation = {
   channelIdentity: null,
   expiryReason: "elapsed" as const,
-  helpAreas: [],
   invitedPhoneNumber: null,
-  preferredName: null,
   state: "expired" as const,
   userId: null,
 };

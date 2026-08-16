@@ -8,6 +8,7 @@ import type { RuntimeConfig } from "./env";
 import * as TwilioVerify from "./integrations/twilio/verify";
 import * as OnboardingCloudflare from "./integrations/cloudflare/onboarding";
 import * as OnboardingPostgres from "./integrations/postgres/onboarding";
+import * as OnboardingLinks from "./integrations/public/onboarding-links";
 import { makeWorkerRuntime } from "./layers";
 import * as Routes from "./routes";
 import * as Onboarding from "./services/onboarding";
@@ -52,8 +53,9 @@ const runInvitationExpiry = (env: Bindings, config: RuntimeConfig) => {
   const dependencies = Layer.mergeAll(
     Registration.layerWithoutDependencies,
     OnboardingCloudflare.layer(env),
-    Layer.succeed(Onboarding.OnboardingConfig, {
+    OnboardingLinks.layer({
       officialWhatsAppNumber: config.whatsApp.phoneNumber,
+      publicBaseUrl: new URL(config.auth.baseURL),
     }),
   ).pipe(Layer.provideMerge(base));
   const onboarding = Onboarding.layerWithoutDependencies.pipe(Layer.provide(dependencies));

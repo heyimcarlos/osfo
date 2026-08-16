@@ -15,8 +15,6 @@ CREATE TABLE "registration_invitations" (
 	"provider" text NOT NULL,
 	"channel_identity" text,
 	"invited_phone_number" text,
-	"preferred_name" text,
-	"help_areas" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"locale" text NOT NULL,
 	"state" text DEFAULT 'live' NOT NULL,
 	"expiry_reason" text,

@@ -1,6 +1,6 @@
 import { Context, Crypto, DateTime, Effect, Layer, Redacted, Schema } from "effect";
+import { HelpArea, OnboardingLocale, RegistrationToken } from "@osfo/api";
 
-import { dbUnavailable, dbWriteRejected, type DbUnavailable, type DbWriteRejected } from "../db";
 import {
   AgentId,
   ChannelBindingId,
@@ -12,32 +12,7 @@ import * as Registration from "./registration";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Effect tags and Drizzle transaction callbacks use these required forms. */
 
-/** Launch setup choices that may shape the first personal response. */
-export const HelpArea = Schema.Literals([
-  "writing-email",
-  "scheduling-reminders",
-  "research",
-  "files-documents",
-  "money-planning",
-  "something-else",
-]);
-
-/** Launch setup choice accepted by onboarding policy. */
-export type HelpArea = typeof HelpArea.Type;
-
-/** Launch onboarding locales. */
-export const OnboardingLocale = Schema.Literals(["en", "es"]);
-
-/** Launch onboarding locale accepted by application policy. */
-export type OnboardingLocale = typeof OnboardingLocale.Type;
-
-/** High-entropy secret that continues one finite-lived Registration Invitation. */
-export const RegistrationToken = Schema.String.check(
-  Schema.makeFilter((value) => /^[0-9a-f]{64}$/u.test(value) || "must be a 64-character token"),
-).pipe(Schema.brand("RegistrationToken"));
-
-/** High-entropy secret that continues one finite-lived Registration Invitation. */
-export type RegistrationToken = typeof RegistrationToken.Type;
+export { HelpArea, OnboardingLocale, RegistrationToken } from "@osfo/api";
 
 /** Explicit setup facts supplied by the person. */
 export const SetupProfile = Schema.Struct({
@@ -153,6 +128,25 @@ export class OnboardingPhoneVerificationRequired extends Schema.TaggedError<Onbo
   { message: Schema.String },
 ) {}
 
+/** Expected failure when onboarding persistence cannot complete an operation. */
+export class OnboardingPersistenceUnavailable extends Schema.TaggedError<OnboardingPersistenceUnavailable>()(
+  "OnboardingPersistenceUnavailable",
+  {
+    cause: Schema.Defect(),
+    operation: Schema.String,
+  },
+) {}
+
+/** Expected failure when Postgres rejects an atomic onboarding transition. */
+export class OnboardingPersistenceRejected extends Schema.TaggedError<OnboardingPersistenceRejected>()(
+  "OnboardingPersistenceRejected",
+  {
+    cause: Schema.Defect(),
+    operation: Schema.String,
+    operationId: Schema.String,
+  },
+) {}
+
 /** Input used to initialize the stable Agent and its primary Session. */
 export interface InitializeAgentInput extends Registration.RegistrationCompleted {}
 
@@ -202,14 +196,16 @@ export class RegistrationTurn extends Context.Service<RegistrationTurn, Registra
   "@osfo/RegistrationTurn",
 ) {}
 
-/** Trusted public configuration used to build WhatsApp enrollment links. */
-export interface OnboardingConfigValue {
-  readonly officialWhatsAppNumber: string;
+/** Public URL projections needed by onboarding policy. */
+export interface OnboardingLinksPort {
+  readonly enrollment: (token: Redacted.Redacted<RegistrationToken>) => URL;
+  readonly registrationHome: () => URL;
+  readonly verification: (token: Redacted.Redacted<RegistrationToken>) => URL;
 }
 
-/** Trusted onboarding configuration supplied by the Worker composition root. */
-export class OnboardingConfig extends Context.Service<OnboardingConfig, OnboardingConfigValue>()(
-  "@osfo/OnboardingConfig",
+/** Public onboarding links supplied by an outbound projection adapter. */
+export class OnboardingLinks extends Context.Service<OnboardingLinks, OnboardingLinksPort>()(
+  "@osfo/OnboardingLinks",
 ) {}
 
 /** Authenticated completion input from the web journey. */
@@ -370,20 +366,25 @@ export interface PersistencePort {
   readonly complete: (
     input: CompletePersistenceInput,
     decide: (context: CompletePersistenceContext) => CompletePersistenceDecision,
-  ) => Effect.Effect<CompletePersistenceResult, DbWriteRejected>;
+  ) => Effect.Effect<CompletePersistenceResult, OnboardingPersistenceRejected>;
   readonly createWebEnrollment: (
     input: WebEnrollmentPersistenceInput,
-  ) => Effect.Effect<void, DbWriteRejected>;
+  ) => Effect.Effect<void, OnboardingPersistenceRejected>;
   readonly enroll: (
     input: EnrollPersistenceInput,
     decide: (context: EnrollmentPersistenceContext) => EnrollmentPersistenceDecision,
-  ) => Effect.Effect<EnrollmentPersistenceResult, DbWriteRejected>;
-  readonly expireByDigest: (digest: string, now: Date) => Effect.Effect<void, DbUnavailable>;
-  readonly expireLive: (now: Date) => Effect.Effect<number, DbUnavailable>;
-  readonly findByDigest: (digest: string) => Effect.Effect<StoredInvitation | null, DbUnavailable>;
+  ) => Effect.Effect<EnrollmentPersistenceResult, OnboardingPersistenceRejected>;
+  readonly expireByDigest: (
+    digest: string,
+    now: Date,
+  ) => Effect.Effect<void, OnboardingPersistenceUnavailable>;
+  readonly expireLive: (now: Date) => Effect.Effect<number, OnboardingPersistenceUnavailable>;
+  readonly findByDigest: (
+    digest: string,
+  ) => Effect.Effect<StoredInvitation | null, OnboardingPersistenceUnavailable>;
   readonly findLiveWhatsApp: (
     channelIdentity: ChannelIdentity,
-  ) => Effect.Effect<RegistrationInvitationId | null, DbUnavailable>;
+  ) => Effect.Effect<RegistrationInvitationId | null, OnboardingPersistenceUnavailable>;
   readonly insertWhatsApp: (input: {
     readonly channelIdentity: ChannelIdentity;
     readonly createdAt: Date;
@@ -392,16 +393,18 @@ export interface PersistencePort {
     readonly invitedPhoneNumber: string;
     readonly locale: OnboardingLocale;
     readonly tokenDigest: string;
-  }) => Effect.Effect<boolean, DbWriteRejected>;
+  }) => Effect.Effect<boolean, OnboardingPersistenceRejected>;
   readonly isCurrentBinding: (
     channelBindingId: ChannelBindingId,
     channelIdentity: ChannelIdentity,
     userId: UserId,
-  ) => Effect.Effect<boolean, DbUnavailable>;
-  readonly readUser: (userId: UserId) => Effect.Effect<StoredOnboardingUser | null, DbUnavailable>;
+  ) => Effect.Effect<boolean, OnboardingPersistenceUnavailable>;
+  readonly readUser: (
+    userId: UserId,
+  ) => Effect.Effect<StoredOnboardingUser | null, OnboardingPersistenceUnavailable>;
   readonly readWelcomeRoute: (
     userId: UserId,
-  ) => Effect.Effect<StoredWelcomeRoute | null, DbUnavailable>;
+  ) => Effect.Effect<StoredWelcomeRoute | null, OnboardingPersistenceUnavailable>;
 }
 
 /** Control-plane onboarding persistence supplied by a Postgres adapter. */
@@ -415,26 +418,34 @@ export interface Interface {
     input: UnknownWhatsAppMessage,
   ) => Effect.Effect<
     RegistrationTurnIssued,
-    DbUnavailable | DbWriteRejected | OnboardingExecutionUnavailable | OnboardingIdentityUnavailable
+    | OnboardingExecutionUnavailable
+    | OnboardingIdentityUnavailable
+    | OnboardingPersistenceRejected
+    | OnboardingPersistenceUnavailable
   >;
   readonly inspectInvitation: (
     token: Redacted.Redacted<RegistrationToken>,
-  ) => Effect.Effect<InvitationView, DbUnavailable | OnboardingIdentityUnavailable>;
+  ) => Effect.Effect<
+    InvitationView,
+    OnboardingIdentityUnavailable | OnboardingPersistenceUnavailable
+  >;
   readonly phoneVerificationTarget: (
     token: Redacted.Redacted<RegistrationToken>,
   ) => Effect.Effect<
     Redacted.Redacted,
-    DbUnavailable | OnboardingIdentityUnavailable | RegistrationInvitationUnavailable
+    | OnboardingIdentityUnavailable
+    | OnboardingPersistenceUnavailable
+    | RegistrationInvitationUnavailable
   >;
   readonly complete: (
     input: CompleteInput,
   ) => Effect.Effect<
     OnboardingCompleted,
     | ChannelBindingConflict
-    | DbUnavailable
-    | DbWriteRejected
     | OnboardingExecutionUnavailable
     | OnboardingIdentityUnavailable
+    | OnboardingPersistenceRejected
+    | OnboardingPersistenceUnavailable
     | OnboardingPhoneVerificationRequired
     | Registration.RegistrationError
     | RegistrationInvitationUnavailable
@@ -444,13 +455,13 @@ export interface Interface {
   ) => Effect.Effect<
     ChannelOnboardingState,
     | ChannelBindingConflict
-    | DbUnavailable
-    | DbWriteRejected
     | OnboardingExecutionUnavailable
     | OnboardingIdentityUnavailable
+    | OnboardingPersistenceRejected
+    | OnboardingPersistenceUnavailable
     | RegistrationInvitationUnavailable
   >;
-  readonly expireInvitations: Effect.Effect<number, DbUnavailable>;
+  readonly expireInvitations: Effect.Effect<number, OnboardingPersistenceUnavailable>;
 }
 
 /** Complete phone-first onboarding authority. */
@@ -459,8 +470,8 @@ export class Service extends Context.Service<Service, Interface>()("@osfo/Onboar
 /** Construct onboarding from request-scoped application capabilities. */
 export const make = Effect.gen(function* () {
   const agentOnboarding = yield* AgentOnboarding;
-  const config = yield* OnboardingConfig;
   const crypto = yield* Crypto.Crypto;
+  const links = yield* OnboardingLinks;
   const persistence = yield* Persistence;
   const registration = yield* Registration.Service;
   const registrationTurn = yield* RegistrationTurn;
@@ -528,12 +539,12 @@ export const make = Effect.gen(function* () {
         invitationId,
         locale: input.locale,
         message: input.message,
-        verifyUrl: "https://osfo.ai/get-started",
+        verifyUrl: links.registrationHome().href,
       });
       return {
         invitationId,
         response,
-        verifyUrl: new URL("https://osfo.ai/get-started"),
+        verifyUrl: links.registrationHome(),
       };
     }
 
@@ -552,8 +563,10 @@ export const make = Effect.gen(function* () {
     if (!inserted) {
       const concurrent = yield* persistence.findLiveWhatsApp(input.channelIdentity);
       if (concurrent === null) {
-        return yield* dbWriteRejected("issueRegistrationInvitation", invitationId, {
-          channelIdentity: input.channelIdentity,
+        return yield* new OnboardingPersistenceRejected({
+          cause: { channelIdentity: input.channelIdentity },
+          operation: "issueRegistrationInvitation",
+          operationId: invitationId,
         });
       }
       const concurrentInvitationId = concurrent;
@@ -562,15 +575,15 @@ export const make = Effect.gen(function* () {
         invitationId: concurrentInvitationId,
         locale: input.locale,
         message: input.message,
-        verifyUrl: "https://osfo.ai/get-started",
+        verifyUrl: links.registrationHome().href,
       });
       return {
         invitationId: concurrentInvitationId,
         response: concurrentResponse,
-        verifyUrl: new URL("https://osfo.ai/get-started"),
+        verifyUrl: links.registrationHome(),
       };
     }
-    const verifyUrl = new URL(`/verify/${Redacted.value(generated.token)}`, "https://osfo.ai");
+    const verifyUrl = links.verification(generated.token);
     const response = yield* registrationTurn.begin({
       eventId: input.eventId,
       invitationId,
@@ -714,7 +727,7 @@ export const make = Effect.gen(function* () {
             acceptedProfile.locale,
             now,
             input.webEnrollmentToken,
-            config.officialWhatsAppNumber,
+            links,
           )
         : channel;
     if (finalChannel._tag === "BindingCreated" || finalChannel._tag === "BindingExisting") {
@@ -796,7 +809,10 @@ export const make = Effect.gen(function* () {
     }
     const route = yield* persistence.readWelcomeRoute(userId);
     if (route === null) {
-      return yield* dbUnavailable("enrollWhatsApp", { userId });
+      return yield* new OnboardingPersistenceUnavailable({
+        cause: { userId },
+        operation: "readWelcomeRoute",
+      });
     }
     yield* agentOnboarding.commitWelcome({
       agentId: route.agentId,
@@ -1027,7 +1043,7 @@ const createWebEnrollment = Effect.fn("Onboarding.createWebEnrollment")(function
   locale: OnboardingLocale,
   now: DateTime.Utc,
   suppliedToken: Redacted.Redacted<RegistrationToken> | null,
-  officialWhatsAppNumber: string,
+  links: OnboardingLinksPort,
 ) {
   if (suppliedToken === null) {
     return yield* new OnboardingIdentityUnavailable({
@@ -1051,14 +1067,6 @@ const createWebEnrollment = Effect.fn("Onboarding.createWebEnrollment")(function
   });
   return {
     _tag: "EnrollmentPending",
-    enrollmentUrl: enrollmentUrl(officialWhatsAppNumber, suppliedToken),
+    enrollmentUrl: links.enrollment(suppliedToken),
   } as const;
 });
-
-const enrollmentUrl = (
-  officialWhatsAppNumber: string,
-  token: Redacted.Redacted<RegistrationToken>,
-) =>
-  new URL(
-    `https://wa.me/${officialWhatsAppNumber}?text=${encodeURIComponent(`OSFO ENROLL ${Redacted.value(token)}`)}`,
-  );

@@ -1,5 +1,5 @@
 {
-  "id": "eb2c2319-f4e8-4055-bf77-f8d622cbf094",
+  "id": "eeb3d5d1-e03a-41ad-bd14-14075a0f525f",
   "prevId": "4e4b431a-a7e9-478e-b23e-6c63d0a5bf8d",
   "version": "7",
   "dialect": "postgresql",
@@ -960,19 +960,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
-        },
-        "preferred_name": {
-          "name": "preferred_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "help_areas": {
-          "name": "help_areas",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
         },
         "locale": {
           "name": "locale",

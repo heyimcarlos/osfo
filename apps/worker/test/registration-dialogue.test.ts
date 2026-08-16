@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
+import { getAgentByName } from "agents";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/run-effect-inside-effect -- Durable Object tests cross RPC, alarm, and Effect boundaries. */
 
@@ -22,7 +23,9 @@ describe("Registration Dialogue", () => {
       }),
       (probe) =>
         Effect.gen(function* () {
-          const dialogue = env.REGISTRATION_DIALOGUE.getByName("registration-natural-turn");
+          const dialogue = yield* Effect.promise(() =>
+            getAgentByName(env.REGISTRATION_DIALOGUE, "registration-natural-turn"),
+          );
           const first = yield* Effect.promise(
             async () =>
               await dialogue.begin({
@@ -73,7 +76,9 @@ describe("Registration Dialogue", () => {
 
   it.effect("deletes all temporary transcript data after registration and expiry", () =>
     Effect.gen(function* () {
-      const completed = env.REGISTRATION_DIALOGUE.getByName("registration-delete-completed");
+      const completed = yield* Effect.promise(() =>
+        getAgentByName(env.REGISTRATION_DIALOGUE, "registration-delete-completed"),
+      );
       yield* Effect.promise(() =>
         runInDurableObject(completed, async (_instance, state) => {
           await state.storage.put("temporary-transcript", { message: "temporary request" });
@@ -88,11 +93,13 @@ describe("Registration Dialogue", () => {
         })),
       );
 
-      const expired = env.REGISTRATION_DIALOGUE.getByName("registration-delete-expired");
+      const expired = yield* Effect.promise(() =>
+        getAgentByName(env.REGISTRATION_DIALOGUE, "registration-delete-expired"),
+      );
       const expiredState = yield* Effect.promise(() =>
         runInDurableObject(expired, async (instance, state) => {
           await state.storage.put("temporary-transcript", { message: "temporary request" });
-          await instance.alarm();
+          await instance.expireDialogue();
           return await state.storage.get("temporary-transcript");
         }),
       );
@@ -100,5 +107,57 @@ describe("Registration Dialogue", () => {
       expect(completedState).toEqual({ alarm: null, transcript: undefined });
       expect(expiredState).toBeUndefined();
     }),
+  );
+
+  it.effect("admits one stable Think submission for concurrent retries of one event", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = Object.getOwnPropertyDescriptor(env.AI, "run");
+        Object.defineProperty(env.AI, "run", {
+          configurable: true,
+          value: () => Promise.resolve({ response: "What would you like help with?" }),
+        });
+        return previous;
+      }),
+      () =>
+        Effect.gen(function* () {
+          const dialogue = yield* Effect.promise(() =>
+            getAgentByName(env.REGISTRATION_DIALOGUE, "registration-idempotent-turn"),
+          );
+          const result = yield* Effect.promise(() =>
+            runInDurableObject(dialogue, async (instance, state) => {
+              const input = {
+                eventId: "wamid-concurrent",
+                locale: "en" as const,
+                message: "Hi",
+                verifyUrl: "https://osfo.ai/verify/token-concurrent",
+              };
+              const [first, retry] = await Promise.all([
+                instance.begin(input),
+                instance.begin(input),
+              ]);
+              const submissions = state.storage.sql
+                .exec<{ idempotency_key: string }>(
+                  "SELECT idempotency_key FROM cf_think_submissions ORDER BY created_at",
+                )
+                .toArray();
+              return { first, retry, submissions };
+            }),
+          );
+
+          expect(result.first).toEqual(result.retry);
+          expect(result.first).toEqual({
+            _tag: "RegistrationTurnCompleted",
+            response:
+              "What would you like help with? Use your registration link to continue: https://osfo.ai/verify/token-concurrent",
+          });
+          expect(result.submissions).toEqual([{ idempotency_key: "wamid-concurrent" }]);
+        }),
+      (previous) =>
+        Effect.sync(() => {
+          if (previous === undefined) Reflect.deleteProperty(env.AI, "run");
+          else Object.defineProperty(env.AI, "run", previous);
+        }),
+    ),
   );
 });

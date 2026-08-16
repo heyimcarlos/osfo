@@ -1,4 +1,5 @@
 import { Result, Schema } from "effect";
+import { getAgentByName } from "agents";
 
 import * as App from "./app";
 import { decodeRuntimeConfig } from "./env";
@@ -56,13 +57,20 @@ const adaptBindings = (env: Env): App.Bindings => ({
   },
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => {
-      const dialogue = env.REGISTRATION_DIALOGUE.getByName(identity);
+      const dialogue = () => getAgentByName(env.REGISTRATION_DIALOGUE, identity);
       return {
-        begin: async (input) =>
-          Schema.decodePromise(RegistrationRpcResult)(await dialogue.begin(input)),
-        deleteDialogue: async () => await dialogue.deleteDialogue(),
-        probeRuntime: async () =>
-          Schema.decodePromise(RuntimeProbeResult)(await dialogue.probeRuntime()),
+        begin: async (input) => {
+          const agent = await dialogue();
+          return Schema.decodePromise(RegistrationRpcResult)(await agent.begin(input));
+        },
+        deleteDialogue: async () => {
+          const agent = await dialogue();
+          await agent.deleteDialogue();
+        },
+        probeRuntime: async () => {
+          const agent = await dialogue();
+          return Schema.decodePromise(RuntimeProbeResult)(await agent.probeRuntime());
+        },
       };
     },
   },

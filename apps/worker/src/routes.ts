@@ -13,6 +13,7 @@ import type { ExecutionUnit } from "./layers";
 import * as AuthMiddleware from "./middleware/auth";
 import * as OnboardingCloudflare from "./integrations/cloudflare/onboarding";
 import * as OnboardingPostgres from "./integrations/postgres/onboarding";
+import * as OnboardingLinks from "./integrations/public/onboarding-links";
 import * as Onboarding from "./services/onboarding";
 import * as Registration from "./services/registration";
 
@@ -29,14 +30,15 @@ export interface Options {
 
 /** Assemble typed product routes, Better Auth, and Cloudflare host probes. */
 export const layer = (options: Options) => {
-  const onboardingConfig = Layer.succeed(Onboarding.OnboardingConfig, {
+  const onboardingLinks = OnboardingLinks.layer({
     officialWhatsAppNumber: options.config.whatsApp.phoneNumber,
+    publicBaseUrl: new URL(options.config.auth.baseURL),
   });
   const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
     Layer.provide(Handlers.layer(options.runtime)),
     Layer.provide(Onboarding.layerWithoutDependencies),
     Layer.provide(OnboardingPostgres.layerWithoutDependencies),
-    Layer.provide(onboardingConfig),
+    Layer.provide(onboardingLinks),
     Layer.provide(Registration.layerWithoutDependencies),
     Layer.provide(OnboardingCloudflare.layer(options.env)),
     Layer.provide(AuthMiddleware.layer(options.config.auth)),
@@ -47,7 +49,7 @@ export const layer = (options: Options) => {
     Layer.provide(OnboardingPostgres.layerWithoutDependencies),
     Layer.provide(Registration.layerWithoutDependencies),
     Layer.provide(OnboardingCloudflare.layer(options.env)),
-    Layer.provide(onboardingConfig),
+    Layer.provide(onboardingLinks),
     Layer.provide(options.authDependencies),
   );
   const invitationAuth = InvitationAuth.layer({

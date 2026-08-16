@@ -8,6 +8,8 @@ import { TestClock } from "effect/testing";
 import * as Db from "../src/db";
 import { ChannelIdentity, UserId } from "../src/domain";
 import * as OnboardingPostgres from "../src/integrations/postgres/onboarding";
+import * as OnboardingLinks from "../src/integrations/public/onboarding-links";
+import { handleWhatsAppOnboardingCommand } from "../src/handlers/whatsapp-onboarding";
 import * as Onboarding from "../src/services/onboarding";
 import * as Registration from "../src/services/registration";
 
@@ -30,18 +32,27 @@ describe("Onboarding application service", () => {
               message: "Can Osfo help me plan my week?",
             };
 
-            const first = yield* onboarding.issueWhatsAppInvitation(message);
-            const repeated = yield* onboarding.issueWhatsAppInvitation({
+            const first = yield* handleWhatsAppOnboardingCommand(onboarding, {
+              _tag: "UnknownSenderMessage",
+              ...message,
+            });
+            const repeated = yield* handleWhatsAppOnboardingCommand(onboarding, {
+              _tag: "UnknownSenderMessage",
               ...message,
               eventId: "wamid-later-contact",
               message: "Are you still there?",
             });
-            const inspected = yield* onboarding.inspectInvitation(tokenFromUrl(first.verifyUrl));
+            expect(first._tag).toBe("InvitationIssued");
+            expect(repeated._tag).toBe("InvitationIssued");
+            if (first._tag !== "InvitationIssued" || repeated._tag !== "InvitationIssued") return;
+            const inspected = yield* onboarding.inspectInvitation(
+              tokenFromUrl(first.invitation.verifyUrl),
+            );
 
-            expect(first.invitationId).toBe(repeated.invitationId);
-            expect(first.response).toContain("I can help you get started");
-            expect(repeated.response).toContain("registration link");
-            expect(first.verifyUrl.origin).toBe("https://osfo.ai");
+            expect(first.invitation.invitationId).toBe(repeated.invitation.invitationId);
+            expect(first.invitation.response).toContain("I can help you get started");
+            expect(repeated.invitation.response).toContain("registration link");
+            expect(first.invitation.verifyUrl.origin).toBe("https://osfo.ai");
             expect(inspected).toEqual({
               locale: "en",
               maskedPhoneNumber: "••••••••0171",
@@ -347,7 +358,9 @@ describe("Onboarding application service", () => {
               userId: UserId.make("user-refused"),
               webEnrollmentToken: webToken,
             });
-            const enrolled = yield* onboarding.enrollWhatsApp({
+            const turnsBeforeEnrollment = harness.turns.length;
+            const enrolled = yield* handleWhatsAppOnboardingCommand(onboarding, {
+              _tag: "EnrollmentControlMessage",
               channelIdentity: ChannelIdentity.make("whatsapp:sender-176"),
               eventId: "wamid-enrollment",
               token: webToken,
@@ -355,7 +368,11 @@ describe("Onboarding application service", () => {
 
             expect(refused.channel).toEqual({ _tag: "ConsentRefused" });
             expect(pending.channel._tag).toBe("EnrollmentPending");
-            expect(enrolled._tag).toBe("BindingCreated");
+            expect(enrolled).toMatchObject({
+              _tag: "EnrollmentCompleted",
+              channel: { _tag: "BindingCreated" },
+            });
+            expect(harness.turns).toHaveLength(turnsBeforeEnrollment);
             expect(harness.welcomes).toEqual([
               {
                 helpAreas: ["files-documents"],
@@ -497,6 +514,7 @@ const makeHarness = (
   options?: { readonly failWelcomeOnce?: boolean },
 ) => {
   const welcomes: Array<Onboarding.SetupProfile> = [];
+  const turns: Array<{ readonly eventId: string; readonly verifyUrl: string }> = [];
   let shouldFailWelcome = options?.failWelcomeOnce ?? false;
   const layer = Onboarding.layerWithoutDependencies.pipe(
     Layer.provideMerge(OnboardingPostgres.layerWithoutDependencies),
@@ -504,8 +522,9 @@ const makeHarness = (
     Layer.provideMerge(Db.layerFromDatabase(database)),
     Layer.provideMerge(BrowserCrypto.layer),
     Layer.provideMerge(
-      Layer.succeed(Onboarding.OnboardingConfig, {
+      OnboardingLinks.layer({
         officialWhatsAppNumber: "14165550100",
+        publicBaseUrl: new URL("https://osfo.ai"),
       }),
     ),
     Layer.provideMerge(
@@ -531,18 +550,20 @@ const makeHarness = (
       Layer.succeed(
         Onboarding.RegistrationTurn,
         Onboarding.RegistrationTurn.of({
-          begin: ({ verifyUrl }) =>
-            Effect.succeed(
+          begin: ({ eventId, verifyUrl }) => {
+            turns.push({ eventId, verifyUrl });
+            return Effect.succeed(
               verifyUrl.endsWith("/get-started")
                 ? "Use the registration link I sent earlier."
                 : `I can help you get started. Verify at ${verifyUrl}`,
-            ),
+            );
+          },
           delete: () => Effect.void,
         }),
       ),
     ),
   );
-  return { layer, welcomes };
+  return { layer, turns, welcomes };
 };
 
 const seedUser = (

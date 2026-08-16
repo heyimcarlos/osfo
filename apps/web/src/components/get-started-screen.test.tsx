@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import { AgentId, UserId } from "@osfo/api";
+import { AgentId, ChannelBindingId, UserId } from "@osfo/api";
 import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
 import { DateTime, Effect } from "effect";
@@ -215,6 +215,101 @@ describe("GetStartedScreen acceptance journeys", () => {
       preferredName: "Ari",
     });
     expect(await screen.findByRole("link", { name: /Continue in WhatsApp/u })).toBeTruthy();
+  });
+
+  it("shows web enrollment as pending until the WhatsApp control message is received", async () => {
+    const user = userEvent.setup();
+    const completedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z"));
+    const dependencies = makeDependencies({
+      complete: () =>
+        Effect.succeed({
+          agentId: AgentId.make("agent-web-pending"),
+          channel: {
+            _tag: "EnrollmentPending",
+            enrollmentUrl: new URL("https://wa.me/14165550100?text=OSFO%20ENROLL%20token"),
+          },
+          completedAt,
+          profileConfirmationRequired: false,
+          userId: UserId.make("user-web-pending"),
+        }),
+    });
+    render(
+      <GetStartedScreen dependencies={dependencies} isAuthenticated onComplete={() => undefined} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(screen.getByRole("button", { name: /Continue to phone verification/u }));
+    await user.click(screen.getByRole("button", { name: /Confirm Free/u }));
+
+    expect(await screen.findByText("WhatsApp connection pending")).toBeTruthy();
+    expect(screen.getByText(/Send the enrollment message/u)).toBeTruthy();
+    expect(document.body.textContent).not.toContain("Setup complete");
+    expect(document.body.textContent).not.toContain("You are ready");
+    expect(document.body.textContent).not.toContain("Your personal Osfo Agent is ready");
+  });
+
+  it("localizes pending WhatsApp enrollment without ready claims", async () => {
+    const user = userEvent.setup();
+    const completedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z"));
+    render(
+      <GetStartedScreen
+        dependencies={makeDependencies({
+          complete: () =>
+            Effect.succeed({
+              agentId: AgentId.make("agent-web-pending-es"),
+              channel: {
+                _tag: "EnrollmentPending",
+                enrollmentUrl: new URL("https://wa.me/14165550100"),
+              },
+              completedAt,
+              profileConfirmationRequired: false,
+              userId: UserId.make("user-web-pending-es"),
+            }),
+        })}
+        isAuthenticated
+        onComplete={() => undefined}
+      />,
+    );
+
+    await user.selectOptions(screen.getByLabelText("Language"), "es");
+    await user.click(screen.getByRole("button", { name: "Continuar" }));
+    await user.click(screen.getByRole("button", { name: /verificación/u }));
+    await user.click(screen.getByRole("button", { name: /Confirmar Free/u }));
+
+    expect(await screen.findByText("Conexión de WhatsApp pendiente")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("Todo listo");
+    expect(document.body.textContent).not.toContain("Agente Osfo personal está listo");
+  });
+
+  it("shows ready copy only after a confirmed Channel Binding", async () => {
+    const user = userEvent.setup();
+    const completedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z"));
+    render(
+      <GetStartedScreen
+        dependencies={makeDependencies({
+          complete: () =>
+            Effect.succeed({
+              agentId: AgentId.make("agent-bound"),
+              channel: {
+                _tag: "BindingCreated",
+                channelBindingId: ChannelBindingId.make("binding-confirmed"),
+              },
+              completedAt,
+              profileConfirmationRequired: false,
+              userId: UserId.make("user-bound"),
+            }),
+        })}
+        isAuthenticated
+        onComplete={() => undefined}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(screen.getByRole("button", { name: /Continue to phone verification/u }));
+    await user.click(screen.getByRole("button", { name: /Confirm Free/u }));
+
+    expect(await screen.findByText("You are ready")).toBeTruthy();
+    expect(screen.getByText(/Your personal Osfo Agent is ready/u)).toBeTruthy();
   });
 
   it("shows accessible recovery for wrong, expired, and reused SMS codes", async () => {

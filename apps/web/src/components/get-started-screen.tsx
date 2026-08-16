@@ -36,7 +36,21 @@ export interface GetStartedDependencies {
   readonly phoneAuth: PhoneAuthDependencies;
 }
 
-type Stage = "existing-profile" | "notice" | "phone" | "plan" | "profile" | "success";
+type SubmissionReturn = "ExistingProfile" | "Plan";
+
+type OnboardingState =
+  | { readonly _tag: "Complete"; readonly result: OnboardingResponse }
+  | { readonly _tag: "EnrollmentPending"; readonly enrollmentUrl: URL }
+  | { readonly _tag: "ExistingProfile"; readonly result: OnboardingResponse }
+  | { readonly _tag: "Failed"; readonly message: string; readonly returnTo: SubmissionReturn }
+  | { readonly _tag: "InvitationLoading" }
+  | { readonly _tag: "InvitationUnavailable" }
+  | { readonly _tag: "Notice" }
+  | { readonly _tag: "Phone" }
+  | { readonly _tag: "Plan" }
+  | { readonly _tag: "Profile" }
+  | { readonly _tag: "RegistrationComplete" }
+  | { readonly _tag: "Submitting"; readonly returnTo: SubmissionReturn };
 
 /** Complete localized phone-first web and invited WhatsApp registration journey. */
 export function GetStartedScreen({
@@ -48,13 +62,11 @@ export function GetStartedScreen({
   const [locale, setLocale] = useState<OnboardingLocale>(() => browserLocale());
   const [preferredName, setPreferredName] = useState("");
   const [helpAreas, setHelpAreas] = useState<ReadonlyArray<HelpArea>>([]);
-  const [stage, setStage] = useState<Stage>("profile");
+  const [state, setState] = useState<OnboardingState>(() =>
+    invitationToken === undefined ? { _tag: "Profile" } : { _tag: "InvitationLoading" },
+  );
   const [invitation, setInvitation] = useState<InvitationResponse>();
-  const [invitationFailed, setInvitationFailed] = useState(false);
   const [bindingConsent, setBindingConsent] = useState<"accepted" | "refused" | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [requestError, setRequestError] = useState<string>();
-  const [completed, setCompleted] = useState<OnboardingResponse>();
   const errorRef = useRef<HTMLParagraphElement>(null);
   const text = copy[locale];
 
@@ -62,25 +74,26 @@ export function GetStartedScreen({
     if (invitationToken === undefined) return;
     void Effect.runPromiseExit(dependencies.inspectInvitation(invitationToken)).then((exit) => {
       if (Exit.isFailure(exit) || exit.value.state !== "live") {
-        setInvitationFailed(true);
+        setState({ _tag: "InvitationUnavailable" });
         return;
       }
       setInvitation(exit.value);
       setLocale(exit.value.locale);
+      setState({ _tag: "Profile" });
     });
   }, [dependencies, invitationToken]);
 
   useEffect(() => {
-    if (requestError !== undefined) errorRef.current?.focus();
-  }, [requestError]);
+    if (state._tag === "Failed") errorRef.current?.focus();
+  }, [state]);
 
   const finish = (existingProfileChoice: "apply" | "keep" | null) => {
+    const returnTo = existingProfileChoice === null ? "Plan" : "ExistingProfile";
     if (invitationToken !== undefined && bindingConsent === null) {
-      setRequestError(text.chooseConsent);
+      setState({ _tag: "Failed", message: text.chooseConsent, returnTo });
       return;
     }
-    setIsSubmitting(true);
-    setRequestError(undefined);
+    setState({ _tag: "Submitting", returnTo });
     const webEnrollmentToken = invitationToken === undefined ? getWebEnrollmentToken() : null;
     void Effect.runPromiseExit(
       dependencies.complete({
@@ -94,30 +107,54 @@ export function GetStartedScreen({
         webEnrollmentToken,
       }),
     ).then((exit) => {
-      setIsSubmitting(false);
       if (Exit.isFailure(exit)) {
-        setRequestError(text.completeError);
+        setState({ _tag: "Failed", message: text.completeError, returnTo });
         return;
       }
-      setCompleted(exit.value);
-      setStage(exit.value.profileConfirmationRequired ? "existing-profile" : "success");
+      if (exit.value.profileConfirmationRequired) {
+        setState({ _tag: "ExistingProfile", result: exit.value });
+        return;
+      }
+      switch (exit.value.channel._tag) {
+        case "EnrollmentPending":
+          setState({
+            _tag: "EnrollmentPending",
+            enrollmentUrl: exit.value.channel.enrollmentUrl,
+          });
+          return;
+        case "BindingCreated":
+        case "BindingExisting":
+          setState({ _tag: "Complete", result: exit.value });
+          return;
+        case "ConsentRefused":
+          setState({ _tag: "RegistrationComplete" });
+          return;
+        case "ProfileConfirmationPending":
+          setState({ _tag: "ExistingProfile", result: exit.value });
+      }
     });
   };
 
-  if (invitationToken !== undefined && invitation === undefined) {
+  if (state._tag === "InvitationLoading" || state._tag === "InvitationUnavailable") {
     return (
       <Shell locale={locale} onLocaleChange={setLocale}>
         <StatusCard
-          description={invitationFailed ? text.linkUnavailableBody : text.loadingBody}
-          title={invitationFailed ? text.linkUnavailable : text.loading}
+          description={
+            state._tag === "InvitationUnavailable" ? text.linkUnavailableBody : text.loadingBody
+          }
+          title={state._tag === "InvitationUnavailable" ? text.linkUnavailable : text.loading}
         />
       </Shell>
     );
   }
 
+  const submittingTo = state._tag === "Submitting" ? state.returnTo : null;
+  const failedAt = state._tag === "Failed" ? state.returnTo : null;
+  const requestError = state._tag === "Failed" ? state.message : undefined;
+
   return (
     <Shell locale={locale} onLocaleChange={setLocale}>
-      {stage === "profile" ? (
+      {state._tag === "Profile" ? (
         <Card className="w-full max-w-[34rem] bg-background shadow-[8px_8px_0_var(--foreground)]">
           <CardHeader className="gap-3 border-b-2 border-border pb-5">
             <p className="font-black text-xs uppercase tracking-[0.22em]">{text.getStarted}</p>
@@ -133,8 +170,7 @@ export function GetStartedScreen({
               className="space-y-6"
               onSubmit={(event) => {
                 event.preventDefault();
-                setRequestError(undefined);
-                setStage("notice");
+                setState({ _tag: "Notice" });
               }}
             >
               <div className="space-y-2">
@@ -177,7 +213,7 @@ export function GetStartedScreen({
         </Card>
       ) : null}
 
-      {stage === "notice" ? (
+      {state._tag === "Notice" ? (
         <Card className="w-full max-w-[34rem] bg-background shadow-[8px_8px_0_var(--foreground)]">
           <CardHeader className="gap-3 border-b-2 border-border pb-5">
             <p className="font-black text-xs uppercase tracking-[0.22em]">{text.beforeSms}</p>
@@ -198,7 +234,7 @@ export function GetStartedScreen({
             <Button
               className="w-full justify-between border-2 font-black uppercase"
               type="button"
-              onClick={() => setStage(isAuthenticated ? "plan" : "phone")}
+              onClick={() => setState({ _tag: isAuthenticated ? "Plan" : "Phone" })}
             >
               {text.continueSms}
               <ArrowRight data-icon="inline-end" />
@@ -207,7 +243,7 @@ export function GetStartedScreen({
         </Card>
       ) : null}
 
-      {stage === "phone" ? (
+      {state._tag === "Phone" ? (
         <PhoneAuthForm
           dependencies={dependencies.phoneAuth}
           {...(invitationToken === undefined ? {} : { invitationToken })}
@@ -216,11 +252,11 @@ export function GetStartedScreen({
           {...(invitation?.maskedPhoneNumber === null || invitation?.maskedPhoneNumber === undefined
             ? {}
             : { maskedPhoneNumber: invitation.maskedPhoneNumber })}
-          onAuthenticated={() => setStage("plan")}
+          onAuthenticated={() => setState({ _tag: "Plan" })}
         />
       ) : null}
 
-      {stage === "plan" ? (
+      {state._tag === "Plan" || submittingTo === "Plan" || failedAt === "Plan" ? (
         <Card className="w-full max-w-[34rem] bg-background shadow-[8px_8px_0_var(--foreground)]">
           <CardHeader className="gap-3 border-b-2 border-border pb-5">
             <p className="font-black text-xs uppercase tracking-[0.22em]">{text.finalStep}</p>
@@ -259,18 +295,20 @@ export function GetStartedScreen({
             <ErrorSummary message={requestError} paragraphRef={errorRef} />
             <Button
               className="w-full justify-between border-2 font-black uppercase"
-              disabled={isSubmitting}
+              disabled={submittingTo === "Plan"}
               type="button"
               onClick={() => finish(null)}
             >
-              {isSubmitting ? text.working : text.confirmFree}
+              {submittingTo === "Plan" ? text.working : text.confirmFree}
               <ArrowRight data-icon="inline-end" />
             </Button>
           </CardContent>
         </Card>
       ) : null}
 
-      {stage === "existing-profile" ? (
+      {state._tag === "ExistingProfile" ||
+      submittingTo === "ExistingProfile" ||
+      failedAt === "ExistingProfile" ? (
         <Card className="w-full max-w-[34rem] bg-background shadow-[8px_8px_0_var(--foreground)]">
           <CardHeader>
             <CardTitle className="text-4xl uppercase leading-none">{text.existingTitle}</CardTitle>
@@ -278,11 +316,15 @@ export function GetStartedScreen({
           </CardHeader>
           <CardContent className="space-y-3">
             <ErrorSummary message={requestError} paragraphRef={errorRef} />
-            <Button disabled={isSubmitting} type="button" onClick={() => finish("apply")}>
+            <Button
+              disabled={submittingTo === "ExistingProfile"}
+              type="button"
+              onClick={() => finish("apply")}
+            >
               {text.applyProfile}
             </Button>
             <Button
-              disabled={isSubmitting}
+              disabled={submittingTo === "ExistingProfile"}
               type="button"
               variant="outline"
               onClick={() => finish("keep")}
@@ -293,29 +335,43 @@ export function GetStartedScreen({
         </Card>
       ) : null}
 
-      {stage === "success" && completed !== undefined ? (
+      {state._tag === "EnrollmentPending" ? (
         <Card className="w-full max-w-[34rem] bg-background shadow-[8px_8px_0_var(--foreground)]">
           <CardHeader>
-            <p className="font-black text-xs uppercase tracking-[0.22em]">{text.complete}</p>
-            <CardTitle className="text-4xl uppercase leading-none">{text.readyTitle}</CardTitle>
-            <CardDescription>{text.readyBody}</CardDescription>
+            <p className="font-black text-xs uppercase tracking-[0.22em]">{text.registered}</p>
+            <CardTitle className="text-4xl uppercase leading-none">{text.pendingTitle}</CardTitle>
+            <CardDescription>{text.pendingBody}</CardDescription>
           </CardHeader>
           <CardContent>
-            {completed.channel._tag === "EnrollmentPending" ? (
-              <a
-                className="inline-flex min-h-11 w-full items-center justify-between rounded-lg bg-primary px-4 font-black uppercase text-primary-foreground outline-none hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50"
-                href={completed.channel.enrollmentUrl.href}
-              >
-                {text.continueWhatsApp}
-                <ExternalLink data-icon="inline-end" />
-              </a>
-            ) : (
-              <Button className="w-full" type="button" onClick={onComplete}>
-                {text.finish}
-              </Button>
-            )}
+            <a
+              className="inline-flex min-h-11 w-full items-center justify-between rounded-lg bg-primary px-4 font-black uppercase text-primary-foreground outline-none hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50"
+              href={state.enrollmentUrl.href}
+            >
+              {text.continueWhatsApp}
+              <ExternalLink data-icon="inline-end" />
+            </a>
           </CardContent>
         </Card>
+      ) : null}
+
+      {state._tag === "Complete" ? (
+        <StatusCardWithAction
+          action={text.finish}
+          description={text.readyBody}
+          eyebrow={text.complete}
+          onAction={onComplete}
+          title={text.readyTitle}
+        />
+      ) : null}
+
+      {state._tag === "RegistrationComplete" ? (
+        <StatusCardWithAction
+          action={text.finish}
+          description={text.registrationCompleteBody}
+          eyebrow={text.registered}
+          onAction={onComplete}
+          title={text.registrationCompleteTitle}
+        />
       ) : null}
     </Shell>
   );
@@ -409,6 +465,33 @@ const StatusCard = ({
   </Card>
 );
 
+const StatusCardWithAction = ({
+  action,
+  description,
+  eyebrow,
+  onAction,
+  title,
+}: {
+  readonly action: string;
+  readonly description: string;
+  readonly eyebrow: string;
+  readonly onAction: () => void;
+  readonly title: string;
+}) => (
+  <Card className="w-full max-w-[34rem] bg-background shadow-[8px_8px_0_var(--foreground)]">
+    <CardHeader>
+      <p className="font-black text-xs uppercase tracking-[0.22em]">{eyebrow}</p>
+      <CardTitle className="text-4xl uppercase leading-none">{title}</CardTitle>
+      <CardDescription>{description}</CardDescription>
+    </CardHeader>
+    <CardContent>
+      <Button className="w-full" type="button" onClick={onAction}>
+        {action}
+      </Button>
+    </CardContent>
+  </Card>
+);
+
 const helpAreaOrder: ReadonlyArray<HelpArea> = [
   "writing-email",
   "scheduling-reminders",
@@ -488,12 +571,19 @@ const copy = {
     nameLabel: "Preferred name",
     noticeTitle: "How setup works",
     optional: "Optional",
+    pendingBody:
+      "Registration is complete, but your WhatsApp connection is pending. Send the enrollment message to connect your WhatsApp identity.",
+    pendingTitle: "WhatsApp connection pending",
     planLink: "View plan and allowance details",
     privacyLink: "Read the complete privacy notice",
     profileBody: "Both fields are optional. You can edit or erase accepted profile facts later.",
     profileTitle: "How can Osfo help?",
     readyBody: "Your personal Osfo Agent is ready. It will ask what you want to work on first.",
     readyTitle: "You are ready",
+    registered: "Registration complete",
+    registrationCompleteBody:
+      "Your registration is complete. You chose not to connect the invited WhatsApp identity.",
+    registrationCompleteTitle: "Registration complete",
     stopNotice:
       "Before proactive WhatsApp messages begin, Osfo explains how to stop them. You can reply STOP at any time.",
     storageNotice:
@@ -548,6 +638,9 @@ const copy = {
     nameLabel: "Nombre preferido",
     noticeTitle: "Cómo funciona la configuración",
     optional: "Opcional",
+    pendingBody:
+      "El registro está completo, pero la conexión de WhatsApp está pendiente. Envía el mensaje de inscripción para conectar tu identidad de WhatsApp.",
+    pendingTitle: "Conexión de WhatsApp pendiente",
     planLink: "Ver detalles del plan y los límites",
     privacyLink: "Leer el aviso de privacidad completo",
     profileBody:
@@ -555,6 +648,10 @@ const copy = {
     profileTitle: "¿Cómo puede ayudarte Osfo?",
     readyBody: "Tu Agente Osfo personal está listo. Te preguntará en qué quieres trabajar primero.",
     readyTitle: "Todo listo",
+    registered: "Registro completo",
+    registrationCompleteBody:
+      "Tu registro está completo. Elegiste no conectar la identidad de WhatsApp invitada.",
+    registrationCompleteTitle: "Registro completo",
     stopNotice:
       "Antes de iniciar mensajes proactivos, Osfo explica cómo detenerlos. Puedes responder STOP en cualquier momento.",
     storageNotice:
