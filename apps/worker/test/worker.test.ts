@@ -131,6 +131,7 @@ describe("Osfo Cloudflare host", () => {
       TWILIO_ACCOUNT_SID: `AC${"1".repeat(32)}`,
       TWILIO_AUTH_TOKEN: "test-only-twilio-token",
       TWILIO_VERIFY_SERVICE_SID: `VA${"2".repeat(32)}`,
+      WHATSAPP_PHONE_NUMBER: "14165550100",
     });
 
     expect(Result.isSuccess(decoded)).toBe(true);

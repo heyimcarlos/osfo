@@ -2,6 +2,7 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const workerBindings = {
+  AI: {},
   BETTER_AUTH_API_KEY: "test-only-better-auth-dashboard-api-key",
   BETTER_AUTH_BASE_URL: "https://osfo.test",
   BETTER_AUTH_SECRET: "test-only-better-auth-secret-32-characters",
@@ -9,6 +10,7 @@ const workerBindings = {
   TWILIO_ACCOUNT_SID: "AC11111111111111111111111111111111",
   TWILIO_AUTH_TOKEN: "test-only-twilio-token",
   TWILIO_VERIFY_SERVICE_SID: "VA22222222222222222222222222222222",
+  WHATSAPP_PHONE_NUMBER: "14165550100",
 };
 
 /** Local Cloudflare Worker and execution-unit test configuration. */
@@ -25,6 +27,7 @@ export default defineConfig({
       "test/action-approval.test.ts",
       "test/model-access-policy.test.ts",
       "test/osfo-agent.test.ts",
+      "test/registration-dialogue.test.ts",
       "test/worker.test.ts",
     ],
     testTimeout: 30_000,

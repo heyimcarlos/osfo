@@ -66,6 +66,28 @@ export const AllowancePeriodId = Schema.String.pipe(Schema.brand("AllowancePerio
 /** Stable identity for one Usage Allowance period. */
 export type AllowancePeriodId = typeof AllowancePeriodId.Type;
 
+/** Stable identity for one finite-lived Registration Invitation. */
+export const RegistrationInvitationId = Schema.String.pipe(
+  Schema.brand("RegistrationInvitationId"),
+);
+
+/** Stable identity for one finite-lived Registration Invitation. */
+export type RegistrationInvitationId = typeof RegistrationInvitationId.Type;
+
+/** Stable identity for one revocable Channel Binding. */
+export const ChannelBindingId = Schema.String.pipe(Schema.brand("ChannelBindingId"));
+
+/** Stable identity for one revocable Channel Binding. */
+export type ChannelBindingId = typeof ChannelBindingId.Type;
+
+/** One authenticated provider identity, separate from a User or Phone Account. */
+export const ChannelIdentity = Schema.String.check(
+  Schema.makeFilter((value) => value.length > 0 || "must not be empty"),
+).pipe(Schema.brand("ChannelIdentity"));
+
+/** One authenticated provider identity, separate from a User or Phone Account. */
+export type ChannelIdentity = typeof ChannelIdentity.Type;
+
 /** Version identity for one launch Plan policy. */
 export const PlanPolicyVersion = Schema.String.pipe(Schema.brand("PlanPolicyVersion"));
 

@@ -32,7 +32,9 @@ export default Cloudflare.Worker(
         TWILIO_ACCOUNT_SID: Config.string("TWILIO_ACCOUNT_SID"),
         TWILIO_AUTH_TOKEN: Config.redacted("TWILIO_AUTH_TOKEN"),
         TWILIO_VERIFY_SERVICE_SID: Config.string("TWILIO_VERIFY_SERVICE_SID"),
+        WHATSAPP_PHONE_NUMBER: Config.string("WHATSAPP_PHONE_NUMBER"),
       },
+      crons: ["0 * * * *"],
       main: "./apps/worker/src/worker.ts",
       observability: {
         enabled: true,

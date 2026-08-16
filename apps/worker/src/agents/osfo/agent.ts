@@ -14,12 +14,14 @@ import {
 } from "@cloudflare/think";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import { DateTime, Effect, Option, Predicate, Result, Schema } from "effect";
+import { HelpArea, OnboardingLocale } from "@osfo/api";
 
 import type { AssistantMessageId as AssistantMessageIdType, SessionId, UserId } from "../../domain";
 import {
   AgentId,
   AllowancePeriodId,
   AssistantMessageId,
+  ChannelBindingId,
   ConversationRouteId as ConversationRouteIdSchema,
   SessionId as SessionIdSchema,
   ThinkRequestId,
@@ -72,6 +74,7 @@ import {
   type CurrentSessionReplacementConflict,
   ThinkSessionReadUnavailable,
   ThinkSessionRecordInvalid,
+  ThinkSessionWriteUnavailable,
 } from "./db/errors";
 import { applyAgentMigrations } from "./db/migrate";
 import { makeModelCallUsageStore } from "./db/model-call-usage";
@@ -183,6 +186,22 @@ export interface SessionHistoryNotFound {
 
 /** Observable result of reading Think Session history. */
 export type SessionHistoryRead = SessionHistoryFound | SessionHistoryNotFound;
+
+const PersonalWelcomeInput = Schema.Struct({
+  channelBindingId: ChannelBindingId,
+  helpAreas: Schema.Array(HelpArea),
+  locale: OnboardingLocale,
+  preferredName: Schema.NullOr(Schema.String),
+});
+type PersonalWelcomeEncoded = typeof PersonalWelcomeInput.Encoded;
+
+/** Durable result for the deterministic first personal response. */
+export interface PersonalWelcomeCommitted {
+  readonly _tag: "PersonalWelcomeCommitted";
+  readonly messageId: AssistantMessageIdType;
+  readonly sessionId: SessionId;
+  readonly text: string;
+}
 
 /** User-scoped Think Durable Object with stable Osfo Agent and Session identity. */
 export class OsfoAgent extends Think<Env> {
@@ -618,6 +637,66 @@ export class OsfoAgent extends Think<Env> {
     return runRpc(this.#store.inspect());
   }
 
+  /** Commit the first localized personal response without running a model turn. */
+  async commitWelcome(
+    input: PersonalWelcomeEncoded,
+  ): Promise<
+    | AgentRequestInvalid
+    | AgentStateNotFound
+    | AgentStoreRecordInvalid
+    | AgentStoreUnavailable
+    | CommittedTurnConflict
+    | PersonalWelcomeCommitted
+    | ThinkSessionWriteUnavailable
+  > {
+    await this.#migrationsReady;
+    const activateCurrentSession = () => this.#activateCurrentSession();
+    const addWelcome = (message: {
+      readonly id: string;
+      readonly parts: Array<{ readonly text: string; readonly type: "text" }>;
+      readonly role: "assistant";
+    }) => this.addMessages([message]);
+    const store = this.#store;
+    return runRpc(
+      Effect.gen(function* () {
+        const parsed = yield* Schema.decodeEffect(PersonalWelcomeInput)(input).pipe(
+          Effect.mapError(() => invalidRequest("commitWelcome")),
+        );
+        const agent = yield* store.inspect();
+        const messageId = AssistantMessageId.make(`welcome-${parsed.channelBindingId}`);
+        const text = personalWelcome(parsed);
+        yield* Effect.tryPromise({
+          try: async () => {
+            await activateCurrentSession();
+            await addWelcome({
+              id: messageId,
+              parts: [{ text, type: "text" }],
+              role: "assistant",
+            });
+          },
+          catch: (cause) =>
+            new ThinkSessionWriteUnavailable({
+              cause,
+              message: "The personal welcome could not be persisted",
+              sessionId: agent.currentSessionId,
+            }),
+        });
+        yield* store.recordCommittedTurn({
+          assistantMessageId: messageId,
+          sessionId: agent.currentSessionId,
+          source: "reconciliation",
+          thinkRequestId: null,
+        });
+        return {
+          _tag: "PersonalWelcomeCommitted",
+          messageId,
+          sessionId: agent.currentSessionId,
+          text,
+        } as const;
+      }),
+    );
+  }
+
   /** Replace one route's current Session while retaining canonical history. */
   async replaceCurrentSession(
     input: ReplaceCurrentSessionEncoded,
@@ -962,6 +1041,42 @@ export class OsfoAgent extends Think<Env> {
 
 const invalidRequest = (operation: AgentRequestOperation): AgentRequestInvalid =>
   new AgentRequestInvalid({ message: "The Agent RPC input is invalid", operation });
+
+const personalWelcome = (profile: typeof PersonalWelcomeInput.Type): string => {
+  const preferredName = profile.preferredName?.trim();
+  const name = preferredName === undefined || preferredName.length === 0 ? "" : ` ${preferredName}`;
+  const areas = profile.helpAreas.map((area) => helpAreaLabels[profile.locale][area]);
+  if (profile.locale === "es") {
+    const selected = areas.length === 0 ? "" : ` Elegiste ${formatList(areas, "y")}.`;
+    return `Hola${name}, estoy listo.${selected} ¿En qué trabajamos primero?`;
+  }
+  const selected = areas.length === 0 ? "" : ` You selected ${formatList(areas, "and")}.`;
+  return `Hi${name}, I'm ready.${selected} What should we work on first?`;
+};
+
+const helpAreaLabels = {
+  en: {
+    "files-documents": "files and documents",
+    "money-planning": "money and planning",
+    research: "research",
+    "scheduling-reminders": "scheduling and reminders",
+    "something-else": "something else",
+    "writing-email": "writing and email",
+  },
+  es: {
+    "files-documents": "archivos y documentos",
+    "money-planning": "dinero y planificación",
+    research: "investigación",
+    "scheduling-reminders": "agenda y recordatorios",
+    "something-else": "algo más",
+    "writing-email": "redacción y correo",
+  },
+} as const;
+
+const formatList = (values: ReadonlyArray<string>, conjunction: string): string => {
+  if (values.length < 2) return values[0] ?? "";
+  return `${values.slice(0, -1).join(", ")} ${conjunction} ${values.at(-1)}`;
+};
 
 const modelCallUsageDispatchUnavailable = (usage: PendingModelCallUsage) =>
   new ModelCallUsageDispatchUnavailable({

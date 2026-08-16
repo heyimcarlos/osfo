@@ -18,6 +18,11 @@ export type DbTimestamp = typeof DbTimestamp.Type;
 export const DbOperation = Schema.Literals([
   "completeRegistration",
   "resolveAgent",
+  "issueRegistrationInvitation",
+  "inspectRegistrationInvitation",
+  "completeOnboarding",
+  "enrollWhatsApp",
+  "expireRegistrationInvitation",
   "resolveAgentOwner",
 ]);
 

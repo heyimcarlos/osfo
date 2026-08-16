@@ -1,11 +1,13 @@
 import { HttpApi, OpenApi } from "effect/unstable/httpapi";
 
 import { HealthGroup } from "./groups/health";
+import { OnboardingGroup } from "./groups/onboarding";
 import { RegistrationGroup } from "./groups/registration";
 
 /** Shared HTTP contract implemented by the Worker and consumed by clients. */
 export const Api = HttpApi.make("osfo")
   .add(HealthGroup)
+  .add(OnboardingGroup)
   .add(RegistrationGroup)
   .annotateMerge(
     OpenApi.annotations({
@@ -16,6 +18,20 @@ export const Api = HttpApi.make("osfo")
   );
 
 export { HealthGroup, HealthResponse } from "./groups/health";
+export {
+  ChannelBindingId,
+  ChannelBindingNeedsSupport,
+  ChannelOnboardingResponse,
+  HelpArea,
+  InvitationResponse,
+  InvitationUnavailable,
+  OnboardingGroup,
+  OnboardingLocale,
+  OnboardingResponse,
+  OnboardingUnavailable,
+  PhoneVerificationRequired,
+  RegistrationToken,
+} from "./groups/onboarding";
 export {
   AgentId,
   RegistrationGroup,
