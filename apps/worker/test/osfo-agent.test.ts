@@ -30,6 +30,58 @@ import {
 /* oxlint-disable effecttsgo/async-function, effecttsgo/prefer-typed-schema-decoder, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Worker integration tests cross Promise, RPC, Effect, and raw SQLite test boundaries. */
 
 describe("Osfo Agent and Think Session foundation", () => {
+  it.effect("keeps managed inference private and disables blind Action replay", () =>
+    Effect.gen(function* () {
+      const agent = env.OSFO_AGENT.getByName(
+        Schema.decodeUnknownSync(AgentId)("agent-managed-runtime-policy"),
+      );
+      const policy = yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance) => ({
+          actionLedgerPendingRetryLeaseMs: instance.actionLedgerPendingRetryLeaseMs,
+          actionPendingApprovalTtlMs: instance.actionPendingApprovalTtlMs,
+          chatRecovery: instance.chatRecovery,
+          hydrationByteBudget: instance.hydrationByteBudget,
+          includeMcpTools: instance.includeMcpTools,
+          maxSteps: instance.maxSteps,
+          sendReasoning: instance.sendReasoning,
+          storeMessages: instance.storeMessages,
+          storeTools: instance.storeTools,
+          workspaceBash: instance.workspaceBash,
+        })),
+      );
+
+      expect(policy).toEqual({
+        actionLedgerPendingRetryLeaseMs: false,
+        actionPendingApprovalTtlMs: 900_000,
+        chatRecovery: false,
+        hydrationByteBudget: 512_000,
+        includeMcpTools: false,
+        maxSteps: 6,
+        sendReasoning: false,
+        storeMessages: false,
+        storeTools: false,
+        workspaceBash: false,
+      });
+    }),
+  );
+
+  it.effect("delegates managed conversation cancellation to Think's Submission ledger", () =>
+    Effect.gen(function* () {
+      const agent = env.OSFO_AGENT.getByName(
+        Schema.decodeUnknownSync(AgentId)("agent-managed-cancellation"),
+      );
+      const canceled = yield* Effect.promise(
+        async () =>
+          await agent.cancelManagedConversation({
+            reason: "The User canceled the request",
+            submissionId: "submission-not-created",
+          }),
+      );
+
+      expect(canceled).toBeNull();
+    }),
+  );
+
   it.effect("keeps the Agent identity stable when its activation is replaced", () =>
     Effect.gen(function* () {
       const agentId = Schema.decodeUnknownSync(AgentId)("agent-stable");
@@ -1041,6 +1093,9 @@ describe("Osfo Agent and Think Session foundation", () => {
 });
 
 const resetOsfoTables = (storage: DurableObjectStorage): void => {
+  storage.sql.exec("DROP TABLE IF EXISTS osfo_model_call_usage_evidence");
+  storage.sql.exec("DROP TABLE IF EXISTS osfo_approval_requests");
+  storage.sql.exec("DROP TABLE IF EXISTS osfo_action_presentations");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_committed_turns");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_session_ownership");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_conversation_routes");

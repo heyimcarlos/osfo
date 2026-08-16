@@ -8,6 +8,13 @@
       "when": 1786858689790,
       "tag": "0000_silky_goblin_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786908847339,
+      "tag": "0001_strange_spyke",
+      "breakpoints": true
     }
   ]
 }
