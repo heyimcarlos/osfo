@@ -36,7 +36,7 @@ The first stable primitives are:
 osfo_agent_initialization       one local initialization fact
 osfo_conversation_routes        stable Agent-local routes
 osfo_session_ownership          current and historical Think Session identities
-osfo_committed_turns             idempotent Osfo projection references
+osfo_committed_turns             committed-turn observation receipts
 ```
 
 Foreign keys express route and Session ownership. Partial unique indexes permit
@@ -55,7 +55,7 @@ operators can diagnose a rejected replay without inspecting private Think state.
 Each committed-turn receipt has an SQLite-assigned monotonic
 `observation_sequence`. This value records Osfo observation order only. It is not
 a provider timestamp and does not claim wall-clock commit order. Reconciliation
-uses Session ownership order, then canonical Think history order, and writes one
+uses Session ownership order, then Think Session history order, and writes one
 receipt at a time. A repeated observation preserves its first sequence and
 observation time. One local transaction checks assistant message and Think request
 identity, enriches a compatible receipt, or inserts the next receipt. Identity
@@ -88,5 +88,5 @@ Direct Durable Object SQLite access is limited to these explicit cases:
 
 Product stores use typed Drizzle operations and show their transaction boundaries.
 They parse retrieved records with Effect Schema and do not hide transaction
-boundaries behind a generic repository. Canonical Think messages are also parsed
-into an Osfo-owned projection at the public Session seam.
+boundaries behind a generic repository. Think Session history records are also
+parsed into an Osfo-owned boundary shape at the public Session seam.

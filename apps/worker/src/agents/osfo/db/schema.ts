@@ -93,7 +93,7 @@ export const agentInitialization = sqliteTable(
   (table) => [check("osfo_agent_initialization_singleton", sql`${table.singletonKey} = 'agent'`)],
 );
 
-/** Idempotent Osfo projection references for committed Think turns. */
+/** Idempotent Osfo observation receipts for committed Think turns. */
 export const committedTurns = sqliteTable(
   "osfo_committed_turns",
   {

@@ -113,7 +113,7 @@ export class CurrentSessionReplacementConflict extends Schema.TaggedError<Curren
   },
 ) {}
 
-/** Expected failure when one committed-turn key names conflicting projection facts. */
+/** Expected failure when one committed-turn key names conflicting observation facts. */
 export class CommittedTurnConflict extends Schema.TaggedError<CommittedTurnConflict>()(
   "CommittedTurnConflict",
   {
@@ -137,7 +137,7 @@ export class ThinkSessionReadUnavailable extends Schema.TaggedError<ThinkSession
   },
 ) {}
 
-/** Expected failure when Think returns a malformed canonical Session record. */
+/** Expected failure when Think returns a malformed Session history record. */
 export class ThinkSessionRecordInvalid extends Schema.TaggedError<ThinkSessionRecordInvalid>()(
   "ThinkSessionRecordInvalid",
   {

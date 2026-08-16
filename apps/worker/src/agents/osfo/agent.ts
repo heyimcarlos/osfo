@@ -47,39 +47,39 @@ import {
 
 const pendingSessionId = "__osfo_uninitialized__";
 
-const CanonicalSessionMessagePart = Schema.StructWithRest(Schema.Struct({ type: Schema.String }), [
+const SessionHistoryMessagePart = Schema.StructWithRest(Schema.Struct({ type: Schema.String }), [
   Schema.Record(Schema.String, Schema.Unknown),
 ]);
 
-/** Osfo-owned projection of one canonical message returned by Think. */
-export const CanonicalSessionMessage = Schema.StructWithRest(
+/** Osfo-owned boundary shape for one message returned from Think Session history. */
+export const SessionHistoryMessage = Schema.StructWithRest(
   Schema.Struct({
     createdAt: Schema.optional(Schema.Union([Schema.Date, Schema.String])),
     id: Schema.String,
-    parts: Schema.Array(CanonicalSessionMessagePart),
+    parts: Schema.Array(SessionHistoryMessagePart),
     role: Schema.String,
   }),
   [Schema.Record(Schema.String, Schema.Unknown)],
 );
 
-/** Osfo-owned projection of one canonical message returned by Think. */
-export type CanonicalSessionMessage = typeof CanonicalSessionMessage.Type;
+/** Osfo-owned boundary shape for one message returned from Think Session history. */
+export type SessionHistoryMessage = typeof SessionHistoryMessage.Type;
 
-/** Canonical Think messages read for one Agent-owned Session. */
-export interface CanonicalSessionFound {
-  readonly _tag: "CanonicalSessionFound";
-  readonly messages: ReadonlyArray<CanonicalSessionMessage>;
+/** Think Session history read for one Agent-owned Session. */
+export interface SessionHistoryFound {
+  readonly _tag: "SessionHistoryFound";
+  readonly messages: ReadonlyArray<SessionHistoryMessage>;
   readonly sessionId: SessionId;
 }
 
 /** Expected read result when a Session does not belong to the Agent. */
-export interface CanonicalSessionNotFound {
-  readonly _tag: "CanonicalSessionNotFound";
+export interface SessionHistoryNotFound {
+  readonly _tag: "SessionHistoryNotFound";
   readonly message: string;
 }
 
-/** Observable result of reading canonical Think Session history. */
-export type CanonicalSessionRead = CanonicalSessionFound | CanonicalSessionNotFound;
+/** Observable result of reading Think Session history. */
+export type SessionHistoryRead = SessionHistoryFound | SessionHistoryNotFound;
 
 /** User-scoped Think Durable Object with stable Osfo Agent and Session identity. */
 export class OsfoAgent extends Think<Env> {
@@ -186,14 +186,14 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
-  /** Read canonical message history through Think for one Agent-owned Session. */
+  /** Read Think Session history for one Agent-owned Session. */
   async readSession(
     sessionId: string,
   ): Promise<
     | AgentRequestInvalid
     | AgentStoreRecordInvalid
     | AgentStoreUnavailable
-    | CanonicalSessionRead
+    | SessionHistoryRead
     | ThinkSessionReadUnavailable
     | ThinkSessionRecordInvalid
   > {
@@ -208,12 +208,12 @@ export class OsfoAgent extends Think<Env> {
         const owned = yield* store.ownsSession(parsed);
         if (!owned) {
           return {
-            _tag: "CanonicalSessionNotFound",
+            _tag: "SessionHistoryNotFound",
             message: "The Think Session does not belong to this Agent",
           } as const;
         }
         const messages = yield* readThinkHistory(session, parsed);
-        return { _tag: "CanonicalSessionFound", messages, sessionId: parsed } as const;
+        return { _tag: "SessionHistoryFound", messages, sessionId: parsed } as const;
       }),
     );
   }
@@ -365,7 +365,7 @@ const readThinkHistory = (session: Session, sessionId: SessionId) =>
     try: () => session.forSession(sessionId).getHistory(),
   }).pipe(
     Effect.flatMap((messages) =>
-      Schema.decodeUnknownEffect(Schema.Array(CanonicalSessionMessage))(messages).pipe(
+      Schema.decodeUnknownEffect(Schema.Array(SessionHistoryMessage))(messages).pipe(
         Effect.mapError(
           () =>
             new ThinkSessionRecordInvalid({
@@ -392,7 +392,7 @@ const readThinkMessage = (
     try: () => session.forSession(sessionId).getMessage(assistantMessageId),
   }).pipe(
     Effect.flatMap((message) =>
-      Schema.decodeUnknownEffect(Schema.NullOr(CanonicalSessionMessage))(message).pipe(
+      Schema.decodeUnknownEffect(Schema.NullOr(SessionHistoryMessage))(message).pipe(
         Effect.mapError(
           () =>
             new ThinkSessionRecordInvalid({

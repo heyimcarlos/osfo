@@ -215,7 +215,7 @@ describe("Osfo Agent and Think Session foundation", () => {
         routeId: "route-history",
       });
       expect(historicalSession).toEqual({
-        _tag: "CanonicalSessionFound",
+        _tag: "SessionHistoryFound",
         messages: [
           {
             id: "historical-user-message",
@@ -391,7 +391,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       const read = yield* Effect.promise(async () => await agent.readSession(sessionId));
 
       expect(read).toEqual({
-        _tag: "CanonicalSessionFound",
+        _tag: "SessionHistoryFound",
         messages: [
           {
             id: "message-user",
@@ -559,7 +559,7 @@ describe("Osfo Agent and Think Session foundation", () => {
     }),
   );
 
-  it.effect("reconciles Sessions and canonical messages in deterministic order", () =>
+  it.effect("reconciles Sessions and Think history messages in deterministic order", () =>
     Effect.gen(function* () {
       const agentId = Schema.decodeUnknownSync(AgentId)("agent-turn-reconciliation");
       const initializationId = Schema.decodeUnknownSync(AgentInitializationId)(
