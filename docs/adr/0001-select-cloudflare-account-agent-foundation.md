@@ -2,7 +2,7 @@
 
 Date: 2026-08-08
 
-Status: Accepted, control-plane storage superseded by ADR 0007, production qualification pending
+Status: Accepted, control-plane storage superseded by ADR 0005, production qualification pending
 
 Osfo v1 will use Cloudflare as its application and agent-runtime foundation. One
 User-scoped Osfo Agent backed by a Durable Object will host Native Memory and

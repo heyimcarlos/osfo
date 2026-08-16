@@ -381,22 +381,23 @@ revocation, deletion, and data-right actions stay available after normal usage
 is exhausted.
 
 An allowance period is `scheduled` before its start, `active` during its
-half-open `[startsAt, endsAt)` interval, and `expired` at or after its end. Only
-one period for one User and allowance kind can be active at a time. A work
-identity can create at most one reservation in that period. A reservation moves
-once from `reserved` to `committed` or `released`. Expiry prevents new
-reservations but does not erase committed use or unresolved reservation
-evidence. Authorization reads available quantity as the period limit minus
-committed and currently reserved quantity. Reservation, commit, release, and
-reconciliation arrive with allowance enforcement in Phase 5; the initial
-allowance-period table remains now because registration already establishes the
-first Free period.
+half-open `[startsAt, endsAt)` interval, and `expired` at or after its end. One
+common period for one User covers every allowance kind. The period pins one
+immutable Plan policy version.
 
-A versioned price book converts expected and reported provider use to USD. Osfo
-reserves the conservative maximum cost and category quantities before work.
-Completion reconciles actual or conservative estimated use and releases the
-unused reservation. Concurrent work cannot reserve the same remainder. A retry
-keeps the same work identity and allowance reservation. Osfo never creates an
+Authorization admits ordinary work only while recorded consumption is below its
+limit and the operation fits its own size, step, cost, and concurrency limits.
+Known-at-start consumption can be checked and recorded during admission. Actual
+category use and vendor cost are recorded after the owning effect has trusted
+evidence. Each Allowance Consumption record uses an existing product or effect
+identity, so safe retries do not count it twice. Feature modules normalize their
+own evidence. Osfo does not create a generic allowance work identity.
+
+Work admitted below a limit may finish and can move recorded use above that
+limit. The next ordinary operation is denied. Per-operation cost limits and
+concurrency limits bound this overshoot. Provider-reported exact cost is used
+when trustworthy. An uncertain incurred cost uses a conservative configured
+maximum. Proven no-use work creates no consumption record. Osfo never creates an
 overage charge.
 
 These actions need one exact Approval:
@@ -405,8 +406,9 @@ These actions need one exact Approval:
 - creation or material change of a recurring reminder;
 - every Workflow start or material change;
 - GM Summon;
-- destructive memory, file, Session, or account-data action;
-- Adventurer work estimated above US$0.50.
+- destructive memory, file, Session, or account-data action.
+
+Cost alone never requires Approval.
 
 Approval is bound to one immutable Action Presentation. A material change to a
 recipient, content, schedule, resource, or cost creates a new Action and needs a
@@ -974,7 +976,7 @@ Implementation evidence must include at least:
 - webhook signature and schema rejection, duplicate inbound events, exact-byte
   Delivery recovery, status disorder, ambiguity, wake-up coalescing, suspension,
   support, and GM Summon;
-- the full entitlement, allowance, cost reservation, Approval, downgrade,
+- the full entitlement, soft-cap allowance consumption, Approval, downgrade,
   reminder, Workflow, and authority-loss matrix;
 - Core Memory inference and correction, Session replacement, Session Recall,
   forgetting, Session and account deletion, ordered delta capture,
