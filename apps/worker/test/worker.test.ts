@@ -42,7 +42,7 @@ describe("Osfo Cloudflare host", () => {
         info: { title: "Osfo API", version: "0.1.0" },
         paths: {
           "/health": { get: { operationId: "health.get" } },
-          "/v1/me/registration": {
+          "/v1/registration": {
             put: { operationId: "registration.complete" },
           },
         },

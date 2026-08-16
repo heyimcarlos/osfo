@@ -28,8 +28,8 @@ describe("Registration HTTP API", () => {
           const cookie = signUp.headers.get("set-cookie")?.split(";", 1)[0];
           expect(cookie).toContain("better-auth.session_token");
 
-          const first = yield* sendJson(app.handler, "PUT", "/v1/me/registration", {}, cookie);
-          const repeated = yield* sendJson(app.handler, "PUT", "/v1/me/registration", {}, cookie);
+          const first = yield* sendJson(app.handler, "PUT", "/v1/registration", {}, cookie);
+          const repeated = yield* sendJson(app.handler, "PUT", "/v1/registration", {}, cookie);
           const firstBody = yield* responseJson(first);
           const repeatedBody = yield* responseJson(repeated);
           const storedUsers = yield* Effect.promise(() => fixture.database.select().from(users));
@@ -67,7 +67,7 @@ describe("Registration HTTP API", () => {
           yield* applyMigrations(fixture.client);
           const app = makeApp(fixture.database);
 
-          const response = yield* sendJson(app.handler, "PUT", "/v1/me/registration", {});
+          const response = yield* sendJson(app.handler, "PUT", "/v1/registration", {});
           const storedAgents = yield* Effect.promise(() => fixture.database.select().from(agents));
 
           expect(response.status).toBe(401);
@@ -92,7 +92,7 @@ describe("Registration HTTP API", () => {
             password: "test-password",
           });
           const cookie = signUp.headers.get("set-cookie")?.split(";", 1)[0];
-          const first = yield* sendJson(app.handler, "PUT", "/v1/me/registration", {}, cookie);
+          const first = yield* sendJson(app.handler, "PUT", "/v1/registration", {}, cookie);
           const [storedUser] = yield* Effect.promise(() =>
             fixture.database.select({ id: users.id }).from(users),
           );
@@ -109,7 +109,7 @@ describe("Registration HTTP API", () => {
               .execute(),
           );
 
-          const recovery = yield* sendJson(app.handler, "PUT", "/v1/me/registration", {}, cookie);
+          const recovery = yield* sendJson(app.handler, "PUT", "/v1/registration", {}, cookie);
 
           expect(first.status).toBe(200);
           expect(recovery.status).toBe(503);
@@ -130,7 +130,7 @@ describe("Registration HTTP API", () => {
 
           const response = yield* Effect.promise(() =>
             app.handler(
-              new Request("https://osfo.test/v1/me/registration", {
+              new Request("https://osfo.test/v1/registration", {
                 headers: {
                   "access-control-request-headers": "content-type",
                   "access-control-request-method": "PUT",

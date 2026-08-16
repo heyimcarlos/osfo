@@ -34,7 +34,7 @@ export class RegistrationUnavailable extends Schema.TaggedError<RegistrationUnav
 
 /** Authenticated registration contract for the Osfo control plane. */
 export const RegistrationGroup = HttpApiGroup.make("registration").add(
-  HttpApiEndpoint.put("complete", "/v1/me/registration", {
+  HttpApiEndpoint.put("complete", "/v1/registration", {
     error: RegistrationUnavailable,
     payload: Schema.Struct({}),
     success: RegistrationResponse,
