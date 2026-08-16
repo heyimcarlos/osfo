@@ -2,6 +2,7 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const workerBindings = {
+  AI: {},
   BETTER_AUTH_API_KEY: "test-only-better-auth-dashboard-api-key",
   BETTER_AUTH_BASE_URL: "https://osfo.test",
   BETTER_AUTH_SECRET: "test-only-better-auth-secret-32-characters",
@@ -17,7 +18,7 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       miniflare: { bindings: workerBindings },
-      wrangler: { configPath: "./wrangler.jsonc" },
+      wrangler: { configPath: "./wrangler.test.jsonc" },
     }),
   ],
   test: {
