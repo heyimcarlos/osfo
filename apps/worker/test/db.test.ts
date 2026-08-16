@@ -1,17 +1,14 @@
+import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { expect, layer } from "@effect/vitest";
+import { agents } from "@osfo/db/schema/agents";
+import { users as usersTable } from "@osfo/db/schema/auth";
+import { allowancePeriods, subscriptions } from "@osfo/db/schema/billing";
 import { applyMigrations, makeTestDatabase } from "@osfo/db/testing";
-import { users } from "@osfo/db/schema/auth";
-import { Effect, Layer } from "effect";
+import { eq } from "drizzle-orm";
+import { DateTime, Effect, Layer } from "effect";
 
-import { database, DbTimestamp, dbUnavailable, layerFromDatabase } from "../src/db";
-import {
-  AgentId,
-  AllowancePeriodId,
-  PlanPolicyVersion,
-  RegistrationId,
-  SubscriptionId,
-  UserId,
-} from "../src/domain";
+import { database, dbUnavailable, layerFromDatabase } from "../src/db";
+import { AgentId, UserId } from "../src/domain";
 import * as AgentDirectory from "../src/services/agent-directory";
 import * as Registration from "../src/services/registration";
 
@@ -21,117 +18,146 @@ const dbLayer = layerFromDatabase(fixture.database);
 const serviceLayer = Layer.merge(
   Registration.layerWithoutDependencies,
   AgentDirectory.layerWithoutDependencies,
-).pipe(Layer.provideMerge(dbLayer));
+).pipe(Layer.provideMerge(dbLayer), Layer.provide(BrowserCrypto.layer));
 
 layer(serviceLayer)("Control-plane services", (it) => {
-  it.effect("atomically establishes registration and stable Agent routing", () =>
+  it.effect("provisions a User and stable Agent route atomically", () =>
     Effect.gen(function* () {
       const agentDirectory = yield* AgentDirectory.Service;
       const registration = yield* Registration.Service;
-      yield* seedUser(UserId.make("user-001"));
-      const created = yield* registration.complete({
-        agentId: AgentId.make("agent-001"),
-        allowancePeriodId: AllowancePeriodId.make("allowance-period-001"),
-        allowancePeriodStartsAt: DbTimestamp.make("2026-08-01T00:00:00.000Z"),
-        allowancePeriodEndsAt: DbTimestamp.make("2026-09-01T00:00:00.000Z"),
-        occurredAt: DbTimestamp.make("2026-08-12T15:00:00.000Z"),
-        planPolicyVersion: PlanPolicyVersion.make("launch-2026-08-12"),
-        registrationId: RegistrationId.make("registration-001"),
-        subscriptionId: SubscriptionId.make("subscription-001"),
-        userId: UserId.make("user-001"),
-      });
-      const route = yield* agentDirectory.resolve(UserId.make("user-001"));
+      const userId = UserId.make("user-001");
+      yield* seedUser(userId);
 
-      expect(created).toEqual({
-        agentId: "agent-001",
-        allowancePeriodId: "allowance-period-001",
-        plan: "free",
-        subscriptionId: "subscription-001",
+      const completed = yield* registration.complete(userId);
+      const route = yield* agentDirectory.resolve(userId);
+
+      expect(completed).toMatchObject({ userId: "user-001" });
+      expect(route).toEqual({
+        agentId: completed.agentId,
         userId: "user-001",
       });
-      expect(route).toEqual({ agentId: "agent-001", userId: "user-001" });
     }),
   );
 
-  it.effect("returns one registration when the same Registration arrives concurrently", () =>
+  it.effect("returns one User when provisioning runs concurrently", () =>
     Effect.gen(function* () {
       const registration = yield* Registration.Service;
-      yield* seedUser(UserId.make("user-duplicate"));
-      const input = {
-        agentId: AgentId.make("agent-duplicate"),
-        allowancePeriodId: AllowancePeriodId.make("allowance-period-duplicate"),
-        allowancePeriodStartsAt: DbTimestamp.make("2026-08-01T00:00:00.000Z"),
-        allowancePeriodEndsAt: DbTimestamp.make("2026-09-01T00:00:00.000Z"),
-        occurredAt: DbTimestamp.make("2026-08-12T15:01:00.000Z"),
-        planPolicyVersion: PlanPolicyVersion.make("launch-2026-08-12"),
-        registrationId: RegistrationId.make("registration-duplicate"),
-        subscriptionId: SubscriptionId.make("subscription-duplicate"),
-        userId: UserId.make("user-duplicate"),
-      };
+      const userId = UserId.make("user-concurrent");
+      yield* seedUser(userId);
 
-      const [first, duplicate] = yield* Effect.all(
-        [registration.complete(input), registration.complete(input)],
+      const [first, concurrent] = yield* Effect.all(
+        [registration.complete(userId), registration.complete(userId)],
         { concurrency: "unbounded" },
       );
-      const exactDuplicate = yield* registration.complete(input);
-      const conflict = yield* Effect.flip(
-        registration.complete({
-          ...input,
-          planPolicyVersion: PlanPolicyVersion.make("conflicting-policy-version"),
-        }),
-      );
+      const repeated = yield* registration.complete(userId);
 
-      expect(duplicate).toEqual(first);
-      expect(exactDuplicate).toEqual(first);
-      expect(conflict).toMatchObject({
-        _tag: "RegistrationConflict",
-        registrationId: "registration-duplicate",
+      expect(concurrent).toEqual(first);
+      expect(repeated).toEqual(first);
+    }),
+  );
+
+  it.effect("returns unavailable when the stored completion time conflicts", () =>
+    Effect.gen(function* () {
+      const db = yield* database;
+      const registration = yield* Registration.Service;
+      const userId = UserId.make("user-completion-conflict");
+      yield* seedUser(userId);
+      yield* registration.complete(userId);
+      yield* Effect.tryPromise({
+        try: () =>
+          db
+            .update(usersTable)
+            .set({
+              registrationCompletedAt: DateTime.toDateUtc(
+                DateTime.makeUnsafe("2026-08-12T15:01:16.000Z"),
+              ),
+            })
+            .where(eq(usersTable.id, userId))
+            .execute(),
+        catch: (cause) => dbUnavailable("completeRegistration", cause),
+      });
+
+      const unavailable = yield* Effect.flip(registration.complete(userId));
+
+      expect(unavailable).toMatchObject({
+        _tag: "DbUnavailable",
+        operation: "completeRegistration",
       });
     }),
   );
 
-  it.effect("rolls back every registration fact when an Agent route conflicts", () =>
+  it.effect("returns unavailable when completed provisioning facts are partial", () =>
     Effect.gen(function* () {
-      const agentDirectory = yield* AgentDirectory.Service;
+      const db = yield* database;
       const registration = yield* Registration.Service;
-      yield* seedUser(UserId.make("user-route-owner"));
-      yield* seedUser(UserId.make("user-route-conflict"));
-      const first = {
-        agentId: AgentId.make("agent-route-conflict"),
-        allowancePeriodId: AllowancePeriodId.make("allowance-period-route-owner"),
-        allowancePeriodStartsAt: DbTimestamp.make("2026-08-01T00:00:00.000Z"),
-        allowancePeriodEndsAt: DbTimestamp.make("2026-09-01T00:00:00.000Z"),
-        occurredAt: DbTimestamp.make("2026-08-12T15:01:30.000Z"),
-        planPolicyVersion: PlanPolicyVersion.make("launch-2026-08-12"),
-        registrationId: RegistrationId.make("registration-route-owner"),
-        subscriptionId: SubscriptionId.make("subscription-route-owner"),
-        userId: UserId.make("user-route-owner"),
-      };
-      const second = {
-        ...first,
-        allowancePeriodId: AllowancePeriodId.make("allowance-period-route-conflict"),
-        registrationId: RegistrationId.make("registration-route-conflict"),
-        subscriptionId: SubscriptionId.make("subscription-route-conflict"),
-        userId: UserId.make("user-route-conflict"),
-      };
-
-      yield* registration.complete(first);
-      const failedCreate = yield* Effect.flip(registration.complete(second));
-      const missingRoute = yield* Effect.flip(agentDirectory.resolve(second.userId));
-      const retried = yield* registration.complete({
-        ...second,
-        agentId: AgentId.make("agent-route-retry"),
+      const userId = UserId.make("user-partial-provisioning");
+      yield* seedUser(userId);
+      yield* Effect.tryPromise({
+        try: () =>
+          db
+            .update(usersTable)
+            .set({
+              registrationCompletedAt: DateTime.toDateUtc(
+                DateTime.makeUnsafe("2026-08-12T15:01:20.000Z"),
+              ),
+            })
+            .where(eq(usersTable.id, userId))
+            .execute(),
+        catch: (cause) => dbUnavailable("completeRegistration", cause),
       });
 
-      expect(failedCreate).toMatchObject({
+      const unavailable = yield* Effect.flip(registration.complete(userId));
+
+      expect(unavailable).toMatchObject({
+        _tag: "DbUnavailable",
+        operation: "completeRegistration",
+      });
+    }),
+  );
+
+  it.effect("rolls back new provisioning facts when the Agent insert conflicts", () =>
+    Effect.gen(function* () {
+      const db = yield* database;
+      const registration = yield* Registration.Service;
+      const userId = UserId.make("user-agent-conflict");
+      yield* seedUser(userId);
+      yield* Effect.tryPromise({
+        try: () =>
+          db.insert(agents).values({
+            agentId: AgentId.make("agent-existing"),
+            createdAt: "2026-08-12T15:01:30.000Z",
+            userId,
+          }),
+        catch: (cause) => dbUnavailable("completeRegistration", cause),
+      });
+
+      const failed = yield* Effect.flip(registration.complete(userId));
+      const storedSubscriptions = yield* Effect.tryPromise({
+        try: () => db.select().from(subscriptions).where(eq(subscriptions.userId, userId)),
+        catch: (cause) => dbUnavailable("completeRegistration", cause),
+      });
+      const storedPeriods = yield* Effect.tryPromise({
+        try: () => db.select().from(allowancePeriods).where(eq(allowancePeriods.userId, userId)),
+        catch: (cause) => dbUnavailable("completeRegistration", cause),
+      });
+      const [storedUser] = yield* Effect.tryPromise({
+        try: () =>
+          db
+            .select({
+              registrationCompletedAt: usersTable.registrationCompletedAt,
+            })
+            .from(usersTable)
+            .where(eq(usersTable.id, userId)),
+        catch: (cause) => dbUnavailable("completeRegistration", cause),
+      });
+
+      expect(failed).toMatchObject({
         _tag: "DbWriteRejected",
-        operationId: "registration-route-conflict",
+        operation: "completeRegistration",
       });
-      expect(missingRoute).toMatchObject({
-        _tag: "AgentRouteNotFound",
-        userId: "user-route-conflict",
-      });
-      expect(retried.userId).toBe("user-route-conflict");
+      expect(storedSubscriptions).toEqual([]);
+      expect(storedPeriods).toEqual([]);
+      expect(storedUser?.registrationCompletedAt).toBeNull();
     }),
   );
 });
@@ -141,11 +167,11 @@ const seedUser = (userId: UserId) =>
     const db = yield* database;
     yield* Effect.tryPromise({
       try: () =>
-        db.insert(users).values({
+        db.insert(usersTable).values({
           email: `${userId}@invalid.example`,
           id: userId,
           name: "Test User",
         }),
-      catch: (cause) => dbUnavailable("establishRegistration", cause),
+      catch: (cause) => dbUnavailable("completeRegistration", cause),
     });
   });

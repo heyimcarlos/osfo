@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { AuthScreen } from "./components/auth-screen";
+import { GetStartedScreen } from "./components/get-started-screen";
 import { ChatPreview } from "./App";
 
 describe("App", () => {
@@ -23,5 +24,13 @@ describe("App", () => {
     expect(html).toContain("What would you like to work on?");
     expect(html).toContain("tester@osfo.test");
     expect(html).toContain("Sign out");
+  });
+
+  it("renders the public phone-first registration entry", () => {
+    const html = renderToStaticMarkup(<GetStartedScreen onComplete={() => undefined} />);
+
+    expect(html).toContain("What should Osfo call you?");
+    expect(html).toContain("No card is required");
+    expect(html).toContain('autoComplete="name"');
   });
 });

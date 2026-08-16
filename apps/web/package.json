@@ -10,9 +10,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@osfo/api": "workspace:*",
     "@osfo/ui": "workspace:*",
     "@tanstack/react-form": "1.33.5",
     "better-auth": "1.6.28",
+    "effect": "catalog:",
     "lucide-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",

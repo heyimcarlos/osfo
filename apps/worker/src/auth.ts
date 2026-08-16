@@ -28,25 +28,7 @@ export interface Options {
 /** Better Auth routes backed by request-scoped Postgres and Twilio Verify. */
 export const layer = (options: Options) => {
   const handler = Effect.gen(function* () {
-    const database = yield* Db.database;
-    const twilio = yield* TwilioVerify;
-    const context = yield* Effect.context();
-    const runPromise = Effect.runPromiseWith(context);
-    const auth = createAuth({
-      baseURL: options.config.baseURL,
-      database,
-      dashboard:
-        options.config.dashboard.kind === "enabled"
-          ? {
-              apiKey: Redacted.value(options.config.dashboard.apiKey),
-              kind: "enabled",
-            }
-          : { kind: "disabled" },
-      secret: Redacted.value(options.config.secret),
-      sendOTP: ({ phoneNumber }) => runPromise(twilio.sendCode(phoneNumber)),
-      trustedOrigins: options.config.trustedOrigins,
-      verifyOTP: ({ code, phoneNumber }) => runPromise(twilio.verifyCode(phoneNumber, code)),
-    });
+    const auth = yield* make(options.config);
 
     return yield* HttpEffect.fromWebHandler((request) =>
       handleAuthRequest(request, auth.handler, options.config.trustedOrigins),
@@ -56,3 +38,28 @@ export const layer = (options: Options) => {
   // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The auth route owns this request-scoped resource boundary.
   return HttpRouter.add("*", "/auth/*", handler.pipe(Effect.provide(options.dependencies)));
 };
+
+/** Build Better Auth from the current request-scoped Worker dependencies. */
+export const make = (config: AuthRouteConfig) =>
+  Effect.gen(function* () {
+    const database = yield* Db.database;
+    const twilio = yield* TwilioVerify;
+    const context = yield* Effect.context();
+    const runPromise = Effect.runPromiseWith(context);
+
+    return createAuth({
+      baseURL: config.baseURL,
+      database,
+      dashboard:
+        config.dashboard.kind === "enabled"
+          ? {
+              apiKey: Redacted.value(config.dashboard.apiKey),
+              kind: "enabled",
+            }
+          : { kind: "disabled" },
+      secret: Redacted.value(config.secret),
+      sendOTP: ({ phoneNumber }) => runPromise(twilio.sendCode(phoneNumber)),
+      trustedOrigins: config.trustedOrigins,
+      verifyOTP: ({ code, phoneNumber }) => runPromise(twilio.verifyCode(phoneNumber, code)),
+    });
+  });

@@ -15,7 +15,7 @@ import { useState } from "react";
 import { authClient } from "../lib/auth-client";
 
 interface PhoneAuthFormProps {
-  readonly onAuthenticated: () => void;
+  readonly onAuthenticated: () => Promise<string | undefined> | string | undefined | void;
 }
 
 /** Phone verification form backed by Twilio Verify. */
@@ -37,6 +37,7 @@ export function PhoneAuthForm({ onAuthenticated }: PhoneAuthFormProps) {
       }
       setIsSubmitting(false);
       setStage("code");
+      return;
     });
   };
 
@@ -47,10 +48,14 @@ export function PhoneAuthForm({ onAuthenticated }: PhoneAuthFormProps) {
       if (result.error) {
         setRequestError(result.error.message || result.error.statusText);
         setIsSubmitting(false);
-        return;
+        return Promise.resolve();
       }
-      setIsSubmitting(false);
-      onAuthenticated();
+      return Promise.resolve(onAuthenticated()).then((error) => {
+        if (error !== undefined) {
+          setRequestError(error);
+        }
+        setIsSubmitting(false);
+      });
     });
   };
 

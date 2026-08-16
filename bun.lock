@@ -28,9 +28,11 @@
       "name": "@osfo/web",
       "version": "0.0.0",
       "dependencies": {
+        "@osfo/api": "workspace:*",
         "@osfo/ui": "workspace:*",
         "@tanstack/react-form": "1.33.5",
         "better-auth": "1.6.28",
+        "effect": "catalog:",
         "lucide-react": "catalog:",
         "react": "catalog:",
         "react-dom": "catalog:",
@@ -52,6 +54,7 @@
       "name": "@osfo/worker",
       "version": "0.0.0",
       "dependencies": {
+        "@effect/platform-browser": "catalog:",
         "@osfo/api": "workspace:*",
         "@osfo/auth": "workspace:*",
         "@osfo/db": "workspace:*",
@@ -139,6 +142,7 @@
   "catalog": {
     "@cloudflare/vitest-pool-workers": "0.21.2",
     "@cloudflare/workers-types": "5.20260812.1",
+    "@effect/platform-browser": "4.0.0-beta.105",
     "@effect/platform-bun": "4.0.0-beta.105",
     "@effect/platform-node": "4.0.0-beta.105",
     "@effect/vitest": "4.0.0-beta.105",
@@ -346,6 +350,8 @@
     "@dotenvx/primitives": ["@dotenvx/primitives@0.8.0", "", {}, "sha512-VYJy0uhFm9zTJ1TxBaW/pA8bjbOM/OttaNMwZ1RHG4JKyRG7DhSdiqD1ipQoAyoD22olUtxbP78W9xY3Wd11bg=="],
 
     "@drizzle-team/brocli": ["@drizzle-team/brocli@0.10.2", "", {}, "sha512-z33Il7l5dKjUgGULTqBsQBQwckHh5AbIuxhdsIxDDiZAzBOrZO6q9ogcWC65kU382AfynTfgNumVcNIjuIua6w=="],
+
+    "@effect/platform-browser": ["@effect/platform-browser@4.0.0-beta.105", "", { "peerDependencies": { "effect": "^4.0.0-beta.105" } }, "sha512-ts6js/MzhptBEfAXkxtyWq0fDK1snISNUWdziw4J5vf8g+1yIujpk4tgFN0dhQcRnhzVJZVDEAUoiwTQW1Bp8A=="],
 
     "@effect/platform-bun": ["@effect/platform-bun@4.0.0-beta.105", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-beta.105" }, "peerDependencies": { "effect": "^4.0.0-beta.105" } }, "sha512-5eCuMLxfkLbVK5If5zFybyKduQvhYofy0oPsbTH8UiIrYqyx5QqK9G9PZ1SfBsbqHfykwLEpMCdzQczFGERw2w=="],
 

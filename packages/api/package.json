@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/api.ts",
     "./groups/health": "./src/groups/health.ts",
+    "./groups/registration": "./src/groups/registration.ts",
     "./middleware/auth": "./src/middleware/auth.ts"
   },
   "scripts": {

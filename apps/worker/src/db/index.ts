@@ -1,5 +1,5 @@
 import { createDb, type Database } from "@osfo/db";
-import { Context, DateTime, Effect, Layer, Option, Result, Schema } from "effect";
+import { Context, DateTime, Effect, Layer, Option, Result, Schema, type Scope } from "effect";
 import postgres, { type Sql } from "postgres";
 
 /** UTC timestamp stored as an ISO 8601 string. */
@@ -15,7 +15,7 @@ export const DbTimestamp = Schema.String.check(
 export type DbTimestamp = typeof DbTimestamp.Type;
 
 /** Database operations used in safe failures and telemetry. */
-export const DbOperation = Schema.Literals(["establishRegistration", "resolveAgent"]);
+export const DbOperation = Schema.Literals(["completeRegistration", "resolveAgent"]);
 
 /** Database operations used in safe failures and telemetry. */
 export type DbOperation = typeof DbOperation.Type;
@@ -43,43 +43,46 @@ export interface Options {
 export type { Database } from "@osfo/db";
 
 interface DbService {
-  readonly database: Database;
+  readonly database: Effect.Effect<Database, never, Scope.Scope>;
 }
 
 /** Worker-local access to the shared Postgres database. */
 export class Db extends Context.Service<Db, DbService>()("@osfo/worker/Db") {}
 
 /** Acquire the shared Drizzle database from the current Effect context. */
-export const database: Effect.Effect<Database, never, Db> = Effect.map(
+export const database: Effect.Effect<Database, never, Db | Scope.Scope> = Effect.map(
   Db,
   (service) => service.database,
-);
+).pipe(Effect.flatten);
 
 /** Construct the Worker database from one request-scoped Postgres client. */
 export const make = (client: Sql): DbService => ({
-  database: createDb(client),
+  database: Effect.succeed(createDb(client)),
 });
 
 /** Database Layer backed by one provided Postgres client. */
 export const layerFromClient = (client: Sql) => Layer.succeed(Db, make(client));
 
 /** Database Layer backed by one provided Drizzle PostgreSQL database. */
-export const layerFromDatabase = (provided: Database) => Layer.succeed(Db, { database: provided });
+export const layerFromDatabase = (provided: Database) =>
+  Layer.succeed(Db, { database: Effect.succeed(provided) });
 
 /** Production database Layer backed by one Cloudflare Hyperdrive binding. */
 export const layer = (options: Options) =>
   Layer.effect(
     Db,
-    Effect.acquireRelease(
-      Effect.sync(() =>
-        postgres(options.db.connectionString, {
-          fetch_types: false,
-          max: 5,
-          prepare: true,
-        }),
-      ),
-      (client) => Effect.promise(() => client.end()),
-    ).pipe(Effect.map(make)),
+    Effect.cached(
+      Effect.acquireRelease(
+        Effect.sync(() =>
+          postgres(options.db.connectionString, {
+            fetch_types: false,
+            max: 5,
+            prepare: true,
+          }),
+        ),
+        (client) => Effect.promise(() => client.end()),
+      ).pipe(Effect.map((client) => createDb(client))),
+    ).pipe(Effect.map((cachedDatabase) => ({ database: cachedDatabase }))),
   );
 
 /** Translate an unknown Postgres failure into a safe database failure. */

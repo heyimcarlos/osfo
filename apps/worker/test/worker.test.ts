@@ -40,7 +40,12 @@ describe("Osfo Cloudflare host", () => {
       expect(response.status).toBe(200);
       expect(document).toMatchObject({
         info: { title: "Osfo API", version: "0.1.0" },
-        paths: { "/health": { get: { operationId: "health.get" } } },
+        paths: {
+          "/health": { get: { operationId: "health.get" } },
+          "/v1/registration": {
+            put: { operationId: "registration.complete" },
+          },
+        },
       });
     }),
   );

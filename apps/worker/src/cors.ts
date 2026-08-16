@@ -10,6 +10,16 @@ const allowedHeaders = [
 ].join(", ");
 const exposedHeaders = "X-PoW-Challenge, X-PoW-Reason";
 
+/** Apply credentialed CORS only to the typed product API. */
+export const productApiLayer = (trustedOrigins: ReadonlyArray<string>) =>
+  HttpRouter.cors({
+    allowedHeaders: ["Content-Type"],
+    allowedMethods: ["GET", "POST", "OPTIONS"],
+    allowedOrigins: [...trustedOrigins],
+    credentials: true,
+    maxAge: 600,
+  });
+
 /** Apply Better Auth CORS policy to one authentication request. */
 export const handleAuthRequest = (
   request: Request,
@@ -46,3 +56,4 @@ const withCorsHeaders = (response: Response, allowedOrigin: string | undefined):
     statusText: response.statusText,
   });
 };
+import { HttpRouter } from "effect/unstable/http";

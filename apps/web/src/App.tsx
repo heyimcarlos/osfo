@@ -1,9 +1,15 @@
 import { Chat, type ChatMessage } from "@osfo/ui/components/chat";
 import { Button } from "@osfo/ui/components/button";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 
 import { AuthScreen } from "./components/auth-screen";
 import { authClient } from "./lib/auth-client";
+
+const GetStartedScreen = lazy(() =>
+  import("./components/get-started-screen").then((module) => ({
+    default: module.GetStartedScreen,
+  })),
+);
 
 const initialMessages: ReadonlyArray<ChatMessage> = [
   {
@@ -27,16 +33,25 @@ const initialMessages: ReadonlyArray<ChatMessage> = [
 /** Osfo browser composition root. */
 export function App() {
   const session = authClient.useSession();
+  const isGetStarted = globalThis.location?.pathname === "/get-started";
 
   if (session.isPending) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-background text-sm text-muted-foreground">
-        Loading Osfo...
-      </main>
-    );
+    return <LoadingScreen />;
   }
 
   if (!session.data) {
+    if (isGetStarted) {
+      return (
+        <Suspense fallback={<LoadingScreen />}>
+          <GetStartedScreen
+            onComplete={() => {
+              globalThis.location.assign("/");
+            }}
+          />
+        </Suspense>
+      );
+    }
+
     return (
       <AuthScreen
         onAuthenticated={() => {
@@ -46,8 +61,28 @@ export function App() {
     );
   }
 
-  return <ChatPreview userLabel={session.data.user.email} />;
+  if (isGetStarted) {
+    return (
+      <Suspense fallback={<LoadingScreen />}>
+        <GetStartedScreen
+          initialName={session.data.user.name}
+          isAuthenticated
+          onComplete={() => {
+            globalThis.location.assign("/");
+          }}
+        />
+      </Suspense>
+    );
+  }
+
+  return <ChatPreview userLabel={session.data.user.name} />;
 }
+
+const LoadingScreen = () => (
+  <main className="grid min-h-dvh place-items-center bg-background text-sm text-muted-foreground">
+    Loading Osfo...
+  </main>
+);
 
 /** Presentation-only chat shown after authentication succeeds. */
 export function ChatPreview({ userLabel = "Test user" }: { readonly userLabel?: string }) {
