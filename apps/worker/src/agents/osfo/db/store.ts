@@ -2,7 +2,15 @@ import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
 import { DbTimestamp } from "../../../db";
-import { AgentId, AgentInitializationId, ConversationRouteId, SessionId } from "../../../domain";
+import {
+  AgentId,
+  AgentInitializationId,
+  AssistantMessageId,
+  ConversationRouteId,
+  SessionId,
+  ThinkRequestId,
+  type ThinkRequestId as ThinkRequestIdType,
+} from "../../../domain";
 import type { AgentDb } from "./client";
 import {
   AgentInitializationConflict,
@@ -90,10 +98,10 @@ export type ConversationRouteFound = typeof ConversationRouteFound.Type;
 
 /** Stable observation accepted after a committed Think turn. */
 export const CommittedTurnObservation = Schema.Struct({
-  assistantMessageId: Schema.String,
+  assistantMessageId: AssistantMessageId,
   sessionId: SessionId,
   source: Schema.Literals(["hook", "reconciliation"]),
-  thinkRequestId: Schema.NullOr(Schema.String),
+  thinkRequestId: Schema.NullOr(ThinkRequestId),
 });
 
 /** Stable observation accepted after a committed Think turn. */
@@ -302,7 +310,7 @@ export const makeAgentStore = (db: AgentDb) => {
       const outcome = yield* execute("recordCommittedTurn", () =>
         // The Durable SQLite driver implements this exact local transaction with transactionSync.
         db.transaction((transaction) => {
-          const findByThinkRequestId = (thinkRequestId: string) =>
+          const findByThinkRequestId = (thinkRequestId: ThinkRequestIdType) =>
             transaction
               .select({ assistantMessageId: committedTurns.assistantMessageId })
               .from(committedTurns)

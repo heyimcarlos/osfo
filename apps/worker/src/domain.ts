@@ -30,6 +30,18 @@ export const SessionId = Schema.String.pipe(Schema.brand("SessionId"));
 /** Stable identity for one canonical Think Session. */
 export type SessionId = typeof SessionId.Type;
 
+/** Stable identity for one committed Think assistant message. */
+export const AssistantMessageId = Schema.String.pipe(Schema.brand("AssistantMessageId"));
+
+/** Stable identity for one committed Think assistant message. */
+export type AssistantMessageId = typeof AssistantMessageId.Type;
+
+/** Stable identity for one Think response request. */
+export const ThinkRequestId = Schema.String.pipe(Schema.brand("ThinkRequestId"));
+
+/** Stable identity for one Think response request. */
+export type ThinkRequestId = typeof ThinkRequestId.Type;
+
 /** Stable identity for one Subscription. */
 export const SubscriptionId = Schema.String.pipe(Schema.brand("SubscriptionId"));
 

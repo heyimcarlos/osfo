@@ -12,8 +12,10 @@ import {
 import type {
   AgentId,
   AgentInitializationId,
+  AssistantMessageId,
   ConversationRouteId,
   SessionId,
+  ThinkRequestId,
 } from "../../../domain";
 import type { DbTimestamp } from "../../../db";
 
@@ -27,6 +29,12 @@ const routeId = customType<{ data: ConversationRouteId; driverData: string }>({
   dataType: () => "text",
 });
 const sessionId = customType<{ data: SessionId; driverData: string }>({
+  dataType: () => "text",
+});
+const assistantMessageId = customType<{ data: AssistantMessageId; driverData: string }>({
+  dataType: () => "text",
+});
+const thinkRequestId = customType<{ data: ThinkRequestId; driverData: string }>({
   dataType: () => "text",
 });
 const timestamp = customType<{ data: DbTimestamp; driverData: string }>({
@@ -83,7 +91,7 @@ export const sessionOwnership = sqliteTable(
 export const committedTurns = sqliteTable(
   "osfo_committed_turns",
   {
-    assistantMessageId: text("assistant_message_id").notNull().unique(),
+    assistantMessageId: assistantMessageId("assistant_message_id").notNull().unique(),
     observationSequence: integer("observation_sequence").primaryKey({ autoIncrement: true }),
     observedAt: text("observed_at")
       .notNull()
@@ -92,7 +100,7 @@ export const committedTurns = sqliteTable(
       .notNull()
       .references(() => sessionOwnership.sessionId, { onDelete: "restrict", onUpdate: "restrict" }),
     source: text("source", { enum: ["hook", "reconciliation"] }).notNull(),
-    thinkRequestId: text("think_request_id"),
+    thinkRequestId: thinkRequestId("think_request_id"),
   },
   (table) => [
     check("osfo_committed_turn_source", sql`${table.source} IN ('hook', 'reconciliation')`),

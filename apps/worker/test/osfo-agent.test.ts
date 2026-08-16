@@ -4,7 +4,14 @@ import { describe, expect, it } from "@effect/vitest";
 import { and, eq, isNull } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
-import { AgentId, AgentInitializationId, ConversationRouteId, SessionId } from "../src/domain";
+import {
+  AgentId,
+  AgentInitializationId,
+  AssistantMessageId,
+  ConversationRouteId,
+  SessionId,
+  ThinkRequestId,
+} from "../src/domain";
 import { DbTimestamp } from "../src/db";
 import { makeAgentDb } from "../src/agents/osfo/db/client";
 import {
@@ -275,20 +282,20 @@ describe("Osfo Agent and Think Session foundation", () => {
 
           db.insert(committedTurns)
             .values({
-              assistantMessageId: "assistant-one",
+              assistantMessageId: AssistantMessageId.make("assistant-one"),
               sessionId,
               source: "hook",
-              thinkRequestId: "stable-think-request",
+              thinkRequestId: ThinkRequestId.make("stable-think-request"),
             })
             .run();
           expect(() =>
             db
               .insert(committedTurns)
               .values({
-                assistantMessageId: "assistant-two",
+                assistantMessageId: AssistantMessageId.make("assistant-two"),
                 sessionId,
                 source: "hook",
-                thinkRequestId: "stable-think-request",
+                thinkRequestId: ThinkRequestId.make("stable-think-request"),
               })
               .run(),
           ).toThrow(/constraint/i);
@@ -383,12 +390,15 @@ describe("Osfo Agent and Think Session foundation", () => {
             requestId: "think-request-completed",
             status: "completed" as const,
           };
+          await instance.session.appendMessage(completed.message);
           await instance.onChatResponse(completed);
-          await instance.onChatResponse({
+          const second = {
             ...completed,
             message: { ...completed.message, id: "assistant-a-second" },
             requestId: "think-request-second",
-          });
+          };
+          await instance.session.appendMessage(second.message);
+          await instance.onChatResponse(second);
           await instance.onChatResponse(completed);
           await instance.onChatResponse({
             ...completed,
@@ -417,6 +427,83 @@ describe("Osfo Agent and Think Session foundation", () => {
           sessionId: "session-committed-hook",
           source: "hook",
           thinkRequestId: "think-request-second",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("records a delayed hook against the Think Session that owns its message", () =>
+    Effect.gen(function* () {
+      const agentId = Schema.decodeUnknownSync(AgentId)("agent-delayed-hook");
+      const initializationId = Schema.decodeUnknownSync(AgentInitializationId)("init-delayed-hook");
+      const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-delayed-hook");
+      const originalSessionId = Schema.decodeUnknownSync(SessionId)("session-delayed-original");
+      const replacementSessionId = Schema.decodeUnknownSync(SessionId)(
+        "session-delayed-replacement",
+      );
+      const agent = env.OSFO_AGENT.getByName(agentId);
+
+      yield* Effect.promise(
+        async () =>
+          await agent.initialize({
+            agentId,
+            initializationId,
+            initializedAt: "2026-08-15T12:00:00.000Z",
+            routeId,
+            sessionId: originalSessionId,
+          }),
+      );
+      yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance) => {
+          await instance.session.appendMessage({
+            id: "assistant-delayed-hook",
+            parts: [{ text: "Committed before replacement", type: "text" }],
+            role: "assistant",
+          });
+          await instance.session.appendMessage(
+            {
+              id: "user-new-active-branch",
+              parts: [{ text: "Start another branch", type: "text" }],
+              role: "user",
+            },
+            null,
+          );
+        }),
+      );
+      yield* Effect.promise(
+        async () =>
+          await agent.replaceCurrentSession({
+            expectedCurrentSessionId: originalSessionId,
+            replacedAt: "2026-08-15T13:00:00.000Z",
+            replacementSessionId,
+            routeId,
+          }),
+      );
+      yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance) => {
+          await instance.onChatResponse({
+            continuation: false,
+            message: {
+              id: "assistant-delayed-hook",
+              parts: [{ text: "Committed before replacement", type: "text" }],
+              role: "assistant",
+            },
+            requestId: "think-request-delayed-hook",
+            status: "completed",
+          });
+        }),
+      );
+
+      const turns = yield* Effect.promise(async () => await agent.readCommittedTurns());
+
+      expect(turns).toEqual([
+        {
+          assistantMessageId: "assistant-delayed-hook",
+          observationSequence: 1,
+          observedAt: expect.any(String),
+          sessionId: "session-delayed-original",
+          source: "hook",
+          thinkRequestId: "think-request-delayed-hook",
         },
       ]);
     }),
@@ -614,16 +701,16 @@ describe("Osfo Agent and Think Session foundation", () => {
           const store = makeAgentStore(makeAgentDb(state.storage));
           await Effect.runPromise(
             store.recordCommittedTurn({
-              assistantMessageId: "assistant-stable-identity",
+              assistantMessageId: AssistantMessageId.make("assistant-stable-identity"),
               sessionId: firstSessionId,
               source: "hook",
-              thinkRequestId: "think-request-stable-identity",
+              thinkRequestId: ThinkRequestId.make("think-request-stable-identity"),
             }),
           );
           const sessionConflict = await Effect.runPromise(
             Effect.flip(
               store.recordCommittedTurn({
-                assistantMessageId: "assistant-stable-identity",
+                assistantMessageId: AssistantMessageId.make("assistant-stable-identity"),
                 sessionId: secondSessionId,
                 source: "reconciliation",
                 thinkRequestId: null,
@@ -633,10 +720,10 @@ describe("Osfo Agent and Think Session foundation", () => {
           const requestConflict = await Effect.runPromise(
             Effect.flip(
               store.recordCommittedTurn({
-                assistantMessageId: "assistant-conflicting-identity",
+                assistantMessageId: AssistantMessageId.make("assistant-conflicting-identity"),
                 sessionId: secondSessionId,
                 source: "hook",
-                thinkRequestId: "think-request-stable-identity",
+                thinkRequestId: ThinkRequestId.make("think-request-stable-identity"),
               }),
             ),
           );

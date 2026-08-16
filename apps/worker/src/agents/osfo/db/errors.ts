@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import { SessionId } from "../../../domain";
+import { AssistantMessageId, SessionId, ThinkRequestId } from "../../../domain";
 
 /** Agent SQLite operations exposed by the typed store seam. */
 export const AgentStoreOperation = Schema.Literals([
@@ -93,10 +93,20 @@ export class CurrentSessionReplacementConflict extends Schema.TaggedError<Curren
 export class CommittedTurnConflict extends Schema.TaggedError<CommittedTurnConflict>()(
   "CommittedTurnConflict",
   {
-    assistantMessageId: Schema.String,
+    assistantMessageId: AssistantMessageId,
     message: Schema.String,
     sessionId: SessionId,
-    thinkRequestId: Schema.NullOr(Schema.String),
+    thinkRequestId: Schema.NullOr(ThinkRequestId),
+  },
+) {}
+
+/** Expected dependency failure when Think Session history cannot be read. */
+export class ThinkSessionReadUnavailable extends Schema.TaggedError<ThinkSessionReadUnavailable>()(
+  "ThinkSessionReadUnavailable",
+  {
+    cause: Schema.Defect(),
+    message: Schema.String,
+    sessionId: SessionId,
   },
 ) {}
 
