@@ -42,11 +42,11 @@ export const ThinkRequestId = Schema.String.pipe(Schema.brand("ThinkRequestId"))
 /** Stable identity for one Think response request. */
 export type ThinkRequestId = typeof ThinkRequestId.Type;
 
-/** Stable identity for one Subscription. */
-export const SubscriptionId = Schema.String.pipe(Schema.brand("SubscriptionId"));
+/** Stable identity for one billing Subscription. */
+export const BillingSubscriptionId = Schema.String.pipe(Schema.brand("BillingSubscriptionId"));
 
-/** Stable identity for one Subscription. */
-export type SubscriptionId = typeof SubscriptionId.Type;
+/** Stable identity for one billing Subscription. */
+export type BillingSubscriptionId = typeof BillingSubscriptionId.Type;
 
 /** Stable identity for one Usage Allowance period. */
 export const AllowancePeriodId = Schema.String.pipe(Schema.brand("AllowancePeriodId"));

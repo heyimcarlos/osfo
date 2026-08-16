@@ -2,8 +2,9 @@ import { describe, expect, it } from "@effect/vitest";
 import { RegistrationResponse } from "@osfo/api";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { agents } from "@osfo/db/schema/agents";
+import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
-import { allowancePeriods, subscriptions } from "@osfo/db/schema/billing";
+import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { eq } from "drizzle-orm";
 import { DateTime, Effect, Layer, Redacted, Schema } from "effect";
 
@@ -35,7 +36,7 @@ describe("Registration HTTP API", () => {
           const storedUsers = yield* Effect.promise(() => fixture.database.select().from(users));
           const storedAgents = yield* Effect.promise(() => fixture.database.select().from(agents));
           const storedSubscriptions = yield* Effect.promise(() =>
-            fixture.database.select().from(subscriptions),
+            fixture.database.select().from(billingSubscriptions),
           );
           const storedPeriods = yield* Effect.promise(() =>
             fixture.database.select().from(allowancePeriods),
@@ -52,6 +53,43 @@ describe("Registration HTTP API", () => {
           expect(storedAgents).toHaveLength(1);
           expect(storedSubscriptions).toHaveLength(1);
           expect(storedPeriods).toHaveLength(1);
+          expect(storedSubscriptions[0]).toMatchObject({
+            billingSubscriptionId: storedPeriods[0]?.billingSubscriptionId,
+            plan: "free",
+            planPolicyVersion: "launch-v1",
+          });
+          expect(storedPeriods[0]).toMatchObject({
+            plan: "free",
+            planPolicyVersion: "launch-v1",
+          });
+          expect(storedPeriods[0]?.startsAt).toEqual(storedUsers[0]?.registrationCompletedAt);
+
+          const firstPeriod = yield* Schema.decodeUnknownEffect(
+            Schema.Struct({
+              billingSubscriptionId: Schema.String,
+              endsAt: Schema.Date,
+              userId: Schema.String,
+            }),
+          )(storedPeriods[0]);
+          yield* Effect.promise(() =>
+            fixture.database.insert(allowancePeriods).values({
+              allowancePeriodId: "allowance-period-later-registration-recovery",
+              billingSubscriptionId: firstPeriod.billingSubscriptionId,
+              createdAt: firstPeriod.endsAt,
+              endsAt: DateTime.toDateUtc(
+                DateTime.add(DateTime.fromDateUnsafe(firstPeriod.endsAt), { days: 30 }),
+              ),
+              plan: "free",
+              planPolicyVersion: "launch-v1",
+              startsAt: firstPeriod.endsAt,
+              userId: firstPeriod.userId,
+            }),
+          );
+          const recovered = yield* sendJson(app.handler, "PUT", "/v1/registration", {}, cookie);
+          const recoveredBody = yield* responseJson(recovered);
+
+          expect(recovered.status).toBe(200);
+          expect(recoveredBody).toEqual(firstBody);
 
           yield* Effect.promise(app.dispose);
         }),
