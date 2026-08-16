@@ -1,13 +1,17 @@
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
-import { Layer } from "effect";
+import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 
 import type * as Auth from "./auth";
 import * as Db from "./db";
 import type { RuntimeConfig } from "./env";
 import * as TwilioVerify from "./integrations/twilio/verify";
+import * as OnboardingCloudflare from "./integrations/cloudflare/onboarding";
+import * as OnboardingPostgres from "./integrations/postgres/onboarding";
 import { makeWorkerRuntime } from "./layers";
 import * as Routes from "./routes";
+import * as Onboarding from "./services/onboarding";
+import * as Registration from "./services/registration";
 
 /** Cloudflare bindings used by the Worker HTTP application. */
 export interface Bindings {
@@ -37,6 +41,27 @@ export const make = (env: Bindings, config: RuntimeConfig, options?: MakeOptions
     dispose: () => webHandler.dispose().then(() => runtime.dispose()),
     handler: webHandler.handler,
   };
+};
+
+/** Delete expired Registration Invitation data from the scheduled Worker event. */
+export const expireRegistrationInvitations = (env: Bindings, config: RuntimeConfig) =>
+  Effect.runPromise(Effect.scoped(runInvitationExpiry(env, config)));
+
+const runInvitationExpiry = (env: Bindings, config: RuntimeConfig) => {
+  const base = Layer.merge(Db.layer({ db: env.DB }), BrowserCrypto.layer);
+  const dependencies = Layer.mergeAll(
+    Registration.layerWithoutDependencies,
+    OnboardingCloudflare.layer(env),
+    Layer.succeed(Onboarding.OnboardingConfig, {
+      officialWhatsAppNumber: config.whatsApp.phoneNumber,
+    }),
+  ).pipe(Layer.provideMerge(base));
+  const onboarding = Onboarding.layerWithoutDependencies.pipe(Layer.provide(dependencies));
+  const persistence = OnboardingPostgres.layerWithoutDependencies.pipe(Layer.provide(base));
+  return Effect.flatMap(Onboarding.Service, (service) => service.expireInvitations).pipe(
+    // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Scheduled maintenance is an application entry point.
+    Effect.provide(onboarding.pipe(Layer.provide(persistence))),
+  );
 };
 
 /** Convert invalid Worker bindings into a safe technical HTTP response. */

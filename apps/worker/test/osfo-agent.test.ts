@@ -30,6 +30,63 @@ import {
 /* oxlint-disable effecttsgo/async-function, effecttsgo/prefer-typed-schema-decoder, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Worker integration tests cross Promise, RPC, Effect, and raw SQLite test boundaries. */
 
 describe("Osfo Agent and Think Session foundation", () => {
+  it.effect("commits one localized welcome from accepted setup facts only", () =>
+    Effect.gen(function* () {
+      const agentId = Schema.decodeUnknownSync(AgentId)("agent-personal-welcome");
+      const initializationId =
+        Schema.decodeUnknownSync(AgentInitializationId)("init-personal-welcome");
+      const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-personal-welcome");
+      const sessionId = Schema.decodeUnknownSync(SessionId)("session-personal-welcome");
+      const agent = env.OSFO_AGENT.getByName(agentId);
+      yield* Effect.promise(
+        async () =>
+          await agent.initialize({
+            agentId,
+            initializationId,
+            initializedAt: "2026-08-15T12:00:00.000Z",
+            routeId,
+            sessionId,
+          }),
+      );
+
+      const input = {
+        channelBindingId: "channel-binding-welcome",
+        helpAreas: ["scheduling-reminders", "writing-email"],
+        locale: "es",
+        preferredName: "Sol",
+      } as const;
+      const committed = yield* Effect.promise(async () => await agent.commitWelcome(input));
+      const repeated = yield* Effect.promise(async () => await agent.commitWelcome(input));
+      const history = yield* Effect.promise(async () => await agent.readSession(sessionId));
+      const receipts = yield* Effect.promise(async () => await agent.readCommittedTurns());
+
+      expect(repeated).toEqual(committed);
+      expect(committed).toEqual({
+        _tag: "PersonalWelcomeCommitted",
+        messageId: "welcome-channel-binding-welcome",
+        sessionId,
+        text: "Hola Sol, estoy listo. Elegiste agenda y recordatorios y redacción y correo. ¿En qué trabajamos primero?",
+      });
+      expect(history).toEqual({
+        _tag: "SessionHistoryFound",
+        messages: [
+          {
+            id: "welcome-channel-binding-welcome",
+            parts: [
+              {
+                text: "Hola Sol, estoy listo. Elegiste agenda y recordatorios y redacción y correo. ¿En qué trabajamos primero?",
+                type: "text",
+              },
+            ],
+            role: "assistant",
+          },
+        ],
+        sessionId,
+      });
+      expect(receipts).toHaveLength(1);
+    }),
+  );
+
   it.effect("keeps the Agent identity stable when its activation is replaced", () =>
     Effect.gen(function* () {
       const agentId = Schema.decodeUnknownSync(AgentId)("agent-stable");

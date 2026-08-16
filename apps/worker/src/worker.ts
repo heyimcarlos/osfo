@@ -1,7 +1,16 @@
-import { Result } from "effect";
+import { Result, Schema } from "effect";
 
 import * as App from "./app";
 import { decodeRuntimeConfig } from "./env";
+import { RuntimeProbeResult } from "./layers";
+
+/* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Cloudflare RPC tags and adapter boundaries require these forms. */
+
+const AgentRpcTag = Schema.Struct({ _tag: Schema.String });
+const RegistrationRpcResult = Schema.Union([
+  Schema.TaggedStruct("RegistrationTurnCompleted", { response: Schema.String }),
+  Schema.TaggedStruct("RegistrationTurnUnavailable", { message: Schema.String }),
+]);
 
 export { OsfoAgent } from "./agents/osfo/agent";
 export { RegistrationDialogue } from "./agents/registration/registration";
@@ -14,7 +23,15 @@ const worker = {
 
     return Result.match(config, {
       onFailure: () => Promise.resolve(App.environmentErrorResponse()),
-      onSuccess: (parsedConfig) => fetchApp(request, App.make(env, parsedConfig)),
+      onSuccess: (parsedConfig) => fetchApp(request, App.make(adaptBindings(env), parsedConfig)),
+    });
+  },
+  scheduled(_controller: ScheduledController, env: Env, context: ExecutionContext): void {
+    const config = decodeRuntimeConfig(env);
+    Result.match(config, {
+      onFailure: () => undefined,
+      onSuccess: (parsedConfig) =>
+        context.waitUntil(App.expireRegistrationInvitations(adaptBindings(env), parsedConfig)),
     });
   },
 } satisfies ExportedHandler<Env>;
@@ -22,7 +39,35 @@ const worker = {
 /** Default Cloudflare Worker entry point. */
 export default worker;
 
-// oxlint-disable-next-line effecttsgo/async-function -- The Cloudflare fetch boundary owns handler cleanup.
+const adaptBindings = (env: Env): App.Bindings => ({
+  DB: env.DB,
+  OSFO_AGENT: {
+    getByName: (identity) => {
+      const agent = env.OSFO_AGENT.getByName(identity);
+      return {
+        commitWelcome: async (input) =>
+          Schema.decodePromise(AgentRpcTag)(await agent.commitWelcome(input)),
+        initialize: async (input) =>
+          Schema.decodePromise(AgentRpcTag)(await agent.initialize(input)),
+        probeRuntime: async () =>
+          Schema.decodePromise(RuntimeProbeResult)(await agent.probeRuntime()),
+      };
+    },
+  },
+  REGISTRATION_DIALOGUE: {
+    getByName: (identity) => {
+      const dialogue = env.REGISTRATION_DIALOGUE.getByName(identity);
+      return {
+        begin: async (input) =>
+          Schema.decodePromise(RegistrationRpcResult)(await dialogue.begin(input)),
+        deleteDialogue: async () => await dialogue.deleteDialogue(),
+        probeRuntime: async () =>
+          Schema.decodePromise(RuntimeProbeResult)(await dialogue.probeRuntime()),
+      };
+    },
+  },
+});
+
 const fetchApp = async (request: Request, app: ReturnType<typeof App.make>): Promise<Response> => {
   try {
     return await app.handler(request);

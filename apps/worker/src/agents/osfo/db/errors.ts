@@ -137,6 +137,16 @@ export class ThinkSessionReadUnavailable extends Schema.TaggedError<ThinkSession
   },
 ) {}
 
+/** Expected dependency failure when a personal welcome cannot be persisted. */
+export class ThinkSessionWriteUnavailable extends Schema.TaggedError<ThinkSessionWriteUnavailable>()(
+  "ThinkSessionWriteUnavailable",
+  {
+    cause: Schema.Defect(),
+    message: Schema.String,
+    sessionId: SessionId,
+  },
+) {}
+
 /** Expected failure when Think returns a malformed Session history record. */
 export class ThinkSessionRecordInvalid extends Schema.TaggedError<ThinkSessionRecordInvalid>()(
   "ThinkSessionRecordInvalid",
@@ -167,6 +177,7 @@ export class AgentStoreRecordInvalid extends Schema.TaggedError<AgentStoreRecord
 
 /** Agent RPC operations with externally supplied values. */
 export const AgentRequestOperation = Schema.Literals([
+  "commitWelcome",
   "initialize",
   "readRoute",
   "readSession",

@@ -9,6 +9,7 @@ const workerBindings = {
   TWILIO_ACCOUNT_SID: "AC11111111111111111111111111111111",
   TWILIO_AUTH_TOKEN: "test-only-twilio-token",
   TWILIO_VERIFY_SERVICE_SID: "VA22222222222222222222222222222222",
+  WHATSAPP_PHONE_NUMBER: "14165550100",
 };
 
 /** Local Cloudflare Worker and execution-unit test configuration. */
@@ -21,7 +22,11 @@ export default defineConfig({
   ],
   test: {
     fileParallelism: false,
-    include: ["test/osfo-agent.test.ts", "test/worker.test.ts"],
+    include: [
+      "test/osfo-agent.test.ts",
+      "test/registration-dialogue.test.ts",
+      "test/worker.test.ts",
+    ],
     testTimeout: 30_000,
   },
 });

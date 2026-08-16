@@ -3,6 +3,7 @@ import { Button } from "@osfo/ui/components/button";
 import { lazy, Suspense, useState } from "react";
 
 import { AuthScreen } from "./components/auth-screen";
+import { PlanDetails, PrivacyNotice } from "./components/public-information";
 import { authClient } from "./lib/auth-client";
 
 const GetStartedScreen = lazy(() =>
@@ -33,17 +34,23 @@ const initialMessages: ReadonlyArray<ChatMessage> = [
 /** Osfo browser composition root. */
 export function App() {
   const session = authClient.useSession();
-  const isGetStarted = globalThis.location?.pathname === "/get-started";
+  const pathname = globalThis.location?.pathname ?? "/";
+  const invitationToken = /^\/verify\/([^/]+)$/u.exec(pathname)?.[1];
+  const isOnboarding = pathname === "/get-started" || invitationToken !== undefined;
+
+  if (pathname === "/privacy") return <PrivacyNotice />;
+  if (pathname === "/plans") return <PlanDetails />;
 
   if (session.isPending) {
     return <LoadingScreen />;
   }
 
   if (!session.data) {
-    if (isGetStarted) {
+    if (isOnboarding) {
       return (
         <Suspense fallback={<LoadingScreen />}>
           <GetStartedScreen
+            {...(invitationToken === undefined ? {} : { invitationToken })}
             onComplete={() => {
               globalThis.location.assign("/");
             }}
@@ -61,11 +68,11 @@ export function App() {
     );
   }
 
-  if (isGetStarted) {
+  if (isOnboarding) {
     return (
       <Suspense fallback={<LoadingScreen />}>
         <GetStartedScreen
-          initialName={session.data.user.name}
+          {...(invitationToken === undefined ? {} : { invitationToken })}
           isAuthenticated
           onComplete={() => {
             globalThis.location.assign("/");

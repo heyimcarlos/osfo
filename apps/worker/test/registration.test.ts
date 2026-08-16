@@ -1,10 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { RegistrationResponse } from "@osfo/api";
+import { OnboardingResponse, RegistrationResponse } from "@osfo/api";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { agents } from "@osfo/db/schema/agents";
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
+import { registrationInvitations } from "@osfo/db/schema/onboarding";
 import { eq } from "drizzle-orm";
 import { DateTime, Effect, Layer, Redacted, Schema } from "effect";
 
@@ -13,7 +14,117 @@ import * as Db from "../src/db";
 import type { RuntimeConfig } from "../src/env";
 import * as TwilioVerify from "../src/integrations/twilio/verify";
 
+/* oxlint-disable eslint/no-underscore-dangle -- HTTP tests assert typed tagged API results. */
+/* oxlint-disable effecttsgo/global-date-in-effect -- This HTTP test needs wall time shared with the request runtime. */
+
 describe("Registration HTTP API", () => {
+  it.effect("keeps an invited phone server-side while Better Auth sends and verifies SMS", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const sentNumbers: Array<string> = [];
+          const app = makeApp(fixture.database, {
+            sendCode: (phoneNumber) => Effect.sync(() => sentNumbers.push(phoneNumber)),
+            verifyCode: (_phoneNumber, code) => Effect.succeed(code === "123456"),
+          });
+          const token = "7".repeat(64);
+          const digest = yield* sha256(token);
+          const createdAt = new Date();
+          const expiresAt = new Date(createdAt.getTime() + 24 * 60 * 60 * 1_000);
+          yield* Effect.promise(() =>
+            fixture.database.insert(registrationInvitations).values({
+              channelIdentity: "whatsapp:server-side-phone",
+              createdAt,
+              expiresAt,
+              invitationId: "registration-invitation-server-side-phone",
+              invitedPhoneNumber: "+14165550183",
+              kind: "whatsapp_first",
+              locale: "en",
+              provider: "whatsapp",
+              tokenDigest: digest,
+            }),
+          );
+
+          const inspected = yield* Effect.promise(() =>
+            app.handler(
+              new Request(`https://osfo.test/v1/onboarding/invitations/${token}`, {
+                headers: { origin: "https://osfo.test" },
+              }),
+            ),
+          );
+          const inspectedBody = yield* Effect.promise(() => inspected.json());
+          const sent = yield* sendJson(app.handler, "POST", "/auth/onboarding/send-otp", {
+            token,
+          });
+          const verified = yield* sendJson(app.handler, "POST", "/auth/onboarding/verify", {
+            code: "123456",
+            token,
+          });
+
+          expect(inspectedBody).toEqual({
+            locale: "en",
+            maskedPhoneNumber: "••••••••0183",
+            state: "live",
+          });
+          expect(sent.status).toBe(200);
+          expect(sentNumbers).toEqual(["+14165550183"]);
+          expect(verified.status).toBe(200);
+          expect(verified.headers.get("set-cookie")).toContain("better-auth.session_token");
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("requires Phone Verification and completes resumable web onboarding", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const app = makeApp(fixture.database);
+          const signUp = yield* sendJson(app.handler, "POST", "/auth/sign-up/email", {
+            email: "web-onboarding@osfo.test",
+            name: "Web Onboarding",
+            password: "test-password",
+          });
+          const cookie = signUp.headers.get("set-cookie")?.split(";", 1)[0];
+          const payload = {
+            existingProfileChoice: null,
+            bindingConsent: "web-enrollment",
+            helpAreas: ["research"],
+            invitationToken: null,
+            locale: "en",
+            preferredName: "River",
+            webEnrollmentToken: "e".repeat(64),
+          };
+
+          const unverified = yield* sendJson(app.handler, "PUT", "/v1/onboarding", payload, cookie);
+          yield* Effect.promise(() =>
+            fixture.database
+              .update(users)
+              .set({ phoneNumber: "+14165550180", phoneNumberVerified: true })
+              .execute(),
+          );
+          const first = yield* sendJson(app.handler, "PUT", "/v1/onboarding", payload, cookie);
+          const retried = yield* sendJson(app.handler, "PUT", "/v1/onboarding", payload, cookie);
+          const firstBody = yield* onboardingResponseJson(first);
+          const retriedBody = yield* onboardingResponseJson(retried);
+
+          expect(unverified.status).toBe(403);
+          expect(first.status).toBe(200);
+          expect(firstBody.channel._tag).toBe("EnrollmentPending");
+          expect(retriedBody).toEqual(firstBody);
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
   it.effect("completes registration for the authenticated Better Auth User", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
@@ -190,17 +301,17 @@ describe("Registration HTTP API", () => {
   );
 });
 
-const makeApp = (database: Parameters<typeof Db.layerFromDatabase>[0]) =>
+const makeApp = (
+  database: Parameters<typeof Db.layerFromDatabase>[0],
+  twilio: TwilioVerify.TwilioVerify["Service"] = {
+    sendCode: () => Effect.void,
+    verifyCode: () => Effect.succeed(false),
+  },
+) =>
   App.make(testBindings, runtimeConfig, {
     authDependencies: Layer.merge(
       Db.layerFromDatabase(database),
-      Layer.succeed(
-        TwilioVerify.TwilioVerify,
-        TwilioVerify.TwilioVerify.of({
-          sendCode: () => Effect.void,
-          verifyCode: () => Effect.succeed(false),
-        }),
-      ),
+      Layer.succeed(TwilioVerify.TwilioVerify, TwilioVerify.TwilioVerify.of(twilio)),
     ),
   });
 
@@ -208,7 +319,7 @@ const sendJson = (
   handler: (request: Request) => Promise<Response>,
   method: "POST" | "PUT",
   path: string,
-  body: Readonly<Record<string, string>>,
+  body: JsonValue,
   cookie?: string,
 ) => {
   const headers = new Headers({
@@ -230,11 +341,33 @@ const sendJson = (
   );
 };
 
+type JsonValue =
+  | boolean
+  | null
+  | number
+  | string
+  | ReadonlyArray<JsonValue>
+  | { readonly [key: string]: JsonValue };
+
 const encodeJsonText = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+
+const sha256 = (value: string) =>
+  Effect.promise(() =>
+    globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)),
+  ).pipe(
+    Effect.map((digest) =>
+      Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(""),
+    ),
+  );
 
 const responseJson = (response: Response) =>
   Effect.promise(() => response.json()).pipe(
     Effect.flatMap((body) => Schema.decodeUnknownEffect(RegistrationResponse)(body)),
+  );
+
+const onboardingResponseJson = (response: Response) =>
+  Effect.promise(() => response.json()).pipe(
+    Effect.flatMap((body) => Schema.decodeUnknownEffect(OnboardingResponse)(body)),
   );
 
 const runtimeConfig: RuntimeConfig = {
@@ -245,6 +378,7 @@ const runtimeConfig: RuntimeConfig = {
     trustedOrigins: ["https://osfo.test"],
   },
   stage: "test",
+  whatsApp: { phoneNumber: "14165550100" },
   twilioVerify: {
     accountSid: Redacted.make(`AC${"1".repeat(32)}`),
     authToken: Redacted.make("test-only-token"),
@@ -256,6 +390,9 @@ const testBindings: App.Bindings = {
   DB: { connectionString: "postgres://unused.invalid/osfo" },
   OSFO_AGENT: {
     getByName: (identity) => ({
+      commitWelcome: () =>
+        Promise.resolve({ _tag: "PersonalWelcomeCommitted", messageId: "welcome-test" }),
+      initialize: () => Promise.resolve({ _tag: "AgentInitialized" }),
       probeRuntime: () =>
         Promise.resolve({
           activationId: "test-agent-activation",
@@ -268,6 +405,8 @@ const testBindings: App.Bindings = {
   },
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => ({
+      begin: () => Promise.resolve({ _tag: "RegistrationTurnCompleted", response: "Register" }),
+      deleteDialogue: () => Promise.resolve(),
       probeRuntime: () =>
         Promise.resolve({
           activationId: "test-registration-activation",
