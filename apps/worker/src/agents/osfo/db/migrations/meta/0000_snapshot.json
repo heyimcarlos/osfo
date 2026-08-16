@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "84d1ddd7-1318-4010-80fc-ada94f48e8aa",
+  "id": "fe52ab6c-71a8-44d0-a857-e5e453efd3f3",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "osfo_agent_initialization": {
@@ -64,12 +64,19 @@
         "assistant_message_id": {
           "name": "assistant_message_id",
           "type": "text",
-          "primaryKey": true,
+          "primaryKey": false,
           "notNull": true,
           "autoincrement": false
         },
-        "recorded_at": {
-          "name": "recorded_at",
+        "observation_sequence": {
+          "name": "observation_sequence",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "observed_at": {
+          "name": "observed_at",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -99,10 +106,21 @@
         }
       },
       "indexes": {
+        "osfo_committed_turns_assistant_message_id_unique": {
+          "name": "osfo_committed_turns_assistant_message_id_unique",
+          "columns": ["assistant_message_id"],
+          "isUnique": true
+        },
         "osfo_committed_turns_by_session": {
           "name": "osfo_committed_turns_by_session",
-          "columns": ["session_id", "assistant_message_id"],
+          "columns": ["session_id", "observation_sequence"],
           "isUnique": false
+        },
+        "osfo_committed_turn_think_request_unique": {
+          "name": "osfo_committed_turn_think_request_unique",
+          "columns": ["think_request_id"],
+          "isUnique": true,
+          "where": "\"osfo_committed_turns\".\"think_request_id\" IS NOT NULL"
         }
       },
       "foreignKeys": {

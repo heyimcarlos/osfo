@@ -9,8 +9,9 @@ CREATE TABLE `osfo_agent_initialization` (
 CREATE UNIQUE INDEX `osfo_agent_initialization_agent_id_unique` ON `osfo_agent_initialization` (`agent_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `osfo_agent_initialization_initialization_id_unique` ON `osfo_agent_initialization` (`initialization_id`);--> statement-breakpoint
 CREATE TABLE `osfo_committed_turns` (
-	`assistant_message_id` text PRIMARY KEY NOT NULL,
-	`recorded_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	`assistant_message_id` text NOT NULL,
+	`observation_sequence` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`observed_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	`session_id` text NOT NULL,
 	`source` text NOT NULL,
 	`think_request_id` text,
@@ -18,7 +19,9 @@ CREATE TABLE `osfo_committed_turns` (
 	CONSTRAINT "osfo_committed_turn_source" CHECK("osfo_committed_turns"."source" IN ('hook', 'reconciliation'))
 );
 --> statement-breakpoint
-CREATE INDEX `osfo_committed_turns_by_session` ON `osfo_committed_turns` (`session_id`,`assistant_message_id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `osfo_committed_turns_assistant_message_id_unique` ON `osfo_committed_turns` (`assistant_message_id`);--> statement-breakpoint
+CREATE INDEX `osfo_committed_turns_by_session` ON `osfo_committed_turns` (`session_id`,`observation_sequence`);--> statement-breakpoint
+CREATE UNIQUE INDEX `osfo_committed_turn_think_request_unique` ON `osfo_committed_turns` (`think_request_id`) WHERE "osfo_committed_turns"."think_request_id" IS NOT NULL;--> statement-breakpoint
 CREATE TABLE `osfo_conversation_routes` (
 	`is_primary` integer NOT NULL,
 	`route_id` text PRIMARY KEY NOT NULL,

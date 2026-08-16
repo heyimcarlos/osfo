@@ -21,7 +21,7 @@ import {
   type AgentInitializationEncoded,
   type AgentInitialized,
   type AgentFound,
-  type CommittedTurnReference,
+  type CommittedTurnReceipt,
   type ConversationRouteFound,
   type CurrentSessionReplaced,
   makeAgentStore,
@@ -141,7 +141,7 @@ export class OsfoAgent extends Think<Env> {
   }
 
   /** Read idempotent committed-turn references owned by this Agent. */
-  async readCommittedTurns(): Promise<ReadonlyArray<CommittedTurnReference>> {
+  async readCommittedTurns(): Promise<ReadonlyArray<CommittedTurnReceipt>> {
     await this.#migrationsReady;
     await this.#reconcileCommittedTurns();
     return Effect.runPromise(this.#store.readCommittedTurns);
@@ -166,24 +166,27 @@ export class OsfoAgent extends Think<Env> {
   async #reconcileCommittedTurns(): Promise<void> {
     await this.#migrationsReady;
     const sessionIds = await Effect.runPromise(this.#store.readSessionIds);
-    const sessions = await Promise.all(
-      sessionIds.map(async (sessionId) => ({
-        messages: await Session.create(this).forSession(sessionId).getHistory(),
-        sessionId,
-      })),
-    );
-    const references = sessions.flatMap(({ messages, sessionId }) =>
-      messages
-        .filter(({ role }) => role === "assistant")
-        .map(({ id }) => ({
-          assistantMessageId: id,
-          sessionId,
-          source: "reconciliation" as const,
-          thinkRequestId: null,
-        })),
-    );
-    await Promise.all(
-      references.map((reference) => Effect.runPromise(this.#store.recordCommittedTurn(reference))),
+    await Effect.runPromise(
+      Effect.forEach(
+        sessionIds,
+        (sessionId) =>
+          Effect.promise(() => Session.create(this).forSession(sessionId).getHistory()).pipe(
+            Effect.flatMap((messages) =>
+              Effect.forEach(
+                messages.filter(({ role }) => role === "assistant"),
+                (message) =>
+                  this.#store.recordCommittedTurn({
+                    assistantMessageId: message.id,
+                    sessionId,
+                    source: "reconciliation",
+                    thinkRequestId: null,
+                  }),
+                { concurrency: 1, discard: true },
+              ),
+            ),
+          ),
+        { concurrency: 1, discard: true },
+      ),
     );
   }
 }

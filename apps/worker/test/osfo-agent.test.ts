@@ -4,7 +4,20 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 
 import { AgentId, AgentInitializationId, ConversationRouteId, SessionId } from "../src/domain";
-import { agentMigrations, applyMigrationChain } from "../src/agents/osfo/db/migrate";
+import { DbTimestamp } from "../src/db";
+import { makeAgentDb } from "../src/agents/osfo/db/client";
+import {
+  agentMigrations,
+  type AgentMigration,
+  applyMigrationChain,
+} from "../src/agents/osfo/db/migrate";
+import { makeAgentStore } from "../src/agents/osfo/db/store";
+import {
+  agentInitialization,
+  committedTurns,
+  conversationRoutes,
+  sessionOwnership,
+} from "../src/agents/osfo/db/schema";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/prefer-typed-schema-decoder, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Worker integration tests cross Promise, RPC, Effect, and raw SQLite test boundaries. */
 
@@ -27,6 +40,16 @@ describe("Osfo Agent and Think Session foundation", () => {
             sessionId,
           }))(),
       );
+      const repeatedInitialization = yield* Effect.promise(
+        async () =>
+          await agent.initialize({
+            agentId,
+            initializationId,
+            initializedAt: "2026-08-15T12:00:00.000Z",
+            routeId,
+            sessionId,
+          }),
+      );
       const firstActivation = yield* Effect.promise(async () => await agent.probeRuntime());
 
       yield* Effect.promise(() => evictDurableObject(agent));
@@ -40,6 +63,7 @@ describe("Osfo Agent and Think Session foundation", () => {
         currentSessionId: "session-primary",
         routeId: "route-primary",
       });
+      expect(repeatedInitialization).toEqual(initialized);
       expect(found).toEqual({
         _tag: "AgentFound",
         agentId: "agent-stable",
@@ -119,6 +143,15 @@ describe("Osfo Agent and Think Session foundation", () => {
       );
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-database-invariants");
       const sessionId = Schema.decodeUnknownSync(SessionId)("session-database-invariants");
+      const otherAgentId = Schema.decodeUnknownSync(AgentId)("other-agent");
+      const otherInitializationId =
+        Schema.decodeUnknownSync(AgentInitializationId)("other-initialization");
+      const secondaryRouteId = Schema.decodeUnknownSync(ConversationRouteId)("secondary-route");
+      const missingRouteId = Schema.decodeUnknownSync(ConversationRouteId)("missing-route");
+      const secondarySessionId = Schema.decodeUnknownSync(SessionId)("secondary-current");
+      const secondCurrentSessionId = Schema.decodeUnknownSync(SessionId)("second-current");
+      const orphanSessionId = Schema.decodeUnknownSync(SessionId)("orphan-session");
+      const initializedAt = Schema.decodeUnknownSync(DbTimestamp)("2026-08-15T12:00:00.000Z");
       const agent = env.OSFO_AGENT.getByName(agentId);
 
       yield* Effect.promise(
@@ -133,55 +166,77 @@ describe("Osfo Agent and Think Session foundation", () => {
       );
       yield* Effect.promise(() =>
         runInDurableObject(agent, async (_instance, state) => {
+          const db = makeAgentDb(state.storage);
           expect(() =>
-            state.storage.sql.exec(
-              `INSERT INTO osfo_agent_initialization
-               (agent_id, initialization_id, initialized_at, singleton_key)
-               VALUES ('other-agent', 'other-initialization', '2026-08-15T12:00:00.000Z', 'agent')`,
-            ),
+            db
+              .insert(agentInitialization)
+              .values({
+                agentId: otherAgentId,
+                initializationId: otherInitializationId,
+                initializedAt,
+                singletonKey: "agent",
+              })
+              .run(),
           ).toThrow(/constraint/i);
           expect(() =>
-            state.storage.sql.exec(
-              "INSERT INTO osfo_conversation_routes (route_id, is_primary) VALUES ('other-primary', 1)",
-            ),
-          ).toThrow(/constraint/i);
-
-          state.storage.sql.exec(
-            "INSERT INTO osfo_conversation_routes (route_id, is_primary) VALUES ('secondary-route', 0)",
-          );
-          state.storage.sql.exec(
-            `INSERT INTO osfo_session_ownership
-             (session_id, route_id, became_current_at, replaced_at)
-             VALUES ('secondary-current', 'secondary-route', '2026-08-15T12:00:00.000Z', NULL)`,
-          );
-          expect(() =>
-            state.storage.sql.exec(
-              `INSERT INTO osfo_session_ownership
-               (session_id, route_id, became_current_at, replaced_at)
-               VALUES ('second-current', 'secondary-route', '2026-08-15T13:00:00.000Z', NULL)`,
-            ),
-          ).toThrow(/constraint/i);
-          expect(() =>
-            state.storage.sql.exec(
-              `INSERT INTO osfo_session_ownership
-               (session_id, route_id, became_current_at, replaced_at)
-               VALUES ('orphan-session', 'missing-route', '2026-08-15T13:00:00.000Z', NULL)`,
-            ),
+            db
+              .insert(conversationRoutes)
+              .values({ isPrimary: true, routeId: secondaryRouteId })
+              .run(),
           ).toThrow(/constraint/i);
 
-          state.storage.sql.exec(
-            `INSERT INTO osfo_committed_turns
-             (assistant_message_id, session_id, source, think_request_id)
-             VALUES ('assistant-one', ?, 'hook', 'stable-think-request')`,
-            sessionId,
-          );
+          db.insert(conversationRoutes)
+            .values({ isPrimary: false, routeId: secondaryRouteId })
+            .run();
+          db.insert(sessionOwnership)
+            .values({
+              becameCurrentAt: initializedAt,
+              replacedAt: null,
+              routeId: secondaryRouteId,
+              sessionId: secondarySessionId,
+            })
+            .run();
           expect(() =>
-            state.storage.sql.exec(
-              `INSERT INTO osfo_committed_turns
-               (assistant_message_id, session_id, source, think_request_id)
-               VALUES ('assistant-two', ?, 'hook', 'stable-think-request')`,
+            db
+              .insert(sessionOwnership)
+              .values({
+                becameCurrentAt: initializedAt,
+                replacedAt: null,
+                routeId: secondaryRouteId,
+                sessionId: secondCurrentSessionId,
+              })
+              .run(),
+          ).toThrow(/constraint/i);
+          expect(() =>
+            db
+              .insert(sessionOwnership)
+              .values({
+                becameCurrentAt: initializedAt,
+                replacedAt: null,
+                routeId: missingRouteId,
+                sessionId: orphanSessionId,
+              })
+              .run(),
+          ).toThrow(/constraint/i);
+
+          db.insert(committedTurns)
+            .values({
+              assistantMessageId: "assistant-one",
               sessionId,
-            ),
+              source: "hook",
+              thinkRequestId: "stable-think-request",
+            })
+            .run();
+          expect(() =>
+            db
+              .insert(committedTurns)
+              .values({
+                assistantMessageId: "assistant-two",
+                sessionId,
+                source: "hook",
+                thinkRequestId: "stable-think-request",
+              })
+              .run(),
           ).toThrow(/constraint/i);
         }),
       );
@@ -243,7 +298,7 @@ describe("Osfo Agent and Think Session foundation", () => {
     }),
   );
 
-  it.effect("records each completed Think turn once through the committed-turn hook", () =>
+  it.effect("assigns and preserves committed-turn observation order through the hook", () =>
     Effect.gen(function* () {
       const agentId = Schema.decodeUnknownSync(AgentId)("agent-committed-hook");
       const initializationId =
@@ -267,7 +322,7 @@ describe("Osfo Agent and Think Session foundation", () => {
           const completed = {
             continuation: false,
             message: {
-              id: "assistant-completed",
+              id: "assistant-z-first",
               parts: [{ text: "Committed response", type: "text" as const }],
               role: "assistant" as const,
             },
@@ -275,6 +330,11 @@ describe("Osfo Agent and Think Session foundation", () => {
             status: "completed" as const,
           };
           await instance.onChatResponse(completed);
+          await instance.onChatResponse({
+            ...completed,
+            message: { ...completed.message, id: "assistant-a-second" },
+            requestId: "think-request-second",
+          });
           await instance.onChatResponse(completed);
           await instance.onChatResponse({
             ...completed,
@@ -289,23 +349,128 @@ describe("Osfo Agent and Think Session foundation", () => {
 
       expect(turns).toEqual([
         {
-          assistantMessageId: "assistant-completed",
+          assistantMessageId: "assistant-z-first",
+          observationSequence: 1,
+          observedAt: expect.any(String),
           sessionId: "session-committed-hook",
           source: "hook",
           thinkRequestId: "think-request-completed",
+        },
+        {
+          assistantMessageId: "assistant-a-second",
+          observationSequence: 2,
+          observedAt: expect.any(String),
+          sessionId: "session-committed-hook",
+          source: "hook",
+          thinkRequestId: "think-request-second",
         },
       ]);
     }),
   );
 
-  it.effect("reconciles a committed Think turn after activation replacement", () =>
+  it.effect("reconciles Sessions and canonical messages in deterministic order", () =>
     Effect.gen(function* () {
       const agentId = Schema.decodeUnknownSync(AgentId)("agent-turn-reconciliation");
       const initializationId = Schema.decodeUnknownSync(AgentInitializationId)(
         "init-turn-reconciliation",
       );
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-turn-reconciliation");
-      const sessionId = Schema.decodeUnknownSync(SessionId)("session-turn-reconciliation");
+      const firstSessionId = Schema.decodeUnknownSync(SessionId)("session-turn-first");
+      const secondSessionId = Schema.decodeUnknownSync(SessionId)("session-turn-second");
+      const agent = env.OSFO_AGENT.getByName(agentId);
+
+      yield* Effect.promise(
+        async () =>
+          await agent.initialize({
+            agentId,
+            initializationId,
+            initializedAt: "2026-08-15T12:00:00.000Z",
+            routeId,
+            sessionId: firstSessionId,
+          }),
+      );
+      yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance) => {
+          for (const id of ["assistant-z-first", "assistant-a-second"]) {
+            await instance.session.appendMessage({
+              id,
+              parts: [{ text: id, type: "text" }],
+              role: "assistant",
+            });
+          }
+        }),
+      );
+      yield* Effect.promise(
+        async () =>
+          await agent.replaceCurrentSession({
+            expectedCurrentSessionId: firstSessionId,
+            replacedAt: "2026-08-15T13:00:00.000Z",
+            replacementSessionId: secondSessionId,
+            routeId,
+          }),
+      );
+      yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance) => {
+          for (const id of ["assistant-m-third", "assistant-b-fourth"]) {
+            await instance.session.appendMessage({
+              id,
+              parts: [{ text: id, type: "text" }],
+              role: "assistant",
+            });
+          }
+        }),
+      );
+      yield* Effect.promise(() => evictDurableObject(agent));
+
+      const firstActivation = yield* Effect.promise(async () => await agent.readCommittedTurns());
+      yield* Effect.promise(() => evictDurableObject(agent));
+      const secondActivation = yield* Effect.promise(async () => await agent.readCommittedTurns());
+
+      expect(firstActivation).toEqual([
+        {
+          assistantMessageId: "assistant-z-first",
+          observationSequence: 1,
+          observedAt: expect.any(String),
+          sessionId: "session-turn-first",
+          source: "reconciliation",
+          thinkRequestId: null,
+        },
+        {
+          assistantMessageId: "assistant-a-second",
+          observationSequence: 2,
+          observedAt: expect.any(String),
+          sessionId: "session-turn-first",
+          source: "reconciliation",
+          thinkRequestId: null,
+        },
+        {
+          assistantMessageId: "assistant-m-third",
+          observationSequence: 3,
+          observedAt: expect.any(String),
+          sessionId: "session-turn-second",
+          source: "reconciliation",
+          thinkRequestId: null,
+        },
+        {
+          assistantMessageId: "assistant-b-fourth",
+          observationSequence: 4,
+          observedAt: expect.any(String),
+          sessionId: "session-turn-second",
+          source: "reconciliation",
+          thinkRequestId: null,
+        },
+      ]);
+      expect(secondActivation).toEqual(firstActivation);
+    }),
+  );
+
+  it.effect("enriches a reconciled receipt without changing its observation identity", () =>
+    Effect.gen(function* () {
+      const agentId = Schema.decodeUnknownSync(AgentId)("agent-turn-enrichment");
+      const initializationId =
+        Schema.decodeUnknownSync(AgentInitializationId)("init-turn-enrichment");
+      const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-turn-enrichment");
+      const sessionId = Schema.decodeUnknownSync(SessionId)("session-turn-enrichment");
       const agent = env.OSFO_AGENT.getByName(agentId);
 
       yield* Effect.promise(
@@ -321,43 +486,141 @@ describe("Osfo Agent and Think Session foundation", () => {
       yield* Effect.promise(() =>
         runInDurableObject(agent, async (instance) => {
           await instance.session.appendMessage({
-            id: "assistant-missed-hook",
-            parts: [{ text: "Persisted before interruption", type: "text" }],
+            id: "assistant-enriched",
+            parts: [{ text: "Recovered response", type: "text" }],
             role: "assistant",
           });
         }),
       );
-      yield* Effect.promise(() => evictDurableObject(agent));
+      const reconciled = yield* Effect.promise(async () => await agent.readCommittedTurns());
 
-      const turns = yield* Effect.promise(async () => await agent.readCommittedTurns());
+      yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance) => {
+          await instance.onChatResponse({
+            continuation: false,
+            message: {
+              id: "assistant-enriched",
+              parts: [{ text: "Recovered response", type: "text" }],
+              role: "assistant",
+            },
+            requestId: "think-request-enriched",
+            status: "completed",
+          });
+        }),
+      );
+      const enriched = yield* Effect.promise(async () => await agent.readCommittedTurns());
 
-      expect(turns).toEqual([
+      expect(reconciled).toHaveLength(1);
+      expect(enriched).toEqual([
         {
-          assistantMessageId: "assistant-missed-hook",
-          sessionId: "session-turn-reconciliation",
-          source: "reconciliation",
-          thinkRequestId: null,
+          assistantMessageId: "assistant-enriched",
+          observationSequence: reconciled[0]?.observationSequence,
+          observedAt: reconciled[0]?.observedAt,
+          sessionId: "session-turn-enrichment",
+          source: "hook",
+          thinkRequestId: "think-request-enriched",
         },
       ]);
     }),
   );
 
-  it.effect("migrates every supported Agent SQLite source version and repeats safely", () =>
+  it.effect("returns typed conflicts for incompatible committed-turn identities", () =>
+    Effect.gen(function* () {
+      const agentId = Schema.decodeUnknownSync(AgentId)("agent-turn-conflicts");
+      const initializationId =
+        Schema.decodeUnknownSync(AgentInitializationId)("init-turn-conflicts");
+      const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-turn-conflicts");
+      const firstSessionId = Schema.decodeUnknownSync(SessionId)("session-conflict-first");
+      const secondSessionId = Schema.decodeUnknownSync(SessionId)("session-conflict-second");
+      const agent = env.OSFO_AGENT.getByName(agentId);
+
+      yield* Effect.promise(
+        async () =>
+          await agent.initialize({
+            agentId,
+            initializationId,
+            initializedAt: "2026-08-15T12:00:00.000Z",
+            routeId,
+            sessionId: firstSessionId,
+          }),
+      );
+      yield* Effect.promise(
+        async () =>
+          await agent.replaceCurrentSession({
+            expectedCurrentSessionId: firstSessionId,
+            replacedAt: "2026-08-15T13:00:00.000Z",
+            replacementSessionId: secondSessionId,
+            routeId,
+          }),
+      );
+
+      const conflicts = yield* Effect.promise(() =>
+        runInDurableObject(agent, async (_instance, state) => {
+          const store = makeAgentStore(makeAgentDb(state.storage));
+          await Effect.runPromise(
+            store.recordCommittedTurn({
+              assistantMessageId: "assistant-stable-identity",
+              sessionId: firstSessionId,
+              source: "hook",
+              thinkRequestId: "think-request-stable-identity",
+            }),
+          );
+          const sessionConflict = await Effect.runPromise(
+            Effect.flip(
+              store.recordCommittedTurn({
+                assistantMessageId: "assistant-stable-identity",
+                sessionId: secondSessionId,
+                source: "reconciliation",
+                thinkRequestId: null,
+              }),
+            ),
+          );
+          const requestConflict = await Effect.runPromise(
+            Effect.flip(
+              store.recordCommittedTurn({
+                assistantMessageId: "assistant-conflicting-identity",
+                sessionId: secondSessionId,
+                source: "hook",
+                thinkRequestId: "think-request-stable-identity",
+              }),
+            ),
+          );
+          return { requestConflict, sessionConflict };
+        }),
+      );
+
+      expect(conflicts.sessionConflict).toMatchObject({
+        _tag: "CommittedTurnConflict",
+        message: "The assistant message is already observed for another Session",
+      });
+      expect(conflicts.requestConflict).toMatchObject({
+        _tag: "CommittedTurnConflict",
+        message: "The Think request is already observed for another assistant message",
+      });
+    }),
+  );
+
+  it.effect("migrates every synthetic Agent SQLite source version and repeats safely", () =>
     Effect.gen(function* () {
       const agent = env.OSFO_AGENT.getByName("agent-migration-source-versions");
       const reports = yield* Effect.promise(() =>
         runInDurableObject(agent, async (_instance, state) => {
           const observed = [];
-          for (let sourceVersion = 0; sourceVersion <= agentMigrations.length; sourceVersion++) {
+          for (
+            let sourceVersion = 0;
+            sourceVersion <= syntheticMigrations.length;
+            sourceVersion++
+          ) {
             resetOsfoTables(state.storage);
+            state.storage.sql.exec("DROP TABLE IF EXISTS synthetic_agent_state");
             const source = await Effect.runPromise(
-              applyMigrationChain(state.storage, agentMigrations.slice(0, sourceVersion)),
+              applyMigrationChain(state.storage, syntheticMigrations.slice(0, sourceVersion)),
             );
             const upgraded = await Effect.runPromise(
-              applyMigrationChain(state.storage, agentMigrations),
+              applyMigrationChain(state.storage, syntheticMigrations),
             );
             const repeated = await Effect.runPromise(
-              applyMigrationChain(state.storage, agentMigrations),
+              applyMigrationChain(state.storage, syntheticMigrations),
             );
             observed.push({ repeated, source, sourceVersion, upgraded });
           }
@@ -368,11 +631,11 @@ describe("Osfo Agent and Think Session foundation", () => {
       for (const report of reports) {
         expect(report.source.currentVersion).toBe(report.sourceVersion);
         expect(report.upgraded.appliedVersions).toEqual(
-          agentMigrations.slice(report.sourceVersion).map(({ version }) => version),
+          syntheticMigrations.slice(report.sourceVersion).map(({ version }) => version),
         );
         expect(report.repeated).toEqual({
           appliedVersions: [],
-          currentVersion: agentMigrations.length,
+          currentVersion: syntheticMigrations.length,
         });
       }
     }),
@@ -545,3 +808,21 @@ const readNonOsfoTableDefinitions = (
        ORDER BY name`,
     )
     .toArray();
+
+const syntheticMigrations: ReadonlyArray<AgentMigration> = [
+  {
+    digest: "sha256:789ea8ca6fb02be481041b135659dbb205327d4015c228a8c4c7c9b16fab3f1e",
+    sql: "CREATE TABLE synthetic_agent_state (id INTEGER PRIMARY KEY) STRICT",
+    version: 1,
+  },
+  {
+    digest: "sha256:5a3b7e272697e0395811e8706a0c277d7dd15b8ee82c1be1114bfc94e39f9804",
+    sql: "ALTER TABLE synthetic_agent_state ADD COLUMN value TEXT",
+    version: 2,
+  },
+  {
+    digest: "sha256:7b8866281e4b0cc27e6945617130a048e1e6f6cb476b7c3c25e5421ebdea90dd",
+    sql: "CREATE INDEX synthetic_agent_state_value ON synthetic_agent_state(value)",
+    version: 3,
+  },
+];

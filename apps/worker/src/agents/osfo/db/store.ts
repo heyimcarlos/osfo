@@ -86,16 +86,26 @@ export const ConversationRouteFound = Schema.TaggedStruct("ConversationRouteFoun
 /** Current and historical Think Session identities owned by one route. */
 export type ConversationRouteFound = typeof ConversationRouteFound.Type;
 
-/** Stable reference to one assistant message observed after a committed Think turn. */
-export const CommittedTurnReference = Schema.Struct({
+/** Stable observation accepted after a committed Think turn. */
+export const CommittedTurnObservation = Schema.Struct({
   assistantMessageId: Schema.String,
   sessionId: SessionId,
   source: Schema.Literals(["hook", "reconciliation"]),
   thinkRequestId: Schema.NullOr(Schema.String),
 });
 
-/** Stable reference to one assistant message observed after a committed Think turn. */
-export type CommittedTurnReference = typeof CommittedTurnReference.Type;
+/** Stable observation accepted after a committed Think turn. */
+export type CommittedTurnObservation = typeof CommittedTurnObservation.Type;
+
+/** Durable Osfo receipt for one observed committed Think turn. */
+export const CommittedTurnReceipt = Schema.Struct({
+  ...CommittedTurnObservation.fields,
+  observationSequence: Schema.Natural,
+  observedAt: Schema.String,
+});
+
+/** Durable Osfo receipt for one observed committed Think turn. */
+export type CommittedTurnReceipt = typeof CommittedTurnReceipt.Type;
 
 /** Construct deep Agent-local persistence operations over a typed Durable SQLite client. */
 export const makeAgentStore = (db: AgentDb) => {
@@ -281,56 +291,98 @@ export const makeAgentStore = (db: AgentDb) => {
       .all(),
   ).pipe(Effect.map((rows) => rows.map(({ sessionId }) => sessionId)));
 
-  const recordCommittedTurn = (reference: CommittedTurnReference) =>
+  const recordCommittedTurn = (reference: CommittedTurnObservation) =>
     Effect.gen(function* () {
-      const matchingMessage = yield* Effect.sync(() =>
-        db
-          .select({ sessionId: committedTurns.sessionId })
-          .from(committedTurns)
-          .where(eq(committedTurns.assistantMessageId, reference.assistantMessageId))
-          .limit(1)
-          .get(),
-      );
-      if (matchingMessage !== undefined) {
-        if (matchingMessage.sessionId !== reference.sessionId) {
-          return yield* new CommittedTurnConflict({
-            message: "The assistant message is already projected for another Session",
-          });
-        }
-        return undefined;
-      }
-      const thinkRequestId = reference.thinkRequestId;
-      if (thinkRequestId !== null) {
-        const matchingRequest = yield* Effect.sync(() =>
-          db
-            .select({ assistantMessageId: committedTurns.assistantMessageId })
+      const outcome = yield* Effect.sync(() =>
+        // The Durable SQLite driver implements this exact local transaction with transactionSync.
+        db.transaction((transaction) => {
+          const matchingMessage = transaction
+            .select(committedTurnReceiptFields)
             .from(committedTurns)
-            .where(eq(committedTurns.thinkRequestId, thinkRequestId))
+            .where(eq(committedTurns.assistantMessageId, reference.assistantMessageId))
             .limit(1)
-            .get(),
-        );
-        if (matchingRequest !== undefined) {
-          return yield* new CommittedTurnConflict({
-            message: "The Think request is already projected for another assistant message",
-          });
-        }
+            .get();
+          if (matchingMessage !== undefined) {
+            if (matchingMessage.sessionId !== reference.sessionId) {
+              return {
+                _tag: "Conflict",
+                message: "The assistant message is already observed for another Session",
+              } as const;
+            }
+            if (
+              matchingMessage.thinkRequestId !== null &&
+              reference.thinkRequestId !== null &&
+              matchingMessage.thinkRequestId !== reference.thinkRequestId
+            ) {
+              return {
+                _tag: "Conflict",
+                message: "The assistant message is already observed for another Think request",
+              } as const;
+            }
+            if (matchingMessage.thinkRequestId === null && reference.thinkRequestId !== null) {
+              const matchingRequest = transaction
+                .select({ assistantMessageId: committedTurns.assistantMessageId })
+                .from(committedTurns)
+                .where(eq(committedTurns.thinkRequestId, reference.thinkRequestId))
+                .limit(1)
+                .get();
+              if (matchingRequest !== undefined) {
+                return {
+                  _tag: "Conflict",
+                  message: "The Think request is already observed for another assistant message",
+                } as const;
+              }
+              const enriched = transaction
+                .update(committedTurns)
+                .set({ source: reference.source, thinkRequestId: reference.thinkRequestId })
+                .where(eq(committedTurns.observationSequence, matchingMessage.observationSequence))
+                .returning(committedTurnReceiptFields)
+                .get();
+              return { _tag: "Receipt", receipt: enriched } as const;
+            }
+            return { _tag: "Receipt", receipt: matchingMessage } as const;
+          }
+
+          if (reference.thinkRequestId !== null) {
+            const matchingRequest = transaction
+              .select({ assistantMessageId: committedTurns.assistantMessageId })
+              .from(committedTurns)
+              .where(eq(committedTurns.thinkRequestId, reference.thinkRequestId))
+              .limit(1)
+              .get();
+            if (matchingRequest !== undefined) {
+              return {
+                _tag: "Conflict",
+                message: "The Think request is already observed for another assistant message",
+              } as const;
+            }
+          }
+          const inserted = transaction
+            .insert(committedTurns)
+            .values(reference)
+            .returning(committedTurnReceiptFields)
+            .get();
+          return { _tag: "Receipt", receipt: inserted } as const;
+        }),
+      );
+      if ("message" in outcome) {
+        return yield* new CommittedTurnConflict({
+          assistantMessageId: reference.assistantMessageId,
+          message: outcome.message,
+          sessionId: reference.sessionId,
+          thinkRequestId: reference.thinkRequestId,
+        });
       }
-      yield* Effect.sync(() => db.insert(committedTurns).values(reference).run());
-      return undefined;
+      return CommittedTurnReceipt.make(outcome.receipt);
     });
 
   const readCommittedTurns = Effect.sync(() =>
     db
-      .select({
-        assistantMessageId: committedTurns.assistantMessageId,
-        sessionId: committedTurns.sessionId,
-        source: committedTurns.source,
-        thinkRequestId: committedTurns.thinkRequestId,
-      })
+      .select(committedTurnReceiptFields)
       .from(committedTurns)
-      .orderBy(asc(committedTurns.assistantMessageId))
+      .orderBy(asc(committedTurns.observationSequence))
       .all(),
-  ).pipe(Effect.map((rows) => rows.map((row) => CommittedTurnReference.make(row))));
+  ).pipe(Effect.map((rows) => rows.map((row) => CommittedTurnReceipt.make(row))));
 
   const readPrimaryFacts = () =>
     Effect.sync(() =>
@@ -400,4 +452,13 @@ export const makeAgentStore = (db: AgentDb) => {
     recordCommittedTurn,
     replaceCurrentSession,
   };
+};
+
+const committedTurnReceiptFields = {
+  assistantMessageId: committedTurns.assistantMessageId,
+  observationSequence: committedTurns.observationSequence,
+  observedAt: committedTurns.observedAt,
+  sessionId: committedTurns.sessionId,
+  source: committedTurns.source,
+  thinkRequestId: committedTurns.thinkRequestId,
 };

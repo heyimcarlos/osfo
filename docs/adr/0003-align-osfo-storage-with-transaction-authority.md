@@ -44,12 +44,23 @@ and non-null Think request identity are unique. Store transactions create the
 required primary route and current Session together, and replace a current
 Session without deleting its historical ownership row.
 
+Each committed-turn receipt has an SQLite-assigned monotonic
+`observation_sequence`. This value records Osfo observation order only. It is not
+a provider timestamp and does not claim wall-clock commit order. Reconciliation
+uses Session ownership order, then canonical Think history order, and writes one
+receipt at a time. A repeated observation preserves its first sequence and
+observation time. One local transaction checks assistant message and Think request
+identity, enriches a compatible receipt, or inserts the next receipt. Identity
+conflicts are typed failures.
+
 Think remains the only authority for Session content, branches, messages, and
 history. Osfo queries and migrations do not inspect or change Think tables.
 
 ## Agent SQLite migration policy
 
 The generated Drizzle migration files form one complete immutable version chain.
+Before the first release, development-only corrections are folded into one
+coherent baseline. After release, every migration is immutable and additive.
 An Osfo coordinator verifies that versions are continuous and verifies the SHA-256
 digest of each generated SQL file before it reads or changes database state. It
 also verifies the applied ledger as an exact supported prefix and rejects gaps,

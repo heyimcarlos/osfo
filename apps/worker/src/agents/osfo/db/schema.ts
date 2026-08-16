@@ -83,8 +83,9 @@ export const sessionOwnership = sqliteTable(
 export const committedTurns = sqliteTable(
   "osfo_committed_turns",
   {
-    assistantMessageId: text("assistant_message_id").primaryKey(),
-    recordedAt: text("recorded_at")
+    assistantMessageId: text("assistant_message_id").notNull().unique(),
+    observationSequence: integer("observation_sequence").primaryKey({ autoIncrement: true }),
+    observedAt: text("observed_at")
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
     sessionId: sessionId("session_id")
@@ -95,7 +96,7 @@ export const committedTurns = sqliteTable(
   },
   (table) => [
     check("osfo_committed_turn_source", sql`${table.source} IN ('hook', 'reconciliation')`),
-    index("osfo_committed_turns_by_session").on(table.sessionId, table.assistantMessageId),
+    index("osfo_committed_turns_by_session").on(table.sessionId, table.observationSequence),
     uniqueIndex("osfo_committed_turn_think_request_unique")
       .on(table.thinkRequestId)
       .where(sql`${table.thinkRequestId} IS NOT NULL`),

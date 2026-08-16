@@ -1,5 +1,7 @@
 import { Schema } from "effect";
 
+import { SessionId } from "../../../domain";
+
 /** Expected failure when an applied migration digest differs from this release. */
 export class AgentMigrationDigestMismatch extends Schema.TaggedError<AgentMigrationDigestMismatch>()(
   "AgentMigrationDigestMismatch",
@@ -77,6 +79,9 @@ export class CurrentSessionReplacementConflict extends Schema.TaggedError<Curren
 export class CommittedTurnConflict extends Schema.TaggedError<CommittedTurnConflict>()(
   "CommittedTurnConflict",
   {
+    assistantMessageId: Schema.String,
     message: Schema.String,
+    sessionId: SessionId,
+    thinkRequestId: Schema.NullOr(Schema.String),
   },
 ) {}
