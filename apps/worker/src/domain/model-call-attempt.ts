@@ -54,6 +54,17 @@ export const modelCallAttemptId = (
 ): ModelCallAttemptId =>
   ModelCallAttemptId.make(`model-call-attempt:${submissionId}:${stepNumber}`);
 
+/** Partition one request ceiling across its bounded steps without increasing the total. */
+export const conservativeVendorCostForStep = (
+  maximumVendorUsdMicros: bigint,
+  maximumSteps: number,
+  stepNumber: ModelStepNumber,
+): bigint => {
+  const steps = BigInt(maximumSteps);
+  const index = BigInt(stepNumber - 1);
+  return maximumVendorUsdMicros / steps + (index < maximumVendorUsdMicros % steps ? 1n : 0n);
+};
+
 /** Normalize exact, proven-no-use, or conservative provider evidence for idempotent recording. */
 export const normalizeModelCallUsage = (
   attemptId: ModelCallAttemptId,

@@ -1094,8 +1094,6 @@ describe("Osfo Agent and Think Session foundation", () => {
 
 const resetOsfoTables = (storage: DurableObjectStorage): void => {
   storage.sql.exec("DROP TABLE IF EXISTS osfo_model_call_usage_evidence");
-  storage.sql.exec("DROP TABLE IF EXISTS osfo_approval_requests");
-  storage.sql.exec("DROP TABLE IF EXISTS osfo_action_presentations");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_committed_turns");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_session_ownership");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_conversation_routes");

@@ -20,8 +20,17 @@ export class AgentRouteNotFound extends Schema.TaggedError<AgentRouteNotFound>()
   { message: Schema.String, userId: UserId },
 ) {}
 
+/** Expected failure when a stable Agent has no User owner. */
+export class AgentOwnerNotFound extends Schema.TaggedError<AgentOwnerNotFound>()(
+  "AgentOwnerNotFound",
+  { agentId: AgentId, message: Schema.String },
+) {}
+
 /** Stable Agent directory operations. */
 export interface Interface {
+  readonly resolveAgent: (
+    agentId: AgentId,
+  ) => Effect.Effect<AgentRoute, AgentOwnerNotFound | DbUnavailable>;
   readonly resolve: (
     userId: UserId,
   ) => Effect.Effect<AgentRoute, AgentRouteNotFound | DbUnavailable>;
@@ -53,7 +62,26 @@ export const make = Effect.gen(function* () {
     return yield* decodeRow(AgentRoute, route, "resolveAgent");
   });
 
-  return Service.of({ resolve });
+  const resolveAgent = Effect.fn("AgentDirectory.resolveAgent")(function* (agentId: AgentId) {
+    const rows = yield* execute("resolveAgentOwner", () =>
+      db
+        .select({ agentId: agents.agentId, userId: agents.userId })
+        .from(agents)
+        .where(eq(agents.agentId, agentId))
+        .limit(1)
+        .execute(),
+    );
+    const route = rows[0];
+    if (route === undefined) {
+      return yield* new AgentOwnerNotFound({
+        agentId,
+        message: "No stable User owner exists for the Agent",
+      });
+    }
+    return yield* decodeRow(AgentRoute, route, "resolveAgentOwner");
+  });
+
+  return Service.of({ resolve, resolveAgent });
 });
 
 /** Agent directory Layer that preserves its database requirement. */

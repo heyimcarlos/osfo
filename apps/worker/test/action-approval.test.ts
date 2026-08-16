@@ -1,9 +1,10 @@
 import { env } from "cloudflare:workers";
-import { evictDurableObject } from "cloudflare:test";
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Predicate, Schema } from "effect";
+import type { PendingApproval } from "@cloudflare/think";
+import { getAgentByName } from "agents";
+import { DateTime, Effect, Schema } from "effect";
 
-import { ActionPresentationPrepared } from "../src/domain/action-approval";
 import {
   AgentId,
   AgentInitializationId,
@@ -11,273 +12,272 @@ import {
   SessionId,
   UserId,
 } from "../src/domain";
+import {
+  ActionPresentationId,
+  makeThinkActionApprovals,
+} from "../src/agents/osfo/think-action-approvals";
+import {
+  presentTestProtectedAction,
+  testProtectedActionName,
+  type TestProtectedActionState,
+} from "../src/agents/osfo/test-protected-action";
+import type { OsfoAgent } from "../src/agents/osfo/agent";
 
-/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date-in-effect, effecttsgo/prefer-schema-over-json, effecttsgo/prefer-typed-schema-decoder, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect -- Worker integration assertions use RPC encoding, native Date values, and public JSON projection. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, effecttsgo/prefer-typed-schema-decoder, effecttsgo/prefer-schema-over-json, typescript/await-thenable, typescript/no-unsafe-type-assertion, osfo/no-chained-type-assertions, osfo/no-unknown-parameters, osfo/no-unknown-returns, eslint/no-underscore-dangle -- Worker integration tests cross Think's Promise, private Action compiler, and Durable Object boundaries. */
 
-describe("Action Presentation and exact Approval RPC", () => {
-  it.effect("keeps an exact cross-authority Approval durable across Agent activation", () =>
+describe("Think Action and exact Approval", () => {
+  it.effect("parks in Think, recovers after activation, and executes once after Approval", () =>
     Effect.gen(function* () {
-      const agentId = Schema.decodeUnknownSync(AgentId)("agent-action-approval");
-      const userId = Schema.decodeUnknownSync(UserId)("user-action-approval");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agentName = Schema.decodeUnknownSync(AgentId)("agent-think-action-recovery");
+      const agent = env.OSFO_AGENT.getByName(agentName);
+      const parked = yield* Effect.promise(() => parkTestAction(agent, "call-recovery"));
 
-      yield* Effect.promise(
-        async () =>
-          await agent.initialize({
-            agentId,
-            initializationId:
-              Schema.decodeUnknownSync(AgentInitializationId)("init-action-approval"),
-            initializedAt: "2026-08-16T15:00:00.000Z",
-            routeId: Schema.decodeUnknownSync(ConversationRouteId)("route-action-approval"),
-            sessionId: Schema.decodeUnknownSync(SessionId)("session-action-approval"),
-          }),
-      );
+      expect(parked).toMatchObject({ action: testProtectedActionName, status: "paused" });
+      expect(parked.executionId).toMatch(/^actpause_/);
 
-      // oxlint-disable-next-line effecttsgo/global-date-in-effect -- The integration test compares server-owned callback time.
-      const createdAt = new Date();
-      const preparedResult = yield* Effect.promise(
-        async () =>
-          await agent.prepareActionPresentation({
-            actionDefinitionVersion: "gmail-send-v1",
-            actionId: "tool-call-send-1",
-            consequences: ["Send one email to the stated recipient."],
-            createdAt: createdAt.toISOString(),
-            description: "Send the prepared email exactly as shown.",
-            executionId: "think-execution-send-1",
-            fields: [
-              { kind: "text", label: "Recipient", name: "recipient", value: "sam@example.com" },
-              { kind: "text", label: "Subject", name: "subject", value: "Trip details" },
-            ],
-            operation: "gmail.send",
-            originatingAuthority: {
-              _tag: "ChannelBinding",
-              channelBindingId: "telegram-binding-origin",
-            },
-            title: "Send email",
-            userId,
-          }),
-      );
-      const prepared = yield* Schema.decodeUnknownEffect(ActionPresentationPrepared)(
-        preparedResult,
-      );
-
-      expect(prepared).toMatchObject({
-        _tag: "ActionPresentationPrepared",
-        presentation: {
-          actionDefinitionVersion: "gmail-send-v1",
-          actionId: "tool-call-send-1",
-          consequences: ["Send one email to the stated recipient."],
-          createdAt,
-          description: "Send the prepared email exactly as shown.",
-          expiresAt: new Date(createdAt.getTime() + 15 * 60 * 1_000),
-          operation: "gmail.send",
-          presentationId: expect.stringMatching(/^action-presentation-/),
-          title: "Send email",
+      const beforeActivation = yield* Effect.promise(async () => await agent.pendingApprovals());
+      expect(beforeActivation).toHaveLength(1);
+      expect(beforeActivation[0]).toMatchObject({
+        descriptor: {
+          action: testProtectedActionName,
+          input: { recipient: "sam@example.com", subject: "Trip details" },
+          kind: "durable-pause",
         },
-        status: { _tag: "Pending" },
+        executionId: parked.executionId,
+        source: "action",
       });
-      expect(prepared).not.toHaveProperty("executionId");
-
-      const presentationId = prepared.presentation.presentationId;
-      const readByWeb = yield* Effect.promise(
-        async () =>
-          await agent.readActionPresentation({
-            actor: {
-              _tag: "AuthSession",
-              authSessionId: "web-session-approver",
-              expiresAt: new Date(createdAt.getTime() + 60 * 60 * 1_000).toISOString(),
-              userId,
-            },
-            presentationId,
-          }),
-      );
-      expect(readByWeb).toMatchObject({
-        _tag: "ActionPresentationFound",
-        presentation: prepared.presentation,
-        status: { _tag: "Pending" },
-      });
-
-      const decision = yield* Effect.promise(
-        async () =>
-          await agent.decideActionApproval({
-            actor: {
-              _tag: "ChannelBinding",
-              channelBindingId: "telegram-binding-approver",
-              userId,
-            },
-            decision: "approve",
-            presentationId,
-          }),
-      );
-      expect(decision).toMatchObject({
-        _tag: "ApprovalDispatchUnavailable",
-        message: "The Approval decision is durable, but Think has not accepted its handoff",
-        presentationId,
-      });
-
-      const approvedBeforeActivation = yield* Effect.promise(
-        async () =>
-          await agent.readActionPresentation({
-            actor: {
-              _tag: "ChannelBinding",
-              channelBindingId: "telegram-binding-reader",
-              userId,
-            },
-            presentationId,
-          }),
-      );
-      expect(approvedBeforeActivation).toMatchObject({
-        _tag: "ActionPresentationFound",
-        status: { _tag: "Approved" },
-      });
-      const decidedAt =
-        "status" in approvedBeforeActivation &&
-        Predicate.isTagged(approvedBeforeActivation.status, "Approved")
-          ? approvedBeforeActivation.status.decidedAt
-          : yield* Effect.die("The Approval must be approved before activation");
+      expect(JSON.stringify(beforeActivation)).not.toContain("oauth-token-must-not-leak");
 
       yield* Effect.promise(() => evictDurableObject(agent));
-      const recovered = yield* Effect.promise(
-        async () =>
-          await agent.readActionPresentation({
-            actor: {
-              _tag: "ChannelBinding",
-              channelBindingId: "telegram-binding-reader",
-              userId,
-            },
-            presentationId,
-          }),
+      const reactivatedAgent = yield* Effect.promise(
+        async () => await getAgentByName(env.OSFO_AGENT, agentName),
       );
-      expect(recovered).toMatchObject({
-        _tag: "ActionPresentationFound",
-        presentation: prepared.presentation,
-        status: {
-          _tag: "Approved",
-          actor: {
-            _tag: "ChannelBinding",
-          },
-          decidedAt,
-        },
+      const afterActivation = yield* Effect.promise(
+        async () => await reactivatedAgent.pendingApprovals(),
+      );
+      expect(afterActivation).toEqual(beforeActivation);
+
+      const approved = yield* Effect.promise(
+        async () => await reactivatedAgent.approveExecution(parked.executionId),
+      );
+      expect(approved).toMatchObject({
+        _tag: "Applied",
+        actionId: "call-recovery",
+        providerOperationId: "test-provider:call-recovery",
       });
+      expect(yield* Effect.promise(async () => await reactivatedAgent.pendingApprovals())).toEqual(
+        [],
+      );
+
+      const repeated = yield* Effect.promise(
+        async () => await reactivatedAgent.approveExecution(parked.executionId),
+      );
+      expect(repeated).toMatchObject({ status: "error" });
     }),
   );
 
-  it.effect("expires, cancels, and rejects changed material facts without exposing secrets", () =>
+  it.effect("rechecks current authority immediately before provider contact", () =>
     Effect.gen(function* () {
-      const agentId = Schema.decodeUnknownSync(AgentId)("agent-action-approval-boundaries");
-      const userId = Schema.decodeUnknownSync(UserId)("user-action-approval-boundaries");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT.getByName(
+        Schema.decodeUnknownSync(AgentId)("agent-think-action-authority-loss"),
+      );
+      const parked = yield* Effect.promise(() => parkTestAction(agent, "call-authority-loss"));
+      yield* Effect.promise(() =>
+        configureTestAction(agent, { authority: "revoked", providerOutcome: "applied" }),
+      );
 
-      yield* Effect.promise(
-        async () =>
-          await agent.initialize({
-            agentId,
-            initializationId: Schema.decodeUnknownSync(AgentInitializationId)(
-              "init-action-approval-boundaries",
-            ),
-            initializedAt: "2026-08-16T15:00:00.000Z",
-            routeId: Schema.decodeUnknownSync(ConversationRouteId)(
-              "route-action-approval-boundaries",
-            ),
-            sessionId: Schema.decodeUnknownSync(SessionId)("session-action-approval-boundaries"),
-          }),
+      const result = yield* Effect.promise(
+        async () => await agent.approveExecution(parked.executionId),
       );
-      const base = {
-        actionDefinitionVersion: "gmail-send-v1",
-        actionId: "tool-call-boundary-1",
-        consequences: ["Send one email."],
-        createdAt: "2020-01-01T00:00:00.000Z",
-        description: "Send the exact prepared email.",
-        executionId: "secret-think-execution-boundary-1",
-        fields: [{ kind: "text" as const, label: "Recipient", name: "recipient", value: "a@b.ca" }],
-        operation: "gmail.send" as const,
-        originatingAuthority: {
-          _tag: "AuthSession" as const,
-          authSessionId: "secret-origin-auth-session",
-        },
-        title: "Send email",
-        userId,
-      };
-      const preparedResult = yield* Effect.promise(
-        async () => await agent.prepareActionPresentation(base),
-      );
-      const prepared = yield* Schema.decodeUnknownEffect(ActionPresentationPrepared)(
-        preparedResult,
-      );
-      expect(JSON.stringify(prepared)).not.toContain("secret-");
+      expect(result).toEqual({ _tag: "Denied", reason: "authorityRevoked", resetAt: null });
+    }),
+  );
 
-      const changed = yield* Effect.promise(
-        async () =>
-          await agent.prepareActionPresentation({
-            ...base,
-            fields: [
-              { kind: "text", label: "Recipient", name: "recipient", value: "changed@b.ca" },
-            ],
-          }),
+  it.effect("returns explicit provider ambiguity and resolves rejection without execution", () =>
+    Effect.gen(function* () {
+      const ambiguousAgent = env.OSFO_AGENT.getByName(
+        Schema.decodeUnknownSync(AgentId)("agent-think-action-ambiguous"),
       );
-      expect(changed).toMatchObject({ _tag: "ActionMaterialityConflict" });
-
-      const unauthorized = yield* Effect.promise(
-        async () =>
-          await agent.readActionPresentation({
-            actor: {
-              _tag: "ChannelBinding",
-              channelBindingId: "binding-other-user",
-              userId: Schema.decodeUnknownSync(UserId)("user-other"),
-            },
-            presentationId: prepared.presentation.presentationId,
-          }),
+      yield* Effect.promise(() =>
+        configureTestAction(ambiguousAgent, {
+          authority: "active",
+          providerOutcome: "ambiguous",
+        }),
       );
-      expect(unauthorized).toMatchObject({ _tag: "ApprovalActorUnauthorized" });
-
-      const expired = yield* Effect.promise(
-        async () =>
-          await agent.decideActionApproval({
-            actor: { _tag: "ChannelBinding", channelBindingId: "binding-owner", userId },
-            decision: "approve",
-            presentationId: prepared.presentation.presentationId,
-          }),
+      const ambiguous = yield* Effect.promise(() =>
+        parkTestAction(ambiguousAgent, "call-ambiguous"),
       );
-      expect(expired).toMatchObject({ _tag: "ApprovalExpired" });
-
-      const cancelCandidateResult = yield* Effect.promise(
-        async () =>
-          await agent.prepareActionPresentation({
-            ...base,
-            actionId: "tool-call-boundary-2",
-            createdAt: new Date().toISOString(),
-            executionId: "secret-think-execution-boundary-2",
-          }),
+      const ambiguousResult = yield* Effect.promise(
+        async () => await ambiguousAgent.approveExecution(ambiguous.executionId),
       );
-      const cancelCandidate = yield* Schema.decodeUnknownEffect(ActionPresentationPrepared)(
-        cancelCandidateResult,
-      );
-      const cancelPresentationId = cancelCandidate.presentation.presentationId;
-      const canceled = yield* Effect.promise(
-        async () =>
-          await agent.cancelActionApproval({
-            presentationId: cancelPresentationId,
-            reason: "The owning conversation was canceled",
-            userId,
-          }),
-      );
-      expect(canceled).toMatchObject({
-        _tag: "ApprovalDispatchUnavailable",
-        message: "The Approval decision is durable, but Think has not accepted its handoff",
-        presentationId: cancelPresentationId,
+      expect(ambiguousResult).toMatchObject({
+        _tag: "Ambiguous",
+        actionId: "call-ambiguous",
+        retry: "reconcile-before-retry",
       });
-      const decisionAfterCancel = yield* Effect.promise(
-        async () =>
-          await agent.decideActionApproval({
-            actor: { _tag: "ChannelBinding", channelBindingId: "binding-owner", userId },
-            decision: "approve",
-            presentationId: cancelPresentationId,
-          }),
+
+      const rejectedAgent = env.OSFO_AGENT.getByName(
+        Schema.decodeUnknownSync(AgentId)("agent-think-action-rejected"),
       );
-      expect(decisionAfterCancel).toMatchObject({
-        _tag: "ApprovalAlreadyResolved",
-        status: { _tag: "Canceled" },
+      const rejected = yield* Effect.promise(() => parkTestAction(rejectedAgent, "call-rejected"));
+      const rejection = yield* Effect.promise(
+        async () => await rejectedAgent.rejectExecution(rejected.executionId, "The User canceled"),
+      );
+      expect(rejection).toMatchObject({
+        executionId: rejected.executionId,
+        reason: "The User canceled",
+        status: "rejected",
       });
     }),
   );
+
+  it.effect("lets Think expire abandoned Approvals during activation recovery", () =>
+    Effect.gen(function* () {
+      const agentName = Schema.decodeUnknownSync(AgentId)("agent-think-action-expiry");
+      const agent = env.OSFO_AGENT.getByName(agentName);
+      const parked = yield* Effect.promise(() => parkTestAction(agent, "call-expiry"));
+
+      yield* Effect.promise(() =>
+        runInDurableObject(agent, async (_instance, state) => {
+          state.storage.sql.exec(
+            "UPDATE cf_think_action_pending_approvals SET created_at = 0 WHERE execution_id = ?",
+            parked.executionId,
+          );
+        }),
+      );
+      yield* Effect.promise(() => evictDurableObject(agent));
+      const reactivatedAgent = yield* Effect.promise(
+        async () => await getAgentByName(env.OSFO_AGENT, agentName),
+      );
+
+      expect(yield* Effect.promise(async () => await reactivatedAgent.pendingApprovals())).toEqual(
+        [],
+      );
+      expect(
+        yield* Effect.promise(
+          async () => await reactivatedAgent.approveExecution(parked.executionId),
+        ),
+      ).toMatchObject({ status: "error" });
+    }),
+  );
+
+  it.effect("projects only definition-owned safe material and authenticates decisions", () =>
+    Effect.gen(function* () {
+      const pending = makePending("actpause_safe", "call-safe");
+      const presentationId = ActionPresentationId.make(pending.executionId);
+      const adapter = makeThinkActionApprovals({
+        authorizer: { ownsAgent: () => Effect.succeed(true) },
+        now: Effect.succeed(DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z"))),
+        present: presentTestProtectedAction,
+        think: {
+          approve: () => Promise.resolve({ status: "approved" }),
+          pending: () => Promise.resolve([pending]),
+          reject: () => Promise.resolve({ status: "rejected" }),
+        },
+      });
+      const actor = {
+        _tag: "ChannelBinding" as const,
+        channelBindingId: "binding-owner",
+        userId: UserId.make("user-owner"),
+      };
+
+      const found = yield* adapter.read({ actor, presentationId });
+      expect(found).toMatchObject({
+        _tag: "ActionPresentationFound",
+        presentation: {
+          actionDefinitionVersion: "osfo-test-gmail-send-v1",
+          actionId: "call-safe",
+          operation: "gmail.send",
+          presentationId,
+          title: "Send test email",
+        },
+      });
+      expect(found.presentation.fields).toEqual([
+        { label: "Recipient", name: "recipient", value: "sam@example.com" },
+        { label: "Subject", name: "subject", value: "Trip details" },
+      ]);
+
+      const accepted = yield* adapter.decide({
+        actor,
+        decision: "approve",
+        presentationId,
+      });
+      expect(accepted).toEqual({
+        _tag: "ApprovalDecisionAccepted",
+        decision: "approved",
+        presentationId,
+      });
+    }),
+  );
+});
+
+const ParkedAction = Schema.Struct({
+  action: Schema.String,
+  executionId: Schema.String,
+  status: Schema.String,
+});
+type ParkedAction = typeof ParkedAction.Type;
+
+const parkTestAction = async (
+  agent: DurableObjectStub<OsfoAgent>,
+  toolCallId: string,
+): Promise<ParkedAction> =>
+  runInDurableObject(agent, async (instance) => {
+    await instance.initialize({
+      agentId: AgentId.make(instance.name),
+      initializationId: AgentInitializationId.make(`init-${toolCallId}`),
+      initializedAt: "2026-08-16T12:00:00.000Z",
+      routeId: ConversationRouteId.make(`route-${toolCallId}`),
+      sessionId: SessionId.make(`session-${toolCallId}`),
+    });
+    // SAFETY: Think exposes no public test driver for compiling registered Actions. The cast reaches the same private seam used by Think's own durable-pause tests.
+    const compile = instance as unknown as {
+      _compileActionTools: () => Promise<
+        Record<
+          string,
+          {
+            execute?: (
+              input: unknown,
+              options: { abortSignal?: AbortSignal; messages?: []; toolCallId?: string },
+            ) => Promise<unknown>;
+          }
+        >
+      >;
+    };
+    const tools = await compile._compileActionTools();
+    const protectedAction = tools[testProtectedActionName];
+    if (protectedAction?.execute === undefined) throw new Error("Test Action is not registered");
+    const result = await protectedAction.execute(
+      {
+        oauthToken: "oauth-token-must-not-leak",
+        recipient: "sam@example.com",
+        subject: "Trip details",
+      },
+      { messages: [], toolCallId },
+    );
+    // SAFETY: The Think test seam returns the documented durable-pause result after the status check in each caller.
+    return Schema.decodeUnknownSync(ParkedAction)(result);
+  });
+
+const configureTestAction = (
+  agent: DurableObjectStub<OsfoAgent>,
+  state: TestProtectedActionState,
+) =>
+  runInDurableObject(agent, async (instance) => {
+    instance.configure<TestProtectedActionState>(state);
+  });
+
+const makePending = (executionId: string, toolCallId: string): PendingApproval => ({
+  descriptor: {
+    action: testProtectedActionName,
+    input: { recipient: "sam@example.com", subject: "Trip details" },
+    kind: "durable-pause",
+    permissions: ["gmail:send"],
+    requestId: "request-safe",
+    risk: "high",
+    summary: "Send the exact test email",
+    toolCallId,
+  },
+  executionId,
+  source: "action",
 });

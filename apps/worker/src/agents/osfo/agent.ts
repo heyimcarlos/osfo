@@ -1,18 +1,21 @@
 import {
+  defaultContextOverflowClassifier,
   Session,
   Think,
   type ChatErrorContext,
   type ChatResponseResult,
   type PrepareStepContext,
+  type PendingApproval,
+  type SessionMessage,
   type StepContext,
   type SubmitMessagesResult,
   type ThinkSubmissionInspection,
   type TurnConfig,
   type TurnContext,
 } from "@cloudflare/think";
-import { DateTime, Effect, Exit, Option, Predicate, Result, Schema } from "effect";
+import { DateTime, Effect, Option, Predicate, Result, Schema } from "effect";
 
-import type { AssistantMessageId as AssistantMessageIdType, SessionId } from "../../domain";
+import type { AssistantMessageId as AssistantMessageIdType, SessionId, UserId } from "../../domain";
 import {
   AgentId,
   AssistantMessageId,
@@ -23,41 +26,15 @@ import {
 } from "../../domain";
 import { database as workerDatabase } from "../../db";
 import * as Billing from "../../db/billing";
-import {
-  type ActionApprovalRecordInvalid,
-  type ActionApprovalStoreUnavailable,
-  type ApprovalCancellationRecorded,
-  type ActionMaterialityConflict,
-  type ActionPresentationFound,
-  ActionPresentationId,
-  type ActionPresentationNotFound,
-  type ActionPresentationPrepared,
-  type ApprovalActorUnauthorized,
-  type ApprovalAlreadyResolved,
-  ApprovalDispatchAmbiguous,
-  ApprovalDispatchUnavailable,
-  ApprovalRequestId,
-  type ApprovalDecisionRecorded,
-  type ApprovalExpired,
-  CancelActionApprovalInput,
-  type CancelActionApprovalEncoded,
-  DecideActionApprovalInput,
-  type DecideActionApprovalEncoded,
-  PrepareActionPresentationInput,
-  type PrepareActionPresentationEncoded,
-  ReadActionPresentationInput,
-  type ReadActionPresentationEncoded,
-} from "../../domain/action-approval";
 import { decodeOsfoStage } from "../../env";
 import {
-  boundManagedContext,
   CancelManagedConversationInput,
-  type CancelManagedConversationEncoded,
   ManagedTurnMetadata,
 } from "../../domain/managed-conversation";
 import {
   ModelCallUsageDispatchUnavailable,
   ModelStepNumber,
+  conservativeVendorCostForStep,
   modelCallAttemptId,
   type PendingModelCallUsage,
 } from "../../domain/model-call-attempt";
@@ -65,13 +42,13 @@ import {
   admitManagedConversation,
   type ManagedConversationDenied,
   SubmitManagedConversationInput,
-  type SubmitManagedConversationEncoded,
 } from "../../services/managed-conversation";
 import {
   launchModelAccessPolicy,
   type ManagedRouteUnavailable,
 } from "../../domain/model-access-policy";
 import { retainedCatalog } from "../../domain/plan-policy";
+import * as AgentDirectory from "../../services/agent-directory";
 import {
   invalidOsfoEnvironment,
   makeOsfoAgentRuntime,
@@ -79,8 +56,6 @@ import {
   type RuntimeProbeResult,
 } from "../../layers";
 import { makeAgentDb } from "./db/client";
-import { digestActionPresentation, makeActionApprovalStore } from "./db/action-approvals";
-import { makeActionApprovalService } from "../../services/action-approvals";
 import * as Allowances from "../../services/allowances";
 import { makeDurableModelCallUsage } from "../../services/model-call-usage";
 import {
@@ -109,16 +84,57 @@ import {
   ReplaceCurrentSessionInput,
   type ReplaceCurrentSessionEncoded,
 } from "./db/store";
+import {
+  type ActionPresentationFound,
+  type ActionPresentationNotFound,
+  type ActionPresentationUnavailable,
+  type ActionApprovalRequestInvalid,
+  ApprovalActorAuthorizationUnavailable,
+  type ApprovalActorUnauthorized,
+  type ApprovalAlreadyResolved,
+  type ApprovalDecisionAccepted,
+  type CancelActionApprovalRequest,
+  type DecideActionApprovalRequest,
+  makeThinkActionApprovals,
+  type ReadActionPresentationRequest,
+  type ThinkApprovalUnavailable,
+} from "./think-action-approvals";
+import {
+  makeTestProtectedAction,
+  presentTestProtectedAction,
+  sanitizeTestProtectedActionInput,
+  testProtectedActionName,
+  type TestProtectedActionState,
+} from "./test-protected-action";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries. */
 
 const pendingSessionId = "__osfo_uninitialized__";
+const gatewayId = "default";
+const defaultTestProtectedActionState: TestProtectedActionState = {
+  authority: "active",
+  providerOutcome: "applied",
+};
 
-const ThinkApprovalDispatchError = Schema.Struct({
-  error: Schema.String,
-  executionId: Schema.String,
-  status: Schema.Literal("error"),
+const GatewayProviderMetadata = Schema.Struct({
+  cloudflare: Schema.optional(
+    Schema.Struct({
+      aiGatewayLogId: Schema.optional(Schema.String),
+    }),
+  ),
 });
+
+/** RPC representation of one managed conversation submission. */
+export type SubmitManagedConversationRequest = typeof SubmitManagedConversationInput.Encoded;
+
+/** RPC representation of one managed conversation cancellation. */
+export type CancelManagedConversationRequest = typeof CancelManagedConversationInput.Encoded;
+
+/** Classified failure from a Think Submission method. */
+export class ThinkSubmissionUnavailable extends Schema.TaggedError<ThinkSubmissionUnavailable>()(
+  "ThinkSubmissionUnavailable",
+  { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
+) {}
 
 const SessionHistoryMessagePart = Schema.StructWithRest(Schema.Struct({ type: Schema.String }), [
   Schema.Record(Schema.String, Schema.Unknown),
@@ -186,20 +202,21 @@ export class OsfoAgent extends Think<Env> {
   /** Bound wake-time memory while retaining enough history for the larger managed route. */
   override hydrationByteBudget = 512_000;
 
+  /** Let Think classify and recover provider context-window failures. */
+  override classifyChatError = defaultContextOverflowClassifier;
+
   readonly #db = makeAgentDb(this.ctx.storage);
   #activeModelStepNumber = ModelStepNumber.make(1);
-  readonly #approvalPersistence = makeActionApprovalStore(this.#db);
-  readonly #actionApprovals = makeActionApprovalService({
-    dispatch: {
-      dispatch: (terminal) =>
-        Effect.promise(() =>
-          this.#dispatchApproval(terminal.presentationId, terminal.executionId, terminal.decision),
-        ).pipe(
-          Effect.flatMap((failure) => (failure === null ? Effect.void : Effect.fail(failure))),
-        ),
-    },
+  readonly #completedModelSteps = new Set<number>();
+  readonly #actionApprovals = makeThinkActionApprovals({
+    authorizer: { ownsAgent: (userId) => this.#userOwnsAgent(userId) },
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-    persistence: this.#approvalPersistence,
+    present: presentTestProtectedAction,
+    think: {
+      approve: (executionId) => this.approveExecution(executionId),
+      pending: (executionId) => this.pendingApprovals(executionId),
+      reject: (executionId, reason) => this.rejectExecution(executionId, reason),
+    },
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
   readonly #modelCallUsage = makeDurableModelCallUsage({
@@ -220,23 +237,57 @@ export class OsfoAgent extends Think<Env> {
     return launchModelAccessPolicy.plans.free.route;
   }
 
+  /** Register a typed protected Action only in the Worker test stage. */
+  override getActions() {
+    const stage = decodeOsfoStage(this.env.OSFO_STAGE);
+    if (Option.isNone(stage) || stage.value !== "test") return {};
+    return {
+      [testProtectedActionName]: makeTestProtectedAction({
+        readState: () =>
+          this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
+      }),
+    };
+  }
+
+  /** Keep inherited pending-Approval RPC output client-safe for every registered Action. */
+  override async pendingApprovals(executionId?: string): Promise<Array<PendingApproval>> {
+    const pending = await super.pendingApprovals(executionId);
+    return pending.map((approval) =>
+      approval.source === "action" && approval.descriptor.action === testProtectedActionName
+        ? Object.assign({}, approval, {
+            descriptor: Object.assign({}, approval.descriptor, {
+              input: sanitizeTestProtectedActionInput(approval.descriptor.input),
+            }),
+          })
+        : Object.assign({}, approval, {
+            descriptor: Object.assign({}, approval.descriptor, { input: {} }),
+          }),
+    );
+  }
+
   /** Apply only the route and limits pinned to the current durable Think Submission. */
   override beforeTurn(_context: TurnContext): Promise<TurnConfig> {
     return Effect.runPromise(
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata).pipe(
-        Effect.map((metadata) => ({
-          activeTools: [],
-          maxOutputTokens: metadata.maxOutputTokens,
-          maxRetries: metadata.maxRetries,
-          maxSteps: metadata.maxSteps,
-          messages: boundManagedContext(
-            _context.messages,
-            _context.system,
-            metadata.maxContextBytes,
-          ),
-          model: metadata.route,
-          sendReasoning: false,
-        })),
+        Effect.map((metadata) => {
+          this.#completedModelSteps.clear();
+          this.contextOverflow = {
+            maxRetries: 1,
+            proactive: {
+              headroom: metadata.targetInputTokens / metadata.maxInputTokens,
+              maxCompactions: 1,
+              maxInputTokens: metadata.maxInputTokens,
+            },
+            reactive: true,
+          };
+          return {
+            maxOutputTokens: metadata.maxOutputTokens,
+            maxRetries: metadata.maxRetries,
+            maxSteps: metadata.maxSteps,
+            model: metadata.route,
+            sendReasoning: false,
+          };
+        }),
       ),
     );
   }
@@ -246,21 +297,25 @@ export class OsfoAgent extends Think<Env> {
     this.#activeModelStepNumber = ModelStepNumber.make(context.stepNumber + 1);
   }
 
-  /** Record conservative model cost after each provider-completed Think step. */
-  override async onStepEnd(_context: StepContext): Promise<void> {
-    await this.#recordCurrentModelUsage();
+  /** Record observed AI Gateway cost or one bounded share after each completed step. */
+  override async onStepEnd(context: StepContext): Promise<void> {
+    const stepNumber = ModelStepNumber.make(context.stepNumber + 1);
+    await this.#recordCurrentModelUsage(stepNumber, context);
+    this.#completedModelSteps.add(stepNumber);
   }
 
   /** Preserve conservative cost evidence when a provider turn ends ambiguously. */
   // oxlint-disable-next-line osfo/no-unknown-parameters, osfo/no-unknown-returns -- Think owns the error hook's unknown protocol contract.
   override onChatError(error: unknown, context?: ChatErrorContext): unknown {
     if (context?.stage === "turn" || context?.stage === "stream" || context?.stage === "recovery") {
-      this.ctx.waitUntil(this.#recordCurrentModelUsage());
+      if (!this.#completedModelSteps.has(this.#activeModelStepNumber)) {
+        this.ctx.waitUntil(this.#recordCurrentModelUsage(this.#activeModelStepNumber));
+      }
     }
     return super.onChatError(error, context);
   }
 
-  async #recordCurrentModelUsage(): Promise<void> {
+  async #recordCurrentModelUsage(stepNumber: ModelStepNumber, step?: StepContext): Promise<void> {
     const metadata = Schema.decodeUnknownOption(ManagedTurnMetadata)(this.activeTurnMetadata);
     if (Option.isNone(metadata)) {
       await Effect.runPromise(
@@ -272,24 +327,23 @@ export class OsfoAgent extends Think<Env> {
     }
     const attemptId = modelCallAttemptId(
       ThinkSubmissionId.make(metadata.value.submissionId),
-      this.#activeModelStepNumber,
+      stepNumber,
     );
+    const evidence =
+      step === undefined
+        ? conservativeStepEvidence(metadata.value, stepNumber)
+        : await this.#readStepEvidence(metadata.value, stepNumber, step);
     await Effect.runPromise(
-      this.#modelCallUsage
-        .record(metadata.value.allowancePeriodId, attemptId, {
-          _tag: "Ambiguous",
-          conservativeVendorUsdMicros: BigInt(metadata.value.conservativeVendorUsdMicros),
-        })
-        .pipe(
-          Effect.catch(() =>
-            Effect.logError("Managed model usage recording remains pending").pipe(
-              Effect.annotateLogs({
-                attemptId,
-                failureTag: "ModelCallUsageRecordingFailure",
-              }),
-            ),
+      this.#modelCallUsage.record(metadata.value.allowancePeriodId, attemptId, evidence).pipe(
+        Effect.catch(() =>
+          Effect.logError("Managed model usage recording remains pending").pipe(
+            Effect.annotateLogs({
+              attemptId,
+              failureTag: "ModelCallUsageRecordingFailure",
+            }),
           ),
         ),
+      ),
     );
   }
 
@@ -297,13 +351,15 @@ export class OsfoAgent extends Think<Env> {
   override async configureSession(session: Session): Promise<Session> {
     await this.#migrationsReady;
     const current = await Effect.runPromise(this.#readOptionalPrimarySessionId());
-    return session.forSession(Option.getOrElse(current, () => pendingSessionId));
+    return session
+      .forSession(Option.getOrElse(current, () => pendingSessionId))
+      .onCompaction(compactManagedSession)
+      .compactAfter(launchModelAccessPolicy.plans.free.context.targetInputTokens);
   }
 
   /** Reconcile committed Think messages when a new Agent activation starts. */
   override async onStart(): Promise<void> {
     await this.#migrationsReady;
-    await Effect.runPromise(this.#actionApprovals.reconcile);
     await Effect.runPromise(this.#modelCallUsage.reconcile);
     await Effect.runPromise(this.#reconcileCommittedTurns());
   }
@@ -337,140 +393,100 @@ export class OsfoAgent extends Think<Env> {
     return outcome;
   }
 
-  /** Commit or recover one immutable client-safe Action Presentation and Approval Request. */
-  async prepareActionPresentation(
-    input: PrepareActionPresentationEncoded,
-  ): Promise<
-    | ActionApprovalRecordInvalid
-    | ActionApprovalStoreUnavailable
-    | ActionMaterialityConflict
-    | ActionPresentationPrepared
-    | AgentRequestInvalid
-  > {
-    await this.#migrationsReady;
-    return runRpc(
-      Effect.gen(
-        function* (this: OsfoAgent) {
-          const parsed = yield* Schema.decodeEffect(PrepareActionPresentationInput)(input).pipe(
-            Effect.mapError(() => invalidRequest("prepareActionPresentation")),
-          );
-          const actionDigest = yield* digestActionPresentation(parsed);
-          const presentationId = ActionPresentationId.make(
-            // oxlint-disable-next-line effecttsgo/crypto-random-uuid -- Presentation IDs require cryptographic opacity.
-            `action-presentation-${crypto.randomUUID()}`,
-          );
-          const approvalRequestId = ApprovalRequestId.make(
-            // oxlint-disable-next-line effecttsgo/crypto-random-uuid -- Approval IDs require cryptographic opacity.
-            `approval-request-${crypto.randomUUID()}`,
-          );
-          return yield* this.#actionApprovals.prepare(
-            parsed,
-            presentationId,
-            approvalRequestId,
-            actionDigest,
-          );
-        }.bind(this),
-      ),
-    );
-  }
-
   /** Authorize and durably enqueue one server-routed managed conversation turn. */
   async submitManagedConversation(
-    input: SubmitManagedConversationEncoded,
+    input: SubmitManagedConversationRequest,
   ): Promise<
-    AgentRequestInvalid | ManagedConversationDenied | ManagedRouteUnavailable | SubmitMessagesResult
+    | AgentRequestInvalid
+    | ManagedConversationDenied
+    | ManagedRouteUnavailable
+    | SubmitMessagesResult
+    | ThinkSubmissionUnavailable
   > {
     await this.#migrationsReady;
     const decoded = Schema.decodeResult(SubmitManagedConversationInput)(input);
     if (Result.isFailure(decoded)) return invalidRequest("submitManagedConversation");
     const admission = await runRpc(admitManagedConversation(decoded.success));
     if (!Predicate.isTagged(admission, "ManagedConversationAdmitted")) return admission;
-    return this.runTurn({
-      idempotencyKey: admission.idempotencyKey,
-      input: admission.message,
-      metadata: admission.metadata,
-      mode: "submit",
-      submissionId: admission.submissionId,
-    });
+    return runRpc(
+      callThinkSubmission("runTurn", () =>
+        this.runTurn({
+          idempotencyKey: admission.idempotencyKey,
+          input: admission.message,
+          metadata: admission.metadata,
+          mode: "submit",
+          submissionId: admission.submissionId,
+        }),
+      ),
+    );
   }
 
   /** Cancel one Think-owned managed conversation without creating another lifecycle. */
   async cancelManagedConversation(
-    input: CancelManagedConversationEncoded,
-  ): Promise<AgentRequestInvalid | ThinkSubmissionInspection | null> {
+    input: CancelManagedConversationRequest,
+  ): Promise<AgentRequestInvalid | ThinkSubmissionInspection | ThinkSubmissionUnavailable | null> {
     await this.#migrationsReady;
     const decoded = Schema.decodeResult(CancelManagedConversationInput)(input);
     if (Result.isFailure(decoded)) return invalidRequest("cancelManagedConversation");
-    await this.cancelSubmission(decoded.success.submissionId, decoded.success.reason);
-    return this.inspectSubmission(decoded.success.submissionId);
+    return runRpc(
+      callThinkSubmission("cancelSubmission", () =>
+        this.cancelSubmission(decoded.success.submissionId, decoded.success.reason),
+      ).pipe(
+        Effect.andThen(
+          callThinkSubmission("inspectSubmission", () =>
+            this.inspectSubmission(decoded.success.submissionId),
+          ),
+        ),
+      ),
+    );
   }
 
   /** Read one immutable presentation and current Approval state for an authenticated User. */
   async readActionPresentation(
-    input: ReadActionPresentationEncoded,
+    input: ReadActionPresentationRequest,
   ): Promise<
-    | ActionApprovalRecordInvalid
-    | ActionApprovalStoreUnavailable
     | ActionPresentationFound
     | ActionPresentationNotFound
-    | AgentRequestInvalid
+    | ActionPresentationUnavailable
+    | ActionApprovalRequestInvalid
+    | ApprovalActorAuthorizationUnavailable
     | ApprovalActorUnauthorized
+    | ThinkApprovalUnavailable
   > {
     await this.#migrationsReady;
-    return runRpc(
-      Schema.decodeEffect(ReadActionPresentationInput)(input).pipe(
-        Effect.mapError(() => invalidRequest("readActionPresentation")),
-        Effect.flatMap((parsed) => this.#actionApprovals.read(parsed)),
-      ),
-    );
+    return runRpc(this.#actionApprovals.read(input));
   }
 
   /** Record the first authenticated exact Approval decision and dispatch it to Think. */
   async decideActionApproval(
-    input: DecideActionApprovalEncoded,
+    input: DecideActionApprovalRequest,
   ): Promise<
-    | ActionApprovalRecordInvalid
-    | ActionApprovalStoreUnavailable
     | ActionPresentationNotFound
-    | AgentRequestInvalid
+    | ActionApprovalRequestInvalid
+    | ApprovalActorAuthorizationUnavailable
     | ApprovalActorUnauthorized
     | ApprovalAlreadyResolved
-    | ApprovalDecisionRecorded
-    | ApprovalDispatchAmbiguous
-    | ApprovalDispatchUnavailable
-    | ApprovalExpired
+    | ApprovalDecisionAccepted
+    | ThinkApprovalUnavailable
   > {
     await this.#migrationsReady;
-    return runRpc(
-      Schema.decodeEffect(DecideActionApprovalInput)(input).pipe(
-        Effect.mapError(() => invalidRequest("decideActionApproval")),
-        Effect.flatMap((parsed) => this.#actionApprovals.decide(parsed)),
-      ),
-    );
+    return runRpc(this.#actionApprovals.decide(input));
   }
 
   /** Cancel one pending Approval and its owning Think execution. */
   async cancelActionApproval(
-    input: CancelActionApprovalEncoded,
+    input: CancelActionApprovalRequest,
   ): Promise<
-    | ActionApprovalRecordInvalid
-    | ActionApprovalStoreUnavailable
     | ActionPresentationNotFound
-    | AgentRequestInvalid
+    | ActionApprovalRequestInvalid
+    | ApprovalActorAuthorizationUnavailable
     | ApprovalActorUnauthorized
     | ApprovalAlreadyResolved
-    | ApprovalCancellationRecorded
-    | ApprovalDispatchAmbiguous
-    | ApprovalDispatchUnavailable
-    | ApprovalExpired
+    | ApprovalDecisionAccepted
+    | ThinkApprovalUnavailable
   > {
     await this.#migrationsReady;
-    return runRpc(
-      Schema.decodeEffect(CancelActionApprovalInput)(input).pipe(
-        Effect.mapError(() => invalidRequest("cancelActionApproval")),
-        Effect.flatMap((parsed) => this.#actionApprovals.cancel(parsed)),
-      ),
-    );
+    return runRpc(this.#actionApprovals.cancel(input));
   }
 
   /** Look up the stable initialization fact and current primary Session. */
@@ -640,37 +656,51 @@ export class OsfoAgent extends Think<Env> {
     });
   }
 
-  async #dispatchApproval(
-    presentationId: ActionPresentationId,
-    executionId: string,
-    decision: "approve" | "reject",
-  ): Promise<ApprovalDispatchAmbiguous | ApprovalDispatchUnavailable | null> {
-    const dispatch =
-      decision === "approve"
-        ? this.approveExecution(executionId)
-        : this.rejectExecution(executionId, "The exact Action was rejected or canceled");
-    const exit = await Effect.runPromiseExit(Effect.promise(() => dispatch));
-    if (Exit.isFailure(exit)) {
-      await Effect.runPromise(
-        Effect.logError("Think Approval dispatch failed").pipe(
-          Effect.annotateLogs({ decision, executionId, failureTag: "ThinkDispatchDefect" }),
-        ),
-      );
-      return approvalDispatchUnavailable(presentationId);
+  async #readStepEvidence(
+    metadata: ManagedTurnMetadata,
+    stepNumber: ModelStepNumber,
+    step: StepContext,
+  ) {
+    const logId = readAiGatewayLogId(step.response.headers, step.providerMetadata);
+    if (Option.isNone(logId)) return conservativeStepEvidence(metadata, stepNumber);
+    const cost = await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => this.env.AI.gateway(gatewayId).getLog(logId.value),
+        catch: () => null,
+      }),
+    );
+    if (cost === null || cost.cost === undefined || !Number.isFinite(cost.cost) || cost.cost < 0) {
+      return conservativeStepEvidence(metadata, stepNumber);
     }
-    const rejected = Schema.decodeUnknownOption(ThinkApprovalDispatchError)(exit.value);
-    if (Option.isSome(rejected)) {
-      if (/no longer pending|not paused/i.test(rejected.value.error)) {
-        return approvalDispatchAmbiguous(presentationId);
-      }
-      await Effect.runPromise(
-        Effect.logError("Think did not accept the persisted Approval decision").pipe(
-          Effect.annotateLogs({ decision, executionId, failureTag: "ThinkDispatchRejected" }),
-        ),
-      );
-      return approvalDispatchUnavailable(presentationId);
+    return {
+      _tag: "Observed" as const,
+      supermemoryIngestionTokens: 0n,
+      supermemoryRetrievals: 0n,
+      vendorUsdMicros: BigInt(Math.ceil(cost.cost * 1_000_000)),
+    };
+  }
+
+  #userOwnsAgent(userId: UserId) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(approvalActorAuthorizationUnavailable(userId, invalidOsfoEnvironment));
     }
-    return null;
+    return Effect.tryPromise({
+      try: () =>
+        runtime.runPromise(
+          Effect.scoped(
+            AgentDirectory.make.pipe(
+              Effect.flatMap((directory) =>
+                directory.resolveAgent(AgentId.make(this.name)).pipe(
+                  Effect.map((route) => route.userId === userId),
+                  Effect.catchTag("AgentOwnerNotFound", () => Effect.succeed(false)),
+                ),
+              ),
+            ),
+          ),
+        ),
+      catch: (cause) => approvalActorAuthorizationUnavailable(userId, cause),
+    });
   }
 
   #findThinkMessageOwner(
@@ -751,23 +781,97 @@ export class OsfoAgent extends Think<Env> {
 const invalidRequest = (operation: AgentRequestOperation): AgentRequestInvalid =>
   new AgentRequestInvalid({ message: "The Agent RPC input is invalid", operation });
 
-const approvalDispatchUnavailable = (presentationId: ActionPresentationId) =>
-  new ApprovalDispatchUnavailable({
-    message: "The Approval decision is durable, but Think has not accepted its handoff",
-    presentationId,
-  });
-
-const approvalDispatchAmbiguous = (presentationId: ActionPresentationId) =>
-  new ApprovalDispatchAmbiguous({
-    message: "Think no longer exposes the exact Approval handoff outcome",
-    presentationId,
-  });
-
 const modelCallUsageDispatchUnavailable = (usage: PendingModelCallUsage) =>
   new ModelCallUsageDispatchUnavailable({
     attemptId: usage.attemptId,
     message: "Durable model-call evidence has not reached Allowances",
   });
+
+const callThinkSubmission = <A>(operation: string, run: () => Promise<A>) =>
+  Effect.tryPromise({
+    try: run,
+    catch: (cause) =>
+      new ThinkSubmissionUnavailable({
+        cause,
+        message: "Think Submission storage is unavailable",
+        operation,
+      }),
+  });
+
+const approvalActorAuthorizationUnavailable = (userId: UserId, cause: unknown) =>
+  new ApprovalActorAuthorizationUnavailable({
+    cause,
+    message: "The Agent owner could not be checked",
+    userId,
+  });
+
+const conservativeStepEvidence = (metadata: ManagedTurnMetadata, stepNumber: ModelStepNumber) => {
+  const maximum = BigInt(metadata.conservativeVendorUsdMicros);
+  return {
+    _tag: "Ambiguous" as const,
+    conservativeVendorUsdMicros: conservativeVendorCostForStep(
+      maximum,
+      metadata.maxSteps,
+      stepNumber,
+    ),
+  };
+};
+
+const HeaderRecord = Schema.Record(Schema.String, Schema.String);
+
+const readAiGatewayLogId = (
+  headers: StepContext["response"]["headers"],
+  providerMetadata: StepContext["providerMetadata"],
+): Option.Option<string> => {
+  const decodedHeaders = Schema.decodeUnknownOption(HeaderRecord)(headers);
+  if (Option.isSome(decodedHeaders)) {
+    const entry = Object.entries(decodedHeaders.value).find(
+      ([name]) => name.toLowerCase() === "cf-aig-log-id",
+    );
+    if (entry !== undefined && entry[1].length > 0) return Option.some(entry[1]);
+  }
+  return Option.flatMap(
+    Schema.decodeUnknownOption(GatewayProviderMetadata)(providerMetadata),
+    (metadata) => Option.fromNullishOr(metadata.cloudflare?.aiGatewayLogId),
+  );
+};
+
+const CompactableMessage = Schema.StructWithRest(
+  Schema.Struct({
+    id: Schema.String,
+    parts: Schema.Array(
+      Schema.StructWithRest(Schema.Struct({ type: Schema.String }), [
+        Schema.Record(Schema.String, Schema.Unknown),
+      ]),
+    ),
+    role: Schema.String,
+  }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+);
+
+const TextPart = Schema.Struct({ text: Schema.String, type: Schema.Literal("text") });
+
+const compactManagedSession = async (messages: ReadonlyArray<SessionMessage>) => {
+  const protectedTail = 4;
+  if (messages.length <= protectedTail + 1) return null;
+  const compacted = messages.slice(0, -protectedTail);
+  const parsed = Schema.decodeUnknownOption(Schema.Array(CompactableMessage))(compacted);
+  if (Option.isNone(parsed)) return null;
+  const lines = parsed.value.flatMap((message) =>
+    message.parts.flatMap((part) => {
+      const text = Schema.decodeUnknownOption(TextPart)(part);
+      return Option.isSome(text) ? [`${message.role}: ${text.value.text}`] : [];
+    }),
+  );
+  const first = parsed.value[0];
+  const last = parsed.value.at(-1);
+  if (first === undefined || last === undefined) return null;
+  return {
+    fromMessageId: first.id,
+    summary: `[Earlier conversation]\n${lines.join("\n").slice(-8_000)}`,
+    toMessageId: last.id,
+  };
+};
 
 const readThinkHistory = (session: Session, sessionId: SessionId) =>
   Effect.tryPromise({

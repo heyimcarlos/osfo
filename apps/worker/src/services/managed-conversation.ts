@@ -16,7 +16,6 @@ import {
 
 const boundedIdentity = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
 const boundedMessage = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64_000));
-const encodeJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 /** Trusted facts required to authorize one server-managed Think Submission. */
 export const SubmitManagedConversationInput = Schema.Struct({
@@ -28,9 +27,6 @@ export const SubmitManagedConversationInput = Schema.Struct({
 
 /** Trusted managed-conversation input after the RPC boundary validates authorization separately. */
 export type SubmitManagedConversation = typeof SubmitManagedConversationInput.Type;
-
-/** RPC representation of one managed conversation submission. */
-export type SubmitManagedConversationEncoded = typeof SubmitManagedConversationInput.Encoded;
 
 /** Successful managed-conversation admission ready for Think submission. */
 export interface ManagedConversationAdmitted {
@@ -59,16 +55,6 @@ export const admitManagedConversation = (
     const plan = input.authorization.subscription.plan;
     const planPolicyVersion = input.authorization.subscription.planPolicyVersion;
     const profile = yield* selectManagedRoute(launchModelAccessPolicy, plan, planPolicyVersion);
-    if (
-      new TextEncoder().encode(encodeJson(input.message)).byteLength >
-      profile.context.targetInputTokens
-    ) {
-      return {
-        _tag: "ManagedConversationDenied",
-        reason: "operationLimitExceeded",
-        resetAt: null,
-      } as const;
-    }
     const admission = makeAuthorization(retainedCatalog).admit(
       { ...input.authorization, requestVendorUsdMicros: profile.maxVendorUsdMicros },
       {
@@ -99,7 +85,7 @@ export const admitManagedConversation = (
         _tag: "OsfoManagedTurn",
         allowancePeriodId: admission.allowancePeriod.allowancePeriodId,
         conservativeVendorUsdMicros: Number(profile.maxVendorUsdMicros),
-        maxContextBytes: profile.context.maxInputTokens,
+        maxInputTokens: profile.context.maxInputTokens,
         maxOutputTokens: profile.context.maxOutputTokens,
         maxRetries: profile.maxRetries,
         maxSteps: profile.maxSteps,

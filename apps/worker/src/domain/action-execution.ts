@@ -1,8 +1,12 @@
 import { Schema } from "effect";
 
-import { ActionId } from "./action-approval";
-
 const evidenceText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_000));
+
+/** Stable identity of one exact effectful Think ToolCall. */
+export const ActionId = Schema.String.check(Schema.isMinLength(1)).pipe(Schema.brand("ActionId"));
+
+/** Stable identity of one exact effectful Think ToolCall. */
+export type ActionId = typeof ActionId.Type;
 
 /** Provider evidence after one committed Action executor contacts an external system. */
 export const ActionExecutionResult = Schema.Union([

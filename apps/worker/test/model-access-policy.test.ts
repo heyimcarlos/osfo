@@ -4,19 +4,18 @@ import { DateTime, Effect, Predicate, Schema } from "effect";
 import { AllowancePeriodId, PlanPolicyVersion, ThinkSubmissionId } from "../src/domain";
 import { Recorded, type AllowanceItem, type AllowanceSource } from "../src/domain/allowance";
 import { launchModelAccessPolicy, selectManagedRoute } from "../src/domain/model-access-policy";
-import { ActionId } from "../src/domain/action-approval";
-import { ambiguousActionResult } from "../src/domain/action-execution";
-import { boundManagedContext } from "../src/domain/managed-conversation";
+import { ActionId, ambiguousActionResult } from "../src/domain/action-execution";
 import {
   ModelCallUsageDispatchUnavailable,
   ModelStepNumber,
+  conservativeVendorCostForStep,
   modelCallAttemptId,
   normalizeModelCallUsage,
   type PendingModelCallUsage,
 } from "../src/domain/model-call-attempt";
 import { AuthorizationContext, make as makeAuthorization } from "../src/services/authorization";
 import { retainedCatalog } from "../src/domain/plan-policy";
-import { executeAuthorizedAction } from "../src/services/action-executor";
+import { executeApprovedAction } from "../src/services/action-executor";
 import { admitManagedConversation } from "../src/services/managed-conversation";
 import { makeDurableModelCallUsage, recordModelCallUsage } from "../src/services/model-call-usage";
 
@@ -101,6 +100,7 @@ describe("managed model access policy", () => {
             _tag: "OsfoManagedTurn",
             allowancePeriodId: `period-${plan}`,
             conservativeVendorUsdMicros: plan === "free" ? 30_000 : 750_000,
+            maxInputTokens: plan === "free" ? 32_000 : 128_000,
             maxRetries: 0,
             maxSteps: plan === "free" ? 6 : 12,
             plan,
@@ -113,15 +113,20 @@ describe("managed model access policy", () => {
     }),
   );
 
-  it("keeps the newest messages inside each managed route input bound", () => {
-    const messages = [
-      { content: "a".repeat(20_000), role: "user" },
-      { content: "b".repeat(20_000), role: "assistant" },
-      { content: "latest", role: "user" },
-    ];
-
-    expect(boundManagedContext(messages, "Osfo instructions", 32_000)).toEqual(messages.slice(1));
-    expect(boundManagedContext(messages, "Osfo instructions", 128_000)).toEqual(messages);
+  it("partitions conservative fallback cost across steps without multiplying the request ceiling", () => {
+    for (const profile of [
+      launchModelAccessPolicy.plans.free,
+      launchModelAccessPolicy.plans.adventurer,
+    ]) {
+      const total = Array.from({ length: profile.maxSteps }, (_, index) =>
+        conservativeVendorCostForStep(
+          profile.maxVendorUsdMicros,
+          profile.maxSteps,
+          ModelStepNumber.make(index + 1),
+        ),
+      ).reduce((sum, value) => sum + value, 0n);
+      expect(total).toBe(profile.maxVendorUsdMicros);
+    }
   });
 
   it.effect("checks recorded Supermemory use before managed work", () =>
@@ -283,16 +288,7 @@ describe("managed model access policy", () => {
     Effect.gen(function* () {
       let contacts = 0;
       const context = authorizationContext("adventurer");
-      const denied = yield* executeAuthorizedAction(
-        {
-          readApproved: (actionId) =>
-            Effect.succeed({
-              actionId,
-              operation: "gmail.send",
-              originatingAuthority: { _tag: "AuthSession", authSessionId: "auth-managed" },
-              userId: context.user.userId,
-            }),
-        },
+      const denied = yield* executeApprovedAction(
         makeAuthorization(retainedCatalog),
         {
           ...context,
