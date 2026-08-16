@@ -12,6 +12,36 @@ export const AgentId = Schema.String.pipe(Schema.brand("AgentId"));
 /** Stable identity for one User-scoped Osfo Agent. */
 export type AgentId = typeof AgentId.Type;
 
+/** Stable identity for one idempotent Osfo Agent initialization. */
+export const AgentInitializationId = Schema.String.pipe(Schema.brand("AgentInitializationId"));
+
+/** Stable identity for one idempotent Osfo Agent initialization. */
+export type AgentInitializationId = typeof AgentInitializationId.Type;
+
+/** Stable identity for one Agent-owned conversation route. */
+export const ConversationRouteId = Schema.String.pipe(Schema.brand("ConversationRouteId"));
+
+/** Stable identity for one Agent-owned conversation route. */
+export type ConversationRouteId = typeof ConversationRouteId.Type;
+
+/** Stable identity for one canonical Think Session. */
+export const SessionId = Schema.String.pipe(Schema.brand("SessionId"));
+
+/** Stable identity for one canonical Think Session. */
+export type SessionId = typeof SessionId.Type;
+
+/** Stable identity for one committed Think assistant message. */
+export const AssistantMessageId = Schema.String.pipe(Schema.brand("AssistantMessageId"));
+
+/** Stable identity for one committed Think assistant message. */
+export type AssistantMessageId = typeof AssistantMessageId.Type;
+
+/** Stable identity for one Think response request. */
+export const ThinkRequestId = Schema.String.pipe(Schema.brand("ThinkRequestId"));
+
+/** Stable identity for one Think response request. */
+export type ThinkRequestId = typeof ThinkRequestId.Type;
+
 /** Stable identity for one Subscription. */
 export const SubscriptionId = Schema.String.pipe(Schema.brand("SubscriptionId"));
 
