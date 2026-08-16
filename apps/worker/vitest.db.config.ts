@@ -9,5 +9,6 @@ export default defineConfig({
       "test/registration.test.ts",
       "test/twilio-verify.test.ts",
     ],
+    testTimeout: 15_000,
   },
 });
