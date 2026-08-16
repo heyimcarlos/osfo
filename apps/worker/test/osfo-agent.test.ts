@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "@effect/vitest";
+import { and, eq, isNull } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
 import { AgentId, AgentInitializationId, ConversationRouteId, SessionId } from "../src/domain";
@@ -50,6 +51,16 @@ describe("Osfo Agent and Think Session foundation", () => {
             sessionId,
           }),
       );
+      const conflictingInitialization = yield* Effect.promise(
+        async () =>
+          await agent.initialize({
+            agentId,
+            initializationId: "init-conflicting",
+            initializedAt: "2026-08-15T12:00:00.000Z",
+            routeId,
+            sessionId,
+          }),
+      );
       const firstActivation = yield* Effect.promise(async () => await agent.probeRuntime());
 
       yield* Effect.promise(() => evictDurableObject(agent));
@@ -64,6 +75,10 @@ describe("Osfo Agent and Think Session foundation", () => {
         routeId: "route-primary",
       });
       expect(repeatedInitialization).toEqual(initialized);
+      expect(conflictingInitialization).toMatchObject({
+        _tag: "AgentInitializationConflict",
+        message: "The named Agent is already initialized with different stable facts",
+      });
       expect(found).toEqual({
         _tag: "AgentFound",
         agentId: "agent-stable",
@@ -98,6 +113,15 @@ describe("Osfo Agent and Think Session foundation", () => {
             sessionId: initialSessionId,
           }),
       );
+      yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance) => {
+          await instance.session.appendMessage({
+            id: "historical-user-message",
+            parts: [{ text: "Keep this history", type: "text" }],
+            role: "user",
+          });
+        }),
+      );
 
       const firstReplacement = yield* Effect.promise(
         async () =>
@@ -118,6 +142,9 @@ describe("Osfo Agent and Think Session foundation", () => {
           }),
       );
       const route = yield* Effect.promise(async () => await agent.readRoute(routeId));
+      const historicalSession = yield* Effect.promise(
+        async () => await agent.readSession(initialSessionId),
+      );
 
       expect(firstReplacement).toEqual({
         _tag: "CurrentSessionReplaced",
@@ -131,6 +158,17 @@ describe("Osfo Agent and Think Session foundation", () => {
         currentSessionId: "session-replacement",
         historicalSessionIds: ["session-initial"],
         routeId: "route-history",
+      });
+      expect(historicalSession).toEqual({
+        _tag: "CanonicalSessionFound",
+        messages: [
+          {
+            id: "historical-user-message",
+            parts: [{ text: "Keep this history", type: "text" }],
+            role: "user",
+          },
+        ],
+        sessionId: "session-initial",
       });
     }),
   );
@@ -159,7 +197,7 @@ describe("Osfo Agent and Think Session foundation", () => {
           await agent.initialize({
             agentId,
             initializationId,
-            initializedAt: "2026-08-15T12:00:00.000Z",
+            initializedAt: "2026-08-15T12:00:00Z",
             routeId,
             sessionId,
           }),
@@ -178,6 +216,22 @@ describe("Osfo Agent and Think Session foundation", () => {
               })
               .run(),
           ).toThrow(/constraint/i);
+          expect(
+            db
+              .select({ routeId: conversationRoutes.routeId })
+              .from(conversationRoutes)
+              .where(eq(conversationRoutes.isPrimary, true))
+              .all(),
+          ).toHaveLength(1);
+          expect(
+            db
+              .select({ sessionId: sessionOwnership.sessionId })
+              .from(sessionOwnership)
+              .where(
+                and(eq(sessionOwnership.routeId, routeId), isNull(sessionOwnership.replacedAt)),
+              )
+              .all(),
+          ).toHaveLength(1);
           expect(() =>
             db
               .insert(conversationRoutes)
@@ -384,7 +438,7 @@ describe("Osfo Agent and Think Session foundation", () => {
           await agent.initialize({
             agentId,
             initializationId,
-            initializedAt: "2026-08-15T12:00:00.000Z",
+            initializedAt: "2026-08-15T12:00:00Z",
             routeId,
             sessionId: firstSessionId,
           }),
@@ -404,7 +458,7 @@ describe("Osfo Agent and Think Session foundation", () => {
         async () =>
           await agent.replaceCurrentSession({
             expectedCurrentSessionId: firstSessionId,
-            replacedAt: "2026-08-15T13:00:00.000Z",
+            replacedAt: "2026-08-15T12:00:00.1Z",
             replacementSessionId: secondSessionId,
             routeId,
           }),
@@ -511,11 +565,12 @@ describe("Osfo Agent and Think Session foundation", () => {
       const enriched = yield* Effect.promise(async () => await agent.readCommittedTurns());
 
       expect(reconciled).toHaveLength(1);
+      const reconciledReceipt = Array.isArray(reconciled) ? reconciled[0] : undefined;
       expect(enriched).toEqual([
         {
           assistantMessageId: "assistant-enriched",
-          observationSequence: reconciled[0]?.observationSequence,
-          observedAt: reconciled[0]?.observedAt,
+          observationSequence: reconciledReceipt?.observationSequence,
+          observedAt: reconciledReceipt?.observedAt,
           sessionId: "session-turn-enrichment",
           source: "hook",
           thinkRequestId: "think-request-enriched",

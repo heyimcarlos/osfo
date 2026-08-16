@@ -15,6 +15,15 @@ import {
   type RuntimeProbeResult,
 } from "../../layers";
 import { makeAgentDb } from "./db/client";
+import {
+  type AgentInitializationConflict,
+  AgentRequestInvalid,
+  type AgentRequestOperation,
+  type AgentStateNotFound,
+  type AgentStoreUnavailable,
+  type CommittedTurnConflict,
+  type CurrentSessionReplacementConflict,
+} from "./db/errors";
 import { applyAgentMigrations } from "./db/migrate";
 import {
   AgentInitializationInput,
@@ -66,69 +75,116 @@ export class OsfoAgent extends Think<Env> {
   /** Select the current primary Think Session after migration exclusion completes. */
   override async configureSession(session: Session): Promise<Session> {
     await this.#migrationsReady;
-    const current = await Effect.runPromise(Effect.option(this.#store.readPrimarySessionId()));
+    const current = await Effect.runPromise(this.#readOptionalPrimarySessionId());
     return session.forSession(Option.getOrElse(current, () => pendingSessionId));
   }
 
   /** Reconcile committed Think messages when a new Agent activation starts. */
   override async onStart(): Promise<void> {
-    await this.#reconcileCommittedTurns();
+    await this.#migrationsReady;
+    await Effect.runPromise(this.#reconcileCommittedTurns());
   }
 
   /** Idempotently establish the initialization fact, primary route, and current Session. */
-  async initialize(input: AgentInitializationEncoded): Promise<AgentInitialized> {
+  async initialize(
+    input: AgentInitializationEncoded,
+  ): Promise<
+    | AgentInitializationConflict
+    | AgentInitialized
+    | AgentRequestInvalid
+    | AgentStateNotFound
+    | AgentStoreUnavailable
+  > {
     await this.#migrationsReady;
-    const namedAgentId = await Effect.runPromise(Schema.decodeEffect(AgentId)(this.name));
-    const parsed = await Effect.runPromise(Schema.decodeEffect(AgentInitializationInput)(input));
-    const initialized = await Effect.runPromise(this.#store.initialize(namedAgentId, parsed));
-    await this.#activateCurrentSession();
-    return initialized;
+    const agentName = this.name;
+    const store = this.#store;
+    const outcome = await runRpc(
+      Effect.gen(function* () {
+        const namedAgentId = yield* Schema.decodeEffect(AgentId)(agentName).pipe(
+          Effect.mapError(() => invalidRequest("initialize")),
+        );
+        const parsed = yield* Schema.decodeEffect(AgentInitializationInput)(input).pipe(
+          Effect.mapError(() => invalidRequest("initialize")),
+        );
+        return yield* store.initialize(namedAgentId, parsed);
+      }),
+    );
+    if ("currentSessionId" in outcome) await this.#activateCurrentSession();
+    return outcome;
   }
 
   /** Look up the stable initialization fact and current primary Session. */
-  async inspect(): Promise<AgentFound> {
+  async inspect(): Promise<AgentFound | AgentStateNotFound | AgentStoreUnavailable> {
     await this.#migrationsReady;
-    return Effect.runPromise(this.#store.inspect());
+    return runRpc(this.#store.inspect());
   }
 
   /** Replace one route's current Session while retaining canonical history. */
   async replaceCurrentSession(
     input: ReplaceCurrentSessionEncoded,
-  ): Promise<CurrentSessionReplaced> {
+  ): Promise<
+    | AgentRequestInvalid
+    | AgentStateNotFound
+    | AgentStoreUnavailable
+    | CurrentSessionReplaced
+    | CurrentSessionReplacementConflict
+  > {
     await this.#migrationsReady;
-    const parsed = await Effect.runPromise(Schema.decodeEffect(ReplaceCurrentSessionInput)(input));
-    const replaced = await Effect.runPromise(this.#store.replaceCurrentSession(parsed));
-    await this.#activateCurrentSession();
-    return replaced;
+    const outcome = await runRpc(
+      Schema.decodeEffect(ReplaceCurrentSessionInput)(input).pipe(
+        Effect.mapError(() => invalidRequest("replaceCurrentSession")),
+        Effect.flatMap((parsed) => this.#store.replaceCurrentSession(parsed)),
+      ),
+    );
+    if ("currentSessionId" in outcome) await this.#activateCurrentSession();
+    return outcome;
   }
 
   /** Read the current and historical Session identities for one route. */
-  async readRoute(routeId: string): Promise<ConversationRouteFound> {
+  async readRoute(
+    routeId: string,
+  ): Promise<
+    AgentRequestInvalid | AgentStateNotFound | AgentStoreUnavailable | ConversationRouteFound
+  > {
     await this.#migrationsReady;
-    const parsed = await Effect.runPromise(Schema.decodeEffect(ConversationRouteIdSchema)(routeId));
-    return Effect.runPromise(this.#store.readRoute(parsed));
+    return runRpc(
+      Schema.decodeEffect(ConversationRouteIdSchema)(routeId).pipe(
+        Effect.mapError(() => invalidRequest("readRoute")),
+        Effect.flatMap((parsed) => this.#store.readRoute(parsed)),
+      ),
+    );
   }
 
   /** Read canonical message history through Think for one Agent-owned Session. */
-  async readSession(sessionId: string): Promise<CanonicalSessionRead> {
+  async readSession(
+    sessionId: string,
+  ): Promise<AgentRequestInvalid | AgentStoreUnavailable | CanonicalSessionRead> {
     await this.#migrationsReady;
-    const parsed = await Effect.runPromise(Schema.decodeEffect(SessionIdSchema)(sessionId));
-    const owned = await Effect.runPromise(this.#store.ownsSession(parsed));
-    if (!owned) {
-      return {
-        _tag: "CanonicalSessionNotFound",
-        message: "The Think Session does not belong to this Agent",
-      };
-    }
-    const messages = await Session.create(this).forSession(parsed).getHistory();
-    return { _tag: "CanonicalSessionFound", messages, sessionId: parsed };
+    const session = Session.create(this);
+    const store = this.#store;
+    return runRpc(
+      Effect.gen(function* () {
+        const parsed = yield* Schema.decodeEffect(SessionIdSchema)(sessionId).pipe(
+          Effect.mapError(() => invalidRequest("readSession")),
+        );
+        const owned = yield* store.ownsSession(parsed);
+        if (!owned) {
+          return {
+            _tag: "CanonicalSessionNotFound",
+            message: "The Think Session does not belong to this Agent",
+          } as const;
+        }
+        const messages = yield* Effect.promise(() => session.forSession(parsed).getHistory());
+        return { _tag: "CanonicalSessionFound", messages, sessionId: parsed } as const;
+      }),
+    );
   }
 
   /** Record one correlation reference after Think commits a completed response. */
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
     if (result.status !== "completed") return;
     await this.#migrationsReady;
-    const current = await Effect.runPromise(Effect.option(this.#store.readPrimarySessionId()));
+    const current = await Effect.runPromise(this.#readOptionalPrimarySessionId());
     if (Option.isNone(current)) return;
     await Effect.runPromise(
       this.#store.recordCommittedTurn({
@@ -141,10 +197,13 @@ export class OsfoAgent extends Think<Env> {
   }
 
   /** Read idempotent committed-turn references owned by this Agent. */
-  async readCommittedTurns(): Promise<ReadonlyArray<CommittedTurnReceipt>> {
+  async readCommittedTurns(): Promise<
+    AgentStoreUnavailable | CommittedTurnConflict | ReadonlyArray<CommittedTurnReceipt>
+  > {
     await this.#migrationsReady;
-    await this.#reconcileCommittedTurns();
-    return Effect.runPromise(this.#store.readCommittedTurns);
+    return runRpc(
+      this.#reconcileCommittedTurns().pipe(Effect.andThen(this.#store.readCommittedTurns)),
+    );
   }
 
   /** Return the technical runtime identity for local smoke verification. */
@@ -163,30 +222,50 @@ export class OsfoAgent extends Think<Env> {
     await this.syncMessagesFromStorage();
   }
 
-  async #reconcileCommittedTurns(): Promise<void> {
-    await this.#migrationsReady;
-    const sessionIds = await Effect.runPromise(this.#store.readSessionIds);
-    await Effect.runPromise(
-      Effect.forEach(
-        sessionIds,
-        (sessionId) =>
-          Effect.promise(() => Session.create(this).forSession(sessionId).getHistory()).pipe(
-            Effect.flatMap((messages) =>
-              Effect.forEach(
-                messages.filter(({ role }) => role === "assistant"),
-                (message) =>
-                  this.#store.recordCommittedTurn({
-                    assistantMessageId: message.id,
-                    sessionId,
-                    source: "reconciliation",
-                    thinkRequestId: null,
-                  }),
-                { concurrency: 1, discard: true },
+  #readOptionalPrimarySessionId() {
+    return this.#store.readPrimarySessionId().pipe(
+      Effect.map(Option.some),
+      Effect.catchTag("AgentStateNotFound", () => Effect.succeed(Option.none<SessionId>())),
+    );
+  }
+
+  #reconcileCommittedTurns(): Effect.Effect<void, AgentStoreUnavailable | CommittedTurnConflict> {
+    return this.#store.readSessionIds.pipe(
+      Effect.flatMap((sessionIds) =>
+        Effect.forEach(
+          sessionIds,
+          (sessionId) =>
+            Effect.promise(() => Session.create(this).forSession(sessionId).getHistory()).pipe(
+              Effect.flatMap((messages) =>
+                Effect.forEach(
+                  messages.filter(({ role }) => role === "assistant"),
+                  (message) =>
+                    this.#store.recordCommittedTurn({
+                      assistantMessageId: message.id,
+                      sessionId,
+                      source: "reconciliation",
+                      thinkRequestId: null,
+                    }),
+                  { concurrency: 1, discard: true },
+                ),
               ),
             ),
-          ),
-        { concurrency: 1, discard: true },
+          { concurrency: 1, discard: true },
+        ),
       ),
     );
   }
 }
+
+const invalidRequest = (operation: AgentRequestOperation): AgentRequestInvalid =>
+  new AgentRequestInvalid({ message: "The Agent RPC input is invalid", operation });
+
+const runRpc = <A, E>(effect: Effect.Effect<A, E>): Promise<A | E> =>
+  Effect.runPromise(
+    effect.pipe(
+      Effect.match({
+        onFailure: (failure) => failure,
+        onSuccess: (value) => value,
+      }),
+    ),
+  );

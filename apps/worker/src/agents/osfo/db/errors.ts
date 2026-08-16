@@ -2,6 +2,20 @@ import { Schema } from "effect";
 
 import { SessionId } from "../../../domain";
 
+/** Agent SQLite operations exposed by the typed store seam. */
+export const AgentStoreOperation = Schema.Literals([
+  "initialize",
+  "inspect",
+  "readRoute",
+  "readSessionOwnership",
+  "replaceCurrentSession",
+  "recordCommittedTurn",
+  "readCommittedTurns",
+]);
+
+/** Agent SQLite operations exposed by the typed store seam. */
+export type AgentStoreOperation = typeof AgentStoreOperation.Type;
+
 /** Expected failure when an applied migration digest differs from this release. */
 export class AgentMigrationDigestMismatch extends Schema.TaggedError<AgentMigrationDigestMismatch>()(
   "AgentMigrationDigestMismatch",
@@ -83,5 +97,35 @@ export class CommittedTurnConflict extends Schema.TaggedError<CommittedTurnConfl
     message: Schema.String,
     sessionId: SessionId,
     thinkRequestId: Schema.NullOr(Schema.String),
+  },
+) {}
+
+/** Expected dependency failure at the narrow synchronous Drizzle seam. */
+export class AgentStoreUnavailable extends Schema.TaggedError<AgentStoreUnavailable>()(
+  "AgentStoreUnavailable",
+  {
+    cause: Schema.Defect(),
+    message: Schema.String,
+    operation: AgentStoreOperation,
+  },
+) {}
+
+/** Agent RPC operations with externally supplied values. */
+export const AgentRequestOperation = Schema.Literals([
+  "initialize",
+  "readRoute",
+  "readSession",
+  "replaceCurrentSession",
+]);
+
+/** Agent RPC operations with externally supplied values. */
+export type AgentRequestOperation = typeof AgentRequestOperation.Type;
+
+/** Expected failure when an Agent RPC value does not match its Effect Schema. */
+export class AgentRequestInvalid extends Schema.TaggedError<AgentRequestInvalid>()(
+  "AgentRequestInvalid",
+  {
+    message: Schema.String,
+    operation: AgentRequestOperation,
   },
 ) {}

@@ -102,15 +102,3 @@ export const committedTurns = sqliteTable(
       .where(sql`${table.thinkRequestId} IS NOT NULL`),
   ],
 );
-
-/** Row read from the Agent initialization fact table. */
-export type AgentInitializationRecord = typeof agentInitialization.$inferSelect;
-
-/** Row read from the conversation route table. */
-export type ConversationRouteRecord = typeof conversationRoutes.$inferSelect;
-
-/** Row read from the Session ownership table. */
-export type SessionOwnershipRecord = typeof sessionOwnership.$inferSelect;
-
-/** Row read from the committed-turn projection table. */
-export type CommittedTurnRecord = typeof committedTurns.$inferSelect;

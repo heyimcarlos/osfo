@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
 import { DbTimestamp } from "../../../db";
@@ -7,6 +7,8 @@ import type { AgentDb } from "./client";
 import {
   AgentInitializationConflict,
   AgentStateNotFound,
+  type AgentStoreOperation,
+  AgentStoreUnavailable,
   CommittedTurnConflict,
   CurrentSessionReplacementConflict,
 } from "./errors";
@@ -116,11 +118,11 @@ export const makeAgentStore = (db: AgentDb) => {
           message: "The AgentId does not match the named Durable Object",
         });
       }
-      const existingInitialization = yield* Effect.sync(() =>
+      const existingInitialization = yield* execute("initialize", () =>
         db.select().from(agentInitialization).limit(1).get(),
       );
       if (existingInitialization !== undefined) {
-        const existing = yield* readPrimaryFacts();
+        const existing = yield* readPrimaryFacts("initialize");
         if (
           existing.agentId !== input.agentId ||
           existing.initializationId !== input.initializationId ||
@@ -138,7 +140,7 @@ export const makeAgentStore = (db: AgentDb) => {
         });
       }
 
-      yield* Effect.sync(() =>
+      yield* execute("initialize", () =>
         // The Durable SQLite driver implements this Drizzle transaction with transactionSync.
         db.transaction((transaction) => {
           transaction
@@ -173,7 +175,7 @@ export const makeAgentStore = (db: AgentDb) => {
     });
 
   const inspect = Effect.fn("AgentStore.inspect")(function* () {
-    const facts = yield* readPrimaryFacts();
+    const facts = yield* readPrimaryFacts("inspect");
     return AgentFound.make({
       agentId: facts.agentId,
       currentSessionId: facts.sessionId,
@@ -182,12 +184,12 @@ export const makeAgentStore = (db: AgentDb) => {
   });
 
   const readPrimarySessionId = Effect.fn("AgentStore.readPrimarySessionId")(function* () {
-    const facts = yield* readPrimaryFacts();
+    const facts = yield* readPrimaryFacts("readSessionOwnership");
     return facts.sessionId;
   });
 
   const readRoute = Effect.fn("AgentStore.readRoute")(function* (routeId: ConversationRouteId) {
-    const sessions = yield* readRouteSessions(routeId);
+    const sessions = yield* readRouteSessions(routeId, "readRoute");
     const current = sessions.find(({ replacedAt }) => replacedAt === null);
     if (current === undefined) {
       return yield* new AgentStateNotFound({
@@ -207,7 +209,7 @@ export const makeAgentStore = (db: AgentDb) => {
   const replaceCurrentSession = Effect.fn("AgentStore.replaceCurrentSession")(function* (
     input: ReplaceCurrentSessionInput,
   ) {
-    const sessions = yield* readRouteSessions(input.routeId);
+    const sessions = yield* readRouteSessions(input.routeId, "replaceCurrentSession");
     const current = sessions.find(({ replacedAt }) => replacedAt === null);
     const historical = sessions.find(
       ({ sessionId }) => sessionId === input.expectedCurrentSessionId,
@@ -227,7 +229,7 @@ export const makeAgentStore = (db: AgentDb) => {
         message: "The route's current Session does not match the replacement request",
       });
     }
-    const replacementOwner = yield* Effect.sync(() =>
+    const replacementOwner = yield* execute("replaceCurrentSession", () =>
       db
         .select({ routeId: sessionOwnership.routeId })
         .from(sessionOwnership)
@@ -241,7 +243,7 @@ export const makeAgentStore = (db: AgentDb) => {
       });
     }
 
-    yield* Effect.sync(() =>
+    yield* execute("replaceCurrentSession", () =>
       // The Durable SQLite driver implements this Drizzle transaction with transactionSync.
       db.transaction((transaction) => {
         transaction
@@ -274,7 +276,7 @@ export const makeAgentStore = (db: AgentDb) => {
   });
 
   const ownsSession = (sessionId: SessionId) =>
-    Effect.sync(() =>
+    execute("readSessionOwnership", () =>
       db
         .select({ sessionId: sessionOwnership.sessionId })
         .from(sessionOwnership)
@@ -283,19 +285,30 @@ export const makeAgentStore = (db: AgentDb) => {
         .get(),
     ).pipe(Effect.map((row) => row !== undefined));
 
-  const readSessionIds = Effect.sync(() =>
+  const readSessionIds = execute("readSessionOwnership", () =>
     db
       .select({ sessionId: sessionOwnership.sessionId })
       .from(sessionOwnership)
-      .orderBy(asc(sessionOwnership.becameCurrentAt), asc(sessionOwnership.sessionId))
+      // julianday keeps valid ISO timestamps chronological across fractional precision variants.
+      .orderBy(
+        asc(sql`julianday(${sessionOwnership.becameCurrentAt})`),
+        asc(sessionOwnership.sessionId),
+      )
       .all(),
   ).pipe(Effect.map((rows) => rows.map(({ sessionId }) => sessionId)));
 
   const recordCommittedTurn = (reference: CommittedTurnObservation) =>
     Effect.gen(function* () {
-      const outcome = yield* Effect.sync(() =>
+      const outcome = yield* execute("recordCommittedTurn", () =>
         // The Durable SQLite driver implements this exact local transaction with transactionSync.
         db.transaction((transaction) => {
+          const findByThinkRequestId = (thinkRequestId: string) =>
+            transaction
+              .select({ assistantMessageId: committedTurns.assistantMessageId })
+              .from(committedTurns)
+              .where(eq(committedTurns.thinkRequestId, thinkRequestId))
+              .limit(1)
+              .get();
           const matchingMessage = transaction
             .select(committedTurnReceiptFields)
             .from(committedTurns)
@@ -320,12 +333,7 @@ export const makeAgentStore = (db: AgentDb) => {
               } as const;
             }
             if (matchingMessage.thinkRequestId === null && reference.thinkRequestId !== null) {
-              const matchingRequest = transaction
-                .select({ assistantMessageId: committedTurns.assistantMessageId })
-                .from(committedTurns)
-                .where(eq(committedTurns.thinkRequestId, reference.thinkRequestId))
-                .limit(1)
-                .get();
+              const matchingRequest = findByThinkRequestId(reference.thinkRequestId);
               if (matchingRequest !== undefined) {
                 return {
                   _tag: "Conflict",
@@ -344,12 +352,7 @@ export const makeAgentStore = (db: AgentDb) => {
           }
 
           if (reference.thinkRequestId !== null) {
-            const matchingRequest = transaction
-              .select({ assistantMessageId: committedTurns.assistantMessageId })
-              .from(committedTurns)
-              .where(eq(committedTurns.thinkRequestId, reference.thinkRequestId))
-              .limit(1)
-              .get();
+            const matchingRequest = findByThinkRequestId(reference.thinkRequestId);
             if (matchingRequest !== undefined) {
               return {
                 _tag: "Conflict",
@@ -376,7 +379,7 @@ export const makeAgentStore = (db: AgentDb) => {
       return CommittedTurnReceipt.make(outcome.receipt);
     });
 
-  const readCommittedTurns = Effect.sync(() =>
+  const readCommittedTurns = execute("readCommittedTurns", () =>
     db
       .select(committedTurnReceiptFields)
       .from(committedTurns)
@@ -384,8 +387,8 @@ export const makeAgentStore = (db: AgentDb) => {
       .all(),
   ).pipe(Effect.map((rows) => rows.map((row) => CommittedTurnReceipt.make(row))));
 
-  const readPrimaryFacts = () =>
-    Effect.sync(() =>
+  const readPrimaryFacts = (operation: AgentStoreOperation) =>
+    execute(operation, () =>
       db
         .select({
           agentId: agentInitialization.agentId,
@@ -417,8 +420,8 @@ export const makeAgentStore = (db: AgentDb) => {
       ),
     );
 
-  const readRouteSessions = (routeId: ConversationRouteId) =>
-    Effect.sync(() =>
+  const readRouteSessions = (routeId: ConversationRouteId, operation: AgentStoreOperation) =>
+    execute(operation, () =>
       db
         .select({
           replacedAt: sessionOwnership.replacedAt,
@@ -462,3 +465,15 @@ const committedTurnReceiptFields = {
   source: committedTurns.source,
   thinkRequestId: committedTurns.thinkRequestId,
 };
+
+/** Translate only synchronous Drizzle dependency failures at the store seam. */
+const execute = <A>(operation: AgentStoreOperation, query: () => A) =>
+  Effect.try({
+    try: query,
+    catch: (cause) =>
+      new AgentStoreUnavailable({
+        cause,
+        message: "Agent SQLite could not complete the Osfo store operation",
+        operation,
+      }),
+  });
