@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 
-import initialMigrationSql from "./migrations/0000_bored_union_jack.sql";
+import initialMigrationSql from "./migrations/0000_silky_goblin_queen.sql";
 import {
   AgentMigrationDefinitionMismatch,
   AgentMigrationDigestMismatch,
@@ -19,7 +19,7 @@ export interface AgentMigration {
 /** Complete immutable Osfo-owned Agent SQLite migration history. */
 export const agentMigrations: ReadonlyArray<AgentMigration> = [
   {
-    digest: "sha256:8b183e9d29d45d336945ac79a74ad815a9c89608ef59442d53862fd66cd0aa89",
+    digest: "sha256:6cc13367470fba28ea86d561b868283b79e218cf50dc759796821e49a3a76b2c",
     sql: initialMigrationSql,
     version: 1,
   },

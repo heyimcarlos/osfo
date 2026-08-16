@@ -1,5 +1,5 @@
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
-import { Effect, Schema } from "effect";
+import { DateTime, Effect, Option, Schema } from "effect";
 
 import { DbTimestamp } from "../../../db";
 import {
@@ -16,6 +16,7 @@ import {
   AgentInitializationConflict,
   AgentStateNotFound,
   type AgentStoreOperation,
+  AgentStoreRecordInvalid,
   AgentStoreUnavailable,
   CommittedTurnConflict,
   CurrentSessionReplacementConflict,
@@ -107,15 +108,48 @@ export const CommittedTurnObservation = Schema.Struct({
 /** Stable observation accepted after a committed Think turn. */
 export type CommittedTurnObservation = typeof CommittedTurnObservation.Type;
 
+const sqliteCurrentTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u;
+
+const CommittedTurnObservedAt = Schema.String.check(
+  Schema.makeFilter(
+    (value) =>
+      (sqliteCurrentTimestamp.test(value) &&
+        Option.isSome(DateTime.make(`${value.replace(" ", "T")}Z`))) ||
+      "must be a valid SQLite CURRENT_TIMESTAMP value",
+  ),
+).pipe(Schema.brand("CommittedTurnObservedAt"));
+
 /** Durable Osfo receipt for one observed committed Think turn. */
 export const CommittedTurnReceipt = Schema.Struct({
   ...CommittedTurnObservation.fields,
   observationSequence: Schema.Natural,
-  observedAt: Schema.String,
+  observedAt: CommittedTurnObservedAt,
 });
 
 /** Durable Osfo receipt for one observed committed Think turn. */
 export type CommittedTurnReceipt = typeof CommittedTurnReceipt.Type;
+
+const AgentInitializationRecord = Schema.Struct({
+  agentId: AgentId,
+  initializationId: AgentInitializationId,
+  initializedAt: DbTimestamp,
+  initialRouteId: ConversationRouteId,
+  initialSessionId: SessionId,
+});
+
+const PrimaryFactsRecord = Schema.Struct({
+  agentId: AgentId,
+  routeId: ConversationRouteId,
+  sessionId: SessionId,
+});
+
+const RouteSessionRecord = Schema.Struct({
+  replacedAt: Schema.NullOr(DbTimestamp),
+  sessionId: SessionId,
+});
+
+const SessionIdRecord = Schema.Struct({ sessionId: SessionId });
+const RouteOwnerRecord = Schema.Struct({ routeId: ConversationRouteId });
 
 /** Construct deep Agent-local persistence operations over a typed Durable SQLite client. */
 export const makeAgentStore = (db: AgentDb) => {
@@ -123,43 +157,61 @@ export const makeAgentStore = (db: AgentDb) => {
     Effect.gen(function* () {
       if (input.agentId !== namedAgentId) {
         return yield* new AgentInitializationConflict({
+          existingAgentId: null,
+          existingInitializationId: null,
+          existingInitializedAt: null,
+          existingRouteId: null,
+          existingSessionId: null,
           message: "The AgentId does not match the named Durable Object",
+          namedAgentId,
+          requestedAgentId: input.agentId,
+          requestedInitializationId: input.initializationId,
+          requestedInitializedAt: input.initializedAt,
+          requestedRouteId: input.routeId,
+          requestedSessionId: input.sessionId,
         });
       }
-      const existingInitialization = yield* execute("initialize", () =>
-        db.select().from(agentInitialization).limit(1).get(),
+      const existingInitializationRow = yield* execute("initialize", () =>
+        db.select(agentInitializationRecordFields).from(agentInitialization).limit(1).get(),
       );
-      if (existingInitialization !== undefined) {
-        const existing = yield* readPrimaryFacts("initialize");
+      if (existingInitializationRow !== undefined) {
+        const existing = yield* decodeAgentInitializationRecord(
+          "initialize",
+          existingInitializationRow,
+        );
         if (
           existing.agentId !== input.agentId ||
           existing.initializationId !== input.initializationId ||
-          existing.routeId !== input.routeId ||
-          existing.sessionId !== input.sessionId
+          existing.initializedAt !== input.initializedAt ||
+          existing.initialRouteId !== input.routeId ||
+          existing.initialSessionId !== input.sessionId
         ) {
           return yield* new AgentInitializationConflict({
+            existingAgentId: existing.agentId,
+            existingInitializationId: existing.initializationId,
+            existingInitializedAt: existing.initializedAt,
+            existingRouteId: existing.initialRouteId,
+            existingSessionId: existing.initialSessionId,
             message: "The named Agent is already initialized with different stable facts",
+            namedAgentId,
+            requestedAgentId: input.agentId,
+            requestedInitializationId: input.initializationId,
+            requestedInitializedAt: input.initializedAt,
+            requestedRouteId: input.routeId,
+            requestedSessionId: input.sessionId,
           });
         }
+        const current = yield* readPrimaryFacts("initialize");
         return AgentInitialized.make({
           agentId: existing.agentId,
-          currentSessionId: existing.sessionId,
-          routeId: existing.routeId,
+          currentSessionId: current.sessionId,
+          routeId: current.routeId,
         });
       }
 
       yield* execute("initialize", () =>
         // The Durable SQLite driver implements this Drizzle transaction with transactionSync.
         db.transaction((transaction) => {
-          transaction
-            .insert(agentInitialization)
-            .values({
-              agentId: input.agentId,
-              initializationId: input.initializationId,
-              initializedAt: input.initializedAt,
-              singletonKey: "agent",
-            })
-            .run();
           transaction
             .insert(conversationRoutes)
             .values({ isPrimary: true, routeId: input.routeId })
@@ -171,6 +223,17 @@ export const makeAgentStore = (db: AgentDb) => {
               replacedAt: null,
               routeId: input.routeId,
               sessionId: input.sessionId,
+            })
+            .run();
+          transaction
+            .insert(agentInitialization)
+            .values({
+              agentId: input.agentId,
+              initializationId: input.initializationId,
+              initializedAt: input.initializedAt,
+              initialRouteId: input.routeId,
+              initialSessionId: input.sessionId,
+              singletonKey: "agent",
             })
             .run();
         }),
@@ -234,7 +297,12 @@ export const makeAgentStore = (db: AgentDb) => {
     }
     if (current?.sessionId !== input.expectedCurrentSessionId) {
       return yield* new CurrentSessionReplacementConflict({
+        actualCurrentSessionId: current?.sessionId ?? null,
+        expectedCurrentSessionId: input.expectedCurrentSessionId,
         message: "The route's current Session does not match the replacement request",
+        replacementOwnerRouteId: null,
+        replacementSessionId: input.replacementSessionId,
+        routeId: input.routeId,
       });
     }
     const replacementOwner = yield* execute("replaceCurrentSession", () =>
@@ -246,8 +314,14 @@ export const makeAgentStore = (db: AgentDb) => {
         .get(),
     );
     if (replacementOwner !== undefined) {
+      const owner = yield* decodeRouteOwner("replaceCurrentSession", replacementOwner);
       return yield* new CurrentSessionReplacementConflict({
+        actualCurrentSessionId: current.sessionId,
+        expectedCurrentSessionId: input.expectedCurrentSessionId,
         message: "The replacement Session is already owned by an Agent route",
+        replacementOwnerRouteId: owner.routeId,
+        replacementSessionId: input.replacementSessionId,
+        routeId: input.routeId,
       });
     }
 
@@ -291,7 +365,13 @@ export const makeAgentStore = (db: AgentDb) => {
         .where(eq(sessionOwnership.sessionId, sessionId))
         .limit(1)
         .get(),
-    ).pipe(Effect.map((row) => row !== undefined));
+    ).pipe(
+      Effect.flatMap((row) =>
+        row === undefined
+          ? Effect.succeed(false)
+          : decodeSessionId("readSessionOwnership", row).pipe(Effect.as(true)),
+      ),
+    );
 
   const readSessionIds = execute("readSessionOwnership", () =>
     db
@@ -303,7 +383,12 @@ export const makeAgentStore = (db: AgentDb) => {
         asc(sessionOwnership.sessionId),
       )
       .all(),
-  ).pipe(Effect.map((rows) => rows.map(({ sessionId }) => sessionId)));
+  ).pipe(
+    Effect.flatMap((rows) =>
+      Effect.forEach(rows, (row) => decodeSessionId("readSessionOwnership", row)),
+    ),
+    Effect.map((rows) => rows.map(({ sessionId }) => sessionId)),
+  );
 
   const recordCommittedTurn = (reference: CommittedTurnObservation) =>
     Effect.gen(function* () {
@@ -311,22 +396,30 @@ export const makeAgentStore = (db: AgentDb) => {
         // The Durable SQLite driver implements this exact local transaction with transactionSync.
         db.transaction((transaction) => {
           const findByThinkRequestId = (thinkRequestId: ThinkRequestIdType) =>
+            decodeCommittedTurnRecord(
+              transaction
+                .select(committedTurnReceiptFields)
+                .from(committedTurns)
+                .where(eq(committedTurns.thinkRequestId, thinkRequestId))
+                .limit(1)
+                .get(),
+            );
+          const matchingMessage = decodeCommittedTurnRecord(
             transaction
-              .select({ assistantMessageId: committedTurns.assistantMessageId })
+              .select(committedTurnReceiptFields)
               .from(committedTurns)
-              .where(eq(committedTurns.thinkRequestId, thinkRequestId))
+              .where(eq(committedTurns.assistantMessageId, reference.assistantMessageId))
               .limit(1)
-              .get();
-          const matchingMessage = transaction
-            .select(committedTurnReceiptFields)
-            .from(committedTurns)
-            .where(eq(committedTurns.assistantMessageId, reference.assistantMessageId))
-            .limit(1)
-            .get();
+              .get(),
+          );
+          if (matchingMessage === invalidCommittedTurnRecord) {
+            return { _tag: "InvalidRecord" } as const;
+          }
           if (matchingMessage !== undefined) {
             if (matchingMessage.sessionId !== reference.sessionId) {
               return {
                 _tag: "Conflict",
+                existing: matchingMessage,
                 message: "The assistant message is already observed for another Session",
               } as const;
             }
@@ -337,14 +430,19 @@ export const makeAgentStore = (db: AgentDb) => {
             ) {
               return {
                 _tag: "Conflict",
+                existing: matchingMessage,
                 message: "The assistant message is already observed for another Think request",
               } as const;
             }
             if (matchingMessage.thinkRequestId === null && reference.thinkRequestId !== null) {
               const matchingRequest = findByThinkRequestId(reference.thinkRequestId);
+              if (matchingRequest === invalidCommittedTurnRecord) {
+                return { _tag: "InvalidRecord" } as const;
+              }
               if (matchingRequest !== undefined) {
                 return {
                   _tag: "Conflict",
+                  existing: matchingRequest,
                   message: "The Think request is already observed for another assistant message",
                 } as const;
               }
@@ -361,9 +459,13 @@ export const makeAgentStore = (db: AgentDb) => {
 
           if (reference.thinkRequestId !== null) {
             const matchingRequest = findByThinkRequestId(reference.thinkRequestId);
+            if (matchingRequest === invalidCommittedTurnRecord) {
+              return { _tag: "InvalidRecord" } as const;
+            }
             if (matchingRequest !== undefined) {
               return {
                 _tag: "Conflict",
+                existing: matchingRequest,
                 message: "The Think request is already observed for another assistant message",
               } as const;
             }
@@ -376,15 +478,21 @@ export const makeAgentStore = (db: AgentDb) => {
           return { _tag: "Receipt", receipt: inserted } as const;
         }),
       );
-      if ("message" in outcome) {
+      if (outcome["_tag"] === "InvalidRecord") {
+        return yield* invalidStoreRecord("recordCommittedTurn");
+      }
+      if (outcome["_tag"] === "Conflict") {
         return yield* new CommittedTurnConflict({
           assistantMessageId: reference.assistantMessageId,
+          existingAssistantMessageId: outcome.existing.assistantMessageId,
+          existingSessionId: outcome.existing.sessionId,
+          existingThinkRequestId: outcome.existing.thinkRequestId,
           message: outcome.message,
           sessionId: reference.sessionId,
           thinkRequestId: reference.thinkRequestId,
         });
       }
-      return CommittedTurnReceipt.make(outcome.receipt);
+      return yield* decodeCommittedTurnReceipt("recordCommittedTurn", outcome.receipt);
     });
 
   const readCommittedTurns = execute("readCommittedTurns", () =>
@@ -393,64 +501,63 @@ export const makeAgentStore = (db: AgentDb) => {
       .from(committedTurns)
       .orderBy(asc(committedTurns.observationSequence))
       .all(),
-  ).pipe(Effect.map((rows) => rows.map((row) => CommittedTurnReceipt.make(row))));
+  ).pipe(
+    Effect.flatMap((rows) =>
+      Effect.forEach(rows, (row) => decodeCommittedTurnReceipt("readCommittedTurns", row)),
+    ),
+  );
 
   const readPrimaryFacts = (operation: AgentStoreOperation) =>
-    execute(operation, () =>
-      db
-        .select({
-          agentId: agentInitialization.agentId,
-          initializationId: agentInitialization.initializationId,
-          routeId: conversationRoutes.routeId,
-          sessionId: sessionOwnership.sessionId,
-        })
-        .from(agentInitialization)
-        .innerJoin(conversationRoutes, eq(conversationRoutes.isPrimary, true))
-        .innerJoin(
-          sessionOwnership,
-          and(
-            eq(sessionOwnership.routeId, conversationRoutes.routeId),
-            isNull(sessionOwnership.replacedAt),
-          ),
-        )
-        .limit(1)
-        .get(),
-    ).pipe(
-      Effect.flatMap((facts) =>
-        facts === undefined
-          ? Effect.fail(
-              new AgentStateNotFound({
-                message: "The named Agent is not initialized",
-                subject: "agent",
-              }),
-            )
-          : Effect.succeed(facts),
-      ),
-    );
+    Effect.gen(function* () {
+      const facts = yield* execute(operation, () =>
+        db
+          .select({
+            agentId: agentInitialization.agentId,
+            routeId: conversationRoutes.routeId,
+            sessionId: sessionOwnership.sessionId,
+          })
+          .from(agentInitialization)
+          .innerJoin(conversationRoutes, eq(conversationRoutes.isPrimary, true))
+          .innerJoin(
+            sessionOwnership,
+            and(
+              eq(sessionOwnership.routeId, conversationRoutes.routeId),
+              isNull(sessionOwnership.replacedAt),
+            ),
+          )
+          .limit(1)
+          .get(),
+      );
+      if (facts === undefined) {
+        return yield* new AgentStateNotFound({
+          message: "The named Agent is not initialized",
+          subject: "agent",
+        });
+      }
+      return yield* decodePrimaryFacts(operation, facts);
+    });
 
   const readRouteSessions = (routeId: ConversationRouteId, operation: AgentStoreOperation) =>
-    execute(operation, () =>
-      db
-        .select({
-          replacedAt: sessionOwnership.replacedAt,
-          sessionId: sessionOwnership.sessionId,
-        })
-        .from(sessionOwnership)
-        .where(eq(sessionOwnership.routeId, routeId))
-        .orderBy(asc(sessionOwnership.becameCurrentAt), asc(sessionOwnership.sessionId))
-        .all(),
-    ).pipe(
-      Effect.flatMap((sessions) =>
-        sessions.length === 0
-          ? Effect.fail(
-              new AgentStateNotFound({
-                message: "The conversation route does not exist",
-                subject: "route",
-              }),
-            )
-          : Effect.succeed(sessions),
-      ),
-    );
+    Effect.gen(function* () {
+      const rows = yield* execute(operation, () =>
+        db
+          .select({
+            replacedAt: sessionOwnership.replacedAt,
+            sessionId: sessionOwnership.sessionId,
+          })
+          .from(sessionOwnership)
+          .where(eq(sessionOwnership.routeId, routeId))
+          .orderBy(asc(sessionOwnership.becameCurrentAt), asc(sessionOwnership.sessionId))
+          .all(),
+      );
+      if (rows.length === 0) {
+        return yield* new AgentStateNotFound({
+          message: "The conversation route does not exist",
+          subject: "route",
+        });
+      }
+      return yield* Effect.forEach(rows, (row) => decodeRouteSession(operation, row));
+    });
 
   return {
     initialize,
@@ -473,6 +580,85 @@ const committedTurnReceiptFields = {
   source: committedTurns.source,
   thinkRequestId: committedTurns.thinkRequestId,
 };
+
+const agentInitializationRecordFields = {
+  agentId: agentInitialization.agentId,
+  initializationId: agentInitialization.initializationId,
+  initializedAt: agentInitialization.initializedAt,
+  initialRouteId: agentInitialization.initialRouteId,
+  initialSessionId: agentInitialization.initialSessionId,
+};
+
+type CommittedTurnRecord = typeof committedTurns.$inferSelect;
+
+const invalidCommittedTurnRecord: unique symbol = Symbol("invalidCommittedTurnRecord");
+
+const decodeCommittedTurnRecord = (
+  row: CommittedTurnRecord | undefined,
+): CommittedTurnReceipt | typeof invalidCommittedTurnRecord | undefined => {
+  if (row === undefined) return undefined;
+  return Option.getOrElse(
+    Schema.decodeOption(CommittedTurnReceipt)(row),
+    () => invalidCommittedTurnRecord,
+  );
+};
+
+const decodeCommittedTurnReceipt = (operation: AgentStoreOperation, row: CommittedTurnRecord) =>
+  Schema.decodeEffect(CommittedTurnReceipt)(row).pipe(
+    Effect.mapError(
+      () =>
+        new AgentStoreRecordInvalid({
+          message: "Agent SQLite returned an invalid committed-turn receipt",
+          operation,
+        }),
+    ),
+  );
+
+const decodeAgentInitializationRecord = (
+  operation: AgentStoreOperation,
+  row: typeof AgentInitializationRecord.Encoded,
+): Effect.Effect<typeof AgentInitializationRecord.Type, AgentStoreRecordInvalid> =>
+  Schema.decodeEffect(AgentInitializationRecord)(row).pipe(
+    Effect.mapError(() => invalidStoreRecord(operation)),
+  );
+
+const decodePrimaryFacts = (
+  operation: AgentStoreOperation,
+  row: typeof PrimaryFactsRecord.Encoded,
+): Effect.Effect<typeof PrimaryFactsRecord.Type, AgentStoreRecordInvalid> =>
+  Schema.decodeEffect(PrimaryFactsRecord)(row).pipe(
+    Effect.mapError(() => invalidStoreRecord(operation)),
+  );
+
+const decodeRouteSession = (
+  operation: AgentStoreOperation,
+  row: typeof RouteSessionRecord.Encoded,
+): Effect.Effect<typeof RouteSessionRecord.Type, AgentStoreRecordInvalid> =>
+  Schema.decodeEffect(RouteSessionRecord)(row).pipe(
+    Effect.mapError(() => invalidStoreRecord(operation)),
+  );
+
+const decodeSessionId = (
+  operation: AgentStoreOperation,
+  row: typeof SessionIdRecord.Encoded,
+): Effect.Effect<typeof SessionIdRecord.Type, AgentStoreRecordInvalid> =>
+  Schema.decodeEffect(SessionIdRecord)(row).pipe(
+    Effect.mapError(() => invalidStoreRecord(operation)),
+  );
+
+const decodeRouteOwner = (
+  operation: AgentStoreOperation,
+  row: typeof RouteOwnerRecord.Encoded,
+): Effect.Effect<typeof RouteOwnerRecord.Type, AgentStoreRecordInvalid> =>
+  Schema.decodeEffect(RouteOwnerRecord)(row).pipe(
+    Effect.mapError(() => invalidStoreRecord(operation)),
+  );
+
+const invalidStoreRecord = (operation: AgentStoreOperation) =>
+  new AgentStoreRecordInvalid({
+    message: "Agent SQLite returned an invalid Osfo-owned record",
+    operation,
+  });
 
 /** Translate only synchronous Drizzle dependency failures at the store seam. */
 const execute = <A>(operation: AgentStoreOperation, query: () => A) =>

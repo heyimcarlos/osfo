@@ -1,6 +1,14 @@
 import { Schema } from "effect";
 
-import { AssistantMessageId, SessionId, ThinkRequestId } from "../../../domain";
+import { DbTimestamp } from "../../../db";
+import {
+  AgentId,
+  AgentInitializationId,
+  AssistantMessageId,
+  ConversationRouteId,
+  SessionId,
+  ThinkRequestId,
+} from "../../../domain";
 
 /** Agent SQLite operations exposed by the typed store seam. */
 export const AgentStoreOperation = Schema.Literals([
@@ -68,7 +76,18 @@ export type AgentMigrationError =
 export class AgentInitializationConflict extends Schema.TaggedError<AgentInitializationConflict>()(
   "AgentInitializationConflict",
   {
+    existingAgentId: Schema.NullOr(AgentId),
+    existingInitializationId: Schema.NullOr(AgentInitializationId),
+    existingInitializedAt: Schema.NullOr(DbTimestamp),
+    existingRouteId: Schema.NullOr(ConversationRouteId),
+    existingSessionId: Schema.NullOr(SessionId),
     message: Schema.String,
+    namedAgentId: AgentId,
+    requestedAgentId: AgentId,
+    requestedInitializationId: AgentInitializationId,
+    requestedInitializedAt: DbTimestamp,
+    requestedRouteId: ConversationRouteId,
+    requestedSessionId: SessionId,
   },
 ) {}
 
@@ -85,7 +104,12 @@ export class AgentStateNotFound extends Schema.TaggedError<AgentStateNotFound>()
 export class CurrentSessionReplacementConflict extends Schema.TaggedError<CurrentSessionReplacementConflict>()(
   "CurrentSessionReplacementConflict",
   {
+    actualCurrentSessionId: Schema.NullOr(SessionId),
+    expectedCurrentSessionId: SessionId,
     message: Schema.String,
+    replacementOwnerRouteId: Schema.NullOr(ConversationRouteId),
+    replacementSessionId: SessionId,
+    routeId: ConversationRouteId,
   },
 ) {}
 
@@ -94,6 +118,9 @@ export class CommittedTurnConflict extends Schema.TaggedError<CommittedTurnConfl
   "CommittedTurnConflict",
   {
     assistantMessageId: AssistantMessageId,
+    existingAssistantMessageId: AssistantMessageId,
+    existingSessionId: SessionId,
+    existingThinkRequestId: Schema.NullOr(ThinkRequestId),
     message: Schema.String,
     sessionId: SessionId,
     thinkRequestId: Schema.NullOr(ThinkRequestId),
@@ -110,11 +137,29 @@ export class ThinkSessionReadUnavailable extends Schema.TaggedError<ThinkSession
   },
 ) {}
 
+/** Expected failure when Think returns a malformed canonical Session record. */
+export class ThinkSessionRecordInvalid extends Schema.TaggedError<ThinkSessionRecordInvalid>()(
+  "ThinkSessionRecordInvalid",
+  {
+    message: Schema.String,
+    sessionId: SessionId,
+  },
+) {}
+
 /** Expected dependency failure at the narrow synchronous Drizzle seam. */
 export class AgentStoreUnavailable extends Schema.TaggedError<AgentStoreUnavailable>()(
   "AgentStoreUnavailable",
   {
     cause: Schema.Defect(),
+    message: Schema.String,
+    operation: AgentStoreOperation,
+  },
+) {}
+
+/** Expected failure when Agent SQLite returns a malformed Osfo-owned record. */
+export class AgentStoreRecordInvalid extends Schema.TaggedError<AgentStoreRecordInvalid>()(
+  "AgentStoreRecordInvalid",
+  {
     message: Schema.String,
     operation: AgentStoreOperation,
   },

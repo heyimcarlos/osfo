@@ -1,4 +1,4 @@
-import { Session, Think, type ChatResponseResult, type SessionMessage } from "@cloudflare/think";
+import { Session, Think, type ChatResponseResult } from "@cloudflare/think";
 import { Effect, Option, Schema } from "effect";
 
 import type { AssistantMessageId as AssistantMessageIdType, SessionId } from "../../domain";
@@ -22,10 +22,12 @@ import {
   AgentRequestInvalid,
   type AgentRequestOperation,
   AgentStateNotFound,
+  type AgentStoreRecordInvalid,
   type AgentStoreUnavailable,
   CommittedTurnConflict,
   type CurrentSessionReplacementConflict,
   ThinkSessionReadUnavailable,
+  ThinkSessionRecordInvalid,
 } from "./db/errors";
 import { applyAgentMigrations } from "./db/migrate";
 import {
@@ -45,10 +47,28 @@ import {
 
 const pendingSessionId = "__osfo_uninitialized__";
 
+const CanonicalSessionMessagePart = Schema.StructWithRest(Schema.Struct({ type: Schema.String }), [
+  Schema.Record(Schema.String, Schema.Unknown),
+]);
+
+/** Osfo-owned projection of one canonical message returned by Think. */
+export const CanonicalSessionMessage = Schema.StructWithRest(
+  Schema.Struct({
+    createdAt: Schema.optional(Schema.Union([Schema.Date, Schema.String])),
+    id: Schema.String,
+    parts: Schema.Array(CanonicalSessionMessagePart),
+    role: Schema.String,
+  }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+);
+
+/** Osfo-owned projection of one canonical message returned by Think. */
+export type CanonicalSessionMessage = typeof CanonicalSessionMessage.Type;
+
 /** Canonical Think messages read for one Agent-owned Session. */
 export interface CanonicalSessionFound {
   readonly _tag: "CanonicalSessionFound";
-  readonly messages: ReadonlyArray<SessionMessage>;
+  readonly messages: ReadonlyArray<CanonicalSessionMessage>;
   readonly sessionId: SessionId;
 }
 
@@ -96,6 +116,7 @@ export class OsfoAgent extends Think<Env> {
     | AgentInitialized
     | AgentRequestInvalid
     | AgentStateNotFound
+    | AgentStoreRecordInvalid
     | AgentStoreUnavailable
   > {
     await this.#migrationsReady;
@@ -117,7 +138,9 @@ export class OsfoAgent extends Think<Env> {
   }
 
   /** Look up the stable initialization fact and current primary Session. */
-  async inspect(): Promise<AgentFound | AgentStateNotFound | AgentStoreUnavailable> {
+  async inspect(): Promise<
+    AgentFound | AgentStateNotFound | AgentStoreRecordInvalid | AgentStoreUnavailable
+  > {
     await this.#migrationsReady;
     return runRpc(this.#store.inspect());
   }
@@ -128,6 +151,7 @@ export class OsfoAgent extends Think<Env> {
   ): Promise<
     | AgentRequestInvalid
     | AgentStateNotFound
+    | AgentStoreRecordInvalid
     | AgentStoreUnavailable
     | CurrentSessionReplaced
     | CurrentSessionReplacementConflict
@@ -147,7 +171,11 @@ export class OsfoAgent extends Think<Env> {
   async readRoute(
     routeId: string,
   ): Promise<
-    AgentRequestInvalid | AgentStateNotFound | AgentStoreUnavailable | ConversationRouteFound
+    | AgentRequestInvalid
+    | AgentStateNotFound
+    | AgentStoreRecordInvalid
+    | AgentStoreUnavailable
+    | ConversationRouteFound
   > {
     await this.#migrationsReady;
     return runRpc(
@@ -162,7 +190,12 @@ export class OsfoAgent extends Think<Env> {
   async readSession(
     sessionId: string,
   ): Promise<
-    AgentRequestInvalid | AgentStoreUnavailable | CanonicalSessionRead | ThinkSessionReadUnavailable
+    | AgentRequestInvalid
+    | AgentStoreRecordInvalid
+    | AgentStoreUnavailable
+    | CanonicalSessionRead
+    | ThinkSessionReadUnavailable
+    | ThinkSessionRecordInvalid
   > {
     await this.#migrationsReady;
     const session = Session.create(this);
@@ -208,9 +241,11 @@ export class OsfoAgent extends Think<Env> {
   /** Read idempotent committed-turn references owned by this Agent. */
   async readCommittedTurns(): Promise<
     | AgentStoreUnavailable
+    | AgentStoreRecordInvalid
     | CommittedTurnConflict
     | ReadonlyArray<CommittedTurnReceipt>
     | ThinkSessionReadUnavailable
+    | ThinkSessionRecordInvalid
   > {
     await this.#migrationsReady;
     return runRpc(
@@ -266,10 +301,14 @@ export class OsfoAgent extends Think<Env> {
         });
       }
       if (owners.length > 1) {
+        const conflictingOwner = owners.at(1) ?? owner;
         return yield* new CommittedTurnConflict({
           assistantMessageId,
+          existingAssistantMessageId: assistantMessageId,
+          existingSessionId: owner,
+          existingThinkRequestId: thinkRequestId,
           message: "The assistant message appears in more than one Think Session",
-          sessionId: owner,
+          sessionId: conflictingOwner,
           thinkRequestId,
         });
       }
@@ -279,7 +318,11 @@ export class OsfoAgent extends Think<Env> {
 
   #reconcileCommittedTurns(): Effect.Effect<
     void,
-    AgentStoreUnavailable | CommittedTurnConflict | ThinkSessionReadUnavailable
+    | AgentStoreRecordInvalid
+    | AgentStoreUnavailable
+    | CommittedTurnConflict
+    | ThinkSessionReadUnavailable
+    | ThinkSessionRecordInvalid
   > {
     return this.#store.readSessionIds.pipe(
       Effect.flatMap((sessionIds) =>
@@ -320,7 +363,19 @@ const readThinkHistory = (session: Session, sessionId: SessionId) =>
         sessionId,
       }),
     try: () => session.forSession(sessionId).getHistory(),
-  });
+  }).pipe(
+    Effect.flatMap((messages) =>
+      Schema.decodeUnknownEffect(Schema.Array(CanonicalSessionMessage))(messages).pipe(
+        Effect.mapError(
+          () =>
+            new ThinkSessionRecordInvalid({
+              message: "Think Session history contains an invalid message",
+              sessionId,
+            }),
+        ),
+      ),
+    ),
+  );
 
 const readThinkMessage = (
   session: Session,
@@ -335,7 +390,19 @@ const readThinkMessage = (
         sessionId,
       }),
     try: () => session.forSession(sessionId).getMessage(assistantMessageId),
-  });
+  }).pipe(
+    Effect.flatMap((message) =>
+      Schema.decodeUnknownEffect(Schema.NullOr(CanonicalSessionMessage))(message).pipe(
+        Effect.mapError(
+          () =>
+            new ThinkSessionRecordInvalid({
+              message: "Think Session message lookup returned an invalid message",
+              sessionId,
+            }),
+        ),
+      ),
+    ),
+  );
 
 const runRpc = <A, E>(effect: Effect.Effect<A, E>): Promise<A | E> =>
   Effect.runPromise(

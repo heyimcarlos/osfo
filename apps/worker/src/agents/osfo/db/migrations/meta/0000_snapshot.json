@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "fe52ab6c-71a8-44d0-a857-e5e453efd3f3",
+  "id": "aee18e57-0ad3-42da-9408-07c5fdae5c45",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "osfo_agent_initialization": {
@@ -28,6 +28,20 @@
           "notNull": true,
           "autoincrement": false
         },
+        "initial_route_id": {
+          "name": "initial_route_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "initial_session_id": {
+          "name": "initial_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
         "singleton_key": {
           "name": "singleton_key",
           "type": "text",
@@ -48,7 +62,26 @@
           "isUnique": true
         }
       },
-      "foreignKeys": {},
+      "foreignKeys": {
+        "osfo_agent_initialization_initial_route_id_osfo_conversation_routes_route_id_fk": {
+          "name": "osfo_agent_initialization_initial_route_id_osfo_conversation_routes_route_id_fk",
+          "tableFrom": "osfo_agent_initialization",
+          "tableTo": "osfo_conversation_routes",
+          "columnsFrom": ["initial_route_id"],
+          "columnsTo": ["route_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        },
+        "osfo_agent_initialization_initial_session_id_osfo_session_ownership_session_id_fk": {
+          "name": "osfo_agent_initialization_initial_session_id_osfo_session_ownership_session_id_fk",
+          "tableFrom": "osfo_agent_initialization",
+          "tableTo": "osfo_session_ownership",
+          "columnsFrom": ["initial_session_id"],
+          "columnsTo": ["session_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {

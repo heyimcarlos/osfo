@@ -26,7 +26,9 @@ Drizzle owns the table declarations, inferred row types, normal reads and writes
 and generated SQL migration files. The Agent-local schema does not contain a
 second Agent directory. PostgreSQL owns the cross-Agent directory. The named
 Durable Object stores only one `osfo_agent_initialization` receipt as local
-initialization evidence and an optional AgentId consistency guard.
+initialization evidence and an optional AgentId consistency guard. The receipt
+also preserves the initial route and Session identities. Current Session changes
+do not change these original initialization facts.
 
 The first stable primitives are:
 
@@ -43,6 +45,12 @@ receipt, initialization identity, Session identity, assistant message identity,
 and non-null Think request identity are unique. Store transactions create the
 required primary route and current Session together, and replace a current
 Session without deleting its historical ownership row.
+
+Initialization replay must match the complete stored receipt, including the
+initialization timestamp and the initial route and Session identities. A compatible
+replay returns the route's current Session, which can differ from its initial
+Session. Conflicts report both established and attempted stable identities so
+operators can diagnose a rejected replay without inspecting private Think state.
 
 Each committed-turn receipt has an SQLite-assigned monotonic
 `observation_sequence`. This value records Osfo observation order only. It is not
@@ -79,4 +87,6 @@ Direct Durable Object SQLite access is limited to these explicit cases:
   exact synchronous atomicity boundary
 
 Product stores use typed Drizzle operations and show their transaction boundaries.
-They do not hide those boundaries behind a generic repository.
+They parse retrieved records with Effect Schema and do not hide transaction
+boundaries behind a generic repository. Canonical Think messages are also parsed
+into an Osfo-owned projection at the public Session seam.

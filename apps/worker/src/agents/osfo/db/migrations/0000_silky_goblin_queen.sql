@@ -2,7 +2,11 @@ CREATE TABLE `osfo_agent_initialization` (
 	`agent_id` text NOT NULL,
 	`initialization_id` text NOT NULL,
 	`initialized_at` text NOT NULL,
+	`initial_route_id` text NOT NULL,
+	`initial_session_id` text NOT NULL,
 	`singleton_key` text PRIMARY KEY NOT NULL,
+	FOREIGN KEY (`initial_route_id`) REFERENCES `osfo_conversation_routes`(`route_id`) ON UPDATE restrict ON DELETE restrict,
+	FOREIGN KEY (`initial_session_id`) REFERENCES `osfo_session_ownership`(`session_id`) ON UPDATE restrict ON DELETE restrict,
 	CONSTRAINT "osfo_agent_initialization_singleton" CHECK("osfo_agent_initialization"."singleton_key" = 'agent')
 );
 --> statement-breakpoint

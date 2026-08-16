@@ -68,6 +68,16 @@ describe("Osfo Agent and Think Session foundation", () => {
             sessionId,
           }),
       );
+      const changedTimestampInitialization = yield* Effect.promise(
+        async () =>
+          await agent.initialize({
+            agentId,
+            initializationId,
+            initializedAt: "2026-08-15T12:00:01.000Z",
+            routeId,
+            sessionId,
+          }),
+      );
       const firstActivation = yield* Effect.promise(async () => await agent.probeRuntime());
 
       yield* Effect.promise(() => evictDurableObject(agent));
@@ -84,7 +94,15 @@ describe("Osfo Agent and Think Session foundation", () => {
       expect(repeatedInitialization).toEqual(initialized);
       expect(conflictingInitialization).toMatchObject({
         _tag: "AgentInitializationConflict",
+        existingInitializationId: "init-stable",
         message: "The named Agent is already initialized with different stable facts",
+        requestedInitializationId: "init-conflicting",
+      });
+      expect(changedTimestampInitialization).toMatchObject({
+        _tag: "AgentInitializationConflict",
+        existingInitializationId: "init-stable",
+        message: "The named Agent is already initialized with different stable facts",
+        requestedInitializationId: "init-stable",
       });
       expect(found).toEqual({
         _tag: "AgentFound",
@@ -148,6 +166,26 @@ describe("Osfo Agent and Think Session foundation", () => {
             routeId,
           }),
       );
+      yield* Effect.promise(() => evictDurableObject(agent));
+      const replayedInitialization = yield* Effect.promise(
+        async () =>
+          await agent.initialize({
+            agentId,
+            initializationId,
+            initializedAt: "2026-08-15T12:00:00.000Z",
+            routeId,
+            sessionId: initialSessionId,
+          }),
+      );
+      const historicalReuse = yield* Effect.promise(
+        async () =>
+          await agent.replaceCurrentSession({
+            expectedCurrentSessionId: replacementSessionId,
+            replacedAt: "2026-08-15T14:00:00.000Z",
+            replacementSessionId: initialSessionId,
+            routeId,
+          }),
+      );
       const route = yield* Effect.promise(async () => await agent.readRoute(routeId));
       const historicalSession = yield* Effect.promise(
         async () => await agent.readSession(initialSessionId),
@@ -160,6 +198,16 @@ describe("Osfo Agent and Think Session foundation", () => {
         routeId: "route-history",
       });
       expect(repeatedReplacement).toEqual(firstReplacement);
+      expect(replayedInitialization).toEqual({
+        _tag: "AgentInitialized",
+        agentId: "agent-route-history",
+        currentSessionId: "session-replacement",
+        routeId: "route-history",
+      });
+      expect(historicalReuse).toMatchObject({
+        _tag: "CurrentSessionReplacementConflict",
+        replacementOwnerRouteId: "route-history",
+      });
       expect(route).toEqual({
         _tag: "ConversationRouteFound",
         currentSessionId: "session-replacement",
@@ -217,6 +265,8 @@ describe("Osfo Agent and Think Session foundation", () => {
               .insert(agentInitialization)
               .values({
                 agentId: otherAgentId,
+                initialRouteId: routeId,
+                initialSessionId: sessionId,
                 initializationId: otherInitializationId,
                 initializedAt,
                 singletonKey: "agent",
@@ -733,11 +783,69 @@ describe("Osfo Agent and Think Session foundation", () => {
 
       expect(conflicts.sessionConflict).toMatchObject({
         _tag: "CommittedTurnConflict",
+        existingAssistantMessageId: "assistant-stable-identity",
+        existingSessionId: "session-conflict-first",
+        existingThinkRequestId: "think-request-stable-identity",
         message: "The assistant message is already observed for another Session",
       });
       expect(conflicts.requestConflict).toMatchObject({
         _tag: "CommittedTurnConflict",
+        existingAssistantMessageId: "assistant-stable-identity",
+        existingSessionId: "session-conflict-first",
+        existingThinkRequestId: "think-request-stable-identity",
         message: "The Think request is already observed for another assistant message",
+      });
+    }),
+  );
+
+  it.effect("fails with a typed store error for an invalid committed-turn timestamp", () =>
+    Effect.gen(function* () {
+      const agentId = Schema.decodeUnknownSync(AgentId)("agent-invalid-observed-at");
+      const initializationId = Schema.decodeUnknownSync(AgentInitializationId)(
+        "init-invalid-observed-at",
+      );
+      const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-invalid-observed-at");
+      const sessionId = Schema.decodeUnknownSync(SessionId)("session-invalid-observed-at");
+      const agent = env.OSFO_AGENT.getByName(agentId);
+
+      yield* Effect.promise(
+        async () =>
+          await agent.initialize({
+            agentId,
+            initializationId,
+            initializedAt: "2026-08-15T12:00:00.000Z",
+            routeId,
+            sessionId,
+          }),
+      );
+      yield* Effect.promise(() =>
+        runInDurableObject(agent, async (_instance, state) => {
+          const db = makeAgentDb(state.storage);
+          db.insert(committedTurns)
+            .values({
+              assistantMessageId: AssistantMessageId.make("assistant-invalid-observed-at"),
+              sessionId,
+              source: "reconciliation",
+              thinkRequestId: null,
+            })
+            .run();
+          db.update(committedTurns)
+            .set({ observedAt: "not-a-sqlite-timestamp" })
+            .where(
+              eq(
+                committedTurns.assistantMessageId,
+                AssistantMessageId.make("assistant-invalid-observed-at"),
+              ),
+            )
+            .run();
+        }),
+      );
+
+      const read = yield* Effect.promise(async () => await agent.readCommittedTurns());
+
+      expect(read).toMatchObject({
+        _tag: "AgentStoreRecordInvalid",
+        operation: "readCommittedTurns",
       });
     }),
   );
