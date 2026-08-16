@@ -15,7 +15,11 @@ export const DbTimestamp = Schema.String.check(
 export type DbTimestamp = typeof DbTimestamp.Type;
 
 /** Database operations used in safe failures and telemetry. */
-export const DbOperation = Schema.Literals(["completeRegistration", "resolveAgent"]);
+export const DbOperation = Schema.Literals([
+  "completeRegistration",
+  "resolveAgent",
+  "resolveAgentOwner",
+]);
 
 /** Database operations used in safe failures and telemetry. */
 export type DbOperation = typeof DbOperation.Type;

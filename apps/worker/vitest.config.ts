@@ -16,12 +16,17 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       miniflare: { bindings: workerBindings },
-      wrangler: { configPath: "./wrangler.jsonc" },
+      wrangler: { configPath: "./wrangler.test.jsonc" },
     }),
   ],
   test: {
     fileParallelism: false,
-    include: ["test/osfo-agent.test.ts", "test/worker.test.ts"],
+    include: [
+      "test/action-approval.test.ts",
+      "test/model-access-policy.test.ts",
+      "test/osfo-agent.test.ts",
+      "test/worker.test.ts",
+    ],
     testTimeout: 30_000,
   },
 });

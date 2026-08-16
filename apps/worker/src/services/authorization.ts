@@ -454,6 +454,8 @@ const allowanceKindsFor = (operation: AuthorizationOperationType): ReadonlyArray
   switch (operation.kind) {
     case "conversation.accept":
       return ["acceptedMessages"];
+    case "conversation.run":
+      return ["supermemoryIngestionTokens", "supermemoryRetrievals"];
     case "file.upload":
       return ["fileUploads"];
     case "document.generate":

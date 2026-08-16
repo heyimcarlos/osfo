@@ -25,8 +25,7 @@
     "ai": "7.0.66",
     "drizzle-orm": "0.45.2",
     "effect": "catalog:",
-    "postgres": "3.4.9",
-    "zod": "4.4.3"
+    "postgres": "3.4.9"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",

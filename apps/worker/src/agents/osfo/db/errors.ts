@@ -167,10 +167,12 @@ export class AgentStoreRecordInvalid extends Schema.TaggedError<AgentStoreRecord
 
 /** Agent RPC operations with externally supplied values. */
 export const AgentRequestOperation = Schema.Literals([
+  "cancelManagedConversation",
   "initialize",
   "readRoute",
   "readSession",
   "replaceCurrentSession",
+  "submitManagedConversation",
 ]);
 
 /** Agent RPC operations with externally supplied values. */

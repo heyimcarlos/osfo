@@ -12,11 +12,13 @@ import {
 import type {
   AgentId,
   AgentInitializationId,
+  AllowancePeriodId,
   AssistantMessageId,
   ConversationRouteId,
   SessionId,
   ThinkRequestId,
 } from "../../../domain";
+import type { ModelCallAttemptId } from "../../../domain/model-call-attempt";
 import type { DbTimestamp } from "../../../db";
 
 const agentId = customType<{ data: AgentId; driverData: string }>({
@@ -38,6 +40,12 @@ const thinkRequestId = customType<{ data: ThinkRequestId; driverData: string }>(
   dataType: () => "text",
 });
 const timestamp = customType<{ data: DbTimestamp; driverData: string }>({
+  dataType: () => "text",
+});
+const allowancePeriodId = customType<{ data: AllowancePeriodId; driverData: string }>({
+  dataType: () => "text",
+});
+const modelCallAttemptId = customType<{ data: ModelCallAttemptId; driverData: string }>({
   dataType: () => "text",
 });
 
@@ -114,5 +122,22 @@ export const committedTurns = sqliteTable(
     uniqueIndex("osfo_committed_turn_think_request_unique")
       .on(table.thinkRequestId)
       .where(sql`${table.thinkRequestId} IS NOT NULL`),
+  ],
+);
+
+/** Durable normalized model-call evidence awaiting idempotent Allowance recording. */
+export const modelCallUsageEvidence = sqliteTable(
+  "osfo_model_call_usage_evidence",
+  {
+    allowancePeriodId: allowancePeriodId("allowance_period_id").notNull(),
+    attemptId: modelCallAttemptId("attempt_id").primaryKey(),
+    dispatchedAt: timestamp("dispatched_at"),
+    itemsJson: text("items_json").notNull(),
+    recordedAt: timestamp("recorded_at").notNull(),
+  },
+  (table) => [
+    index("osfo_model_call_usage_pending")
+      .on(table.recordedAt)
+      .where(sql`${table.dispatchedAt} IS NULL`),
   ],
 );
