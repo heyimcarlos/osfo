@@ -127,6 +127,16 @@
         "vitest": "catalog:",
       },
     },
+    "packages/model-quality": {
+      "name": "@osfo/model-quality",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
     "packages/ui": {
       "name": "@osfo/ui",
       "version": "0.0.0",
@@ -702,6 +712,8 @@
     "@osfo/auth": ["@osfo/auth@workspace:packages/auth"],
 
     "@osfo/db": ["@osfo/db@workspace:packages/db"],
+
+    "@osfo/model-quality": ["@osfo/model-quality@workspace:packages/model-quality"],
 
     "@osfo/ui": ["@osfo/ui@workspace:packages/ui"],
 
