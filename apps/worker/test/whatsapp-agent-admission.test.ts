@@ -1,6 +1,6 @@
 import type { ThinkSubmissionInspection } from "@cloudflare/think";
 import { describe, expect, it } from "@effect/vitest";
-import { DateTime, Effect, Schema } from "effect";
+import { DateTime, Deferred, Effect, Schema } from "effect";
 
 import { ThinkSubmissionUnavailable } from "../src/services/think-submission";
 import {
@@ -8,6 +8,7 @@ import {
   AgentId,
   AllowancePeriodId,
   ChannelBindingId,
+  ChannelIdentity,
   ConversationRouteId,
   ProviderMessageId,
   SessionId,
@@ -15,7 +16,7 @@ import {
   UserMessageId,
 } from "../src/domain";
 import { accept, type Interface } from "../src/services/whatsapp-agent-admission";
-import type { AgentAcceptanceInput } from "../src/services/whatsapp-admission";
+import { type AgentAcceptanceInput, WhatsAppMessageText } from "../src/services/whatsapp-admission";
 import { AuthorizationContext } from "../src/services/authorization";
 import { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
 
@@ -26,44 +27,48 @@ describe("WhatsApp Agent admission", () => {
     Effect.gen(function* () {
       let authorityCurrent = true;
       let authorityChecks = 0;
-      let inspection: ThinkSubmissionInspection | null = null;
-      let recorded = 0;
-      let receipt: AcceptanceReceipt | null = null;
-      let submissions = 0;
+      const receiptLedger = new Map<string, AcceptanceReceipt>();
+      const thinkLedger = new Map<string, ThinkSubmissionInspection>();
       const input = acceptanceInput();
       const dependencies = makeDependencies({
-        inspect: () => Effect.succeed(inspection),
-        isCurrent: () =>
+        inspect: (submissionId) => Effect.succeed(thinkLedger.get(submissionId) ?? null),
+        readCurrentBinding: (query) =>
           Effect.sync(() => {
             authorityChecks += 1;
-            return authorityCurrent;
+            return authorityCurrent
+              ? { ...query, channelIdentity: ChannelIdentity.make("14165550123") }
+              : null;
           }),
-        readReceipt: () => Effect.succeed(receipt),
+        readReceipt: (channelBindingId, providerMessageId) =>
+          Effect.succeed(receiptLedger.get(`${channelBindingId}:${providerMessageId}`) ?? null),
         recordReceipt: (candidate) =>
           Effect.sync(() => {
-            recorded += 1;
-            receipt = Schema.decodeSync(AcceptanceReceipt)({
+            const receipt = Schema.decodeSync(AcceptanceReceipt)({
               ...candidate,
               _tag: "AcceptanceReceipt",
               acceptedAt: "2026-08-16T12:00:00Z",
             });
+            receiptLedger.set(
+              `${candidate.channelBindingId}:${candidate.providerMessageId}`,
+              receipt,
+            );
             return receipt;
           }),
         submit: (submission) =>
           Effect.suspend(() => {
-            submissions += 1;
             const idempotencyKey = Schema.decodeSync(Schema.String)(submission.idempotencyKey);
             const metadata = Schema.decodeSync(Schema.Record(Schema.String, Schema.Unknown))(
               submission.metadata,
             );
             const submissionId = Schema.decodeSync(ThinkSubmissionId)(submission.submissionId);
-            inspection = {
+            const inspection = {
               createdAt: 1,
               idempotencyKey,
               metadata,
               status: "pending",
               submissionId,
-            };
+            } satisfies ThinkSubmissionInspection;
+            thinkLedger.set(submissionId, inspection);
             return Effect.fail(
               new ThinkSubmissionUnavailable({
                 cause: inspection,
@@ -88,8 +93,62 @@ describe("WhatsApp Agent admission", () => {
         userMessageId: input.userMessageId,
       });
       expect(authorityChecks).toBe(1);
-      expect(submissions).toBe(1);
-      expect(recorded).toBe(1);
+      expect(thinkLedger.size).toBe(1);
+      expect(receiptLedger.size).toBe(1);
+    }),
+  );
+
+  it.effect("concurrent replay creates one Think submission and one Acceptance Receipt", () =>
+    Effect.gen(function* () {
+      const input = acceptanceInput();
+      const submitArrivals = yield* Deferred.make<void>();
+      const receiptLedger = new Map<string, AcceptanceReceipt>();
+      const thinkLedger = new Map<string, ThinkSubmissionInspection>();
+      let waiting = 0;
+      const dependencies = makeDependencies({
+        inspect: (submissionId) => Effect.succeed(thinkLedger.get(submissionId) ?? null),
+        readReceipt: (channelBindingId, providerMessageId) =>
+          Effect.succeed(receiptLedger.get(`${channelBindingId}:${providerMessageId}`) ?? null),
+        recordReceipt: (candidate) =>
+          Effect.sync(() => {
+            const key = `${candidate.channelBindingId}:${candidate.providerMessageId}`;
+            const existing = receiptLedger.get(key);
+            if (existing !== undefined) return existing;
+            const receipt = Schema.decodeSync(AcceptanceReceipt)({
+              ...candidate,
+              _tag: "AcceptanceReceipt",
+              acceptedAt: "2026-08-16T12:00:00Z",
+            });
+            receiptLedger.set(key, receipt);
+            return receipt;
+          }),
+        submit: (submission) =>
+          Effect.gen(function* () {
+            waiting += 1;
+            if (waiting === 2) yield* Deferred.succeed(submitArrivals, undefined);
+            yield* Deferred.await(submitArrivals);
+            const existing = thinkLedger.get(submission.submissionId);
+            if (existing !== undefined) return { submissionId: existing.submissionId };
+            const inspection = {
+              createdAt: 1,
+              idempotencyKey: submission.idempotencyKey,
+              metadata: submission.metadata,
+              status: "pending" as const,
+              submissionId: submission.submissionId,
+            };
+            thinkLedger.set(submission.submissionId, inspection);
+            return { submissionId: submission.submissionId };
+          }),
+      });
+
+      const accepted = yield* Effect.all(
+        [accept({ dependencies, input }), accept({ dependencies, input })],
+        { concurrency: "unbounded" },
+      );
+
+      expect(accepted[1]).toEqual(accepted[0]);
+      expect(thinkLedger.size).toBe(1);
+      expect(receiptLedger.size).toBe(1);
     }),
   );
 
@@ -98,7 +157,7 @@ describe("WhatsApp Agent admission", () => {
       let submissions = 0;
       const input = acceptanceInput();
       const dependencies = makeDependencies({
-        isCurrent: () => Effect.succeed(false),
+        readCurrentBinding: () => Effect.succeed(null),
         submit: () =>
           Effect.sync(() => {
             submissions += 1;
@@ -126,14 +185,17 @@ describe("WhatsApp Agent admission", () => {
 const makeDependencies = (
   overrides: Partial<{
     readonly inspect: Interface["think"]["inspect"];
-    readonly isCurrent: Interface["authority"]["isCurrent"];
+    readonly readCurrentBinding: Interface["authority"]["readCurrentBinding"];
     readonly readReceipt: Interface["store"]["readAcceptanceReceipt"];
     readonly recordReceipt: Interface["store"]["recordAcceptanceReceipt"];
     readonly submit: Interface["think"]["submit"];
   }>,
 ): Interface => ({
   authority: {
-    isCurrent: overrides.isCurrent ?? (() => Effect.succeed(true)),
+    readCurrentBinding:
+      overrides.readCurrentBinding ??
+      ((query) =>
+        Effect.succeed({ ...query, channelIdentity: ChannelIdentity.make("14165550123") })),
   },
   store: {
     inspect: () =>
@@ -172,7 +234,7 @@ const makeDependencies = (
 const acceptanceInput = (): AgentAcceptanceInput => ({
   authorization: authorization(),
   channelBindingId: ChannelBindingId.make("binding-1"),
-  message: "Please help",
+  message: WhatsAppMessageText.make("Please help"),
   providerMessageId: ProviderMessageId.make("wamid.1"),
   receiptId: AcceptanceReceiptId.make("receipt-1"),
   submissionId: ThinkSubmissionId.make("submission-1"),

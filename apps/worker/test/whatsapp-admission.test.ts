@@ -4,10 +4,11 @@ import { DateTime, Effect, Redacted, Schema } from "effect";
 import { AgentId, ChannelBindingId, ChannelIdentity, ProviderMessageId } from "../src/domain";
 import {
   type AgentAcceptanceInput,
+  InboundWhatsAppMessage,
   make,
-  type InboundWhatsAppMessage,
   type Interface,
   type WhatsAppAdmissionUnavailable,
+  WhatsAppMessageText,
 } from "../src/services/whatsapp-admission";
 import { AuthorizationContext } from "../src/services/authorization";
 import { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
@@ -88,7 +89,7 @@ describe("WhatsApp inbound admission", () => {
         {
           _tag: "UnknownSenderMessage",
           channelIdentity: "14165550123",
-          eventId: "phone-1:wamid.1",
+          eventId: "123456789:wamid.1",
           invitedPhoneNumber: "14165550123",
           locale: "en",
           message: "Please help",
@@ -115,7 +116,7 @@ describe("WhatsApp inbound admission", () => {
 
       const outcome = yield* service.admit({
         ...textMessage(),
-        message: `OSFO ENROLL ${token}`,
+        message: WhatsAppMessageText.make(`OSFO ENROLL ${token}`),
       });
 
       expect(outcome).toEqual({ _tag: "OnboardingAccepted" });
@@ -123,7 +124,7 @@ describe("WhatsApp inbound admission", () => {
       expect(commands[0]).toMatchObject({
         _tag: "EnrollmentControlMessage",
         channelIdentity: "14165550123",
-        eventId: "phone-1:wamid.1",
+        eventId: "123456789:wamid.1",
       });
       expect(enrollmentToken).toBe(token);
     }),
@@ -159,13 +160,14 @@ const admission = (overrides: {
 
 type TestFailure = SimulatedAgentFailure | WhatsAppAdmissionUnavailable;
 
-const textMessage = (): InboundWhatsAppMessage => ({
-  _tag: "TextMessage",
-  channelIdentity: ChannelIdentity.make("14165550123"),
-  message: "Please help",
-  phoneNumberId: "phone-1",
-  providerMessageId: ProviderMessageId.make("wamid.1"),
-});
+const textMessage = (): InboundWhatsAppMessage =>
+  Schema.decodeSync(InboundWhatsAppMessage)({
+    _tag: "TextMessage",
+    channelIdentity: ChannelIdentity.make("14165550123"),
+    message: "Please help",
+    phoneNumberId: "123456789",
+    providerMessageId: ProviderMessageId.make("wamid.1"),
+  });
 
 const acceptanceReceipt = (): AcceptanceReceipt =>
   Schema.decodeSync(AcceptanceReceipt)({

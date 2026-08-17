@@ -6,6 +6,7 @@ import { Effect, Layer, Schema } from "effect";
 
 import { database, decodeOptionalRow, type Database } from "../../db";
 import { AgentId } from "../../domain";
+import * as ChannelBindingAuthority from "../../services/channel-binding-authority";
 import * as Onboarding from "../../services/onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Drizzle transactions and domain tags require these forms. */
@@ -33,6 +34,7 @@ const UserPhoneRecord = Schema.Struct({ phoneNumber: Schema.NullOr(Schema.String
 /** Postgres implementation of the onboarding control-plane persistence port. */
 export const make = Effect.gen(function* () {
   const db = yield* database;
+  const channelBindingAuthority = makeChannelBindingAuthority(db);
 
   const findByDigest: Onboarding.PersistencePort["findByDigest"] = (digest) =>
     Effect.tryPromise({
@@ -204,22 +206,7 @@ export const make = Effect.gen(function* () {
         },
         catch: (cause) => rejected("insertWhatsApp", input.invitationId, cause),
       }),
-    isCurrentBinding: (channelBindingId, channelIdentity, userId) =>
-      Effect.tryPromise({
-        try: () =>
-          db
-            .select({ channelIdentity: channelBindings.channelIdentity })
-            .from(channelBindings)
-            .where(
-              and(
-                eq(channelBindings.channelBindingId, channelBindingId),
-                eq(channelBindings.userId, userId),
-                isNull(channelBindings.revokedAt),
-              ),
-            )
-            .limit(1),
-        catch: (cause) => unavailable("isCurrentBinding", cause),
-      }).pipe(Effect.map((rows) => rows[0]?.channelIdentity === channelIdentity)),
+    readCurrentBinding: channelBindingAuthority.readCurrentBinding,
     readUser,
     readWelcomeRoute,
   });
@@ -228,11 +215,62 @@ export const make = Effect.gen(function* () {
 /** Postgres onboarding adapter Layer that preserves its request-scoped database requirement. */
 export const layerWithoutDependencies = Layer.effect(Onboarding.Persistence, make);
 
+/** Construct the single PostgreSQL reader for current Channel Binding authority. */
+export const makeChannelBindingAuthority = (
+  db: Database,
+): ChannelBindingAuthority.Port<Onboarding.OnboardingPersistenceUnavailable> => ({
+  readCurrentBinding: (query) =>
+    Effect.tryPromise({
+      try: () => readCurrentBindingRow(db, query),
+      catch: (cause) => unavailable("readCurrentBinding", cause),
+    }).pipe(Effect.flatMap(decodeCurrentBinding)),
+});
+
+/** Read current Channel Binding authority through its single PostgreSQL owner. */
+export const readCurrentBinding = (query: ChannelBindingAuthority.CurrentChannelBindingQuery) =>
+  Effect.gen(function* () {
+    const db = yield* database;
+    return yield* makeChannelBindingAuthority(db).readCurrentBinding(query);
+  });
+
 const unavailable = (operation: string, cause: unknown) =>
   new Onboarding.OnboardingPersistenceUnavailable({ cause, operation });
 
 const rejected = (operation: string, operationId: string, cause: unknown) =>
   new Onboarding.OnboardingPersistenceRejected({ cause, operation, operationId });
+
+const readCurrentBindingRow = (
+  db: Database,
+  query: ChannelBindingAuthority.CurrentChannelBindingQuery,
+) =>
+  db
+    .select({
+      channelBindingId: channelBindings.channelBindingId,
+      channelIdentity: channelBindings.channelIdentity,
+      userId: channelBindings.userId,
+    })
+    .from(channelBindings)
+    .where(
+      and(
+        eq(channelBindings.channelBindingId, query.channelBindingId),
+        eq(channelBindings.userId, query.userId),
+        eq(channelBindings.provider, "whatsapp"),
+        isNull(channelBindings.revokedAt),
+      ),
+    )
+    .limit(1);
+
+const decodeCurrentBinding = (
+  rows: Awaited<ReturnType<typeof readCurrentBindingRow>>,
+): Effect.Effect<
+  ChannelBindingAuthority.CurrentChannelBinding | null,
+  Onboarding.OnboardingPersistenceUnavailable
+> =>
+  rows[0] === undefined
+    ? Effect.succeed(null)
+    : Schema.decodeEffect(ChannelBindingAuthority.CurrentChannelBinding)(rows[0]).pipe(
+        Effect.mapError((cause) => unavailable("readCurrentBinding", cause)),
+      );
 
 const completeTransaction = async (
   db: Database,

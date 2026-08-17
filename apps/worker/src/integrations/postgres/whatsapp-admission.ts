@@ -5,13 +5,11 @@ import { channelBindings } from "@osfo/db/schema/onboarding";
 import { and, eq, isNull } from "drizzle-orm";
 import { DateTime, Effect, Schema } from "effect";
 
-import { database, execute } from "../../db";
+import { database } from "../../db";
 import * as Billing from "../../db/billing";
 import {
   AgentId,
-  type ChannelBindingId,
   ChannelBindingId as ChannelBindingIdSchema,
-  type UserId,
   UserId as UserIdSchema,
 } from "../../domain";
 import type { RouteInput } from "../../services/whatsapp-admission";
@@ -34,28 +32,6 @@ export class WhatsAppAdmissionPersistenceUnavailable extends Schema.TaggedError<
   "WhatsAppAdmissionPersistenceUnavailable",
   { cause: Schema.Defect(), message: Schema.String },
 ) {}
-
-/** Recheck current ownership and revocation for one fixed WhatsApp Channel Binding. */
-export const isCurrentBinding = (channelBindingId: ChannelBindingId, userId: UserId) =>
-  Effect.gen(function* () {
-    const db = yield* database;
-    const rows = yield* execute("recheckChannelBinding", () =>
-      db
-        .select({ channelBindingId: channelBindings.channelBindingId })
-        .from(channelBindings)
-        .where(
-          and(
-            eq(channelBindings.channelBindingId, channelBindingId),
-            eq(channelBindings.userId, userId),
-            eq(channelBindings.provider, "whatsapp"),
-            isNull(channelBindings.revokedAt),
-          ),
-        )
-        .limit(1)
-        .execute(),
-    );
-    return rows[0] !== undefined;
-  });
 
 /** Construct the PostgreSQL provider-event and first-binding resolution adapter. */
 export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>

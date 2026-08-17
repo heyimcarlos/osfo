@@ -1,7 +1,12 @@
 import { Effect, Redacted, Schema } from "effect";
 
-import { ChannelIdentity, ProviderMessageId } from "../../domain";
-import type { InboundWhatsAppMessage } from "../../services/whatsapp-admission";
+import { ProviderMessageId } from "../../domain";
+import {
+  type InboundWhatsAppMessage,
+  WhatsAppDirectChannelIdentity,
+  WhatsAppMessageText,
+  WhatsAppPhoneNumberId,
+} from "../../services/whatsapp-admission";
 
 /** Expected failure when Meta webhook authentication does not match configuration. */
 export class MetaWebhookAuthenticationFailed extends Schema.TaggedError<MetaWebhookAuthenticationFailed>()(
@@ -50,7 +55,7 @@ export type MetaInboundFact = IgnoredMetaEvent | InboundWhatsAppMessage;
 const MessageContext = Schema.Struct({ group_id: Schema.optional(Schema.String) });
 const MessageBase = {
   context: Schema.optional(MessageContext),
-  from: ChannelIdentity,
+  from: WhatsAppDirectChannelIdentity,
   id: ProviderMessageId,
   timestamp: Schema.String,
 };
@@ -64,13 +69,13 @@ const UnsupportedMessageType = Schema.String.check(
 const MetaMessage = Schema.Union([
   Schema.Struct({
     ...MessageBase,
-    text: Schema.Struct({ body: Schema.String }),
+    text: Schema.Struct({ body: WhatsAppMessageText }),
     type: Schema.Literal("text"),
   }),
   Schema.Struct({
     ...MessageBase,
     interactive: Schema.Struct({
-      button_reply: Schema.Struct({ id: Schema.String, title: Schema.String }),
+      button_reply: Schema.Struct({ id: Schema.String, title: WhatsAppMessageText }),
       type: Schema.Literal("button_reply"),
     }),
     type: Schema.Literal("interactive"),
@@ -99,7 +104,7 @@ const MetaMessage = Schema.Union([
   }),
   Schema.Struct({
     ...MessageBase,
-    button: Schema.Struct({ payload: Schema.String, text: Schema.String }),
+    button: Schema.Struct({ payload: Schema.String, text: WhatsAppMessageText }),
     type: Schema.Literal("button"),
   }),
   Schema.Struct({ ...MessageBase, type: UnsupportedMessageType }),
@@ -129,7 +134,7 @@ const MetaWebhook = Schema.Struct({
             messages: Schema.optional(Schema.Array(MetaMessage)),
             metadata: Schema.Struct({
               display_phone_number: Schema.String,
-              phone_number_id: Schema.String,
+              phone_number_id: WhatsAppPhoneNumberId,
             }),
             statuses: Schema.optional(Schema.Array(MetaStatus)),
           }),

@@ -18,22 +18,18 @@ import { HelpArea, OnboardingLocale } from "@osfo/api";
 
 import type { AssistantMessageId as AssistantMessageIdType, SessionId, UserId } from "../../domain";
 import {
-  AcceptanceReceiptId,
   AgentId,
   AllowancePeriodId,
   AssistantMessageId,
   ChannelBindingId,
   ConversationRouteId as ConversationRouteIdSchema,
-  ProviderMessageId,
   SessionId as SessionIdSchema,
   ThinkRequestId,
-  ThinkSubmissionId,
-  UserMessageId,
 } from "../../domain";
 import { database as workerDatabase } from "../../db";
 import * as Billing from "../../db/billing";
 import { decodeOsfoStage } from "../../env";
-import * as WhatsAppPostgres from "../../integrations/postgres/whatsapp-admission";
+import * as OnboardingPostgres from "../../integrations/postgres/onboarding";
 import {
   CancelManagedConversationInput,
   ManagedTurnMetadata,
@@ -52,8 +48,8 @@ import {
   type ManagedConversationDenied,
   SubmitManagedConversationInput,
 } from "../../services/managed-conversation";
-import { AuthorizationContext } from "../../services/authorization";
 import * as WhatsAppAgentAdmission from "../../services/whatsapp-agent-admission";
+import { AgentAcceptanceInput } from "../../services/whatsapp-admission";
 import {
   launchModelAccessPolicy,
   type ManagedRouteUnavailable,
@@ -200,16 +196,7 @@ const PersonalWelcomeInput = Schema.Struct({
 });
 type PersonalWelcomeEncoded = typeof PersonalWelcomeInput.Encoded;
 
-const AcceptWhatsAppMessageInput = Schema.Struct({
-  authorization: AuthorizationContext,
-  channelBindingId: ChannelBindingId,
-  message: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64_000)),
-  providerMessageId: ProviderMessageId,
-  receiptId: AcceptanceReceiptId,
-  submissionId: ThinkSubmissionId,
-  userMessageId: UserMessageId,
-});
-type AcceptWhatsAppMessageEncoded = typeof AcceptWhatsAppMessageInput.Encoded;
+type AcceptWhatsAppMessageEncoded = typeof AgentAcceptanceInput.Encoded;
 
 /** Durable result for the deterministic first personal response. */
 export interface PersonalWelcomeCommitted {
@@ -547,7 +534,7 @@ export class OsfoAgent extends Think<Env> {
     | WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable
   > {
     await this.#migrationsReady;
-    const decoded = Schema.decodeResult(AcceptWhatsAppMessageInput)(input);
+    const decoded = Schema.decodeResult(AgentAcceptanceInput)(input);
     if (Result.isFailure(decoded)) return invalidRequest("acceptWhatsAppMessage");
     const parsed = decoded.success;
     return runRpc(
@@ -560,7 +547,7 @@ export class OsfoAgent extends Think<Env> {
       >({
         dependencies: {
           authority: {
-            isCurrent: (channelBindingId, userId) =>
+            readCurrentBinding: ({ channelBindingId, userId }) =>
               this.#isCurrentWhatsAppBinding(channelBindingId, userId),
           },
           store: this.#store,
@@ -1038,7 +1025,7 @@ export class OsfoAgent extends Think<Env> {
     return Effect.tryPromise({
       try: () =>
         runtime.runPromise(
-          Effect.scoped(WhatsAppPostgres.isCurrentBinding(channelBindingId, userId)),
+          Effect.scoped(OnboardingPostgres.readCurrentBinding({ channelBindingId, userId })),
         ),
       catch: (cause) =>
         new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({

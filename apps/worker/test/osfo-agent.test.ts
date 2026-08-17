@@ -11,9 +11,13 @@ import {
   AssistantMessageId,
   ChannelBindingId,
   ConversationRouteId,
+  ProviderMessageId,
   SessionId,
   ThinkRequestId,
+  ThinkSubmissionId,
+  UserMessageId,
 } from "../src/domain";
+import { ManagedTurnMetadata } from "../src/domain/managed-conversation";
 import { ModelCallAttemptId } from "../src/domain/model-call-attempt";
 import { DbTimestamp } from "../src/db";
 import { makeAgentDb } from "../src/agents/osfo/db/client";
@@ -29,6 +33,8 @@ import {
   conversationRoutes,
   sessionOwnership,
 } from "../src/agents/osfo/db/schema";
+import { AuthorizationContext } from "../src/services/authorization";
+import { admitManagedConversation } from "../src/services/managed-conversation";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/prefer-typed-schema-decoder, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Worker integration tests cross Promise, RPC, Effect, and raw SQLite test boundaries. */
 
@@ -82,7 +88,11 @@ describe("Osfo Agent and Think Session foundation", () => {
           );
           const first = await instance.acceptWhatsAppMessage(input);
           const repeated = await instance.acceptWhatsAppMessage(input);
-          return { first, repeated };
+          const conflict = await instance.acceptWhatsAppMessage({
+            ...input,
+            userMessageId: "message-whatsapp-conflict",
+          });
+          return { conflict, first, repeated };
         }),
       );
 
@@ -98,6 +108,122 @@ describe("Osfo Agent and Think Session foundation", () => {
         thinkSubmissionId: "submission-whatsapp-acceptance",
         userMessageId: "message-whatsapp-acceptance",
       });
+      expect(results.conflict).toMatchObject({
+        _tag: "AcceptanceReceiptConflict",
+        existingUserMessageId: "message-whatsapp-acceptance",
+        userMessageId: "message-whatsapp-conflict",
+      });
+    }),
+  );
+
+  it.effect("recovers a real Think acceptance into one SQLite Acceptance Receipt", () =>
+    Effect.gen(function* () {
+      const agentId = AgentId.make("agent-whatsapp-think-recovery");
+      const channelBindingId = ChannelBindingId.make("binding-whatsapp-think-recovery");
+      const routeId = ConversationRouteId.make("route-whatsapp-think-recovery");
+      const sessionId = SessionId.make("session-whatsapp-think-recovery");
+      const submissionId = ThinkSubmissionId.make("submission-whatsapp-think-recovery");
+      const providerMessageId = ProviderMessageId.make("wamid.whatsapp-think-recovery");
+      const userMessageId = UserMessageId.make("message-whatsapp-think-recovery");
+      const receiptId = "receipt-whatsapp-think-recovery";
+      const agent = env.OSFO_AGENT.getByName(agentId);
+      const authorization = yield* Schema.decodeUnknownEffect(AuthorizationContext)(
+        whatsappAuthorization(channelBindingId),
+      );
+      const managed = yield* admitManagedConversation({
+        authorization,
+        idempotencyKey: `whatsapp-${receiptId}`,
+        message: "Recover accepted work",
+        submissionId,
+      });
+      const admitted = yield* Schema.decodeUnknownEffect(
+        Schema.TaggedStruct("ManagedConversationAdmitted", {
+          idempotencyKey: Schema.String,
+          metadata: ManagedTurnMetadata,
+          submissionId: ThinkSubmissionId,
+        }),
+      )(managed);
+      const metadata = {
+        ...admitted.metadata,
+        whatsappAcceptance: {
+          channelBindingId,
+          providerMessageId,
+          sessionId,
+          userMessageId,
+        },
+      };
+      const input = {
+        authorization,
+        channelBindingId,
+        message: "Recover accepted work",
+        providerMessageId,
+        receiptId,
+        submissionId,
+        userMessageId,
+      } as const;
+      yield* Effect.promise(
+        async () =>
+          await agent.initialize({
+            agentId,
+            initializationId: "init-whatsapp-think-recovery",
+            initializedAt: "2026-08-16T12:00:00.000Z",
+            routeId,
+            sessionId,
+          }),
+      );
+
+      const recovered = yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance, state) => {
+          await instance.inspectSubmission("ensure-think-submission-table");
+          state.storage.sql.exec(
+            `INSERT INTO cf_think_submissions
+              (submission_id, idempotency_key, request_id, stream_id, status,
+               messages_json, metadata_json, error_message, created_at,
+               messages_applied_at, started_at, completed_at)
+             VALUES (?, ?, ?, NULL, 'pending', ?, ?, NULL, ?, NULL, NULL, NULL)`,
+            submissionId,
+            admitted.idempotencyKey,
+            submissionId,
+            JSON.stringify([
+              {
+                id: userMessageId,
+                parts: [{ text: input.message, type: "text" }],
+                role: "user",
+              },
+            ]),
+            JSON.stringify(metadata),
+            1,
+          );
+          const receipt = await instance.acceptWhatsAppMessage(input);
+          const receiptRows = Array.from(
+            state.storage.sql.exec<{ count: number }>(
+              "SELECT count(*) AS count FROM osfo_acceptance_receipts",
+            ),
+          );
+          const submissionRows = Array.from(
+            state.storage.sql.exec<{ count: number }>(
+              "SELECT count(*) AS count FROM cf_think_submissions WHERE submission_id = ?",
+              submissionId,
+            ),
+          );
+          return {
+            receipt,
+            receiptCount: receiptRows[0]?.count,
+            submissionCount: submissionRows[0]?.count,
+          };
+        }),
+      );
+
+      expect(recovered.receipt).toMatchObject({
+        _tag: "AcceptanceReceipt",
+        channelBindingId,
+        providerMessageId,
+        receiptId,
+        thinkSubmissionId: submissionId,
+        userMessageId,
+      });
+      expect(recovered.receiptCount).toBe(1);
+      expect(recovered.submissionCount).toBe(1);
     }),
   );
 

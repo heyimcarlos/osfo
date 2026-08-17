@@ -4,34 +4,55 @@ import { RegistrationToken } from "@osfo/api";
 import {
   AcceptanceReceiptId,
   type AgentId,
-  type ChannelBindingId,
-  type ChannelIdentity,
-  type ProviderMessageId,
+  ChannelBindingId,
+  ProviderMessageId,
   ThinkSubmissionId,
   UserMessageId,
 } from "../domain";
-import type { AuthorizationContext } from "./authorization";
+import { AuthorizationContext } from "./authorization";
 import type { AcceptanceReceipt } from "./whatsapp-acceptance-receipt";
 import type { WhatsAppOnboardingCommand } from "./whatsapp-onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schemas use the standard _tag discriminator. */
 
+/** Provider-verified WhatsApp sender identity accepted by direct-message admission. */
+export const WhatsAppDirectChannelIdentity = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(15),
+  Schema.isPattern(/^\d+$/u),
+).pipe(Schema.brand("ChannelIdentity"));
+
+/** Meta phone-number resource identity accepted by inbound routing. */
+export const WhatsAppPhoneNumberId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(64),
+  Schema.isPattern(/^\d+$/u),
+).pipe(Schema.brand("WhatsAppPhoneNumberId"));
+
+/** Supported direct-message text fixed before hashing, persistence, or Agent RPC. */
+export const WhatsAppMessageText = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(4_096),
+).pipe(Schema.brand("WhatsAppMessageText"));
+
 /** Supported direct-message facts produced by the authenticated Meta adapter. */
-export type InboundWhatsAppMessage =
-  | {
-      readonly _tag: "ButtonReply";
-      readonly channelIdentity: ChannelIdentity;
-      readonly message: string;
-      readonly phoneNumberId: string;
-      readonly providerMessageId: ProviderMessageId;
-    }
-  | {
-      readonly _tag: "TextMessage";
-      readonly channelIdentity: ChannelIdentity;
-      readonly message: string;
-      readonly phoneNumberId: string;
-      readonly providerMessageId: ProviderMessageId;
-    };
+export const InboundWhatsAppMessage = Schema.Union([
+  Schema.TaggedStruct("ButtonReply", {
+    channelIdentity: WhatsAppDirectChannelIdentity,
+    message: WhatsAppMessageText,
+    phoneNumberId: WhatsAppPhoneNumberId,
+    providerMessageId: ProviderMessageId,
+  }),
+  Schema.TaggedStruct("TextMessage", {
+    channelIdentity: WhatsAppDirectChannelIdentity,
+    message: WhatsAppMessageText,
+    phoneNumberId: WhatsAppPhoneNumberId,
+    providerMessageId: ProviderMessageId,
+  }),
+]);
+
+/** Supported direct-message facts produced by the authenticated Meta adapter. */
+export type InboundWhatsAppMessage = typeof InboundWhatsAppMessage.Type;
 
 /** Provider-event facts fixed before Channel Binding resolution. */
 export type RouteInput = InboundWhatsAppMessage & { readonly contentDigest: string };
@@ -59,15 +80,18 @@ export type InboundRoute =
   | { readonly _tag: "Unbound" };
 
 /** Stable facts sent to the named Agent acceptance RPC. */
-export interface AgentAcceptanceInput {
-  readonly authorization: AuthorizationContext;
-  readonly channelBindingId: ChannelBindingId;
-  readonly message: string;
-  readonly providerMessageId: ProviderMessageId;
-  readonly receiptId: AcceptanceReceiptId;
-  readonly submissionId: ThinkSubmissionId;
-  readonly userMessageId: UserMessageId;
-}
+export const AgentAcceptanceInput = Schema.Struct({
+  authorization: AuthorizationContext,
+  channelBindingId: ChannelBindingId,
+  message: WhatsAppMessageText,
+  providerMessageId: ProviderMessageId,
+  receiptId: AcceptanceReceiptId,
+  submissionId: ThinkSubmissionId,
+  userMessageId: UserMessageId,
+});
+
+/** Stable facts sent to the named Agent acceptance RPC. */
+export type AgentAcceptanceInput = typeof AgentAcceptanceInput.Type;
 
 /** Observable inbound result used by the HTTP webhook boundary. */
 export type AdmissionOutcome =
