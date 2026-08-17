@@ -6,8 +6,8 @@ import { Effect, Layer, Schema } from "effect";
 
 import { database, decodeOptionalRow, type Database } from "../../db";
 import { AgentId } from "../../domain";
-import * as ChannelBindingAuthority from "../../services/channel-binding-authority";
 import * as Onboarding from "../../services/onboarding";
+import * as ChannelBindingPostgres from "./channel-binding";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Drizzle transactions and domain tags require these forms. */
 
@@ -31,18 +31,9 @@ const WelcomeRouteRecord = Schema.Struct({
 
 const UserPhoneRecord = Schema.Struct({ phoneNumber: Schema.NullOr(Schema.String) });
 
-const StoredWhatsAppBinding = Schema.Struct({
-  ...Onboarding.StoredChannelBinding.fields,
-  revokedAt: Schema.NullOr(Schema.Date),
-});
-
-/** Storage-local Channel Binding facts needed by inbound receipt fixation. */
-export type StoredWhatsAppBinding = typeof StoredWhatsAppBinding.Type;
-
 /** Postgres implementation of the onboarding control-plane persistence port. */
 export const make = Effect.gen(function* () {
   const db = yield* database;
-  const channelBindingAuthority = makeChannelBindingAuthority(db);
 
   const findByDigest: Onboarding.PersistencePort["findByDigest"] = (digest) =>
     Effect.tryPromise({
@@ -214,7 +205,26 @@ export const make = Effect.gen(function* () {
         },
         catch: (cause) => rejected("insertWhatsApp", input.invitationId, cause),
       }),
-    readCurrentBinding: channelBindingAuthority.readCurrentBinding,
+    readCurrentBinding: (query) =>
+      Effect.tryPromise({
+        try: () =>
+          ChannelBindingPostgres.readCurrentWhatsAppBinding(
+            db,
+            query.userId,
+            query.channelBindingId,
+          ),
+        catch: (cause) => unavailable("readCurrentBinding", cause),
+      }).pipe(
+        Effect.map((binding) =>
+          binding === null
+            ? null
+            : Onboarding.StoredChannelBinding.make({
+                channelBindingId: binding.channelBindingId,
+                channelIdentity: binding.channelIdentity,
+                userId: binding.userId,
+              }),
+        ),
+      ),
     readUser,
     readWelcomeRoute,
   });
@@ -223,62 +233,11 @@ export const make = Effect.gen(function* () {
 /** Postgres onboarding adapter Layer that preserves its request-scoped database requirement. */
 export const layerWithoutDependencies = Layer.effect(Onboarding.Persistence, make);
 
-/** Construct the single PostgreSQL reader for current Channel Binding authority. */
-export const makeChannelBindingAuthority = (
-  db: Database,
-): ChannelBindingAuthority.Port<Onboarding.OnboardingPersistenceUnavailable> => ({
-  readCurrentBinding: (query) =>
-    Effect.tryPromise({
-      try: () => readCurrentBindingRow(db, query),
-      catch: (cause) => unavailable("readCurrentBinding", cause),
-    }).pipe(Effect.flatMap(decodeCurrentBinding)),
-});
-
-/** Read current Channel Binding authority through its single PostgreSQL owner. */
-export const readCurrentBinding = (query: ChannelBindingAuthority.CurrentChannelBindingQuery) =>
-  Effect.gen(function* () {
-    const db = yield* database;
-    return yield* makeChannelBindingAuthority(db).readCurrentBinding(query);
-  });
-
 const unavailable = (operation: string, cause: unknown) =>
   new Onboarding.OnboardingPersistenceUnavailable({ cause, operation });
 
 const rejected = (operation: string, operationId: string, cause: unknown) =>
   new Onboarding.OnboardingPersistenceRejected({ cause, operation, operationId });
-
-const readCurrentBindingRow = (
-  db: Database,
-  query: ChannelBindingAuthority.CurrentChannelBindingQuery,
-) =>
-  db
-    .select({
-      channelBindingId: channelBindings.channelBindingId,
-      channelIdentity: channelBindings.channelIdentity,
-      userId: channelBindings.userId,
-    })
-    .from(channelBindings)
-    .where(
-      and(
-        eq(channelBindings.channelBindingId, query.channelBindingId),
-        eq(channelBindings.userId, query.userId),
-        eq(channelBindings.provider, "whatsapp"),
-        isNull(channelBindings.revokedAt),
-      ),
-    )
-    .limit(1);
-
-const decodeCurrentBinding = (
-  rows: Awaited<ReturnType<typeof readCurrentBindingRow>>,
-): Effect.Effect<
-  ChannelBindingAuthority.CurrentChannelBinding | null,
-  Onboarding.OnboardingPersistenceUnavailable
-> =>
-  rows[0] === undefined
-    ? Effect.succeed(null)
-    : Schema.decodeEffect(ChannelBindingAuthority.CurrentChannelBinding)(rows[0]).pipe(
-        Effect.mapError((cause) => unavailable("readCurrentBinding", cause)),
-      );
 
 const completeTransaction = async (
   db: Database,
@@ -450,53 +409,6 @@ const createWebEnrollmentTransaction = async (
   });
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
-
-/** Resolve one active WhatsApp binding inside the caller-owned PostgreSQL transaction. */
-export const readActiveWhatsAppBinding = async (
-  transaction: Transaction,
-  channelIdentity: Onboarding.StoredChannelBinding["channelIdentity"],
-): Promise<StoredWhatsAppBinding | null> => {
-  const [row] = await transaction
-    .select({
-      channelBindingId: channelBindings.channelBindingId,
-      channelIdentity: channelBindings.channelIdentity,
-      revokedAt: channelBindings.revokedAt,
-      userId: channelBindings.userId,
-    })
-    .from(channelBindings)
-    .where(
-      and(
-        eq(channelBindings.provider, "whatsapp"),
-        eq(channelBindings.channelIdentity, channelIdentity),
-        isNull(channelBindings.revokedAt),
-      ),
-    )
-    .limit(1);
-  return row === undefined ? null : Schema.decodeSync(StoredWhatsAppBinding)(row);
-};
-
-/** Read one fixed WhatsApp binding through the storage module that owns its predicate. */
-export const readWhatsAppBinding = async (
-  db: Pick<Transaction, "select">,
-  channelBindingId: Onboarding.StoredChannelBinding["channelBindingId"],
-): Promise<StoredWhatsAppBinding | null> => {
-  const [row] = await db
-    .select({
-      channelBindingId: channelBindings.channelBindingId,
-      channelIdentity: channelBindings.channelIdentity,
-      revokedAt: channelBindings.revokedAt,
-      userId: channelBindings.userId,
-    })
-    .from(channelBindings)
-    .where(
-      and(
-        eq(channelBindings.channelBindingId, channelBindingId),
-        eq(channelBindings.provider, "whatsapp"),
-      ),
-    )
-    .limit(1);
-  return row === undefined ? null : Schema.decodeSync(StoredWhatsAppBinding)(row);
-};
 
 const readLockedInvitation = async (
   transaction: Transaction,

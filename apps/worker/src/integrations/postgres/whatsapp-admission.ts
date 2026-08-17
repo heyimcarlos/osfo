@@ -14,7 +14,7 @@ import {
 } from "../../domain";
 import type { InboundRoute, RouteInput } from "../../services/whatsapp-admission";
 import { AuthorizationContext } from "../../services/authorization";
-import { readActiveWhatsAppBinding, readWhatsAppBinding } from "./onboarding";
+import { readActiveWhatsAppBinding, readWhatsAppBinding } from "./channel-binding";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect and persistence result values use the standard _tag discriminator. */
 

@@ -23,10 +23,7 @@ import {
   UserId,
 } from "../src/domain";
 import { retainedCatalog } from "../src/domain/plan-policy";
-import {
-  makeChannelBindingAuthority,
-  readCurrentBinding,
-} from "../src/integrations/postgres/onboarding";
+import * as ChannelBindingPostgres from "../src/integrations/postgres/channel-binding";
 import { make } from "../src/integrations/postgres/whatsapp-admission";
 import * as Allowances from "../src/services/allowances";
 import * as WhatsAppAgentAdmission from "../src/services/whatsapp-agent-admission";
@@ -248,13 +245,13 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
       );
       const authorization = yield* persistence.admit({ ...bound, _tag: "Bound" });
       const submissions = new Map<string, WhatsAppAgentAdmission.SubmissionInput>();
-      const authority = makeChannelBindingAuthority(database);
+      const authority = yield* ChannelBindingPostgres.make;
 
       const denied = yield* WhatsAppAgentAdmission.accept({
         dependencies: {
           authority: {
-            readCurrentBinding: (query) =>
-              authority.readCurrentBinding(query).pipe(
+            inspect: (userId, channelBindingId) =>
+              authority.inspect(userId, channelBindingId).pipe(
                 Effect.mapError(
                   (cause) =>
                     new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({
@@ -321,14 +318,15 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
         }),
       )(repeated);
       const repeatedAuthorization = yield* admission.admit(repeatedBound);
-      const oldAuthority = yield* readCurrentBinding({
-        channelBindingId: ChannelBindingId.make("binding-old"),
-        userId: UserId.make("user-old"),
-      });
-      const newAuthority = yield* readCurrentBinding({
-        channelBindingId: ChannelBindingId.make("binding-new"),
-        userId: UserId.make("user-new"),
-      });
+      const authority = yield* ChannelBindingPostgres.make;
+      const oldAuthority = yield* authority.inspect(
+        UserId.make("user-old"),
+        ChannelBindingId.make("binding-old"),
+      );
+      const newAuthority = yield* authority.inspect(
+        UserId.make("user-new"),
+        ChannelBindingId.make("binding-new"),
+      );
 
       expect(first).toMatchObject({ _tag: "Bound", channelBindingId: "binding-old" });
       expect(repeated).toMatchObject({
@@ -338,10 +336,10 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
       expect(repeatedAuthorization).toMatchObject({
         authority: { _tag: "RevokedChannelBinding" },
       });
-      expect(oldAuthority).toBeNull();
+      expect(oldAuthority).toMatchObject({ _tag: "RevokedChannelBinding" });
       expect(newAuthority).toMatchObject({
+        _tag: "ChannelBinding",
         channelBindingId: "binding-new",
-        channelIdentity: "14165550123",
         userId: "user-new",
       });
     }),

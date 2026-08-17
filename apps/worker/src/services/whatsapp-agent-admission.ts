@@ -10,7 +10,7 @@ import {
 } from "../domain";
 import { ManagedTurnMetadata } from "../domain/managed-conversation";
 import { retainedCatalog } from "../domain/plan-policy";
-import type * as ChannelBindingAuthority from "./channel-binding-authority";
+import type * as ChannelBinding from "./channel-binding";
 import type { AgentAcceptanceInput, AgentRecoveryInput } from "./whatsapp-admission";
 import type { AcceptanceReceiptInput } from "./whatsapp-acceptance-receipt";
 import { make as makeAuthorization } from "./authorization";
@@ -79,7 +79,15 @@ export interface Interface<
   Receipt extends AcceptanceReceiptInput = AcceptanceReceiptInput,
   StoreFailure = never,
 > {
-  readonly authority: ChannelBindingAuthority.Port<WhatsAppAuthorityUnavailable>;
+  readonly authority: {
+    readonly inspect: (
+      userId: Parameters<ChannelBinding.Interface["inspect"]>[0],
+      channelBindingId: Parameters<ChannelBinding.Interface["inspect"]>[1],
+    ) => Effect.Effect<
+      Effect.Success<ReturnType<ChannelBinding.Interface["inspect"]>>,
+      WhatsAppAuthorityUnavailable
+    >;
+  };
   readonly store: {
     readonly inspect: () => Effect.Effect<{ readonly currentSessionId: SessionId }, StoreFailure>;
     readonly readAcceptanceReceipt: (
@@ -118,11 +126,8 @@ export const accept = <Receipt extends AcceptanceReceiptInput, StoreFailure>(opt
         resetAt: null,
       } satisfies ManagedConversationDenied;
     }
-    const currentBinding = yield* dependencies.authority.readCurrentBinding({
-      channelBindingId: input.channelBindingId,
-      userId,
-    });
-    if (currentBinding === null) {
+    const currentBinding = yield* dependencies.authority.inspect(userId, input.channelBindingId);
+    if (Predicate.isTagged(currentBinding, "RevokedChannelBinding")) {
       return {
         _tag: "ManagedConversationDenied",
         reason: "authorityRevoked",

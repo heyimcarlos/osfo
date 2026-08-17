@@ -8,7 +8,6 @@ import {
   RegistrationInvitationId,
   UserId,
 } from "../domain";
-import * as ChannelBindingAuthority from "./channel-binding-authority";
 import * as Registration from "./registration";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Effect tags and Drizzle transaction callbacks use these required forms. */
@@ -259,7 +258,11 @@ export const StoredWelcomeRoute = Schema.Struct({
 export type StoredWelcomeRoute = typeof StoredWelcomeRoute.Type;
 
 /** Parsed active Channel Binding used by atomic onboarding decisions. */
-export const StoredChannelBinding = ChannelBindingAuthority.CurrentChannelBinding;
+export const StoredChannelBinding = Schema.Struct({
+  channelBindingId: ChannelBindingId,
+  channelIdentity: ChannelIdentity,
+  userId: UserId,
+});
 
 /** Parsed active Channel Binding used by atomic onboarding decisions. */
 export type StoredChannelBinding = typeof StoredChannelBinding.Type;
@@ -391,7 +394,10 @@ export interface PersistencePort {
     readonly locale: OnboardingLocale;
     readonly tokenDigest: string;
   }) => Effect.Effect<boolean, OnboardingPersistenceRejected>;
-  readonly readCurrentBinding: ChannelBindingAuthority.Port<OnboardingPersistenceUnavailable>["readCurrentBinding"];
+  readonly readCurrentBinding: (query: {
+    readonly channelBindingId: ChannelBindingId;
+    readonly userId: UserId;
+  }) => Effect.Effect<StoredChannelBinding | null, OnboardingPersistenceUnavailable>;
   readonly readUser: (
     userId: UserId,
   ) => Effect.Effect<StoredOnboardingUser | null, OnboardingPersistenceUnavailable>;

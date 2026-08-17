@@ -8,7 +8,6 @@ import {
   AgentId,
   AllowancePeriodId,
   ChannelBindingId,
-  ChannelIdentity,
   ConversationRouteId,
   ProviderMessageId,
   SessionId,
@@ -32,12 +31,12 @@ describe("WhatsApp Agent admission", () => {
       const input = acceptanceInput();
       const dependencies = makeDependencies({
         inspect: (submissionId) => Effect.succeed(thinkLedger.get(submissionId) ?? null),
-        readCurrentBinding: (query) =>
+        inspectBinding: (userId, channelBindingId) =>
           Effect.sync(() => {
             authorityChecks += 1;
             return authorityCurrent
-              ? { ...query, channelIdentity: ChannelIdentity.make("14165550123") }
-              : null;
+              ? { _tag: "ChannelBinding" as const, channelBindingId, userId }
+              : { _tag: "RevokedChannelBinding" as const, channelBindingId, userId };
           }),
         readReceipt: (channelBindingId, providerMessageId) =>
           Effect.succeed(receiptLedger.get(`${channelBindingId}:${providerMessageId}`) ?? null),
@@ -157,7 +156,8 @@ describe("WhatsApp Agent admission", () => {
       let submissions = 0;
       const input = acceptanceInput();
       const dependencies = makeDependencies({
-        readCurrentBinding: () => Effect.succeed(null),
+        inspectBinding: (userId, channelBindingId) =>
+          Effect.succeed({ _tag: "RevokedChannelBinding", channelBindingId, userId }),
         submit: () =>
           Effect.sync(() => {
             submissions += 1;
@@ -185,17 +185,17 @@ describe("WhatsApp Agent admission", () => {
 const makeDependencies = (
   overrides: Partial<{
     readonly inspect: Interface["think"]["inspect"];
-    readonly readCurrentBinding: Interface["authority"]["readCurrentBinding"];
+    readonly inspectBinding: Interface["authority"]["inspect"];
     readonly readReceipt: Interface["store"]["readAcceptanceReceipt"];
     readonly recordReceipt: Interface["store"]["recordAcceptanceReceipt"];
     readonly submit: Interface["think"]["submit"];
   }>,
 ): Interface => ({
   authority: {
-    readCurrentBinding:
-      overrides.readCurrentBinding ??
-      ((query) =>
-        Effect.succeed({ ...query, channelIdentity: ChannelIdentity.make("14165550123") })),
+    inspect:
+      overrides.inspectBinding ??
+      ((userId, channelBindingId) =>
+        Effect.succeed({ _tag: "ChannelBinding", channelBindingId, userId })),
   },
   store: {
     inspect: () =>

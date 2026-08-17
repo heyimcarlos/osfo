@@ -29,7 +29,7 @@ import {
 import { database as workerDatabase } from "../../db";
 import * as Billing from "../../db/billing";
 import { decodeOsfoStage } from "../../env";
-import * as OnboardingPostgres from "../../integrations/postgres/onboarding";
+import * as ChannelBindingPostgres from "../../integrations/postgres/channel-binding";
 import {
   CancelManagedConversationInput,
   ManagedTurnMetadata,
@@ -549,8 +549,8 @@ export class OsfoAgent extends Think<Env> {
         dependencies: {
           ...recovery,
           authority: {
-            readCurrentBinding: ({ channelBindingId, userId }) =>
-              this.#isCurrentWhatsAppBinding(channelBindingId, userId),
+            inspect: (userId, channelBindingId) =>
+              this.#inspectCurrentWhatsAppBinding(channelBindingId, userId),
           },
           store: { ...recovery.store, inspect: this.#store.inspect },
           think: {
@@ -1043,7 +1043,7 @@ export class OsfoAgent extends Think<Env> {
     });
   }
 
-  #isCurrentWhatsAppBinding(channelBindingId: ChannelBindingId, userId: UserId) {
+  #inspectCurrentWhatsAppBinding(channelBindingId: ChannelBindingId, userId: UserId) {
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) {
       return Effect.fail(
@@ -1056,7 +1056,11 @@ export class OsfoAgent extends Think<Env> {
     return Effect.tryPromise({
       try: () =>
         runtime.runPromise(
-          Effect.scoped(OnboardingPostgres.readCurrentBinding({ channelBindingId, userId })),
+          Effect.scoped(
+            ChannelBindingPostgres.make.pipe(
+              Effect.flatMap((authority) => authority.inspect(userId, channelBindingId)),
+            ),
+          ),
         ),
       catch: (cause) =>
         new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({
