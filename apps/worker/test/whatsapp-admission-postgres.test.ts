@@ -125,21 +125,22 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
     }),
   );
 
-  it.effect("denies a suspended User before new Think submission", () =>
+  it.effect("denies a User suspended after initial admission before new Think submission", () =>
     Effect.gen(function* () {
       const database = fixture.database;
       yield* Effect.promise(() => seedBoundUser(database, "suspended", "14165550137"));
-      yield* Effect.promise(() =>
-        database.insert(userSuspensionEvents).values({
-          action: "suspended",
-          adminActorId: "admin-whatsapp-suspended",
-          eventId: "suspension-whatsapp-suspended",
-          reason: "Current authority test",
-          userId: "user-suspended",
-        }),
-      );
 
-      const denied = yield* admitThroughAgent(routeMessage("14165550137", "wamid.suspended"));
+      const denied = yield* admitThroughAgent(routeMessage("14165550137", "wamid.suspended"), {
+        afterInitialAdmission: Effect.promise(() =>
+          database.insert(userSuspensionEvents).values({
+            action: "suspended",
+            adminActorId: "admin-whatsapp-suspended",
+            eventId: "suspension-whatsapp-suspended",
+            reason: "Current authority test",
+            userId: "user-suspended",
+          }),
+        ).pipe(Effect.asVoid),
+      });
 
       expect(denied.outcome).toEqual({
         _tag: "ManagedConversationDenied",
@@ -150,20 +151,21 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
     }),
   );
 
-  it.effect("denies revoked deletion access before new Think submission", () =>
+  it.effect("denies deletion requested after initial admission before new Think submission", () =>
     Effect.gen(function* () {
       const database = fixture.database;
       yield* Effect.promise(() => seedBoundUser(database, "deleting", "14165550138"));
-      yield* Effect.promise(() =>
-        database.insert(deletionCases).values({
-          deletionCaseId: "deletion-whatsapp-deleting",
-          reason: "Current authority test",
-          requestedByAdminId: "admin-whatsapp-deleting",
-          userId: "user-deleting",
-        }),
-      );
 
-      const denied = yield* admitThroughAgent(routeMessage("14165550138", "wamid.deleting"));
+      const denied = yield* admitThroughAgent(routeMessage("14165550138", "wamid.deleting"), {
+        afterInitialAdmission: Effect.promise(() =>
+          database.insert(deletionCases).values({
+            deletionCaseId: "deletion-whatsapp-deleting",
+            reason: "Current authority test",
+            requestedByAdminId: "admin-whatsapp-deleting",
+            userId: "user-deleting",
+          }),
+        ).pipe(Effect.asVoid),
+      });
 
       expect(denied.outcome).toEqual({
         _tag: "ManagedConversationDenied",
@@ -171,6 +173,86 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
         resetAt: null,
       });
       expect(denied.submissions).toBe(0);
+    }),
+  );
+
+  it.effect("denies a plan change after initial admission before new Think submission", () =>
+    Effect.gen(function* () {
+      const database = fixture.database;
+      yield* Effect.promise(() => seedBoundUser(database, "plan-race", "14165550139"));
+
+      const denied = yield* admitThroughAgent(routeMessage("14165550139", "wamid.plan-race"), {
+        afterInitialAdmission: Effect.promise(() =>
+          database
+            .update(billingSubscriptions)
+            .set({ planPolicyVersion: "retired-v0" })
+            .where(eq(billingSubscriptions.userId, "user-plan-race")),
+        ).pipe(Effect.asVoid),
+      });
+
+      expect(denied.outcome).toEqual({
+        _tag: "ManagedConversationDenied",
+        reason: "policyUnavailable",
+        resetAt: null,
+      });
+      expect(denied.submissions).toBe(0);
+    }),
+  );
+
+  it.effect("denies allowance exhaustion after initial admission before new Think submission", () =>
+    Effect.gen(function* () {
+      const database = fixture.database;
+      const seeded = yield* Effect.promise(() =>
+        seedBoundUser(database, "allowance-race", "14165550140"),
+      );
+
+      const denied = yield* admitThroughAgent(routeMessage("14165550140", "wamid.allowance-race"), {
+        afterInitialAdmission: Effect.promise(() =>
+          database.insert(allowanceUsage).values({
+            allowanceKind: "acceptedMessages",
+            allowancePeriodId: seeded.allowancePeriodId,
+            basis: "known_at_start",
+            quantity: 30n,
+            sourceId: "receipt-existing-limit",
+            sourceType: "acceptanceReceipt",
+            userId: seeded.userId,
+          }),
+        ).pipe(Effect.asVoid),
+      });
+
+      expect(denied.outcome).toEqual({
+        _tag: "ManagedConversationDenied",
+        reason: "allowanceExhausted",
+        resetAt: date("2026-09-01T00:00:00.000Z"),
+      });
+      expect(denied.submissions).toBe(0);
+    }),
+  );
+
+  it.effect("does not submit when the allowance period expires after initial admission", () =>
+    Effect.gen(function* () {
+      const database = fixture.database;
+      const seeded = yield* Effect.promise(() =>
+        seedBoundUser(database, "period-race", "14165550141"),
+      );
+      let submissions = 0;
+
+      const failure = yield* Effect.flip(
+        admitThroughAgent(routeMessage("14165550141", "wamid.period-race"), {
+          afterInitialAdmission: Effect.promise(() =>
+            database
+              .update(allowancePeriods)
+              .set({ endsAt: date("2026-08-10T00:00:00.000Z") })
+              .where(eq(allowancePeriods.allowancePeriodId, seeded.allowancePeriodId)),
+          ).pipe(Effect.asVoid),
+          onSubmit: () => {
+            submissions += 1;
+          },
+        }),
+      );
+
+      expect(failure).toMatchObject({ _tag: "WhatsAppAuthorityUnavailable" });
+      expect(submissions).toBe(0);
     }),
   );
 
@@ -287,21 +369,20 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
           channelBindingId: ChannelBindingId,
         }),
       )(routed);
+      const authorization = yield* persistence.admit({ ...bound, _tag: "Bound" });
       yield* Effect.promise(() =>
         database
           .update(channelBindings)
           .set({ revokedAt: date("2026-08-16T12:00:01.000Z") })
           .where(eq(channelBindings.channelBindingId, bound.channelBindingId)),
       );
-      const authorization = yield* persistence.admit({ ...bound, _tag: "Bound" });
       const submissions = new Map<string, WhatsAppAgentAdmission.SubmissionInput>();
-      const authority = yield* ChannelBindingPostgres.make;
 
       const denied = yield* WhatsAppAgentAdmission.accept({
         dependencies: {
-          authority: {
-            inspect: (userId, channelBindingId) =>
-              authority.inspect(userId, channelBindingId).pipe(
+          authorization: {
+            inspect: () =>
+              persistence.admit({ ...bound, _tag: "Bound" }).pipe(
                 Effect.mapError(
                   (cause) =>
                     new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({
@@ -495,7 +576,13 @@ const makeRealAdmission = (
     });
   });
 
-const admitThroughAgent = (message: InboundWhatsAppMessage) =>
+const admitThroughAgent = (
+  message: InboundWhatsAppMessage,
+  options?: {
+    readonly afterInitialAdmission?: Effect.Effect<void>;
+    readonly onSubmit?: () => void;
+  },
+) =>
   Effect.gen(function* () {
     const persistence = yield* make({
       now: Effect.succeed(date("2026-08-16T12:00:00.000Z")),
@@ -511,13 +598,13 @@ const admitThroughAgent = (message: InboundWhatsAppMessage) =>
       }),
     )(route);
     const authorization = yield* persistence.admit(bound);
+    yield* options?.afterInitialAdmission ?? Effect.void;
     let submissions = 0;
-    const authority = yield* ChannelBindingPostgres.make;
     const outcome = yield* WhatsAppAgentAdmission.accept({
       dependencies: {
-        authority: {
-          inspect: (userId, channelBindingId) =>
-            authority.inspect(userId, channelBindingId).pipe(
+        authorization: {
+          inspect: () =>
+            persistence.admit(bound).pipe(
               Effect.mapError(
                 (cause) =>
                   new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({
@@ -538,6 +625,7 @@ const admitThroughAgent = (message: InboundWhatsAppMessage) =>
           submit: (submission) =>
             Effect.sync(() => {
               submissions += 1;
+              options?.onSubmit?.();
               return { submissionId: submission.submissionId };
             }),
         },

@@ -12,6 +12,7 @@ import {
   ProviderMessageId,
   SessionId,
   ThinkSubmissionId,
+  UserId,
   UserMessageId,
 } from "../src/domain";
 import { accept, type Interface } from "../src/services/whatsapp-agent-admission";
@@ -31,12 +32,10 @@ describe("WhatsApp Agent admission", () => {
       const input = acceptanceInput();
       const dependencies = makeDependencies({
         inspect: (submissionId) => Effect.succeed(thinkLedger.get(submissionId) ?? null),
-        inspectBinding: (userId, channelBindingId) =>
+        inspectAuthorization: () =>
           Effect.sync(() => {
             authorityChecks += 1;
-            return authorityCurrent
-              ? { _tag: "ChannelBinding" as const, channelBindingId, userId }
-              : { _tag: "RevokedChannelBinding" as const, channelBindingId, userId };
+            return authorityCurrent ? authorization() : revokedAuthorization();
           }),
         readReceipt: (channelBindingId, providerMessageId) =>
           Effect.succeed(receiptLedger.get(`${channelBindingId}:${providerMessageId}`) ?? null),
@@ -156,8 +155,7 @@ describe("WhatsApp Agent admission", () => {
       let submissions = 0;
       const input = acceptanceInput();
       const dependencies = makeDependencies({
-        inspectBinding: (userId, channelBindingId) =>
-          Effect.succeed({ _tag: "RevokedChannelBinding", channelBindingId, userId }),
+        inspectAuthorization: () => Effect.succeed(revokedAuthorization()),
         submit: () =>
           Effect.sync(() => {
             submissions += 1;
@@ -180,22 +178,48 @@ describe("WhatsApp Agent admission", () => {
       expect(submissions).toBe(0);
     }),
   );
+
+  it.effect("uses the current inside-Agent authorization snapshot for fresh work", () =>
+    Effect.gen(function* () {
+      let submissions = 0;
+      const input = acceptanceInput();
+      const dependencies = makeDependencies({
+        inspectAuthorization: () =>
+          Effect.succeed(
+            authorization({
+              user: { _tag: "SuspendedUser", userId: UserId.make("user-1") },
+            }),
+          ),
+        submit: (submission) =>
+          Effect.sync(() => {
+            submissions += 1;
+            return { submissionId: submission.submissionId };
+          }),
+      });
+
+      const denied = yield* accept({ dependencies, input });
+
+      expect(denied).toEqual({
+        _tag: "ManagedConversationDenied",
+        reason: "userSuspended",
+        resetAt: null,
+      });
+      expect(submissions).toBe(0);
+    }),
+  );
 });
 
 const makeDependencies = (
   overrides: Partial<{
+    readonly inspectAuthorization: Interface["authorization"]["inspect"];
     readonly inspect: Interface["think"]["inspect"];
-    readonly inspectBinding: Interface["authority"]["inspect"];
     readonly readReceipt: Interface["store"]["readAcceptanceReceipt"];
     readonly recordReceipt: Interface["store"]["recordAcceptanceReceipt"];
     readonly submit: Interface["think"]["submit"];
   }>,
 ): Interface => ({
-  authority: {
-    inspect:
-      overrides.inspectBinding ??
-      ((userId, channelBindingId) =>
-        Effect.succeed({ _tag: "ChannelBinding", channelBindingId, userId })),
+  authorization: {
+    inspect: overrides.inspectAuthorization ?? (() => Effect.succeed(authorization())),
   },
   store: {
     inspect: () =>
@@ -241,7 +265,7 @@ const acceptanceInput = (): AgentAcceptanceInput => ({
   userMessageId: UserMessageId.make("message-1"),
 });
 
-const authorization = () =>
+const authorization = (overrides?: Partial<AuthorizationContext>) =>
   Schema.decodeSync(AuthorizationContext)({
     allowance: {
       _tag: "Metered" as const,
@@ -272,6 +296,16 @@ const authorization = () =>
     resourceOwnerUserId: "user-1",
     subscription: { plan: "free" as const, planPolicyVersion: "launch-v1" },
     user: { _tag: "ActiveUser" as const, userId: "user-1" },
+    ...overrides,
+  });
+
+const revokedAuthorization = () =>
+  authorization({
+    authority: {
+      _tag: "RevokedChannelBinding",
+      channelBindingId: ChannelBindingId.make("binding-1"),
+      userId: UserId.make("user-1"),
+    },
   });
 
 const date = (iso: string) => DateTime.toDateUtc(DateTime.makeUnsafe(iso));

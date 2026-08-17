@@ -29,7 +29,7 @@ import {
 import { database as workerDatabase } from "../../db";
 import * as Billing from "../../db/billing";
 import { decodeOsfoStage } from "../../env";
-import * as ChannelBindingPostgres from "../../integrations/postgres/channel-binding";
+import * as WhatsAppPostgres from "../../integrations/postgres/whatsapp-admission";
 import {
   CancelManagedConversationInput,
   ManagedTurnMetadata,
@@ -548,9 +548,9 @@ export class OsfoAgent extends Think<Env> {
       >({
         dependencies: {
           ...recovery,
-          authority: {
-            inspect: (userId, channelBindingId) =>
-              this.#inspectCurrentWhatsAppBinding(channelBindingId, userId),
+          authorization: {
+            inspect: (channelBindingId) =>
+              this.#inspectCurrentWhatsAppAuthorization(channelBindingId),
           },
           store: { ...recovery.store, inspect: this.#store.inspect },
           think: {
@@ -1043,13 +1043,13 @@ export class OsfoAgent extends Think<Env> {
     });
   }
 
-  #inspectCurrentWhatsAppBinding(channelBindingId: ChannelBindingId, userId: UserId) {
+  #inspectCurrentWhatsAppAuthorization(channelBindingId: ChannelBindingId) {
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) {
       return Effect.fail(
         new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({
           cause: invalidOsfoEnvironment,
-          message: "Current WhatsApp authority could not be checked",
+          message: "Current WhatsApp authorization could not be checked",
         }),
       );
     }
@@ -1057,15 +1057,21 @@ export class OsfoAgent extends Think<Env> {
       try: () =>
         runtime.runPromise(
           Effect.scoped(
-            ChannelBindingPostgres.make.pipe(
-              Effect.flatMap((authority) => authority.inspect(userId, channelBindingId)),
+            WhatsAppPostgres.make().pipe(
+              Effect.flatMap((persistence) =>
+                persistence.admit({
+                  _tag: "Bound",
+                  agentId: AgentId.make(this.name),
+                  channelBindingId,
+                }),
+              ),
             ),
           ),
         ),
       catch: (cause) =>
         new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({
           cause,
-          message: "Current WhatsApp authority could not be checked",
+          message: "Current WhatsApp authorization could not be checked",
         }),
     });
   }

@@ -10,13 +10,12 @@ import {
 } from "../domain";
 import { ManagedTurnMetadata } from "../domain/managed-conversation";
 import { retainedCatalog } from "../domain/plan-policy";
-import type * as ChannelBinding from "./channel-binding";
 import type { AgentAcceptanceInput, AgentRecoveryInput } from "./whatsapp-admission";
 import type { AcceptanceReceiptInput } from "./whatsapp-acceptance-receipt";
-import { make as makeAuthorization } from "./authorization";
+import { type AuthorizationContext, make as makeAuthorization } from "./authorization";
 import { admitManagedConversation, type ManagedConversationDenied } from "./managed-conversation";
 
-/** Expected failure when current Channel Binding authority cannot be checked. */
+/** Expected failure when current WhatsApp authorization facts cannot be checked. */
 export class WhatsAppAuthorityUnavailable extends Schema.TaggedError<WhatsAppAuthorityUnavailable>()(
   "WhatsAppAuthorityUnavailable",
   { cause: Schema.Defect(), message: Schema.String },
@@ -79,14 +78,10 @@ export interface Interface<
   Receipt extends AcceptanceReceiptInput = AcceptanceReceiptInput,
   StoreFailure = never,
 > {
-  readonly authority: {
+  readonly authorization: {
     readonly inspect: (
-      userId: Parameters<ChannelBinding.Interface["inspect"]>[0],
-      channelBindingId: Parameters<ChannelBinding.Interface["inspect"]>[1],
-    ) => Effect.Effect<
-      Effect.Success<ReturnType<ChannelBinding.Interface["inspect"]>>,
-      WhatsAppAuthorityUnavailable
-    >;
+      channelBindingId: ChannelBindingId,
+    ) => Effect.Effect<AuthorizationContext, WhatsAppAuthorityUnavailable>;
   };
   readonly store: {
     readonly inspect: () => Effect.Effect<{ readonly currentSessionId: SessionId }, StoreFailure>;
@@ -118,24 +113,9 @@ export const accept = <Receipt extends AcceptanceReceiptInput, StoreFailure>(opt
     const recovered = yield* recover({ dependencies, input });
     if (recovered !== null) return recovered;
 
-    const userId = input.authorization.resourceOwnerUserId;
-    if (userId === null) {
-      return {
-        _tag: "ManagedConversationDenied",
-        reason: "ownershipRequired",
-        resetAt: null,
-      } satisfies ManagedConversationDenied;
-    }
-    const currentBinding = yield* dependencies.authority.inspect(userId, input.channelBindingId);
-    if (Predicate.isTagged(currentBinding, "RevokedChannelBinding")) {
-      return {
-        _tag: "ManagedConversationDenied",
-        reason: "authorityRevoked",
-        resetAt: null,
-      } satisfies ManagedConversationDenied;
-    }
+    const authorization = yield* dependencies.authorization.inspect(input.channelBindingId);
 
-    const acceptance = makeAuthorization(retainedCatalog).admit(input.authorization, {
+    const acceptance = makeAuthorization(retainedCatalog).admit(authorization, {
       actionId: input.receiptId,
       kind: "conversation.accept",
     });
@@ -154,7 +134,7 @@ export const accept = <Receipt extends AcceptanceReceiptInput, StoreFailure>(opt
       } satisfies ManagedConversationDenied;
     }
     const managed = yield* admitManagedConversation({
-      authorization: input.authorization,
+      authorization,
       idempotencyKey: `whatsapp-${input.receiptId}`,
       message: input.message,
       submissionId: input.submissionId,
