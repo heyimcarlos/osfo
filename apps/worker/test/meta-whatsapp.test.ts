@@ -413,7 +413,7 @@ describe("Meta WhatsApp adapter", () => {
         sha256: "media-sha256",
       };
       const messages = [
-        { ...unsupportedMessage("audio"), audio: media },
+        { ...unsupportedMessage("audio"), audio: { ...media, voice: true } },
         { ...unsupportedMessage("video"), video: { ...media, caption: "A video" } },
         {
           ...unsupportedMessage("document"),

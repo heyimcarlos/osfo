@@ -95,13 +95,11 @@ const MessageBase = {
   timestamp: Schema.String,
   to: Schema.optional(WhatsAppDirectChannelIdentity),
 };
-const MediaObject = Schema.Struct({
-  caption: Schema.optional(Schema.String),
-  filename: Schema.optional(Schema.String),
+const MediaIdentity = {
   id: Schema.String,
   mime_type: Schema.String,
   sha256: Schema.String,
-});
+};
 const Contact = Schema.Struct({
   addresses: Schema.optional(
     Schema.Array(
@@ -201,15 +199,35 @@ const MetaMessage = Schema.Union([
     button: Schema.Struct({ payload: Schema.String, text: WhatsAppMessageText }),
     type: Schema.Literal("button"),
   }),
-  Schema.Struct({ ...MessageBase, image: MediaObject, type: Schema.Literal("image") }),
-  Schema.Struct({ ...MessageBase, audio: MediaObject, type: Schema.Literal("audio") }),
-  Schema.Struct({ ...MessageBase, document: MediaObject, type: Schema.Literal("document") }),
   Schema.Struct({
     ...MessageBase,
-    sticker: Schema.Struct({ ...MediaObject.fields, animated: Schema.optional(Schema.Boolean) }),
+    image: Schema.Struct({ ...MediaIdentity, caption: Schema.optional(Schema.String) }),
+    type: Schema.Literal("image"),
+  }),
+  Schema.Struct({
+    ...MessageBase,
+    audio: Schema.Struct({ ...MediaIdentity, voice: Schema.optional(Schema.Boolean) }),
+    type: Schema.Literal("audio"),
+  }),
+  Schema.Struct({
+    ...MessageBase,
+    document: Schema.Struct({
+      ...MediaIdentity,
+      caption: Schema.optional(Schema.String),
+      filename: Schema.optional(Schema.String),
+    }),
+    type: Schema.Literal("document"),
+  }),
+  Schema.Struct({
+    ...MessageBase,
+    sticker: Schema.Struct({ ...MediaIdentity, animated: Schema.optional(Schema.Boolean) }),
     type: Schema.Literal("sticker"),
   }),
-  Schema.Struct({ ...MessageBase, video: MediaObject, type: Schema.Literal("video") }),
+  Schema.Struct({
+    ...MessageBase,
+    video: Schema.Struct({ ...MediaIdentity, caption: Schema.optional(Schema.String) }),
+    type: Schema.Literal("video"),
+  }),
   Schema.Struct({
     ...MessageBase,
     contacts: Schema.Array(Contact),
