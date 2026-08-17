@@ -197,7 +197,18 @@ const admitFact = (
   fact: MetaInboundFact,
 ) =>
   fact._tag === "TextMessage" || fact._tag === "ButtonReply"
-    ? admission.admit(fact).pipe(Effect.asVoid)
+    ? admission.admit(fact).pipe(
+        Effect.flatMap((outcome) =>
+          Predicate.isTagged(outcome, "MessageDenied")
+            ? Effect.fail(
+                new WhatsAppAdmission.WhatsAppAdmissionUnavailable({
+                  cause: outcome,
+                  message: "The bound WhatsApp message was not accepted",
+                }),
+              )
+            : Effect.void,
+        ),
+      )
     : Effect.void;
 
 const decodeAgentAcceptance = (
