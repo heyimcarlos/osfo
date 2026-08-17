@@ -4,6 +4,7 @@ import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { channelBindings } from "@osfo/db/schema/onboarding";
+import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { applyMigrations, makeTestDatabase } from "@osfo/db/testing";
 import { eq } from "drizzle-orm";
 import { DateTime, Deferred, Effect, Fiber, Schema } from "effect";
@@ -121,6 +122,55 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
 
       expect(outcome).toEqual({ _tag: "MessageDenied", reason: "allowanceExhausted" });
       expect(usage).toEqual([]);
+    }),
+  );
+
+  it.effect("denies a suspended User before new Think submission", () =>
+    Effect.gen(function* () {
+      const database = fixture.database;
+      yield* Effect.promise(() => seedBoundUser(database, "suspended", "14165550137"));
+      yield* Effect.promise(() =>
+        database.insert(userSuspensionEvents).values({
+          action: "suspended",
+          adminActorId: "admin-whatsapp-suspended",
+          eventId: "suspension-whatsapp-suspended",
+          reason: "Current authority test",
+          userId: "user-suspended",
+        }),
+      );
+
+      const denied = yield* admitThroughAgent(routeMessage("14165550137", "wamid.suspended"));
+
+      expect(denied.outcome).toEqual({
+        _tag: "ManagedConversationDenied",
+        reason: "userSuspended",
+        resetAt: null,
+      });
+      expect(denied.submissions).toBe(0);
+    }),
+  );
+
+  it.effect("denies revoked deletion access before new Think submission", () =>
+    Effect.gen(function* () {
+      const database = fixture.database;
+      yield* Effect.promise(() => seedBoundUser(database, "deleting", "14165550138"));
+      yield* Effect.promise(() =>
+        database.insert(deletionCases).values({
+          deletionCaseId: "deletion-whatsapp-deleting",
+          reason: "Current authority test",
+          requestedByAdminId: "admin-whatsapp-deleting",
+          userId: "user-deleting",
+        }),
+      );
+
+      const denied = yield* admitThroughAgent(routeMessage("14165550138", "wamid.deleting"));
+
+      expect(denied.outcome).toEqual({
+        _tag: "ManagedConversationDenied",
+        reason: "deletionAccessRevoked",
+        resetAt: null,
+      });
+      expect(denied.submissions).toBe(0);
     }),
   );
 
@@ -443,6 +493,66 @@ const makeRealAdmission = (
         route: (input) => persistence.route(input),
       },
     });
+  });
+
+const admitThroughAgent = (message: InboundWhatsAppMessage) =>
+  Effect.gen(function* () {
+    const persistence = yield* make({
+      now: Effect.succeed(date("2026-08-16T12:00:00.000Z")),
+    });
+    const route = yield* persistence.route({
+      ...message,
+      contentDigest: `digest-${message.message}`,
+    });
+    const bound = yield* Schema.decodeUnknownEffect(
+      Schema.TaggedStruct("Bound", {
+        agentId: AgentId,
+        channelBindingId: ChannelBindingId,
+      }),
+    )(route);
+    const authorization = yield* persistence.admit(bound);
+    let submissions = 0;
+    const authority = yield* ChannelBindingPostgres.make;
+    const outcome = yield* WhatsAppAgentAdmission.accept({
+      dependencies: {
+        authority: {
+          inspect: (userId, channelBindingId) =>
+            authority.inspect(userId, channelBindingId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({
+                    cause,
+                    message: "Current binding could not be read",
+                  }),
+              ),
+            ),
+        },
+        store: {
+          inspect: () => Effect.die("denied lifecycle authority must not inspect Agent state"),
+          readAcceptanceReceipt: () => Effect.succeed(null),
+          recordAcceptanceReceipt: () =>
+            Effect.die("denied lifecycle authority must not record a receipt"),
+        },
+        think: {
+          inspect: () => Effect.succeed(null),
+          submit: (submission) =>
+            Effect.sync(() => {
+              submissions += 1;
+              return { submissionId: submission.submissionId };
+            }),
+        },
+      },
+      input: {
+        authorization,
+        channelBindingId: bound.channelBindingId,
+        message: message.message,
+        providerMessageId: message.providerMessageId,
+        receiptId: AcceptanceReceiptId.make(`receipt-${message.providerMessageId}`),
+        submissionId: ThinkSubmissionId.make(`submission-${message.providerMessageId}`),
+        userMessageId: UserMessageId.make(`message-${message.providerMessageId}`),
+      },
+    });
+    return { outcome, submissions };
   });
 
 const receiptFromAcceptance = (input: AgentAcceptanceInput): AcceptanceReceipt => {

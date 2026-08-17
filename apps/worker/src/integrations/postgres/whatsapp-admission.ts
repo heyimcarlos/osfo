@@ -15,6 +15,8 @@ import {
 import type { InboundRoute, RouteInput } from "../../services/whatsapp-admission";
 import { AuthorizationContext } from "../../services/authorization";
 import { readActiveWhatsAppBinding, readWhatsAppBinding } from "./channel-binding";
+import * as DeletionCasePostgres from "./deletion-case";
+import * as UserSuspensionPostgres from "./user-suspension";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect and persistence result values use the standard _tag discriminator. */
 
@@ -39,6 +41,8 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
   Effect.gen(function* () {
     const db = yield* database;
     const billing = Billing.make(db);
+    const deletionCases = yield* DeletionCasePostgres.make;
+    const userSuspensions = yield* UserSuspensionPostgres.make;
 
     const route = (input: RouteInput) =>
       Effect.gen(function* () {
@@ -172,7 +176,11 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
           });
         }
         const userId = UserIdSchema.make(facts.userId);
-        const allowance = yield* billing.admit(userId, now);
+        const [allowance, deletionAccess, user] = yield* Effect.all([
+          billing.admit(userId, now),
+          deletionCases.inspect(userId),
+          userSuspensions.inspect(userId),
+        ]);
         const authorization = yield* Schema.decodeEffect(AuthorizationContext)({
           allowance: { _tag: "Metered", ...allowance },
           approval: null,
@@ -188,7 +196,7 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
                   channelBindingId: facts.channelBindingId,
                   userId,
                 },
-          deletionAccess: { _tag: "DeletionAccessAvailable" },
+          deletionAccess,
           gmailConnection: null,
           liveFacts: {
             activeGmSummonsInSession: 0n,
@@ -204,7 +212,7 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
           requestVendorUsdMicros: 0n,
           resourceOwnerUserId: userId,
           subscription: { plan: facts.plan, planPolicyVersion: facts.planPolicyVersion },
-          user: { _tag: "ActiveUser", userId },
+          user,
         }).pipe(
           Effect.mapError(
             (cause) =>

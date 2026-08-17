@@ -38,19 +38,26 @@ describe("WhatsApp admission with native PostgreSQL", () => {
           const arrivals = yield* Deferred.make<void>();
           const receipts = new Map<string, AcceptanceReceipt>();
           const submissions = new Set<string>();
+          let freshAcceptances = 0;
           let waiting = 0;
-          const admission = yield* makeRealAdmission(database, (input) =>
-            Effect.gen(function* () {
-              waiting += 1;
-              if (waiting === 2) yield* Deferred.succeed(arrivals, undefined);
-              yield* Deferred.await(arrivals);
-              submissions.add(input.submissionId);
-              const existing = receipts.get(input.submissionId);
-              if (existing !== undefined) return existing;
-              const receipt = receiptFromAcceptance(input);
-              receipts.set(input.submissionId, receipt);
-              return receipt;
-            }),
+          const admission = yield* makeRealAdmission(
+            database,
+            (input) =>
+              Effect.gen(function* () {
+                freshAcceptances += 1;
+                waiting += 1;
+                if (waiting === 2) yield* Deferred.succeed(arrivals, undefined);
+                yield* Deferred.await(arrivals);
+                submissions.add(input.submissionId);
+                const existing = receipts.get(input.submissionId);
+                if (existing !== undefined) return existing;
+                const receipt = receiptFromAcceptance(input);
+                receipts.set(input.submissionId, receipt);
+                return receipt;
+              }),
+            {
+              recover: (input) => Effect.succeed(receipts.get(input.submissionId) ?? null),
+            },
           );
           const message = routeMessage("14165550201", "wamid.native-concurrent");
 
@@ -58,6 +65,7 @@ describe("WhatsApp admission with native PostgreSQL", () => {
             [admission.admit(message), admission.admit(message)],
             { concurrency: "unbounded" },
           );
+          const freshAcceptancesBeforeReplay = freshAcceptances;
           const replay = yield* admission.admit(message);
           const usage = yield* Effect.promise(() =>
             database
@@ -68,6 +76,7 @@ describe("WhatsApp admission with native PostgreSQL", () => {
 
           expect(second).toEqual(first);
           expect(replay).toEqual(first);
+          expect(freshAcceptances).toBe(freshAcceptancesBeforeReplay);
           expect(submissions.size).toBe(1);
           expect(receipts.size).toBe(1);
           expect(usage).toHaveLength(1);
