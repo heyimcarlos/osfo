@@ -283,7 +283,8 @@ describe("Separate account authorities", () => {
           { concurrency: "unbounded" },
         );
 
-        expect(results.map((result) => result._tag).toSorted()).toEqual([
+        // oxlint-disable-next-line unicorn/no-array-sort -- ES2022 has no toSorted, and this new local array is safe to mutate.
+        expect(results.map((result) => result._tag).sort()).toEqual([
           "ManualSupportRequired",
           "PhoneAccountReplaced",
         ]);
