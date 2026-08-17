@@ -24,6 +24,8 @@ const ActingAuthority = Schema.Union([
     userId: UserId,
   }),
 ]);
+
+/** Stable authority identity that originated one protected operation. */
 export const OriginatingAuthority = Schema.Union([
   Schema.TaggedStruct("AuthSession", { authSessionId: AuthSessionId }),
   Schema.TaggedStruct("ChannelBinding", { channelBindingId: ChannelBindingId }),
@@ -32,11 +34,15 @@ export const OriginatingAuthority = Schema.Union([
     triggerType: Schema.Literals(["scheduledTask", "workflow"]),
   }),
 ]);
+
+/** Exact User, operation, and Action approved for one protected effect. */
 export const Approval = Schema.Struct({
   actionId: Schema.String,
   operation: AuthorizationOperationName,
   userId: UserId,
 });
+
+/** Current allowance facts used to admit or deny one operation. */
 export const Allowance = Schema.Union([
   Schema.TaggedStruct("Unavailable", {}),
   Schema.TaggedStruct("Metered", {

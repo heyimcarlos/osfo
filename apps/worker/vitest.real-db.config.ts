@@ -7,6 +7,7 @@ export default defineConfig({
     include: [
       "test/allowances.real-postgres.test.ts",
       "test/account-authorities.real-postgres.test.ts",
+      "test/real-postgres-fixture.real-postgres.test.ts",
     ],
     testTimeout: 30_000,
   },

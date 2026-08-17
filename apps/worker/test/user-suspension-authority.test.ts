@@ -3,6 +3,7 @@ import { Effect } from "effect";
 
 import { UserId } from "../src/domain";
 import { AuthSessionId } from "../src/domain/auth-session";
+import type { AccountAuthorityFixture } from "./account-authority-fixture";
 import {
   adminActorId,
   reason,
@@ -112,4 +113,48 @@ describe("User Suspension authority", () => {
       }),
     ),
   );
+
+  it.effect("fails closed when inspection reads a corrupt suspension action", () =>
+    withAccountAuthorityFixture(({ authorities, database }) =>
+      Effect.gen(function* () {
+        yield* seedCorruptSuspensionAction(database.client);
+
+        const failure = yield* Effect.flip(authorities.userSuspensions.inspect(userId));
+
+        expect(failure).toMatchObject({
+          _tag: "DbUnavailable",
+          operation: "inspectUserSuspension",
+        });
+      }),
+    ),
+  );
+
+  it.effect("fails closed when a transition reads a corrupt suspension action", () =>
+    withAccountAuthorityFixture(({ authorities, database }) =>
+      Effect.gen(function* () {
+        yield* seedCorruptSuspensionAction(database.client);
+
+        const failure = yield* Effect.flip(
+          authorities.userSuspensions.suspend({ adminActorId, reason, userId }),
+        );
+
+        expect(failure).toMatchObject({
+          _tag: "DbUnavailable",
+          operation: "suspendUser",
+        });
+      }),
+    ),
+  );
 });
+
+const seedCorruptSuspensionAction = (client: AccountAuthorityFixture["database"]["client"]) =>
+  Effect.promise(() =>
+    client.exec(`
+      ALTER TABLE user_suspension_events
+        DROP CONSTRAINT user_suspension_events_action_check;
+      INSERT INTO user_suspension_events
+        (event_id, user_id, action, admin_actor_id, reason, occurred_at)
+      VALUES
+        ('corrupt-event', 'user-authority-1', 'unknown', 'admin-1', 'Corrupt fixture row', now());
+    `),
+  );

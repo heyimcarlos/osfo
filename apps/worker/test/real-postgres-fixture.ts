@@ -33,8 +33,14 @@ export const withRealPostgresFixture = <A, E>(
         Effect.acquireUseRelease(
           acquireClient(databaseUrl),
           (client) =>
-            initializeDatabase(client).pipe(
-              Effect.flatMap((database) => use({ client, database })),
+            verifyDedicatedDatabase(client).pipe(
+              Effect.andThen(
+                Effect.acquireUseRelease(
+                  prepareDatabase(client),
+                  (database) => use({ client, database }),
+                  () => cleanupDatabase(client),
+                ),
+              ),
             ),
           (client) =>
             Effect.tryPromise({
@@ -76,7 +82,7 @@ const acquireClient = (databaseUrl: Redacted.Redacted) =>
       }),
   });
 
-const initializeDatabase = (client: ReturnType<typeof postgres>) =>
+const verifyDedicatedDatabase = (client: ReturnType<typeof postgres>) =>
   Effect.gen(function* () {
     const rows = yield* Effect.tryPromise({
       try: () => client`select current_database() as "databaseName"`,
@@ -97,6 +103,11 @@ const initializeDatabase = (client: ReturnType<typeof postgres>) =>
         message: "OSFO_REAL_POSTGRES_URL must target the dedicated osfo_ticket_170 database",
       });
     }
+    return undefined;
+  });
+
+const prepareDatabase = (client: ReturnType<typeof postgres>) =>
+  Effect.gen(function* () {
     const migrations = yield* readMigrations.pipe(
       Effect.mapError(
         () =>
@@ -107,23 +118,36 @@ const initializeDatabase = (client: ReturnType<typeof postgres>) =>
     );
     yield* Effect.tryPromise({
       // oxlint-disable-next-line effecttsgo/async-function -- Postgres.js owns this Promise transaction boundary.
-      try: async () => {
-        await client.unsafe("DROP SCHEMA public CASCADE");
-        await client.unsafe("CREATE SCHEMA public");
+      try: () =>
         // oxlint-disable-next-line effecttsgo/async-function -- Postgres.js owns this Promise transaction callback.
-        await client.begin(async (transaction) => {
+        client.begin(async (transaction) => {
+          await transaction.unsafe("DROP SCHEMA public CASCADE");
+          await transaction.unsafe("CREATE SCHEMA public");
           for (const migration of migrations) {
             for (const statement of migration.statements) {
               // oxlint-disable-next-line eslint/no-await-in-loop -- Migration statements must keep deployment order.
               await transaction.unsafe(statement);
             }
           }
-        });
-      },
+        }),
       catch: () =>
         new RealPostgresTestUnavailable({
           message: "Could not initialize the dedicated native PostgreSQL test database",
         }),
     });
     return createDb(client);
+  });
+
+const cleanupDatabase = (client: ReturnType<typeof postgres>) =>
+  Effect.tryPromise({
+    try: () =>
+      // oxlint-disable-next-line effecttsgo/async-function -- Postgres.js owns this cleanup transaction callback.
+      client.begin(async (transaction) => {
+        await transaction.unsafe("DROP SCHEMA public CASCADE");
+        await transaction.unsafe("CREATE SCHEMA public");
+      }),
+    catch: () =>
+      new RealPostgresTestUnavailable({
+        message: "Could not clean the dedicated native PostgreSQL test database",
+      }),
   });

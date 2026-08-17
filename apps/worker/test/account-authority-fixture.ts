@@ -1,7 +1,7 @@
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { sessions, users } from "@osfo/db/schema/auth";
-import { DateTime, Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 
 import * as AccountAuthorities from "../src/composition/account-authorities";
 import * as Db from "../src/db";
@@ -62,22 +62,22 @@ const seedUser = (database: TestDatabaseFixture["database"]) =>
       });
       await transaction.insert(sessions).values([
         {
-          expiresAt: testDate("2026-09-01T00:00:00.000Z"),
+          expiresAt: sessionExpiresAt,
           id: "auth-session-1",
           token: "token-1",
-          updatedAt: testDate("2026-08-16T00:00:00.000Z"),
+          updatedAt: sessionUpdatedAt,
           userId,
         },
         {
-          expiresAt: testDate("2026-09-01T00:00:00.000Z"),
+          expiresAt: sessionExpiresAt,
           id: "auth-session-2",
           token: "token-2",
-          updatedAt: testDate("2026-08-16T00:00:00.000Z"),
+          updatedAt: sessionUpdatedAt,
           userId,
         },
       ]);
     }),
   );
 
-/** Construct one deterministic UTC Date for account authority tests. */
-export const testDate = (value: string) => DateTime.toDateUtc(DateTime.makeUnsafe(value));
+const sessionExpiresAt = Schema.decodeSync(Schema.DateFromString)("2026-09-01T00:00:00.000Z");
+const sessionUpdatedAt = Schema.decodeSync(Schema.DateFromString)("2026-08-16T00:00:00.000Z");

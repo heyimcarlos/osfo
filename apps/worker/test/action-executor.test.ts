@@ -1,14 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import { channelBindings } from "@osfo/db/schema/onboarding";
 import { eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { TestClock } from "effect/testing";
 
 import type { Authorities } from "./account-authority-fixture";
 import {
   adminActorId,
   reason,
-  testDate,
   userId,
   withAccountAuthorityFixture,
 } from "./account-authority-fixture";
@@ -82,7 +81,7 @@ describe("protected-effect executor", () => {
         );
         let providerContacts = 0;
 
-        yield* TestClock.setTime(testDate("2026-09-02T00:00:00.000Z").getTime());
+        yield* TestClock.setTime(parseDate("2026-09-02T00:00:00.000Z").getTime());
         const result = yield* ActionExecutor.make(
           authorization,
           protectedEffectOwners(authorities),
@@ -131,7 +130,7 @@ describe("protected-effect executor", () => {
             approval: { actionId, operation: operation.kind, userId },
             authority,
             deletionAccess: { _tag: "DeletionAccessAvailable" },
-            now: testDate("2026-08-16T12:00:00.000Z"),
+            now: parseDate("2026-08-16T12:00:00.000Z"),
             originatingAuthority: { _tag: "ChannelBinding", channelBindingId },
             user: { _tag: "ActiveUser", userId },
           }),
@@ -140,7 +139,7 @@ describe("protected-effect executor", () => {
         yield* Effect.promise(() =>
           database.database
             .update(channelBindings)
-            .set({ revokedAt: testDate("2026-08-16T12:01:00.000Z") })
+            .set({ revokedAt: parseDate("2026-08-16T12:01:00.000Z") })
             .where(eq(channelBindings.channelBindingId, channelBindingId)),
         );
         let providerContacts = 0;
@@ -184,7 +183,7 @@ describe("protected-effect executor", () => {
             approval: { actionId, operation: operation.kind, userId },
             authority,
             deletionAccess: { _tag: "DeletionAccessAvailable" },
-            now: testDate("2026-08-16T12:00:00.000Z"),
+            now: parseDate("2026-08-16T12:00:00.000Z"),
             originatingAuthority: { _tag: "AuthSession", authSessionId },
             user: { _tag: "ActiveUser", userId },
           }),
@@ -260,7 +259,7 @@ const currentAuthorizationContext = (
       approval: { actionId, operation: "gmail.send", userId },
       authority,
       deletionAccess,
-      now: testDate("2026-08-16T12:00:00.000Z"),
+      now: parseDate("2026-08-16T12:00:00.000Z"),
       originatingAuthority: { _tag: "AuthSession", authSessionId },
       user,
     });
@@ -278,10 +277,10 @@ const stableAuthorizationContext = (): Pick<
   allowance: {
     _tag: "Metered",
     allowancePeriodId: AllowancePeriodId.make("period-protected-effect"),
-    endsAt: testDate("2026-09-01T00:00:00.000Z"),
+    endsAt: parseDate("2026-09-01T00:00:00.000Z"),
     plan: "adventurer",
     planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
-    startsAt: testDate("2026-08-01T00:00:00.000Z"),
+    startsAt: parseDate("2026-08-01T00:00:00.000Z"),
     usage: [],
   },
   gmailConnection: { _tag: "Connected", userId },
@@ -323,3 +322,5 @@ const protectedEffectOwners = (authorities: Authorities): ActionExecutor.Authori
       }),
   },
 });
+
+const parseDate = Schema.decodeSync(Schema.DateFromString);

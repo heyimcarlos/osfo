@@ -1,7 +1,7 @@
 import { userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { users } from "@osfo/db/schema/auth";
 import { desc, eq, sql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Predicate, Result, Schema } from "effect";
 
 import * as Db from "../../db";
 import { AdminActorId, AdminReason } from "../../domain/account-administration";
@@ -10,9 +10,13 @@ import * as UserSuspension from "../../services/user-suspension";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Drizzle transactions and domain tags require these forms. */
 
+const SuspensionAction = Schema.Literals(["restored", "suspended"]);
+
+const LatestAction = Schema.Struct({ action: SuspensionAction });
+
 const History = Schema.Array(
   Schema.Struct({
-    action: Schema.Literals(["restored", "suspended"]),
+    action: SuspensionAction,
     adminActorId: AdminActorId,
     eventId: UserSuspensionEventId,
     occurredAt: Schema.Date,
@@ -52,14 +56,18 @@ export const make = Effect.gen(function* () {
           .orderBy(desc(userSuspensionEvents.occurredAt), desc(userSuspensionEvents.eventId))
           .limit(1),
       ).pipe(
-        Effect.map(([latest]) =>
-          latest?.action === "suspended"
-            ? ({ _tag: "SuspendedUser", userId } as const)
-            : ({ _tag: "ActiveUser", userId } as const),
+        Effect.flatMap(([latest]) =>
+          Db.decodeOptionalRow(LatestAction, latest, "inspectUserSuspension"),
+        ),
+        Effect.map((latest) =>
+          latest === undefined || latest.action === "restored"
+            ? ({ _tag: "ActiveUser", userId } as const)
+            : ({ _tag: "SuspendedUser", userId } as const),
         ),
       ),
-    transition: (command, eventId, action) =>
-      Db.execute(action === "suspended" ? "suspendUser" : "restoreUser", () =>
+    transition: (command, eventId, action) => {
+      const operation = action === "suspended" ? "suspendUser" : "restoreUser";
+      return Db.execute(operation, () =>
         database.transaction(async (transaction) => {
           const [user] = await transaction
             .select({ id: users.id })
@@ -74,7 +82,14 @@ export const make = Effect.gen(function* () {
             .where(eq(userSuspensionEvents.userId, command.userId))
             .orderBy(desc(userSuspensionEvents.occurredAt), desc(userSuspensionEvents.eventId))
             .limit(1);
-          const suspended = latest?.action === "suspended";
+          let suspended = false;
+          if (latest !== undefined) {
+            const decoded = Schema.decodeUnknownResult(LatestAction)(latest);
+            if (Result.isFailure(decoded)) {
+              return { _tag: "CorruptSuspensionAction", cause: decoded.failure } as const;
+            }
+            suspended = decoded.success.action === "suspended";
+          }
           if ((action === "suspended" && suspended) || (action === "restored" && !suspended)) {
             return "unchanged" as const;
           }
@@ -88,7 +103,14 @@ export const make = Effect.gen(function* () {
           });
           return "changed" as const;
         }),
-      ),
+      ).pipe(
+        Effect.flatMap((result) =>
+          Predicate.isTagged(result, "CorruptSuspensionAction")
+            ? Effect.fail(Db.dbUnavailable(operation, result.cause))
+            : Effect.succeed(result),
+        ),
+      );
+    },
   });
 });
 
