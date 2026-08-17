@@ -86,7 +86,7 @@ describe("Model Quality canary", () => {
       assessCanary({
         ...common,
         eligibleMessages: 200,
-        failureMode: { caseId: "safety-160", kind: "covered" },
+        failureMode: { caseId: "safety-160", failureModeId: "safety-160", kind: "covered" },
       }),
     ).toEqual({ action: "ADVANCE", verdict: "PASS" });
     expect(
@@ -94,7 +94,7 @@ describe("Model Quality canary", () => {
         ...common,
         eligibleMessages: 200,
         evaluationCorpus: initialCorpusManifest,
-        failureMode: { caseId: "safety-161", kind: "covered" },
+        failureMode: { caseId: "safety-161", failureModeId: "safety-161", kind: "covered" },
       }),
     ).toEqual({ action: "PAUSE", verdict: "MISSING" });
   });

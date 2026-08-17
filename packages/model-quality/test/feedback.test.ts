@@ -23,19 +23,35 @@ describe("privacy-safe production feedback", () => {
 
   it("enforces retention limits", () => {
     const createdAt = Date.parse("2026-08-17T00:00:00.000Z");
-    expect(evaluationExpiry("temporary-content", createdAt, false)).toEqual({
+    expect(
+      evaluationExpiry({ createdAtEpochMs: createdAt, recordClass: "temporary-content" }),
+    ).toEqual({
       kind: "success",
       value: Date.parse("2026-08-18T00:00:00.000Z"),
     });
-    expect(evaluationExpiry("content-free-metadata", createdAt, false)).toEqual({
+    expect(
+      evaluationExpiry({ createdAtEpochMs: createdAt, recordClass: "content-free-metadata" }),
+    ).toEqual({
       kind: "success",
       value: Date.parse("2026-09-16T00:00:00.000Z"),
     });
-    expect(evaluationExpiry("consented-real-trace", createdAt, true)).toEqual({
+    expect(
+      evaluationExpiry({
+        createdAtEpochMs: createdAt,
+        necessity: { consentRecordId: "consent-1", kind: "documented-consent-and-necessity" },
+        recordClass: "consented-real-trace",
+      }),
+    ).toEqual({
       kind: "success",
       value: Date.parse("2026-11-15T00:00:00.000Z"),
     });
-    expect(evaluationExpiry("consented-real-trace", createdAt, false)).toMatchObject({
+    expect(
+      evaluationExpiry({
+        createdAtEpochMs: createdAt,
+        necessity: { consentRecordId: "", kind: "documented-consent-and-necessity" },
+        recordClass: "consented-real-trace",
+      }),
+    ).toMatchObject({
       error: { _tag: "InvalidRetentionPolicy" },
       kind: "error",
     });

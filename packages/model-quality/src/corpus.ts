@@ -1,5 +1,6 @@
 import { digestValue, type EvidenceDigest } from "./manifest";
 import { freezeCaseFixture, makeCaseFixture, type CaseFixture } from "./case-fixture";
+import { isSealedCaseId, sealedContentDigest } from "./sealed-content-digests";
 
 export type { CaseFixture } from "./case-fixture";
 
@@ -32,6 +33,7 @@ export type CriticalRiskClass =
 
 type CorpusCaseBase = {
   readonly authorId: string;
+  readonly coveredFailureModeIds: ReadonlyArray<string>;
   readonly finalApproverId: string;
   readonly id: string;
   readonly journey: Journey;
@@ -48,7 +50,7 @@ export type CorpusCase = CorpusCaseBase &
     | { readonly fixture: CaseFixture; readonly split: "development" }
     | {
         readonly fixture: {
-          readonly referenceDigest: EvidenceDigest<"fixture">;
+          readonly contentDigest: EvidenceDigest<"fixture">;
           readonly kind: "sealed-reference";
           readonly reference: string;
         };
@@ -100,6 +102,7 @@ const makeCases = (journey: Journey, size: number): ReadonlyArray<CorpusCase> =>
         : "ordinary";
     const common = {
       authorId: `corpus-author-${ordinal % 4}`,
+      coveredFailureModeIds: Object.freeze([id]),
       finalApproverId: `corpus-approver-${ordinal % 3}`,
       id,
       journey,
@@ -109,13 +112,13 @@ const makeCases = (journey: Journey, size: number): ReadonlyArray<CorpusCase> =>
       riskClass,
       reviewState: "approved",
     } as const;
-    return offset >= holdoutStart
+    return offset >= holdoutStart && isSealedCaseId(id)
       ? Object.freeze({
           ...common,
           fixture: Object.freeze({
+            contentDigest: sealedContentDigest(id),
             kind: "sealed-reference" as const,
             reference: `holdout://${id}`,
-            referenceDigest: digestValue("fixture", { id, vaultVersion: "model-quality-v1" }),
           }),
           split: "sealed-holdout" as const,
         })
@@ -143,6 +146,12 @@ export const initialCorpusManifest: CorpusManifest = Object.freeze({
   ...initialCorpusContents,
   contentDigest: digestValue("corpus", initialCorpusContents),
 });
+
+/** Verify that a corpus manifest still matches every immutable content field. */
+export const verifyCorpusManifest = (manifest: CorpusManifest): boolean => {
+  const { contentDigest, ...contents } = manifest;
+  return contentDigest === digestValue("corpus", contents);
+};
 
 /** Safety-case authorship approval used for immutable corpus governance. */
 export type CorpusSafetyApproval = {
@@ -228,9 +237,14 @@ export const createCorpusVersion = (input: CreateCorpusVersionInput): CreateCorp
 
 const freezeCorpusCase = (item: CorpusCase): CorpusCase =>
   item.split === "sealed-holdout"
-    ? Object.freeze({ ...item, fixture: Object.freeze({ ...item.fixture }) })
+    ? Object.freeze({
+        ...item,
+        coveredFailureModeIds: Object.freeze([...item.coveredFailureModeIds]),
+        fixture: Object.freeze({ ...item.fixture }),
+      })
     : Object.freeze({
         ...item,
+        coveredFailureModeIds: Object.freeze([...item.coveredFailureModeIds]),
         fixture: freezeCaseFixture(item.fixture),
       });
 

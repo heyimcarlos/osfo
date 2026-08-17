@@ -13,16 +13,28 @@ export type EvaluationExpiryResult =
       readonly kind: "error";
     };
 
+/** Explicit policy evidence needed to retain one evaluation record. */
+export type EvaluationRetentionRequest =
+  | {
+      readonly createdAtEpochMs: number;
+      readonly recordClass: Exclude<EvaluationRecordClass, "consented-real-trace">;
+    }
+  | {
+      readonly createdAtEpochMs: number;
+      readonly necessity: {
+        readonly consentRecordId: string;
+        readonly kind: "documented-consent-and-necessity";
+      };
+      readonly recordClass: "consented-real-trace";
+    };
+
 /** Calculate the maximum retained-until epoch millisecond for an evaluation record. */
-export const evaluationExpiry = (
-  recordClass: EvaluationRecordClass,
-  createdAtEpochMs: number,
-  necessary: boolean,
-): EvaluationExpiryResult => {
+export const evaluationExpiry = (request: EvaluationRetentionRequest): EvaluationExpiryResult => {
+  const { createdAtEpochMs, recordClass } = request;
   if (
     !Number.isFinite(createdAtEpochMs) ||
     createdAtEpochMs < 0 ||
-    (recordClass === "consented-real-trace" && !necessary)
+    (recordClass === "consented-real-trace" && request.necessity.consentRecordId.length === 0)
   ) {
     return {
       error: {

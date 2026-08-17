@@ -34,11 +34,29 @@ describe("Model Quality execution levels", () => {
           message: `Release vault cannot resolve ${reference}.`,
         },
         kind: "error",
+        verdict: "MISSING",
       }),
     });
     expect(result).toMatchObject({
       error: { _tag: "SealedFixtureUnavailable" },
       kind: "error",
+      verdict: "MISSING",
+    });
+  });
+
+  it("rejects vault content that does not match the sealed manifest digest", () => {
+    const developmentCase = initialCorpusManifest.cases.find(
+      (item) => item.split === "development",
+    );
+    if (developmentCase?.split !== "development") throw new Error("Fixture is required.");
+    expect(
+      resolveCompleteReleaseCorpus(initialCorpusManifest, {
+        resolve: () => ({ kind: "success", value: developmentCase.fixture }),
+      }),
+    ).toMatchObject({
+      error: { _tag: "SealedFixtureUnavailable" },
+      kind: "error",
+      verdict: "MISSING",
     });
   });
 

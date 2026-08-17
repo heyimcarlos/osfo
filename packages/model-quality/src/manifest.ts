@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, verify as verifySignature } from "node:crypto";
 
 import type { EvidenceVerdict } from "./statistics";
 
@@ -61,6 +61,7 @@ export type EvaluationManifestInput = {
     readonly corpusDigest: EvidenceDigest<"corpus">;
     readonly graderDigest: EvidenceDigest<"grader">;
     readonly rubricDigest: EvidenceDigest<"rubric">;
+    readonly signature: string;
   };
   readonly configuration: BehaviorConfiguration;
   readonly corpusDigest: EvidenceDigest<"corpus">;
@@ -144,11 +145,13 @@ export const createEvaluationManifest = (
     input.approvedBaseline.corpusDigest !== input.corpusDigest ||
     input.approvedBaseline.graderDigest !== input.graderDigest ||
     input.approvedBaseline.rubricDigest !== input.rubricDigest ||
+    !verifyBaselineApproval(input.approvedBaseline) ||
     !Number.isFinite(approvedAt) ||
     !Number.isFinite(createdAt) ||
     !Number.isFinite(startedAt) ||
     !Number.isFinite(endedAt) ||
-    startedAt > endedAt
+    startedAt > endedAt ||
+    approvedAt > startedAt
   ) {
     return {
       error: {
@@ -178,6 +181,26 @@ export const createEvaluationManifest = (
 };
 
 const baselineApproverIds = new Set(["quality-owner-1"]);
+
+const baselineApprovalPublicKey = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAUuYid1UPAjLYBSZk94tul2nBuau+yWodeYdHuyG/tmA=
+-----END PUBLIC KEY-----`;
+
+const verifyBaselineApproval = (approval: EvaluationManifestInput["approvedBaseline"]): boolean =>
+  verifySignature(
+    null,
+    Buffer.from(
+      [
+        approval.approverId,
+        approval.approvedAt,
+        approval.corpusDigest,
+        approval.graderDigest,
+        approval.rubricDigest,
+      ].join("|"),
+    ),
+    baselineApprovalPublicKey,
+    Buffer.from(approval.signature, "base64"),
+  );
 
 /** Verify content integrity and the exact approved corpus, rubric, and grader baseline. */
 export const verifyEvaluationManifest = (manifest: EvaluationManifest): boolean => {

@@ -1,6 +1,6 @@
-import type { CaseFixture } from "./case-fixture";
+import { freezeCaseFixture, type CaseFixture } from "./case-fixture";
 import type { CorpusCase, CorpusManifest } from "./corpus";
-import type { EvidenceDigest } from "./manifest";
+import { digestValue, type EvidenceDigest } from "./manifest";
 
 /** Complete release case after an authorized vault resolves sealed fixture content. */
 export type ReleaseExecutionCase = Omit<CorpusCase, "fixture"> & {
@@ -11,13 +11,14 @@ export type ReleaseExecutionCase = Omit<CorpusCase, "fixture"> & {
 export type SealedFixtureFailure = {
   readonly error: { readonly _tag: "SealedFixtureUnavailable"; readonly message: string };
   readonly kind: "error";
+  readonly verdict: "MISSING";
 };
 
 /** Access-controlled fixture capability supplied only to complete release runs. */
 export type SealedFixtureVault = {
   readonly resolve: (
     reference: string,
-    referenceDigest: EvidenceDigest<"fixture">,
+    contentDigest: EvidenceDigest<"fixture">,
   ) => { readonly kind: "success"; readonly value: CaseFixture } | SealedFixtureFailure;
 };
 
@@ -37,9 +38,20 @@ export const resolveCompleteReleaseCorpus = (
       resolved.push(Object.freeze({ ...item, fixture: item.fixture }));
       continue;
     }
-    const fixture = vault.resolve(item.fixture.reference, item.fixture.referenceDigest);
+    const fixture = vault.resolve(item.fixture.reference, item.fixture.contentDigest);
     if (fixture.kind === "error") return fixture;
-    resolved.push(Object.freeze({ ...item, fixture: fixture.value }));
+    const frozenFixture = freezeCaseFixture(fixture.value);
+    if (digestValue("fixture", frozenFixture) !== item.fixture.contentDigest) {
+      return {
+        error: {
+          _tag: "SealedFixtureUnavailable",
+          message: `Vault fixture digest for ${item.id} does not match the manifest.`,
+        },
+        kind: "error",
+        verdict: "MISSING",
+      };
+    }
+    resolved.push(Object.freeze({ ...item, fixture: frozenFixture }));
   }
   return { kind: "success", value: Object.freeze(resolved) };
 };

@@ -96,7 +96,7 @@ export type CaseRunScores = {
 export type PairedComparisonInput = PairedPowerInput & {
   readonly baselineByCase: ReadonlyArray<CaseRunScores>;
   readonly candidateByCase: ReadonlyArray<CaseRunScores>;
-  readonly corpusCases: ReadonlyArray<{ readonly id: string; readonly repetitions: 3 | 5 }>;
+  readonly corpusManifest: CorpusManifest;
 };
 
 /** Result of a paired, case-clustered non-inferiority comparison. */
@@ -115,8 +115,13 @@ export const pairedNonInferiority = (
 ): PairedComparison | StatisticsFailure => {
   const power = requiredPairedCaseCount(input);
   if (power.kind === "error") return power;
-  const repetitions = new Map(input.corpusCases.map((item) => [item.id, item.repetitions]));
-  if (repetitions.size !== input.corpusCases.length) {
+  if (!verifyCorpusManifest(input.corpusManifest)) {
+    return invalidStatistics("The corpus manifest content digest does not match.");
+  }
+  const repetitions = new Map(
+    input.corpusManifest.cases.map((item) => [item.id, item.repetitions]),
+  );
+  if (repetitions.size !== input.corpusManifest.cases.length) {
     return invalidStatistics("Corpus case identities must be unique.");
   }
   const baseline = parseCaseScores(input.baselineByCase, repetitions);
@@ -224,3 +229,4 @@ const invalidStatistics = (message: string): StatisticsFailure => ({
 });
 
 const success = <T>(value: T): StatisticsResult<T> => ({ kind: "success", value });
+import { verifyCorpusManifest, type CorpusManifest } from "./corpus";

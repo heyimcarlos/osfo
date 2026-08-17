@@ -35,6 +35,8 @@ describe("Model Quality evidence manifests", () => {
         corpusDigest: initialCorpusManifest.contentDigest,
         graderDigest,
         rubricDigest,
+        signature:
+          "T2szmTxFus/Nzl57fISxEfrcoMKlPuAQZWaGC8CVsXB9sUcAskhD9eYyIoUk7K0rR6uoAwhrW9/CVJgY21SRCw==",
       },
       configuration,
       corpusDigest: initialCorpusManifest.contentDigest,
@@ -105,6 +107,25 @@ describe("Model Quality evidence manifests", () => {
     ).toMatchObject({ error: { _tag: "InvalidBaselineApproval" }, kind: "error" });
   });
 
+  it("rejects unsigned or post-evaluation baseline approval claims", () => {
+    const input = makeManifestInput();
+    expect(
+      createEvaluationManifest({
+        ...input,
+        approvedBaseline: { ...input.approvedBaseline, signature: "not-a-signature" },
+      }),
+    ).toMatchObject({ error: { _tag: "InvalidBaselineApproval" }, kind: "error" });
+    expect(
+      createEvaluationManifest({
+        ...input,
+        approvedBaseline: {
+          ...input.approvedBaseline,
+          approvedAt: "2026-08-18T00:00:00.000Z",
+        },
+      }),
+    ).toMatchObject({ error: { _tag: "InvalidBaselineApproval" }, kind: "error" });
+  });
+
   it("invalidates PASS after seven days or any material evidence change", () => {
     const common = {
       currentConfigurationDigest: configurationDigest(configuration),
@@ -149,6 +170,8 @@ const makeManifestInput = () => ({
     corpusDigest: initialCorpusManifest.contentDigest,
     graderDigest,
     rubricDigest,
+    signature:
+      "T2szmTxFus/Nzl57fISxEfrcoMKlPuAQZWaGC8CVsXB9sUcAskhD9eYyIoUk7K0rR6uoAwhrW9/CVJgY21SRCw==",
   },
   configuration,
   corpusDigest: initialCorpusManifest.contentDigest,

@@ -13,7 +13,7 @@ export type CanaryEvidence = {
   readonly failureMode:
     | { readonly kind: "none" }
     | { readonly description: string; readonly kind: "uncovered" }
-    | { readonly caseId: string; readonly kind: "covered" };
+    | { readonly caseId: string; readonly failureModeId: string; readonly kind: "covered" };
   readonly observedHours: number;
   readonly priorStage: {
     readonly releaseId: string;
@@ -45,9 +45,13 @@ export const assessCanary = (evidence: CanaryEvidence): CanaryAssessment => {
   if (evidence.failureMode.kind === "uncovered") return { action: "PAUSE", verdict: "MISSING" };
   if (evidence.failureMode.kind === "covered") {
     const caseId = evidence.failureMode.caseId;
+    const failureModeId = evidence.failureMode.failureModeId;
     if (
       caseId.length === 0 ||
-      !evidence.evaluationCorpus.cases.some((item) => item.id === caseId)
+      failureModeId.length === 0 ||
+      !evidence.evaluationCorpus.cases.some(
+        (item) => item.id === caseId && item.coveredFailureModeIds.includes(failureModeId),
+      )
     ) {
       return { action: "PAUSE", verdict: "MISSING" };
     }
