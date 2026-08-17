@@ -30,7 +30,8 @@ export interface Options {
 /** Better Auth routes backed by request-scoped Postgres and Twilio Verify. */
 export const layer = (options: Options) => {
   const handler = Effect.gen(function* () {
-    const auth = yield* make(options.config);
+    const canAccess = yield* AccountAccess.make;
+    const auth = yield* make(options.config, canAccess);
 
     return yield* HttpEffect.fromWebHandler((request) =>
       handleAuthRequest(request, auth.handler, options.config.trustedOrigins),
@@ -42,10 +43,9 @@ export const layer = (options: Options) => {
 };
 
 /** Build Better Auth from the current request-scoped Worker dependencies. */
-export const make = (config: AuthRouteConfig) =>
+export const make = (config: AuthRouteConfig, canAccess: AccountAccess.Check) =>
   Effect.gen(function* () {
     const database = yield* Db.database;
-    const canAccess = yield* AccountAccess.make;
     const twilio = yield* TwilioVerify;
     const context = yield* Effect.context();
     const runPromise = Effect.runPromiseWith(context);

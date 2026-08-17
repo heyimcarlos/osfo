@@ -19,15 +19,8 @@
     {
       "idx": 2,
       "version": "7",
-      "when": 1786923162028,
-      "tag": "0002_fluffy_logan",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1786929237720,
-      "tag": "0003_spooky_mordo",
+      "when": 1786930535411,
+      "tag": "0002_solid_johnny_blaze",
       "breakpoints": true
     }
   ]

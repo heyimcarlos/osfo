@@ -1,5 +1,5 @@
 {
-  "id": "f3cbf992-5ed7-4897-95c0-9a52d72d1ce8",
+  "id": "7a1b6eac-7cc6-4fd1-9cf3-3723852fd42d",
   "prevId": "eeb3d5d1-e03a-41ad-bd14-14075a0f525f",
   "version": "7",
   "dialect": "postgresql",
@@ -1221,11 +1221,11 @@
       "checkConstraints": {
         "deletion_cases_actor_check": {
           "name": "deletion_cases_actor_check",
-          "value": "length(\"deletion_cases\".\"requested_by_admin_id\") > 0"
+          "value": "length(btrim(\"deletion_cases\".\"requested_by_admin_id\")) > 0"
         },
         "deletion_cases_reason_check": {
           "name": "deletion_cases_reason_check",
-          "value": "length(\"deletion_cases\".\"reason\") > 0"
+          "value": "length(btrim(\"deletion_cases\".\"reason\")) > 0"
         }
       },
       "isRLSEnabled": false
@@ -1322,11 +1322,11 @@
         },
         "user_suspension_events_actor_check": {
           "name": "user_suspension_events_actor_check",
-          "value": "length(\"user_suspension_events\".\"admin_actor_id\") > 0"
+          "value": "length(btrim(\"user_suspension_events\".\"admin_actor_id\")) > 0"
         },
         "user_suspension_events_reason_check": {
           "name": "user_suspension_events_reason_check",
-          "value": "length(\"user_suspension_events\".\"reason\") > 0"
+          "value": "length(btrim(\"user_suspension_events\".\"reason\")) > 0"
         }
       },
       "isRLSEnabled": false

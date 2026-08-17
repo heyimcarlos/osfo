@@ -24,7 +24,8 @@ export const layer = (config: WorkerAuth.AuthRouteConfig) =>
       return Auth.of((effect) =>
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
-          const auth = yield* WorkerAuth.make(config);
+          const canAccess = yield* AccountAccess.make;
+          const auth = yield* WorkerAuth.make(config, canAccess);
           const session = yield* Effect.tryPromise({
             try: () => auth.api.getSession({ headers: new Headers(request.headers) }),
             catch: () =>
@@ -37,7 +38,6 @@ export const layer = (config: WorkerAuth.AuthRouteConfig) =>
             return yield* new Unauthorized({});
           }
 
-          const canAccess = yield* AccountAccess.make;
           const hasAccess = yield* canAccess(UserId.make(session.user.id)).pipe(
             Effect.mapError(
               () =>
