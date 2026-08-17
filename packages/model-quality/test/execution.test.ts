@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 
 import { initialCorpusManifest } from "../src/corpus";
 import { assessCompleteGateRequirement, createExecutionPlan } from "../src/execution";
+import { resolveCompleteReleaseCorpus } from "../src/release-execution";
 
 describe("Model Quality execution levels", () => {
   it("builds a fixed PR smoke level with one run and no sealed holdout cases", () => {
@@ -23,6 +24,17 @@ describe("Model Quality execution levels", () => {
     expect(plan.cases).toHaveLength(600);
     expect(plan.finalEvidence).toBe(true);
     expect(plan.cases.filter((item) => item.repetitions === 5)).toHaveLength(160);
+  });
+
+  it("resolves every sealed fixture only through the internal release executor", () => {
+    const result = resolveCompleteReleaseCorpus(initialCorpusManifest);
+    expect(result.kind).toBe("success");
+    if (result.kind === "error") return;
+    expect(result.value).toHaveLength(600);
+    expect(result.value.every((item) => item.fixture.thread.length > 0)).toBe(true);
+    expect(
+      result.value.find((item) => item.id === "safety-160")?.fixture.providerFixtures,
+    ).toHaveLength(1);
   });
 
   it("requires weekly and notice-driven complete production reruns", () => {

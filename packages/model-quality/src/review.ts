@@ -1,5 +1,6 @@
 import type { Journey } from "./corpus";
 import type { EvidenceVerdict } from "./statistics";
+import { isEvidenceCount, isEvidenceSubset } from "./evidence-count";
 
 /** Review counts for one non-safety journey. */
 export type JourneyReview = {
@@ -37,16 +38,14 @@ export type HumanReviewAssessment = {
 export const assessHumanReview = (input: HumanReviewInput): HumanReviewAssessment => {
   const reasons: Array<string> = [];
   if (
-    !validReviewCount(input.reviewedSafetyCases, input.totalSafetyCases) ||
+    !isEvidenceSubset(input.reviewedSafetyCases, input.totalSafetyCases) ||
     input.journeyReviews.some(
       (review) =>
-        !validReviewCount(review.reviewedCases, review.totalCases) ||
-        !validReviewCount(review.doubleLabeledCases, review.reviewedCases),
+        !isEvidenceSubset(review.reviewedCases, review.totalCases) ||
+        !isEvidenceSubset(review.doubleLabeledCases, review.reviewedCases),
     ) ||
-    !Number.isInteger(input.disagreements) ||
-    !Number.isInteger(input.adjudicatedDisagreements) ||
-    input.disagreements < 0 ||
-    input.adjudicatedDisagreements < 0 ||
+    !isEvidenceCount(input.disagreements) ||
+    !isEvidenceCount(input.adjudicatedDisagreements) ||
     input.adjudicatedDisagreements > input.disagreements
   ) {
     reasons.push("Review counts must be valid non-negative integer subsets.");
@@ -94,10 +93,3 @@ export const assessHumanReview = (input: HumanReviewInput): HumanReviewAssessmen
   }
   return { reasons, verdict: reasons.length === 0 ? "PASS" : "MISSING" };
 };
-
-const validReviewCount = (subset: number, total: number) =>
-  Number.isInteger(subset) &&
-  Number.isInteger(total) &&
-  subset >= 0 &&
-  total >= 0 &&
-  subset <= total;

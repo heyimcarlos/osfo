@@ -34,8 +34,27 @@ export type JourneySamplingPlan = {
   readonly totalSamples: number;
 };
 
+/** Expected invalid population failure from weekly sampling. */
+export type InvalidSamplingPopulation = {
+  readonly error: { readonly _tag: "InvalidSamplingPopulation" };
+  readonly kind: "error";
+};
+
+/** Parsed weekly sampling outcome. */
+export type JourneySamplingResult =
+  | { readonly kind: "success"; readonly value: JourneySamplingPlan }
+  | InvalidSamplingPopulation;
+
 /** Select one percent per Plan route while enforcing one 200-sample journey cap. */
-export const planWeeklySampling = (population: JourneySamplingPopulation): JourneySamplingPlan => {
+export const planWeeklySampling = (
+  population: JourneySamplingPopulation,
+): JourneySamplingResult => {
+  if (
+    !isEvidenceCount(population.freeMessages) ||
+    !isEvidenceCount(population.adventurerMessages)
+  ) {
+    return { error: { _tag: "InvalidSamplingPopulation" }, kind: "error" };
+  }
   const freeTarget = Math.ceil(Math.max(0, population.freeMessages) * 0.01);
   const adventurerTarget = Math.ceil(Math.max(0, population.adventurerMessages) * 0.01);
   const uncapped = freeTarget + adventurerTarget;
@@ -45,8 +64,12 @@ export const planWeeklySampling = (population: JourneySamplingPopulation): Journ
       ? freeTarget
       : Math.floor((totalSamples * freeTarget) / uncapped);
   return {
-    adventurerSamples: totalSamples - freeSamples,
-    freeSamples,
-    totalSamples,
+    kind: "success",
+    value: {
+      adventurerSamples: totalSamples - freeSamples,
+      freeSamples,
+      totalSamples,
+    },
   };
 };
+import { isEvidenceCount } from "./evidence-count";

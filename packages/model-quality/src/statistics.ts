@@ -89,6 +89,7 @@ export const requiredPairedCaseCount = (input: PairedPowerInput): StatisticsResu
 /** Repeated outputs clustered under one independent case identity. */
 export type CaseRunScores = {
   readonly caseId: string;
+  readonly requiredRuns: 3 | 5;
   readonly runs: ReadonlyArray<number>;
 };
 
@@ -126,9 +127,16 @@ export const pairedNonInferiority = (
   ) {
     return invalidStatistics("Paired case identities must match.");
   }
-  const differences = baselineIds.map(
-    (caseId) => (candidate.value.get(caseId) ?? 0) - (baseline.value.get(caseId) ?? 0),
+  const mismatchedRuns = baselineIds.some(
+    (caseId) =>
+      baseline.value.get(caseId)?.requiredRuns !== candidate.value.get(caseId)?.requiredRuns,
   );
+  if (mismatchedRuns) return invalidStatistics("Paired case repetition requirements must match.");
+  const differences = baselineIds.map((caseId) => {
+    const baselineScore = baseline.value.get(caseId)?.score ?? 0;
+    const candidateScore = candidate.value.get(caseId)?.score ?? 0;
+    return candidateScore - baselineScore;
+  });
   const difference = mean(differences);
   const lowerConfidenceBound = pairedClusterBootstrapLowerBound(differences);
   const verdict: EvidenceVerdict =
@@ -149,18 +157,20 @@ export const pairedNonInferiority = (
 
 const parseCaseScores = (
   cases: ReadonlyArray<CaseRunScores>,
-): StatisticsResult<ReadonlyMap<string, number>> => {
-  const scores = new Map<string, number>();
+): StatisticsResult<
+  ReadonlyMap<string, { readonly requiredRuns: 3 | 5; readonly score: number }>
+> => {
+  const scores = new Map<string, { readonly requiredRuns: 3 | 5; readonly score: number }>();
   for (const item of cases) {
     if (
       item.caseId.length === 0 ||
       scores.has(item.caseId) ||
-      item.runs.length === 0 ||
+      item.runs.length !== item.requiredRuns ||
       item.runs.some((score) => !Number.isFinite(score) || score < 0 || score > 1)
     ) {
       return invalidStatistics("Case identities must be unique and every case needs bounded runs.");
     }
-    scores.set(item.caseId, mean(item.runs));
+    scores.set(item.caseId, { requiredRuns: item.requiredRuns, score: mean(item.runs) });
   }
   if (scores.size === 0) return invalidStatistics("Paired analysis requires independent cases.");
   return success(scores);

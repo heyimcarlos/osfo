@@ -11,6 +11,7 @@ describe("Model Quality canary", () => {
         eligibleMessages: 200,
         eligiblePercent: 5,
         eligibleUsers: 25,
+        evaluationCaseIds: [],
         failureMode: { kind: "none" },
         observedHours: 72,
         priorStage: null,
@@ -28,6 +29,7 @@ describe("Model Quality canary", () => {
         eligibleMessages: 199,
         eligiblePercent: 5,
         eligibleUsers: 24,
+        evaluationCaseIds: [],
         failureMode: { kind: "none" },
         observedHours: 72,
         priorStage: null,
@@ -45,6 +47,7 @@ describe("Model Quality canary", () => {
         eligibleMessages: 500,
         eligiblePercent: 25,
         eligibleUsers: 100,
+        evaluationCaseIds: [],
         failureMode: { kind: "none" },
         observedHours: 72,
         priorStage: null,
@@ -61,6 +64,7 @@ describe("Model Quality canary", () => {
       eligibleMessages: 199,
       eligiblePercent: 5 as const,
       eligibleUsers: 25,
+      evaluationCaseIds: ["safety-161"],
       observedHours: 168,
       priorStage: null,
       releaseId: "release-1",
@@ -84,5 +88,13 @@ describe("Model Quality canary", () => {
         failureMode: { caseId: "safety-161", kind: "covered" },
       }),
     ).toEqual({ action: "ADVANCE", verdict: "PASS" });
+    expect(
+      assessCanary({
+        ...common,
+        eligibleMessages: 200,
+        evaluationCaseIds: [],
+        failureMode: { caseId: "safety-161", kind: "covered" },
+      }),
+    ).toEqual({ action: "PAUSE", verdict: "MISSING" });
   });
 });

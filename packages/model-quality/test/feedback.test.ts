@@ -8,46 +8,48 @@ import { evaluationExpiry, reviewPrivateContent } from "../src/retention";
 describe("privacy-safe production feedback", () => {
   it("caps stratified automatic sampling at one percent and 200 per journey each week", () => {
     expect(planWeeklySampling({ adventurerMessages: 0, freeMessages: 120 })).toEqual({
-      adventurerSamples: 0,
-      freeSamples: 2,
-      totalSamples: 2,
+      kind: "success",
+      value: { adventurerSamples: 0, freeSamples: 2, totalSamples: 2 },
     });
     expect(planWeeklySampling({ adventurerMessages: 50_000, freeMessages: 50_000 })).toEqual({
-      adventurerSamples: 100,
-      freeSamples: 100,
-      totalSamples: 200,
+      kind: "success",
+      value: { adventurerSamples: 100, freeSamples: 100, totalSamples: 200 },
+    });
+    expect(planWeeklySampling({ adventurerMessages: Number.NaN, freeMessages: 1 })).toMatchObject({
+      error: { _tag: "InvalidSamplingPopulation" },
+      kind: "error",
     });
   });
 
   it("enforces retention limits", () => {
     const createdAt = Date.parse("2026-08-17T00:00:00.000Z");
-    expect(evaluationExpiry("temporary-content", createdAt)).toBe(
-      Date.parse("2026-08-18T00:00:00.000Z"),
-    );
-    expect(evaluationExpiry("content-free-metadata", createdAt)).toBe(
-      Date.parse("2026-09-16T00:00:00.000Z"),
-    );
-    expect(evaluationExpiry("consented-real-trace", createdAt)).toBe(
-      Date.parse("2026-11-15T00:00:00.000Z"),
-    );
+    expect(evaluationExpiry("temporary-content", createdAt)).toEqual({
+      kind: "success",
+      value: Date.parse("2026-08-18T00:00:00.000Z"),
+    });
+    expect(evaluationExpiry("content-free-metadata", createdAt)).toEqual({
+      kind: "success",
+      value: Date.parse("2026-09-16T00:00:00.000Z"),
+    });
+    expect(evaluationExpiry("consented-real-trace", createdAt)).toEqual({
+      kind: "success",
+      value: Date.parse("2026-11-15T00:00:00.000Z"),
+    });
   });
 
   it("prohibits random private reading and starts deletion across every evaluation copy", () => {
     expect(reviewPrivateContent({ basis: "random-sample" })).toEqual({ verdict: "PROHIBITED" });
-    expect(
-      propagateSourceDeletion(
-        createEvaluationCopyRegistry("thread-1", [
-          { copyId: "raw-output", location: "live" },
-          { copyId: "review-bundle", location: "live" },
-          {
-            copyId: "hosted-grader-copy",
-            location: "provider-recovery",
-            recoveryExpiresAt: "2026-09-16T12:00:00.000Z",
-          },
-        ]),
-        "2026-08-17T12:00:00.000Z",
-      ),
-    ).toEqual({
+    const registry = createEvaluationCopyRegistry("thread-1", [
+      { copyId: "raw-output", location: "live" },
+      { copyId: "review-bundle", location: "live" },
+      {
+        copyId: "hosted-grader-copy",
+        location: "provider-recovery",
+        recoveryExpiresAt: "2026-09-16T12:00:00.000Z",
+      },
+    ]);
+    if (registry.kind === "error") throw new Error("Test registry must be valid.");
+    expect(propagateSourceDeletion(registry.value, "2026-08-17T12:00:00.000Z")).toEqual({
       liveDeletions: [
         { copyId: "raw-output", requestedAt: "2026-08-17T12:00:00.000Z", sourceId: "thread-1" },
         { copyId: "review-bundle", requestedAt: "2026-08-17T12:00:00.000Z", sourceId: "thread-1" },

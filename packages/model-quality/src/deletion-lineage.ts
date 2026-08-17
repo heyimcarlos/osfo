@@ -13,15 +13,37 @@ export type EvaluationCopyRegistry = {
   readonly sourceId: string;
 };
 
+/** Parsed registry construction outcome. */
+export type EvaluationCopyRegistryResult =
+  | { readonly kind: "success"; readonly value: EvaluationCopyRegistry }
+  | { readonly error: { readonly _tag: "InvalidEvaluationCopyRegistry" }; readonly kind: "error" };
+
 /** Create the complete immutable registry when evaluation copies are created. */
 export const createEvaluationCopyRegistry = (
   sourceId: string,
   copies: ReadonlyArray<EvaluationCopy>,
-): EvaluationCopyRegistry =>
-  Object.freeze({
-    copies: Object.freeze(copies.map((copy) => Object.freeze({ ...copy }))),
-    sourceId,
-  });
+): EvaluationCopyRegistryResult => {
+  const copyIds = copies.map((copy) => copy.copyId);
+  const invalid =
+    sourceId.length === 0 ||
+    copies.length === 0 ||
+    copyIds.some((copyId) => copyId.length === 0) ||
+    new Set(copyIds).size !== copyIds.length ||
+    copies.some(
+      (copy) =>
+        copy.location === "provider-recovery" &&
+        !Number.isFinite(Date.parse(copy.recoveryExpiresAt)),
+    );
+  return invalid
+    ? { error: { _tag: "InvalidEvaluationCopyRegistry" }, kind: "error" }
+    : {
+        kind: "success",
+        value: Object.freeze({
+          copies: Object.freeze(copies.map((copy) => Object.freeze({ ...copy }))),
+          sourceId,
+        }),
+      };
+};
 
 /** One immediate deletion request propagated to an evaluation copy. */
 export type EvaluationCopyDeletion = {

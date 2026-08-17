@@ -59,6 +59,14 @@ describe("initial Model Quality corpus", () => {
     expect(Object.isFrozen(initialCorpusManifest)).toBe(true);
     expect(Object.isFrozen(initialCorpusManifest.cases)).toBe(true);
     expect(Object.isFrozen(initialCorpusManifest.cases[0]?.fixture)).toBe(true);
+    const developmentCase = initialCorpusManifest.cases.find(
+      (item) => item.split === "development",
+    );
+    expect(developmentCase?.split).toBe("development");
+    if (developmentCase?.split !== "development") return;
+    expect(developmentCase.fixture.knowledgeSources[0]?.content).toContain("is due on");
+    expect(developmentCase.fixture.providerFixtures[0]?.request.caseId).toBe(developmentCase.id);
+    expect(developmentCase.fixture.toolDefinitions[0]?.inputSchema.idempotencyKey).toBe("string");
     const sealedCase = initialCorpusManifest.cases.find((item) => item.split === "sealed-holdout");
     expect(sealedCase?.fixture).toMatchObject({ kind: "sealed-reference" });
     expect(sealedCase?.fixture).not.toHaveProperty("thread");

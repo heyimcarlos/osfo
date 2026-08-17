@@ -1,4 +1,5 @@
 import type { EvidenceVerdict } from "./statistics";
+import { isEvidenceCount } from "./evidence-count";
 
 /** Evidence collected for one stable eligible-User canary cohort. */
 export type CanaryEvidence = {
@@ -7,6 +8,7 @@ export type CanaryEvidence = {
   readonly eligibleMessages: number;
   readonly eligiblePercent: 5 | 25;
   readonly eligibleUsers: number;
+  readonly evaluationCaseIds: ReadonlyArray<string>;
   readonly failureMode:
     | { readonly kind: "none" }
     | { readonly description: string; readonly kind: "uncovered" }
@@ -30,9 +32,9 @@ export type CanaryAssessment = {
 /** Assess canary duration, cohort, message, stop, and rollback controls. */
 export const assessCanary = (evidence: CanaryEvidence): CanaryAssessment => {
   if (
-    !validNonNegativeInteger(evidence.confirmedCriticalFailures) ||
-    !validNonNegativeInteger(evidence.eligibleMessages) ||
-    !validNonNegativeInteger(evidence.eligibleUsers) ||
+    !isEvidenceCount(evidence.confirmedCriticalFailures) ||
+    !isEvidenceCount(evidence.eligibleMessages) ||
+    !isEvidenceCount(evidence.eligibleUsers) ||
     !Number.isFinite(evidence.observedHours) ||
     evidence.observedHours < 0
   ) {
@@ -40,6 +42,13 @@ export const assessCanary = (evidence: CanaryEvidence): CanaryAssessment => {
   }
   if (evidence.confirmedCriticalFailures > 0) return { action: "ROLLBACK", verdict: "FAIL" };
   if (evidence.failureMode.kind === "uncovered") return { action: "PAUSE", verdict: "MISSING" };
+  if (
+    evidence.failureMode.kind === "covered" &&
+    (evidence.failureMode.caseId.length === 0 ||
+      !evidence.evaluationCaseIds.includes(evidence.failureMode.caseId))
+  ) {
+    return { action: "PAUSE", verdict: "MISSING" };
+  }
   const correctSequence =
     evidence.stage === "five-percent"
       ? evidence.eligiblePercent === 5 && evidence.priorStage === null
@@ -65,5 +74,3 @@ export const assessCanary = (evidence: CanaryEvidence): CanaryAssessment => {
     ? { action: "PAUSE", verdict: "MISSING" }
     : { action: "EXTEND", verdict: "MISSING" };
 };
-
-const validNonNegativeInteger = (value: number) => Number.isInteger(value) && value >= 0;

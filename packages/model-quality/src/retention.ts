@@ -5,18 +5,26 @@ export type EvaluationRecordClass =
   | "flagged-review-bundle"
   | "consented-real-trace";
 
+/** Parsed retention-expiry result. */
+export type EvaluationExpiryResult =
+  | { readonly kind: "success"; readonly value: number }
+  | { readonly error: { readonly _tag: "InvalidRetentionInstant" }; readonly kind: "error" };
+
 /** Calculate the maximum retained-until epoch millisecond for an evaluation record. */
 export const evaluationExpiry = (
   recordClass: EvaluationRecordClass,
   createdAtEpochMs: number,
-): number => {
+): EvaluationExpiryResult => {
+  if (!Number.isFinite(createdAtEpochMs) || createdAtEpochMs < 0) {
+    return { error: { _tag: "InvalidRetentionInstant" }, kind: "error" };
+  }
   const hours =
     recordClass === "temporary-content"
       ? 24
       : recordClass === "consented-real-trace"
         ? 24 * 90
         : 24 * 30;
-  return createdAtEpochMs + hours * 60 * 60 * 1_000;
+  return { kind: "success", value: createdAtEpochMs + hours * 60 * 60 * 1_000 };
 };
 
 /** Basis under which private content was selected for human review. */

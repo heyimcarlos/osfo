@@ -93,6 +93,22 @@ export type EvaluationManifest = EvaluationManifestInput & {
   readonly contentDigest: EvidenceDigest<"manifest">;
 };
 
+/** Product authority allowed to approve a new evaluation baseline. */
+export type BaselineApprovalAuthority = {
+  readonly approvedApproverIds: ReadonlyArray<string>;
+};
+
+/** Expected failure when baseline evidence is not authorized or internally consistent. */
+export type InvalidBaselineApproval = {
+  readonly _tag: "InvalidBaselineApproval";
+  readonly message: string;
+};
+
+/** Result of creating an immutable evaluation manifest. */
+export type EvaluationManifestResult =
+  | { readonly kind: "success"; readonly value: EvaluationManifest }
+  | { readonly error: InvalidBaselineApproval; readonly kind: "error" };
+
 /** JSON-compatible evidence value accepted by canonical manifest hashing. */
 export type CanonicalValue =
   | null
@@ -121,7 +137,26 @@ export const configurationDigest = (
 ): EvidenceDigest<"configuration"> => digestValue("configuration", configuration);
 
 /** Create and freeze an immutable evaluation evidence manifest. */
-export const createEvaluationManifest = (input: EvaluationManifestInput): EvaluationManifest => {
+export const createEvaluationManifest = (
+  input: EvaluationManifestInput,
+  authority: BaselineApprovalAuthority,
+): EvaluationManifestResult => {
+  if (
+    !authority.approvedApproverIds.includes(input.approvedBaseline.approverId) ||
+    input.approvedBaseline.corpusDigest !== input.corpusDigest ||
+    input.approvedBaseline.graderDigest !== input.graderDigest ||
+    input.approvedBaseline.rubricDigest !== input.rubricDigest ||
+    !Number.isFinite(Date.parse(input.approvedBaseline.approvedAt))
+  ) {
+    return {
+      error: {
+        _tag: "InvalidBaselineApproval",
+        message: "The baseline approval is unauthorized or does not match evaluated evidence.",
+      },
+      kind: "error",
+    };
+  }
+  const approvedBaseline = Object.freeze({ ...input.approvedBaseline });
   const configuration = Object.freeze({ ...input.configuration });
   const outputEvidence = Object.freeze({
     ...input.outputEvidence,
@@ -129,11 +164,15 @@ export const createEvaluationManifest = (input: EvaluationManifestInput): Evalua
   });
   const unsigned = Object.freeze({
     ...input,
+    approvedBaseline,
     configuration,
     outputEvidence,
     configurationDigest: configurationDigest(configuration),
   });
-  return Object.freeze({ ...unsigned, contentDigest: digestValue("manifest", unsigned) });
+  return {
+    kind: "success",
+    value: Object.freeze({ ...unsigned, contentDigest: digestValue("manifest", unsigned) }),
+  };
 };
 
 /** Verify content integrity and the exact approved corpus, rubric, and grader baseline. */

@@ -7,7 +7,7 @@ describe("Model Quality corpus governance", () => {
     const result = createCorpusVersion({
       cases: initialCorpusManifest.cases.filter((item) => item.id !== "ordinary-001"),
       createdAt: "2026-08-18T00:00:00.000Z",
-      knownFailingCaseIds: ["ordinary-001"],
+      newlyFailingCaseIds: ["ordinary-001"],
       previous: initialCorpusManifest,
       safetyApprovals: [],
       version: "model-quality-v2",
@@ -33,7 +33,7 @@ describe("Model Quality corpus governance", () => {
     const result = createCorpusVersion({
       cases: [copiedFirstCase, ...initialCorpusManifest.cases.slice(1)],
       createdAt: "2026-08-18T00:00:00.000Z",
-      knownFailingCaseIds: [],
+      newlyFailingCaseIds: [],
       previous: initialCorpusManifest,
       safetyApprovals: [],
       version: "model-quality-v2",
@@ -57,12 +57,15 @@ describe("Model Quality corpus governance", () => {
       throw new Error("First safety case must be development.");
     const changed = {
       ...safetyCase,
-      fixture: { ...safetyCase.fixture, expectedOutcomes: ["changed outcome"] },
+      fixture: {
+        ...safetyCase.fixture,
+        expectedOutcomes: [{ assertionId: "changed", expected: "changed outcome" }],
+      },
     };
     const result = createCorpusVersion({
       cases: initialCorpusManifest.cases.map((item) => (item.id === changed.id ? changed : item)),
       createdAt: "2026-08-18T00:00:00.000Z",
-      knownFailingCaseIds: [],
+      newlyFailingCaseIds: [],
       previous: initialCorpusManifest,
       safetyApprovals: [],
       version: "model-quality-v2",
@@ -74,5 +77,26 @@ describe("Model Quality corpus governance", () => {
       },
       kind: "error",
     });
+  });
+
+  it("carries known failures forward so a later caller cannot omit them", () => {
+    const marked = createCorpusVersion({
+      cases: initialCorpusManifest.cases,
+      createdAt: "2026-08-18T00:00:00.000Z",
+      newlyFailingCaseIds: ["ordinary-001"],
+      previous: initialCorpusManifest,
+      safetyApprovals: [],
+      version: "model-quality-v2",
+    });
+    if (marked.kind === "error") throw new Error(marked.error.message);
+    const removal = createCorpusVersion({
+      cases: marked.value.cases.filter((item) => item.id !== "ordinary-001"),
+      createdAt: "2026-08-19T00:00:00.000Z",
+      newlyFailingCaseIds: [],
+      previous: marked.value,
+      safetyApprovals: [],
+      version: "model-quality-v3",
+    });
+    expect(removal).toMatchObject({ error: { _tag: "InvalidCorpusChange" }, kind: "error" });
   });
 });

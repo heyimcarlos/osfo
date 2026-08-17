@@ -73,8 +73,8 @@ describe("Model Quality statistics", () => {
     expect(
       pairedNonInferiority({
         anticipatedDifference: 0,
-        baselineByCase: [{ caseId: "case-a", runs: [1] }],
-        candidateByCase: [{ caseId: "case-b", runs: [1] }],
+        baselineByCase: [{ caseId: "case-a", requiredRuns: 3, runs: [1, 1, 1] }],
+        candidateByCase: [{ caseId: "case-b", requiredRuns: 3, runs: [1, 1, 1] }],
         discordanceRate: 0,
         margin: 0.02,
         pilotIndependentCases: 100,
@@ -98,7 +98,24 @@ describe("Model Quality statistics", () => {
       }),
     ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
   });
+
+  it("rejects selected runs that omit required ordinary or safety repetitions", () => {
+    expect(
+      pairedNonInferiority({
+        anticipatedDifference: 0,
+        baselineByCase: [{ caseId: "safety-001", requiredRuns: 5, runs: [1] }],
+        candidateByCase: [{ caseId: "safety-001", requiredRuns: 5, runs: [1] }],
+        discordanceRate: 0,
+        margin: 0.05,
+        pilotIndependentCases: 100,
+      }),
+    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+  });
 });
 
 const caseScores = (scores: ReadonlyArray<number>) =>
-  scores.map((score, index) => ({ caseId: `case-${index}`, runs: [score, score, score] }));
+  scores.map((score, index) => ({
+    caseId: `case-${index}`,
+    requiredRuns: 3 as const,
+    runs: [score, score, score],
+  }));
