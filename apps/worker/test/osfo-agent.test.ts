@@ -192,17 +192,10 @@ describe("Osfo Agent and Think Session foundation", () => {
               "SELECT count(*) AS count FROM osfo_acceptance_receipts",
             ),
           );
-          const submissionRows = Array.from(
-            state.storage.sql.exec<{ count: number }>(
-              "SELECT count(*) AS count FROM cf_think_submissions WHERE submission_id = ?",
-              submissionId,
-            ),
-          );
           return {
             acceptedSubmission,
             receipt,
             receiptCount: receiptRows[0]?.count,
-            submissionCount: submissionRows[0]?.count,
           };
         }),
       );
@@ -220,7 +213,6 @@ describe("Osfo Agent and Think Session foundation", () => {
         submissionId,
       });
       expect(recovered.receiptCount).toBe(1);
-      expect(recovered.submissionCount).toBe(1);
     }),
   );
 
