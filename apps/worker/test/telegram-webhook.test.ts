@@ -261,8 +261,8 @@ const makeHarness = (overrides?: {
       },
     },
     allowedUserIds: new Set(overrides?.allowedUserIds ?? ["900100200"]),
-    onboarding: {
-      beginTelegramEvent: (eventId) => {
+    delivery: {
+      beginEvent: (eventId) => {
         if (completedOnboardingEvents.has(eventId)) {
           return Effect.succeed({ _tag: "Completed" } as const);
         }
@@ -277,21 +277,14 @@ const makeHarness = (overrides?: {
         pendingOnboardingEvents.set(eventId, claimToken);
         return Effect.succeed({ _tag: "Claimed", claimToken } as const);
       },
-      completeTelegramEvent: (eventId, claimToken) =>
+      completeEvent: (eventId, claimToken) =>
         Effect.sync(() => {
           if (ambiguousOnboardingEvents.get(eventId) !== claimToken) return;
           ambiguousOnboardingEvents.delete(eventId);
           pendingOnboardingEvents.delete(eventId);
           completedOnboardingEvents.add(eventId);
         }),
-      enrollTelegram: (input) => {
-        enrollments.push(input);
-        return Effect.succeed({
-          _tag: "BindingCreated",
-          channelBindingId: ChannelBindingId.make("binding-telegram"),
-        });
-      },
-      issueTelegramInvitation: (input) => {
+      issueInvitation: (input) => {
         invitationAttempt += 1;
         if (overrides?.failFirstInvitation === true && invitationAttempt === 1) {
           return Effect.fail(
@@ -311,7 +304,7 @@ const makeHarness = (overrides?: {
           verifyUrl: new URL("https://osfo.test/verify/token"),
         });
       },
-      markTelegramEventAmbiguous: (eventId, claimToken) =>
+      markEventAmbiguous: (eventId, claimToken) =>
         pendingOnboardingEvents.get(eventId) !== claimToken
           ? Effect.fail(
               new Onboarding.OnboardingPersistenceUnavailable({
@@ -323,6 +316,15 @@ const makeHarness = (overrides?: {
               pendingOnboardingEvents.delete(eventId);
               ambiguousOnboardingEvents.set(eventId, claimToken);
             }),
+    },
+    onboarding: {
+      enrollTelegram: (input) => {
+        enrollments.push(input);
+        return Effect.succeed({
+          _tag: "BindingCreated",
+          channelBindingId: ChannelBindingId.make("binding-telegram"),
+        });
+      },
     },
     outbound,
     secretToken: Redacted.make("telegram-webhook-secret"),

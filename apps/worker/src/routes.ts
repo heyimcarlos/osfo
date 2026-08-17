@@ -16,10 +16,12 @@ import * as AuthMiddleware from "./middleware/auth";
 import * as OnboardingCloudflare from "./integrations/cloudflare/onboarding";
 import * as TelegramAdmissionCloudflare from "./integrations/cloudflare/telegram-admission";
 import * as TelegramAdmissionPostgres from "./integrations/postgres/telegram-admission";
+import * as TelegramDeliveryPostgres from "./integrations/postgres/telegram-onboarding-delivery";
 import * as OnboardingPostgres from "./integrations/postgres/onboarding";
 import * as OnboardingLinks from "./integrations/public/onboarding-links";
 import * as Onboarding from "./services/onboarding";
 import * as TelegramAdmission from "./services/telegram-message-admission";
+import * as TelegramDelivery from "./services/telegram-onboarding-delivery";
 import * as Registration from "./services/registration";
 
 /** Cloudflare bindings used by the Worker route tree. */
@@ -74,12 +76,23 @@ export const layer = (options: Options) => {
     Layer.provide(TelegramAdmissionCloudflare.layer(options.env)),
     Layer.provide(options.authDependencies),
   );
+  const telegramDelivery = TelegramDelivery.layerWithoutDependencies.pipe(
+    Layer.provide(TelegramDeliveryPostgres.layerWithoutDependencies),
+    Layer.provide(OnboardingPostgres.layerWithoutDependencies),
+    Layer.provide(OnboardingCloudflare.layer(options.env)),
+    Layer.provide(onboardingLinks),
+    Layer.provide(options.authDependencies),
+  );
   const telegram =
     options.config.telegram.kind === "enabled"
       ? TelegramRoutes.layer({
           stage: options.config.stage,
           telegram: options.config.telegram,
-        }).pipe(Layer.provide(onboardingRequest), Layer.provide(telegramAdmission))
+        }).pipe(
+          Layer.provide(onboardingRequest),
+          Layer.provide(telegramAdmission),
+          Layer.provide(telegramDelivery),
+        )
       : Layer.empty;
 
   return Layer.mergeAll(

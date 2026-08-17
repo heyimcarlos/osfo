@@ -5,6 +5,7 @@ import { ChannelIdentity } from "../domain";
 import type { OsfoStage } from "../env";
 import type * as TelegramAdmission from "../services/telegram-message-admission";
 import * as Onboarding from "../services/onboarding";
+import type * as TelegramDelivery from "../services/telegram-onboarding-delivery";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect result unions use the standard _tag discriminator. */
 
@@ -51,14 +52,8 @@ export interface TelegramOutbound {
 export interface TelegramWebhookOptions {
   readonly admission: Pick<TelegramAdmission.Interface, "accept">;
   readonly allowedUserIds: ReadonlySet<string>;
-  readonly onboarding: Pick<
-    Onboarding.Interface,
-    | "beginTelegramEvent"
-    | "completeTelegramEvent"
-    | "enrollTelegram"
-    | "issueTelegramInvitation"
-    | "markTelegramEventAmbiguous"
-  >;
+  readonly delivery: TelegramDelivery.Interface;
+  readonly onboarding: Pick<Onboarding.Interface, "enrollTelegram">;
   readonly outbound: TelegramOutbound;
   readonly secretToken: Redacted.Redacted;
   readonly stage: OsfoStage;
@@ -85,16 +80,16 @@ export const handleTelegramWebhook = Effect.fn("TelegramWebhook.handle")(functio
   const channelIdentity = ChannelIdentity.make(`telegram:${userId}`);
   const enrollmentToken = readEnrollmentToken(update.message.text);
   if (enrollmentToken !== null) {
-    const claim = yield* claimOnboardingEvent(options.onboarding, eventId);
+    const claim = yield* claimOnboardingEvent(options.delivery, eventId);
     if (claim instanceof Response) return claim;
     yield* options.onboarding.enrollTelegram({
       channelIdentity,
       eventId,
       token: Redacted.make(enrollmentToken),
     });
-    yield* options.onboarding.markTelegramEventAmbiguous(eventId, claim);
+    yield* options.delivery.markEventAmbiguous(eventId, claim);
     yield* options.outbound.post(userId, "Telegram is connected to your Osfo Agent.");
-    yield* options.onboarding.completeTelegramEvent(eventId, claim);
+    yield* options.delivery.completeEvent(eventId, claim);
     return response(200, "OK");
   }
 
@@ -106,10 +101,10 @@ export const handleTelegramWebhook = Effect.fn("TelegramWebhook.handle")(functio
   if (admission._tag === "Accepted") return response(200, "OK");
   if (admission._tag === "Denied") return response(503, "Retry later");
 
-  const claim = yield* claimOnboardingEvent(options.onboarding, eventId);
+  const claim = yield* claimOnboardingEvent(options.delivery, eventId);
   if (claim instanceof Response) return claim;
 
-  const invitation = yield* options.onboarding.issueTelegramInvitation(
+  const invitation = yield* options.delivery.issueInvitation(
     {
       channelIdentity,
       eventId,
@@ -118,9 +113,9 @@ export const handleTelegramWebhook = Effect.fn("TelegramWebhook.handle")(functio
     },
     claim,
   );
-  yield* options.onboarding.markTelegramEventAmbiguous(eventId, claim);
+  yield* options.delivery.markEventAmbiguous(eventId, claim);
   yield* options.outbound.post(userId, invitation.response);
-  yield* options.onboarding.completeTelegramEvent(eventId, claim);
+  yield* options.delivery.completeEvent(eventId, claim);
   return response(200, "OK");
 });
 
@@ -167,10 +162,10 @@ const response = (status: number, body: string) =>
   new Response(body, { headers: { "content-type": "text/plain; charset=utf-8" }, status });
 
 const claimOnboardingEvent = Effect.fn("TelegramWebhook.claimOnboardingEvent")(function* (
-  onboarding: Pick<Onboarding.Interface, "beginTelegramEvent">,
+  delivery: Pick<TelegramDelivery.Interface, "beginEvent">,
   eventId: string,
 ) {
-  const claim = yield* onboarding.beginTelegramEvent(eventId);
+  const claim = yield* delivery.beginEvent(eventId);
   if (claim._tag === "Completed") return response(200, "OK");
   if (claim._tag === "Ambiguous") return response(503, "Provider outcome is ambiguous");
   if (claim._tag === "InProgress") return response(503, "Retry later");

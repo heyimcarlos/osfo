@@ -248,16 +248,12 @@ const seedBoundUser = async (database: Database) => {
 const date = (iso: string) => DateTime.toDateUtc(DateTime.makeUnsafe(iso));
 
 const testOnboarding = Onboarding.Service.of({
-  beginTelegramEvent: () => Effect.die("unexpected Telegram event"),
   complete: () => Effect.die("unexpected onboarding completion"),
-  completeTelegramEvent: () => Effect.die("unexpected Telegram completion"),
   enrollTelegram: () => Effect.die("unexpected Telegram enrollment"),
   enrollWhatsApp: () => Effect.die("unexpected WhatsApp enrollment"),
   expireInvitations: Effect.die("unexpected invitation expiry"),
   inspectInvitation: () => Effect.die("unexpected invitation inspection"),
   issueWhatsAppInvitation: () => Effect.die("unexpected invitation issue"),
-  issueTelegramInvitation: () => Effect.die("unexpected Telegram invitation"),
-  markTelegramEventAmbiguous: () => Effect.die("unexpected Telegram delivery"),
   phoneVerificationTarget: () => Effect.die("unexpected verification target"),
 });
 

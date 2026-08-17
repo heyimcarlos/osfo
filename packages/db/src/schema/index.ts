@@ -4,4 +4,5 @@ export * from "./auth";
 export * from "./billing";
 export * from "./messaging";
 export * from "./onboarding";
+export * from "./telegram-onboarding-delivery";
 export * from "./user-lifecycle";

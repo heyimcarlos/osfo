@@ -5,6 +5,7 @@ import { HttpEffect, HttpRouter } from "effect/unstable/http";
 import type { OsfoStage, RuntimeConfig } from "../env";
 import * as TelegramAdmission from "../services/telegram-message-admission";
 import * as Onboarding from "../services/onboarding";
+import * as TelegramDelivery from "../services/telegram-onboarding-delivery";
 import { handleTelegramWebhook } from "./telegram-webhook";
 
 /** Telegram route configuration after runtime decoding and production rejection. */
@@ -19,9 +20,10 @@ export const layer = (options: Options) =>
     Effect.all([
       Onboarding.Service,
       TelegramAdmission.Service,
+      TelegramDelivery.Service,
       Effect.promise(() => import("../integrations/telegram/outbound")),
     ]).pipe(
-      Effect.map(([onboarding, admission, TelegramOutbound]) => {
+      Effect.map(([onboarding, admission, delivery, TelegramOutbound]) => {
         const outbound = TelegramOutbound.make({
           allowedUserIds: options.telegram.allowedUserIds,
           botToken: options.telegram.botToken,
@@ -35,6 +37,7 @@ export const layer = (options: Options) =>
               handleTelegramWebhook(request, {
                 admission,
                 allowedUserIds: new Set(options.telegram.allowedUserIds),
+                delivery,
                 onboarding,
                 outbound,
                 secretToken: options.telegram.webhookSecret,
