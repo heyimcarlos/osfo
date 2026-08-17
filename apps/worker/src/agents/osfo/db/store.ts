@@ -16,7 +16,7 @@ import {
 import {
   AcceptanceReceipt,
   type AcceptanceReceiptInput,
-} from "../../../services/whatsapp-acceptance-receipt";
+} from "../../../services/provider-acceptance-receipt";
 import type { AgentDb } from "./client";
 import {
   AgentInitializationConflict,

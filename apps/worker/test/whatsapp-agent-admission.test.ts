@@ -21,7 +21,7 @@ import {
 } from "../src/services/whatsapp-agent-admission";
 import { type AgentAcceptanceInput, WhatsAppMessageText } from "../src/services/whatsapp-admission";
 import { AuthorizationContext } from "../src/services/authorization";
-import { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
+import { AcceptanceReceipt } from "../src/services/provider-acceptance-receipt";
 
 /* oxlint-disable effecttsgo/schema-sync-in-effect -- Deterministic test fixtures decode controlled values inside dependency callbacks. */
 

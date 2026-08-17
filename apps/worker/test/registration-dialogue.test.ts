@@ -58,11 +58,13 @@ describe("Registration Dialogue", () => {
             _tag: "RegistrationTurnCompleted",
             response:
               "I can help you plan your week. Use your registration link to continue: https://osfo.ai/verify/token-first",
+            verifyUrl: "https://osfo.ai/verify/token-first",
           });
           expect(exactRetry).toEqual(first);
           expect(laterMessage).toEqual({
             _tag: "RegistrationTurnCompleted",
             response: "Use your registration link to continue: https://osfo.ai/verify/token-first",
+            verifyUrl: "https://osfo.ai/verify/token-first",
           });
           expect(probe.calls()).toBe(1);
         }),
@@ -150,6 +152,7 @@ describe("Registration Dialogue", () => {
             _tag: "RegistrationTurnCompleted",
             response:
               "What would you like help with? Use your registration link to continue: https://osfo.ai/verify/token-concurrent",
+            verifyUrl: "https://osfo.ai/verify/token-concurrent",
           });
           expect(result.submissions).toEqual([{ idempotency_key: "wamid-concurrent" }]);
         }),

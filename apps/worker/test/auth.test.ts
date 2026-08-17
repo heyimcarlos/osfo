@@ -568,6 +568,7 @@ const runtimeConfig: RuntimeConfig = {
     webhookVerifyToken: Redacted.make("test-only-meta-webhook-token"),
   },
   stage: "test",
+  telegram: { kind: "disabled" },
   whatsApp: { phoneNumber: "14165550100" },
   twilioVerify: {
     accountSid: Redacted.make(`AC${"1".repeat(32)}`),
@@ -586,9 +587,21 @@ const testBindings: App.Bindings = {
           reason: "userSuspended",
           resetAt: null,
         }),
+      acceptTelegramMessage: () =>
+        Promise.resolve({
+          _tag: "ManagedConversationDenied",
+          reason: "userSuspended",
+          resetAt: null,
+        }),
       commitWelcome: () =>
         Promise.resolve({ _tag: "PersonalWelcomeCommitted", messageId: "welcome-test" }),
       initialize: () => Promise.resolve({ _tag: "AgentInitialized" }),
+      submitManagedConversation: () =>
+        Promise.resolve({
+          accepted: true,
+          status: "pending" as const,
+          submissionId: "submission-test",
+        }),
       probeRuntime: () =>
         Promise.resolve({
           activationId: "test-agent-activation",
@@ -598,11 +611,17 @@ const testBindings: App.Bindings = {
           stage: "test" as const,
         }),
       recoverWhatsAppMessage: () => Promise.resolve(null),
+      recoverTelegramMessage: () => Promise.resolve(null),
     }),
   },
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => ({
-      begin: () => Promise.resolve({ _tag: "RegistrationTurnCompleted", response: "Register" }),
+      begin: () =>
+        Promise.resolve({
+          _tag: "RegistrationTurnCompleted",
+          response: "Register",
+          verifyUrl: "https://osfo.ai/verify/test",
+        }),
       deleteDialogue: () => Promise.resolve(),
       probeRuntime: () =>
         Promise.resolve({

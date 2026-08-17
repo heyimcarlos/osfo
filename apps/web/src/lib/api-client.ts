@@ -42,7 +42,6 @@ export interface CompleteOnboardingPayload {
   readonly invitationToken: string | null;
   readonly locale: OnboardingLocale;
   readonly preferredName: string | null;
-  readonly webEnrollmentToken: string | null;
 }
 
 /** Complete authenticated onboarding through the shared typed API contract. */
@@ -53,12 +52,8 @@ export const completeOnboarding = (payload: CompleteOnboardingPayload) =>
       payload.invitationToken === null
         ? null
         : yield* Schema.decodeEffect(RegistrationToken)(payload.invitationToken);
-    const webEnrollmentToken =
-      payload.webEnrollmentToken === null
-        ? null
-        : yield* Schema.decodeEffect(RegistrationToken)(payload.webEnrollmentToken);
     return yield* client.onboarding.complete({
-      payload: { ...payload, invitationToken, webEnrollmentToken },
+      payload: { ...payload, invitationToken },
     });
   }).pipe(
     // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The browser API client owns its Fetch runtime.

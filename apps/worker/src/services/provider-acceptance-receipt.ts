@@ -12,7 +12,7 @@ import {
 
 const utcTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u;
 
-/** Stable facts required to map one accepted WhatsApp message to Think. */
+/** Stable facts mapping one accepted provider message to its canonical Think Session. */
 export const AcceptanceReceiptInput = Schema.Struct({
   allowancePeriodId: AllowancePeriodId,
   channelBindingId: ChannelBindingId,
@@ -23,7 +23,7 @@ export const AcceptanceReceiptInput = Schema.Struct({
   userMessageId: UserMessageId,
 });
 
-/** Stable facts required to map one accepted WhatsApp message to Think. */
+/** Stable receipt facts before the persistence adapter adds its acceptance timestamp. */
 export type AcceptanceReceiptInput = typeof AcceptanceReceiptInput.Type;
 
 const AcceptanceTimestamp = Schema.String.check(
@@ -34,11 +34,11 @@ const AcceptanceTimestamp = Schema.String.check(
   ),
 ).pipe(Schema.brand("AcceptanceTimestamp"));
 
-/** Immutable durable evidence for one accepted Channel Message Key. */
+/** Immutable durable evidence for one accepted provider message. */
 export const AcceptanceReceipt = Schema.TaggedStruct("AcceptanceReceipt", {
   ...AcceptanceReceiptInput.fields,
   acceptedAt: AcceptanceTimestamp,
 });
 
-/** Immutable durable evidence for one accepted Channel Message Key. */
+/** Durable proof that one provider message reached one canonical Think Session. */
 export type AcceptanceReceipt = typeof AcceptanceReceipt.Type;

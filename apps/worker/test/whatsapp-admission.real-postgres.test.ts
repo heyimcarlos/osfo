@@ -16,7 +16,7 @@ import { retainedCatalog } from "../src/domain/plan-policy";
 import { make as makePersistence } from "../src/integrations/postgres/whatsapp-admission";
 import * as Allowances from "../src/services/allowances";
 import type { ManagedConversationDenied } from "../src/services/managed-conversation";
-import type { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
+import type { AcceptanceReceipt } from "../src/services/provider-acceptance-receipt";
 import type { AgentAcceptanceInput, AgentRecoveryInput } from "../src/services/whatsapp-admission";
 import { WhatsAppMessageText } from "../src/services/whatsapp-admission";
 import { withRealPostgresFixture } from "./real-postgres-fixture";
