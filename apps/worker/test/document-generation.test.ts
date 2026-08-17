@@ -323,8 +323,16 @@ describe("Document Generation", () => {
           ),
       });
       const artifact = yield* fixture.documents.generate(generationRequest("pdf"));
-      const retained = fixture.stored[0];
-      if (retained === undefined) return;
+      const retained = yield* Effect.succeed(fixture.stored[0]).pipe(
+        Effect.filterOrFail(
+          (value): value is DocumentGeneration.StoredArtifact => value !== undefined,
+          () =>
+            new DocumentGeneration.ArtifactIntegrityFailure({
+              contentId: artifact.content.contentId,
+              message: "Fixture did not retain the generated document",
+            }),
+        ),
+      );
       fixture.stored.splice(0, 1, { ...retained, retention: "pending" });
       downgraded = true;
 
