@@ -73,22 +73,37 @@ export const layer = (env: Bindings) =>
       Onboarding.AgentOnboarding.of({
         initialize: (input) => {
           const agentId = input.agentId;
-          return call(
-            () =>
-              env.OSFO_AGENT.getByName(agentId).initialize({
-                agentId,
-                initializationId: AgentInitializationId.make(`registration-${agentId}`),
-                initializedAt: input.completedAt.toISOString(),
-                routeId: ConversationRouteId.make(`primary-route-${agentId}`),
-                sessionId: SessionId.make(`primary-session-${agentId}`),
-              }),
-            "The personal Agent could not be initialized",
-          ).pipe(
-            Effect.flatMap((result) =>
-              result._tag === "AgentInitialized"
-                ? Effect.void
-                : unavailable("The personal Agent rejected its stable initialization", result),
-            ),
+          const initializeWithRoute = (routeId: ConversationRouteId) =>
+            call(
+              () =>
+                env.OSFO_AGENT.getByName(agentId).initialize({
+                  agentId,
+                  initializationId: AgentInitializationId.make(`registration-${agentId}`),
+                  initializedAt: input.completedAt.toISOString(),
+                  routeId,
+                  sessionId: SessionId.make(`primary-session-${agentId}`),
+                }),
+              "The personal Agent could not be initialized",
+            );
+          return initializeWithRoute(ConversationRouteId.make(`primary-route-${agentId}`)).pipe(
+            Effect.flatMap((result) => {
+              if (result._tag === "AgentInitialized") return Effect.void;
+              if (result._tag !== "AgentInitializationConflict") {
+                return unavailable("The personal Agent rejected its stable initialization", result);
+              }
+              return initializeWithRoute(
+                ConversationRouteId.make(`whatsapp-route-${agentId}`),
+              ).pipe(
+                Effect.flatMap((legacyResult) =>
+                  legacyResult._tag === "AgentInitialized"
+                    ? Effect.void
+                    : unavailable(
+                        "The personal Agent rejected its legacy stable initialization",
+                        legacyResult,
+                      ),
+                ),
+              );
+            }),
           );
         },
         commitWelcome: (input) =>
