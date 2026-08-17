@@ -21,7 +21,7 @@ export class WhatsAppAuthorizationUnavailable extends Schema.TaggedError<WhatsAp
   { cause: Schema.Defect(), message: Schema.String },
 ) {}
 
-const WhatsAppSubmissionMetadata = Schema.Struct({
+export const WhatsAppSubmissionMetadata = Schema.Struct({
   ...ManagedTurnMetadata.fields,
   whatsappAcceptance: Schema.Struct({
     channelBindingId: ChannelBindingId,
@@ -31,24 +31,21 @@ const WhatsAppSubmissionMetadata = Schema.Struct({
   }),
 });
 
-/** Application-owned acceptance facts persisted by the named Agent. */
 /** Application-owned view of a durable Think submission. */
-export interface SubmissionInspection {
-  readonly idempotencyKey?: string | undefined;
-  readonly metadata?: unknown;
+export interface WhatsAppSubmissionInspection {
+  readonly idempotencyKey: string;
+  readonly metadata: typeof WhatsAppSubmissionMetadata.Type;
   readonly submissionId: ThinkSubmissionId;
 }
 
-/** Application-owned command for durable Think submission. */
-export interface SubmissionInput {
+/** Application-owned intent for one durable WhatsApp submission. */
+export interface WhatsAppSubmissionIntent {
   readonly idempotencyKey: string;
-  readonly input: {
-    readonly id: UserMessageId;
-    readonly parts: Array<{ readonly text: string; readonly type: "text" }>;
-    readonly role: "user";
+  readonly message: {
+    readonly text: AgentAcceptanceInput["message"];
+    readonly userMessageId: UserMessageId;
   };
   readonly metadata: typeof WhatsAppSubmissionMetadata.Type;
-  readonly mode: "submit";
   readonly submissionId: ThinkSubmissionId;
 }
 
@@ -70,7 +67,7 @@ export interface AcceptanceReceiptStore<
 export interface ThinkSubmissionInspector {
   readonly inspect: (
     submissionId: ThinkSubmissionId,
-  ) => Effect.Effect<SubmissionInspection | null, ThinkSubmissionUnavailable>;
+  ) => Effect.Effect<WhatsAppSubmissionInspection | null, ThinkSubmissionUnavailable>;
 }
 
 /** Concrete dependencies used by recoverable WhatsApp acceptance inside one named Agent. */
@@ -93,7 +90,7 @@ export interface AcceptanceReceiptStoreWithSession<
 /** Think capabilities used only when accepting new work. */
 export interface ThinkSubmissionAcceptor extends ThinkSubmissionInspector {
   readonly submit: (
-    input: SubmissionInput,
+    input: WhatsAppSubmissionIntent,
   ) => Effect.Effect<{ readonly submissionId: ThinkSubmissionId }, ThinkSubmissionUnavailable>;
 }
 
@@ -161,13 +158,11 @@ export const accept = <Receipt extends AcceptanceReceiptInput, StoreFailure>(opt
     });
     const submitted = yield* dependencies.think.submit({
       idempotencyKey: managed.idempotencyKey,
-      input: {
-        id: input.userMessageId,
-        parts: [{ text: input.message, type: "text" }],
-        role: "user",
+      message: {
+        text: input.message,
+        userMessageId: input.userMessageId,
       },
       metadata,
-      mode: "submit",
       submissionId: managed.submissionId,
     });
     if (submitted.submissionId !== input.submissionId) {
@@ -213,18 +208,7 @@ export const recover = <Receipt extends AcceptanceReceiptInput, StoreFailure>(op
 
     const inspected = yield* dependencies.think.inspect(input.submissionId);
     if (inspected === null) return null;
-    const metadata = yield* Schema.decodeUnknownEffect(WhatsAppSubmissionMetadata)(
-      inspected.metadata,
-    ).pipe(
-      Effect.mapError(
-        (cause) =>
-          new ThinkSubmissionUnavailable({
-            cause,
-            message: "The accepted WhatsApp submission has invalid recovery facts",
-            operation: "inspectSubmission",
-          }),
-      ),
-    );
+    const metadata = inspected.metadata;
     const expectedIdempotencyKey = `whatsapp-${input.receiptId}`;
     if (
       inspected.submissionId !== input.submissionId ||

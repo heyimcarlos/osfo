@@ -66,7 +66,7 @@ export const WhatsAppProviderContentDigest = Schema.String.check(
 ).pipe(Schema.brand("WhatsAppProviderContentDigest"));
 
 /** Truncated SHA-256 digest of the stable WhatsApp admission identity chain. */
-const WhatsAppAdmissionIdentityDigest = Schema.String.check(
+export const WhatsAppAdmissionIdentityDigest = Schema.String.check(
   Schema.isMinLength(40),
   Schema.isMaxLength(40),
   Schema.isPattern(/^[0-9a-f]+$/u),
@@ -140,6 +140,7 @@ export interface Interface<Failure> {
   readonly allowances: {
     readonly recordAcceptedMessage: (receipt: AcceptanceReceipt) => Effect.Effect<void, Failure>;
   };
+  readonly identity: WhatsAppStableIdentity;
   readonly onboarding: {
     readonly handle: (
       command: WhatsAppOnboardingCommand,
@@ -151,6 +152,17 @@ export interface Interface<Failure> {
     ) => Effect.Effect<void, Failure>;
     readonly route: (input: RouteInput) => Effect.Effect<InboundRoute, Failure>;
   };
+}
+
+/** Stable identity derivation required by inbound WhatsApp admission. */
+export interface WhatsAppStableIdentity {
+  readonly deriveAdmission: (
+    route: Extract<InboundRoute, { readonly _tag: "Bound" }>,
+    providerMessageId: ProviderMessageId,
+  ) => Effect.Effect<typeof WhatsAppAdmissionIdentityDigest.Type, WhatsAppIdentityUnavailable>;
+  readonly deriveContent: (
+    message: InboundWhatsAppMessage,
+  ) => Effect.Effect<typeof WhatsAppProviderContentDigest.Type, WhatsAppIdentityUnavailable>;
 }
 
 /** Inbound admission operations exposed to an authenticated HTTP adapter. */
@@ -166,23 +178,16 @@ export const make = <Failure>(options: Interface<Failure>): Service<Failure> => 
     message: InboundWhatsAppMessage,
   ): Effect.Effect<AdmissionOutcome, Failure | WhatsAppIdentityUnavailable> =>
     Effect.gen(function* () {
-      const contentDigest = yield* digest(
-        encodeIdentity([
-          message._tag,
-          message.channelIdentity,
-          message.phoneNumberId,
-          message.providerMessageId,
-          message.message,
-        ]),
-      ).pipe(Effect.map((value) => WhatsAppProviderContentDigest.make(value)));
+      const contentDigest = yield* options.identity.deriveContent(message);
       const route = yield* options.persistence.route({ ...message, contentDigest });
       if (route._tag === "Unbound") {
         yield* options.onboarding.handle(onboardingCommand(message));
         return { _tag: "OnboardingAccepted" } as const;
       }
-      const identityDigest = yield* digest(
-        encodeIdentity([route.channelBindingId, message.providerMessageId]),
-      ).pipe(Effect.map((value) => WhatsAppAdmissionIdentityDigest.make(value)));
+      const identityDigest = yield* options.identity.deriveAdmission(
+        route,
+        message.providerMessageId,
+      );
       const recoveryInput = AgentRecoveryInput.make({
         channelBindingId: route.channelBindingId,
         providerMessageId: message.providerMessageId,
@@ -208,8 +213,6 @@ export const make = <Failure>(options: Interface<Failure>): Service<Failure> => 
     }),
 });
 
-const encodeIdentity = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
-
 const onboardingCommand = (message: InboundWhatsAppMessage): WhatsAppOnboardingCommand => {
   const enrollment = /^OSFO ENROLL (\S+)$/u.exec(message.message.trim());
   const token = Schema.decodeUnknownOption(RegistrationToken)(enrollment?.[1]);
@@ -229,19 +232,3 @@ const onboardingCommand = (message: InboundWhatsAppMessage): WhatsAppOnboardingC
         token: Redacted.make(token.value),
       };
 };
-
-const digest = (value: string): Effect.Effect<string, WhatsAppIdentityUnavailable> =>
-  Effect.tryPromise({
-    try: () => crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)),
-    catch: (cause) =>
-      new WhatsAppIdentityUnavailable({
-        cause,
-        message: "Stable WhatsApp admission identities could not be derived",
-      }),
-  }).pipe(
-    Effect.map((bytes) =>
-      Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0"))
-        .join("")
-        .slice(0, 40),
-    ),
-  );

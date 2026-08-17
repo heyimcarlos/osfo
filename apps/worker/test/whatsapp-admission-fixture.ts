@@ -9,6 +9,7 @@ import {
   InboundWhatsAppMessage,
   type Interface,
   make as makeAdmission,
+  WhatsAppAdmissionIdentityDigest,
   WhatsAppProviderContentDigest,
 } from "../src/services/whatsapp-admission";
 
@@ -31,6 +32,16 @@ export const makeWhatsAppAdmissionFixture = <Failure>(options: AdmissionFixtureO
       recover: (_agentId, input) => options.recover?.(input) ?? Effect.succeed(null),
     },
     allowances: { recordAcceptedMessage: options.recordAcceptedMessage },
+    identity: {
+      deriveAdmission: (route, providerMessageId) =>
+        Effect.succeed(
+          WhatsAppAdmissionIdentityDigest.make(
+            testDigest(`${route.channelBindingId}:${providerMessageId}`),
+          ),
+        ),
+      deriveContent: (message) =>
+        Effect.succeed(WhatsAppProviderContentDigest.make(testDigest(JSON.stringify(message)))),
+    },
     onboarding: { handle: () => Effect.succeed({ _tag: "OnboardingAccepted" }) },
     persistence: options.persistence,
   });
@@ -79,3 +90,12 @@ export const routeMessage = (channelIdentity: string, providerMessageId: string)
 
 /** Valid provider content digest used by both PostgreSQL admission fixtures. */
 export const providerContentDigest = WhatsAppProviderContentDigest.make("0".repeat(40));
+
+const testDigest = (value: string) => {
+  let hash = 2_166_136_261;
+  for (const character of value) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0").repeat(5);
+};

@@ -1,4 +1,5 @@
-import { DateTime, Effect, Predicate, Schema } from "effect";
+import { Crypto, DateTime, Effect, Predicate, Schema } from "effect";
+import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 
 import { database } from "../db";
@@ -6,6 +7,7 @@ import * as Billing from "../db/billing";
 import { retainedCatalog } from "../domain/plan-policy";
 import type { RuntimeConfig } from "../env";
 import { handleWhatsAppOnboardingCommand } from "./whatsapp-onboarding";
+import * as WhatsAppIdentity from "../integrations/cloudflare/whatsapp-identity";
 import {
   authenticateAndDecode,
   type MetaInboundFact,
@@ -48,6 +50,7 @@ export const layer = (options: { readonly config: RuntimeConfig; readonly env: B
   const handler = Effect.gen(function* () {
     const db = yield* database;
     const onboarding = yield* Onboarding.Service;
+    const crypto = yield* Crypto.Crypto;
     const now = DateTime.toDateUtc(yield* DateTime.now);
     const persistence = yield* WhatsAppPostgres.make({ now: Effect.succeed(now) });
     const allowances = Allowances.make({
@@ -99,6 +102,7 @@ export const layer = (options: { readonly config: RuntimeConfig; readonly env: B
               ),
             ),
       },
+      identity: WhatsAppIdentity.make(crypto),
       onboarding: {
         handle: (command) =>
           handleWhatsAppOnboardingCommand(onboarding, command).pipe(
@@ -142,7 +146,9 @@ export const layer = (options: { readonly config: RuntimeConfig; readonly env: B
     };
     return yield* HttpEffect.fromWebHandler(runRequest);
   });
-  return HttpRouter.add("*", "/webhooks/whatsapp", handler);
+  return HttpRouter.add("*", "/webhooks/whatsapp", handler).pipe(
+    HttpRouter.provideRequest(BrowserCrypto.layer),
+  );
 };
 
 const handleRequest = (

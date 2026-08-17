@@ -40,8 +40,22 @@ export type IgnoredMetaEvent =
       readonly providerMessageId: ProviderMessageId;
     }
   | {
-      readonly _tag: "NonMessageEvent";
+      readonly _tag: "MessageStatus";
       readonly phoneNumberId: WhatsAppPhoneNumberId;
+      readonly providerMessageId: ProviderMessageId;
+      readonly recipientId: typeof WhatsAppDirectChannelIdentity.Type;
+      readonly status: "deleted" | "delivered" | "failed" | "read" | "sent";
+      readonly timestamp: string;
+    }
+  | {
+      readonly _tag: "NonMessageNotification";
+      readonly notification:
+        | "account_update"
+        | "account_review_update"
+        | "message_template_status_update"
+        | "phone_number_name_update"
+        | "phone_number_quality_update";
+      readonly whatsAppBusinessAccountId: string;
     }
   | {
       readonly _tag: "ProviderEcho";
@@ -282,64 +296,137 @@ const MetaMessage = Schema.Union([
     type: Schema.Literal("unknown"),
   }),
 ]);
-const MetaStatus = Schema.Struct({
-  conversation: Schema.optional(
-    Schema.Struct({
-      expiration_timestamp: Schema.optional(Schema.String),
-      id: Schema.String,
-      origin: Schema.Struct({ type: Schema.String }),
-    }),
-  ),
-  errors: Schema.optional(
-    Schema.Array(
-      Schema.Struct({
-        code: Schema.Finite,
-        error_data: Schema.optional(Schema.Struct({ details: Schema.String })),
-        href: Schema.optional(Schema.String),
-        message: Schema.String,
-        title: Schema.String,
-      }),
-    ),
-  ),
-  id: Schema.String,
-  pricing: Schema.optional(
-    Schema.Struct({
-      billable: Schema.Boolean,
-      category: Schema.String,
-      pricing_model: Schema.String,
-      type: Schema.optional(Schema.String),
-    }),
-  ),
-  recipient_id: Schema.String,
-  status: Schema.String,
+const MetaStatusBase = {
+  id: ProviderMessageId,
+  recipient_id: WhatsAppDirectChannelIdentity,
   timestamp: Schema.String,
+};
+const MetaStatusConversation = Schema.Struct({
+  expiration_timestamp: Schema.optional(Schema.String),
+  id: Schema.String,
+  origin: Schema.Struct({ type: Schema.String }),
 });
+const MetaStatusPricing = Schema.Struct({
+  billable: Schema.Boolean,
+  category: Schema.String,
+  pricing_model: Schema.String,
+  type: Schema.optional(Schema.String),
+});
+const MetaStatusError = Schema.Struct({
+  code: Schema.Finite,
+  error_data: Schema.optional(Schema.Struct({ details: Schema.String })),
+  href: Schema.optional(Schema.String),
+  message: Schema.optional(Schema.String),
+  title: Schema.String,
+});
+const MetaStatus = Schema.Union([
+  Schema.Struct({
+    ...MetaStatusBase,
+    conversation: Schema.optional(MetaStatusConversation),
+    pricing: Schema.optional(MetaStatusPricing),
+    status: Schema.Literals(["sent", "delivered", "read"]),
+  }),
+  Schema.Struct({ ...MetaStatusBase, status: Schema.Literal("deleted") }),
+  Schema.Struct({
+    ...MetaStatusBase,
+    errors: Schema.Array(MetaStatusError).check(Schema.isMinLength(1)),
+    status: Schema.Literal("failed"),
+  }),
+]);
+const MetaMessageChange = Schema.Struct({
+  field: Schema.Literal("messages"),
+  value: Schema.Struct({
+    contacts: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          profile: Schema.optional(Schema.Struct({ name: Schema.String })),
+          wa_id: Schema.String,
+        }),
+      ),
+    ),
+    messaging_product: Schema.Literal("whatsapp"),
+    messages: Schema.Array(MetaMessage).check(Schema.isMinLength(1)),
+    metadata: Schema.Struct({
+      display_phone_number: Schema.String,
+      phone_number_id: WhatsAppPhoneNumberId,
+    }),
+  }),
+});
+const MetaStatusChange = Schema.Struct({
+  field: Schema.Literal("messages"),
+  value: Schema.Struct({
+    messaging_product: Schema.Literal("whatsapp"),
+    metadata: Schema.Struct({
+      display_phone_number: Schema.String,
+      phone_number_id: WhatsAppPhoneNumberId,
+    }),
+    statuses: Schema.Array(MetaStatus).check(Schema.isMinLength(1)),
+  }),
+});
+const MetaNonMessageChange = Schema.Union([
+  Schema.Struct({
+    field: Schema.Literal("phone_number_name_update"),
+    value: Schema.Struct({
+      decision: Schema.Literals(["APPROVED", "REJECTED"]),
+      display_phone_number: Schema.String,
+      rejection_reason: Schema.NullOr(Schema.String),
+      requested_verified_name: Schema.String,
+    }),
+  }),
+  Schema.Struct({
+    field: Schema.Literal("phone_number_quality_update"),
+    value: Schema.Struct({
+      current_limit: Schema.Literals(["TIER_1K", "TIER_10K", "TIER_100K"]),
+      display_phone_number: Schema.String,
+      event: Schema.Literals(["ONBOARDING", "UPGRADE", "DOWNGRADE", "FLAGGED", "UNFLAGGED"]),
+    }),
+  }),
+  Schema.Struct({
+    field: Schema.Literal("account_update"),
+    value: Schema.Union([
+      Schema.Struct({ event: Schema.Literal("VERIFIED_ACCOUNT"), phone_number: Schema.String }),
+      Schema.Struct({
+        ban_info: Schema.Struct({
+          waba_ban_date: Schema.String,
+          waba_ban_state: Schema.Literals(["FLAGGED", "DISABLE", "REINSTATE"]),
+        }),
+        event: Schema.Literal("DISABLED_UPDATE"),
+      }),
+    ]),
+  }),
+  Schema.Struct({
+    field: Schema.Literal("account_review_update"),
+    value: Schema.Struct({ decision: Schema.Literals(["APPROVED", "REJECTED"]) }),
+  }),
+  Schema.Struct({
+    field: Schema.Literal("message_template_status_update"),
+    value: Schema.Struct({
+      event: Schema.Literals([
+        "APPROVED",
+        "IN_APPEAL",
+        "PENDING",
+        "REJECTED",
+        "PENDING_DELETION",
+        "DELETED",
+        "DISABLED",
+        "FLAGGED",
+        "REINSTATED",
+      ]),
+      message_template_id: Schema.String,
+      message_template_language: Schema.String,
+      message_template_name: Schema.String,
+      reason: Schema.NullOr(Schema.String),
+    }),
+  }),
+]);
 const MetaWebhook = Schema.Struct({
   entry: Schema.Array(
     Schema.Struct({
       changes: Schema.Array(
-        Schema.Struct({
-          field: Schema.Literal("messages"),
-          value: Schema.Struct({
-            contacts: Schema.optional(
-              Schema.Array(
-                Schema.Struct({
-                  profile: Schema.optional(Schema.Struct({ name: Schema.String })),
-                  wa_id: Schema.String,
-                }),
-              ),
-            ),
-            messaging_product: Schema.Literal("whatsapp"),
-            messages: Schema.optional(Schema.Array(MetaMessage)),
-            metadata: Schema.Struct({
-              display_phone_number: Schema.String,
-              phone_number_id: WhatsAppPhoneNumberId,
-            }),
-            statuses: Schema.optional(Schema.Array(MetaStatus)),
-          }),
-        }),
+        Schema.Union([MetaMessageChange, MetaStatusChange, MetaNonMessageChange]),
       ),
       id: Schema.String,
+      time: Schema.optional(Schema.Finite),
     }),
   ),
   object: Schema.Literal("whatsapp_business_account"),
@@ -396,10 +483,26 @@ export const authenticateAndDecode = (
       ),
     );
     return webhook.entry.flatMap((entry) =>
-      entry.changes.flatMap((change) => {
+      entry.changes.flatMap((change): ReadonlyArray<MetaInboundFact> => {
+        if (change.field !== "messages") {
+          return [
+            {
+              _tag: "NonMessageNotification",
+              notification: change.field,
+              whatsAppBusinessAccountId: entry.id,
+            },
+          ];
+        }
         const phoneNumberId = change.value.metadata.phone_number_id;
-        if (change.value.messages === undefined) {
-          return [{ _tag: "NonMessageEvent", phoneNumberId } as const];
+        if ("statuses" in change.value) {
+          return change.value.statuses.map((status) => ({
+            _tag: "MessageStatus",
+            phoneNumberId,
+            providerMessageId: status.id,
+            recipientId: status.recipient_id,
+            status: status.status,
+            timestamp: status.timestamp,
+          }));
         }
         return change.value.messages.map((message): MetaInboundFact => {
           if (message.to !== undefined) {

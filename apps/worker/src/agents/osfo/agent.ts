@@ -200,8 +200,8 @@ type PersonalWelcomeEncoded = typeof PersonalWelcomeInput.Encoded;
 type AcceptWhatsAppMessageEncoded = typeof AgentAcceptanceInput.Encoded;
 
 const WhatsAppThinkSubmissionInspection = Schema.Struct({
-  idempotencyKey: Schema.optional(Schema.String),
-  metadata: Schema.optional(Schema.Unknown),
+  idempotencyKey: Schema.String,
+  metadata: WhatsAppAgentAdmission.WhatsAppSubmissionMetadata,
   submissionId: ThinkSubmissionId,
 });
 
@@ -565,9 +565,19 @@ export class OsfoAgent extends Think<Env> {
           think: {
             ...recovery.think,
             submit: (submission) =>
-              callThinkSubmission("runTurn", () => this.runTurn(submission)).pipe(
-                Effect.flatMap(decodeWhatsAppThinkSubmissionAccepted),
-              ),
+              callThinkSubmission("runTurn", () =>
+                this.runTurn({
+                  idempotencyKey: submission.idempotencyKey,
+                  input: {
+                    id: submission.message.userMessageId,
+                    parts: [{ text: submission.message.text, type: "text" }],
+                    role: "user",
+                  },
+                  metadata: submission.metadata,
+                  mode: "submit",
+                  submissionId: submission.submissionId,
+                }),
+              ).pipe(Effect.flatMap(decodeWhatsAppThinkSubmissionAccepted)),
           },
         },
         input: parsed,
@@ -1239,7 +1249,7 @@ const callThinkSubmission = <A>(operation: string, run: () => Promise<A>) =>
   });
 
 const decodeWhatsAppThinkSubmissionInspection = (inspection: ThinkSubmissionInspection) =>
-  Schema.decodeEffect(WhatsAppThinkSubmissionInspection)(inspection).pipe(
+  Schema.decodeUnknownEffect(WhatsAppThinkSubmissionInspection)(inspection).pipe(
     Effect.mapError(
       (cause) =>
         new ThinkSubmissionUnavailable({

@@ -15,10 +15,10 @@ import type { RuntimeConfig } from "../src/env";
 import * as WhatsApp from "../src/handlers/whatsapp";
 import * as Onboarding from "../src/services/onboarding";
 import type { AgentAcceptanceInput, AgentRecoveryInput } from "../src/services/whatsapp-admission";
-import { encodeJsonText, sign, webhook } from "./whatsapp-webhook-fixture";
+import { encodeJsonText, sign, statusWebhook, webhook } from "./whatsapp-webhook-fixture";
 
 describe("WhatsApp webhook admission", () => {
-  it.effect("keeps signed provider echoes and group messages outside UserMessage admission", () =>
+  it.effect("keeps signed statuses, provider echoes, and group messages outside admission", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
       (fixture) =>
@@ -69,6 +69,8 @@ describe("WhatsApp webhook admission", () => {
             ]),
           );
           const signature = yield* sign(body, "meta-app-secret");
+          const statusBody = encodeJsonText(statusWebhook("failed"));
+          const statusSignature = yield* sign(statusBody, "meta-app-secret");
 
           const response = yield* Effect.promise(() =>
             app.handler(
@@ -79,13 +81,27 @@ describe("WhatsApp webhook admission", () => {
               }),
             ),
           );
+          const statusResponse = yield* Effect.promise(() =>
+            app.handler(
+              new Request("https://osfo.test/webhooks/whatsapp", {
+                body: statusBody,
+                headers: { "X-Hub-Signature-256": statusSignature },
+                method: "POST",
+              }),
+            ),
+          );
           const providerEvents = yield* Effect.promise(() =>
             fixture.database.select().from(inboundWhatsAppEvents),
           );
           const usage = yield* Effect.promise(() => fixture.database.select().from(allowanceUsage));
           const responseBody = yield* Effect.promise(() => response.text());
+          const statusResponseBody = yield* Effect.promise(() => statusResponse.text());
 
           expect({ body: responseBody, status: response.status }).toEqual({
+            body: "EVENT_RECEIVED",
+            status: 200,
+          });
+          expect({ body: statusResponseBody, status: statusResponse.status }).toEqual({
             body: "EVENT_RECEIVED",
             status: 200,
           });

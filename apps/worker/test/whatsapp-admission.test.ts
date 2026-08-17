@@ -8,7 +8,9 @@ import {
   make,
   type Interface,
   type WhatsAppAdmissionUnavailable,
+  WhatsAppAdmissionIdentityDigest,
   WhatsAppMessageText,
+  WhatsAppProviderContentDigest,
 } from "../src/services/whatsapp-admission";
 import { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
 import type { WhatsAppOnboardingCommand } from "../src/services/whatsapp-onboarding";
@@ -21,6 +23,30 @@ class SimulatedAgentFailure extends Schema.TaggedError<SimulatedAgentFailure>()(
 ) {}
 
 describe("WhatsApp inbound admission", () => {
+  it.effect(
+    "derives provider content and admission identities through the stable identity port",
+    () =>
+      Effect.gen(function* () {
+        const calls: Array<string> = [];
+        const service = admission({
+          deriveAdmission: (route, providerMessageId) =>
+            Effect.sync(() => {
+              calls.push(`admission:${route.channelBindingId}:${providerMessageId}`);
+              return WhatsAppAdmissionIdentityDigest.make("b".repeat(40));
+            }),
+          deriveContent: (message) =>
+            Effect.sync(() => {
+              calls.push(`content:${message.providerMessageId}`);
+              return WhatsAppProviderContentDigest.make("a".repeat(40));
+            }),
+        });
+
+        yield* service.admit(textMessage());
+
+        expect(calls).toEqual(["content:wamid.1", "admission:binding-1:wamid.1"]);
+      }),
+  );
+
   it.effect("recovers an existing receipt when current allowance admission is unavailable", () =>
     Effect.gen(function* () {
       const receipt = acceptanceReceipt();
@@ -157,6 +183,8 @@ const admission = (overrides: {
   readonly record?: Interface<TestFailure>["allowances"]["recordAcceptedMessage"];
   readonly recover?: Interface<TestFailure>["agent"]["recover"];
   readonly route?: Interface<TestFailure>["persistence"]["route"];
+  readonly deriveAdmission?: Interface<TestFailure>["identity"]["deriveAdmission"];
+  readonly deriveContent?: Interface<TestFailure>["identity"]["deriveContent"];
 }) =>
   make<TestFailure>({
     agent: {
@@ -165,6 +193,14 @@ const admission = (overrides: {
     },
     allowances: {
       recordAcceptedMessage: overrides.record ?? (() => Effect.void),
+    },
+    identity: {
+      deriveAdmission:
+        overrides.deriveAdmission ??
+        (() => Effect.succeed(WhatsAppAdmissionIdentityDigest.make("b".repeat(40)))),
+      deriveContent:
+        overrides.deriveContent ??
+        (() => Effect.succeed(WhatsAppProviderContentDigest.make("a".repeat(40)))),
     },
     onboarding: {
       handle: overrides.onboard ?? (() => Effect.succeed({ _tag: "InvitationIssued" as const })),

@@ -387,7 +387,7 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
           .set({ revokedAt: date("2026-08-16T12:00:01.000Z") })
           .where(eq(channelBindings.channelBindingId, bound.channelBindingId)),
       );
-      const submissions = new Map<string, WhatsAppAgentAdmission.SubmissionInput>();
+      const submissions = new Map<string, WhatsAppAgentAdmission.WhatsAppSubmissionIntent>();
 
       const denied = yield* WhatsAppAgentAdmission.accept({
         dependencies: {

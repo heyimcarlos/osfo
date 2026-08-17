@@ -2,7 +2,13 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Redacted } from "effect";
 
 import { authenticateAndDecode, verifyChallenge } from "../src/integrations/meta/whatsapp";
-import { encodeJsonText, sign, webhook } from "./whatsapp-webhook-fixture";
+import {
+  encodeJsonText,
+  sign,
+  statusFixture,
+  statusWebhook,
+  webhook,
+} from "./whatsapp-webhook-fixture";
 
 describe("Meta WhatsApp adapter", () => {
   it.effect("matches a fixed known Meta HMAC-SHA256 vector", () =>
@@ -365,7 +371,7 @@ describe("Meta WhatsApp adapter", () => {
     }),
   );
 
-  it.effect("classifies unsupported direct content and status-only events without messages", () =>
+  it.effect("classifies unsupported direct content and status changes without messages", () =>
     Effect.gen(function* () {
       const unsupportedBody = encodeJsonText(
         webhook([
@@ -401,8 +407,132 @@ describe("Meta WhatsApp adapter", () => {
           providerMessageId: "wamid.image",
         },
       ]);
-      expect(status).toEqual([{ _tag: "NonMessageEvent", phoneNumberId: "123456789" }]);
+      expect(status).toEqual([
+        {
+          _tag: "MessageStatus",
+          phoneNumberId: "123456789",
+          providerMessageId: "wamid.outbound",
+          recipientId: "14165550123",
+          status: "delivered",
+          timestamp: "1786924800",
+        },
+      ]);
     }),
+  );
+
+  it.effect(
+    "classifies the finite signed Meta message-status variants with stable identities",
+    () =>
+      Effect.gen(function* () {
+        const variants = ["sent", "delivered", "read", "deleted", "failed"] as const;
+        const decoded = yield* Effect.forEach(variants, (status) => {
+          const body = encodeJsonText(statusWebhook(status));
+          return sign(body, "meta-app-secret").pipe(
+            Effect.flatMap((signature) =>
+              authenticateAndDecode(request(body, signature), Redacted.make("meta-app-secret")),
+            ),
+          );
+        });
+
+        expect(decoded).toEqual(
+          variants.map((status) => [
+            {
+              _tag: "MessageStatus",
+              phoneNumberId: "123456789",
+              providerMessageId: status === "delivered" ? "wamid.outbound" : `wamid.${status}`,
+              recipientId: "14165550123",
+              status,
+              timestamp: "1786924800",
+            },
+          ]),
+        );
+      }),
+  );
+
+  it.effect(
+    "classifies supported non-message notifications and rejects mixed message changes",
+    () =>
+      Effect.gen(function* () {
+        const notifications = [
+          notificationWebhook("phone_number_name_update", {
+            decision: "APPROVED",
+            display_phone_number: "16505551111",
+            rejection_reason: null,
+            requested_verified_name: "Osfo",
+          }),
+          notificationWebhook("phone_number_quality_update", {
+            current_limit: "TIER_10K",
+            display_phone_number: "16505551111",
+            event: "FLAGGED",
+          }),
+          notificationWebhook("account_update", {
+            event: "DISABLED_UPDATE",
+            ban_info: { waba_ban_date: "January 31, 2021", waba_ban_state: "FLAGGED" },
+          }),
+          notificationWebhook("account_review_update", { decision: "APPROVED" }),
+          notificationWebhook("message_template_status_update", {
+            event: "APPROVED",
+            message_template_id: "template-1",
+            message_template_language: "en-US",
+            message_template_name: "Osfo update",
+            reason: null,
+          }),
+        ] as const;
+        const decoded = yield* Effect.forEach(notifications, (notification) => {
+          const body = encodeJsonText(notification);
+          return sign(body, "meta-app-secret").pipe(
+            Effect.flatMap((signature) =>
+              authenticateAndDecode(request(body, signature), Redacted.make("meta-app-secret")),
+            ),
+          );
+        });
+        const mixedBody = encodeJsonText(mixedStatusAndMessageWebhook());
+        const malformed = yield* sign(mixedBody, "meta-app-secret").pipe(
+          Effect.flatMap((signature) =>
+            authenticateAndDecode(request(mixedBody, signature), Redacted.make("meta-app-secret")),
+          ),
+          Effect.flip,
+        );
+
+        expect(decoded).toEqual([
+          [
+            {
+              _tag: "NonMessageNotification",
+              notification: "phone_number_name_update",
+              whatsAppBusinessAccountId: "waba-1",
+            },
+          ],
+          [
+            {
+              _tag: "NonMessageNotification",
+              notification: "phone_number_quality_update",
+              whatsAppBusinessAccountId: "waba-1",
+            },
+          ],
+          [
+            {
+              _tag: "NonMessageNotification",
+              notification: "account_update",
+              whatsAppBusinessAccountId: "waba-1",
+            },
+          ],
+          [
+            {
+              _tag: "NonMessageNotification",
+              notification: "account_review_update",
+              whatsAppBusinessAccountId: "waba-1",
+            },
+          ],
+          [
+            {
+              _tag: "NonMessageNotification",
+              notification: "message_template_status_update",
+              whatsAppBusinessAccountId: "waba-1",
+            },
+          ],
+        ]);
+        expect(malformed).toMatchObject({ _tag: "MetaWebhookPayloadInvalid" });
+      }),
   );
 
   it.effect("classifies the finite documented unsupported direct-message union", () =>
@@ -600,37 +730,66 @@ const unsupportedMessage = (type: string) => ({
   type,
 });
 
-const statusWebhook = () => ({
-  entry: [
-    {
-      changes: [
-        {
-          field: "messages",
-          value: {
-            messaging_product: "whatsapp",
-            metadata: { display_phone_number: "14165550100", phone_number_id: "123456789" },
-            statuses: [
-              {
-                conversation: {
-                  id: "conversation-1",
-                  origin: { type: "service" },
-                },
-                id: "wamid.outbound",
-                pricing: {
-                  billable: true,
-                  category: "service",
-                  pricing_model: "CBP",
-                },
-                recipient_id: "14165550123",
-                status: "delivered",
-                timestamp: "1786924800",
-              },
-            ],
-          },
-        },
-      ],
-      id: "waba-1",
-    },
-  ],
+type NotificationFixtureValue =
+  | { readonly decision: "APPROVED" | "REJECTED" }
+  | {
+      readonly decision: "APPROVED" | "REJECTED";
+      readonly display_phone_number: string;
+      readonly rejection_reason: string | null;
+      readonly requested_verified_name: string;
+    }
+  | {
+      readonly current_limit: "TIER_1K" | "TIER_10K" | "TIER_100K";
+      readonly display_phone_number: string;
+      readonly event: "DOWNGRADE" | "FLAGGED" | "ONBOARDING" | "UNFLAGGED" | "UPGRADE";
+    }
+  | {
+      readonly ban_info: {
+        readonly waba_ban_date: string;
+        readonly waba_ban_state: "DISABLE" | "FLAGGED" | "REINSTATE";
+      };
+      readonly event: "DISABLED_UPDATE";
+    }
+  | {
+      readonly event:
+        | "APPROVED"
+        | "DELETED"
+        | "DISABLED"
+        | "FLAGGED"
+        | "IN_APPEAL"
+        | "PENDING"
+        | "PENDING_DELETION"
+        | "REINSTATED"
+        | "REJECTED";
+      readonly message_template_id: string;
+      readonly message_template_language: string;
+      readonly message_template_name: string;
+      readonly reason: string | null;
+    };
+
+const notificationWebhook = (field: string, value: NotificationFixtureValue) => ({
+  entry: [{ changes: [{ field, value }], id: "waba-1", time: 1_608_243_062 }],
   object: "whatsapp_business_account",
 });
+
+const mixedStatusAndMessageWebhook = () => {
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              messaging_product: "whatsapp",
+              messages: [textMessage()],
+              metadata: { display_phone_number: "14165550100", phone_number_id: "123456789" },
+              statuses: [statusFixture("sent")],
+            },
+          },
+        ],
+        id: "waba-1",
+      },
+    ],
+    object: "whatsapp_business_account",
+  };
+};

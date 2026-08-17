@@ -17,7 +17,7 @@ import {
 import {
   accept,
   type Interface,
-  type SubmissionInspection,
+  type WhatsAppSubmissionInspection,
 } from "../src/services/whatsapp-agent-admission";
 import { type AgentAcceptanceInput, WhatsAppMessageText } from "../src/services/whatsapp-admission";
 import { AuthorizationContext } from "../src/services/authorization";
@@ -31,7 +31,7 @@ describe("WhatsApp Agent admission", () => {
       let authorityCurrent = true;
       let authorityChecks = 0;
       const receiptLedger = new Map<string, AcceptanceReceipt>();
-      const thinkLedger = new Map<ThinkSubmissionId, SubmissionInspection>();
+      const thinkLedger = new Map<ThinkSubmissionId, WhatsAppSubmissionInspection>();
       const input = acceptanceInput();
       const dependencies = makeDependencies({
         inspect: (submissionId) => Effect.succeed(thinkLedger.get(submissionId) ?? null),
@@ -58,13 +58,10 @@ describe("WhatsApp Agent admission", () => {
         submit: (submission) =>
           Effect.suspend(() => {
             const idempotencyKey = Schema.decodeSync(Schema.String)(submission.idempotencyKey);
-            const metadata = Schema.decodeSync(Schema.Record(Schema.String, Schema.Unknown))(
-              submission.metadata,
-            );
             const submissionId = Schema.decodeSync(ThinkSubmissionId)(submission.submissionId);
-            const inspection: SubmissionInspection = {
+            const inspection: WhatsAppSubmissionInspection = {
               idempotencyKey,
-              metadata,
+              metadata: submission.metadata,
               submissionId,
             };
             thinkLedger.set(submissionId, inspection);
@@ -102,7 +99,7 @@ describe("WhatsApp Agent admission", () => {
       const input = acceptanceInput();
       const submitArrivals = yield* Deferred.make<void>();
       const receiptLedger = new Map<string, AcceptanceReceipt>();
-      const thinkLedger = new Map<ThinkSubmissionId, SubmissionInspection>();
+      const thinkLedger = new Map<ThinkSubmissionId, WhatsAppSubmissionInspection>();
       let waiting = 0;
       const dependencies = makeDependencies({
         inspect: (submissionId) => Effect.succeed(thinkLedger.get(submissionId) ?? null),
@@ -128,7 +125,7 @@ describe("WhatsApp Agent admission", () => {
             yield* Deferred.await(submitArrivals);
             const existing = thinkLedger.get(submission.submissionId);
             if (existing !== undefined) return { submissionId: existing.submissionId };
-            const inspection: SubmissionInspection = {
+            const inspection: WhatsAppSubmissionInspection = {
               idempotencyKey: submission.idempotencyKey,
               metadata: submission.metadata,
               submissionId: submission.submissionId,
