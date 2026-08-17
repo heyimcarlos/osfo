@@ -17,13 +17,22 @@ import * as PhoneAccount from "../src/services/phone-account";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide -- The fixture owns real database and provider boundaries. */
 
+/** Seeded User identity shared by account authority tests. */
 export const userId = UserId.make("user-authority-1");
+
+/** Seeded administrator identity shared by lifecycle transition tests. */
 export const adminActorId = AdminActorId.make("admin-1");
+
+/** Valid administrative reason shared by lifecycle transition tests. */
 export const reason = AdminReason.make("Support reviewed the request");
 
+/** Embedded PostgreSQL fixture type used by account authority tests. */
 export type TestDatabaseFixture = Effect.Success<typeof makeTestDatabase>;
+
+/** Composed narrow account authorities used by integration tests. */
 export type Authorities = Effect.Success<typeof AccountAuthorities.make>;
 
+/** Seeded account authority test resources supplied to one test. */
 export interface AccountAuthorityFixture {
   readonly authorities: Authorities;
   readonly database: TestDatabaseFixture;
@@ -36,6 +45,7 @@ export interface AccountAuthorityFixture {
   };
 }
 
+/** Run one test with isolated migrated PostgreSQL and account authorities. */
 export const withAccountAuthorityFixture = <A, E>(
   use: (fixture: AccountAuthorityFixture) => Effect.Effect<A, E>,
 ): Effect.Effect<A, E> =>
@@ -116,4 +126,5 @@ const makeTwilio = () => {
   };
 };
 
+/** Construct one deterministic UTC Date for account authority tests. */
 export const testDate = (value: string) => DateTime.toDateUtc(DateTime.makeUnsafe(value));
