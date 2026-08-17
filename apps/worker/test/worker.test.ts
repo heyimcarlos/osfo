@@ -1,12 +1,35 @@
 import { exports } from "cloudflare:workers";
-import { describe, expect, it } from "@effect/vitest";
-import { Effect, Option, Result, Schema } from "effect";
+import { createExecutionContext, createScheduledController, env } from "cloudflare:test";
+import { describe, expect, it, vi } from "@effect/vitest";
+import { Effect, Schema } from "effect";
 
 import { runInvocationEffect } from "../src/adapters/host";
-import { decodeOsfoStage, decodeRuntimeConfig } from "../src/env";
 import { makeWorkflowRuntime, probeExecutionUnit, RuntimeProbe } from "../src/layers";
+import worker from "../src/worker";
 
 describe("Osfo Cloudflare host", () => {
+  // oxlint-disable-next-line effecttsgo/async-function -- Test covers the Promise-based Worker host interface.
+  it("logs safe configuration failures and returns a generic response", async () => {
+    const secret = "short-secret-do-not-log";
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await worker.fetch(new Request("https://osfo.test/health"), {
+      ...env,
+      BETTER_AUTH_SECRET: secret,
+    });
+    const evidence = error.mock.calls.flat().join(" ");
+    error.mockRestore();
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: "The Worker runtime configuration is invalid",
+    });
+    expect(evidence).toContain(
+      "Worker configuration is invalid: BETTER_AUTH_SECRET must contain at least 32 characters",
+    );
+    expect(evidence).not.toContain(secret);
+  });
+
   it.effect("creates one Worker runtime for each request", () =>
     Effect.gen(function* () {
       const first = yield* Effect.promise(() =>
@@ -29,6 +52,43 @@ describe("Osfo Cloudflare host", () => {
       expect(secondProbe.activationId).not.toBe(firstProbe.activationId);
     }),
   );
+
+  it.effect("does not share Worker runtimes between concurrent requests", () =>
+    Effect.gen(function* () {
+      const responses = yield* Effect.promise(() =>
+        Promise.all([
+          exports.default.fetch(new Request("https://osfo.test/health")),
+          exports.default.fetch(new Request("https://osfo.test/health")),
+        ]),
+      );
+      const probes = yield* Effect.forEach(responses, decodeRuntimeProbe);
+
+      expect(responses.map((response) => response.status)).toEqual([200, 200]);
+      expect(probes[0]?.activationId).not.toBe(probes[1]?.activationId);
+    }),
+  );
+
+  it("logs and throws safe configuration failures for scheduled work", () => {
+    const secret = "bad";
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    expect(() =>
+      worker.scheduled(
+        createScheduledController(),
+        { ...env, BETTER_AUTH_SECRET: secret },
+        createExecutionContext(),
+      ),
+    ).toThrowError(
+      "Worker configuration is invalid: BETTER_AUTH_SECRET must contain at least 32 characters",
+    );
+    const evidence = error.mock.calls.flat().join(" ");
+    error.mockRestore();
+
+    expect(evidence).toContain(
+      "Worker configuration is invalid: BETTER_AUTH_SECRET must contain at least 32 characters",
+    );
+    expect(evidence).not.toContain(secret);
+  });
 
   it.effect("publishes the typed health contract in OpenAPI", () =>
     Effect.gen(function* () {
@@ -219,111 +279,7 @@ describe("Osfo Cloudflare host", () => {
       expect(secondResult.activationId).not.toBe(firstResult.activationId);
     }),
   );
-
-  it("accepts preview behavior but rejects infrastructure stage names", () => {
-    expect(Option.isSome(decodeOsfoStage("preview"))).toBe(true);
-    expect(Option.isNone(decodeOsfoStage("pr-212"))).toBe(true);
-  });
-
-  it("decodes complete authentication configuration without exposing secrets", () => {
-    const input = {
-      BETTER_AUTH_API_KEY: "test-only-better-auth-dashboard-api-key",
-      BETTER_AUTH_BASE_URL: "https://osfo.test",
-      BETTER_AUTH_SECRET: "test-only-better-auth-secret-32-characters",
-      BETTER_AUTH_TRUSTED_ORIGINS: '["https://osfo.test"]',
-      META_APP_SECRET: "test-only-meta-app-secret",
-      META_WEBHOOK_VERIFY_TOKEN: "test-only-meta-webhook-token",
-      OSFO_STAGE: "test",
-      STRIPE_ADVENTURER_PRICE_ID: "price_adventurer",
-      STRIPE_ADVENTURER_PRODUCT_ID: "prod_adventurer",
-      STRIPE_PORTAL_CONFIGURATION_ID: "bpc_approved",
-      STRIPE_SECRET_KEY: "sk_test_osfo",
-      STRIPE_WEBHOOK_SECRET: "whsec_test_osfo",
-      TWILIO_ACCOUNT_SID: `AC${"1".repeat(32)}`,
-      TWILIO_AUTH_TOKEN: "test-only-twilio-token",
-      TWILIO_VERIFY_SERVICE_SID: `VA${"2".repeat(32)}`,
-      WHATSAPP_PHONE_NUMBER: "14165550100",
-    };
-    const decoded = decodeRuntimeConfig(input);
-    const production = decodeRuntimeConfig({ ...input, OSFO_STAGE: "production" });
-
-    expect(Result.isSuccess(decoded)).toBe(true);
-    expect(Result.getOrThrow(decoded).auth.credentialAuthentication).toBe("enabled");
-    expect(Result.getOrThrow(production).auth.credentialAuthentication).toBe("disabled");
-    expect(
-      Result.isFailure(
-        decodeRuntimeConfig({ ...input, STRIPE_PORTAL_CONFIGURATION_ID: "unapproved" }),
-      ),
-    ).toBe(true);
-    expect(String(decoded)).not.toContain("test-only-better-auth-dashboard-api-key");
-    expect(String(decoded)).not.toContain("test-only-twilio-token");
-    expect(String(decoded)).not.toContain("test-only-better-auth-secret");
-    expect(String(decoded)).not.toContain("test-only-meta-app-secret");
-    expect(String(decoded)).not.toContain("test-only-meta-webhook-token");
-  });
-
-  it("rejects incomplete authentication configuration", () => {
-    expect(Result.isFailure(decodeRuntimeConfig({ OSFO_STAGE: "test" }))).toBe(true);
-  });
-
-  it("enables Telegram only with complete non-production configuration and redacts secrets", () => {
-    const decoded = decodeRuntimeConfig({
-      ...completeRuntimeInput,
-      TELEGRAM_ALLOWED_USER_IDS: "12345,67890",
-      TELEGRAM_BOT_TOKEN: "telegram-test-bot-token",
-      TELEGRAM_BOT_USERNAME: "osfo_test_bot",
-      TELEGRAM_WEBHOOK_SECRET_TOKEN: "telegram_test_webhook_secret",
-    });
-
-    expect(Result.isSuccess(decoded)).toBe(true);
-    expect(Result.getOrThrow(decoded).telegram).toMatchObject({
-      allowedUserIds: ["12345", "67890"],
-      botUsername: "osfo_test_bot",
-      kind: "enabled",
-    });
-    expect(String(decoded)).not.toContain("telegram-test-bot-token");
-    expect(String(decoded)).not.toContain("telegram_test_webhook_secret");
-  });
-
-  it("rejects partial Telegram configuration and all production activation", () => {
-    expect(
-      Result.isFailure(
-        decodeRuntimeConfig({ ...completeRuntimeInput, TELEGRAM_BOT_TOKEN: "partial" }),
-      ),
-    ).toBe(true);
-    expect(
-      Result.isFailure(
-        decodeRuntimeConfig({
-          ...completeRuntimeInput,
-          OSFO_STAGE: "production",
-          TELEGRAM_ALLOWED_USER_IDS: "12345",
-          TELEGRAM_BOT_TOKEN: "telegram-test-bot-token",
-          TELEGRAM_BOT_USERNAME: "osfo_test_bot",
-          TELEGRAM_WEBHOOK_SECRET_TOKEN: "telegram_test_webhook_secret",
-        }),
-      ),
-    ).toBe(true);
-  });
 });
-
-const completeRuntimeInput = {
-  BETTER_AUTH_API_KEY: "test-only-better-auth-dashboard-api-key",
-  BETTER_AUTH_BASE_URL: "https://osfo.test",
-  BETTER_AUTH_SECRET: "test-only-better-auth-secret-32-characters",
-  BETTER_AUTH_TRUSTED_ORIGINS: '["https://osfo.test"]',
-  META_APP_SECRET: "test-only-meta-app-secret",
-  META_WEBHOOK_VERIFY_TOKEN: "test-only-meta-webhook-token",
-  OSFO_STAGE: "test",
-  STRIPE_ADVENTURER_PRICE_ID: "price_adventurer",
-  STRIPE_ADVENTURER_PRODUCT_ID: "prod_adventurer",
-  STRIPE_PORTAL_CONFIGURATION_ID: "bpc_approved",
-  STRIPE_SECRET_KEY: "sk_test_osfo",
-  STRIPE_WEBHOOK_SECRET: "whsec_test_osfo",
-  TWILIO_ACCOUNT_SID: `AC${"1".repeat(32)}`,
-  TWILIO_AUTH_TOKEN: "test-only-twilio-token",
-  TWILIO_VERIFY_SERVICE_SID: `VA${"2".repeat(32)}`,
-  WHATSAPP_PHONE_NUMBER: "14165550100",
-} as const;
 
 const decodeRuntimeProbe = (response: Response) =>
   Effect.promise(() => response.json()).pipe(

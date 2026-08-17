@@ -94,15 +94,13 @@ The selected Twilio Verify Service must define the programmable rate-limit key
 `phone_number`. Configure one bucket for one send per 30 seconds and one bucket
 for five sends per hour. The Worker supplies this key on every SMS request.
 
-### Telegram dogfooding
+### Telegram configuration
 
-Telegram is a non-production onboarding and acceptance transport. Create a bot
-with BotFather, then set the four `TELEGRAM_*` values shown in
-`apps/worker/.env.example`. Also set `VITE_ENROLLMENT_PROVIDER=telegram` in the
-web app so the pre-completion disclosure and enrollment copy match the Worker
-transport. `TELEGRAM_ALLOWED_USER_IDS` is a comma-separated list of numeric
-Telegram User IDs. The Worker rejects partial configuration, users outside this
-list, invalid webhook secrets, and every production activation.
+Telegram is a required onboarding and acceptance transport. Create a bot with
+BotFather, then set the four `TELEGRAM_*` values shown in
+`apps/worker/.env.example`. `TELEGRAM_ALLOWED_USER_IDS` is a comma-separated
+list of numeric Telegram User IDs. The Worker rejects missing configuration,
+users outside this list, and invalid webhook secrets.
 
 Register this webhook URL with Telegram's `setWebhook` Bot API method:
 

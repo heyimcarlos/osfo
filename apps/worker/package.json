@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./env": "./src/env.ts"
+    "./config": "./src/config.ts"
   },
   "scripts": {
     "agent-db:check": "drizzle-kit check --config drizzle.agent.config.ts",

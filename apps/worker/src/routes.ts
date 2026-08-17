@@ -5,7 +5,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import * as Auth from "./auth";
 import { productApiLayer } from "./cors";
-import type { RuntimeConfig } from "./env";
+import type { CloudflareConfig } from "./config";
 import * as Handlers from "./handlers";
 import * as RuntimeProbes from "./handlers/runtime-probes";
 import * as StripeWebhook from "./handlers/stripe-webhook";
@@ -35,7 +35,7 @@ export type Bindings = RuntimeProbes.Bindings &
 /** Options used to assemble the Worker route tree. */
 export interface Options {
   readonly authDependencies: Auth.AuthDependencies;
-  readonly config: RuntimeConfig;
+  readonly config: CloudflareConfig;
   readonly env: Bindings;
   readonly runtime: ManagedRuntime.ManagedRuntime<ExecutionUnit, never>;
 }
@@ -43,11 +43,10 @@ export interface Options {
 /** Assemble typed product routes, Better Auth, and Cloudflare host probes. */
 export const layer = (options: Options) => {
   const onboardingLinks = OnboardingLinks.layer({
-    enrollmentProvider: options.config.telegram.kind === "enabled" ? "telegram" : "whatsapp",
+    enrollmentProvider: "telegram",
     officialWhatsAppNumber: options.config.whatsApp.phoneNumber,
     publicBaseUrl: new URL(options.config.auth.baseURL),
-    telegramBotUsername:
-      options.config.telegram.kind === "enabled" ? options.config.telegram.botUsername : "disabled",
+    telegramBotUsername: options.config.telegram.botUsername,
   });
   const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
     Layer.provide(Handlers.layer(options.runtime, options.config)),
@@ -109,17 +108,13 @@ export const layer = (options: Options) => {
     Layer.provide(onboardingLinks),
     Layer.provide(options.authDependencies),
   );
-  const telegram =
-    options.config.telegram.kind === "enabled"
-      ? TelegramRoutes.layer({
-          stage: options.config.stage,
-          telegram: options.config.telegram,
-        }).pipe(
-          Layer.provide(onboardingRequest),
-          Layer.provide(telegramAdmission),
-          Layer.provide(telegramDelivery),
-        )
-      : Layer.empty;
+  const telegram = TelegramRoutes.layer({
+    telegram: options.config.telegram,
+  }).pipe(
+    Layer.provide(onboardingRequest),
+    Layer.provide(telegramAdmission),
+    Layer.provide(telegramDelivery),
+  );
   const stripeWebhook = StripeWebhook.layer(options.config).pipe(
     HttpRouter.provideRequest(options.authDependencies),
   );

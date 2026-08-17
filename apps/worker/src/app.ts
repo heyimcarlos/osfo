@@ -1,18 +1,20 @@
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
-import { Effect, Layer } from "effect";
-import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
+import { Effect, Layer, Schema, type ManagedRuntime } from "effect";
+import { HttpRouter, HttpServer } from "effect/unstable/http";
 
 import type * as Auth from "./auth";
+import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "./config";
 import * as Db from "./db";
-import type { OsfoStage, RuntimeConfig } from "./env";
 import * as TwilioVerify from "./integrations/twilio/verify";
 import * as OnboardingCloudflare from "./integrations/cloudflare/onboarding";
 import * as OnboardingPostgres from "./integrations/postgres/onboarding";
 import * as OnboardingLinks from "./integrations/public/onboarding-links";
-import { makeWorkerRuntime, probeExecutionUnit } from "./layers";
+import { makeWorkerRuntime, type ExecutionUnit, RuntimeProbeResult } from "./layers";
 import * as Routes from "./routes";
 import * as Onboarding from "./services/onboarding";
 import * as Registration from "./services/registration";
+
+/* oxlint-disable effecttsgo/async-function -- Cloudflare RPC adapters expose Promise-based interfaces. */
 
 /** Cloudflare bindings used by the Worker HTTP application. */
 export interface Bindings {
@@ -27,17 +29,20 @@ export interface MakeOptions {
   readonly authDependencies?: Auth.AuthDependencies;
 }
 
-/** Build one request-scoped Effect HTTP application. */
-export const make = (env: Bindings, config: RuntimeConfig, options?: MakeOptions) => {
+const AgentRpcTag = Schema.Struct({ _tag: Schema.String });
+const RegistrationRpcResult = Schema.Union([
+  Schema.TaggedStruct("RegistrationTurnCompleted", {
+    response: Schema.String,
+    verifyUrl: Schema.String,
+  }),
+  Schema.TaggedStruct("RegistrationTurnUnavailable", { message: Schema.String }),
+]);
+
+/** Build one request-scoped Cloudflare application from the current bindings. */
+export const makeCloudflareApp = async (env: CloudflareEnv) => {
+  const config = loadConfig(env);
   const runtime = makeWorkerRuntime(config.stage);
-  const authDependencies =
-    options?.authDependencies ??
-    Layer.merge(Db.layer({ db: env.DB }), TwilioVerify.layer(config.twilioVerify));
-  const appLayer = Routes.layer({ authDependencies, config, env, runtime }).pipe(
-    Layer.provide(BrowserCrypto.layer),
-    Layer.provide(HttpServer.layerServices),
-  );
-  const webHandler = HttpRouter.toWebHandler(appLayer, { disableLogger: true });
+  const webHandler = makeWebHandler(adaptBindings(env), config, runtime);
 
   return {
     dispose: () => webHandler.dispose().then(() => runtime.dispose()),
@@ -45,40 +50,47 @@ export const make = (env: Bindings, config: RuntimeConfig, options?: MakeOptions
   };
 };
 
-/** Return request-runtime health without loading unrelated integration configuration. */
-export const healthResponse = (stage: OsfoStage) =>
-  Effect.acquireUseRelease(
-    Effect.sync(() => makeWorkerRuntime(stage)),
-    (runtime) =>
-      Effect.promise(() => runtime.runPromise(probeExecutionUnit)).pipe(
-        Effect.map((probe) =>
-          Response.json({
-            activationId: probe.activationId,
-            executionUnit: "worker",
-            identity: "request",
-            kind: "RuntimeProbe",
-            stage: probe.stage,
-          }),
-        ),
-      ),
-    (runtime) => Effect.promise(() => runtime.dispose()),
+/** Build one request-scoped Effect HTTP application. */
+export const make = (env: Bindings, config: CloudflareConfig, options?: MakeOptions) => {
+  const runtime = makeWorkerRuntime(config.stage);
+  const webHandler = makeWebHandler(env, config, runtime, options);
+
+  return {
+    dispose: () => webHandler.dispose().then(() => runtime.dispose()),
+    handler: webHandler.handler,
+  };
+};
+
+const makeWebHandler = (
+  env: Bindings,
+  config: CloudflareConfig,
+  runtime: ManagedRuntime.ManagedRuntime<ExecutionUnit, never>,
+  options?: MakeOptions,
+) => {
+  const authDependencies =
+    options?.authDependencies ??
+    Layer.merge(Db.layer({ db: env.DB }), TwilioVerify.layer(config.twilioVerify));
+  const appLayer = Routes.layer({ authDependencies, config, env, runtime }).pipe(
+    Layer.provide(BrowserCrypto.layer),
+    Layer.provide(HttpServer.layerServices),
   );
+  return HttpRouter.toWebHandler(appLayer, { disableLogger: true });
+};
 
 /** Delete expired Registration Invitation data from the scheduled Worker event. */
-export const expireRegistrationInvitations = (env: Bindings, config: RuntimeConfig) =>
-  Effect.runPromise(Effect.scoped(runInvitationExpiry(env, config)));
+export const expireRegistrationInvitations = (env: CloudflareEnv, config: CloudflareConfig) =>
+  Effect.runPromise(Effect.scoped(runInvitationExpiry(adaptBindings(env), config)));
 
-const runInvitationExpiry = (env: Bindings, config: RuntimeConfig) => {
+const runInvitationExpiry = (env: Bindings, config: CloudflareConfig) => {
   const base = Layer.merge(Db.layer({ db: env.DB }), BrowserCrypto.layer);
   const dependencies = Layer.mergeAll(
     Registration.layerWithoutDependencies,
     OnboardingCloudflare.layer(env),
     OnboardingLinks.layer({
-      enrollmentProvider: config.telegram.kind === "enabled" ? "telegram" : "whatsapp",
+      enrollmentProvider: "telegram",
       officialWhatsAppNumber: config.whatsApp.phoneNumber,
       publicBaseUrl: new URL(config.auth.baseURL),
-      telegramBotUsername:
-        config.telegram.kind === "enabled" ? config.telegram.botUsername : "disabled",
+      telegramBotUsername: config.telegram.botUsername,
     }),
   ).pipe(Layer.provideMerge(base));
   const onboarding = Onboarding.layerWithoutDependencies.pipe(Layer.provide(dependencies));
@@ -89,11 +101,43 @@ const runInvitationExpiry = (env: Bindings, config: RuntimeConfig) => {
   );
 };
 
-/** Convert invalid Worker bindings into a safe technical HTTP response. */
-export const environmentErrorResponse = (): Response =>
-  HttpServerResponse.toWeb(
-    HttpServerResponse.jsonUnsafe(
-      { error: "The Worker runtime configuration is invalid" },
-      { status: 500 },
-    ),
-  );
+const adaptBindings = (env: CloudflareEnv): Bindings => ({
+  ARTIFACTS: env.ARTIFACTS,
+  DB: env.DB,
+  OSFO_AGENT: {
+    getByName: (identity) => {
+      const agent = env.OSFO_AGENT.getByName(identity);
+      return {
+        acceptWhatsAppMessage: async (input) => agent.acceptWhatsAppMessage(input),
+        acceptTelegramMessage: async (input) => agent.acceptTelegramMessage(input),
+        commitWelcome: async (input) =>
+          Schema.decodePromise(AgentRpcTag)(await agent.commitWelcome(input)),
+        initialize: async (input) =>
+          Schema.decodePromise(AgentRpcTag)(await agent.initialize(input)),
+        probeRuntime: async () =>
+          Schema.decodePromise(RuntimeProbeResult)(await agent.probeRuntime()),
+        recoverWhatsAppMessage: async (input) => agent.recoverWhatsAppMessage(input),
+        recoverTelegramMessage: async (input) => agent.recoverTelegramMessage(input),
+      };
+    },
+  },
+  REGISTRATION_DIALOGUE: {
+    getByName: (identity) => {
+      const dialogue = async () => env.REGISTRATION_DIALOGUE.getByName(identity);
+      return {
+        begin: async (input) => {
+          const agent = await dialogue();
+          return Schema.decodePromise(RegistrationRpcResult)(await agent.begin(input));
+        },
+        deleteDialogue: async () => {
+          const agent = await dialogue();
+          await agent.deleteDialogue();
+        },
+        probeRuntime: async () => {
+          const agent = await dialogue();
+          return Schema.decodePromise(RuntimeProbeResult)(await agent.probeRuntime());
+        },
+      };
+    },
+  },
+});

@@ -5,12 +5,12 @@ import * as Health from "./handlers/health";
 import * as Onboarding from "./handlers/onboarding";
 import * as Registration from "./handlers/registration";
 import type { ExecutionUnit } from "./layers";
-import type { RuntimeConfig } from "./env";
+import type { CloudflareConfig } from "./config";
 
 /** Implement every typed Osfo API group. */
 export const layer = (
   runtime: ManagedRuntime.ManagedRuntime<ExecutionUnit, never>,
-  config: RuntimeConfig,
+  config: CloudflareConfig,
 ) =>
   Layer.mergeAll(
     Billing.layer(config),

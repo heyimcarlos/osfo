@@ -11,7 +11,7 @@ import { DateTime, Effect, Layer, Redacted } from "effect";
 import { HttpRouter } from "effect/unstable/http";
 
 import * as Db from "../src/db";
-import type { RuntimeConfig } from "../src/env";
+import type { CloudflareConfig } from "../src/config";
 import * as WhatsApp from "../src/handlers/whatsapp";
 import * as Onboarding from "../src/services/onboarding";
 import type { AgentAcceptanceInput, AgentRecoveryInput } from "../src/services/whatsapp-admission";
@@ -257,7 +257,7 @@ const testOnboarding = Onboarding.Service.of({
   phoneVerificationTarget: () => Effect.die("unexpected verification target"),
 });
 
-const config: RuntimeConfig = {
+const config: CloudflareConfig = {
   auth: {
     baseURL: "https://osfo.test/",
     credentialAuthentication: "enabled",
@@ -270,7 +270,12 @@ const config: RuntimeConfig = {
     webhookVerifyToken: Redacted.make("verify-me"),
   },
   stage: "test",
-  telegram: { kind: "disabled" },
+  telegram: {
+    allowedUserIds: ["12345"],
+    botToken: Redacted.make("telegram-test-bot-token"),
+    botUsername: "osfo_test_bot",
+    webhookSecret: Redacted.make("telegram-test-webhook-secret"),
+  },
   stripe: {
     adventurerPriceId: "price_adventurer",
     adventurerProductId: "prod_adventurer",
