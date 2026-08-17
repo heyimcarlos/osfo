@@ -9,15 +9,17 @@ import {
   StripeCheckoutSessionId,
   StripeCustomerId,
   StripeInvoiceId,
-  type StripePriceId,
-  type StripeProductId,
+  StripePriceId,
+  StripeProductId,
   StripeSubscriptionId,
+  UserId,
 } from "../../domain";
 import {
   StripeSubscriptionSnapshot,
   type StripeSubscriptionSnapshot as StripeSubscriptionSnapshotType,
 } from "../../services/billing-subscriptions";
 import {
+  CheckoutState,
   StripeRequestFailed,
   type StripeGateway as StripeBillingGateway,
 } from "../../services/stripe-billing";
@@ -77,9 +79,27 @@ const ChargeLocator = Schema.Struct({
   amount_refunded: Schema.Finite,
   payment_intent: Schema.NullOr(StripeReference),
 });
+const ChargePaymentLocator = Schema.Struct({ payment_intent: Schema.NullOr(StripeReference) });
+const DisputeLocator = Schema.Struct({ charge: StripeReference, status: Schema.String });
 const InvoicePaymentList = Schema.Struct({
   data: Schema.Array(Schema.Struct({ invoice: StripeReference })),
 });
+const CurrentInvoicePaymentList = Schema.Struct({
+  data: Schema.Array(
+    Schema.Struct({
+      amount_paid: Schema.NullOr(Schema.Finite),
+      payment: Schema.Struct({
+        charge: Schema.optionalKey(StripeReference),
+        payment_intent: Schema.optionalKey(StripeReference),
+        type: Schema.String,
+      }),
+      status: Schema.String,
+    }),
+  ),
+});
+const PaymentIntentLocator = Schema.Struct({ latest_charge: Schema.NullOr(StripeReference) });
+const RefundedCharge = Schema.Struct({ amount: Schema.Finite, amount_refunded: Schema.Finite });
+const DisputeList = Schema.Struct({ data: Schema.Array(Schema.Struct({ status: Schema.String })) });
 const StripeFailure = Schema.Struct({
   statusCode: Schema.optionalKey(Schema.Finite),
   type: Schema.optionalKey(Schema.String),
@@ -105,6 +125,20 @@ export interface ReconciliationGateway {
   ) => Effect.Effect<
     StripeSubscriptionSnapshotType,
     PermanentStripeWebhookFailure | StripeRequestFailed
+  >;
+  readonly retrieveCheckoutForReturn: (
+    stripeCheckoutSessionId: StripeCheckoutSessionId,
+  ) => Effect.Effect<
+    {
+      readonly billingCheckoutSessionId: BillingCheckoutSessionId;
+      readonly customerId: StripeCustomerId;
+      readonly priceId: StripePriceId;
+      readonly productId: StripeProductId;
+      readonly state: CheckoutState;
+      readonly stripeSubscriptionId: StripeSubscriptionId | null;
+      readonly userId: UserId;
+    },
+    StripeRequestFailed
   >;
 }
 
@@ -188,7 +222,8 @@ export const make = (
       const subscription = yield* tryStripe("retrieveSubscription", () =>
         options.client.subscriptions.retrieve(subscriptionId, { expand: ["latest_invoice"] }),
       );
-      return yield* parseSubscriptionSnapshot(subscription, options.offer);
+      const snapshot = yield* parseSubscriptionSnapshot(subscription, options.offer);
+      return yield* discoverCurrentPeriodReversal(options.client, snapshot);
     });
   const fetchCurrentSnapshot: StripeWebhookGateway["fetchCurrentSnapshot"] = (event) =>
     Effect.gen(function* () {
@@ -200,19 +235,80 @@ export const make = (
         }),
       );
       const snapshot = yield* parseSubscriptionSnapshot(subscription, options.offer);
-      const currentPeriodRefunded =
-        locator.refundedInvoiceId !== null &&
+      const eventProvesCurrentReversal =
+        locator.paymentReversal !== null &&
+        locator.paymentReversal.reversed &&
         snapshot.payment._tag === "Paid" &&
-        snapshot.payment.invoiceId === locator.refundedInvoiceId;
+        snapshot.payment.invoiceId === locator.paymentReversal.invoiceId;
+      const current = eventProvesCurrentReversal
+        ? StripeSubscriptionSnapshot.make({
+            ...snapshot,
+            currentPeriodRefunded: true,
+            payment: { _tag: "NotPaid" },
+          })
+        : yield* discoverCurrentPeriodReversal(options.client, snapshot);
       return {
         _tag: "Snapshot" as const,
-        snapshot: currentPeriodRefunded
-          ? StripeSubscriptionSnapshot.make({
-              ...snapshot,
-              currentPeriodRefunded: true,
-              payment: { _tag: "NotPaid" },
-            })
-          : snapshot,
+        snapshot: current,
+      };
+    });
+  const retrieveCheckout = (stripeCheckoutSessionId: StripeCheckoutSessionId) =>
+    Effect.gen(function* () {
+      const session = yield* tryStripe("retrieveCheckout", () =>
+        options.client.checkout.sessions.retrieve(stripeCheckoutSessionId),
+      );
+      if (session.status === null) {
+        return yield* new StripeRequestFailed({
+          kind: "permanent",
+          message: "Stripe returned a Checkout Session without a state",
+          operation: "retrieveCheckout",
+        });
+      }
+      const subscriptionId =
+        session.subscription === null
+          ? null
+          : typeof session.subscription === "string"
+            ? session.subscription
+            : session.subscription.id;
+      const customerId =
+        session.customer === null
+          ? null
+          : typeof session.customer === "string"
+            ? session.customer
+            : session.customer.id;
+      const metadata = session.metadata;
+      if (metadata === null) {
+        return yield* new StripeRequestFailed({
+          kind: "permanent",
+          message: "Stripe returned Checkout without identity metadata",
+          operation: "retrieveCheckout",
+        });
+      }
+      const billingCheckoutSessionId = yield* parseId(
+        BillingCheckoutSessionId,
+        session.client_reference_id,
+        "retrieveCheckout",
+      );
+      if (metadata.billingCheckoutSessionId !== billingCheckoutSessionId) {
+        return yield* new StripeRequestFailed({
+          kind: "permanent",
+          message: "Stripe returned conflicting Checkout attempt identity",
+          operation: "retrieveCheckout",
+        });
+      }
+      return {
+        billingCheckoutSessionId,
+        customerId: yield* parseId(StripeCustomerId, customerId, "retrieveCheckout"),
+        expiresAt: new Date(session.expires_at * 1_000),
+        priceId: yield* parseId(StripePriceId, metadata.priceId, "retrieveCheckout"),
+        productId: yield* parseId(StripeProductId, metadata.productId, "retrieveCheckout"),
+        state: yield* parseId(CheckoutState, session.status, "retrieveCheckout"),
+        stripeSubscriptionId:
+          subscriptionId === null
+            ? null
+            : yield* parseId(StripeSubscriptionId, subscriptionId, "retrieveCheckout"),
+        userId: yield* parseId(UserId, metadata.userId, "retrieveCheckout"),
+        url: session.url === null ? null : new URL(session.url),
       };
     });
 
@@ -277,34 +373,8 @@ export const make = (
       ),
     fetchCurrentSnapshot,
     fetchSubscription,
-    retrieveCheckout: (stripeCheckoutSessionId) =>
-      Effect.gen(function* () {
-        const session = yield* tryStripe("retrieveCheckout", () =>
-          options.client.checkout.sessions.retrieve(stripeCheckoutSessionId),
-        );
-        if (session.status === null) {
-          return yield* new StripeRequestFailed({
-            kind: "permanent",
-            message: "Stripe returned a Checkout Session without a state",
-            operation: "retrieveCheckout",
-          });
-        }
-        const subscriptionId =
-          session.subscription === null
-            ? null
-            : typeof session.subscription === "string"
-              ? session.subscription
-              : session.subscription.id;
-        return {
-          expiresAt: new Date(session.expires_at * 1_000),
-          state: session.status === "complete" ? "complete" : session.status,
-          stripeSubscriptionId:
-            subscriptionId === null
-              ? null
-              : yield* parseId(StripeSubscriptionId, subscriptionId, "retrieveCheckout"),
-          url: session.url === null ? null : new URL(session.url),
-        };
-      }),
+    retrieveCheckout,
+    retrieveCheckoutForReturn: retrieveCheckout,
     verify: (rawBody, signature) =>
       Effect.tryPromise({
         try: () =>
@@ -329,12 +399,95 @@ export const make = (
   };
 };
 
+const discoverCurrentPeriodReversal = (
+  client: Stripe,
+  snapshot: StripeSubscriptionSnapshotType,
+): Effect.Effect<
+  StripeSubscriptionSnapshotType,
+  PermanentStripeWebhookFailure | StripeRequestFailed
+> =>
+  Effect.gen(function* () {
+    if (snapshot.payment._tag !== "Paid") return snapshot;
+    const invoiceId = snapshot.payment.invoiceId;
+    const payments = yield* tryStripe("listInvoicePayments", () =>
+      client.invoicePayments.list({ invoice: invoiceId, status: "paid" }),
+    ).pipe(Effect.flatMap((value) => decodeLocator(CurrentInvoicePaymentList, value)));
+    const paid = payments.data.filter(
+      (payment) =>
+        payment.status === "paid" && payment.amount_paid !== null && payment.amount_paid > 0,
+    );
+    if (paid.length === 0) return snapshot;
+    const reversals = yield* Effect.forEach(paid, (payment) =>
+      Effect.gen(function* () {
+        const locator = payment.payment;
+        let chargeId: string;
+        if (locator.type === "charge" && locator.charge !== undefined) {
+          chargeId = typeof locator.charge === "string" ? locator.charge : locator.charge.id;
+        } else if (locator.type === "payment_intent" && locator.payment_intent !== undefined) {
+          const paymentIntentId =
+            typeof locator.payment_intent === "string"
+              ? locator.payment_intent
+              : locator.payment_intent.id;
+          chargeId = yield* tryStripe("retrievePaymentIntent", () =>
+            client.paymentIntents.retrieve(paymentIntentId),
+          ).pipe(
+            Effect.flatMap((value) => decodeLocator(PaymentIntentLocator, value)),
+            Effect.flatMap((intent) => {
+              if (intent.latest_charge === null) {
+                return Effect.fail(
+                  new PermanentStripeWebhookFailure({
+                    errorCode: "missing_invoice_payment_charge",
+                    message: "A paid Invoice payment has no authoritative Charge",
+                  }),
+                );
+              }
+              return Effect.succeed(
+                typeof intent.latest_charge === "string"
+                  ? intent.latest_charge
+                  : intent.latest_charge.id,
+              );
+            }),
+          );
+        } else {
+          return yield* new PermanentStripeWebhookFailure({
+            errorCode: "unsupported_invoice_payment",
+            message: "A paid Invoice uses an unsupported payment authority",
+          });
+        }
+        const charge = yield* tryStripe("retrieveCharge", () =>
+          client.charges.retrieve(chargeId),
+        ).pipe(Effect.flatMap((value) => decodeLocator(RefundedCharge, value)));
+        const fullyRefunded = charge.amount > 0 && charge.amount_refunded === charge.amount;
+        if (fullyRefunded) return { disputed: false, fullyRefunded };
+        const disputes = yield* tryStripe("listDisputes", () =>
+          client.disputes.list({ charge: chargeId }),
+        ).pipe(Effect.flatMap((value) => decodeLocator(DisputeList, value)));
+        const statuses = yield* Effect.forEach(disputes.data, (dispute) =>
+          disputeReversal(dispute.status),
+        );
+        return { disputed: statuses.some(Boolean), fullyRefunded };
+      }),
+    );
+    const reversed =
+      reversals.every((payment) => payment.fullyRefunded) ||
+      reversals.some((payment) => payment.disputed);
+    if (!reversed) return snapshot;
+    return StripeSubscriptionSnapshot.make({
+      ...snapshot,
+      currentPeriodRefunded: true,
+      payment: { _tag: "NotPaid" },
+    });
+  });
+
 const locateSubscription = (
   client: Stripe,
   event: VerifiedStripeEvent,
 ): Effect.Effect<
   {
-    readonly refundedInvoiceId: StripeInvoiceId | null;
+    readonly paymentReversal: {
+      readonly invoiceId: StripeInvoiceId;
+      readonly reversed: boolean;
+    } | null;
     readonly subscriptionId: StripeSubscriptionId;
   } | null,
   PermanentStripeWebhookFailure | StripeRequestFailed
@@ -348,7 +501,7 @@ const locateSubscription = (
             message: "The verified event has an invalid Stripe Subscription ID",
           }),
       ),
-      Effect.map((subscriptionId) => ({ refundedInvoiceId: null, subscriptionId })),
+      Effect.map((subscriptionId) => ({ paymentReversal: null, subscriptionId })),
     );
   }
   if (event.type.startsWith("checkout.session.")) {
@@ -362,7 +515,7 @@ const locateSubscription = (
       const id =
         typeof locator.subscription === "string" ? locator.subscription : locator.subscription.id;
       return {
-        refundedInvoiceId: null,
+        paymentReversal: null,
         subscriptionId: yield* parseWebhookId(StripeSubscriptionId, id),
       };
     });
@@ -371,7 +524,7 @@ const locateSubscription = (
     return Effect.gen(function* () {
       const invoiceId = yield* parseWebhookId(StripeInvoiceId, event.externalObjectId);
       const subscriptionId = yield* locateSubscriptionFromInvoice(client, invoiceId);
-      return subscriptionId === null ? null : { refundedInvoiceId: null, subscriptionId };
+      return subscriptionId === null ? null : { paymentReversal: null, subscriptionId };
     });
   }
   if (event.type === "charge.refunded") {
@@ -402,10 +555,65 @@ const locateSubscription = (
         typeof payment.invoice === "string" ? payment.invoice : payment.invoice.id,
       );
       const subscriptionId = yield* locateSubscriptionFromInvoice(client, invoiceId);
-      return subscriptionId === null ? null : { refundedInvoiceId: invoiceId, subscriptionId };
+      return subscriptionId === null
+        ? null
+        : { paymentReversal: { invoiceId, reversed: true }, subscriptionId };
+    });
+  }
+  if (event.type.startsWith("charge.dispute.")) {
+    return Effect.gen(function* () {
+      const dispute = yield* tryStripe("retrieveDispute", () =>
+        client.disputes.retrieve(event.externalObjectId),
+      ).pipe(Effect.flatMap((value) => decodeLocator(DisputeLocator, value)));
+      const reversed = yield* disputeReversal(dispute.status);
+      const chargeId = typeof dispute.charge === "string" ? dispute.charge : dispute.charge.id;
+      const charge = yield* tryStripe("retrieveCharge", () =>
+        client.charges.retrieve(chargeId),
+      ).pipe(Effect.flatMap((value) => decodeLocator(ChargePaymentLocator, value)));
+      if (charge.payment_intent === null) return null;
+      const paymentIntentId =
+        typeof charge.payment_intent === "string"
+          ? charge.payment_intent
+          : charge.payment_intent.id;
+      const payments = yield* tryStripe("listInvoicePayments", () =>
+        client.invoicePayments.list({
+          payment: { payment_intent: paymentIntentId, type: "payment_intent" },
+        }),
+      ).pipe(Effect.flatMap((value) => decodeLocator(InvoicePaymentList, value)));
+      const payment = payments.data[0];
+      if (payment === undefined) return null;
+      const invoiceId = yield* parseWebhookId(
+        StripeInvoiceId,
+        typeof payment.invoice === "string" ? payment.invoice : payment.invoice.id,
+      );
+      const subscriptionId = yield* locateSubscriptionFromInvoice(client, invoiceId);
+      return subscriptionId === null
+        ? null
+        : { paymentReversal: { invoiceId, reversed }, subscriptionId };
     });
   }
   return Effect.succeed(null);
+};
+
+const disputeReversal = (status: string): Effect.Effect<boolean, PermanentStripeWebhookFailure> => {
+  switch (status) {
+    case "lost":
+    case "needs_response":
+    case "under_review":
+    case "warning_needs_response":
+    case "warning_under_review":
+      return Effect.succeed(true);
+    case "warning_closed":
+    case "won":
+      return Effect.succeed(false);
+    default:
+      return Effect.fail(
+        new PermanentStripeWebhookFailure({
+          errorCode: "unsupported_dispute_status",
+          message: "Stripe returned an unsupported Dispute status",
+        }),
+      );
+  }
 };
 
 const locateSubscriptionFromInvoice = (

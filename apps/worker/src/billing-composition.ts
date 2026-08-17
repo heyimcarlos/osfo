@@ -50,6 +50,7 @@ export const makeBillingServices = (database: Database, config: RuntimeConfig) =
       customer: secureId.pipe(Effect.map((id) => BillingCustomerId.make(id))),
     },
     offers: { adventurer: offer },
+    now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
     persistence: makeStripePersistence(database),
     portal: {
       configurationId: StripePortalConfigurationId.make(config.stripe.portalConfigurationId),
@@ -58,17 +59,24 @@ export const makeBillingServices = (database: Database, config: RuntimeConfig) =
     stripe,
     urls: {
       cancel: new URL("/billing", webBaseUrl),
-      success: new URL("/billing/return?source=checkout", webBaseUrl),
+      success: new URL(
+        "/billing/return?source=checkout&session_id={CHECKOUT_SESSION_ID}",
+        webBaseUrl,
+      ),
     },
+    waitForCheckoutClaim: Effect.sleep("25 millis"),
   });
   const webhookPersistence = WebhooksDb.make({
     database,
     webhookEventId: Effect.sync(() => crypto.randomUUID()),
   });
   return {
-    presentation: BillingPresentation.make({
-      inspect: (userId) => inspectStripeBilling(database, userId),
-    }),
+    presentation: BillingPresentation.make(
+      {
+        inspect: (userId, now) => inspectStripeBilling(database, userId, now),
+      },
+      { now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)) },
+    ),
     stripe,
     stripeBilling,
     subscriptions,

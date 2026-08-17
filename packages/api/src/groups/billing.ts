@@ -35,6 +35,18 @@ export const BillingReconciliation = Schema.Struct({
 /** Safe result after current Stripe state is reconciled. */
 export type BillingReconciliation = typeof BillingReconciliation.Type;
 
+/** Authenticated evidence selecting one exact hosted billing return. */
+export const BillingReconciliationRequest = Schema.Union([
+  Schema.Struct({
+    reason: Schema.Literal("checkoutReturn"),
+    stripeCheckoutSessionId: Schema.String,
+  }),
+  Schema.Struct({ reason: Schema.Literal("portalReturn") }),
+]);
+
+/** Authenticated evidence selecting one exact hosted billing return. */
+export type BillingReconciliationRequest = typeof BillingReconciliationRequest.Type;
+
 /** Safe response when billing or Stripe is unavailable. */
 export class BillingUnavailable extends Schema.TaggedError<BillingUnavailable>()(
   "BillingUnavailable",
@@ -98,7 +110,7 @@ export const BillingGroup = HttpApiGroup.make("billing")
   .add(
     HttpApiEndpoint.post("reconcile", "/v1/billing/reconcile", {
       error: [BillingForbidden, BillingUnavailable],
-      payload: Schema.Struct({ reason: Schema.Literals(["checkoutReturn", "portalReturn"]) }),
+      payload: BillingReconciliationRequest,
       success: BillingReconciliation,
     })
       .middleware(Auth)

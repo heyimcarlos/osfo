@@ -106,14 +106,27 @@ const BillingRoute = () => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const source = new URLSearchParams(globalThis.location.search).get("source");
-    const load =
+    const search = new URLSearchParams(globalThis.location.search);
+    const source = search.get("source");
+    const stripeCheckoutSessionId = search.get("session_id");
+    if (
       globalThis.location.pathname === "/billing/return" &&
-      (source === "checkout" || source === "portal")
-        ? reconcileBilling(source === "checkout" ? "checkoutReturn" : "portalReturn").pipe(
-            Effect.andThen(inspectBilling),
-          )
-        : inspectBilling;
+      source === "checkout" &&
+      stripeCheckoutSessionId === null
+    ) {
+      setError("Billing is temporarily unavailable. Please try again.");
+      return;
+    }
+    const load =
+      globalThis.location.pathname === "/billing/return" && source === "portal"
+        ? reconcileBilling({ reason: "portalReturn" }).pipe(Effect.andThen(inspectBilling))
+        : globalThis.location.pathname === "/billing/return" &&
+            source === "checkout" &&
+            stripeCheckoutSessionId !== null
+          ? reconcileBilling({ reason: "checkoutReturn", stripeCheckoutSessionId }).pipe(
+              Effect.andThen(inspectBilling),
+            )
+          : inspectBilling;
     void Effect.runPromise(load).then(setSummary, () => {
       setError("Billing is temporarily unavailable. Please try again.");
     });

@@ -1,8 +1,11 @@
-import { billingCheckoutSessions } from "@osfo/db/schema/billing";
+import { billingCheckoutSessions, billingCustomers } from "@osfo/db/schema/billing";
 import { and, eq, or, sql } from "drizzle-orm";
 
 import type { StripeSubscriptionId } from "../../domain";
-import type { StripeCheckoutEvidence } from "../../services/billing-subscriptions";
+import type {
+  StripeCheckoutEvidence,
+  StripeSubscriptionSnapshot,
+} from "../../services/billing-subscriptions";
 import type { Database } from "../index";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect unions use the standard _tag discriminator. */
@@ -56,22 +59,47 @@ export const applyCheckoutEvidence = (
 export const checkoutEvidenceMatches = async (
   database: Pick<Database, "select">,
   evidence: StripeCheckoutEvidence,
+  snapshot?: StripeSubscriptionSnapshot,
 ): Promise<boolean> => {
-  if (evidence.locator._tag === "StripeSession") return true;
   const [stored] = await database
-    .select({ stripeCheckoutSessionId: billingCheckoutSessions.stripeCheckoutSessionId })
+    .select({
+      customerId: billingCustomers.stripeCustomerId,
+      priceId: billingCheckoutSessions.stripePriceId,
+      productId: billingCheckoutSessions.stripeProductId,
+      state: billingCheckoutSessions.state,
+      stripeCheckoutSessionId: billingCheckoutSessions.stripeCheckoutSessionId,
+      userId: billingCheckoutSessions.userId,
+    })
     .from(billingCheckoutSessions)
-    .where(
-      eq(
-        billingCheckoutSessions.billingCheckoutSessionId,
-        evidence.locator.billingCheckoutSessionId,
+    .innerJoin(
+      billingCustomers,
+      and(
+        eq(billingCustomers.billingCustomerId, billingCheckoutSessions.billingCustomerId),
+        eq(billingCustomers.userId, billingCheckoutSessions.userId),
       ),
+    )
+    .where(
+      evidence.locator._tag === "LocalAttempt"
+        ? eq(
+            billingCheckoutSessions.billingCheckoutSessionId,
+            evidence.locator.billingCheckoutSessionId,
+          )
+        : eq(
+            billingCheckoutSessions.stripeCheckoutSessionId,
+            evidence.locator.stripeCheckoutSessionId,
+          ),
     )
     .for("update")
     .limit(1);
   return (
-    stored === undefined ||
-    stored.stripeCheckoutSessionId === null ||
-    stored.stripeCheckoutSessionId === evidence.locator.stripeCheckoutSessionId
+    stored !== undefined &&
+    (snapshot === undefined ||
+      (stored.userId === snapshot.userId &&
+        stored.customerId === snapshot.customerId &&
+        stored.productId === snapshot.productId &&
+        stored.priceId === snapshot.priceId)) &&
+    (evidence.locator._tag === "StripeSession" ||
+      (stored.state === "creating" && stored.stripeCheckoutSessionId === null) ||
+      stored.stripeCheckoutSessionId === evidence.locator.stripeCheckoutSessionId)
   );
 };

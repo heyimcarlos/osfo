@@ -14,17 +14,19 @@ import {
 } from "../../domain";
 import {
   BillingPersistenceUnavailable,
+  checkoutEligibility,
   CheckoutIneligible,
   type PreparedCheckout,
   type Persistence,
 } from "../../services/stripe-billing";
+import { effectivePlanAt } from "../../services/billing-authorization";
 import type { Database } from "../index";
 
-/* oxlint-disable effecttsgo/async-function -- Drizzle owns these transaction Promise boundaries. */
+/* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Drizzle owns these transaction Promise boundaries and domain tags use _tag. */
 
 /** Construct PostgreSQL coordination for stable Stripe Customer and Checkout attempts. */
 export const makeStripePersistence = (database: Database): Persistence => ({
-  failCheckout: (billingCheckoutSessionId, _errorCode) =>
+  failCheckout: (billingCheckoutSessionId) =>
     execute("failCheckout", () =>
       database
         .update(billingCheckoutSessions)
@@ -37,10 +39,13 @@ export const makeStripePersistence = (database: Database): Persistence => ({
         )
         .then(() => undefined),
     ),
-  inspectCheckoutEligibility: (userId) =>
+  inspectCheckoutEligibility: (userId, now) =>
     execute("inspectCheckoutEligibility", () =>
       database
         .select({
+          currentPeriodEnd: billingSubscriptions.stripeCurrentPeriodEnd,
+          pendingPlan: billingSubscriptions.pendingPlan,
+          pendingPlanEffectiveAt: billingSubscriptions.pendingPlanEffectiveAt,
           plan: billingSubscriptions.plan,
           stripeStatus: billingSubscriptions.stripeStatus,
           stripeSubscriptionId: billingSubscriptions.stripeSubscriptionId,
@@ -51,13 +56,10 @@ export const makeStripePersistence = (database: Database): Persistence => ({
         .then(([subscription]) =>
           subscription === undefined
             ? undefined
-            : {
-                hasRecoverableStripeSubscription:
-                  subscription.stripeSubscriptionId !== null &&
-                  subscription.stripeStatus !== "canceled" &&
-                  subscription.stripeStatus !== "incomplete_expired",
-                plan: subscription.plan,
-              },
+            : checkoutEligibility({
+                ...subscription,
+                plan: effectivePlanAt(subscription, now),
+              }),
         ),
     ).pipe(
       Effect.flatMap((eligibility) =>
@@ -71,6 +73,9 @@ export const makeStripePersistence = (database: Database): Persistence => ({
       database.transaction(async (transaction) => {
         const [subscription] = await transaction
           .select({
+            currentPeriodEnd: billingSubscriptions.stripeCurrentPeriodEnd,
+            pendingPlan: billingSubscriptions.pendingPlan,
+            pendingPlanEffectiveAt: billingSubscriptions.pendingPlanEffectiveAt,
             plan: billingSubscriptions.plan,
             stripeStatus: billingSubscriptions.stripeStatus,
             stripeSubscriptionId: billingSubscriptions.stripeSubscriptionId,
@@ -80,15 +85,12 @@ export const makeStripePersistence = (database: Database): Persistence => ({
           .limit(1)
           .for("update");
         if (subscription === undefined) return undefined;
-        if (subscription.plan === "adventurer") {
-          return { ineligibleReason: "activePlan" } as const;
-        }
-        if (
-          subscription.stripeSubscriptionId !== null &&
-          subscription.stripeStatus !== "canceled" &&
-          subscription.stripeStatus !== "incomplete_expired"
-        ) {
-          return { ineligibleReason: "existingStripeSubscription" } as const;
+        const eligibility = checkoutEligibility({
+          ...subscription,
+          plan: effectivePlanAt(subscription, input.now),
+        });
+        if (eligibility._tag === "Ineligible") {
+          return { ineligibleReason: eligibility.reason } as const;
         }
         const [customer] = await transaction
           .select({ billingCustomerId: billingCustomers.billingCustomerId })
@@ -104,6 +106,7 @@ export const makeStripePersistence = (database: Database): Persistence => ({
         const [existing] = await transaction
           .select({
             billingCheckoutSessionId: billingCheckoutSessions.billingCheckoutSessionId,
+            claimExpired: sql<boolean>`${billingCheckoutSessions.updatedAt} <= clock_timestamp() - interval '30 seconds'`,
             state: billingCheckoutSessions.state,
             stripeCheckoutSessionId: billingCheckoutSessions.stripeCheckoutSessionId,
           })
@@ -119,7 +122,21 @@ export const makeStripePersistence = (database: Database): Persistence => ({
           )
           .orderBy(desc(billingCheckoutSessions.createdAt))
           .limit(1);
-        if (existing !== undefined) return decodeCheckout(existing);
+        if (existing !== undefined) {
+          if (existing.state === "creating" && existing.claimExpired) {
+            await transaction
+              .update(billingCheckoutSessions)
+              .set({ updatedAt: sql`clock_timestamp()` })
+              .where(
+                eq(
+                  billingCheckoutSessions.billingCheckoutSessionId,
+                  existing.billingCheckoutSessionId,
+                ),
+              );
+            return decodeCheckout(existing, "Acquired");
+          }
+          return decodeCheckout(existing, existing.state === "creating" ? "Pending" : "Acquired");
+        }
         const [created] = await transaction
           .insert(billingCheckoutSessions)
           .values({
@@ -136,7 +153,7 @@ export const makeStripePersistence = (database: Database): Persistence => ({
             state: billingCheckoutSessions.state,
             stripeCheckoutSessionId: billingCheckoutSessions.stripeCheckoutSessionId,
           });
-        return created === undefined ? undefined : decodeCheckout(created);
+        return created === undefined ? undefined : decodeCheckout(created, "Acquired");
       }),
     ).pipe(Effect.flatMap((checkout) => decodePreparedCheckout(checkout, input))),
   prepareCustomer: (userId, billingCustomerId) =>
@@ -170,6 +187,19 @@ export const makeStripePersistence = (database: Database): Persistence => ({
           ? persistenceFailure("prepareCustomer", { billingCustomerId, userId })
           : Effect.succeed(customer),
       ),
+    ),
+  releaseCheckoutClaim: (billingCheckoutSessionId) =>
+    execute("releaseCheckoutClaim", () =>
+      database
+        .update(billingCheckoutSessions)
+        .set({ updatedAt: sql`clock_timestamp() - interval '31 seconds'` })
+        .where(
+          and(
+            eq(billingCheckoutSessions.billingCheckoutSessionId, billingCheckoutSessionId),
+            eq(billingCheckoutSessions.state, "creating"),
+          ),
+        )
+        .then(() => undefined),
     ),
   storeCheckout: (billingCheckoutSessionId, session) =>
     execute("storeCheckout", () =>
@@ -232,12 +262,16 @@ export const makeStripePersistence = (database: Database): Persistence => ({
     ),
 });
 
-const decodeCheckout = (stored: {
-  readonly billingCheckoutSessionId: string;
-  readonly state: "complete" | "creating" | "expired" | "failed" | "open";
-  readonly stripeCheckoutSessionId: string | null;
-}) => ({
+const decodeCheckout = (
+  stored: {
+    readonly billingCheckoutSessionId: string;
+    readonly state: "complete" | "creating" | "expired" | "failed" | "open";
+    readonly stripeCheckoutSessionId: string | null;
+  },
+  claim: "Acquired" | "Pending",
+) => ({
   billingCheckoutSessionId: BillingCheckoutSessionId.make(stored.billingCheckoutSessionId),
+  claim,
   state: stored.state,
   stripeCheckoutSessionId:
     stored.stripeCheckoutSessionId === null

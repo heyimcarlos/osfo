@@ -1,4 +1,10 @@
-import { Api, type HelpArea, type OnboardingLocale, RegistrationToken } from "@osfo/api";
+import {
+  Api,
+  type BillingReconciliationRequest,
+  type HelpArea,
+  type OnboardingLocale,
+  RegistrationToken,
+} from "@osfo/api";
 import { Effect, Layer, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { HttpApiClient } from "effect/unstable/httpapi";
@@ -88,10 +94,12 @@ export const openBillingPortal = Effect.gen(function* () {
 );
 
 /** Reconcile current Stripe state after a hosted Checkout or Portal return. */
-export const reconcileBilling = (reason: "checkoutReturn" | "portalReturn") =>
+export const reconcileBilling = (payload: BillingReconciliationRequest) =>
   Effect.gen(function* () {
     const client = yield* HttpApiClient.make(Api, { baseUrl: apiBaseURL });
-    return yield* client.billing.reconcile({ payload: { reason } });
+    return yield* payload.reason === "checkoutReturn"
+      ? client.billing.reconcile({ payload })
+      : client.billing.reconcile({ payload });
   }).pipe(
     // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The browser API client owns its Fetch runtime.
     Effect.provide(httpClientLayer),

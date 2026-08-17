@@ -270,6 +270,13 @@ const config: RuntimeConfig = {
   },
   stage: "test",
   telegram: { kind: "disabled" },
+  stripe: {
+    adventurerPriceId: "price_adventurer",
+    adventurerProductId: "prod_adventurer",
+    portalConfigurationId: "bpc_approved",
+    secretKey: Redacted.make("sk_test_osfo"),
+    webhookSecret: Redacted.make("whsec_test_osfo"),
+  },
   twilioVerify: {
     accountSid: Redacted.make("AC00000000000000000000000000000000"),
     authToken: Redacted.make("test-only-twilio-token"),

@@ -344,6 +344,7 @@ export interface Interface {
     retrieveCurrentSnapshot: (
       subject: ReconciliationSubject,
     ) => Effect.Effect<StripeSubscriptionSnapshot, StripeStateUnavailable>,
+    checkoutEvidence?: StripeCheckoutEvidence,
   ) => Effect.Effect<
     ApplyStripeSnapshotResult,
     | BillingProjectionRetryExhausted
@@ -392,6 +393,7 @@ export const make = (
     retrieveCurrentSnapshot: (
       subject: ReconciliationSubject,
     ) => Effect.Effect<StripeSubscriptionSnapshot, StripeStateUnavailable>,
+    checkoutEvidence: StripeCheckoutEvidence | undefined,
     attempt: number,
   ): ReturnType<Interface["reconcile"]> =>
     Effect.gen(function* () {
@@ -406,7 +408,7 @@ export const make = (
         { _tag: "Reconciliation", reason },
         expectedUpdatedAt,
         snapshot,
-        null,
+        checkoutEvidence ?? null,
       );
       if (result._tag !== "StaleSnapshot") return result;
       if (attempt >= 3) {
@@ -415,12 +417,19 @@ export const make = (
           message: "Billing projection did not converge after current Stripe state was refetched",
         });
       }
-      return yield* reconcileAttempt(subject, reason, retrieveCurrentSnapshot, attempt + 1);
+      return yield* reconcileAttempt(
+        subject,
+        reason,
+        retrieveCurrentSnapshot,
+        checkoutEvidence,
+        attempt + 1,
+      );
     });
 
   return {
     applyStripeSnapshot,
     loadRevision,
-    reconcile: (subject, reason, fetch) => reconcileAttempt(subject, reason, fetch, 1),
+    reconcile: (subject, reason, fetch, checkoutEvidence) =>
+      reconcileAttempt(subject, reason, fetch, checkoutEvidence, 1),
   };
 };

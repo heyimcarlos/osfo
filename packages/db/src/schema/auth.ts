@@ -27,11 +27,6 @@ export const users = pgTable("users", {
   helpAreas: jsonb("help_areas").$type<ReadonlyArray<string>>().default([]).notNull(),
   locale: text("locale").default("en").notNull(),
   registrationCompletedAt: timestamp("registration_completed_at"),
-  suspendedAt: timestamp("suspended_at", { mode: "date", withTimezone: true }),
-  deletionAccessRevokedAt: timestamp("deletion_access_revoked_at", {
-    mode: "date",
-    withTimezone: true,
-  }),
 });
 
 export const sessions = pgTable(

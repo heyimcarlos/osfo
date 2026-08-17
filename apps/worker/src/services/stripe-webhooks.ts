@@ -28,6 +28,10 @@ const supportedEventTypes = new Set([
   "invoice.payment_action_required",
   "invoice.finalization_failed",
   "charge.refunded",
+  "charge.dispute.created",
+  "charge.dispute.funds_withdrawn",
+  "charge.dispute.closed",
+  "charge.dispute.funds_reinstated",
 ]);
 
 /** Signature-verified Stripe event locator with no embedded projection state. */
@@ -262,13 +266,26 @@ export const make = (options: {
     event: VerifiedStripeEvent,
     webhookEventId: string,
     checkoutEvidence: StripeCheckoutEvidence | null,
-  ) =>
-    (!supportedEventTypes.has(event.type)
-      ? options.persistence
-          .markProcessed(webhookEventId, checkoutEvidence)
-          .pipe(Effect.as({ _tag: "Processed" } as const))
-      : project(event, webhookEventId, checkoutEvidence, 1)
-    ).pipe(
+  ) => {
+    const processing = !supportedEventTypes.has(event.type)
+      ? event.type.startsWith("charge.dispute.")
+        ? persistFailure(webhookEventId, "unsupported_dispute_event", checkoutEvidence).pipe(
+            Effect.andThen(
+              Effect.logError("Unsupported Stripe dispute event").pipe(
+                Effect.annotateLogs({
+                  eventType: event.type,
+                  externalEventId: event.externalEventId,
+                  webhookEventId,
+                }),
+              ),
+            ),
+            Effect.as({ _tag: "FailedAcknowledged" } as const),
+          )
+        : options.persistence
+            .markProcessed(webhookEventId, checkoutEvidence)
+            .pipe(Effect.as({ _tag: "Processed" } as const))
+      : project(event, webhookEventId, checkoutEvidence, 1);
+    return processing.pipe(
       Effect.catchTags({
         InvalidStripeSnapshot: (failure) =>
           persistFailure(webhookEventId, failure._tag, checkoutEvidence).pipe(
@@ -313,6 +330,7 @@ export const make = (options: {
           }),
       }),
     );
+  };
 
   const process = (event: VerifiedStripeEvent, webhookEventId: string) =>
     checkoutEvidenceFor(event).pipe(

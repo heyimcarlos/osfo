@@ -14,7 +14,7 @@ import * as BillingSubscriptions from "../src/services/billing-subscriptions";
 import { StripeRequestFailed } from "../src/services/stripe-billing";
 import * as StripeWebhooks from "../src/services/stripe-webhooks";
 
-/* oxlint-disable eslint/no-underscore-dangle, effecttsgo/global-date -- These tests assert typed Effect results with fixed boundary dates. */
+/* oxlint-disable eslint/no-underscore-dangle, effecttsgo/global-date, effecttsgo/global-date-in-effect -- These tests assert typed Effect results with fixed boundary dates. */
 
 const supportedTypes = [
   "checkout.session.completed",
@@ -30,6 +30,10 @@ const supportedTypes = [
   "invoice.payment_action_required",
   "invoice.finalization_failed",
   "charge.refunded",
+  "charge.dispute.created",
+  "charge.dispute.funds_withdrawn",
+  "charge.dispute.closed",
+  "charge.dispute.funds_reinstated",
 ] as const;
 
 describe("StripeWebhooks", () => {
@@ -227,47 +231,114 @@ describe("StripeWebhooks", () => {
     }),
   );
 
-  it.effect("replays a stored verified event through current-state processing", () =>
+  it.effect("replays one dispute projection and treats its processed replay as idempotent", () =>
     Effect.gen(function* () {
       const observations: Array<string> = [];
+      let replayCalls = 0;
+      const snapshot = BillingSubscriptions.StripeSubscriptionSnapshot.make({
+        cancelAtPeriodEnd: false,
+        customerId: StripeCustomerId.make("cus_disputereplay"),
+        currentPeriodRefunded: true,
+        payment: { _tag: "NotPaid" },
+        period: {
+          endsAt: new Date("2026-09-16T00:00:00.000Z"),
+          startsAt: new Date("2026-08-16T00:00:00.000Z"),
+        },
+        priceId: StripePriceId.make("price_adventurer"),
+        productId: StripeProductId.make("prod_adventurer"),
+        status: "active",
+        subscriptionId: StripeSubscriptionId.make("sub_disputereplay"),
+        userId: UserId.make("user-dispute-replay"),
+      });
       const service = StripeWebhooks.make({
         billing: {
-          loadRevision: () => Effect.die("unused"),
-          applyStripeSnapshot: () => Effect.die("unused"),
+          loadRevision: () => Effect.succeed(new Date("2026-08-16T00:00:00.000Z")),
+          applyStripeSnapshot: () => {
+            observations.push("apply:dispute");
+            return Effect.succeed({ _tag: "AccessEnded" });
+          },
         },
         persistence: {
           fail: () => Effect.void,
-          markProcessed: (webhookEventId) => {
-            observations.push(`processed:${webhookEventId}`);
-            return Effect.void;
-          },
+          markProcessed: () => Effect.die("must project a supported dispute"),
           receive: () => Effect.die("unused"),
-          replay: () =>
-            Effect.succeed({
-              _tag: "Pending",
-              event: {
-                billingCheckoutSessionId: null,
-                externalEventId: "evt_replay",
-                externalObjectId: "sub_replay",
-                provider: "stripe",
-                type: "customer.subscription.updated",
-              },
-              webhookEventId: "webhook-replay",
-            }),
+          replay: () => {
+            replayCalls += 1;
+            return replayCalls === 1
+              ? Effect.succeed({
+                  _tag: "Pending" as const,
+                  event: {
+                    billingCheckoutSessionId: null,
+                    externalEventId: "evt_dispute_replay",
+                    externalObjectId: "dp_dispute_replay",
+                    provider: "stripe",
+                    type: "charge.dispute.funds_withdrawn",
+                  },
+                  webhookEventId: "webhook-dispute-replay",
+                })
+              : Effect.succeed({ _tag: "ProcessedDuplicate" as const });
+          },
         },
         stripe: {
           fetchCurrentSnapshot: (event) => {
             observations.push(`fetch:${event.externalObjectId}`);
-            return Effect.succeed({ _tag: "NoOp" });
+            return Effect.succeed({ _tag: "Snapshot", snapshot });
           },
           verify: () => Effect.die("unused"),
         },
       });
 
-      const result = yield* service.replay("webhook-replay");
+      const result = yield* service.replay("webhook-dispute-replay");
+      const duplicate = yield* service.replay("webhook-dispute-replay");
 
       expect(result).toEqual({ _tag: "Processed" });
-      expect(observations).toEqual(["fetch:sub_replay", "processed:webhook-replay"]);
+      expect(duplicate).toEqual({ _tag: "ProcessedDuplicate" });
+      expect(observations).toEqual([
+        "fetch:dp_dispute_replay",
+        "fetch:dp_dispute_replay",
+        "apply:dispute",
+      ]);
+    }),
+  );
+
+  it.effect("fails an unsupported dispute event instead of marking it processed", () =>
+    Effect.gen(function* () {
+      let failedCode: string | null = null;
+      let processed = 0;
+      const service = StripeWebhooks.make({
+        billing: {
+          applyStripeSnapshot: () => Effect.die("must not project an unsupported dispute"),
+          loadRevision: () => Effect.die("must not load an unsupported dispute"),
+        },
+        persistence: {
+          fail: (_webhookEventId, errorCode) => {
+            failedCode = errorCode;
+            return Effect.void;
+          },
+          markProcessed: () => {
+            processed += 1;
+            return Effect.void;
+          },
+          receive: () => Effect.succeed({ _tag: "Pending", webhookEventId: "webhook-unsupported" }),
+          replay: () => Effect.die("unused"),
+        },
+        stripe: {
+          fetchCurrentSnapshot: () => Effect.die("must not fetch an unsupported dispute"),
+          verify: () =>
+            Effect.succeed({
+              billingCheckoutSessionId: null,
+              externalEventId: "evt_unsupported_dispute",
+              externalObjectId: "dp_unsupported",
+              type: "charge.dispute.updated",
+            }),
+        },
+      });
+
+      expect(yield* service.handle("body", "signature")).toEqual({
+        _tag: "FailedAcknowledged",
+      });
+      expect(failedCode).toBe("unsupported_dispute_event");
+      expect(processed).toBe(0);
     }),
   );
 

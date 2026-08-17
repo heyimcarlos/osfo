@@ -1,5 +1,5 @@
 import { webhookEvents } from "@osfo/db/schema/webhooks";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 
 import {
@@ -8,6 +8,7 @@ import {
   type VerifiedStripeEvent,
 } from "../../services/stripe-webhooks";
 import type { Database } from "../index";
+import { beginAttempt } from "./begin-attempt";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle owns this transaction Promise boundary. */
 
@@ -48,17 +49,7 @@ export const receive = (
           .for("update")
           .limit(1);
         if (stored === undefined) return undefined;
-        if (stored.status === "processed") return { _tag: "ProcessedDuplicate" } as const;
-        await transaction
-          .update(webhookEvents)
-          .set({
-            attempts: sql`${webhookEvents.attempts} + 1`,
-            errorCode: null,
-            status: "pending",
-            updatedAt: sql`clock_timestamp()`,
-          })
-          .where(eq(webhookEvents.webhookEventId, stored.webhookEventId));
-        return { _tag: "Pending", webhookEventId: stored.webhookEventId } as const;
+        return beginAttempt(transaction, stored.webhookEventId, stored.status);
       }),
     catch: (cause) =>
       new WebhookPersistenceUnavailable({

@@ -1,12 +1,16 @@
 import { describe, expect, it } from "@effect/vitest";
+import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
-import { billingSubscriptions } from "@osfo/db/schema/billing";
+import { billingCustomers, billingSubscriptions } from "@osfo/db/schema/billing";
+import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 
-import { inspectBillingAuthorization } from "../src/db/billing/stripe-inspect";
-import { Plan, PlanPolicyVersion, UserId } from "../src/domain";
+import { inspectAndRepairBillingAuthorization } from "../src/db/billing/stripe-inspect";
+import * as BillingAuthorizationComposition from "../src/composition/billing-authorization";
+import { AllowancePeriodId, Plan, PlanPolicyVersion, UserId } from "../src/domain";
+import { AuthSessionId } from "../src/domain/auth-session";
 import { admit } from "../src/services/billing-authorization";
 
 /* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect -- Fixed Date fixtures keep Authorization boundary and persisted-fact tests deterministic. */
@@ -15,7 +19,7 @@ const now = new Date("2026-08-16T12:00:00.000Z");
 
 const facts = {
   authSessionExpiresAt: new Date("2026-08-16T13:00:00.000Z"),
-  authSessionId: "session-001",
+  authSessionId: AuthSessionId.make("session-001"),
   plan: Plan.make("free"),
   planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
   deletionAccess: { _tag: "DeletionAccessAvailable" as const },
@@ -66,51 +70,172 @@ describe("billing Authorization", () => {
     ).toBe(false);
   });
 
-  it.effect("loads current User safety facts with the Subscription policy", () =>
+  it.effect("reads suspension and deletion access from their live authority owners", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
       (fixture) =>
         Effect.gen(function* () {
           yield* applyMigrations(fixture.client);
+          const userId = UserId.make("user-live-billing-authority");
           yield* Effect.promise(() =>
             fixture.database.insert(users).values({
-              deletionAccessRevokedAt: new Date("2026-08-16T10:00:00.000Z"),
-              email: "billing-authorization@example.test",
-              id: facts.userId,
-              name: "Billing Authorization User",
-              suspendedAt: new Date("2026-08-16T09:00:00.000Z"),
+              email: "live-billing-authority@example.test",
+              id: userId,
+              name: "Live Billing Authority",
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingSubscriptions).values({
-              billingSubscriptionId: "billing-authorization-subscription",
+              billingSubscriptionId: "subscription-live-billing-authority",
               plan: "free",
               planPolicyVersion: "launch-v1",
-              userId: facts.userId,
+              userId,
+            }),
+          );
+          const authorize = yield* BillingAuthorizationComposition.make(fixture.database, {
+            allowancePeriodId: Effect.succeed(
+              AllowancePeriodId.make("allowance-live-billing-authority"),
+            ),
+            now: Effect.succeed(now),
+          });
+          const currentUser = {
+            authSessionExpiresAt: new Date("2026-08-16T13:00:00.000Z"),
+            authSessionId: "session-live-billing-authority",
+            userId,
+          };
+
+          expect(yield* authorize(currentUser, "billing.inspect")).toBe(true);
+          yield* Effect.promise(() =>
+            fixture.database.insert(userSuspensionEvents).values({
+              action: "suspended",
+              adminActorId: "admin-billing-authority",
+              eventId: "suspension-live-billing-authority",
+              occurredAt: new Date("2026-08-16T11:00:00.000Z"),
+              reason: "safety review",
+              userId,
+            }),
+          );
+          expect(yield* authorize(currentUser, "billing.inspect")).toBe(false);
+          yield* Effect.promise(() =>
+            fixture.database.insert(userSuspensionEvents).values({
+              action: "restored",
+              adminActorId: "admin-billing-authority",
+              eventId: "restoration-live-billing-authority",
+              occurredAt: new Date("2026-08-16T11:30:00.000Z"),
+              reason: "review complete",
+              userId,
+            }),
+          );
+          expect(yield* authorize(currentUser, "billing.inspect")).toBe(true);
+          yield* Effect.promise(() =>
+            fixture.database.insert(deletionCases).values({
+              deletionCaseId: "deletion-live-billing-authority",
+              reason: "user request",
+              requestedByAdminId: "admin-billing-authority",
+              userId,
+            }),
+          );
+          expect(yield* authorize(currentUser, "billing.inspect")).toBe(false);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("fails closed at the confirmed paid-period boundary and repairs one Free period", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const userId = UserId.make("user-expired-paid-period");
+          const periodEnd = new Date("2026-08-16T12:00:00.000Z");
+          const freePeriodEnd = new Date("2026-09-15T12:00:00.000Z");
+          const repair = {
+            allowancePeriodId: AllowancePeriodId.make("allowance-expired-paid-period-free"),
+            freePeriodEnd,
+          };
+          yield* Effect.promise(() =>
+            fixture.database.insert(users).values({
+              email: "expired-paid-period@example.test",
+              id: userId,
+              name: "Expired Paid Period User",
+            }),
+          );
+          yield* Effect.promise(() =>
+            fixture.database.insert(billingCustomers).values({
+              billingCustomerId: "customer-expired-paid-period",
+              stripeCustomerId: "cus_expired_paid_period",
+              userId,
+            }),
+          );
+          yield* Effect.promise(() =>
+            fixture.database.insert(billingSubscriptions).values({
+              billingCustomerId: "customer-expired-paid-period",
+              billingSubscriptionId: "subscription-expired-paid-period",
+              plan: "adventurer",
+              planPolicyVersion: "launch-v1",
+              stripeCurrentPeriodEnd: periodEnd,
+              stripeCurrentPeriodStart: new Date("2026-07-16T12:00:00.000Z"),
+              stripeLatestInvoiceId: "in_expired_paid_period",
+              stripePriceId: "price_adventurer",
+              stripeProductId: "prod_adventurer",
+              stripeStatus: "active",
+              stripeSubscriptionId: "sub_expired_paid_period",
+              userId,
+            }),
+          );
+          yield* Effect.promise(() =>
+            fixture.database.insert(allowancePeriods).values({
+              allowancePeriodId: "allowance-expired-paid-period-adventurer",
+              billingSubscriptionId: "subscription-expired-paid-period",
+              endsAt: periodEnd,
+              plan: "adventurer",
+              planPolicyVersion: "launch-v1",
+              startsAt: new Date("2026-07-16T12:00:00.000Z"),
+              stripeInvoiceId: "in_expired_paid_period",
+              userId,
             }),
           );
 
-          const stored = yield* inspectBillingAuthorization(fixture.database, facts.userId);
-
-          expect(stored).toEqual({
-            deletionAccess: { _tag: "DeletionAccessRevoked" },
-            plan: facts.plan,
-            planPolicyVersion: facts.planPolicyVersion,
-            user: { _tag: "SuspendedUser", userId: facts.userId },
-          });
-
-          yield* Effect.promise(() =>
-            fixture.database
-              .update(users)
-              .set({ deletionAccessRevokedAt: null, suspendedAt: null })
-              .where(eq(users.id, facts.userId)),
+          const beforeEnd = yield* inspectAndRepairBillingAuthorization(
+            fixture.database,
+            userId,
+            new Date("2026-08-16T11:59:59.999Z"),
+            repair,
           );
-          const restored = yield* inspectBillingAuthorization(fixture.database, facts.userId);
-          expect(restored).toEqual({
-            deletionAccess: { _tag: "DeletionAccessAvailable" },
-            plan: facts.plan,
-            planPolicyVersion: facts.planPolicyVersion,
-            user: { _tag: "ActiveUser", userId: facts.userId },
+          expect(beforeEnd.plan).toBe("adventurer");
+
+          const atEnd = yield* inspectAndRepairBillingAuthorization(
+            fixture.database,
+            userId,
+            periodEnd,
+            repair,
+          );
+          expect(atEnd.plan).toBe("free");
+          const [repaired] = yield* Effect.promise(() =>
+            fixture.database
+              .select({
+                pendingPlan: billingSubscriptions.pendingPlan,
+                plan: billingSubscriptions.plan,
+              })
+              .from(billingSubscriptions)
+              .where(eq(billingSubscriptions.userId, userId)),
+          );
+          expect(repaired).toEqual({ pendingPlan: null, plan: "free" });
+          const periods = yield* Effect.promise(() =>
+            fixture.database
+              .select({
+                endsAt: allowancePeriods.endsAt,
+                plan: allowancePeriods.plan,
+                startsAt: allowancePeriods.startsAt,
+              })
+              .from(allowancePeriods)
+              .where(eq(allowancePeriods.userId, userId)),
+          );
+          expect(periods).toContainEqual({
+            endsAt: freePeriodEnd,
+            plan: "free",
+            startsAt: periodEnd,
           });
         }),
       closeTestDatabase,

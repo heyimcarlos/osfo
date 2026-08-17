@@ -12,6 +12,8 @@ import type {
   UserId,
 } from "../domain";
 
+/* oxlint-disable eslint/no-underscore-dangle -- Closed domain policy results use the _tag discriminator. */
+
 /** Local lifecycle state for one Stripe Checkout attempt. */
 export const CheckoutState = Schema.Literals(["creating", "open", "complete", "expired", "failed"]);
 
@@ -30,7 +32,10 @@ export class StripeRequestFailed extends Schema.TaggedError<StripeRequestFailed>
       "createPortal",
       "retrieveCheckout",
       "retrieveCharge",
+      "retrieveDispute",
       "retrieveInvoice",
+      "retrievePaymentIntent",
+      "listDisputes",
       "listInvoicePayments",
       "retrieveSubscription",
       "verifyWebhook",
@@ -52,11 +57,30 @@ export class CheckoutIneligible extends Schema.TaggedError<CheckoutIneligible>()
   },
 ) {}
 
-/** Current facts that determine whether a User can start subscription Checkout. */
-export interface CheckoutEligibility {
-  readonly hasRecoverableStripeSubscription: boolean;
+/** Closed policy result for current subscription Checkout eligibility. */
+export type CheckoutEligibility =
+  | { readonly _tag: "Eligible" }
+  | {
+      readonly _tag: "Ineligible";
+      readonly reason: CheckoutIneligible["reason"];
+    };
+
+/** Decide Checkout eligibility once from current Subscription facts. */
+export const checkoutEligibility = (facts: {
   readonly plan: "adventurer" | "free";
-}
+  readonly stripeStatus: string | null;
+  readonly stripeSubscriptionId: string | null;
+}): CheckoutEligibility => {
+  if (facts.plan === "adventurer") return { _tag: "Ineligible", reason: "activePlan" };
+  if (
+    facts.stripeSubscriptionId !== null &&
+    facts.stripeStatus !== "canceled" &&
+    facts.stripeStatus !== "incomplete_expired"
+  ) {
+    return { _tag: "Ineligible", reason: "existingStripeSubscription" };
+  }
+  return { _tag: "Eligible" };
+};
 
 /** Local Customer fact returned by idempotent preparation. */
 export interface PreparedCustomer {
@@ -67,6 +91,7 @@ export interface PreparedCustomer {
 /** Local Checkout fact returned by idempotent preparation. */
 export interface PreparedCheckout {
   readonly billingCheckoutSessionId: BillingCheckoutSessionId;
+  readonly claim: "Acquired" | "Pending";
   readonly state: CheckoutState;
   readonly stripeCheckoutSessionId: StripeCheckoutSessionId | null;
 }
@@ -75,10 +100,10 @@ export interface PreparedCheckout {
 export interface Persistence {
   readonly failCheckout: (
     billingCheckoutSessionId: BillingCheckoutSessionId,
-    errorCode: string,
   ) => Effect.Effect<void, BillingPersistenceUnavailable>;
   readonly inspectCheckoutEligibility: (
     userId: UserId,
+    now: Date,
   ) => Effect.Effect<CheckoutEligibility, BillingPersistenceUnavailable>;
   readonly prepareCheckout: (input: {
     readonly billingCheckoutSessionId: BillingCheckoutSessionId;
@@ -86,11 +111,15 @@ export interface Persistence {
     readonly priceId: StripePriceId;
     readonly productId: StripeProductId;
     readonly userId: UserId;
+    readonly now: Date;
   }) => Effect.Effect<PreparedCheckout, BillingPersistenceUnavailable | CheckoutIneligible>;
   readonly prepareCustomer: (
     userId: UserId,
     billingCustomerId: BillingCustomerId,
   ) => Effect.Effect<PreparedCustomer, BillingPersistenceUnavailable>;
+  readonly releaseCheckoutClaim: (
+    billingCheckoutSessionId: BillingCheckoutSessionId,
+  ) => Effect.Effect<void, BillingPersistenceUnavailable>;
   readonly storeCheckout: (
     billingCheckoutSessionId: BillingCheckoutSessionId,
     session: {
@@ -156,6 +185,7 @@ export interface StripeGateway {
 
 /** Concrete dependencies for explicit Stripe billing coordination. */
 export interface MakeOptions {
+  readonly now: Effect.Effect<Date>;
   readonly ids: {
     readonly checkout: Effect.Effect<BillingCheckoutSessionId>;
     readonly customer: Effect.Effect<BillingCustomerId>;
@@ -170,6 +200,7 @@ export interface MakeOptions {
   };
   readonly stripe: StripeGateway;
   readonly urls: { readonly cancel: URL; readonly success: URL };
+  readonly waitForCheckoutClaim: Effect.Effect<void>;
 }
 
 /** Customer Checkout and Customer Portal operations for Stripe-hosted billing. */
@@ -211,9 +242,11 @@ export const make = (options: MakeOptions): Interface => {
       readonly billingCustomerId: BillingCustomerId;
       readonly stripeCustomerId: StripeCustomerId;
     },
+    attempt = 1,
   ): ReturnType<Interface["startCheckout"]> =>
     Effect.gen(function* () {
       const candidateId = yield* options.ids.checkout;
+      const now = yield* options.now;
       const offer = options.offers.adventurer;
       const checkout = yield* options.persistence.prepareCheckout({
         billingCheckoutSessionId: candidateId,
@@ -221,7 +254,20 @@ export const make = (options: MakeOptions): Interface => {
         priceId: offer.priceId,
         productId: offer.productId,
         userId,
+        now,
       });
+
+      if (checkout.claim === "Pending") {
+        if (attempt >= 1_000) {
+          return yield* new BillingPersistenceUnavailable({
+            cause: { billingCheckoutSessionId: checkout.billingCheckoutSessionId },
+            message: "Another Checkout provider claim did not settle",
+            operation: "awaitCheckoutClaim",
+          });
+        }
+        yield* options.waitForCheckoutClaim;
+        return yield* createCheckout(userId, customer, attempt + 1);
+      }
 
       if (checkout.stripeCheckoutSessionId !== null && checkout.state === "open") {
         const existing = yield* options.stripe.retrieveCheckout(checkout.stripeCheckoutSessionId);
@@ -263,11 +309,8 @@ export const make = (options: MakeOptions): Interface => {
         .pipe(
           Effect.tapError((failure) =>
             failure.kind === "permanent"
-              ? options.persistence.failCheckout(
-                  checkout.billingCheckoutSessionId,
-                  failure.operation,
-                )
-              : Effect.void,
+              ? options.persistence.failCheckout(checkout.billingCheckoutSessionId)
+              : options.persistence.releaseCheckoutClaim(checkout.billingCheckoutSessionId),
           ),
         );
       yield* options.persistence.storeCheckout(checkout.billingCheckoutSessionId, created);
@@ -286,12 +329,10 @@ export const make = (options: MakeOptions): Interface => {
       }),
     startCheckout: (userId) =>
       Effect.gen(function* () {
-        const eligibility = yield* options.persistence.inspectCheckoutEligibility(userId);
-        if (eligibility.plan === "adventurer") {
-          return yield* new CheckoutIneligible({ reason: "activePlan" });
-        }
-        if (eligibility.hasRecoverableStripeSubscription) {
-          return yield* new CheckoutIneligible({ reason: "existingStripeSubscription" });
+        const now = yield* options.now;
+        const eligibility = yield* options.persistence.inspectCheckoutEligibility(userId, now);
+        if (eligibility._tag === "Ineligible") {
+          return yield* new CheckoutIneligible({ reason: eligibility.reason });
         }
         const customer = yield* ensureCustomer(userId);
         return yield* createCheckout(userId, customer);

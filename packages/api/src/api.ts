@@ -24,6 +24,7 @@ export {
   BillingGroup,
   BillingForbidden,
   BillingReconciliation,
+  BillingReconciliationRequest,
   BillingRedirect,
   BillingSummary,
   BillingUnavailable,

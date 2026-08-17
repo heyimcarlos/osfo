@@ -7,6 +7,7 @@ import {
   StripePortalConfigurationId,
   StripePriceId,
   StripeProductId,
+  StripeSubscriptionId,
 } from "../src/domain";
 import * as StripeAdapter from "../src/integrations/stripe/billing";
 
@@ -48,6 +49,7 @@ const installRefundResponses = (
   input: { readonly amount: number; readonly amountRefunded: number; readonly invoiceId: string },
 ) => {
   Object.defineProperty(client.charges, "retrieve", {
+    configurable: true,
     value: () =>
       Promise.resolve({
         amount: input.amount,
@@ -56,9 +58,11 @@ const installRefundResponses = (
       }),
   });
   Object.defineProperty(client.invoicePayments, "list", {
+    configurable: true,
     value: () => Promise.resolve({ data: [{ invoice: input.invoiceId }] }),
   });
   Object.defineProperty(client.invoices, "retrieve", {
+    configurable: true,
     value: () =>
       Promise.resolve({ parent: { subscription_details: { subscription: "sub_current" } } }),
   });
@@ -238,6 +242,33 @@ describe("Stripe adapter", () => {
       Object.defineProperty(client.subscriptions, "retrieve", {
         value: () => Promise.resolve(currentSubscription("in_current")),
       });
+      Object.defineProperty(client.invoicePayments, "list", {
+        value: (request: Stripe.InvoicePaymentListParams) =>
+          Promise.resolve(
+            "invoice" in request
+              ? {
+                  data: [
+                    {
+                      amount_paid: 2_000,
+                      payment: { charge: "ch_current", type: "charge" },
+                      status: "paid",
+                    },
+                  ],
+                }
+              : { data: [{ invoice: "in_historical" }] },
+          ),
+      });
+      Object.defineProperty(client.charges, "retrieve", {
+        value: (chargeId: string) =>
+          Promise.resolve(
+            chargeId === "ch_current"
+              ? { amount: 2_000, amount_refunded: 0 }
+              : { amount: 2_000, amount_refunded: 2_000, payment_intent: "pi_refunded" },
+          ),
+      });
+      Object.defineProperty(client.disputes, "list", {
+        value: () => Promise.resolve({ data: [] }),
+      });
 
       const result = yield* makeAdapter(client).fetchCurrentSnapshot({
         billingCheckoutSessionId: null,
@@ -281,4 +312,241 @@ describe("Stripe adapter", () => {
       });
     }),
   );
+
+  it.effect("discovers a missed full refund during explicit reconciliation", () =>
+    Effect.gen(function* () {
+      const client = new Stripe("sk_test_adapter", { apiVersion: "2026-07-29.dahlia" });
+      Object.defineProperty(client.subscriptions, "retrieve", {
+        value: () => Promise.resolve(currentSubscription("in_current")),
+      });
+      Object.defineProperty(client.invoicePayments, "list", {
+        value: () =>
+          Promise.resolve({
+            data: [
+              {
+                amount_paid: 2_500,
+                invoice: "in_current",
+                payment: { payment_intent: "pi_current", type: "payment_intent" },
+                status: "paid",
+              },
+            ],
+          }),
+      });
+      Object.defineProperty(client.paymentIntents, "retrieve", {
+        value: () => Promise.resolve({ latest_charge: "ch_current" }),
+      });
+      Object.defineProperty(client.charges, "retrieve", {
+        value: () => Promise.resolve({ amount: 2_500, amount_refunded: 2_500 }),
+      });
+
+      const snapshot = yield* makeAdapter(client).fetchSubscription(
+        StripeSubscriptionId.make("sub_current"),
+      );
+
+      expect(snapshot).toMatchObject({
+        currentPeriodRefunded: true,
+        payment: { _tag: "NotPaid" },
+      });
+    }),
+  );
+
+  it.effect("discovers an open current-period dispute during explicit reconciliation", () =>
+    Effect.gen(function* () {
+      const client = new Stripe("sk_test_adapter", { apiVersion: "2026-07-29.dahlia" });
+      Object.defineProperty(client.subscriptions, "retrieve", {
+        value: () => Promise.resolve(currentSubscription("in_current")),
+      });
+      Object.defineProperty(client.invoicePayments, "list", {
+        value: () =>
+          Promise.resolve({
+            data: [
+              {
+                amount_paid: 2_500,
+                payment: { charge: "ch_current", type: "charge" },
+                status: "paid",
+              },
+            ],
+          }),
+      });
+      Object.defineProperty(client.charges, "retrieve", {
+        value: () => Promise.resolve({ amount: 2_500, amount_refunded: 0 }),
+      });
+      Object.defineProperty(client.disputes, "list", {
+        value: () => Promise.resolve({ data: [{ status: "under_review" }] }),
+      });
+
+      const snapshot = yield* makeAdapter(client).fetchSubscription(
+        StripeSubscriptionId.make("sub_current"),
+      );
+
+      expect(snapshot).toMatchObject({
+        currentPeriodRefunded: true,
+        payment: { _tag: "NotPaid" },
+      });
+    }),
+  );
+
+  it.effect("keeps access reversed when a later Subscription event arrives during a dispute", () =>
+    Effect.gen(function* () {
+      const client = new Stripe("sk_test_adapter", { apiVersion: "2026-07-29.dahlia" });
+      Object.defineProperty(client.subscriptions, "retrieve", {
+        value: () => Promise.resolve(currentSubscription("in_current")),
+      });
+      Object.defineProperty(client.invoicePayments, "list", {
+        value: () =>
+          Promise.resolve({
+            data: [
+              {
+                amount_paid: 2_500,
+                payment: { charge: "ch_current", type: "charge" },
+                status: "paid",
+              },
+            ],
+          }),
+      });
+      Object.defineProperty(client.charges, "retrieve", {
+        value: () => Promise.resolve({ amount: 2_500, amount_refunded: 0 }),
+      });
+      Object.defineProperty(client.disputes, "list", {
+        value: () => Promise.resolve({ data: [{ status: "needs_response" }] }),
+      });
+
+      const result = yield* makeAdapter(client).fetchCurrentSnapshot({
+        billingCheckoutSessionId: null,
+        externalEventId: "evt_subscription_during_dispute",
+        externalObjectId: "sub_current",
+        type: "customer.subscription.updated",
+      });
+
+      expect(result).toMatchObject({
+        _tag: "Snapshot",
+        snapshot: { currentPeriodRefunded: true, payment: { _tag: "NotPaid" } },
+      });
+    }),
+  );
+
+  it.effect("keeps a current dispute reversed after a later historical refund event", () =>
+    Effect.gen(function* () {
+      const client = new Stripe("sk_test_adapter", { apiVersion: "2026-07-29.dahlia" });
+      Object.defineProperty(client.subscriptions, "retrieve", {
+        value: () => Promise.resolve(currentSubscription("in_current")),
+      });
+      Object.defineProperty(client.invoicePayments, "list", {
+        value: (request: Stripe.InvoicePaymentListParams) =>
+          Promise.resolve(
+            "invoice" in request
+              ? {
+                  data: [
+                    {
+                      amount_paid: 2_500,
+                      payment: { charge: "ch_current", type: "charge" },
+                      status: "paid",
+                    },
+                  ],
+                }
+              : { data: [{ invoice: "in_historical" }] },
+          ),
+      });
+      Object.defineProperty(client.invoices, "retrieve", {
+        value: () =>
+          Promise.resolve({ parent: { subscription_details: { subscription: "sub_current" } } }),
+      });
+      Object.defineProperty(client.charges, "retrieve", {
+        value: (chargeId: string) =>
+          Promise.resolve(
+            chargeId === "ch_current"
+              ? { amount: 2_500, amount_refunded: 0 }
+              : { amount: 2_500, amount_refunded: 2_500, payment_intent: "pi_historical" },
+          ),
+      });
+      Object.defineProperty(client.disputes, "list", {
+        value: () => Promise.resolve({ data: [{ status: "needs_response" }] }),
+      });
+
+      const result = yield* makeAdapter(client).fetchCurrentSnapshot({
+        billingCheckoutSessionId: null,
+        externalEventId: "evt_historical_with_current_dispute",
+        externalObjectId: "ch_historical",
+        type: "charge.refunded",
+      });
+
+      expect(result).toMatchObject({
+        _tag: "Snapshot",
+        snapshot: { currentPeriodRefunded: true, payment: { _tag: "NotPaid" } },
+      });
+    }),
+  );
+
+  for (const testCase of [
+    { eventType: "charge.dispute.created", expectedReversed: true, status: "needs_response" },
+    {
+      eventType: "charge.dispute.funds_withdrawn",
+      expectedReversed: true,
+      status: "under_review",
+    },
+    { eventType: "charge.dispute.closed", expectedReversed: true, status: "lost" },
+    {
+      eventType: "charge.dispute.funds_reinstated",
+      expectedReversed: false,
+      status: "won",
+    },
+  ] as const) {
+    it.effect(`maps ${testCase.eventType} from authoritative dispute state`, () =>
+      Effect.gen(function* () {
+        const client = new Stripe("sk_test_adapter", { apiVersion: "2026-07-29.dahlia" });
+        Object.defineProperty(client.disputes, "retrieve", {
+          value: () => Promise.resolve({ charge: "ch_disputed", status: testCase.status }),
+        });
+        Object.defineProperty(client.charges, "retrieve", {
+          value: (chargeId: string) =>
+            Promise.resolve(
+              chargeId === "ch_current"
+                ? { amount: 2_500, amount_refunded: 0 }
+                : { payment_intent: "pi_disputed" },
+            ),
+        });
+        Object.defineProperty(client.invoicePayments, "list", {
+          value: (request: Stripe.InvoicePaymentListParams) =>
+            Promise.resolve(
+              "invoice" in request
+                ? {
+                    data: [
+                      {
+                        amount_paid: 2_500,
+                        payment: { charge: "ch_current", type: "charge" },
+                        status: "paid",
+                      },
+                    ],
+                  }
+                : { data: [{ invoice: "in_current" }] },
+            ),
+        });
+        Object.defineProperty(client.disputes, "list", {
+          value: () => Promise.resolve({ data: [{ status: testCase.status }] }),
+        });
+        Object.defineProperty(client.invoices, "retrieve", {
+          value: () =>
+            Promise.resolve({ parent: { subscription_details: { subscription: "sub_current" } } }),
+        });
+        Object.defineProperty(client.subscriptions, "retrieve", {
+          value: () => Promise.resolve(currentSubscription("in_current")),
+        });
+
+        const result = yield* makeAdapter(client).fetchCurrentSnapshot({
+          billingCheckoutSessionId: null,
+          externalEventId: `evt_${testCase.status}`,
+          externalObjectId: `dp_${testCase.status}`,
+          type: testCase.eventType,
+        });
+
+        expect(result).toMatchObject({
+          _tag: "Snapshot",
+          snapshot: {
+            currentPeriodRefunded: testCase.expectedReversed,
+            payment: { _tag: testCase.expectedReversed ? "NotPaid" : "Paid" },
+          },
+        });
+      }),
+    );
+  }
 });

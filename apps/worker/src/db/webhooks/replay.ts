@@ -1,12 +1,13 @@
 import { webhookEvents } from "@osfo/db/schema/webhooks";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 
 import { BillingCheckoutSessionId } from "../../domain";
 import { WebhookPersistenceUnavailable, type ReplayResult } from "../../services/stripe-webhooks";
 import type { Database } from "../index";
+import { beginAttempt } from "./begin-attempt";
 
-/* oxlint-disable effecttsgo/async-function -- Drizzle owns this transaction Promise boundary. */
+/* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Drizzle owns this transaction Promise boundary and domain results use _tag. */
 
 /** Prepare one pending or failed event for the same processing handler and count the attempt. */
 export const replay = (
@@ -30,16 +31,8 @@ export const replay = (
           .for("update")
           .limit(1);
         if (stored === undefined) return undefined;
-        if (stored.status === "processed") return { _tag: "ProcessedDuplicate" } as const;
-        await transaction
-          .update(webhookEvents)
-          .set({
-            attempts: sql`${webhookEvents.attempts} + 1`,
-            errorCode: null,
-            status: "pending",
-            updatedAt: sql`clock_timestamp()`,
-          })
-          .where(eq(webhookEvents.webhookEventId, webhookEventId));
+        const transition = await beginAttempt(transaction, webhookEventId, stored.status);
+        if (transition._tag === "ProcessedDuplicate") return transition;
         return {
           _tag: "Pending",
           event: {

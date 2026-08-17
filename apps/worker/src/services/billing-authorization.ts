@@ -1,13 +1,14 @@
 import { Predicate } from "effect";
 
-import type { Plan, PlanPolicyVersion, UserId } from "../domain";
+import { Plan, type PlanPolicyVersion, type UserId } from "../domain";
+import type { AuthSessionId } from "../domain/auth-session";
 import { retainedCatalog } from "../domain/plan-policy";
 import { make as makeAuthorization } from "./authorization";
 
 /** Authenticated and persisted facts required to authorize one billing operation. */
 export interface BillingAuthorizationFacts {
   readonly authSessionExpiresAt: Date;
-  readonly authSessionId: string;
+  readonly authSessionId: AuthSessionId;
   readonly deletionAccess:
     | { readonly _tag: "DeletionAccessAvailable" }
     | { readonly _tag: "DeletionAccessRevoked" };
@@ -21,6 +22,32 @@ export interface BillingAuthorizationFacts {
 
 /** Billing operations admitted through central Authorization. */
 export type BillingOperation = "billing.inspect" | "subscription.manage";
+
+/** Stored commercial facts that bound current Plan authority. */
+export interface BillingPlanAuthority {
+  readonly currentPeriodEnd: Date | null;
+  readonly pendingPlan: Plan | null;
+  readonly pendingPlanEffectiveAt: Date | null;
+  readonly plan: Plan;
+}
+
+/** Resolve current Plan authority from the last confirmed paid-period boundary. */
+export const effectivePlanAt = (authority: BillingPlanAuthority, now: Date): Plan => {
+  if (
+    authority.pendingPlan !== null &&
+    authority.pendingPlanEffectiveAt !== null &&
+    authority.pendingPlanEffectiveAt <= now
+  ) {
+    return authority.pendingPlan;
+  }
+  if (
+    authority.plan === "adventurer" &&
+    (authority.currentPeriodEnd === null || authority.currentPeriodEnd <= now)
+  ) {
+    return Plan.make("free");
+  }
+  return authority.plan;
+};
 
 /** Admit one billing operation from current AuthSession and Subscription facts. */
 export const admit = (facts: BillingAuthorizationFacts, operation: BillingOperation, now: Date) =>

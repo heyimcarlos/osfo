@@ -75,7 +75,7 @@ export const applyStripeSnapshot = (
       }
       if (
         input.checkoutEvidence !== null &&
-        !(await checkoutEvidenceMatches(transaction, input.checkoutEvidence))
+        !(await checkoutEvidenceMatches(transaction, input.checkoutEvidence, input.snapshot))
       ) {
         return new InvalidStripeSnapshot({
           message: "Stripe Checkout identity does not match the local Checkout attempt",
@@ -230,14 +230,14 @@ export const applyStripeSnapshot = (
         }
       }
 
+      if (input.checkoutEvidence !== null) {
+        await applyCheckoutEvidence(
+          transaction,
+          input.checkoutEvidence,
+          input.snapshot.subscriptionId,
+        );
+      }
       if (input.source._tag === "Webhook") {
-        if (input.checkoutEvidence !== null) {
-          await applyCheckoutEvidence(
-            transaction,
-            input.checkoutEvidence,
-            input.snapshot.subscriptionId,
-          );
-        }
         await transaction
           .update(webhookEvents)
           .set({ processedAt: now, status: "processed", updatedAt: now })
