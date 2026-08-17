@@ -14,6 +14,7 @@ export default defineConfig({
       "test/deletion-case-authority.test.ts",
       "test/meta-whatsapp.test.ts",
       "test/onboarding.test.ts",
+      "test/onboarding-public-surface.test.ts",
       "test/telegram-webhook.test.ts",
       "test/telegram-message-admission.test.ts",
       "test/telegram-onboarding-delivery.test.ts",

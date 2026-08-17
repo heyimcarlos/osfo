@@ -193,10 +193,10 @@ export const make = Effect.gen(function* () {
       }),
     findByDigest,
     findLiveChannel,
-    insertChannel: (input) =>
+    insertWhatsAppInvitation: (input) =>
       Effect.tryPromise({
-        try: () => insertChannelTransaction(db, input),
-        catch: (cause) => rejected("insertChannel", input.invitationId, cause),
+        try: () => insertWhatsAppInvitationTransaction(db, input),
+        catch: (cause) => rejected("insertWhatsAppInvitation", input.invitationId, cause),
       }),
     readCurrentBinding: (query) =>
       Effect.tryPromise({
@@ -234,14 +234,14 @@ const unavailable = (operation: string, cause: unknown) =>
 const rejected = (operation: string, operationId: string, cause: unknown) =>
   new Onboarding.OnboardingPersistenceRejected({ cause, operation, operationId });
 
-const insertChannelTransaction = async (
+const insertWhatsAppInvitationTransaction = async (
   db: Database,
-  input: Parameters<Onboarding.PersistencePort["insertChannel"]>[0],
+  input: Onboarding.WhatsAppInvitationPersistenceInput,
 ) =>
   db.transaction(async (transaction) => {
     const invitation = await transaction
       .insert(registrationInvitations)
-      .values(input)
+      .values({ ...input, kind: "whatsapp_first", provider: "whatsapp" })
       .onConflictDoNothing()
       .returning({ invitationId: registrationInvitations.invitationId });
     if (invitation.length > 0) return true;
