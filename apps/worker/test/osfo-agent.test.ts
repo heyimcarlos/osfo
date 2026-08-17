@@ -174,26 +174,18 @@ describe("Osfo Agent and Think Session foundation", () => {
 
       const recovered = yield* Effect.promise(() =>
         runInDurableObject(agent, async (instance, state) => {
-          await instance.inspectSubmission("ensure-think-submission-table");
-          state.storage.sql.exec(
-            `INSERT INTO cf_think_submissions
-              (submission_id, idempotency_key, request_id, stream_id, status,
-               messages_json, metadata_json, error_message, created_at,
-               messages_applied_at, started_at, completed_at)
-             VALUES (?, ?, ?, NULL, 'pending', ?, ?, NULL, ?, NULL, NULL, NULL)`,
+          await instance.runTurn({
+            idempotencyKey: admitted.idempotencyKey,
+            input: {
+              id: userMessageId,
+              parts: [{ text: input.message, type: "text" }],
+              role: "user",
+            },
+            metadata,
+            mode: "submit",
             submissionId,
-            admitted.idempotencyKey,
-            submissionId,
-            JSON.stringify([
-              {
-                id: userMessageId,
-                parts: [{ text: input.message, type: "text" }],
-                role: "user",
-              },
-            ]),
-            JSON.stringify(metadata),
-            1,
-          );
+          });
+          const acceptedSubmission = await instance.inspectSubmission(submissionId);
           const receipt = await instance.acceptWhatsAppMessage(input);
           const receiptRows = Array.from(
             state.storage.sql.exec<{ count: number }>(
@@ -207,6 +199,7 @@ describe("Osfo Agent and Think Session foundation", () => {
             ),
           );
           return {
+            acceptedSubmission,
             receipt,
             receiptCount: receiptRows[0]?.count,
             submissionCount: submissionRows[0]?.count,
@@ -221,6 +214,10 @@ describe("Osfo Agent and Think Session foundation", () => {
         receiptId,
         thinkSubmissionId: submissionId,
         userMessageId,
+      });
+      expect(recovered.acceptedSubmission).toMatchObject({
+        idempotencyKey: admitted.idempotencyKey,
+        submissionId,
       });
       expect(recovered.receiptCount).toBe(1);
       expect(recovered.submissionCount).toBe(1);

@@ -361,7 +361,16 @@ const statusWebhook = () => ({
             metadata: { display_phone_number: "14165550100", phone_number_id: "123456789" },
             statuses: [
               {
+                conversation: {
+                  id: "conversation-1",
+                  origin: { type: "service" },
+                },
                 id: "wamid.outbound",
+                pricing: {
+                  billable: true,
+                  category: "service",
+                  pricing_model: "CBP",
+                },
                 recipient_id: "14165550123",
                 status: "delivered",
                 timestamp: "1786924800",

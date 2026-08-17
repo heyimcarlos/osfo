@@ -110,7 +110,33 @@ const MetaMessage = Schema.Union([
   Schema.Struct({ ...MessageBase, type: UnsupportedMessageType }),
 ]);
 const MetaStatus = Schema.Struct({
+  conversation: Schema.optional(
+    Schema.Struct({
+      expiration_timestamp: Schema.optional(Schema.String),
+      id: Schema.String,
+      origin: Schema.Struct({ type: Schema.String }),
+    }),
+  ),
+  errors: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        code: Schema.Finite,
+        error_data: Schema.optional(Schema.Struct({ details: Schema.String })),
+        href: Schema.optional(Schema.String),
+        message: Schema.String,
+        title: Schema.String,
+      }),
+    ),
+  ),
   id: Schema.String,
+  pricing: Schema.optional(
+    Schema.Struct({
+      billable: Schema.Boolean,
+      category: Schema.String,
+      pricing_model: Schema.String,
+      type: Schema.optional(Schema.String),
+    }),
+  ),
   recipient_id: Schema.String,
   status: Schema.String,
   timestamp: Schema.String,
