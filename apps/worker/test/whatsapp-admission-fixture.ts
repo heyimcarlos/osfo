@@ -42,7 +42,7 @@ export const makeWhatsAppAdmissionFixture = <Failure>(options: AdmissionFixtureO
       deriveContent: (message) =>
         Effect.succeed(WhatsAppProviderContentDigest.make(testDigest(JSON.stringify(message)))),
     },
-    onboarding: { handle: () => Effect.succeed({ _tag: "OnboardingAccepted" }) },
+    onboarding: { handle: () => Effect.void },
     persistence: options.persistence,
   });
 

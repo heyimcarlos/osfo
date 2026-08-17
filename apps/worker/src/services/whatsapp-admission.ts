@@ -142,9 +142,7 @@ export interface Interface<Failure> {
   };
   readonly identity: WhatsAppStableIdentity;
   readonly onboarding: {
-    readonly handle: (
-      command: WhatsAppOnboardingCommand,
-    ) => Effect.Effect<{ readonly _tag: string }, Failure>;
+    readonly handle: (command: WhatsAppOnboardingCommand) => Effect.Effect<void, Failure>;
   };
   readonly persistence: {
     readonly admit: (

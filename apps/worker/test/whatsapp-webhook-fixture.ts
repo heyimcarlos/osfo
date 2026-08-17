@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect";
 
+/** Build one authenticated-message webhook envelope for adapter and HTTP tests. */
 export const webhook = (messages: ReadonlyArray<object>) => ({
   entry: [
     {
@@ -20,8 +21,10 @@ export const webhook = (messages: ReadonlyArray<object>) => ({
   object: "whatsapp_business_account",
 });
 
+/** Meta message statuses accepted by the shared signed webhook fixture. */
 export type MetaMessageStatus = "deleted" | "delivered" | "failed" | "read" | "sent";
 
+/** Build one status-only webhook using a documented Meta status shape. */
 export const statusWebhook = (status: MetaMessageStatus = "delivered") => ({
   entry: [
     {
@@ -41,6 +44,7 @@ export const statusWebhook = (status: MetaMessageStatus = "delivered") => ({
   object: "whatsapp_business_account",
 });
 
+/** Build the documented fields for one finite Meta message status. */
 export const statusFixture = (status: MetaMessageStatus) => {
   const base = {
     id: status === "delivered" ? "wamid.outbound" : `wamid.${status}`,
@@ -69,8 +73,10 @@ export const statusFixture = (status: MetaMessageStatus) => {
   };
 };
 
+/** Encode a test payload into the exact JSON text that will be signed. */
 export const encodeJsonText = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
+/** Sign exact test payload bytes with Meta's HMAC-SHA256 header format. */
 export const sign = (body: string, secret: string) =>
   Effect.gen(function* () {
     const key = yield* Effect.promise(() =>

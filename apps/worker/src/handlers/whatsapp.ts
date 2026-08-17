@@ -113,6 +113,7 @@ export const layer = (options: { readonly config: RuntimeConfig; readonly env: B
                   message: "WhatsApp onboarding could not be completed",
                 }),
             ),
+            Effect.asVoid,
           ),
       },
       persistence: {

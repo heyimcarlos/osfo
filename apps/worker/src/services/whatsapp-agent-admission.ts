@@ -21,6 +21,7 @@ export class WhatsAppAuthorizationUnavailable extends Schema.TaggedError<WhatsAp
   { cause: Schema.Defect(), message: Schema.String },
 ) {}
 
+/** Parsed Think metadata that proves one stable WhatsApp acceptance chain. */
 export const WhatsAppSubmissionMetadata = Schema.Struct({
   ...ManagedTurnMetadata.fields,
   whatsappAcceptance: Schema.Struct({

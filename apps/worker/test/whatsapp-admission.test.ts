@@ -123,7 +123,6 @@ describe("WhatsApp inbound admission", () => {
         onboard: (command) =>
           Effect.sync(() => {
             commands.push(command);
-            return { _tag: "InvitationIssued" as const };
           }),
       });
 
@@ -154,7 +153,6 @@ describe("WhatsApp inbound admission", () => {
             commands.push(command);
             enrollmentToken =
               command._tag === "EnrollmentControlMessage" ? Redacted.value(command.token) : null;
-            return { _tag: "EnrollmentCompleted" as const };
           }),
       });
       const token = "a".repeat(64);
@@ -203,7 +201,7 @@ const admission = (overrides: {
         (() => Effect.succeed(WhatsAppProviderContentDigest.make("a".repeat(40)))),
     },
     onboarding: {
-      handle: overrides.onboard ?? (() => Effect.succeed({ _tag: "InvitationIssued" as const })),
+      handle: overrides.onboard ?? (() => Effect.void),
     },
     persistence: {
       admit: overrides.admit ?? (() => Effect.void),
