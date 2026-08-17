@@ -24,6 +24,8 @@ describe("Model Quality corpus governance", () => {
   it("links and deeply freezes an approved successor manifest", () => {
     const firstCase = initialCorpusManifest.cases[0];
     if (firstCase === undefined) throw new Error("Initial corpus requires a first case.");
+    if (firstCase.split !== "development")
+      throw new Error("First case must be a development case.");
     const copiedFirstCase = {
       ...firstCase,
       fixture: { ...firstCase.fixture, thread: [...firstCase.fixture.thread] },
@@ -42,12 +44,17 @@ describe("Model Quality corpus governance", () => {
     expect(result.value.contentDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(Object.isFrozen(result.value)).toBe(true);
     expect(Object.isFrozen(result.value.cases)).toBe(true);
-    expect(Object.isFrozen(result.value.cases[0]?.fixture.thread)).toBe(true);
+    const firstResultCase = result.value.cases[0];
+    expect(
+      firstResultCase?.split === "development" && Object.isFrozen(firstResultCase.fixture.thread),
+    ).toBe(true);
   });
 
   it("rejects a changed safety case without recorded independent approval", () => {
     const safetyCase = initialCorpusManifest.cases.find((item) => item.journey === "safety");
     if (safetyCase === undefined) throw new Error("Initial corpus requires a safety case.");
+    if (safetyCase.split !== "development")
+      throw new Error("First safety case must be development.");
     const changed = {
       ...safetyCase,
       fixture: { ...safetyCase.fixture, expectedOutcomes: ["changed outcome"] },

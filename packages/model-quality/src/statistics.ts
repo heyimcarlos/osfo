@@ -30,6 +30,7 @@ export const exactBinomialUpperBound = (input: ExactBinomialInput): StatisticsRe
   if (
     !Number.isInteger(input.failures) ||
     !Number.isInteger(input.total) ||
+    !Number.isFinite(input.confidence) ||
     input.failures < 0 ||
     input.total <= 0 ||
     input.failures > input.total ||
@@ -56,13 +57,18 @@ export type PairedPowerInput = {
   readonly anticipatedDifference: number;
   readonly discordanceRate: number;
   readonly margin: number;
+  readonly pilotIndependentCases: number;
 };
 
 /** Calculate required independent cases at 90% power and one-sided alpha 0.05. */
 export const requiredPairedCaseCount = (input: PairedPowerInput): StatisticsResult<number> => {
   const distanceFromMargin = input.margin + input.anticipatedDifference;
-  if (input.discordanceRate === 0 && distanceFromMargin > 0) return success(1);
   if (
+    !Number.isFinite(input.anticipatedDifference) ||
+    !Number.isFinite(input.discordanceRate) ||
+    !Number.isFinite(input.margin) ||
+    !Number.isInteger(input.pilotIndependentCases) ||
+    input.pilotIndependentCases <= 0 ||
     input.discordanceRate < 0 ||
     input.discordanceRate > 1 ||
     input.margin <= 0 ||
@@ -70,7 +76,11 @@ export const requiredPairedCaseCount = (input: PairedPowerInput): StatisticsResu
   ) {
     return invalidStatistics("Paired power inputs are outside their domains.");
   }
-  const variance = Math.max(0, input.discordanceRate - input.anticipatedDifference ** 2);
+  const estimatedDiscordance =
+    input.discordanceRate === 0
+      ? 1 - 0.05 ** (1 / input.pilotIndependentCases)
+      : input.discordanceRate;
+  const variance = Math.max(0, estimatedDiscordance - input.anticipatedDifference ** 2);
   const zAlpha = 1.6448536269514722;
   const zPower = 1.2815515655446004;
   return success(Math.ceil(((zAlpha + zPower) ** 2 * variance) / distanceFromMargin ** 2));

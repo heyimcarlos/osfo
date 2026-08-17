@@ -59,6 +59,9 @@ describe("initial Model Quality corpus", () => {
     expect(Object.isFrozen(initialCorpusManifest)).toBe(true);
     expect(Object.isFrozen(initialCorpusManifest.cases)).toBe(true);
     expect(Object.isFrozen(initialCorpusManifest.cases[0]?.fixture)).toBe(true);
+    const sealedCase = initialCorpusManifest.cases.find((item) => item.split === "sealed-holdout");
+    expect(sealedCase?.fixture).toMatchObject({ kind: "sealed-reference" });
+    expect(sealedCase?.fixture).not.toHaveProperty("thread");
     expect(
       initialCorpusManifest.cases
         .filter((item) => item.journey === "safety")

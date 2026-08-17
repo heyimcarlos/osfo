@@ -1,20 +1,22 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import {
-  assessCorpusRebalancing,
-  createEvaluationCopyRegistry,
-  evaluationExpiry,
-  minimizeReviewedFailure,
-  planWeeklySampling,
-  propagateSourceDeletion,
-  reviewPrivateContent,
-  triageFeedbackSignal,
-} from "../src/feedback";
+import { assessCorpusRebalancing, minimizeReviewedFailure } from "../src/corpus-feedback";
+import { createEvaluationCopyRegistry, propagateSourceDeletion } from "../src/deletion-lineage";
+import { planWeeklySampling, triageFeedbackSignal } from "../src/production-feedback";
+import { evaluationExpiry, reviewPrivateContent } from "../src/retention";
 
 describe("privacy-safe production feedback", () => {
   it("caps stratified automatic sampling at one percent and 200 per journey each week", () => {
-    expect(planWeeklySampling(120)).toBe(2);
-    expect(planWeeklySampling(50_000)).toBe(200);
+    expect(planWeeklySampling({ adventurerMessages: 0, freeMessages: 120 })).toEqual({
+      adventurerSamples: 0,
+      freeSamples: 2,
+      totalSamples: 2,
+    });
+    expect(planWeeklySampling({ adventurerMessages: 50_000, freeMessages: 50_000 })).toEqual({
+      adventurerSamples: 100,
+      freeSamples: 100,
+      totalSamples: 200,
+    });
   });
 
   it("enforces retention limits", () => {

@@ -5,13 +5,16 @@
   "type": "module",
   "exports": {
     "./corpus": "./src/corpus.ts",
+    "./corpus-feedback": "./src/corpus-feedback.ts",
+    "./deletion-lineage": "./src/deletion-lineage.ts",
     "./deterministic": "./src/deterministic.ts",
     "./execution": "./src/execution.ts",
-    "./feedback": "./src/feedback.ts",
     "./gate": "./src/gate.ts",
     "./grading": "./src/grading.ts",
     "./manifest": "./src/manifest.ts",
     "./promotion": "./src/promotion.ts",
+    "./production-feedback": "./src/production-feedback.ts",
+    "./retention": "./src/retention.ts",
     "./review": "./src/review.ts",
     "./statistics": "./src/statistics.ts"
   },

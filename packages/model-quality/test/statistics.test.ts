@@ -24,7 +24,12 @@ describe("Model Quality statistics", () => {
 
   it("predeclares paired independent-case power and reports underpowered evidence as MISSING", () => {
     expect(
-      requiredPairedCaseCount({ anticipatedDifference: 0, discordanceRate: 0.1, margin: 0.02 }),
+      requiredPairedCaseCount({
+        anticipatedDifference: 0,
+        discordanceRate: 0.1,
+        margin: 0.02,
+        pilotIndependentCases: 100,
+      }),
     ).toEqual({ kind: "success", value: 2141 });
 
     expect(
@@ -34,6 +39,7 @@ describe("Model Quality statistics", () => {
         candidateByCase: caseScores([1, 1, 0, 1]),
         discordanceRate: 0.1,
         margin: 0.02,
+        pilotIndependentCases: 100,
       }),
     ).toMatchObject({
       independentCases: 4,
@@ -47,17 +53,18 @@ describe("Model Quality statistics", () => {
     expect(
       pairedNonInferiority({
         anticipatedDifference: 0,
-        baselineByCase: caseScores([1, 1, 1, 1, 1]),
-        candidateByCase: caseScores([1, 1, 1, 1, 1]),
+        baselineByCase: caseScores(Array.from({ length: 102 }, () => 1)),
+        candidateByCase: caseScores(Array.from({ length: 102 }, () => 1)),
         discordanceRate: 0,
         margin: 0.05,
+        pilotIndependentCases: 100,
       }),
     ).toEqual({
       difference: 0,
-      independentCases: 5,
+      independentCases: 102,
       kind: "success",
       lowerConfidenceBound: 0,
-      requiredCases: 1,
+      requiredCases: 102,
       verdict: "PASS",
     });
   });
@@ -70,11 +77,26 @@ describe("Model Quality statistics", () => {
         candidateByCase: [{ caseId: "case-b", runs: [1] }],
         discordanceRate: 0,
         margin: 0.02,
+        pilotIndependentCases: 100,
       }),
     ).toEqual({
       error: { _tag: "InvalidStatisticsInput", message: "Paired case identities must match." },
       kind: "error",
     });
+  });
+
+  it("returns tagged errors for non-finite statistical inputs", () => {
+    expect(
+      exactBinomialUpperBound({ confidence: Number.NaN, failures: 0, total: 299 }),
+    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+    expect(
+      requiredPairedCaseCount({
+        anticipatedDifference: Number.NaN,
+        discordanceRate: 0.1,
+        margin: 0.02,
+        pilotIndependentCases: 100,
+      }),
+    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
   });
 });
 

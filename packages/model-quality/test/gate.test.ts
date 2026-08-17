@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 
 import type { CriticalRiskClass, Journey, PlanRoute } from "../src/corpus";
 import { evaluateModelQualityGate, type GateEvidence, type StratumEvidence } from "../src/gate";
+import { digestValue } from "../src/manifest";
 
 const journeys: ReadonlyArray<Exclude<Journey, "safety">> = [
   "ordinary",
@@ -48,7 +49,7 @@ const passingStratum = (
 
 const passingEvidence = (): GateEvidence => ({
   candidateCaseIds: ["case-1"],
-  candidateCorpusDigest: "sha256:corpus",
+  candidateCorpusDigest: digestValue("corpus", "corpus"),
   criticalChecks: { passed: 10, total: 10 },
   criticalRiskClasses: riskClasses.map((riskClass) => ({ passed: 1, riskClass, total: 1 })),
   humanReview: "PASS",
@@ -64,7 +65,7 @@ const passingEvidence = (): GateEvidence => ({
     ),
   },
   productionCaseIds: ["case-1"],
-  productionCorpusDigest: "sha256:corpus",
+  productionCorpusDigest: digestValue("corpus", "corpus"),
   strata: journeys.flatMap((journey) =>
     planRoutes.map((planRoute) => passingStratum(journey, planRoute)),
   ),
@@ -118,5 +119,20 @@ describe("Model Quality Gate", () => {
         subjectiveAuthority: { affectedCases: 30, humanReviewedCases: 30, kind: "human" },
       }),
     ).toEqual({ reasons: [], verdict: "PASS" });
+  });
+
+  it("reports impossible evidence counts as MISSING", () => {
+    const evidence = passingEvidence();
+    expect(
+      evaluateModelQualityGate({
+        ...evidence,
+        criticalChecks: { passed: 11, total: 10 },
+      }),
+    ).toMatchObject({
+      reasons: expect.arrayContaining([
+        "Evidence counts must be non-negative integers with passed not above total.",
+      ]),
+      verdict: "MISSING",
+    });
   });
 });

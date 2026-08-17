@@ -36,6 +36,21 @@ export type HumanReviewAssessment = {
 /** Assess complete-gate human coverage and independent safety approval. */
 export const assessHumanReview = (input: HumanReviewInput): HumanReviewAssessment => {
   const reasons: Array<string> = [];
+  if (
+    !validReviewCount(input.reviewedSafetyCases, input.totalSafetyCases) ||
+    input.journeyReviews.some(
+      (review) =>
+        !validReviewCount(review.reviewedCases, review.totalCases) ||
+        !validReviewCount(review.doubleLabeledCases, review.reviewedCases),
+    ) ||
+    !Number.isInteger(input.disagreements) ||
+    !Number.isInteger(input.adjudicatedDisagreements) ||
+    input.disagreements < 0 ||
+    input.adjudicatedDisagreements < 0 ||
+    input.adjudicatedDisagreements > input.disagreements
+  ) {
+    reasons.push("Review counts must be valid non-negative integer subsets.");
+  }
   if (!input.blinded) reasons.push("Open-ended human review must be blinded.");
   if (input.totalSafetyCases === 0 || input.reviewedSafetyCases !== input.totalSafetyCases) {
     reasons.push("Every safety case requires human review.");
@@ -79,3 +94,10 @@ export const assessHumanReview = (input: HumanReviewInput): HumanReviewAssessmen
   }
   return { reasons, verdict: reasons.length === 0 ? "PASS" : "MISSING" };
 };
+
+const validReviewCount = (subset: number, total: number) =>
+  Number.isInteger(subset) &&
+  Number.isInteger(total) &&
+  subset >= 0 &&
+  total >= 0 &&
+  subset <= total;

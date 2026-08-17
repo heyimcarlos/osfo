@@ -1,7 +1,12 @@
 import type { CorpusCase, CorpusManifest, Journey } from "./corpus";
 
 /** One case scheduled at an execution level. */
-export type ExecutionCase = Omit<CorpusCase, "repetitions"> & { readonly repetitions: 1 | 3 | 5 };
+type WithExecutionRepetitions<T> = T extends CorpusCase
+  ? Omit<T, "repetitions"> & { readonly repetitions: 1 | 3 | 5 }
+  : never;
+
+/** One case scheduled at an execution level. */
+export type ExecutionCase = WithExecutionRepetitions<CorpusCase>;
 
 /** Pull-request or complete-gate execution request. */
 export type ExecutionRequest =
@@ -18,6 +23,28 @@ export type ExecutionPlan = {
   readonly cases: ReadonlyArray<ExecutionCase>;
   readonly finalEvidence: boolean;
   readonly level: ExecutionRequest["level"];
+};
+
+/** Notices and elapsed time that require a new complete production gate. */
+export type CompleteGateRequirementInput = {
+  readonly lastCompletedAt: string;
+  readonly materialConfigurationChanged: boolean;
+  readonly notices: ReadonlyArray<"provider-model" | "route" | "policy" | "material-dependency">;
+  readonly now: string;
+};
+
+/** Require weekly and notice-driven complete production reruns. */
+export const assessCompleteGateRequirement = (
+  input: CompleteGateRequirementInput,
+): "CURRENT" | "REQUIRED" => {
+  const elapsed = Date.parse(input.now) - Date.parse(input.lastCompletedAt);
+  return !Number.isFinite(elapsed) ||
+    elapsed < 0 ||
+    elapsed >= 7 * 24 * 60 * 60 * 1_000 ||
+    input.materialConfigurationChanged ||
+    input.notices.length > 0
+    ? "REQUIRED"
+    : "CURRENT";
 };
 
 const smokeJourneys: ReadonlyArray<Exclude<Journey, "safety">> = [

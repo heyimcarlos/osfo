@@ -11,6 +11,7 @@ describe("Model Quality canary", () => {
         eligibleMessages: 200,
         eligiblePercent: 5,
         eligibleUsers: 25,
+        failureMode: { kind: "none" },
         observedHours: 72,
         priorStage: null,
         releaseId: "release-1",
@@ -27,6 +28,7 @@ describe("Model Quality canary", () => {
         eligibleMessages: 199,
         eligiblePercent: 5,
         eligibleUsers: 24,
+        failureMode: { kind: "none" },
         observedHours: 72,
         priorStage: null,
         releaseId: "release-1",
@@ -43,11 +45,44 @@ describe("Model Quality canary", () => {
         eligibleMessages: 500,
         eligiblePercent: 25,
         eligibleUsers: 100,
+        failureMode: { kind: "none" },
         observedHours: 72,
         priorStage: null,
         releaseId: "release-1",
         stage: "twenty-five-percent",
       }),
     ).toEqual({ action: "PAUSE", verdict: "MISSING" });
+  });
+
+  it("pauses after seven days or until a new failure mode has an evaluation case", () => {
+    const common = {
+      cohortId: "cohort-a",
+      confirmedCriticalFailures: 0,
+      eligibleMessages: 199,
+      eligiblePercent: 5 as const,
+      eligibleUsers: 25,
+      observedHours: 168,
+      priorStage: null,
+      releaseId: "release-1",
+      stage: "five-percent" as const,
+    };
+    expect(assessCanary({ ...common, failureMode: { kind: "none" } })).toEqual({
+      action: "PAUSE",
+      verdict: "MISSING",
+    });
+    expect(
+      assessCanary({
+        ...common,
+        eligibleMessages: 200,
+        failureMode: { description: "new refusal defect", kind: "uncovered" },
+      }),
+    ).toEqual({ action: "PAUSE", verdict: "MISSING" });
+    expect(
+      assessCanary({
+        ...common,
+        eligibleMessages: 200,
+        failureMode: { caseId: "safety-161", kind: "covered" },
+      }),
+    ).toEqual({ action: "ADVANCE", verdict: "PASS" });
   });
 });

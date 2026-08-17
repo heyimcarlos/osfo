@@ -1,5 +1,5 @@
 import type { CriticalRiskClass, Journey, PlanRoute } from "./corpus";
-import type { Sha256Digest } from "./manifest";
+import type { EvidenceDigest } from "./manifest";
 import type { EvidenceVerdict } from "./statistics";
 
 /** Failures that one confirmed occurrence makes release-blocking. */
@@ -26,7 +26,7 @@ export type StratumEvidence = {
 /** Complete evidence required to issue a Model Quality verdict. */
 export type GateEvidence = {
   readonly candidateCaseIds: ReadonlyArray<string>;
-  readonly candidateCorpusDigest: Sha256Digest;
+  readonly candidateCorpusDigest: EvidenceDigest<"corpus">;
   readonly criticalChecks: { readonly passed: number; readonly total: number };
   readonly criticalRiskClasses: ReadonlyArray<{
     readonly passed: number;
@@ -51,7 +51,7 @@ export type GateEvidence = {
     }>;
   };
   readonly productionCaseIds: ReadonlyArray<string>;
-  readonly productionCorpusDigest: Sha256Digest;
+  readonly productionCorpusDigest: EvidenceDigest<"corpus">;
   readonly strata: ReadonlyArray<StratumEvidence>;
   readonly zeroToleranceFailures: ReadonlyArray<ZeroToleranceFailure>;
 };
@@ -97,21 +97,29 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
   }
 
   const failures: Array<string> = [];
-  if (evidence.criticalChecks.passed !== evidence.criticalChecks.total) {
+  if (
+    validCount(evidence.criticalChecks.passed, evidence.criticalChecks.total) &&
+    evidence.criticalChecks.passed !== evidence.criticalChecks.total
+  ) {
     failures.push("Critical deterministic and safety checks must pass at 100%.");
   }
   for (const risk of evidence.criticalRiskClasses) {
-    if (risk.passed !== risk.total)
+    if (validCount(risk.passed, risk.total) && risk.passed !== risk.total)
       failures.push(`${risk.riskClass} critical checks must pass at 100%.`);
   }
   for (const stratum of evidence.strata) {
-    if (stratum.total > 0 && stratum.completeRubricPassed / stratum.total < 0.9) {
+    if (
+      validCount(stratum.completeRubricPassed, stratum.total) &&
+      stratum.total > 0 &&
+      stratum.completeRubricPassed / stratum.total < 0.9
+    ) {
       failures.push(`${stratum.journey}/${stratum.planRoute} complete-rubric floor is below 90%.`);
     }
     if (
       groundedJourneys.has(stratum.journey) &&
       stratum.groundedTotal !== undefined &&
       stratum.groundedPassed !== undefined &&
+      validCount(stratum.groundedPassed, stratum.groundedTotal) &&
       stratum.groundedTotal > 0 &&
       stratum.groundedPassed / stratum.groundedTotal < 0.95
     ) {
@@ -134,6 +142,19 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
   if (failures.length > 0) return { reasons: failures, verdict: "FAIL" };
 
   const missing: Array<string> = [];
+  if (
+    !validCount(evidence.criticalChecks.passed, evidence.criticalChecks.total) ||
+    evidence.criticalRiskClasses.some((item) => !validCount(item.passed, item.total)) ||
+    evidence.strata.some(
+      (item) =>
+        !validCount(item.completeRubricPassed, item.total) ||
+        (item.groundedPassed !== undefined &&
+          item.groundedTotal !== undefined &&
+          !validCount(item.groundedPassed, item.groundedTotal)),
+    )
+  ) {
+    missing.push("Evidence counts must be non-negative integers with passed not above total.");
+  }
   if (
     evidence.criticalChecks.total === 0 ||
     requiredRiskClasses.some(
@@ -206,6 +227,13 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
     ? { reasons: missing, verdict: "MISSING" }
     : { reasons: [], verdict: "PASS" };
 };
+
+const validCount = (passed: number, total: number) =>
+  Number.isInteger(passed) &&
+  Number.isInteger(total) &&
+  passed >= 0 &&
+  total >= 0 &&
+  passed <= total;
 
 const sameCases = (left: ReadonlyArray<string>, right: ReadonlyArray<string>) => {
   // oxlint-disable-next-line unicorn/no-array-sort -- Each spread is a fresh array, so sorting cannot mutate caller-owned evidence.

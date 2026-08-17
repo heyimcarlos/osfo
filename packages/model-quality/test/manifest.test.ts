@@ -5,49 +5,62 @@ import {
   assessPassCurrentness,
   configurationDigest,
   createEvaluationManifest,
+  digestValue,
   type BehaviorConfiguration,
   verifyEvaluationManifest,
 } from "../src/manifest";
 
 const configuration = {
-  context: "sha256:context",
-  memory: "sha256:memory",
-  policies: "sha256:policies",
-  prompts: "sha256:prompts",
-  rendering: "sha256:rendering",
-  routes: "sha256:routes",
-  skills: "sha256:skills",
-  tools: "sha256:tools",
-  workflows: "sha256:workflows",
+  context: digestValue("context", "context"),
+  memory: digestValue("memory", "memory"),
+  policies: digestValue("policies", "policies"),
+  prompts: digestValue("prompts", "prompts"),
+  rendering: digestValue("rendering", "rendering"),
+  routes: digestValue("routes", "routes"),
+  skills: digestValue("skills", "skills"),
+  tools: digestValue("tools", "tools"),
+  workflows: digestValue("workflows", "workflows"),
 } satisfies BehaviorConfiguration;
+
+const dependencyDigest = digestValue("dependency", "dependencies");
+const graderDigest = digestValue("grader", "graders");
+const rubricDigest = digestValue("rubric", "rubric");
 
 describe("Model Quality evidence manifests", () => {
   it("creates an immutable, verifiable manifest bound to the complete configuration", () => {
     const manifest = createEvaluationManifest({
+      approvedBaseline: {
+        approvedAt: "2026-08-16T00:00:00.000Z",
+        approverId: "quality-owner-1",
+        corpusDigest: initialCorpusManifest.contentDigest,
+        graderDigest,
+        rubricDigest,
+      },
       configuration,
       corpusDigest: initialCorpusManifest.contentDigest,
       corpusVersion: initialCorpusManifest.version,
       createdAt: "2026-08-17T00:00:00.000Z",
-      dependencyDigest: "sha256:dependencies",
-      fixtureDigest: "sha256:fixtures",
-      graderDigest: "sha256:graders",
+      dependencyDigest,
+      fixtureDigest: digestValue("fixture", "fixtures"),
+      graderDigest,
       humanLabelSetVersion: "labels-v1",
-      inferenceSettingsDigest: "sha256:inference-settings",
+      inferenceSettingsDigest: digestValue("inference-settings", "inference-settings"),
       outputEvidence: {
-        artifactChecksumsDigest: "sha256:artifacts",
-        costDigest: "sha256:cost",
-        latencyDigest: "sha256:latency",
-        rawOutputsDigest: "sha256:outputs",
-        scoreDigest: "sha256:scores",
-        tokenUseDigest: "sha256:tokens",
-        traceDigest: "sha256:traces",
+        artifactChecksumsDigest: digestValue("artifact-checksums", "artifacts"),
+        costDigest: digestValue("cost", "cost"),
+        latencyDigest: digestValue("latency", "latency"),
+        rawOutputsDigest: digestValue("raw-outputs", "outputs"),
+        scoreDigest: digestValue("scores", "scores"),
+        tokenUseDigest: digestValue("token-use", "tokens"),
+        traceDigest: digestValue("traces", "traces"),
         utcWindow: {
           endedAt: "2026-08-17T01:00:00.000Z",
           startedAt: "2026-08-17T00:00:00.000Z",
         },
       },
-      powerCalculationDigest: "sha256:power-calculation",
+      powerCalculationDigest: digestValue("power-calculation", "power-calculation"),
       providerModelId: "pinned-model-2026-08-01",
+      rubricDigest,
       sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
     });
 
@@ -62,12 +75,14 @@ describe("Model Quality evidence manifests", () => {
     const common = {
       currentConfigurationDigest: configurationDigest(configuration),
       currentCorpusDigest: initialCorpusManifest.contentDigest,
-      currentDependencyDigest: "sha256:dependencies",
-      currentGraderDigest: "sha256:graders",
+      currentDependencyDigest: dependencyDigest,
+      currentGraderDigest: graderDigest,
+      currentRubricDigest: rubricDigest,
       passConfigurationDigest: configurationDigest(configuration),
       passCorpusDigest: initialCorpusManifest.contentDigest,
-      passDependencyDigest: "sha256:dependencies",
-      passGraderDigest: "sha256:graders",
+      passDependencyDigest: dependencyDigest,
+      passGraderDigest: graderDigest,
+      passRubricDigest: rubricDigest,
       passedAt: "2026-08-10T12:00:00.000Z",
     } as const;
 
@@ -76,9 +91,19 @@ describe("Model Quality evidence manifests", () => {
     expect(
       assessPassCurrentness({
         ...common,
-        currentConfigurationDigest: "sha256:material-change",
+        currentConfigurationDigest: digestValue("configuration", "material-change"),
         now: "2026-08-11T12:00:00.000Z",
       }),
     ).toBe("MISSING");
+  });
+
+  it("keeps non-finite numeric evidence distinct from null and each other", () => {
+    expect(
+      new Set([
+        digestValue("manifest", null),
+        digestValue("manifest", Number.NaN),
+        digestValue("manifest", Infinity),
+      ]).size,
+    ).toBe(3);
   });
 });

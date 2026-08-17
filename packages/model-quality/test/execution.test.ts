@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import { initialCorpusManifest } from "../src/corpus";
-import { createExecutionPlan } from "../src/execution";
+import { assessCompleteGateRequirement, createExecutionPlan } from "../src/execution";
 
 describe("Model Quality execution levels", () => {
   it("builds a fixed PR smoke level with one run and no sealed holdout cases", () => {
@@ -23,5 +23,24 @@ describe("Model Quality execution levels", () => {
     expect(plan.cases).toHaveLength(600);
     expect(plan.finalEvidence).toBe(true);
     expect(plan.cases.filter((item) => item.repetitions === 5)).toHaveLength(160);
+  });
+
+  it("requires weekly and notice-driven complete production reruns", () => {
+    const common = {
+      lastCompletedAt: "2026-08-10T00:00:00.000Z",
+      materialConfigurationChanged: false,
+      now: "2026-08-16T23:59:59.999Z",
+    } as const;
+    expect(assessCompleteGateRequirement({ ...common, notices: [] })).toBe("CURRENT");
+    expect(assessCompleteGateRequirement({ ...common, notices: ["provider-model"] })).toBe(
+      "REQUIRED",
+    );
+    expect(
+      assessCompleteGateRequirement({
+        ...common,
+        notices: [],
+        now: "2026-08-17T00:00:00.000Z",
+      }),
+    ).toBe("REQUIRED");
   });
 });
