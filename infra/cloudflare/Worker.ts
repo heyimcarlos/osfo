@@ -5,6 +5,7 @@ import * as Redacted from "effect/Redacted";
 
 import { Hyperdrive } from "./Db";
 import { ExecutionUnitWorkflow } from "./ExecutionUnitWorkflow";
+import { Files } from "./Files";
 import { Artifacts } from "./Artifacts";
 
 /** Cloudflare Worker and execution-unit bindings for one Osfo runtime stage. */
@@ -49,6 +50,7 @@ export default Cloudflare.Worker(
           instanceType: "lite",
         }),
         EXECUTION_UNIT_WORKFLOW: ExecutionUnitWorkflow,
+        FILES: Files,
         META_APP_SECRET: Config.redacted("META_APP_SECRET"),
         META_WEBHOOK_VERIFY_TOKEN: Config.redacted("META_WEBHOOK_VERIFY_TOKEN"),
         OSFO_AGENT: Cloudflare.DurableObject("OsfoAgent", {

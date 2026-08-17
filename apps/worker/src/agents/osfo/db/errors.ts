@@ -193,17 +193,21 @@ export const AgentRequestOperation = Schema.Literals([
   "acceptWhatsAppMessage",
   "acceptTelegramMessage",
   "commitWelcome",
+  "analyzeFile",
   "cancelManagedConversation",
+  "deleteFile",
   "boundCoreMemory",
   "correctCoreMemory",
   "inspectCoreMemory",
   "initialize",
   "readSessionAuthorizationFacts",
   "readRoute",
+  "readFile",
   "readSession",
   "recoverWhatsAppMessage",
   "recoverTelegramMessage",
   "submitManagedConversation",
+  "uploadFile",
 ]);
 
 /** Agent RPC operations with externally supplied values. */

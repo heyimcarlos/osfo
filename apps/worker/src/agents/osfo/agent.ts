@@ -21,6 +21,7 @@ import { DateTime, Effect, Exit, Option, Predicate, Result, Schema } from "effec
 import { HelpArea, OnboardingLocale } from "@osfo/api";
 
 import type { AssistantMessageId as AssistantMessageIdType, SessionId, UserId } from "../../domain";
+import type { AllowanceItem, AllowanceSource } from "../../domain/allowance";
 import {
   AgentId,
   AllowancePeriodId,
@@ -35,7 +36,7 @@ import { ActionId } from "../../domain/action-execution";
 import { ContentId } from "../../domain/client-content";
 import * as DocumentArtifact from "../../domain/document-artifact";
 import * as DocumentGenerationComposition from "../../composition/document-generation";
-import { database as workerDatabase } from "../../db";
+import { database as workerDatabase, DbTimestamp } from "../../db";
 import * as Billing from "../../db/billing";
 import { decodeOsfoStage, decodeRuntimeConfig } from "../../env";
 import * as ProviderAuthorizationPostgres from "../../integrations/postgres/provider-authorization";
@@ -74,6 +75,14 @@ import {
   type ManagedRouteUnavailable,
 } from "../../domain/model-access-policy";
 import { currentPolicy, retainedCatalog, type PlanPolicyNotFound } from "../../domain/plan-policy";
+import { FileAnalysisId, FileId, FileName, FileUploadId } from "../../domain/file";
+import { makeCloudflareFileCompute } from "../../integrations/cloudflare/file-compute";
+import {
+  type FileObjectMetadataInvalid,
+  type FileObjectStoreUnavailable,
+  makeR2FileObjects,
+} from "../../integrations/cloudflare/file-objects";
+import { loadCurrentFileAuthorization } from "../../integrations/postgres/file-authorization";
 import * as AgentDirectory from "../../services/agent-directory";
 import {
   invalidOsfoEnvironment,
@@ -82,6 +91,16 @@ import {
   type RuntimeProbeResult,
 } from "../../layers";
 import { makeAgentDb } from "./db/client";
+import {
+  type FileAnalysisConflict,
+  type FileNotFound,
+  type FileStoreRecordInvalid,
+  type FileStoreUnavailable,
+  type FileUploadConflict,
+  makeFileStore,
+  type RetainedFileLimitExceeded,
+} from "./db/file-store";
+import { type FileStateTransitionConflict, makeFiles } from "../../services/files";
 import {
   BoundCoreMemoryInput,
   type BoundCoreMemoryEncoded,
@@ -107,7 +126,7 @@ import {
   make as makeAuthorization,
   restoreCoreMemoryAuthorization,
   type ApprovalRequired,
-  type AuthorizationContext,
+  AuthorizationContext,
   type Denied,
 } from "../../services/authorization";
 import * as DocumentGeneration from "../../services/document-generation";
@@ -152,7 +171,6 @@ import { applyAgentMigrations } from "./db/migrate";
 import { makeModelCallUsageStore } from "./db/model-call-usage";
 import { makeSessionExecution } from "./session-execution";
 import { makeAgentSessionCommand } from "./session-command";
-import { ThinkSubmissionUnavailable } from "../../services/think-submission";
 import type { AcceptanceReceipt } from "../../services/provider-acceptance-receipt";
 import type {
   SessionCommandReceipt,
@@ -214,6 +232,15 @@ const defaultTestProtectedActionState: TestProtectedActionState = {
 };
 const authorization = makeAuthorization(retainedCatalog);
 
+type AgentFilePersistenceError =
+  | FileAnalysisConflict
+  | FileNotFound
+  | FileStateTransitionConflict
+  | FileStoreRecordInvalid
+  | FileStoreUnavailable
+  | FileUploadConflict
+  | RetainedFileLimitExceeded;
+
 const GatewayProviderMetadata = Schema.Struct({
   cloudflare: Schema.optional(
     Schema.Struct({
@@ -243,6 +270,53 @@ export type SubmitManagedConversationRequest = typeof SubmitManagedConversationI
 /** RPC representation of one managed conversation cancellation. */
 export type CancelManagedConversationRequest = typeof CancelManagedConversationInput.Encoded;
 
+const FileActionId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
+
+/** Trusted server-routed request to ingest one User-owned file. */
+export const UploadFileRequest = Schema.Struct({
+  actionId: FileActionId,
+  authorization: AuthorizationContext,
+  bytes: Schema.instanceOf(Uint8Array),
+  declaredMediaType: Schema.String,
+  fileId: FileId,
+  fileName: FileName,
+  uploadId: FileUploadId,
+});
+export type UploadFileRequest = typeof UploadFileRequest.Type;
+
+/** Trusted server-routed request to read one User-owned file. */
+export const ReadFileRequest = Schema.Struct({
+  actionId: FileActionId,
+  authorization: AuthorizationContext,
+  fileId: FileId,
+});
+export type ReadFileRequest = typeof ReadFileRequest.Type;
+
+/** Trusted server-routed request to analyze one normalized User-owned file. */
+export const AnalyzeFileRequest = Schema.Struct({
+  actionId: FileActionId,
+  analysisId: FileAnalysisId,
+  authorization: AuthorizationContext,
+  fileId: FileId,
+  prompt: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64_000)),
+});
+export type AnalyzeFileRequest = typeof AnalyzeFileRequest.Type;
+
+/** Trusted server-routed request to delete one User-owned file. */
+export const DeleteFileRequest = ReadFileRequest;
+export type DeleteFileRequest = typeof DeleteFileRequest.Type;
+
+/** Classified failure from a Think Submission method. */
+export class ThinkSubmissionUnavailable extends Schema.TaggedError<ThinkSubmissionUnavailable>()(
+  "ThinkSubmissionUnavailable",
+  { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
+) {}
+
+/** Expected failure when production file dependencies cannot be reached from an Agent. */
+export class FileCapabilityUnavailable extends Schema.TaggedError<FileCapabilityUnavailable>()(
+  "FileCapabilityUnavailable",
+  { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
+) {}
 const SessionHistoryMessagePart = Schema.StructWithRest(Schema.Struct({ type: Schema.String }), [
   Schema.Record(Schema.String, Schema.Unknown),
 ]);
@@ -351,6 +425,26 @@ export class OsfoAgent extends Think<Env> {
   override classifyChatError = defaultContextOverflowClassifier;
 
   readonly #db = makeAgentDb(this.ctx.storage);
+  readonly #fileStore = makeFileStore(this.#db);
+  readonly #files = makeFiles<
+    FileCapabilityUnavailable,
+    FileCapabilityUnavailable,
+    FileObjectMetadataInvalid | FileObjectStoreUnavailable,
+    AgentFilePersistenceError
+  >({
+    allowances: {
+      record: (periodId, source, items) => this.#recordFileAllowance(periodId, source, items),
+    },
+    authorization: makeAuthorization(retainedCatalog),
+    catalog: retainedCatalog,
+    compute: makeCloudflareFileCompute(this.env.DOCUMENT_SANDBOX),
+    currentAuthorizationContext: (context) => this.#currentFileAuthorizationContext(context),
+    now: DateTime.now.pipe(
+      Effect.map((time) => DbTimestamp.make(DateTime.toDateUtc(time).toISOString())),
+    ),
+    objects: makeR2FileObjects(this.env.FILES),
+    store: this.#fileStore,
+  });
   #activeModelStepNumber = ModelStepNumber.make(1);
   readonly #completedModelSteps = new Set<number>();
   readonly #currentApprovalAuthorization = new Map<ActionId, AuthorizationContext>();
@@ -540,17 +634,17 @@ export class OsfoAgent extends Think<Env> {
     const pending = await super.pendingApprovals(executionId);
     return pending.map((approval) =>
       approval.source === "action" && approval.descriptor.action === documentDeleteActionName
+        ? Object.assign({}, approval, {
+            descriptor: Object.assign({}, approval.descriptor, {
+              input: sanitizeDocumentDeleteInput(approval.descriptor.input),
+            }),
+          })
+        : approval.source === "action" && approval.descriptor.action === gmailSendActionName
           ? Object.assign({}, approval, {
               descriptor: Object.assign({}, approval.descriptor, {
-                input: sanitizeDocumentDeleteInput(approval.descriptor.input),
+                input: sanitizeGmailSendActionInput(approval.descriptor.input),
               }),
             })
-          : approval.source === "action" && approval.descriptor.action === gmailSendActionName
-            ? Object.assign({}, approval, {
-                descriptor: Object.assign({}, approval.descriptor, {
-                  input: sanitizeGmailSendActionInput(approval.descriptor.input),
-                }),
-              })
           : sanitizePendingApproval(approval),
     );
   }
@@ -1195,6 +1289,80 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  /** Ingest and normalize one authenticated User-owned file through owned production adapters. */
+  async uploadFile(input: UploadFileRequest) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeEffect(UploadFileRequest)(input).pipe(
+        Effect.mapError(() => invalidRequest("uploadFile")),
+        Effect.flatMap((parsed) =>
+          this.#files.upload({
+            actionId: parsed.actionId,
+            bytes: parsed.bytes,
+            context: parsed.authorization,
+            declaredMediaType: parsed.declaredMediaType,
+            fileId: parsed.fileId,
+            fileName: parsed.fileName,
+            uploadId: parsed.uploadId,
+          }),
+        ),
+      ),
+    );
+  }
+
+  /** Read one authenticated User-owned file through its Agent and R2 ownership boundary. */
+  async readFile(input: ReadFileRequest) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeEffect(ReadFileRequest)(input).pipe(
+        Effect.mapError(() => invalidRequest("readFile")),
+        Effect.flatMap((parsed) =>
+          this.#files.read({
+            actionId: parsed.actionId,
+            context: parsed.authorization,
+            fileId: parsed.fileId,
+          }),
+        ),
+      ),
+    );
+  }
+
+  /** Analyze one authenticated User-owned normalized file in disposable compute. */
+  async analyzeFile(input: AnalyzeFileRequest) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeEffect(AnalyzeFileRequest)(input).pipe(
+        Effect.mapError(() => invalidRequest("analyzeFile")),
+        Effect.flatMap((parsed) =>
+          this.#files.analyze({
+            actionId: parsed.actionId,
+            analysisId: parsed.analysisId,
+            context: parsed.authorization,
+            fileId: parsed.fileId,
+            prompt: parsed.prompt,
+          }),
+        ),
+      ),
+    );
+  }
+
+  /** Delete one authenticated User-owned file after exact destructive Approval. */
+  async deleteFile(input: DeleteFileRequest) {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeEffect(DeleteFileRequest)(input).pipe(
+        Effect.mapError(() => invalidRequest("deleteFile")),
+        Effect.flatMap((parsed) =>
+          this.#files.remove({
+            actionId: parsed.actionId,
+            context: parsed.authorization,
+            fileId: parsed.fileId,
+          }),
+        ),
+      ),
+    );
+  }
+
   /** Read one immutable presentation and current Approval state for an authenticated User. */
   async readActionPresentation(
     input: ReadActionPresentationRequest,
@@ -1696,6 +1864,77 @@ export class OsfoAgent extends Think<Env> {
           ),
         ),
       catch: () => modelCallUsageDispatchUnavailable(usage),
+    });
+  }
+
+  #recordFileAllowance(
+    allowancePeriodId: AllowancePeriodId,
+    source: AllowanceSource,
+    items: ReadonlyArray<AllowanceItem>,
+  ) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return new FileCapabilityUnavailable({
+        cause: invalidOsfoEnvironment,
+        message: "File allowance recording has no valid Worker runtime",
+        operation: "recordAllowance",
+      });
+    }
+    return Effect.tryPromise({
+      try: () =>
+        runtime.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const database = yield* workerDatabase;
+              const allowances = Allowances.make({
+                billing: Billing.make(database),
+                catalog: retainedCatalog,
+                now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
+              });
+              return yield* allowances.record(allowancePeriodId, source, items);
+            }),
+          ),
+        ),
+      catch: (cause) =>
+        new FileCapabilityUnavailable({
+          cause,
+          message: "File allowance recording is unavailable",
+          operation: "recordAllowance",
+        }),
+    });
+  }
+
+  #currentFileAuthorizationContext(
+    context: AuthorizationContext,
+  ): Effect.Effect<AuthorizationContext, FileCapabilityUnavailable> {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new FileCapabilityUnavailable({
+          cause: invalidOsfoEnvironment,
+          message: "Current file authorization has no valid Worker runtime",
+          operation: "readCurrentAuthorization",
+        }),
+      );
+    }
+    const agentId = AgentId.make(this.name);
+    return Effect.tryPromise({
+      try: () =>
+        runtime.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+              const database = yield* workerDatabase;
+              return yield* loadCurrentFileAuthorization(database, agentId, context, now);
+            }),
+          ),
+        ),
+      catch: (cause) =>
+        new FileCapabilityUnavailable({
+          cause,
+          message: "Current file authorization facts are unavailable",
+          operation: "readCurrentAuthorization",
+        }),
     });
   }
 

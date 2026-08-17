@@ -34,6 +34,7 @@ export default defineConfig({
     fileParallelism: false,
     include: [
       "test/action-approval.test.ts",
+      "test/file-ingestion.test.ts",
       "test/document-artifacts-r2.test.ts",
       "test/document-compute.test.ts",
       "test/document-download.test.ts",

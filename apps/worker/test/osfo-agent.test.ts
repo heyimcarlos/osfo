@@ -1783,7 +1783,7 @@ describe("Osfo Agent and Think Session foundation", () => {
     }),
   );
 
-  it.effect("upgrades a populated 0002 Agent database to 0003 without losing receipts", () =>
+  it.effect("upgrades a populated 0002 Agent database through 0004 without losing receipts", () =>
     Effect.gen(function* () {
       const agent = env.OSFO_AGENT.getByName("agent-migration-populated-0002");
       const observed = yield* Effect.promise(() =>
@@ -1839,8 +1839,8 @@ describe("Osfo Agent and Think Session foundation", () => {
       expect(observed).toEqual({
         ownership: { ownership_sequence: 1, session_id: "session-upgrade-0002" },
         receipt: { receipt_id: "receipt-upgrade-0002", session_id: "session-upgrade-0002" },
-        repeated: { appliedVersions: [], currentVersion: 4 },
-        upgraded: { appliedVersions: [4], currentVersion: 4 },
+        repeated: { appliedVersions: [], currentVersion: 5 },
+        upgraded: { appliedVersions: [4, 5], currentVersion: 5 },
       });
     }),
   );
@@ -2178,6 +2178,9 @@ const whatsappAuthorization = (channelBindingId: string) => ({
 });
 
 const resetOsfoTables = (storage: DurableObjectStorage): void => {
+  storage.sql.exec("DROP TABLE IF EXISTS osfo_file_deletions");
+  storage.sql.exec("DROP TABLE IF EXISTS osfo_file_analyses");
+  storage.sql.exec("DROP TABLE IF EXISTS osfo_files");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_acceptance_receipts");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_session_command_receipts");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_model_call_usage_evidence");

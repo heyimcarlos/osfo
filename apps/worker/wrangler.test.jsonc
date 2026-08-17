@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "osfo-test",
   "main": "src/worker.ts",
-  "rules": [{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }],
+  "rules": [{ "type": "Text", "globs": ["**/*.sql", "**/*.py"], "fallthrough": true }],
   "compatibility_date": "2026-08-12",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
@@ -22,7 +22,10 @@
       "localConnectionString": "postgres://osfo:osfo@127.0.0.1:5432/osfo_test",
     },
   ],
-  "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "osfo-test-generated-artifacts" }],
+  "r2_buckets": [
+    { "binding": "ARTIFACTS", "bucket_name": "osfo-test-generated-artifacts" },
+    { "binding": "FILES", "bucket_name": "osfo-test-files" },
+  ],
   "durable_objects": {
     "bindings": [
       { "name": "DOCUMENT_SANDBOX", "class_name": "Sandbox" },

@@ -292,6 +292,17 @@ describe("Authorization", () => {
     });
 
     expect(authorization.recheck(exhausted, fileRead)).toEqual({ _tag: "Permitted" });
+    const admittedOversizedUpload = {
+      ...operation("file.upload"),
+      bytes: 10_000_001n,
+    } as const;
+    expect(authorization.admit(context, admittedOversizedUpload)).toMatchObject({
+      _tag: "Denied",
+      reason: "operationLimitExceeded",
+    });
+    expect(authorization.recheck(context, admittedOversizedUpload)).toEqual({
+      _tag: "Permitted",
+    });
     expect(
       authorization.recheck(
         {

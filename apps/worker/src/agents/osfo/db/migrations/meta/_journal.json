@@ -29,6 +29,13 @@
       "when": 1786947502227,
       "tag": "0003_typical_sir_ram",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1786976891440,
+      "tag": "0004_sudden_invaders",
+      "breakpoints": true
     }
   ]
 }

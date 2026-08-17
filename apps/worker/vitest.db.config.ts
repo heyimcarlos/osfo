@@ -17,6 +17,7 @@ export default defineConfig({
       "test/billing-return.test.ts",
       "test/checkout-evidence.test.ts",
       "test/db.test.ts",
+      "test/file-content.test.ts",
       "test/deletion-case-authority.test.ts",
       "test/document-generation.test.ts",
       "test/gmail.test.ts",

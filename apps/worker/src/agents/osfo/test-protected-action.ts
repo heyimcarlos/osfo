@@ -10,10 +10,7 @@ import {
 import { AuthorizationOperation } from "../../domain/authorization-operation";
 import { retainedCatalog } from "../../domain/plan-policy";
 import * as ActionExecutor from "../../services/action-executor";
-import {
-  AuthorizationContext,
-  make as makeAuthorization,
-} from "../../services/authorization";
+import { AuthorizationContext, make as makeAuthorization } from "../../services/authorization";
 import {
   ActionPresentation,
   ActionPresentationId,

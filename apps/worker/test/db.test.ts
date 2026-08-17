@@ -2,14 +2,16 @@ import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { expect, layer } from "@effect/vitest";
 import { agents } from "@osfo/db/schema/agents";
 import { allowancePeriods } from "@osfo/db/schema/allowances";
-import { users as usersTable } from "@osfo/db/schema/auth";
+import { sessions, users as usersTable } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { applyMigrations, makeTestDatabase } from "@osfo/db/testing";
 import { eq } from "drizzle-orm";
 import { DateTime, Effect, Layer } from "effect";
 
 import { database, dbUnavailable, layerFromDatabase } from "../src/db";
-import { AgentId, UserId } from "../src/domain";
+import { AgentId, PlanPolicyVersion, UserId } from "../src/domain";
+import { loadCurrentFileAuthorization } from "../src/integrations/postgres/file-authorization";
+import { AuthorizationContext } from "../src/services/authorization";
 import * as AgentDirectory from "../src/services/agent-directory";
 import * as Registration from "../src/services/registration";
 
@@ -160,6 +162,88 @@ layer(serviceLayer)("Control-plane services", (it) => {
       expect(storedSubscriptions).toEqual([]);
       expect(storedPeriods).toEqual([]);
       expect(storedUser?.registrationCompletedAt).toBeNull();
+    }),
+  );
+
+  it.effect("loads current file authority and fails closed when persisted facts disappear", () =>
+    Effect.gen(function* () {
+      const db = yield* database;
+      const registration = yield* Registration.Service;
+      const userId = UserId.make("user-file-authority");
+      yield* seedUser(userId);
+      const registered = yield* registration.complete(userId);
+      const now = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z"));
+      yield* Effect.promise(() =>
+        db.insert(sessions).values({
+          expiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-09-01T00:00:00.000Z")),
+          id: "file-session",
+          token: "file-session-token",
+          userId,
+        }),
+      );
+      const context = AuthorizationContext.make({
+        allowance: { _tag: "Unavailable" },
+        approval: null,
+        authority: {
+          _tag: "AuthSession",
+          authSessionId: "file-session",
+          expiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-09-01T00:00:00.000Z")),
+          userId,
+        },
+        deletionAccess: { _tag: "DeletionAccessAvailable" },
+        gmailConnection: null,
+        liveFacts: {
+          activeGmSummonsInSession: 0n,
+          activeReminders: 0n,
+          concurrentWorkflows: 0n,
+          retainedFileBytes: 0n,
+        },
+        now,
+        originatingAuthority: { _tag: "AuthSession", authSessionId: "file-session" },
+        requestVendorUsdMicros: 0n,
+        resourceOwnerUserId: userId,
+        subscription: { plan: "free", planPolicyVersion: PlanPolicyVersion.make("launch-v1") },
+        user: { _tag: "ActiveUser", userId },
+      });
+
+      const current = yield* loadCurrentFileAuthorization(db, registered.agentId, context, now);
+      const suspended = yield* loadCurrentFileAuthorization(
+        db,
+        registered.agentId,
+        {
+          ...context,
+          user: { _tag: "SuspendedUser", userId },
+        },
+        now,
+      );
+      const deletionRevoked = yield* loadCurrentFileAuthorization(
+        db,
+        registered.agentId,
+        {
+          ...context,
+          deletionAccess: { _tag: "DeletionAccessRevoked" },
+        },
+        now,
+      );
+      yield* Effect.promise(() => db.delete(sessions).where(eq(sessions.id, "file-session")));
+      const revoked = yield* loadCurrentFileAuthorization(db, registered.agentId, context, now);
+      const otherUserId = UserId.make("user-file-authority-other");
+      yield* seedUser(otherUserId);
+      const otherAgent = yield* registration.complete(otherUserId);
+      const wrongAgent = yield* loadCurrentFileAuthorization(db, otherAgent.agentId, context, now);
+      yield* Effect.promise(() =>
+        db.delete(billingSubscriptions).where(eq(billingSubscriptions.userId, userId)),
+      );
+      const missingSubscription = yield* Effect.flip(
+        loadCurrentFileAuthorization(db, registered.agentId, context, now),
+      );
+
+      expect(current.authority).toMatchObject({ _tag: "AuthSession" });
+      expect(suspended.user).toMatchObject({ _tag: "SuspendedUser" });
+      expect(deletionRevoked.deletionAccess).toMatchObject({ _tag: "DeletionAccessRevoked" });
+      expect(revoked.authority).toMatchObject({ _tag: "RevokedAuthSession" });
+      expect(wrongAgent.authority).toBeNull();
+      expect(missingSubscription).toMatchObject({ _tag: "CurrentFileAuthorizationUnavailable" });
     }),
   );
 });
