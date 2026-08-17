@@ -5,9 +5,10 @@ import { HttpEffect, HttpRouter } from "effect/unstable/http";
 import { handleAuthRequest } from "./cors";
 import * as Db from "./db";
 import { TwilioVerify } from "./integrations/twilio/verify";
-import * as UserLifecyclePostgres from "./integrations/postgres/user-lifecycle";
+import * as DeletionCasePostgres from "./integrations/postgres/deletion-case";
+import * as UserSuspensionPostgres from "./integrations/postgres/user-suspension";
 import { UserId } from "./domain";
-import * as UserLifecycle from "./services/user-lifecycle";
+import * as AccountAccess from "./services/account-access";
 
 /** Trusted Better Auth configuration parsed from Worker bindings. */
 export interface AuthRouteConfig {
@@ -46,7 +47,8 @@ export const layer = (options: Options) => {
 export const make = (config: AuthRouteConfig) =>
   Effect.gen(function* () {
     const database = yield* Db.database;
-    const userLifecyclePersistence = yield* UserLifecyclePostgres.make;
+    const deletionCases = yield* DeletionCasePostgres.make;
+    const userSuspensions = yield* UserSuspensionPostgres.make;
     const twilio = yield* TwilioVerify;
     const context = yield* Effect.context();
     const runPromise = Effect.runPromiseWith(context);
@@ -54,9 +56,7 @@ export const make = (config: AuthRouteConfig) =>
     return createAuth({
       baseURL: config.baseURL,
       canCreateSession: (userId) =>
-        runPromise(
-          UserLifecycle.canCreateAuthSession(userLifecyclePersistence, UserId.make(userId)),
-        ),
+        runPromise(AccountAccess.canAccess(userSuspensions, deletionCases, UserId.make(userId))),
       database,
       dashboard:
         config.dashboard.kind === "enabled"

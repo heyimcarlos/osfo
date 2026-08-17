@@ -12,7 +12,7 @@ export default defineConfig({
       "test/plan-policy.test.ts",
       "test/registration.test.ts",
       "test/twilio-verify.test.ts",
-      "test/user-lifecycle.test.ts",
+      "test/account-authorities.test.ts",
     ],
     testTimeout: 15_000,
   },

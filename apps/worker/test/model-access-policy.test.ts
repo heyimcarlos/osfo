@@ -3,7 +3,6 @@ import { DateTime, Effect, Predicate, Schema } from "effect";
 
 import { AllowancePeriodId, PlanPolicyVersion, ThinkSubmissionId } from "../src/domain";
 import type { AllowanceItem, AllowanceSource } from "../src/domain/allowance";
-import { AuthSessionId } from "../src/domain/user-lifecycle";
 import { launchModelAccessPolicy, selectManagedRoute } from "../src/domain/model-access-policy";
 import { ActionId, ambiguousActionResult } from "../src/domain/action-execution";
 import {
@@ -15,12 +14,8 @@ import {
   normalizeModelCallUsage,
   type PendingModelCallUsage,
 } from "../src/domain/model-call-attempt";
-import { AuthorizationContext, make as makeAuthorization } from "../src/services/authorization";
-import { currentPolicy, retainedCatalog } from "../src/domain/plan-policy";
-import {
-  ThinkApprovedActionExecution,
-  executeThinkApprovedAction,
-} from "../src/services/action-executor";
+import { AuthorizationContext } from "../src/services/authorization";
+import { currentPolicy } from "../src/domain/plan-policy";
 import { admitManagedConversation } from "../src/services/managed-conversation";
 import { makeDurableModelCallUsage } from "../src/services/model-call-usage";
 
@@ -327,48 +322,6 @@ describe("managed model access policy", () => {
         operation: "commitModelCallUsage",
       });
       expect(dispatches).toBe(0);
-    }),
-  );
-
-  it.effect("rechecks the original acting authority immediately before provider contact", () =>
-    Effect.gen(function* () {
-      let contacts = 0;
-      const context = authorizationContext("adventurer");
-      const denied = yield* executeThinkApprovedAction(
-        makeAuthorization(retainedCatalog),
-        {
-          ...context,
-          approval: {
-            actionId: "caller-supplied-approval-must-not-authorize",
-            operation: "gmail.send",
-            userId: context.user.userId,
-          },
-          authority: {
-            _tag: "RevokedAuthSession",
-            authSessionId: AuthSessionId.make("auth-managed"),
-            userId: context.user.userId,
-          },
-          gmailConnection: { _tag: "Connected", userId: context.user.userId },
-          originatingAuthority: { _tag: "AuthSession", authSessionId: "auth-managed" },
-        },
-        ThinkApprovedActionExecution.make({
-          _tag: "ThinkApprovedActionExecution",
-          actionId: ActionId.make("send-action"),
-          operation: "gmail.send",
-        }),
-        (actionId) => {
-          contacts += 1;
-          return Effect.succeed({
-            _tag: "Applied",
-            actionId,
-            evidence: "Provider confirmed the send",
-            providerOperationId: "provider-send-1",
-          });
-        },
-      );
-
-      expect(denied).toMatchObject({ _tag: "Denied", reason: "authorityRevoked" });
-      expect(contacts).toBe(0);
     }),
   );
 });

@@ -24,12 +24,11 @@ export const DbOperation = Schema.Literals([
   "enrollWhatsApp",
   "expireRegistrationInvitation",
   "resolveAgentOwner",
-  "inspectUserLifecycle",
+  "inspectChannelBinding",
+  "inspectUserSuspension",
+  "inspectDeletionCase",
   "suspendUser",
   "restoreUser",
-  "revokeAuthSession",
-  "beginPhoneReplacement",
-  "replacePhoneAccount",
   "requestDeletion",
 ]);
 

@@ -10,22 +10,14 @@ import {
   type AuthorizationOperationName as AuthorizationOperationNameType,
 } from "../domain/authorization-operation";
 import { type Capability, type PlanPolicyCatalog, policyFor } from "../domain/plan-policy";
-import {
-  AuthSessionAuthorityFact,
-  DeletionAccessFact,
-  UserAccessFact,
-} from "../domain/user-lifecycle";
+import { AuthSessionAuthorityFact } from "../domain/auth-session";
+import { ChannelBindingAuthorityFact } from "../domain/channel-binding";
+import { DeletionAccessFact } from "../domain/deletion-case";
+import { UserAccessFact } from "../domain/user-suspension";
 
 const ActingAuthority = Schema.Union([
   AuthSessionAuthorityFact,
-  Schema.TaggedStruct("ChannelBinding", {
-    channelBindingId: Schema.String,
-    userId: UserId,
-  }),
-  Schema.TaggedStruct("RevokedChannelBinding", {
-    channelBindingId: Schema.String,
-    userId: UserId,
-  }),
+  ChannelBindingAuthorityFact,
   Schema.TaggedStruct("DurableTrigger", {
     triggerId: Schema.String,
     triggerType: Schema.Literals(["scheduledTask", "workflow"]),

@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { DateTime, Schema } from "effect";
 
 import { UserId } from "../src/domain";
-import { AuthSessionId } from "../src/domain/user-lifecycle";
+import { AuthSessionId } from "../src/domain/auth-session";
 import type { AuthorizationOperationName } from "../src/domain/authorization-operation";
 import { AuthorizationContext, make } from "../src/services/authorization";
 import { retainedCatalog } from "../src/domain/plan-policy";

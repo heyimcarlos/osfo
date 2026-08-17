@@ -6,6 +6,17 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
 import { phoneNumber, type PhoneNumberOptions } from "better-auth/plugins/phone-number";
 
+export {
+  createAuthSessionAuthority,
+  createPhoneAccountAuthority,
+  type AuthSessionAuthority,
+  type AuthSessionRecord,
+  type PhoneAccountAuthority,
+  type PhoneAccountRecord,
+  type ReplacePhoneAccountResult,
+  type RevokeAuthSessionResult,
+} from "./authority";
+
 /** Runtime dependencies and trusted configuration for one Better Auth instance. */
 export interface AuthOptions {
   readonly baseURL: string;
