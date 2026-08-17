@@ -70,20 +70,96 @@ const MessageContext = Schema.Struct({
     }),
   ),
 });
+const MessageIdentity = Schema.Struct({
+  acknowledged: Schema.Boolean,
+  created_timestamp: Schema.Finite,
+  hash: Schema.String,
+});
+const MessageReferral = Schema.Struct({
+  body: Schema.optional(Schema.String),
+  headline: Schema.optional(Schema.String),
+  image_url: Schema.optional(Schema.String),
+  media_type: Schema.optional(Schema.Literals(["image", "video"])),
+  source_id: Schema.String,
+  source_type: Schema.Literals(["ad", "post"]),
+  source_url: Schema.String,
+  thumbnail_url: Schema.optional(Schema.String),
+  video_url: Schema.optional(Schema.String),
+});
 const MessageBase = {
   context: Schema.optional(MessageContext),
   from: WhatsAppDirectChannelIdentity,
   id: ProviderMessageId,
+  identity: Schema.optional(MessageIdentity),
+  referral: Schema.optional(MessageReferral),
   timestamp: Schema.String,
   to: Schema.optional(WhatsAppDirectChannelIdentity),
 };
-const UnsupportedMessageType = Schema.String.check(
-  Schema.makeFilter(
-    (value) =>
-      (value !== "text" && value !== "interactive" && value !== "button") ||
-      "must not shadow a supported message type",
+const MediaObject = Schema.Struct({
+  caption: Schema.optional(Schema.String),
+  filename: Schema.optional(Schema.String),
+  id: Schema.String,
+  mime_type: Schema.String,
+  sha256: Schema.String,
+});
+const Contact = Schema.Struct({
+  addresses: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        city: Schema.optional(Schema.String),
+        country: Schema.optional(Schema.String),
+        country_code: Schema.optional(Schema.String),
+        state: Schema.optional(Schema.String),
+        street: Schema.optional(Schema.String),
+        type: Schema.optional(Schema.String),
+        zip: Schema.optional(Schema.String),
+      }),
+    ),
   ),
-);
+  birthday: Schema.optional(Schema.String),
+  emails: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        email: Schema.optional(Schema.String),
+        type: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+  name: Schema.Struct({
+    first_name: Schema.optional(Schema.String),
+    formatted_name: Schema.String,
+    last_name: Schema.optional(Schema.String),
+    middle_name: Schema.optional(Schema.String),
+    prefix: Schema.optional(Schema.String),
+    suffix: Schema.optional(Schema.String),
+  }),
+  org: Schema.optional(
+    Schema.Struct({
+      company: Schema.optional(Schema.String),
+      department: Schema.optional(Schema.String),
+      title: Schema.optional(Schema.String),
+    }),
+  ),
+  phones: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        phone: Schema.optional(Schema.String),
+        type: Schema.optional(Schema.String),
+        wa_id: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+  urls: Schema.optional(
+    Schema.Array(
+      Schema.Struct({ type: Schema.optional(Schema.String), url: Schema.optional(Schema.String) }),
+    ),
+  ),
+});
+const MetaMessageError = Schema.Struct({
+  code: Schema.Finite,
+  details: Schema.String,
+  title: Schema.String,
+});
 const MetaMessage = Schema.Union([
   Schema.Struct({
     ...MessageBase,
@@ -125,7 +201,68 @@ const MetaMessage = Schema.Union([
     button: Schema.Struct({ payload: Schema.String, text: WhatsAppMessageText }),
     type: Schema.Literal("button"),
   }),
-  Schema.Struct({ ...MessageBase, type: UnsupportedMessageType }),
+  Schema.Struct({ ...MessageBase, image: MediaObject, type: Schema.Literal("image") }),
+  Schema.Struct({ ...MessageBase, audio: MediaObject, type: Schema.Literal("audio") }),
+  Schema.Struct({ ...MessageBase, document: MediaObject, type: Schema.Literal("document") }),
+  Schema.Struct({
+    ...MessageBase,
+    sticker: Schema.Struct({ ...MediaObject.fields, animated: Schema.optional(Schema.Boolean) }),
+    type: Schema.Literal("sticker"),
+  }),
+  Schema.Struct({ ...MessageBase, video: MediaObject, type: Schema.Literal("video") }),
+  Schema.Struct({
+    ...MessageBase,
+    contacts: Schema.Array(Contact),
+    type: Schema.Literal("contacts"),
+  }),
+  Schema.Struct({
+    ...MessageBase,
+    location: Schema.Struct({
+      address: Schema.optional(Schema.String),
+      latitude: Schema.Finite,
+      longitude: Schema.Finite,
+      name: Schema.optional(Schema.String),
+      url: Schema.optional(Schema.String),
+    }),
+    type: Schema.Literal("location"),
+  }),
+  Schema.Struct({
+    ...MessageBase,
+    reaction: Schema.Struct({ emoji: Schema.String, message_id: ProviderMessageId }),
+    type: Schema.Literal("reaction"),
+  }),
+  Schema.Struct({
+    ...MessageBase,
+    order: Schema.Struct({
+      catalog_id: Schema.String,
+      product_items: Schema.Array(
+        Schema.Struct({
+          currency: Schema.String,
+          item_price: Schema.String,
+          product_retailer_id: Schema.String,
+          quantity: Schema.String,
+        }),
+      ),
+      text: Schema.optional(Schema.String),
+    }),
+    type: Schema.Literal("order"),
+  }),
+  Schema.Struct({
+    ...MessageBase,
+    system: Schema.Struct({
+      body: Schema.optional(Schema.String),
+      identity: Schema.optional(Schema.String),
+      new_wa_id: Schema.optional(WhatsAppDirectChannelIdentity),
+      type: Schema.String,
+      user: Schema.optional(WhatsAppDirectChannelIdentity),
+    }),
+    type: Schema.Literal("system"),
+  }),
+  Schema.Struct({
+    ...MessageBase,
+    errors: Schema.Array(MetaMessageError),
+    type: Schema.Literal("unknown"),
+  }),
 ]);
 const MetaStatus = Schema.Struct({
   conversation: Schema.optional(

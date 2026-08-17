@@ -371,6 +371,12 @@ describe("Meta WhatsApp adapter", () => {
         webhook([
           {
             from: "14165550123",
+            image: {
+              caption: "A reference photo",
+              id: "2754859441498128",
+              mime_type: "image/jpeg",
+              sha256: "81d3bd8a8db4868c9520ed47186e8b7c5789e61ff79f7f834be6950b808a90d3",
+            },
             id: "wamid.image",
             timestamp: "1786924800",
             type: "image",
@@ -396,6 +402,145 @@ describe("Meta WhatsApp adapter", () => {
         },
       ]);
       expect(status).toEqual([{ _tag: "NonMessageEvent", phoneNumberId: "123456789" }]);
+    }),
+  );
+
+  it.effect("classifies the finite documented unsupported direct-message union", () =>
+    Effect.gen(function* () {
+      const media = {
+        id: "media-1",
+        mime_type: "application/octet-stream",
+        sha256: "media-sha256",
+      };
+      const messages = [
+        { ...unsupportedMessage("audio"), audio: media },
+        { ...unsupportedMessage("video"), video: { ...media, caption: "A video" } },
+        {
+          ...unsupportedMessage("document"),
+          document: { ...media, caption: "A document", filename: "brief.pdf" },
+        },
+        {
+          ...unsupportedMessage("sticker"),
+          sticker: { ...media, animated: false, mime_type: "image/webp" },
+        },
+        {
+          ...unsupportedMessage("location"),
+          location: {
+            address: "1 Main Street",
+            latitude: 43.6532,
+            longitude: -79.3832,
+            name: "Toronto",
+          },
+        },
+        {
+          ...unsupportedMessage("contacts"),
+          contacts: [
+            {
+              name: { first_name: "Ada", formatted_name: "Ada Lovelace" },
+              phones: [{ phone: "+14165550124", type: "CELL", wa_id: "14165550124" }],
+            },
+          ],
+        },
+        {
+          ...unsupportedMessage("reaction"),
+          reaction: { emoji: "👍", message_id: "wamid.reacted-to" },
+        },
+        {
+          ...unsupportedMessage("order"),
+          context: { from: "14165550100", id: "wamid.catalog-message" },
+          order: {
+            catalog_id: "catalog-1",
+            product_items: [
+              {
+                currency: "CAD",
+                item_price: "10.00",
+                product_retailer_id: "product-1",
+                quantity: "2",
+              },
+            ],
+            text: "Two please",
+          },
+        },
+        {
+          ...unsupportedMessage("system"),
+          system: {
+            body: "The customer changed their phone number",
+            new_wa_id: "14165550124",
+            type: "user_changed_number",
+          },
+        },
+        {
+          ...unsupportedMessage("unknown"),
+          errors: [
+            {
+              code: 130_501,
+              details: "Message type is not currently supported",
+              title: "Unsupported message type",
+            },
+          ],
+        },
+      ];
+      const body = encodeJsonText(webhook(messages));
+
+      const decoded = yield* authenticateAndDecode(
+        request(body, yield* sign(body, "meta-app-secret")),
+        Redacted.make("meta-app-secret"),
+      );
+
+      expect(decoded).toEqual(
+        [
+          "audio",
+          "video",
+          "document",
+          "sticker",
+          "location",
+          "contacts",
+          "reaction",
+          "order",
+          "system",
+          "unknown",
+        ].map((type) => ({
+          _tag: "UnsupportedDirectMessage",
+          phoneNumberId: "123456789",
+          providerMessageId: `wamid.${type}`,
+        })),
+      );
+    }),
+  );
+
+  it.effect("rejects malformed known content and unrecognized message types safely", () =>
+    Effect.gen(function* () {
+      const invalidMessages = [
+        {
+          ...unsupportedMessage("image"),
+          image: { id: "media-1", mime_type: "image/jpeg" },
+        },
+        {
+          ...unsupportedMessage("image"),
+          image: {
+            id: "media-1",
+            mime_type: "image/jpeg",
+            sha256: "media-sha256",
+            unexpected: true,
+          },
+        },
+        unsupportedMessage("future-provider-type"),
+      ];
+      const rejected = yield* Effect.forEach(invalidMessages, (message) => {
+        const body = encodeJsonText(webhook([message]));
+        return sign(body, "meta-app-secret").pipe(
+          Effect.flatMap((signature) =>
+            authenticateAndDecode(request(body, signature), Redacted.make("meta-app-secret")),
+          ),
+          Effect.flip,
+        );
+      });
+
+      expect(rejected).toEqual(
+        Array.from({ length: 3 }, () =>
+          expect.objectContaining({ _tag: "MetaWebhookPayloadInvalid" }),
+        ),
+      );
     }),
   );
 
@@ -446,6 +591,13 @@ const textMessage = () => ({
   text: { body: "Please help" },
   timestamp: "1786924800",
   type: "text",
+});
+
+const unsupportedMessage = (type: string) => ({
+  from: "14165550123",
+  id: `wamid.${type}`,
+  timestamp: "1786924800",
+  type,
 });
 
 const statusWebhook = () => ({
