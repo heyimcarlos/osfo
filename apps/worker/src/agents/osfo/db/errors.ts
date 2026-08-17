@@ -179,6 +179,8 @@ export class AgentStoreRecordInvalid extends Schema.TaggedError<AgentStoreRecord
 export const AgentRequestOperation = Schema.Literals([
   "commitWelcome",
   "cancelManagedConversation",
+  "boundCoreMemory",
+  "correctCoreMemory",
   "initialize",
   "readRoute",
   "readSession",

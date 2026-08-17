@@ -60,6 +60,26 @@ import {
   type RuntimeProbeResult,
 } from "../../layers";
 import { makeAgentDb } from "./db/client";
+import {
+  BoundCoreMemoryInput,
+  type BoundCoreMemoryEncoded,
+  boundCoreMemory,
+  clearCoreMemory,
+  configureCoreMemory,
+  coreMemoryClearActionName,
+  type CoreMemoryBudgetExceeded,
+  type CoreMemoryBound,
+  type CoreMemoryCorrected,
+  type CoreMemoryInspected,
+  type CoreMemoryUnavailable,
+  CorrectCoreMemoryInput,
+  type CorrectCoreMemoryEncoded,
+  correctCoreMemory,
+  inspectCoreMemory,
+  makeCoreMemoryClearAction,
+  presentCoreMemoryClearAction,
+  sanitizeCoreMemoryClearActionInput,
+} from "./core-memory";
 import * as Allowances from "../../services/allowances";
 import { makeActionApprovals } from "../../services/action-approvals";
 import { makeDurableModelCallUsage } from "../../services/model-call-usage";
@@ -251,7 +271,10 @@ export class OsfoAgent extends Think<Env> {
       },
     }),
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-    present: presentTestProtectedAction,
+    present: (pending) =>
+      pending.descriptor.action === coreMemoryClearActionName
+        ? presentCoreMemoryClearAction(pending)
+        : presentTestProtectedAction(pending),
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
   readonly #modelCallUsage = makeDurableModelCallUsage({
@@ -272,16 +295,25 @@ export class OsfoAgent extends Think<Env> {
     return launchModelAccessPolicy.plans.free.route;
   }
 
-  /** Register a typed protected Action only in the Worker test stage. */
+  /** Register Core Memory clearing and the test-stage protected Action. */
   override getActions() {
     const stage = decodeOsfoStage(this.env.OSFO_STAGE);
-    if (Option.isNone(stage) || stage.value !== "test") return {};
-    return {
+    const coreMemory = {
+      [coreMemoryClearActionName]: makeCoreMemoryClearAction({
+        clear: async (input) => {
+          await this.#migrationsReady;
+          await this.#activateCurrentSession();
+          return runRpc(clearCoreMemory(this.session, input));
+        },
+      }),
+    };
+    if (Option.isNone(stage) || stage.value !== "test") return coreMemory;
+    return Object.assign(coreMemory, {
       [testProtectedActionName]: makeTestProtectedAction({
         readState: () =>
           this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
       }),
-    };
+    });
   }
 
   /** Keep inherited pending-Approval RPC output client-safe for every registered Action. */
@@ -294,14 +326,23 @@ export class OsfoAgent extends Think<Env> {
               input: sanitizeTestProtectedActionInput(approval.descriptor.input),
             }),
           })
-        : Object.assign({}, approval, {
-            descriptor: Object.assign({}, approval.descriptor, { input: {} }),
-          }),
+        : approval.source === "action" && approval.descriptor.action === coreMemoryClearActionName
+          ? Object.assign({}, approval, {
+              descriptor: Object.assign({}, approval.descriptor, {
+                input: sanitizeCoreMemoryClearActionInput(approval.descriptor.input),
+              }),
+            })
+          : Object.assign({}, approval, {
+              descriptor: Object.assign({}, approval.descriptor, { input: {} }),
+            }),
     );
   }
 
   /** Apply only the route and limits pinned to the current durable Think Submission. */
-  override beforeTurn(_context: TurnContext): Promise<TurnConfig> {
+  override async beforeTurn(_context: TurnContext): Promise<TurnConfig> {
+    // Think preserves prompt snapshots after tool writes. Refresh here so the next turn always
+    // sees the latest Agent-wide Core Memory without changing the current turn's cached prefix.
+    await this.session.refreshSystemPrompt();
     return Effect.runPromise(
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata).pipe(
         Effect.map((metadata) => {
@@ -408,14 +449,60 @@ export class OsfoAgent extends Think<Env> {
   override async configureSession(session: Session): Promise<Session> {
     await this.#migrationsReady;
     const current = await Effect.runPromise(this.#readOptionalPrimarySessionId());
-    return session
+    const configured = session
       .forSession(Option.getOrElse(current, () => pendingSessionId))
+      .withContext("Operating Contract", {
+        provider: { get: async () => this.getSystemPrompt() },
+      });
+    const coreMemory = await configureCoreMemory(configured, this);
+    return coreMemory
       .onCompaction(
         createCompactFunction({
           summarize: summarizeManagedSession,
         }),
       )
       .compactAfter(launchModelAccessPolicy.plans.free.context.targetInputTokens);
+  }
+
+  /** Change one Core Memory block's independent User-selected budget. */
+  async boundCoreMemory(
+    input: BoundCoreMemoryEncoded,
+  ): Promise<
+    AgentRequestInvalid | CoreMemoryBound | CoreMemoryBudgetExceeded | CoreMemoryUnavailable
+  > {
+    await this.#migrationsReady;
+    await this.#activateCurrentSession();
+    const outcome = await runRpc(
+      Schema.decodeEffect(BoundCoreMemoryInput)(input).pipe(
+        Effect.mapError(() => invalidRequest("boundCoreMemory")),
+        Effect.flatMap((parsed) => boundCoreMemory(this.session, this, parsed)),
+      ),
+    );
+    if (Predicate.isTagged(outcome, "CoreMemoryBound")) await this.#activateCurrentSession();
+    return outcome;
+  }
+
+  /** Inspect Agent-wide User Context and Agent Notes before or after any turn. */
+  async inspectCoreMemory(): Promise<CoreMemoryInspected | CoreMemoryUnavailable> {
+    await this.#migrationsReady;
+    await this.#activateCurrentSession();
+    return runRpc(inspectCoreMemory(this.session));
+  }
+
+  /** Immediately replace one Core Memory block from a direct User correction. */
+  async correctCoreMemory(
+    input: CorrectCoreMemoryEncoded,
+  ): Promise<
+    AgentRequestInvalid | CoreMemoryBudgetExceeded | CoreMemoryCorrected | CoreMemoryUnavailable
+  > {
+    await this.#migrationsReady;
+    await this.#activateCurrentSession();
+    return runRpc(
+      Schema.decodeEffect(CorrectCoreMemoryInput)(input).pipe(
+        Effect.mapError(() => invalidRequest("correctCoreMemory")),
+        Effect.flatMap((parsed) => correctCoreMemory(this.session, parsed)),
+      ),
+    );
   }
 
   /** Reconcile committed Think messages when a new Agent activation starts. */

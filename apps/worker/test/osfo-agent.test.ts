@@ -22,6 +22,8 @@ import {
   applyMigrationChain,
 } from "../src/agents/osfo/db/migrate";
 import { makeAgentStore } from "../src/agents/osfo/db/store";
+import { coreMemoryClearActionName } from "../src/agents/osfo/core-memory";
+import type { OsfoAgent } from "../src/agents/osfo/agent";
 import {
   agentInitialization,
   committedTurns,
@@ -29,9 +31,206 @@ import {
   sessionOwnership,
 } from "../src/agents/osfo/db/schema";
 
-/* oxlint-disable effecttsgo/async-function, effecttsgo/prefer-typed-schema-decoder, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Worker integration tests cross Promise, RPC, Effect, and raw SQLite test boundaries. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/prefer-typed-schema-decoder, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, eslint/no-await-in-loop, eslint/no-underscore-dangle, osfo/no-chained-type-assertions, osfo/no-unknown-parameters, osfo/no-unknown-returns, typescript/await-thenable, typescript/no-unsafe-type-assertion -- Worker integration tests cross Promise, RPC, Effect, Think's private Action compiler, and raw SQLite test boundaries. */
 
 describe("Osfo Agent and Think Session foundation", () => {
+  it.effect("starts the first turn with empty independently bounded Core Memory blocks", () =>
+    Effect.gen(function* () {
+      const { agent } = yield* initializeCoreMemoryAgent("first-turn");
+
+      const memory = yield* Effect.promise(async () => await agent.inspectCoreMemory());
+
+      expect(memory).toEqual({
+        _tag: "CoreMemoryInspected",
+        agentNotes: { content: "", maxTokens: 800, tokens: 0 },
+        userContext: { content: "", maxTokens: 1_200, tokens: 0 },
+      });
+    }),
+  );
+
+  it.effect("applies a User correction immediately and keeps Core Memory across Sessions", () =>
+    Effect.gen(function* () {
+      const {
+        agent,
+        routeId,
+        sessionId: initialSessionId,
+      } = yield* initializeCoreMemoryAgent("correction");
+      const replacementSessionId = Schema.decodeUnknownSync(SessionId)(
+        "session-core-memory-correction-replacement",
+      );
+
+      yield* Effect.promise(async () =>
+        agent.correctCoreMemory({
+          block: "userContext",
+          content: "The User prefers long replies.",
+        }),
+      );
+      yield* Effect.promise(async () =>
+        agent.correctCoreMemory({
+          block: "agentNotes",
+          content: "Commitment: send the itinerary on Friday.",
+        }),
+      );
+      const corrected = yield* Effect.promise(async () =>
+        agent.correctCoreMemory({
+          block: "userContext",
+          content: "The User prefers concise replies.",
+        }),
+      );
+      yield* Effect.promise(async () =>
+        agent.replaceCurrentSession({
+          expectedCurrentSessionId: initialSessionId,
+          replacedAt: "2026-08-15T13:00:00.000Z",
+          replacementSessionId,
+          routeId,
+        }),
+      );
+      yield* Effect.promise(() => evictDurableObject(agent));
+      const memory = yield* Effect.promise(async () => await agent.inspectCoreMemory());
+
+      expect(corrected).toMatchObject({
+        _tag: "CoreMemoryCorrected",
+        block: "userContext",
+        content: "The User prefers concise replies.",
+      });
+      expect(memory).toMatchObject({
+        _tag: "CoreMemoryInspected",
+        agentNotes: { content: "Commitment: send the itinerary on Friday." },
+        userContext: { content: "The User prefers concise replies." },
+      });
+    }),
+  );
+
+  it.effect("clears one Core Memory block without changing the other block", () =>
+    Effect.gen(function* () {
+      const { agent } = yield* initializeCoreMemoryAgent("clear");
+      yield* Effect.promise(async () =>
+        agent.correctCoreMemory({ block: "userContext", content: "The User lives in Toronto." }),
+      );
+      yield* Effect.promise(async () =>
+        agent.correctCoreMemory({ block: "agentNotes", content: "Goal: prepare the itinerary." }),
+      );
+
+      const parked = yield* Effect.promise(() =>
+        parkCoreMemoryClearAction(agent, "action-clear-user-context", "userContext"),
+      );
+      const beforeApproval = yield* Effect.promise(async () => await agent.inspectCoreMemory());
+      const cleared = yield* Effect.promise(
+        async () => await agent.approveExecution(parked.executionId),
+      );
+      const memory = yield* Effect.promise(async () => await agent.inspectCoreMemory());
+
+      expect(parked).toMatchObject({ action: coreMemoryClearActionName, status: "paused" });
+      expect(beforeApproval).toMatchObject({
+        userContext: { content: "The User lives in Toronto." },
+      });
+      expect(cleared).toEqual({ _tag: "CoreMemoryCleared", block: "userContext" });
+      expect(memory).toMatchObject({
+        _tag: "CoreMemoryInspected",
+        agentNotes: { content: "Goal: prepare the itinerary." },
+        userContext: { content: "", tokens: 0 },
+      });
+    }),
+  );
+
+  it.effect("gives every turn proactive memory tools with inference and reasoning safeguards", () =>
+    Effect.gen(function* () {
+      const { agent } = yield* initializeCoreMemoryAgent("policy");
+
+      const context = yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance) => {
+          const tools = await instance.session.tools();
+          const setContext = tools.set_context;
+          if (setContext?.execute === undefined) {
+            return { prompt: await instance.session.refreshSystemPrompt(), tools: [] };
+          }
+          await setContext.execute(
+            {
+              action: "replace",
+              content: "The User prefers calendar times in Eastern Time.",
+              label: "User Context",
+            },
+            { context: undefined, messages: [], toolCallId: "tool-core-memory-proactive" },
+          );
+          return {
+            prompt: await instance.session.refreshSystemPrompt(),
+            tools: Object.keys(tools),
+          };
+        }),
+      );
+      yield* Effect.promise(() => evictDurableObject(agent));
+      const memory = yield* Effect.promise(async () => await agent.inspectCoreMemory());
+
+      expect(context.tools).toContain("set_context");
+      expect(context.prompt).toContain("Proactively keep only narrow durable User facts");
+      expect(context.prompt).toContain("require strong direct evidence or User confirmation");
+      expect(context.prompt).toContain("Never store hidden reasoning, chain-of-thought");
+      expect(context.prompt).toContain("Store the narrowest durable conclusion");
+      expect(memory).toMatchObject({
+        userContext: { content: "The User prefers calendar times in Eastern Time." },
+      });
+    }),
+  );
+
+  it.effect("enforces each Core Memory block budget independently", () =>
+    Effect.gen(function* () {
+      const { agent } = yield* initializeCoreMemoryAgent("budgets");
+      const content = "fact ".repeat(690).trim();
+
+      const agentNotes = yield* Effect.promise(async () =>
+        agent.correctCoreMemory({ block: "agentNotes", content }),
+      );
+      const userContext = yield* Effect.promise(async () =>
+        agent.correctCoreMemory({ block: "userContext", content }),
+      );
+      const memory = yield* Effect.promise(async () => await agent.inspectCoreMemory());
+
+      expect(agentNotes).toMatchObject({
+        _tag: "CoreMemoryBudgetExceeded",
+        block: "agentNotes",
+        maxTokens: 800,
+      });
+      expect(userContext).toMatchObject({
+        _tag: "CoreMemoryCorrected",
+        block: "userContext",
+        maxTokens: 1_200,
+      });
+      expect(memory).toMatchObject({
+        agentNotes: { content: "", tokens: 0 },
+        userContext: { content },
+      });
+    }),
+  );
+
+  it.effect("persists independent User-selected Core Memory bounds", () =>
+    Effect.gen(function* () {
+      const { agent } = yield* initializeCoreMemoryAgent("user-bounds");
+
+      yield* Effect.promise(async () =>
+        agent.boundCoreMemory({ block: "userContext", maxTokens: 900 }),
+      );
+      yield* Effect.promise(async () =>
+        agent.boundCoreMemory({ block: "agentNotes", maxTokens: 400 }),
+      );
+      const overBound = yield* Effect.promise(async () =>
+        agent.correctCoreMemory({ block: "agentNotes", content: "fact ".repeat(350).trim() }),
+      );
+      yield* Effect.promise(() => evictDurableObject(agent));
+      const memory = yield* Effect.promise(async () => await agent.inspectCoreMemory());
+
+      expect(memory).toMatchObject({
+        _tag: "CoreMemoryInspected",
+        agentNotes: { maxTokens: 400 },
+        userContext: { maxTokens: 900 },
+      });
+      expect(overBound).toMatchObject({
+        _tag: "CoreMemoryBudgetExceeded",
+        block: "agentNotes",
+        maxTokens: 400,
+      });
+    }),
+  );
+
   it.effect("commits one localized welcome from accepted setup facts only", () =>
     Effect.gen(function* () {
       const agentId = Schema.decodeUnknownSync(AgentId)("agent-personal-welcome");
@@ -1193,6 +1392,59 @@ describe("Osfo Agent and Think Session foundation", () => {
     }),
   );
 });
+
+const initializeCoreMemoryAgent = (name: string) =>
+  Effect.gen(function* () {
+    const agentId = Schema.decodeUnknownSync(AgentId)(`agent-core-memory-${name}`);
+    const routeId = Schema.decodeUnknownSync(ConversationRouteId)(`route-core-memory-${name}`);
+    const sessionId = Schema.decodeUnknownSync(SessionId)(`session-core-memory-${name}`);
+    const agent = env.OSFO_AGENT.getByName(agentId);
+    yield* Effect.promise(
+      async () =>
+        await agent.initialize({
+          agentId,
+          initializationId: `init-core-memory-${name}`,
+          initializedAt: "2026-08-15T12:00:00.000Z",
+          routeId,
+          sessionId,
+        }),
+    );
+    return { agent, routeId, sessionId };
+  });
+
+const ParkedCoreMemoryAction = Schema.Struct({
+  action: Schema.String,
+  executionId: Schema.String,
+  status: Schema.String,
+});
+
+const parkCoreMemoryClearAction = (
+  agent: DurableObjectStub<OsfoAgent>,
+  toolCallId: string,
+  block: "agentNotes" | "userContext",
+) =>
+  runInDurableObject(agent, async (instance) => {
+    // SAFETY: Think has no public test driver for registered Actions. This reaches the same compiler seam as Think's durable-pause tests.
+    const compile = instance as unknown as {
+      _compileActionTools: () => Promise<
+        Record<
+          string,
+          {
+            execute?: (
+              input: unknown,
+              options: { messages?: []; toolCallId?: string },
+            ) => Promise<unknown>;
+          }
+        >
+      >;
+    };
+    const tools = await compile._compileActionTools();
+    const clear = tools[coreMemoryClearActionName];
+    if (clear?.execute === undefined) throw new Error("Core Memory clear Action is not registered");
+    return Schema.decodeUnknownSync(ParkedCoreMemoryAction)(
+      await clear.execute({ block }, { messages: [], toolCallId }),
+    );
+  });
 
 const resetOsfoTables = (storage: DurableObjectStorage): void => {
   storage.sql.exec("DROP TABLE IF EXISTS osfo_model_call_usage_evidence");
