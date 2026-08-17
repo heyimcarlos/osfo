@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { sessions, users, verifications } from "@osfo/db/schema/auth";
+import { userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { count, eq } from "drizzle-orm";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { HttpRouter } from "effect/unstable/http";
@@ -18,8 +19,8 @@ const authConfig = {
   trustedOrigins: ["https://osfo.test"],
 };
 
-describe("temporary credential authentication", () => {
-  it.effect("creates and signs in a User with an email and password", () =>
+describe("launch authentication policy", () => {
+  it.effect("does not expose email-and-password authentication", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
       (fixture) =>
@@ -35,25 +36,10 @@ describe("temporary credential authentication", () => {
             name: "Osfo Tester",
             password: "test-password",
           });
-          const signIn = yield* request(app.handler, "/auth/sign-in/email", {
-            email: "tester@osfo.test",
-            password: "test-password",
-          });
           const storedUsers = yield* Effect.promise(() => fixture.database.select().from(users));
-          const storedSessions = yield* Effect.promise(() =>
-            fixture.database.select().from(sessions),
-          );
 
-          expect(response.status).toBe(200);
-          expect(signIn.status).toBe(200);
-          expect(signIn.headers.get("set-cookie")).toContain("better-auth.session_token");
-          expect(response.headers.get("set-cookie")).toContain("better-auth.session_token");
-          expect(storedUsers).toHaveLength(1);
-          expect(storedUsers[0]).toMatchObject({
-            email: "tester@osfo.test",
-            name: "Osfo Tester",
-          });
-          expect(storedSessions).toHaveLength(2);
+          expect(response.status).toBe(400);
+          expect(storedUsers).toEqual([]);
 
           yield* Effect.promise(app.dispose);
         }),
@@ -186,6 +172,50 @@ describe("phone authentication", () => {
           expect(secondBody.user.id).toBe(firstBody.user.id);
           expect(userCounts[0]?.userCount).toBe(1);
           expect(storedSessions).toHaveLength(2);
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("does not create a new AuthSession for a suspended User", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const twilio = makeTestTwilio();
+          const app = makeAuthApp(
+            Db.layerFromDatabase(fixture.database),
+            Layer.succeed(TwilioVerify.TwilioVerify, twilio.service),
+          );
+          const phoneNumber = "+14165550109";
+
+          yield* request(app.handler, "/auth/phone-number/send-otp", { phoneNumber });
+          const first = yield* request(app.handler, "/auth/phone-number/verify", {
+            code: twilio.code,
+            phoneNumber,
+          });
+          const firstBody = yield* responseJson(first);
+          yield* Effect.promise(() =>
+            fixture.database.insert(userSuspensionEvents).values({
+              action: "suspended",
+              adminActorId: "admin-test",
+              eventId: "suspension-test",
+              reason: "Test suspension",
+              userId: firstBody.user.id,
+            }),
+          );
+          twilio.advanceBy(30 * 1_000);
+          yield* request(app.handler, "/auth/phone-number/send-otp", { phoneNumber });
+          const suspendedSignIn = yield* request(app.handler, "/auth/phone-number/verify", {
+            code: twilio.code,
+            phoneNumber,
+          });
+
+          expect(first.status).toBe(200);
+          expect(suspendedSignIn.status).toBe(403);
 
           yield* Effect.promise(app.dispose);
         }),
@@ -470,7 +500,8 @@ const makeTestTwilio = (options?: { readonly unavailable?: boolean }) => {
           return false;
         }
         verification.attempts += 1;
-        const approved = verification.attempts <= 5 && submittedCode === verification.code;
+        const approved =
+          verification.attempts <= 5 && Redacted.value(submittedCode) === verification.code;
         if (approved) {
           pending.delete(phoneNumber);
           return true;

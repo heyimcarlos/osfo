@@ -99,10 +99,13 @@
         "@osfo/db": "workspace:*",
         "better-auth": "1.6.28",
         "drizzle-orm": "0.45.2",
+        "effect": "catalog:",
       },
       "devDependencies": {
+        "@effect/vitest": "catalog:",
         "auth": "1.6.28",
         "typescript": "catalog:",
+        "vitest": "catalog:",
       },
     },
     "packages/db": {

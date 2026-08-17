@@ -8,7 +8,9 @@ import { Effect, Layer } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 
 import * as WorkerAuth from "../auth";
+import * as AccountAccess from "../composition/account-access";
 import * as Db from "../db";
+import { UserId } from "../domain";
 import { TwilioVerify } from "../integrations/twilio/verify";
 
 /** Authenticate protected product endpoints through Better Auth. */
@@ -22,7 +24,8 @@ export const layer = (config: WorkerAuth.AuthRouteConfig) =>
       return Auth.of((effect) =>
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
-          const auth = yield* WorkerAuth.make(config);
+          const canAccess = yield* AccountAccess.make;
+          const auth = yield* WorkerAuth.make(config, canAccess);
           const session = yield* Effect.tryPromise({
             try: () => auth.api.getSession({ headers: new Headers(request.headers) }),
             catch: () =>
@@ -35,10 +38,20 @@ export const layer = (config: WorkerAuth.AuthRouteConfig) =>
             return yield* new Unauthorized({});
           }
 
+          const hasAccess = yield* canAccess(UserId.make(session.user.id)).pipe(
+            Effect.mapError(
+              () =>
+                new AuthenticationUnavailable({
+                  message: "Authentication is temporarily unavailable",
+                }),
+            ),
+          );
+          if (!hasAccess) return yield* new Unauthorized({});
+
           return yield* Effect.provideService(
             effect,
             CurrentUser,
-            CurrentUser.of({ userId: session.user.id }),
+            CurrentUser.of({ authSessionId: session.session.id, userId: session.user.id }),
           );
         }).pipe(Effect.provideService(Db.Db, db), Effect.provideService(TwilioVerify, twilio)),
       );

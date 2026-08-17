@@ -27,7 +27,7 @@ describe("Registration HTTP API", () => {
           const sentNumbers: Array<string> = [];
           const app = makeApp(fixture.database, {
             sendCode: (phoneNumber) => Effect.sync(() => sentNumbers.push(phoneNumber)),
-            verifyCode: (_phoneNumber, code) => Effect.succeed(code === "123456"),
+            verifyCode: (_phoneNumber, code) => Effect.succeed(Redacted.value(code) === "123456"),
           });
           const token = "7".repeat(64);
           const digest = yield* sha256(token);
@@ -85,13 +85,11 @@ describe("Registration HTTP API", () => {
       (fixture) =>
         Effect.gen(function* () {
           yield* applyMigrations(fixture.client);
-          const app = makeApp(fixture.database);
-          const signUp = yield* sendJson(app.handler, "POST", "/auth/sign-up/email", {
-            email: "web-onboarding@osfo.test",
-            name: "Web Onboarding",
-            password: "test-password",
-          });
-          const cookie = signUp.headers.get("set-cookie")?.split(";", 1)[0];
+          const app = makeApp(fixture.database, acceptingTwilio);
+          const cookie = yield* authenticatePhone(app.handler, "+14165550180");
+          yield* Effect.promise(() =>
+            fixture.database.update(users).set({ phoneNumberVerified: false }).execute(),
+          );
           const payload = {
             existingProfileChoice: null,
             bindingConsent: "web-enrollment",
@@ -131,13 +129,8 @@ describe("Registration HTTP API", () => {
       (fixture) =>
         Effect.gen(function* () {
           yield* applyMigrations(fixture.client);
-          const app = makeApp(fixture.database);
-          const signUp = yield* sendJson(app.handler, "POST", "/auth/sign-up/email", {
-            email: "registered@osfo.test",
-            name: "Registered User",
-            password: "test-password",
-          });
-          const cookie = signUp.headers.get("set-cookie")?.split(";", 1)[0];
+          const app = makeApp(fixture.database, acceptingTwilio);
+          const cookie = yield* authenticatePhone(app.handler, "+14165550181");
           expect(cookie).toContain("better-auth.session_token");
 
           const first = yield* sendJson(app.handler, "PUT", "/v1/registration", {}, cookie);
@@ -234,13 +227,8 @@ describe("Registration HTTP API", () => {
       (fixture) =>
         Effect.gen(function* () {
           yield* applyMigrations(fixture.client);
-          const app = makeApp(fixture.database);
-          const signUp = yield* sendJson(app.handler, "POST", "/auth/sign-up/email", {
-            email: "conflicting-registration@osfo.test",
-            name: "Conflicting Registration",
-            password: "test-password",
-          });
-          const cookie = signUp.headers.get("set-cookie")?.split(";", 1)[0];
+          const app = makeApp(fixture.database, acceptingTwilio);
+          const cookie = yield* authenticatePhone(app.handler, "+14165550182");
           const first = yield* sendJson(app.handler, "PUT", "/v1/registration", {}, cookie);
           const [storedUser] = yield* Effect.promise(() =>
             fixture.database.select({ id: users.id }).from(users),
@@ -340,6 +328,25 @@ const sendJson = (
     ),
   );
 };
+
+const acceptingTwilio: TwilioVerify.TwilioVerify["Service"] = {
+  sendCode: () => Effect.void,
+  verifyCode: (_phoneNumber, code) => Effect.succeed(Redacted.value(code) === "123456"),
+};
+
+const authenticatePhone = (handler: (request: Request) => Promise<Response>, phoneNumber: string) =>
+  Effect.gen(function* () {
+    const sent = yield* sendJson(handler, "POST", "/auth/phone-number/send-otp", { phoneNumber });
+    const verified = yield* sendJson(handler, "POST", "/auth/phone-number/verify", {
+      code: "123456",
+      phoneNumber,
+    });
+    expect(sent.status).toBe(200);
+    expect(verified.status).toBe(200);
+    const cookie = verified.headers.get("set-cookie")?.split(";", 1)[0];
+    expect(cookie).toContain("better-auth.session_token");
+    return yield* Schema.decodeUnknownEffect(Schema.String)(cookie);
+  });
 
 type JsonValue =
   | boolean

@@ -8,6 +8,7 @@ import { DateTime, Effect, Schema } from "effect";
 import {
   AgentId,
   AgentInitializationId,
+  ChannelBindingId,
   ConversationRouteId,
   SessionId,
   UserId,
@@ -77,22 +78,61 @@ describe("Think Action and exact Approval", () => {
     }),
   );
 
-  it.effect("rechecks current authority immediately before provider contact", () =>
-    Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(
-        Schema.decodeUnknownSync(AgentId)("agent-think-action-authority-loss"),
-      );
-      const parked = yield* Effect.promise(() => parkTestAction(agent, "call-authority-loss"));
-      yield* Effect.promise(() =>
-        configureTestAction(agent, { authority: "revoked", providerOutcome: "applied" }),
-      );
+  for (const testCase of [
+    {
+      authority: "revoked",
+      currentFact: "current",
+      denial: "authorityRevoked",
+      name: "authority revocation",
+    },
+    {
+      authority: "active",
+      currentFact: "ownership-lost",
+      denial: "ownershipRequired",
+      name: "ownership loss",
+    },
+    {
+      authority: "active",
+      currentFact: "entitlement-lost",
+      denial: "missingEntitlement",
+      name: "entitlement loss",
+    },
+    {
+      authority: "active",
+      currentFact: "integration-revoked",
+      denial: "integrationConnectionRequired",
+      name: "Integration Connection revocation",
+    },
+    {
+      authority: "active",
+      currentFact: "approval-revoked",
+      denial: "approvalRequired",
+      name: "Approval revocation",
+    },
+  ] as const) {
+    it.effect(`rechecks current ${testCase.name} before provider contact`, () =>
+      Effect.gen(function* () {
+        const agent = env.OSFO_AGENT.getByName(
+          Schema.decodeUnknownSync(AgentId)(`agent-think-action-${testCase.currentFact}`),
+        );
+        const parked = yield* Effect.promise(() =>
+          parkTestAction(agent, `call-${testCase.currentFact}`),
+        );
+        yield* Effect.promise(() =>
+          configureTestAction(agent, {
+            authority: testCase.authority,
+            currentFact: testCase.currentFact,
+            providerOutcome: "not-applied",
+          }),
+        );
 
-      const result = yield* Effect.promise(
-        async () => await agent.approveExecution(parked.executionId),
-      );
-      expect(result).toEqual({ _tag: "Denied", reason: "authorityRevoked", resetAt: null });
-    }),
-  );
+        const result = yield* Effect.promise(
+          async () => await agent.approveExecution(parked.executionId),
+        );
+        expect(result).toEqual({ _tag: "Denied", reason: testCase.denial, resetAt: null });
+      }),
+    );
+  }
 
   it.effect("returns explicit provider ambiguity", () =>
     Effect.gen(function* () {
@@ -102,6 +142,7 @@ describe("Think Action and exact Approval", () => {
       yield* Effect.promise(() =>
         configureTestAction(ambiguousAgent, {
           authority: "active",
+          currentFact: "current",
           providerOutcome: "ambiguous",
         }),
       );
@@ -167,7 +208,7 @@ describe("Think Action and exact Approval", () => {
       });
       const actor = {
         _tag: "ChannelBinding" as const,
-        channelBindingId: "binding-owner",
+        channelBindingId: ChannelBindingId.make("binding-owner"),
         userId: UserId.make("user-owner"),
       };
 
