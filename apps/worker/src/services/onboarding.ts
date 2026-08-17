@@ -394,11 +394,10 @@ export interface PersistencePort {
     readonly locale: OnboardingLocale;
     readonly tokenDigest: string;
   }) => Effect.Effect<boolean, OnboardingPersistenceRejected>;
-  readonly isCurrentBinding: (
-    channelBindingId: ChannelBindingId,
-    channelIdentity: ChannelIdentity,
-    userId: UserId,
-  ) => Effect.Effect<boolean, OnboardingPersistenceUnavailable>;
+  readonly readCurrentBinding: (query: {
+    readonly channelBindingId: ChannelBindingId;
+    readonly userId: UserId;
+  }) => Effect.Effect<StoredChannelBinding | null, OnboardingPersistenceUnavailable>;
   readonly readUser: (
     userId: UserId,
   ) => Effect.Effect<StoredOnboardingUser | null, OnboardingPersistenceUnavailable>;
@@ -774,12 +773,11 @@ export const make = Effect.gen(function* () {
             if (recovered._tag !== "BindingCreated" && recovered._tag !== "BindingExisting") {
               return yield* new RegistrationInvitationUnavailable({ reason: "consumed" });
             }
-            const bindingMatches = yield* persistence.isCurrentBinding(
-              recovered.channelBindingId,
-              input.channelIdentity,
+            const currentBinding = yield* persistence.readCurrentBinding({
+              channelBindingId: recovered.channelBindingId,
               userId,
-            );
-            if (!bindingMatches) {
+            });
+            if (currentBinding?.channelIdentity !== input.channelIdentity) {
               return yield* new RegistrationInvitationUnavailable({ reason: "consumed" });
             }
             return recovered;

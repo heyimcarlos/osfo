@@ -7,6 +7,7 @@ import { Effect, Layer, Schema } from "effect";
 import { database, decodeOptionalRow, type Database } from "../../db";
 import { AgentId } from "../../domain";
 import * as Onboarding from "../../services/onboarding";
+import * as ChannelBindingPostgres from "./channel-binding";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Drizzle transactions and domain tags require these forms. */
 
@@ -204,22 +205,26 @@ export const make = Effect.gen(function* () {
         },
         catch: (cause) => rejected("insertWhatsApp", input.invitationId, cause),
       }),
-    isCurrentBinding: (channelBindingId, channelIdentity, userId) =>
+    readCurrentBinding: (query) =>
       Effect.tryPromise({
         try: () =>
-          db
-            .select({ channelIdentity: channelBindings.channelIdentity })
-            .from(channelBindings)
-            .where(
-              and(
-                eq(channelBindings.channelBindingId, channelBindingId),
-                eq(channelBindings.userId, userId),
-                isNull(channelBindings.revokedAt),
-              ),
-            )
-            .limit(1),
-        catch: (cause) => unavailable("isCurrentBinding", cause),
-      }).pipe(Effect.map((rows) => rows[0]?.channelIdentity === channelIdentity)),
+          ChannelBindingPostgres.readCurrentWhatsAppBinding(
+            db,
+            query.userId,
+            query.channelBindingId,
+          ),
+        catch: (cause) => unavailable("readCurrentBinding", cause),
+      }).pipe(
+        Effect.map((binding) =>
+          binding === null
+            ? null
+            : Onboarding.StoredChannelBinding.make({
+                channelBindingId: binding.channelBindingId,
+                channelIdentity: binding.channelIdentity,
+                userId: binding.userId,
+              }),
+        ),
+      ),
     readUser,
     readWelcomeRoute,
   });

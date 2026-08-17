@@ -563,6 +563,10 @@ const responseJson = (response: Response) =>
 
 const runtimeConfig: RuntimeConfig = {
   auth: authConfig,
+  meta: {
+    appSecret: Redacted.make("test-only-meta-app-secret"),
+    webhookVerifyToken: Redacted.make("test-only-meta-webhook-token"),
+  },
   stage: "test",
   whatsApp: { phoneNumber: "14165550100" },
   twilioVerify: {
@@ -576,6 +580,12 @@ const testBindings: App.Bindings = {
   DB: { connectionString: "postgres://unused.invalid/osfo" },
   OSFO_AGENT: {
     getByName: (identity) => ({
+      acceptWhatsAppMessage: () =>
+        Promise.resolve({
+          _tag: "ManagedConversationDenied",
+          reason: "userSuspended",
+          resetAt: null,
+        }),
       commitWelcome: () =>
         Promise.resolve({ _tag: "PersonalWelcomeCommitted", messageId: "welcome-test" }),
       initialize: () => Promise.resolve({ _tag: "AgentInitialized" }),
@@ -587,6 +597,7 @@ const testBindings: App.Bindings = {
           kind: "RuntimeProbe" as const,
           stage: "test" as const,
         }),
+      recoverWhatsAppMessage: () => Promise.resolve(null),
     }),
   },
   REGISTRATION_DIALOGUE: {

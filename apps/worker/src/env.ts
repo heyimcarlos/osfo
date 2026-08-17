@@ -31,6 +31,9 @@ const WhatsAppPhoneNumber = Schema.String.check(
     (value) => /^[1-9]\d{7,14}$/u.test(value) || "must be an E.164 number without the plus sign",
   ),
 );
+const MetaSecret = Schema.String.check(
+  Schema.makeFilter((value) => value.length > 0 || "must not be empty"),
+);
 const TrustedOrigins = Schema.fromJsonString(
   Schema.Array(Schema.URLFromString).check(
     Schema.makeFilter((origins) => origins.length > 0 || "must contain at least one origin"),
@@ -41,6 +44,8 @@ const RawRuntimeConfig = Schema.Struct({
   BETTER_AUTH_BASE_URL: Schema.URLFromString,
   BETTER_AUTH_SECRET: BetterAuthSecret,
   BETTER_AUTH_TRUSTED_ORIGINS: TrustedOrigins,
+  META_APP_SECRET: MetaSecret,
+  META_WEBHOOK_VERIFY_TOKEN: MetaSecret,
   OSFO_STAGE: OsfoStage,
   TWILIO_ACCOUNT_SID: TwilioAccountSid,
   TWILIO_AUTH_TOKEN: TwilioAuthToken,
@@ -59,6 +64,10 @@ export interface RuntimeConfig {
     readonly trustedOrigins: ReadonlyArray<string>;
   };
   readonly stage: OsfoStage;
+  readonly meta: {
+    readonly appSecret: Redacted.Redacted;
+    readonly webhookVerifyToken: Redacted.Redacted;
+  };
   readonly whatsApp: {
     readonly phoneNumber: string;
   };
@@ -75,6 +84,8 @@ export interface RuntimeConfigInput {
   readonly BETTER_AUTH_BASE_URL?: string;
   readonly BETTER_AUTH_SECRET?: string;
   readonly BETTER_AUTH_TRUSTED_ORIGINS?: string;
+  readonly META_APP_SECRET?: string;
+  readonly META_WEBHOOK_VERIFY_TOKEN?: string;
   readonly OSFO_STAGE?: string;
   readonly TWILIO_ACCOUNT_SID?: string;
   readonly TWILIO_AUTH_TOKEN?: string;
@@ -93,6 +104,10 @@ export const decodeRuntimeConfig = (input: RuntimeConfigInput) =>
       },
       secret: Redacted.make(raw.BETTER_AUTH_SECRET),
       trustedOrigins: raw.BETTER_AUTH_TRUSTED_ORIGINS.map((origin) => origin.origin),
+    },
+    meta: {
+      appSecret: Redacted.make(raw.META_APP_SECRET),
+      webhookVerifyToken: Redacted.make(raw.META_WEBHOOK_VERIFY_TOKEN),
     },
     stage: raw.OSFO_STAGE,
     whatsApp: { phoneNumber: raw.WHATSAPP_PHONE_NUMBER },

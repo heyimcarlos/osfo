@@ -22,6 +22,13 @@
       "when": 1786930535411,
       "tag": "0002_solid_johnny_blaze",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786935694183,
+      "tag": "0003_warm_mach_iv",
+      "breakpoints": true
     }
   ]
 }

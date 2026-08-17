@@ -22,6 +22,8 @@ export default Cloudflare.Worker(
         BETTER_AUTH_TRUSTED_ORIGINS: Config.string("BETTER_AUTH_TRUSTED_ORIGINS"),
         DB: Hyperdrive,
         EXECUTION_UNIT_WORKFLOW: ExecutionUnitWorkflow,
+        META_APP_SECRET: Config.redacted("META_APP_SECRET"),
+        META_WEBHOOK_VERIFY_TOKEN: Config.redacted("META_WEBHOOK_VERIFY_TOKEN"),
         OSFO_AGENT: Cloudflare.DurableObject("OsfoAgent", {
           className: "OsfoAgent",
         }),

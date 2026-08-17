@@ -6,14 +6,21 @@ import {
   AgentId,
   AgentInitializationId,
   AssistantMessageId,
+  type ChannelBindingId,
   ConversationRouteId,
+  type ProviderMessageId,
   SessionId,
   ThinkRequestId,
   type ThinkRequestId as ThinkRequestIdType,
 } from "../../../domain";
+import {
+  AcceptanceReceipt,
+  type AcceptanceReceiptInput,
+} from "../../../services/whatsapp-acceptance-receipt";
 import type { AgentDb } from "./client";
 import {
   AgentInitializationConflict,
+  AcceptanceReceiptConflict,
   AgentStateNotFound,
   type AgentStoreOperation,
   AgentStoreRecordInvalid,
@@ -22,11 +29,14 @@ import {
   CurrentSessionReplacementConflict,
 } from "./errors";
 import {
+  acceptanceReceipts,
   agentInitialization,
   committedTurns,
   conversationRoutes,
   sessionOwnership,
 } from "./schema";
+
+const sqliteCurrentTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u;
 
 /** Stable facts accepted at the Agent initialization RPC boundary. */
 export const AgentInitializationInput = Schema.Struct({
@@ -108,8 +118,6 @@ export const CommittedTurnObservation = Schema.Struct({
 /** Stable observation accepted after a committed Think turn. */
 export type CommittedTurnObservation = typeof CommittedTurnObservation.Type;
 
-const sqliteCurrentTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u;
-
 const CommittedTurnObservedAt = Schema.String.check(
   Schema.makeFilter(
     (value) =>
@@ -153,6 +161,64 @@ const RouteOwnerRecord = Schema.Struct({ routeId: ConversationRouteId });
 
 /** Construct deep Agent-local persistence operations over a typed Durable SQLite client. */
 export const makeAgentStore = (db: AgentDb) => {
+  const readAcceptanceReceipt = (
+    channelBindingId: ChannelBindingId,
+    providerMessageId: ProviderMessageId,
+  ) =>
+    execute("readAcceptanceReceipt", () =>
+      db
+        .select(acceptanceReceiptFields)
+        .from(acceptanceReceipts)
+        .where(
+          and(
+            eq(acceptanceReceipts.channelBindingId, channelBindingId),
+            eq(acceptanceReceipts.providerMessageId, providerMessageId),
+          ),
+        )
+        .limit(1)
+        .get(),
+    ).pipe(
+      Effect.flatMap((row) =>
+        row === undefined
+          ? Effect.succeed(null)
+          : decodeAcceptanceReceipt("readAcceptanceReceipt", row),
+      ),
+    );
+
+  const recordAcceptanceReceipt = (input: AcceptanceReceiptInput) =>
+    Effect.gen(function* () {
+      const existing = yield* readAcceptanceReceipt(
+        input.channelBindingId,
+        input.providerMessageId,
+      );
+      if (existing !== null) {
+        if (
+          existing.allowancePeriodId === input.allowancePeriodId &&
+          existing.receiptId === input.receiptId &&
+          existing.sessionId === input.sessionId &&
+          existing.thinkSubmissionId === input.thinkSubmissionId &&
+          existing.userMessageId === input.userMessageId
+        ) {
+          return existing;
+        }
+        return yield* new AcceptanceReceiptConflict({
+          channelBindingId: input.channelBindingId,
+          existingReceiptId: existing.receiptId,
+          existingThinkSubmissionId: existing.thinkSubmissionId,
+          existingUserMessageId: existing.userMessageId,
+          message: "The Channel Message Key already has different acceptance facts",
+          providerMessageId: input.providerMessageId,
+          receiptId: input.receiptId,
+          thinkSubmissionId: input.thinkSubmissionId,
+          userMessageId: input.userMessageId,
+        });
+      }
+      const inserted = yield* execute("recordAcceptanceReceipt", () =>
+        db.insert(acceptanceReceipts).values(input).returning(acceptanceReceiptFields).get(),
+      );
+      return yield* decodeAcceptanceReceipt("recordAcceptanceReceipt", inserted);
+    });
+
   const initialize = (namedAgentId: AgentId, input: AgentInitializationInput) =>
     Effect.gen(function* () {
       if (input.agentId !== namedAgentId) {
@@ -560,6 +626,8 @@ export const makeAgentStore = (db: AgentDb) => {
     });
 
   return {
+    readAcceptanceReceipt,
+    recordAcceptanceReceipt,
     initialize,
     inspect,
     ownsSession,
@@ -571,6 +639,27 @@ export const makeAgentStore = (db: AgentDb) => {
     replaceCurrentSession,
   };
 };
+
+const acceptanceReceiptFields = {
+  acceptedAt: acceptanceReceipts.acceptedAt,
+  allowancePeriodId: acceptanceReceipts.allowancePeriodId,
+  channelBindingId: acceptanceReceipts.channelBindingId,
+  providerMessageId: acceptanceReceipts.providerMessageId,
+  receiptId: acceptanceReceipts.receiptId,
+  sessionId: acceptanceReceipts.sessionId,
+  thinkSubmissionId: acceptanceReceipts.thinkSubmissionId,
+  userMessageId: acceptanceReceipts.userMessageId,
+};
+
+const decodeAcceptanceReceipt = (
+  operation: AgentStoreOperation,
+  row: typeof acceptanceReceipts.$inferSelect,
+) =>
+  Schema.decodeEffect(AcceptanceReceipt)({
+    ...row,
+    _tag: "AcceptanceReceipt",
+    acceptedAt: `${row.acceptedAt.replace(" ", "T")}Z`,
+  }).pipe(Effect.mapError(() => invalidStoreRecord(operation)));
 
 const committedTurnReceiptFields = {
   assistantMessageId: committedTurns.assistantMessageId,
