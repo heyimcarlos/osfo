@@ -18,7 +18,6 @@ import {
   ChannelBindingId,
   ChannelIdentity,
   ProviderMessageId,
-  SessionId,
   ThinkSubmissionId,
   UserMessageId,
   UserId,
@@ -33,9 +32,14 @@ import {
   type AgentAcceptanceInput,
   type AgentRecoveryInput,
   InboundWhatsAppMessage,
-  make as makeAdmission,
   WhatsAppMessageText,
 } from "../src/services/whatsapp-admission";
+import {
+  makeWhatsAppAdmissionFixture,
+  receiptFromAcceptance,
+  recoveredReceipt,
+  routeMessage,
+} from "./whatsapp-admission-fixture";
 
 const fixture = Effect.runSync(makeTestDatabase);
 await Effect.runPromise(applyMigrations(fixture.client));
@@ -549,29 +553,24 @@ const makeRealAdmission = (
       catalog: retainedCatalog,
       now: Effect.succeed(now),
     });
-    return makeAdmission<
+    return makeWhatsAppAdmissionFixture<
       | Effect.Error<ReturnType<typeof persistence.admit>>
       | Effect.Error<ReturnType<typeof persistence.route>>
     >({
-      agent: {
-        accept: (_agentId, input) => accept(input),
-        recover: (_agentId, input) => options?.recover?.(input) ?? Effect.succeed(null),
-      },
-      allowances: {
-        recordAcceptedMessage: (receipt) =>
-          allowances
-            .record(
-              receipt.allowancePeriodId,
-              { sourceId: receipt.receiptId, sourceType: "acceptanceReceipt" },
-              [{ allowanceKind: "acceptedMessages", basis: "known_at_start", quantity: 1n }],
-            )
-            .pipe(Effect.orDie, Effect.asVoid),
-      },
-      onboarding: { handle: () => Effect.succeed({ _tag: "OnboardingAccepted" }) },
+      accept,
       persistence: {
         admit: (route) => persistence.admit(route).pipe(Effect.asVoid),
         route: (input) => persistence.route(input),
       },
+      recordAcceptedMessage: (receipt) =>
+        allowances
+          .record(
+            receipt.allowancePeriodId,
+            { sourceId: receipt.receiptId, sourceType: "acceptanceReceipt" },
+            [{ allowanceKind: "acceptedMessages", basis: "known_at_start", quantity: 1n }],
+          )
+          .pipe(Effect.orDie, Effect.asVoid),
+      recover: options?.recover,
     });
   });
 
@@ -639,46 +638,6 @@ const admitThroughAgent = (
       },
     });
     return { outcome, submissions };
-  });
-
-const receiptFromAcceptance = (
-  input: AgentAcceptanceInput,
-  allowancePeriodId: AllowancePeriodId,
-): AcceptanceReceipt => {
-  return Schema.decodeSync(AcceptanceReceipt)({
-    _tag: "AcceptanceReceipt",
-    acceptedAt: "2026-08-16T12:00:00Z",
-    allowancePeriodId,
-    channelBindingId: input.channelBindingId,
-    providerMessageId: input.providerMessageId,
-    receiptId: input.receiptId,
-    sessionId: SessionId.make(`session-${input.submissionId}`),
-    thinkSubmissionId: input.submissionId,
-    userMessageId: input.userMessageId,
-  });
-};
-
-const recoveredReceipt = (
-  input: AgentRecoveryInput,
-  allowancePeriodId: AllowancePeriodId,
-  acceptedAt: string,
-): AcceptanceReceipt =>
-  Schema.decodeSync(AcceptanceReceipt)({
-    ...input,
-    _tag: "AcceptanceReceipt",
-    acceptedAt,
-    allowancePeriodId,
-    sessionId: SessionId.make(`session-${input.submissionId}`),
-    thinkSubmissionId: input.submissionId,
-  });
-
-const routeMessage = (channelIdentity: string, providerMessageId: string) =>
-  Schema.decodeSync(InboundWhatsAppMessage)({
-    _tag: "TextMessage",
-    channelIdentity,
-    message: "Please help",
-    phoneNumberId: "123456789",
-    providerMessageId,
   });
 
 const routeInput = () => ({
