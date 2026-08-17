@@ -9,15 +9,13 @@ export const layer = (runtime: ManagedRuntime.ManagedRuntime<ExecutionUnit, neve
   HttpApiBuilder.group(Api, "health", (handlers) =>
     handlers.handle("get", () =>
       Effect.promise(() => runtime.runPromise(probeExecutionUnit)).pipe(
-        Effect.map(
-          (probe): HealthResponse => ({
-            activationId: probe.activationId,
-            executionUnit: "worker",
-            identity: "request",
-            kind: "RuntimeProbe",
-            stage: probe.stage,
-          }),
-        ),
+        Effect.map((probe): HealthResponse => ({
+          activationId: probe.activationId,
+          executionUnit: "worker",
+          identity: "request",
+          kind: "RuntimeProbe",
+          stage: probe.stage,
+        })),
       ),
     ),
   );

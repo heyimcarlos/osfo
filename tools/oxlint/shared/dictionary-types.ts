@@ -251,11 +251,10 @@ function dictionaryValueTypes(
   const unwrapped = unwrapTransparentType(type);
 
   if (unwrapped.type === "TSTypeLiteral") {
-    return unwrapped.members.flatMap(
-      (member): ReadonlyArray<ResolvedType> =>
-        member.type === "TSIndexSignature" && member.typeAnnotation !== null
-          ? [{ type: member.typeAnnotation.typeAnnotation, substitutions }]
-          : [],
+    return unwrapped.members.flatMap((member): ReadonlyArray<ResolvedType> =>
+      member.type === "TSIndexSignature" && member.typeAnnotation !== null
+        ? [{ type: member.typeAnnotation.typeAnnotation, substitutions }]
+        : [],
     );
   }
 
