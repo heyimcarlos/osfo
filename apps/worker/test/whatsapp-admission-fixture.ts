@@ -2,17 +2,17 @@ import { Effect, Schema } from "effect";
 
 import { type AllowancePeriodId, SessionId } from "../src/domain";
 import { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
+import type { ManagedConversationDenied } from "../src/services/managed-conversation";
 import {
   type AgentAcceptanceInput,
   type AgentRecoveryInput,
   InboundWhatsAppMessage,
   type Interface,
   make as makeAdmission,
+  WhatsAppProviderContentDigest,
 } from "../src/services/whatsapp-admission";
 
-type AcceptanceOutcome =
-  | AcceptanceReceipt
-  | { readonly _tag: "ManagedConversationDenied"; readonly reason: string };
+type AcceptanceOutcome = AcceptanceReceipt | ManagedConversationDenied;
 
 interface AdmissionFixtureOptions<Failure> {
   readonly accept: (input: AgentAcceptanceInput) => Effect.Effect<AcceptanceOutcome>;
@@ -76,3 +76,6 @@ export const routeMessage = (channelIdentity: string, providerMessageId: string)
     phoneNumberId: "123456789",
     providerMessageId,
   });
+
+/** Valid provider content digest used by both PostgreSQL admission fixtures. */
+export const providerContentDigest = WhatsAppProviderContentDigest.make("0".repeat(40));

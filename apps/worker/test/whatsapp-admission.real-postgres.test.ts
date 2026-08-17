@@ -15,12 +15,14 @@ import { AllowancePeriodId, ChannelBindingId, UserId } from "../src/domain";
 import { retainedCatalog } from "../src/domain/plan-policy";
 import { make as makePersistence } from "../src/integrations/postgres/whatsapp-admission";
 import * as Allowances from "../src/services/allowances";
+import type { ManagedConversationDenied } from "../src/services/managed-conversation";
 import type { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
 import type { AgentAcceptanceInput, AgentRecoveryInput } from "../src/services/whatsapp-admission";
 import { WhatsAppMessageText } from "../src/services/whatsapp-admission";
 import { withRealPostgresFixture } from "./real-postgres-fixture";
 import {
   makeWhatsAppAdmissionFixture,
+  providerContentDigest,
   receiptFromAcceptance,
   recoveredReceipt,
   routeMessage,
@@ -101,6 +103,7 @@ describe("WhatsApp admission with native PostgreSQL", () => {
             Effect.succeed({
               _tag: "ManagedConversationDenied" as const,
               reason: "allowanceExhausted",
+              resetAt: null,
             }),
           );
 
@@ -154,7 +157,11 @@ describe("WhatsApp admission with native PostgreSQL", () => {
             () =>
               Effect.sync(() => {
                 freshAcceptances += 1;
-                return { _tag: "ManagedConversationDenied" as const, reason: "unexpected" };
+                return {
+                  _tag: "ManagedConversationDenied" as const,
+                  reason: "allowanceExhausted" as const,
+                  resetAt: null,
+                };
               }),
             {
               now: date("2026-09-02T12:00:00.000Z"),
@@ -192,7 +199,7 @@ describe("WhatsApp admission with native PostgreSQL", () => {
           }).pipe(Effect.provide(layerFromDatabase(database)));
           const input = {
             ...routeMessage("14165550205", "wamid.native-fixed"),
-            contentDigest: "native-fixed-digest",
+            contentDigest: providerContentDigest,
           };
           const first = yield* persistence.route(input);
           yield* Effect.promise(async () => {
@@ -224,9 +231,7 @@ const makeRealAdmission = (
   database: Database,
   accept: (
     input: AgentAcceptanceInput,
-  ) => Effect.Effect<
-    AcceptanceReceipt | { readonly _tag: "ManagedConversationDenied"; readonly reason: string }
-  >,
+  ) => Effect.Effect<AcceptanceReceipt | ManagedConversationDenied>,
   options?: {
     readonly now?: Date;
     readonly recover?: (input: AgentRecoveryInput) => Effect.Effect<AcceptanceReceipt | null>;

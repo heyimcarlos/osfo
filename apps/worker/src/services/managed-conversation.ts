@@ -15,7 +15,7 @@ import {
 import { ManagedTurnMetadata } from "../domain/managed-conversation";
 import {
   AuthorizationContext,
-  type AuthorizationDenialReason,
+  AuthorizationDenialReason,
   make as makeAuthorization,
 } from "./authorization";
 
@@ -43,11 +43,13 @@ export interface ManagedConversationAdmitted {
 }
 
 /** Closed denial returned before a managed Think Submission is created. */
-export interface ManagedConversationDenied {
-  readonly _tag: "ManagedConversationDenied";
-  readonly reason: AuthorizationDenialReason;
-  readonly resetAt: Date | null;
-}
+export const ManagedConversationDenied = Schema.TaggedStruct("ManagedConversationDenied", {
+  reason: AuthorizationDenialReason,
+  resetAt: Schema.NullOr(Schema.Date),
+});
+
+/** Closed denial returned before a managed Think Submission is created. */
+export type ManagedConversationDenied = typeof ManagedConversationDenied.Type;
 
 /** Admit one conversation with a server-owned route and its worst-case request cost. */
 export const admitManagedConversation = (

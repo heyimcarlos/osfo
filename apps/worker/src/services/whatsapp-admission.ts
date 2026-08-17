@@ -10,6 +10,8 @@ import {
   UserMessageId,
 } from "../domain";
 import type { AcceptanceReceipt } from "./whatsapp-acceptance-receipt";
+import type { AuthorizationDenialReason } from "./authorization";
+import type { ManagedConversationDenied } from "./managed-conversation";
 import type { WhatsAppOnboardingCommand } from "./whatsapp-onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schemas use the standard _tag discriminator. */
@@ -27,6 +29,9 @@ export const WhatsAppPhoneNumberId = Schema.String.check(
   Schema.isMaxLength(64),
   Schema.isPattern(/^\d+$/u),
 ).pipe(Schema.brand("WhatsAppPhoneNumberId"));
+
+/** Meta phone-number resource identity accepted by inbound routing. */
+export type WhatsAppPhoneNumberId = typeof WhatsAppPhoneNumberId.Type;
 
 /** Supported direct-message text fixed before hashing, persistence, or Agent RPC. */
 export const WhatsAppMessageText = Schema.String.check(
@@ -53,8 +58,24 @@ export const InboundWhatsAppMessage = Schema.Union([
 /** Supported direct-message facts produced by the authenticated Meta adapter. */
 export type InboundWhatsAppMessage = typeof InboundWhatsAppMessage.Type;
 
+/** Truncated SHA-256 digest of authenticated provider message content. */
+export const WhatsAppProviderContentDigest = Schema.String.check(
+  Schema.isMinLength(40),
+  Schema.isMaxLength(40),
+  Schema.isPattern(/^[0-9a-f]+$/u),
+).pipe(Schema.brand("WhatsAppProviderContentDigest"));
+
+/** Truncated SHA-256 digest of the stable WhatsApp admission identity chain. */
+const WhatsAppAdmissionIdentityDigest = Schema.String.check(
+  Schema.isMinLength(40),
+  Schema.isMaxLength(40),
+  Schema.isPattern(/^[0-9a-f]+$/u),
+).pipe(Schema.brand("WhatsAppAdmissionIdentityDigest"));
+
 /** Provider-event facts fixed before Channel Binding resolution. */
-export type RouteInput = InboundWhatsAppMessage & { readonly contentDigest: string };
+export type RouteInput = InboundWhatsAppMessage & {
+  readonly contentDigest: typeof WhatsAppProviderContentDigest.Type;
+};
 
 /** Expected failure when stable inbound identities cannot be derived. */
 export class WhatsAppIdentityUnavailable extends Schema.TaggedError<WhatsAppIdentityUnavailable>()(
@@ -101,7 +122,7 @@ export type AgentAcceptanceInput = typeof AgentAcceptanceInput.Type;
 /** Observable inbound result used by the HTTP webhook boundary. */
 export type AdmissionOutcome =
   | { readonly _tag: "MessageAccepted"; readonly receipt: AcceptanceReceipt }
-  | { readonly _tag: "MessageDenied"; readonly reason: string }
+  | { readonly _tag: "MessageDenied"; readonly reason: AuthorizationDenialReason }
   | { readonly _tag: "OnboardingAccepted" };
 
 /** Dependencies required by WhatsApp inbound admission policy. */
@@ -110,10 +131,7 @@ export interface Interface<Failure> {
     readonly accept: (
       agentId: AgentId,
       input: AgentAcceptanceInput,
-    ) => Effect.Effect<
-      AcceptanceReceipt | { readonly _tag: "ManagedConversationDenied"; readonly reason: string },
-      Failure
-    >;
+    ) => Effect.Effect<AcceptanceReceipt | ManagedConversationDenied, Failure>;
     readonly recover: (
       agentId: AgentId,
       input: AgentRecoveryInput,
@@ -156,7 +174,7 @@ export const make = <Failure>(options: Interface<Failure>): Service<Failure> => 
           message.providerMessageId,
           message.message,
         ]),
-      );
+      ).pipe(Effect.map((value) => WhatsAppProviderContentDigest.make(value)));
       const route = yield* options.persistence.route({ ...message, contentDigest });
       if (route._tag === "Unbound") {
         yield* options.onboarding.handle(onboardingCommand(message));
@@ -164,7 +182,7 @@ export const make = <Failure>(options: Interface<Failure>): Service<Failure> => 
       }
       const identityDigest = yield* digest(
         encodeIdentity([route.channelBindingId, message.providerMessageId]),
-      );
+      ).pipe(Effect.map((value) => WhatsAppAdmissionIdentityDigest.make(value)));
       const recoveryInput = AgentRecoveryInput.make({
         channelBindingId: route.channelBindingId,
         providerMessageId: message.providerMessageId,

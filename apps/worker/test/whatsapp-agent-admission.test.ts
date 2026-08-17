@@ -1,4 +1,3 @@
-import type { ThinkSubmissionInspection } from "@cloudflare/think";
 import { describe, expect, it } from "@effect/vitest";
 import { DateTime, Deferred, Effect, Schema } from "effect";
 
@@ -15,7 +14,11 @@ import {
   UserId,
   UserMessageId,
 } from "../src/domain";
-import { accept, type Interface } from "../src/services/whatsapp-agent-admission";
+import {
+  accept,
+  type Interface,
+  type SubmissionInspection,
+} from "../src/services/whatsapp-agent-admission";
 import { type AgentAcceptanceInput, WhatsAppMessageText } from "../src/services/whatsapp-admission";
 import { AuthorizationContext } from "../src/services/authorization";
 import { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
@@ -28,7 +31,7 @@ describe("WhatsApp Agent admission", () => {
       let authorityCurrent = true;
       let authorityChecks = 0;
       const receiptLedger = new Map<string, AcceptanceReceipt>();
-      const thinkLedger = new Map<string, ThinkSubmissionInspection>();
+      const thinkLedger = new Map<ThinkSubmissionId, SubmissionInspection>();
       const input = acceptanceInput();
       const dependencies = makeDependencies({
         inspect: (submissionId) => Effect.succeed(thinkLedger.get(submissionId) ?? null),
@@ -59,13 +62,11 @@ describe("WhatsApp Agent admission", () => {
               submission.metadata,
             );
             const submissionId = Schema.decodeSync(ThinkSubmissionId)(submission.submissionId);
-            const inspection = {
-              createdAt: 1,
+            const inspection: SubmissionInspection = {
               idempotencyKey,
               metadata,
-              status: "pending",
               submissionId,
-            } satisfies ThinkSubmissionInspection;
+            };
             thinkLedger.set(submissionId, inspection);
             return Effect.fail(
               new ThinkSubmissionUnavailable({
@@ -101,7 +102,7 @@ describe("WhatsApp Agent admission", () => {
       const input = acceptanceInput();
       const submitArrivals = yield* Deferred.make<void>();
       const receiptLedger = new Map<string, AcceptanceReceipt>();
-      const thinkLedger = new Map<string, ThinkSubmissionInspection>();
+      const thinkLedger = new Map<ThinkSubmissionId, SubmissionInspection>();
       let waiting = 0;
       const dependencies = makeDependencies({
         inspect: (submissionId) => Effect.succeed(thinkLedger.get(submissionId) ?? null),
@@ -127,11 +128,9 @@ describe("WhatsApp Agent admission", () => {
             yield* Deferred.await(submitArrivals);
             const existing = thinkLedger.get(submission.submissionId);
             if (existing !== undefined) return { submissionId: existing.submissionId };
-            const inspection = {
-              createdAt: 1,
+            const inspection: SubmissionInspection = {
               idempotencyKey: submission.idempotencyKey,
               metadata: submission.metadata,
-              status: "pending" as const,
               submissionId: submission.submissionId,
             };
             thinkLedger.set(submission.submissionId, inspection);
@@ -222,13 +221,12 @@ const makeDependencies = (
     inspect: overrides.inspectAuthorization ?? (() => Effect.succeed(authorization())),
   },
   store: {
-    inspect: () =>
-      Effect.succeed({
-        _tag: "AgentFound" as const,
-        agentId: AgentId.make("agent-1"),
-        currentSessionId: SessionId.make("session-1"),
-        routeId: ConversationRouteId.make("route-1"),
-      }),
+    inspect: Effect.succeed({
+      _tag: "AgentFound" as const,
+      agentId: AgentId.make("agent-1"),
+      currentSessionId: SessionId.make("session-1"),
+      routeId: ConversationRouteId.make("route-1"),
+    }),
     readAcceptanceReceipt: overrides.readReceipt ?? (() => Effect.succeed(null)),
     recordAcceptanceReceipt:
       overrides.recordReceipt ??

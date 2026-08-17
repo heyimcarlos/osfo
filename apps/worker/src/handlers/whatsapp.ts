@@ -14,19 +14,17 @@ import {
 import * as WhatsAppPostgres from "../integrations/postgres/whatsapp-admission";
 import * as Allowances from "../services/allowances";
 import * as Onboarding from "../services/onboarding";
+import { ManagedConversationDenied } from "../services/managed-conversation";
 import { AcceptanceReceipt } from "../services/whatsapp-acceptance-receipt";
 import * as WhatsAppAdmission from "../services/whatsapp-admission";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schemas and RPC values use the standard _tag discriminator. */
 
-const ManagedConversationDenied = Schema.TaggedStruct("ManagedConversationDenied", {
-  reason: Schema.String,
-});
 const AgentRpcTag = Schema.Struct({ _tag: Schema.String });
 
 type AgentAcceptanceRpcResult =
   | AcceptanceReceipt
-  | typeof ManagedConversationDenied.Type
+  | ManagedConversationDenied
   | { readonly _tag: string };
 
 interface WhatsAppAgentStub {
@@ -214,7 +212,7 @@ const admitFact = (
 const decodeAgentAcceptance = (
   result: AgentAcceptanceRpcResult,
 ): Effect.Effect<
-  AcceptanceReceipt | typeof ManagedConversationDenied.Type,
+  AcceptanceReceipt | ManagedConversationDenied,
   WhatsAppAdmission.WhatsAppAdmissionUnavailable
 > =>
   Schema.decodeEffect(AgentRpcTag)(result).pipe(

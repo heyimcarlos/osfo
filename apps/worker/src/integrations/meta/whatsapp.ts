@@ -36,22 +36,22 @@ export interface ChallengeVerified {
 export type IgnoredMetaEvent =
   | {
       readonly _tag: "GroupMessageRejected";
-      readonly phoneNumberId: string;
-      readonly providerMessageId: string;
+      readonly phoneNumberId: WhatsAppPhoneNumberId;
+      readonly providerMessageId: ProviderMessageId;
     }
   | {
       readonly _tag: "NonMessageEvent";
-      readonly phoneNumberId: string;
+      readonly phoneNumberId: WhatsAppPhoneNumberId;
     }
   | {
       readonly _tag: "ProviderEcho";
-      readonly phoneNumberId: string;
-      readonly providerMessageId: string;
+      readonly phoneNumberId: WhatsAppPhoneNumberId;
+      readonly providerMessageId: ProviderMessageId;
     }
   | {
       readonly _tag: "UnsupportedDirectMessage";
-      readonly phoneNumberId: string;
-      readonly providerMessageId: string;
+      readonly phoneNumberId: WhatsAppPhoneNumberId;
+      readonly providerMessageId: ProviderMessageId;
     };
 
 /** Closed normalized output of one authenticated Meta webhook body. */

@@ -33,7 +33,8 @@ describe("WhatsApp webhook admission", () => {
                   acceptanceCalls += 1;
                   return Promise.resolve({
                     _tag: "ManagedConversationDenied" as const,
-                    reason: "test",
+                    reason: "userSuspended",
+                    resetAt: null,
                   });
                 },
                 recoverWhatsAppMessage: () => {
@@ -116,6 +117,7 @@ describe("WhatsApp webhook admission", () => {
                   return Promise.resolve({
                     _tag: "ManagedConversationDenied" as const,
                     reason: "userSuspended",
+                    resetAt: null,
                   });
                 },
                 recoverWhatsAppMessage: (input) => {

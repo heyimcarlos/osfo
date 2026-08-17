@@ -581,7 +581,11 @@ const testBindings: App.Bindings = {
   OSFO_AGENT: {
     getByName: (identity) => ({
       acceptWhatsAppMessage: () =>
-        Promise.resolve({ _tag: "ManagedConversationDenied", reason: "test" }),
+        Promise.resolve({
+          _tag: "ManagedConversationDenied",
+          reason: "userSuspended",
+          resetAt: null,
+        }),
       commitWelcome: () =>
         Promise.resolve({ _tag: "PersonalWelcomeCommitted", messageId: "welcome-test" }),
       initialize: () => Promise.resolve({ _tag: "AgentInitialized" }),

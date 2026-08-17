@@ -26,6 +26,7 @@ import { retainedCatalog } from "../src/domain/plan-policy";
 import * as ChannelBindingPostgres from "../src/integrations/postgres/channel-binding";
 import { make } from "../src/integrations/postgres/whatsapp-admission";
 import * as Allowances from "../src/services/allowances";
+import type { ManagedConversationDenied } from "../src/services/managed-conversation";
 import * as WhatsAppAgentAdmission from "../src/services/whatsapp-agent-admission";
 import { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
 import {
@@ -36,6 +37,7 @@ import {
 } from "../src/services/whatsapp-admission";
 import {
   makeWhatsAppAdmissionFixture,
+  providerContentDigest,
   receiptFromAcceptance,
   recoveredReceipt,
   routeMessage,
@@ -113,6 +115,7 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
         Effect.succeed({
           _tag: "ManagedConversationDenied" as const,
           reason: "allowanceExhausted",
+          resetAt: null,
         }),
       );
 
@@ -323,7 +326,11 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
           () =>
             Effect.sync(() => {
               freshAcceptances += 1;
-              return { _tag: "ManagedConversationDenied" as const, reason: "unexpected" };
+              return {
+                _tag: "ManagedConversationDenied" as const,
+                reason: "allowanceExhausted" as const,
+                resetAt: null,
+              };
             }),
           {
             now: date("2026-09-02T12:00:00.000Z"),
@@ -366,7 +373,7 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
         now: Effect.succeed(date("2026-08-16T12:00:00.000Z")),
       });
       const message = routeMessage("14165550134", "wamid.revocation-race");
-      const routed = yield* persistence.route({ ...message, contentDigest: "race-digest" });
+      const routed = yield* persistence.route({ ...message, contentDigest: providerContentDigest });
       const bound = yield* Schema.decodeUnknownEffect(
         Schema.Struct({
           agentId: AgentId,
@@ -397,7 +404,7 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
               ),
           },
           store: {
-            inspect: () => Effect.die("receipt store must not be read after authority denial"),
+            inspect: Effect.die("receipt store must not be read after authority denial"),
             readAcceptanceReceipt: () => Effect.succeed(null),
             recordAcceptanceReceipt: () =>
               Effect.die("receipt must not be written after authority denial"),
@@ -537,9 +544,7 @@ const makeRealAdmission = (
   database: typeof fixture.database,
   accept: (
     input: AgentAcceptanceInput,
-  ) => Effect.Effect<
-    AcceptanceReceipt | { readonly _tag: "ManagedConversationDenied"; readonly reason: string }
-  >,
+  ) => Effect.Effect<AcceptanceReceipt | ManagedConversationDenied>,
   options?: {
     readonly now?: Date;
     readonly recover?: (input: AgentRecoveryInput) => Effect.Effect<AcceptanceReceipt | null>;
@@ -587,7 +592,7 @@ const admitThroughAgent = (
     });
     const route = yield* persistence.route({
       ...message,
-      contentDigest: `digest-${message.message}`,
+      contentDigest: providerContentDigest,
     });
     const bound = yield* Schema.decodeUnknownEffect(
       Schema.TaggedStruct("Bound", {
@@ -613,7 +618,7 @@ const admitThroughAgent = (
             ),
         },
         store: {
-          inspect: () => Effect.die("denied lifecycle authority must not inspect Agent state"),
+          inspect: Effect.die("denied lifecycle authority must not inspect Agent state"),
           readAcceptanceReceipt: () => Effect.succeed(null),
           recordAcceptanceReceipt: () =>
             Effect.die("denied lifecycle authority must not record a receipt"),
@@ -648,7 +653,7 @@ const routeInput = () => ({
     phoneNumberId: "123456789",
     providerMessageId: ProviderMessageId.make("wamid.1"),
   }),
-  contentDigest: "digest-1",
+  contentDigest: providerContentDigest,
 });
 
 // oxlint-disable-next-line effecttsgo/async-function -- test fixture: Drizzle setup is a contained Promise boundary.

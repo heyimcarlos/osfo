@@ -24,6 +24,7 @@ import {
   ChannelBindingId,
   ConversationRouteId as ConversationRouteIdSchema,
   SessionId as SessionIdSchema,
+  ThinkSubmissionId,
   ThinkRequestId,
 } from "../../domain";
 import { database as workerDatabase } from "../../db";
@@ -197,6 +198,14 @@ const PersonalWelcomeInput = Schema.Struct({
 type PersonalWelcomeEncoded = typeof PersonalWelcomeInput.Encoded;
 
 type AcceptWhatsAppMessageEncoded = typeof AgentAcceptanceInput.Encoded;
+
+const WhatsAppThinkSubmissionInspection = Schema.Struct({
+  idempotencyKey: Schema.optional(Schema.String),
+  metadata: Schema.optional(Schema.Unknown),
+  submissionId: ThinkSubmissionId,
+});
+
+const WhatsAppThinkSubmissionAccepted = Schema.Struct({ submissionId: ThinkSubmissionId });
 
 /** Durable result for the deterministic first personal response. */
 export interface PersonalWelcomeCommitted {
@@ -552,10 +561,13 @@ export class OsfoAgent extends Think<Env> {
             inspect: (channelBindingId) =>
               this.#inspectCurrentWhatsAppAuthorization(channelBindingId),
           },
-          store: { ...recovery.store, inspect: this.#store.inspect },
+          store: { ...recovery.store, inspect: this.#store.inspect() },
           think: {
             ...recovery.think,
-            submit: (submission) => callThinkSubmission("runTurn", () => this.runTurn(submission)),
+            submit: (submission) =>
+              callThinkSubmission("runTurn", () => this.runTurn(submission)).pipe(
+                Effect.flatMap(decodeWhatsAppThinkSubmissionAccepted),
+              ),
           },
         },
         input: parsed,
@@ -1083,8 +1095,14 @@ export class OsfoAgent extends Think<Env> {
         recordAcceptanceReceipt: this.#store.recordAcceptanceReceipt,
       },
       think: {
-        inspect: (submissionId: string) =>
-          callThinkSubmission("inspectSubmission", () => this.inspectSubmission(submissionId)),
+        inspect: (submissionId: ThinkSubmissionId) =>
+          callThinkSubmission("inspectSubmission", () => this.inspectSubmission(submissionId)).pipe(
+            Effect.flatMap((inspection) =>
+              inspection === null
+                ? Effect.succeed(null)
+                : decodeWhatsAppThinkSubmissionInspection(inspection),
+            ),
+          ),
       },
     };
   }
@@ -1219,6 +1237,30 @@ const callThinkSubmission = <A>(operation: string, run: () => Promise<A>) =>
         operation,
       }),
   });
+
+const decodeWhatsAppThinkSubmissionInspection = (inspection: ThinkSubmissionInspection) =>
+  Schema.decodeEffect(WhatsAppThinkSubmissionInspection)(inspection).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ThinkSubmissionUnavailable({
+          cause,
+          message: "Think returned invalid WhatsApp Submission inspection facts",
+          operation: "inspectSubmission",
+        }),
+    ),
+  );
+
+const decodeWhatsAppThinkSubmissionAccepted = (submission: SubmitMessagesResult) =>
+  Schema.decodeEffect(WhatsAppThinkSubmissionAccepted)(submission).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ThinkSubmissionUnavailable({
+          cause,
+          message: "Think returned invalid WhatsApp Submission acceptance facts",
+          operation: "runTurn",
+        }),
+    ),
+  );
 
 const approvalActorAuthorizationUnavailable = (userId: UserId, cause: unknown) =>
   new ApprovalActorAuthorizationUnavailable({

@@ -34,9 +34,9 @@ const WhatsAppSubmissionMetadata = Schema.Struct({
 /** Application-owned acceptance facts persisted by the named Agent. */
 /** Application-owned view of a durable Think submission. */
 export interface SubmissionInspection {
-  readonly idempotencyKey?: string;
+  readonly idempotencyKey?: string | undefined;
   readonly metadata?: unknown;
-  readonly submissionId: string;
+  readonly submissionId: ThinkSubmissionId;
 }
 
 /** Application-owned command for durable Think submission. */
@@ -53,24 +53,48 @@ export interface SubmissionInput {
 }
 
 /** Concrete dependencies used by recoverable WhatsApp acceptance inside one named Agent. */
+export interface AcceptanceReceiptStore<
+  Receipt extends AcceptanceReceiptInput = AcceptanceReceiptInput,
+  StoreFailure = never,
+> {
+  readonly readAcceptanceReceipt: (
+    channelBindingId: ChannelBindingId,
+    providerMessageId: ProviderMessageId,
+  ) => Effect.Effect<Receipt | null, StoreFailure>;
+  readonly recordAcceptanceReceipt: (
+    input: AcceptanceReceiptInput,
+  ) => Effect.Effect<Receipt, StoreFailure>;
+}
+
+/** Think inspection capability required by acceptance recovery. */
+export interface ThinkSubmissionInspector {
+  readonly inspect: (
+    submissionId: ThinkSubmissionId,
+  ) => Effect.Effect<SubmissionInspection | null, ThinkSubmissionUnavailable>;
+}
+
+/** Concrete dependencies used by recoverable WhatsApp acceptance inside one named Agent. */
 export interface RecoveryInterface<
   Receipt extends AcceptanceReceiptInput = AcceptanceReceiptInput,
   StoreFailure = never,
 > {
-  readonly store: {
-    readonly readAcceptanceReceipt: (
-      channelBindingId: ChannelBindingId,
-      providerMessageId: ProviderMessageId,
-    ) => Effect.Effect<Receipt | null, StoreFailure>;
-    readonly recordAcceptanceReceipt: (
-      input: AcceptanceReceiptInput,
-    ) => Effect.Effect<Receipt, StoreFailure>;
-  };
-  readonly think: {
-    readonly inspect: (
-      submissionId: string,
-    ) => Effect.Effect<SubmissionInspection | null, ThinkSubmissionUnavailable>;
-  };
+  readonly store: AcceptanceReceiptStore<Receipt, StoreFailure>;
+  readonly think: ThinkSubmissionInspector;
+}
+
+/** Receipt store capability used only when accepting new work. */
+export interface AcceptanceReceiptStoreWithSession<
+  Receipt extends AcceptanceReceiptInput = AcceptanceReceiptInput,
+  StoreFailure = never,
+> extends AcceptanceReceiptStore<Receipt, StoreFailure> {
+  readonly inspect: Effect.Effect<{ readonly currentSessionId: SessionId }, StoreFailure>;
+}
+
+/** Think capabilities used only when accepting new work. */
+export interface ThinkSubmissionAcceptor extends ThinkSubmissionInspector {
+  readonly submit: (
+    input: SubmissionInput,
+  ) => Effect.Effect<{ readonly submissionId: ThinkSubmissionId }, ThinkSubmissionUnavailable>;
 }
 
 /** Concrete dependencies used by new WhatsApp acceptance inside one named Agent. */
@@ -83,24 +107,8 @@ export interface Interface<
       channelBindingId: ChannelBindingId,
     ) => Effect.Effect<AuthorizationContext, WhatsAppAuthorizationUnavailable>;
   };
-  readonly store: {
-    readonly inspect: () => Effect.Effect<{ readonly currentSessionId: SessionId }, StoreFailure>;
-    readonly readAcceptanceReceipt: (
-      channelBindingId: ChannelBindingId,
-      providerMessageId: ProviderMessageId,
-    ) => Effect.Effect<Receipt | null, StoreFailure>;
-    readonly recordAcceptanceReceipt: (
-      input: AcceptanceReceiptInput,
-    ) => Effect.Effect<Receipt, StoreFailure>;
-  };
-  readonly think: {
-    readonly inspect: (
-      submissionId: string,
-    ) => Effect.Effect<SubmissionInspection | null, ThinkSubmissionUnavailable>;
-    readonly submit: (
-      input: SubmissionInput,
-    ) => Effect.Effect<{ readonly submissionId: string }, ThinkSubmissionUnavailable>;
-  };
+  readonly store: AcceptanceReceiptStoreWithSession<Receipt, StoreFailure>;
+  readonly think: ThinkSubmissionAcceptor;
 }
 
 /** Accept or recover one WhatsApp UserMessage through Think and an immutable receipt. */
@@ -141,7 +149,7 @@ export const accept = <Receipt extends AcceptanceReceiptInput, StoreFailure>(opt
     });
     if (!Predicate.isTagged(managed, "ManagedConversationAdmitted")) return managed;
 
-    const agent = yield* dependencies.store.inspect();
+    const agent = yield* dependencies.store.inspect;
     const metadata = WhatsAppSubmissionMetadata.make({
       ...managed.metadata,
       whatsappAcceptance: {
