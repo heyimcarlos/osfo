@@ -1,18 +1,39 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { initialCorpusManifest } from "../src/corpus";
+import { createCorpusVersion, initialCorpusManifest } from "../src/corpus";
 import { digestValue } from "../src/manifest";
 
 import {
   createPairedPowerPlan,
   exactBinomialUpperBound,
   pairedNonInferiority,
+  parseCaseRunScores,
   requiredPairedCaseCount,
   type PairedPowerPlanInput,
 } from "../src/statistics";
 import { powerPlanSignature } from "./power-signatures";
 
 describe("Model Quality statistics", () => {
+  it("parses and freezes case identities before core score calculations", () => {
+    const first = initialCorpusManifest.cases[0];
+    if (first?.split !== "development") throw new Error("Development case required.");
+    const parsed = parseCaseRunScores({
+      caseId: first.id,
+      fixtureDigest: digestValue("fixture", first.fixture),
+      runs: [1, 1, 1],
+    });
+    expect(parsed.kind).toBe("success");
+    if (parsed.kind === "error") return;
+    expect(Object.isFrozen(parsed.value)).toBe(true);
+    expect(Object.isFrozen(parsed.value.runs)).toBe(true);
+    expect(
+      parseCaseRunScores({
+        caseId: "not a case id",
+        fixtureDigest: digestValue("fixture", first.fixture),
+        runs: [1],
+      }),
+    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+  });
   it("calculates one-sided exact-binomial upper confidence bounds", () => {
     expect(exactBinomialUpperBound({ confidence: 0.95, failures: 0, total: 299 })).toEqual({
       kind: "success",
@@ -52,6 +73,31 @@ describe("Model Quality statistics", () => {
       requiredCases: 541,
       verdict: "MISSING",
     });
+  });
+
+  it("keeps verified predecessor lineage when it parses a successor power plan", () => {
+    const successor = createCorpusVersion({
+      cases: initialCorpusManifest.cases,
+      createdAt: "2026-08-18T00:00:00.000Z",
+      newlyFailingCaseIds: [],
+      previous: initialCorpusManifest,
+      previousLineage: [],
+      safetyApprovals: [],
+      version: "model-quality-v2",
+    });
+    if (successor.kind === "error") throw new Error(successor.error.message);
+    const initialInput = powerPlanInput(1, { discordanceRate: 0.1, margin: 0.02 });
+    const { signature: ignoredSignature, ...unsigned } = initialInput;
+    expect(ignoredSignature.length).toBeGreaterThan(0);
+    const input = {
+      ...unsigned,
+      corpusDigest: successor.value.contentDigest,
+    };
+    expect(
+      createPairedPowerPlan({ ...input, signature: powerPlanSignature(input) }, successor.value, [
+        initialCorpusManifest,
+      ]),
+    ).toMatchObject({ kind: "success" });
   });
 
   it("keeps repeated runs clustered under their independent case", () => {

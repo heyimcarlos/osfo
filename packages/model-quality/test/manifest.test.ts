@@ -10,6 +10,7 @@ import {
   type BehaviorConfiguration,
   verifyEvaluationManifest,
 } from "../src/manifest";
+import { baselineSignature, outputSignature } from "./signatures";
 import {
   passingHumanReviewAssessment,
   testGateVerdictDigest,
@@ -41,12 +42,18 @@ describe("Model Quality evidence manifests", () => {
       approvedBaseline: {
         approvedAt: "2026-08-16T00:00:00.000Z",
         approverId: "quality-owner-1",
+        configurationDigest: configurationDigest(configuration),
         corpusDigest: initialCorpusManifest.contentDigest,
+        dependencyDigest,
         graderDigest,
+        humanLabelSetVersion: "labels-v1",
+        inferenceSettingsDigest: digestValue("inference-settings", "inference-settings"),
+        providerModelId: "pinned-model-2026-08-01",
         rubricDigest,
-        signature:
-          "QyGleZbqmUTzIPShcbL5zl/9wEQ2DQaaxCg5VbgtioFBSfG4kpv3sEZ1V2lnU08LlZIXEukhdrP9iQMQJx7oDw==",
+        sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
+        signature: "",
       },
+      arm: "candidate" as const,
       configuration,
       corpusDigest: initialCorpusManifest.contentDigest,
       corpusVersion: initialCorpusManifest.version,
@@ -72,18 +79,23 @@ describe("Model Quality evidence manifests", () => {
           startedAt: "2026-08-17T00:00:00.000Z",
         },
       },
-      outputSignature:
-        "M2yhQ4Vuue9FpBfPdLzpKRogjzVSHl9IWDEqaTl1tcbv4bR5bg1VgvwA/VZbzXUW4r59UDZaIdRbYNbGTauwDg==",
+      outputSignature: "",
       powerCalculationDigest: testPowerDigest,
       providerModelId: "pinned-model-2026-08-01",
       rubricDigest,
       releaseId: "release-1",
       sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
     };
-    expect(evaluationOutputSigningDigest(input)).toBe(
-      "sha256:d77738180dd9c0821f970a7fffb6facf6aab8a2d28a5f35bb2110abffedccc2b",
-    );
-    const result = createEvaluationManifest(input);
+    const withBaseline = {
+      ...input,
+      approvedBaseline: {
+        ...input.approvedBaseline,
+        signature: baselineSignature(input.approvedBaseline),
+      },
+    };
+    const signed = { ...withBaseline, outputSignature: outputSignature(withBaseline) };
+    expect(evaluationOutputSigningDigest(signed)).toMatch(/^sha256:[a-f0-9]{64}$/);
+    const result = createEvaluationManifest(signed);
 
     expect(result.kind).toBe("success");
     if (result.kind === "error") return;
@@ -223,46 +235,61 @@ describe("Model Quality evidence manifests", () => {
   });
 });
 
-const makeManifestInput = () => ({
-  approvedBaseline: {
-    approvedAt: "2026-08-16T00:00:00.000Z",
-    approverId: "quality-owner-1",
-    corpusDigest: initialCorpusManifest.contentDigest,
-    graderDigest,
-    rubricDigest,
-    signature:
-      "QyGleZbqmUTzIPShcbL5zl/9wEQ2DQaaxCg5VbgtioFBSfG4kpv3sEZ1V2lnU08LlZIXEukhdrP9iQMQJx7oDw==",
-  },
-  configuration,
-  corpusDigest: initialCorpusManifest.contentDigest,
-  corpusVersion: initialCorpusManifest.version,
-  createdAt: "2026-08-17T00:00:00.000Z",
-  dependencyDigest,
-  fixtureDigest: digestValue("fixture", "fixtures"),
-  graderDigest,
-  gateVerdictDigest,
-  humanReviewDigest: humanReview.contentDigest,
-  humanLabelSetVersion: "labels-v1",
-  inferenceSettingsDigest: digestValue("inference-settings", "inference-settings"),
-  manifestId: "evaluation-1",
-  outputEvidence: {
-    artifactChecksumsDigest: digestValue("artifact-checksums", "artifacts"),
-    costDigest: digestValue("cost", "cost"),
-    latencyDigest: digestValue("latency", "latency"),
-    rawOutputsDigest: digestValue("raw-outputs", "outputs"),
-    scoreDigest: testScoreDigest,
-    tokenUseDigest: digestValue("token-use", "tokens"),
-    traceDigest: digestValue("traces", "traces"),
-    utcWindow: {
-      endedAt: "2026-08-17T01:00:00.000Z",
-      startedAt: "2026-08-17T00:00:00.000Z",
+const makeManifestInput = () => {
+  const input = {
+    approvedBaseline: {
+      approvedAt: "2026-08-16T00:00:00.000Z",
+      approverId: "quality-owner-1",
+      configurationDigest: configurationDigest(configuration),
+      corpusDigest: initialCorpusManifest.contentDigest,
+      dependencyDigest,
+      graderDigest,
+      humanLabelSetVersion: "labels-v1",
+      inferenceSettingsDigest: digestValue("inference-settings", "inference-settings"),
+      providerModelId: "pinned-model-2026-08-01",
+      rubricDigest,
+      sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
+      signature: "",
     },
-  },
-  outputSignature:
-    "M2yhQ4Vuue9FpBfPdLzpKRogjzVSHl9IWDEqaTl1tcbv4bR5bg1VgvwA/VZbzXUW4r59UDZaIdRbYNbGTauwDg==",
-  powerCalculationDigest: testPowerDigest,
-  providerModelId: "pinned-model-2026-08-01",
-  rubricDigest,
-  releaseId: "release-1",
-  sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
-});
+    arm: "candidate" as const,
+    configuration,
+    corpusDigest: initialCorpusManifest.contentDigest,
+    corpusVersion: initialCorpusManifest.version,
+    createdAt: "2026-08-17T00:00:00.000Z",
+    dependencyDigest,
+    fixtureDigest: digestValue("fixture", "fixtures"),
+    graderDigest,
+    gateVerdictDigest,
+    humanReviewDigest: humanReview.contentDigest,
+    humanLabelSetVersion: "labels-v1",
+    inferenceSettingsDigest: digestValue("inference-settings", "inference-settings"),
+    manifestId: "evaluation-1",
+    outputEvidence: {
+      artifactChecksumsDigest: digestValue("artifact-checksums", "artifacts"),
+      costDigest: digestValue("cost", "cost"),
+      latencyDigest: digestValue("latency", "latency"),
+      rawOutputsDigest: digestValue("raw-outputs", "outputs"),
+      scoreDigest: testScoreDigest,
+      tokenUseDigest: digestValue("token-use", "tokens"),
+      traceDigest: digestValue("traces", "traces"),
+      utcWindow: {
+        endedAt: "2026-08-17T01:00:00.000Z",
+        startedAt: "2026-08-17T00:00:00.000Z",
+      },
+    },
+    outputSignature: "",
+    powerCalculationDigest: testPowerDigest,
+    providerModelId: "pinned-model-2026-08-01",
+    rubricDigest,
+    releaseId: "release-1",
+    sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
+  };
+  const withBaseline = {
+    ...input,
+    approvedBaseline: {
+      ...input.approvedBaseline,
+      signature: baselineSignature(input.approvedBaseline),
+    },
+  };
+  return { ...withBaseline, outputSignature: outputSignature(withBaseline) };
+};

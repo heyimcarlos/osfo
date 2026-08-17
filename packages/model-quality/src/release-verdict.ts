@@ -113,9 +113,34 @@ const releaseManifestsAreValid = (
     currentInstant.kind === "success" &&
     verifyEvaluationManifest(candidate) &&
     verifyEvaluationManifest(production) &&
+    candidate.arm === "candidate" &&
+    production.arm === "production" &&
+    candidate.approvedBaseline.configurationDigest ===
+      production.approvedBaseline.configurationDigest &&
+    candidate.approvedBaseline.corpusDigest === production.approvedBaseline.corpusDigest &&
+    candidate.approvedBaseline.dependencyDigest === production.approvedBaseline.dependencyDigest &&
+    candidate.approvedBaseline.graderDigest === production.approvedBaseline.graderDigest &&
+    candidate.approvedBaseline.humanLabelSetVersion ===
+      production.approvedBaseline.humanLabelSetVersion &&
+    candidate.approvedBaseline.inferenceSettingsDigest ===
+      production.approvedBaseline.inferenceSettingsDigest &&
+    candidate.approvedBaseline.providerModelId === production.approvedBaseline.providerModelId &&
+    candidate.approvedBaseline.rubricDigest === production.approvedBaseline.rubricDigest &&
+    candidate.approvedBaseline.sourceCommit === production.approvedBaseline.sourceCommit &&
+    production.approvedBaseline.configurationDigest === production.configurationDigest &&
+    production.approvedBaseline.corpusDigest === production.corpusDigest &&
+    production.approvedBaseline.dependencyDigest === production.dependencyDigest &&
+    production.approvedBaseline.graderDigest === production.graderDigest &&
+    production.approvedBaseline.humanLabelSetVersion === production.humanLabelSetVersion &&
+    production.approvedBaseline.inferenceSettingsDigest === production.inferenceSettingsDigest &&
+    production.approvedBaseline.providerModelId === production.providerModelId &&
+    production.approvedBaseline.rubricDigest === production.rubricDigest &&
+    production.approvedBaseline.sourceCommit === production.sourceCommit &&
     candidate.corpusDigest === production.corpusDigest &&
     candidate.corpusVersion === production.corpusVersion &&
     candidate.fixtureDigest === production.fixtureDigest &&
+    candidate.graderDigest === production.graderDigest &&
+    candidate.rubricDigest === production.rubricDigest &&
     assessPassCurrentness({
       currentConfigurationDigest: current.configurationDigest,
       currentCorpusDigest: current.corpusDigest,

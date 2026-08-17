@@ -1,4 +1,5 @@
 import { assessHumanReview } from "../src/review";
+import { parseReleaseId } from "../src/identity";
 import { initialCorpusManifest } from "../src/corpus";
 import {
   configurationDigest,
@@ -7,6 +8,8 @@ import {
   parseEvidenceDigest,
   type BehaviorConfiguration,
 } from "../src/manifest";
+import { createModelGraderQualification } from "../src/grading";
+import { baselineSignature, modelGraderSignature, outputSignature } from "./signatures";
 import { createReleasePass } from "../src/release-verdict";
 import {
   createPairedPowerPlan,
@@ -79,6 +82,55 @@ export const testConfiguration = {
 
 export const testDependencyDigest = digestValue("dependency", "dependencies");
 export const testGraderDigest = digestValue("grader", "graders");
+const parsedTestReleaseId = parseReleaseId("release-1");
+if (parsedTestReleaseId.kind === "error") throw new Error("Static release identity is invalid.");
+export const testReleaseId = parsedTestReleaseId.value;
+export const passingModelGraderQualification = () => {
+  const input = {
+    assessedAt: "2026-08-16T00:00:00.000Z",
+    authorityId: "model-grader-owner-1",
+    calibration: {
+      criticalFalsePasses: Array.from({ length: 299 }, (_, index) => ({
+        caseId: `critical-${index}`,
+        failed: false,
+      })),
+      falseFailures: Array.from({ length: 100 }, (_, index) => ({
+        caseId: `false-failure-${index}`,
+        failed: false,
+      })),
+      otherFalsePasses: Array.from({ length: 100 }, (_, index) => ({
+        caseId: `other-false-pass-${index}`,
+        failed: false,
+      })),
+    },
+    graderDigest: testGraderDigest,
+    signature: "",
+  };
+  const result = createModelGraderQualification({
+    ...input,
+    signature: modelGraderSignature(input),
+  });
+  if (result.kind === "error") throw new Error("Model grader fixture signature is invalid.");
+  return result.value;
+};
+export const testCandidateCostMaterial = Object.freeze([
+  Object.freeze({
+    amountUsd: 0.01,
+    arm: "candidate" as const,
+    recordedAt: "2026-08-17T00:30:00.000Z",
+    source: "model-provider-bill",
+    type: "model",
+  }),
+]);
+export const testProductionCostMaterial = Object.freeze([
+  Object.freeze({
+    amountUsd: 0.01,
+    arm: "production" as const,
+    recordedAt: "2026-08-17T00:30:00.000Z",
+    source: "model-provider-bill",
+    type: "model",
+  }),
+]);
 
 const caseRuns = (score: number): ReadonlyArray<CaseRunScores> =>
   initialCorpusManifest.cases.map((item) => ({
@@ -187,21 +239,31 @@ export const testScoreDigest = digestValue("scores", {
   productionRuns: testProductionRuns,
 });
 
-export const passingEvaluationManifest = (overrides?: {
-  readonly gateVerdictDigest?: typeof testGateVerdictDigest;
-  readonly outputSignature?: string;
-}) => {
+export const passingEvaluationManifest = (
+  arm: "candidate" | "production" = "candidate",
+  overrides?: {
+    readonly gateVerdictDigest?: typeof testGateVerdictDigest;
+    readonly outputSignature?: string;
+    readonly providerModelId?: string;
+  },
+) => {
   const humanReview = passingHumanReviewAssessment();
   const input = {
     approvedBaseline: {
       approvedAt: "2026-08-16T00:00:00.000Z",
       approverId: "quality-owner-1",
+      configurationDigest: configurationDigest(testConfiguration),
       corpusDigest: initialCorpusManifest.contentDigest,
+      dependencyDigest: testDependencyDigest,
       graderDigest: testGraderDigest,
+      humanLabelSetVersion: "labels-v1",
+      inferenceSettingsDigest: digestValue("inference-settings", "inference-settings"),
+      providerModelId: "pinned-model-2026-08-01",
       rubricDigest: testRubricDigest,
-      signature:
-        "QyGleZbqmUTzIPShcbL5zl/9wEQ2DQaaxCg5VbgtioFBSfG4kpv3sEZ1V2lnU08LlZIXEukhdrP9iQMQJx7oDw==",
+      sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
+      signature: "",
     },
+    arm,
     configuration: testConfiguration,
     corpusDigest: initialCorpusManifest.contentDigest,
     corpusVersion: initialCorpusManifest.version,
@@ -216,7 +278,10 @@ export const passingEvaluationManifest = (overrides?: {
     manifestId: "evaluation-1",
     outputEvidence: {
       artifactChecksumsDigest: digestValue("artifact-checksums", "artifacts"),
-      costDigest: digestValue("cost", "cost"),
+      costDigest: digestValue(
+        "cost",
+        arm === "candidate" ? testCandidateCostMaterial : testProductionCostMaterial,
+      ),
       latencyDigest: digestValue("latency", "latency"),
       rawOutputsDigest: digestValue("raw-outputs", "outputs"),
       scoreDigest: testScoreDigest,
@@ -227,16 +292,25 @@ export const passingEvaluationManifest = (overrides?: {
         startedAt: "2026-08-17T00:00:00.000Z",
       },
     },
-    outputSignature:
-      overrides?.outputSignature ??
-      "M2yhQ4Vuue9FpBfPdLzpKRogjzVSHl9IWDEqaTl1tcbv4bR5bg1VgvwA/VZbzXUW4r59UDZaIdRbYNbGTauwDg==",
+    outputSignature: "",
     powerCalculationDigest: testPowerDigest,
-    providerModelId: "pinned-model-2026-08-01",
+    providerModelId: overrides?.providerModelId ?? "pinned-model-2026-08-01",
     rubricDigest: testRubricDigest,
     releaseId: "release-1",
     sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
   };
-  const result = createEvaluationManifest(input);
+  const withBaseline = {
+    ...input,
+    approvedBaseline: {
+      ...input.approvedBaseline,
+      signature: baselineSignature(input.approvedBaseline),
+    },
+  };
+  const signed = {
+    ...withBaseline,
+    outputSignature: overrides?.outputSignature ?? outputSignature(withBaseline),
+  };
+  const result = createEvaluationManifest(signed);
   if (result.kind === "error") throw new Error(result.error.message);
   return result.value;
 };
@@ -253,8 +327,14 @@ export const passingCurrentReleaseEvidence = {
 } as const;
 
 export const passingReleasePass = () => {
-  const manifest = passingEvaluationManifest();
-  const result = createReleasePass("release-1", manifest, manifest, passingCurrentReleaseEvidence);
+  const candidate = passingEvaluationManifest("candidate");
+  const production = passingEvaluationManifest("production");
+  const result = createReleasePass(
+    "release-1",
+    candidate,
+    production,
+    passingCurrentReleaseEvidence,
+  );
   if (result.kind === "error") throw new Error(result.error.message);
   return result.value;
 };

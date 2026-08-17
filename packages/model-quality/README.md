@@ -22,9 +22,11 @@ deterministic graders -> calibrated model or human review
         canary controls
 ```
 
-The public seams are package subpath exports. The modules are pure. Callers supply time,
-configuration, grader results, traces, and production observations. A missing provider run,
-human label, trace, sample, or powered comparison stays `MISSING`.
+The single supported package seam is `@osfo/model-quality`. Its `ModelQualityTooling` facade
+contains corpus, execution, grading, gate, canary, feedback, deletion, and retention operations.
+Internal source modules are not package exports. Callers supply time, configuration, grader
+results, traces, and production observations. A missing provider run, human label, trace,
+sample, or powered comparison stays `MISSING`.
 
 The initial corpus manifest contains 600 authored or synthetic cases. Pull request plans can use
 only development cases. Complete release plans include the sealed holdout. Corpus successors are

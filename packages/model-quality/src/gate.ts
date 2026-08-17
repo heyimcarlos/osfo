@@ -16,11 +16,13 @@ import {
 } from "./statistics";
 import { isEvidenceSubset } from "./evidence-count";
 import { verifyHumanReviewAssessment, type HumanReviewAssessment } from "./review";
+import { verifyModelGraderQualification, type VerifiedModelGraderQualification } from "./grading";
 import {
   createReleasePass,
   type CurrentReleaseEvidence,
   type ReleasePass,
 } from "./release-verdict";
+import { parseEvidenceInstant, type CaseId, type ReleaseId } from "./identity";
 
 /** Failures that one confirmed occurrence makes release-blocking. */
 export type ZeroToleranceFailure =
@@ -43,12 +45,28 @@ export type StratumEvidence = {
   readonly total: number;
 };
 
+/** One material cost record retained with signed evaluation output evidence. */
+export type CostRecord = {
+  readonly amountUsd: number;
+  readonly arm: "candidate" | "production";
+  readonly recordedAt: string;
+  readonly source: string;
+  readonly type: string;
+};
+
+/** Immutable material cost evidence for one evaluated configuration. */
+export type CostMaterial = ReadonlyArray<CostRecord>;
+
 /** Complete evidence required to issue a Model Quality verdict. */
 export type GateEvidence = {
   readonly candidateRuns: ReadonlyArray<CaseRunScores>;
-  readonly releaseId: string;
+  readonly costMaterial: {
+    readonly candidate: CostMaterial | null;
+    readonly production: CostMaterial | null;
+  };
+  readonly releaseId: ReleaseId;
   readonly candidateManifest: EvaluationManifest;
-  readonly candidateCaseIds: ReadonlyArray<string>;
+  readonly candidateCaseIds: ReadonlyArray<CaseId>;
   readonly candidateCorpusDigest: EvidenceDigest<"corpus">;
   readonly criticalChecks: { readonly passed: number; readonly total: number };
   readonly criticalRiskClasses: ReadonlyArray<{
@@ -60,7 +78,7 @@ export type GateEvidence = {
   readonly evaluationCorpusLineage: CorpusLineage;
   readonly humanReview: HumanReviewAssessment | null;
   readonly subjectiveAuthority:
-    | { readonly calibration: EvidenceVerdict; readonly kind: "model-grader" }
+    | { readonly kind: "model-grader"; readonly qualification: VerifiedModelGraderQualification }
     | {
         readonly affectedCases: number;
         readonly humanReviewedCases: number;
@@ -86,7 +104,7 @@ export type GateEvidence = {
       readonly verdict: EvidenceVerdict;
     }>;
   };
-  readonly productionCaseIds: ReadonlyArray<string>;
+  readonly productionCaseIds: ReadonlyArray<CaseId>;
   readonly productionCorpusDigest: EvidenceDigest<"corpus">;
   readonly productionManifest: EvaluationManifest;
   readonly productionRuns: ReadonlyArray<CaseRunScores>;
@@ -106,6 +124,7 @@ export type GateAssessment = {
 export const gateVerdictEvidenceDigest = (evidence: GateEvidence): EvidenceDigest<"gate-verdict"> =>
   digestValue("gate-verdict", {
     candidateCaseIds: evidence.candidateCaseIds,
+    costMaterial: evidence.costMaterial,
     candidateRuns: evidence.candidateRuns,
     candidateCorpusDigest: evidence.candidateCorpusDigest,
     criticalChecks: evidence.criticalChecks,
@@ -121,7 +140,13 @@ export const gateVerdictEvidenceDigest = (evidence: GateEvidence): EvidenceDiges
     productionRuns: evidence.productionRuns,
     releaseId: evidence.releaseId,
     strata: evidence.strata,
-    subjectiveAuthority: evidence.subjectiveAuthority,
+    subjectiveAuthority:
+      evidence.subjectiveAuthority.kind === "model-grader"
+        ? {
+            kind: "model-grader",
+            qualificationDigest: evidence.subjectiveAuthority.qualification.contentDigest,
+          }
+        : evidence.subjectiveAuthority,
     zeroToleranceFailures: evidence.zeroToleranceFailures,
   });
 
@@ -217,7 +242,8 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
   }
   if (
     evidence.subjectiveAuthority.kind === "model-grader" &&
-    evidence.subjectiveAuthority.calibration === "FAIL"
+    verifyModelGraderQualification(evidence.subjectiveAuthority.qualification) &&
+    evidence.subjectiveAuthority.qualification.qualification.verdict === "FAIL"
   ) {
     failures.push("The model grader failed calibration.");
   }
@@ -316,7 +342,10 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
   }
   if (
     (evidence.subjectiveAuthority.kind === "model-grader" &&
-      evidence.subjectiveAuthority.calibration === "MISSING") ||
+      (!verifyModelGraderQualification(evidence.subjectiveAuthority.qualification) ||
+        evidence.subjectiveAuthority.qualification.graderDigest !==
+          evidence.candidateManifest.graderDigest ||
+        !evidence.subjectiveAuthority.qualification.qualification.releaseAuthority)) ||
     (evidence.subjectiveAuthority.kind === "human" &&
       (!isEvidenceSubset(
         evidence.subjectiveAuthority.humanReviewedCases,
@@ -327,6 +356,12 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
         evidence.subjectiveAuthority.affectedCases === 0))
   ) {
     missing.push("Subjective grading lacks qualified release authority.");
+  }
+  if (
+    !costMaterialMatches(evidence.costMaterial.candidate, evidence.candidateManifest) ||
+    !costMaterialMatches(evidence.costMaterial.production, evidence.productionManifest)
+  ) {
+    missing.push("Material cost evidence is MISSING or does not match signed output.");
   }
   if (
     overallComparison.kind === "error" ||
@@ -437,7 +472,7 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
       : { reasons: ["Signed release output evidence is MISSING."], verdict: "MISSING" };
 };
 
-const sameCases = (left: ReadonlyArray<string>, right: ReadonlyArray<string>) => {
+const sameCases = (left: ReadonlyArray<CaseId>, right: ReadonlyArray<CaseId>) => {
   // oxlint-disable-next-line unicorn/no-array-sort -- Each spread is a fresh array, so sorting cannot mutate caller-owned evidence.
   const sortedLeft = [...left].sort();
   // oxlint-disable-next-line unicorn/no-array-sort -- The spread is a fresh array, so sorting cannot mutate caller-owned evidence.
@@ -461,3 +496,22 @@ const runsAreExactProjection = (
       source.runs.every((score, index) => score === item.runs[index])
     );
   });
+
+const costMaterialMatches = (
+  material: CostMaterial | null,
+  manifest: EvaluationManifest,
+): boolean =>
+  material !== null &&
+  material.length > 0 &&
+  material.every(
+    (record) =>
+      Number.isFinite(record.amountUsd) &&
+      record.amountUsd >= 0 &&
+      record.arm === manifest.arm &&
+      record.source.length > 0 &&
+      record.type.length > 0 &&
+      parseEvidenceInstant(record.recordedAt).kind === "success" &&
+      Date.parse(record.recordedAt) >= Date.parse(manifest.outputEvidence.utcWindow.startedAt) &&
+      Date.parse(record.recordedAt) <= Date.parse(manifest.outputEvidence.utcWindow.endedAt),
+  ) &&
+  digestValue("cost", material) === manifest.outputEvidence.costDigest;

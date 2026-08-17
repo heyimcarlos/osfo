@@ -389,6 +389,9 @@ const corpusInvariantFailure = (
       return `Corpus case ${item.id} has an invalid fixture source for its split.`;
     }
   }
+  if (!hasRequiredInitialComposition(manifest.cases)) {
+    return "Corpus versions require the exact 600-case composition and 20% sealed ratio per class.";
+  }
   if (
     new Set(manifest.knownFailingCaseIds).size !== manifest.knownFailingCaseIds.length ||
     manifest.knownFailingCaseIds.some((id) => !caseIds.includes(id))
@@ -413,6 +416,17 @@ const corpusInvariantFailure = (
   }
   return null;
 };
+
+/** Check the frozen initial case counts and sealed ratio for every journey class. */
+const hasRequiredInitialComposition = (corpusCases: ReadonlyArray<PersistedCorpusCase>): boolean =>
+  corpusCases.length === 600 &&
+  journeySizes.every(([journey, required]) => {
+    const casesForJourney = corpusCases.filter((item) => item.journey === journey);
+    return (
+      casesForJourney.length === required &&
+      casesForJourney.filter((item) => item.split === "sealed-holdout").length === required / 5
+    );
+  });
 
 const verifyCorpusLineage = (
   lineage: CorpusLineage,

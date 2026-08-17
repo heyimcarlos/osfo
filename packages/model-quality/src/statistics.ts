@@ -131,11 +131,41 @@ export const requiredPairedCaseCount = (input: PairedPowerInput): StatisticsResu
   );
 };
 
-/** Repeated outputs clustered under one independent case identity. */
-export type CaseRunScores = {
+/** Persisted repeated output scores accepted only at the evidence boundary. */
+export type PersistedCaseRunScores = {
   readonly caseId: string;
   readonly fixtureDigest: EvidenceDigest<"fixture">;
   readonly runs: ReadonlyArray<number>;
+};
+
+/** Parsed and immutable repeated outputs clustered under one independent case identity. */
+export type CaseRunScores = {
+  readonly caseId: CaseId;
+  readonly fixtureDigest: EvidenceDigest<"fixture">;
+  readonly runs: ReadonlyArray<number>;
+};
+
+/** Parse and freeze one case-run record before calculations consume its identity. */
+export const parseCaseRunScores = (
+  input: PersistedCaseRunScores,
+): StatisticsResult<CaseRunScores> => {
+  const caseId = parseCaseId(input.caseId);
+  if (
+    caseId.kind === "error" ||
+    input.runs.length === 0 ||
+    input.runs.some((score) => !Number.isFinite(score) || score < 0 || score > 1)
+  ) {
+    return invalidStatistics(
+      "Case-run evidence must contain a parsed case identity and bounded scores.",
+    );
+  }
+  return success(
+    Object.freeze({
+      caseId: caseId.value,
+      fixtureDigest: input.fixtureDigest,
+      runs: Object.freeze([...input.runs]),
+    }),
+  );
 };
 
 /** Verify exact repeated outputs for every case in one trusted corpus version. */
@@ -216,10 +246,30 @@ export type PairedPowerPlan = ParsedPairedPowerInput & {
   readonly signature: string;
 };
 
+/** Less-trusted persisted final-power plan accepted before identities and runs are parsed. */
+export type PersistedPairedPowerPlan = PairedPowerInput & {
+  readonly authorityId: string;
+  readonly candidateEvaluationStartedAt: string;
+  readonly caseIds: ReadonlyArray<string>;
+  readonly contentDigest: EvidenceDigest<"power-calculation">;
+  readonly corpusDigest: EvidenceDigest<"corpus">;
+  readonly declaredAt: string;
+  readonly pilotBaselineByCase: ReadonlyArray<PersistedCaseRunScores>;
+  readonly pilotCandidateByCase: ReadonlyArray<PersistedCaseRunScores>;
+  readonly pilotObservations: ReadonlyArray<{
+    readonly caseId: string;
+    readonly difference: number;
+    readonly fixtureDigest: EvidenceDigest<"fixture">;
+  }>;
+  readonly pilotRunEvidenceDigest: EvidenceDigest<"scores">;
+  readonly requiredCases: number;
+  readonly signature: string;
+};
+
 const powerPlanAuthorityIds = new Set(["quality-power-owner-1"]);
 
 const powerPlanAuthorityPublicKey = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAYmDUW0aBFMQmi3lGHgfcyNy2B3p1eXmZb3B41/HtDss=
+MCowBQYDK2VwAyEAOwTpeNujZmsV31F9qCJ3h0kOHbDSq4sI7i8aQZRUZak=
 -----END PUBLIC KEY-----`;
 
 /** Produce the canonical digest signed by the independent power-plan authority. */
@@ -309,13 +359,14 @@ export const createPairedPowerPlan = (
     requiredCases: requiredCases.value,
     signature: input.signature,
   });
-  return {
-    kind: "success",
-    value: Object.freeze({
+  return parsePairedPowerPlan(
+    Object.freeze({
       ...unsigned,
       contentDigest: digestValue("power-calculation", unsigned),
     }),
-  };
+    corpusManifest,
+    corpusLineage,
+  );
 };
 
 /** Inputs for a paired, case-clustered non-inferiority comparison. */
@@ -344,9 +395,13 @@ export const pairedNonInferiority = (
   if (!verifyCorpusManifest(input.corpusManifest, input.corpusLineage ?? [])) {
     return invalidStatistics("The corpus manifest content digest does not match.");
   }
-  if (!powerPlanIsValid(input.powerPlan, input.corpusManifest)) {
-    return invalidStatistics("The predeclared paired power plan is invalid.");
-  }
+  const parsedPlan = parsePairedPowerPlan(
+    input.powerPlan,
+    input.corpusManifest,
+    input.corpusLineage ?? [],
+  );
+  if (parsedPlan.kind === "error") return parsedPlan;
+  const powerPlan = parsedPlan.value;
   const sealedCases = new Map(
     input.corpusManifest.cases
       .filter((item) => item.split === "sealed-holdout")
@@ -371,7 +426,7 @@ export const pairedNonInferiority = (
     return invalidStatistics("Paired case identities must match.");
   }
   if (
-    !sameCaseIdentities(baselineIds, input.powerPlan.caseIds) ||
+    !sameCaseIdentities(baselineIds, powerPlan.caseIds) ||
     baselineIds.some(
       (caseId) =>
         input.baselineByCase.find((item) => item.caseId === caseId)?.fixtureDigest !==
@@ -388,9 +443,9 @@ export const pairedNonInferiority = (
   const difference = mean(differences);
   const lowerConfidenceBound = pairedClusterBootstrapLowerBound(differences);
   const verdict: EvidenceVerdict =
-    baselineIds.length < input.powerPlan.requiredCases
+    baselineIds.length < powerPlan.requiredCases
       ? "MISSING"
-      : lowerConfidenceBound >= -input.powerPlan.margin
+      : lowerConfidenceBound >= -powerPlan.margin
         ? "PASS"
         : "FAIL";
   return {
@@ -398,7 +453,7 @@ export const pairedNonInferiority = (
     independentCases: baselineIds.length,
     kind: "success",
     lowerConfidenceBound,
-    requiredCases: input.powerPlan.requiredCases,
+    requiredCases: powerPlan.requiredCases,
     verdict,
   };
 };
@@ -432,7 +487,18 @@ const parseCaseScores = (
   return success(scores);
 };
 
-const powerPlanIsValid = (plan: PairedPowerPlan, corpusManifest: CorpusManifest): boolean => {
+/** Parse a persisted power plan and verify all derived and signed evidence once. */
+export const parsePairedPowerPlan = (
+  persisted: PersistedPairedPowerPlan,
+  corpusManifest: CorpusManifest,
+  corpusLineage: CorpusLineage = [],
+): StatisticsResult<PairedPowerPlan> => {
+  if (!verifyCorpusManifest(corpusManifest, corpusLineage)) {
+    return invalidStatistics("The corpus manifest content digest does not match.");
+  }
+  const normalized = normalizePowerPlan(persisted);
+  if (normalized.kind === "error") return normalized;
+  const plan = normalized.value;
   const { contentDigest, ...unsigned } = plan;
   const parsed = parsePairedPowerInput(plan);
   const pilotInput = parsePilotPowerInput(plan.pilotObservations, plan.margin);
@@ -448,7 +514,7 @@ const powerPlanIsValid = (plan: PairedPowerPlan, corpusManifest: CorpusManifest)
     corpusManifest.cases.filter((item) => item.split === "sealed-holdout").map((item) => item.id),
   );
   const requiredCases = requiredPairedCaseCount(plan);
-  return (
+  const valid =
     parsed.kind === "success" &&
     pilotInput.kind === "success" &&
     pilotEvidence.kind === "success" &&
@@ -493,7 +559,74 @@ const powerPlanIsValid = (plan: PairedPowerPlan, corpusManifest: CorpusManifest)
       powerPlanAuthorityPublicKey,
       Buffer.from(plan.signature, "base64"),
     ) &&
-    contentDigest === digestValue("power-calculation", unsigned)
+    contentDigest === digestValue("power-calculation", unsigned);
+  return valid
+    ? success(freezePowerPlan(plan))
+    : invalidStatistics("The predeclared paired power plan is invalid.");
+};
+
+const normalizePowerPlan = (
+  persisted: PersistedPairedPowerPlan,
+): StatisticsResult<PairedPowerPlan> => {
+  const input = parsePairedPowerInput(persisted);
+  const authorityId = parseApprovalId(persisted.authorityId);
+  const candidateEvaluationStartedAt = parseEvidenceInstant(persisted.candidateEvaluationStartedAt);
+  const declaredAt = parseEvidenceInstant(persisted.declaredAt);
+  const caseIds = persisted.caseIds.map(parseCaseId);
+  const pilotBaselineByCase = persisted.pilotBaselineByCase.map(parseCaseRunScores);
+  const pilotCandidateByCase = persisted.pilotCandidateByCase.map(parseCaseRunScores);
+  const pilotObservations = persisted.pilotObservations.map((observation) => ({
+    ...observation,
+    caseId: parseCaseId(observation.caseId),
+  }));
+  if (
+    input.kind === "error" ||
+    authorityId.kind === "error" ||
+    candidateEvaluationStartedAt.kind === "error" ||
+    declaredAt.kind === "error" ||
+    caseIds.some((result) => result.kind === "error") ||
+    pilotBaselineByCase.some((result) => result.kind === "error") ||
+    pilotCandidateByCase.some((result) => result.kind === "error") ||
+    pilotObservations.some((observation) => observation.caseId.kind === "error")
+  ) {
+    return invalidStatistics(
+      "The persisted paired power plan has invalid identities or run evidence.",
+    );
+  }
+  return success(
+    Object.freeze({
+      ...input.value,
+      authorityId: authorityId.value,
+      candidateEvaluationStartedAt: candidateEvaluationStartedAt.value,
+      caseIds: Object.freeze(
+        caseIds.flatMap((result) => (result.kind === "success" ? [result.value] : [])),
+      ),
+      contentDigest: persisted.contentDigest,
+      corpusDigest: persisted.corpusDigest,
+      declaredAt: declaredAt.value,
+      pilotBaselineByCase: Object.freeze(
+        pilotBaselineByCase.flatMap((result) => (result.kind === "success" ? [result.value] : [])),
+      ),
+      pilotCandidateByCase: Object.freeze(
+        pilotCandidateByCase.flatMap((result) => (result.kind === "success" ? [result.value] : [])),
+      ),
+      pilotObservations: Object.freeze(
+        pilotObservations.flatMap((observation) =>
+          observation.caseId.kind === "success"
+            ? [
+                Object.freeze({
+                  caseId: observation.caseId.value,
+                  difference: observation.difference,
+                  fixtureDigest: observation.fixtureDigest,
+                }),
+              ]
+            : [],
+        ),
+      ),
+      pilotRunEvidenceDigest: persisted.pilotRunEvidenceDigest,
+      requiredCases: persisted.requiredCases,
+      signature: persisted.signature,
+    }),
   );
 };
 
@@ -588,6 +721,17 @@ const freezeCaseRuns = (runs: ReadonlyArray<CaseRunScores>): ReadonlyArray<CaseR
   Object.freeze(
     runs.map((item) => Object.freeze({ ...item, runs: Object.freeze([...item.runs]) })),
   );
+
+const freezePowerPlan = (plan: PairedPowerPlan): PairedPowerPlan =>
+  Object.freeze({
+    ...plan,
+    caseIds: Object.freeze([...plan.caseIds]),
+    pilotBaselineByCase: freezeCaseRuns(plan.pilotBaselineByCase),
+    pilotCandidateByCase: freezeCaseRuns(plan.pilotCandidateByCase),
+    pilotObservations: Object.freeze(
+      plan.pilotObservations.map((item) => Object.freeze({ ...item })),
+    ),
+  });
 
 const sameCaseIdentities = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean => {
   if (left.length !== right.length) return false;

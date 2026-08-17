@@ -9,6 +9,63 @@ import {
 import { digestValue } from "../src/manifest";
 
 describe("Model Quality corpus governance", () => {
+  it("rejects a 599-case successor or a changed class composition", () => {
+    const missing = createCorpusVersion({
+      cases: initialCorpusManifest.cases.slice(1),
+      createdAt: "2026-08-18T00:00:00.000Z",
+      newlyFailingCaseIds: [],
+      previous: initialCorpusManifest,
+      previousLineage: [],
+      safetyApprovals: [],
+      version: "model-quality-v2",
+    });
+    expect(missing).toMatchObject({ error: { _tag: "InvalidCorpusChange" }, kind: "error" });
+
+    const ordinaryDevelopment = initialCorpusManifest.cases.find(
+      (item) => item.journey === "ordinary",
+    );
+    if (ordinaryDevelopment?.split !== "development") throw new Error("Development case required.");
+    const changedClass = initialCorpusManifest.cases.map((item) =>
+      item.id === ordinaryDevelopment.id ? { ...item, journey: "memory" as const } : item,
+    );
+    const changed = createCorpusVersion({
+      cases: changedClass,
+      createdAt: "2026-08-18T00:00:00.000Z",
+      newlyFailingCaseIds: [],
+      previous: initialCorpusManifest,
+      previousLineage: [],
+      safetyApprovals: [],
+      version: "model-quality-v2",
+    });
+    expect(changed).toMatchObject({ error: { _tag: "InvalidCorpusChange" }, kind: "error" });
+  });
+
+  it("rejects a successor that changes one journey class sealed ratio", () => {
+    const sealed = initialCorpusManifest.cases.find(
+      (item) => item.journey === "ordinary" && item.split === "sealed-holdout",
+    );
+    const development = initialCorpusManifest.cases.find(
+      (item) => item.journey === "ordinary" && item.split === "development",
+    );
+    if (sealed?.split !== "sealed-holdout" || development?.split !== "development") {
+      throw new Error("Ordinary sealed and development cases are required.");
+    }
+    const relabelled = {
+      ...sealed,
+      fixture: development.fixture,
+      split: "development" as const,
+    } satisfies typeof development;
+    const result = createCorpusVersion({
+      cases: initialCorpusManifest.cases.map((item) => (item.id === sealed.id ? relabelled : item)),
+      createdAt: "2026-08-18T00:00:00.000Z",
+      newlyFailingCaseIds: [],
+      previous: initialCorpusManifest,
+      previousLineage: [],
+      safetyApprovals: [],
+      version: "model-quality-v2",
+    });
+    expect(result).toMatchObject({ error: { _tag: "InvalidCorpusChange" }, kind: "error" });
+  });
   it("rejects a caller-rehashed manifest that relabels a development fixture as holdout", () => {
     const developmentCase = initialCorpusManifest.cases.find(
       (item) => item.split === "development",

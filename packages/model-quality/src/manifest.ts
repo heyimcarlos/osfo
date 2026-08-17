@@ -23,6 +23,7 @@ declare const digestRole: unique symbol;
 export type DigestRole =
   | "artifact-checksums"
   | "configuration"
+  | "cohort"
   | "context"
   | "corpus"
   | "cost"
@@ -94,11 +95,19 @@ export type EvaluationManifestInput = {
   readonly approvedBaseline: {
     readonly approvedAt: string;
     readonly approverId: string;
+    readonly configurationDigest: EvidenceDigest<"configuration">;
     readonly corpusDigest: EvidenceDigest<"corpus">;
+    readonly dependencyDigest: EvidenceDigest<"dependency">;
     readonly graderDigest: EvidenceDigest<"grader">;
+    readonly humanLabelSetVersion: string;
+    readonly inferenceSettingsDigest: EvidenceDigest<"inference-settings">;
+    readonly providerModelId: string;
     readonly rubricDigest: EvidenceDigest<"rubric">;
+    readonly sourceCommit: string;
     readonly signature: string;
   };
+  /** Explicit immutable role of this manifest in the candidate versus production comparison. */
+  readonly arm: "candidate" | "production";
   readonly configuration: BehaviorConfiguration;
   readonly corpusDigest: EvidenceDigest<"corpus">;
   readonly corpusVersion: string;
@@ -266,25 +275,35 @@ export const createEvaluationManifest = (
 const baselineApproverIds = new Set(["quality-owner-1"]);
 
 const baselineApprovalPublicKey = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAbM5VhS3D2z1GkbpJXOOYIyFsR0VgibH6w+yLQCGUduo=
+MCowBQYDK2VwAyEAxHWjDtUk10j4bylZrvhcB2FpnEBJ65GWCW+Etn6hOj8=
 -----END PUBLIC KEY-----`;
 
 const outputEvidencePublicKey = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAvtNhpYEvQk3Z/E68DRPFfPjPcymXaRscaJ1FKlQhfMg=
+MCowBQYDK2VwAyEACRDA7XS9bYXe8nFwvAuCH5ny1bZ5LR0WkWMlylI6NjU=
 -----END PUBLIC KEY-----`;
+
+/** Produce the baseline authority payload that binds approved production identity. */
+export const baselineApprovalSigningDigest = (
+  approval: EvaluationManifestInput["approvedBaseline"],
+): EvidenceDigest<"manifest"> =>
+  digestValue("manifest", {
+    approvedAt: approval.approvedAt,
+    approverId: approval.approverId,
+    configurationDigest: approval.configurationDigest,
+    corpusDigest: approval.corpusDigest,
+    dependencyDigest: approval.dependencyDigest,
+    graderDigest: approval.graderDigest,
+    humanLabelSetVersion: approval.humanLabelSetVersion,
+    inferenceSettingsDigest: approval.inferenceSettingsDigest,
+    providerModelId: approval.providerModelId,
+    rubricDigest: approval.rubricDigest,
+    sourceCommit: approval.sourceCommit,
+  });
 
 const verifyBaselineApproval = (approval: EvaluationManifestInput["approvedBaseline"]): boolean =>
   verifySignature(
     null,
-    Buffer.from(
-      [
-        approval.approverId,
-        approval.approvedAt,
-        approval.corpusDigest,
-        approval.graderDigest,
-        approval.rubricDigest,
-      ].join("|"),
-    ),
+    Buffer.from(baselineApprovalSigningDigest(approval)),
     baselineApprovalPublicKey,
     Buffer.from(approval.signature, "base64"),
   );
@@ -296,9 +315,6 @@ const evaluationManifestInputIsValid = (input: EvaluationManifestInput): boolean
   const endedAt = parseEvidenceInstant(input.outputEvidence.utcWindow.endedAt);
   return (
     baselineApproverIds.has(input.approvedBaseline.approverId) &&
-    input.approvedBaseline.corpusDigest === input.corpusDigest &&
-    input.approvedBaseline.graderDigest === input.graderDigest &&
-    input.approvedBaseline.rubricDigest === input.rubricDigest &&
     verifyBaselineApproval(input.approvedBaseline) &&
     verifyOutputEvidenceSignature(input) &&
     approvedAt.kind === "success" &&
@@ -308,10 +324,12 @@ const evaluationManifestInputIsValid = (input: EvaluationManifestInput): boolean
     Date.parse(startedAt.value) <= Date.parse(endedAt.value) &&
     Date.parse(approvedAt.value) <= Date.parse(startedAt.value) &&
     parseApprovalId(input.approvedBaseline.approverId).kind === "success" &&
+    parseVersionId(input.approvedBaseline.humanLabelSetVersion).kind === "success" &&
     parseVersionId(input.corpusVersion).kind === "success" &&
     parseVersionId(input.humanLabelSetVersion).kind === "success" &&
     parseEvaluationManifestId(input.manifestId).kind === "success" &&
     parseReleaseId(input.releaseId).kind === "success" &&
+    (input.arm === "candidate" || input.arm === "production") &&
     input.providerModelId.length > 0 &&
     input.sourceCommit.length > 0
   );

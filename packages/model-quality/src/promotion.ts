@@ -1,3 +1,4 @@
+import type { EvidenceDigest } from "./manifest";
 import type { EvidenceVerdict } from "./statistics";
 import { isEvidenceCount } from "./evidence-count";
 import { verifyCorpusManifest, type CorpusLineage, type CorpusManifest } from "./corpus";
@@ -10,6 +11,8 @@ import {
 
 /** Evidence collected for one stable eligible-User canary cohort. */
 export type CanaryEvidence = {
+  /** Immutable identity of the eligible-User cohort selected for this release. */
+  readonly cohortDigest: EvidenceDigest<"cohort">;
   readonly cohortId: string;
   readonly confirmedCriticalFailures: number;
   readonly eligibleMessages: number;
@@ -24,6 +27,7 @@ export type CanaryEvidence = {
     | { readonly caseId: string; readonly failureModeId: string; readonly kind: "covered" };
   readonly observedHours: number;
   readonly priorStage: {
+    readonly cohortDigest: EvidenceDigest<"cohort">;
     readonly releaseId: string;
     readonly stage: "five-percent";
     readonly verdict: "PASS";
@@ -83,6 +87,7 @@ export const assessCanary = (evidence: CanaryEvidence): CanaryAssessment => {
       ? evidence.eligiblePercent === 5 && evidence.priorStage === null
       : evidence.eligiblePercent === 25 &&
         evidence.priorStage?.releaseId === evidence.releaseId &&
+        evidence.priorStage.cohortDigest === evidence.cohortDigest &&
         evidence.priorStage.verdict === "PASS";
   if (!correctSequence || evidence.cohortId.length === 0 || evidence.releaseId.length === 0) {
     return { action: "PAUSE", verdict: "MISSING" };

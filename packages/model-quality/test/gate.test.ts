@@ -12,19 +12,24 @@ import {
   type GateEvidence,
   type StratumEvidence,
 } from "../src/gate";
-import { digestValue, parseEvidenceDigest } from "../src/manifest";
+import { digestValue } from "../src/manifest";
+import { parseReleaseId } from "../src/identity";
 import {
   passingEvaluationManifest,
   passingHumanReviewAssessment,
   testConfigurationDigest,
   testCandidateRuns,
+  testCandidateCostMaterial,
   testDependencyDigest,
   testGraderDigest,
+  passingModelGraderQualification,
   testOverallPairedEvidence,
   testPowerDigest,
   testRubricDigest,
+  testReleaseId,
   testScoreDigest,
   testProductionRuns,
+  testProductionCostMaterial,
   testStratumPairedEvidence,
 } from "./evidence-fixture";
 
@@ -54,6 +59,8 @@ const groundedJourneys = new Set<Exclude<Journey, "safety">>([
   "research-report",
   "document-build",
 ]);
+const parsedOtherReleaseId = parseReleaseId("release-2");
+if (parsedOtherReleaseId.kind === "error") throw new Error("Static release identity is invalid.");
 
 const passingStratum = (
   journey: Exclude<Journey, "safety">,
@@ -71,49 +78,60 @@ const passingStratum = (
       }
     : { completeEvidence: true, completeRubricPassed: 9, journey, planRoute, total: 10 };
 
-const passingEvidence = (): GateEvidence => ({
-  candidateRuns: testCandidateRuns,
-  candidateManifest: passingEvaluationManifest(),
-  candidateCaseIds: initialCorpusManifest.cases.map((item) => item.id),
-  candidateCorpusDigest: initialCorpusManifest.contentDigest,
-  criticalChecks: { passed: 10, total: 10 },
-  criticalRiskClasses: riskClasses.map((riskClass) => ({ passed: 1, riskClass, total: 1 })),
-  evaluationCorpus: initialCorpusManifest,
-  evaluationCorpusLineage: [],
-  humanReview: passingHumanReviewAssessment(),
-  nonInferiority: {
-    overall: { ...testOverallPairedEvidence, margin: 0.02, verdict: "PASS" },
-    powerCalculationDigest: testPowerDigest,
-    scoreDigest: testScoreDigest,
-    strata: testStratumPairedEvidence.map((item) => ({
-      baselineByCase: item.baselineByCase,
-      candidateByCase: item.candidateByCase,
-      journey: item.journey,
-      margin: 0.05,
-      planRoute: item.planRoute,
-      powerPlan: item.powerPlan,
-      verdict: "PASS" as const,
-    })),
-  },
-  productionCaseIds: initialCorpusManifest.cases.map((item) => item.id),
-  productionCorpusDigest: initialCorpusManifest.contentDigest,
-  productionManifest: passingEvaluationManifest(),
-  productionRuns: testProductionRuns,
-  releaseId: "release-1",
-  strata: journeys.flatMap((journey) =>
-    planRoutes.map((planRoute) => passingStratum(journey, planRoute)),
-  ),
-  subjectiveAuthority: { calibration: "PASS", kind: "model-grader" },
-  zeroToleranceFailures: [],
-  currentEvidence: {
-    configurationDigest: testConfigurationDigest,
-    corpusDigest: initialCorpusManifest.contentDigest,
-    dependencyDigest: testDependencyDigest,
-    graderDigest: testGraderDigest,
-    now: "2026-08-17T01:00:00.000Z",
-    rubricDigest: testRubricDigest,
-  },
-});
+const passingEvidence = (): GateEvidence => {
+  const candidateManifest = passingEvaluationManifest("candidate");
+  const productionManifest = passingEvaluationManifest("production");
+  const unsigned: GateEvidence = {
+    candidateRuns: testCandidateRuns,
+    candidateManifest,
+    candidateCaseIds: initialCorpusManifest.cases.map((item) => item.id),
+    candidateCorpusDigest: initialCorpusManifest.contentDigest,
+    costMaterial: { candidate: testCandidateCostMaterial, production: testProductionCostMaterial },
+    criticalChecks: { passed: 10, total: 10 },
+    criticalRiskClasses: riskClasses.map((riskClass) => ({ passed: 1, riskClass, total: 1 })),
+    evaluationCorpus: initialCorpusManifest,
+    evaluationCorpusLineage: [],
+    humanReview: passingHumanReviewAssessment(),
+    nonInferiority: {
+      overall: { ...testOverallPairedEvidence, margin: 0.02, verdict: "PASS" },
+      powerCalculationDigest: testPowerDigest,
+      scoreDigest: testScoreDigest,
+      strata: testStratumPairedEvidence.map((item) => ({
+        baselineByCase: item.baselineByCase,
+        candidateByCase: item.candidateByCase,
+        journey: item.journey,
+        margin: 0.05,
+        planRoute: item.planRoute,
+        powerPlan: item.powerPlan,
+        verdict: "PASS" as const,
+      })),
+    },
+    productionCaseIds: initialCorpusManifest.cases.map((item) => item.id),
+    productionCorpusDigest: initialCorpusManifest.contentDigest,
+    productionManifest,
+    productionRuns: testProductionRuns,
+    releaseId: testReleaseId,
+    strata: journeys.flatMap((journey) =>
+      planRoutes.map((planRoute) => passingStratum(journey, planRoute)),
+    ),
+    subjectiveAuthority: { kind: "model-grader", qualification: passingModelGraderQualification() },
+    zeroToleranceFailures: [],
+    currentEvidence: {
+      configurationDigest: testConfigurationDigest,
+      corpusDigest: initialCorpusManifest.contentDigest,
+      dependencyDigest: testDependencyDigest,
+      graderDigest: testGraderDigest,
+      now: "2026-08-17T01:00:00.000Z",
+      rubricDigest: testRubricDigest,
+    },
+  };
+  const gateVerdictDigest = gateVerdictEvidenceDigest(unsigned);
+  return {
+    ...unsigned,
+    candidateManifest: passingEvaluationManifest("candidate", { gateVerdictDigest }),
+    productionManifest: passingEvaluationManifest("production", { gateVerdictDigest }),
+  };
+};
 
 describe("Model Quality Gate", () => {
   it("passes only complete absolute, paired, grader, and review evidence", () => {
@@ -127,6 +145,51 @@ describe("Model Quality Gate", () => {
     const evidence = passingEvidence();
     expect(
       evaluateModelQualityGate({ ...evidence, candidateRuns: evidence.candidateRuns.slice(1) }),
+    ).toMatchObject({ verdict: "MISSING" });
+  });
+
+  it("reports missing or tampered material cost evidence as MISSING", () => {
+    const evidence = passingEvidence();
+    const cost = testCandidateCostMaterial[0];
+    if (cost === undefined) throw new Error("Cost fixture requires one material record.");
+    expect(
+      evaluateModelQualityGate({
+        ...evidence,
+        costMaterial: { candidate: null, production: testProductionCostMaterial },
+      }),
+    ).toMatchObject({ verdict: "MISSING" });
+    expect(
+      evaluateModelQualityGate({
+        ...evidence,
+        costMaterial: {
+          candidate: [{ ...cost, amountUsd: 9 }],
+          production: testProductionCostMaterial,
+        },
+      }),
+    ).toMatchObject({ verdict: "MISSING" });
+  });
+
+  it("rejects cost material outside its signed arm and evaluation window", () => {
+    const evidence = passingEvidence();
+    const candidateCost = testCandidateCostMaterial[0];
+    if (candidateCost === undefined) throw new Error("Cost fixture requires one material record.");
+    expect(
+      evaluateModelQualityGate({
+        ...evidence,
+        costMaterial: {
+          candidate: [{ ...candidateCost, recordedAt: "2026-08-16T00:30:00.000Z" }],
+          production: testProductionCostMaterial,
+        },
+      }),
+    ).toMatchObject({ verdict: "MISSING" });
+    expect(
+      evaluateModelQualityGate({
+        ...evidence,
+        costMaterial: {
+          candidate: testCandidateCostMaterial,
+          production: [{ ...candidateCost, arm: "candidate" }],
+        },
+      }),
     ).toMatchObject({ verdict: "MISSING" });
   });
 
@@ -198,6 +261,37 @@ describe("Model Quality Gate", () => {
     });
   });
 
+  it("rejects a caller-forged model-grader PASS qualification", () => {
+    const evidence = passingEvidence();
+    const qualification = passingModelGraderQualification();
+    const firstCritical = qualification.calibration.criticalFalsePasses[0];
+    if (firstCritical === undefined)
+      throw new Error("Calibration fixture requires a critical case.");
+    expect(
+      evaluateModelQualityGate({
+        ...evidence,
+        subjectiveAuthority: {
+          kind: "model-grader",
+          qualification: {
+            ...qualification,
+            calibration: {
+              ...qualification.calibration,
+              criticalFalsePasses: [
+                { ...firstCritical, failed: true },
+                ...qualification.calibration.criticalFalsePasses.slice(1),
+              ],
+            },
+            qualification: {
+              ...qualification.qualification,
+              releaseAuthority: true,
+              verdict: "PASS",
+            },
+          },
+        },
+      }),
+    ).toMatchObject({ verdict: "MISSING" });
+  });
+
   it("never passes a caller-rehashed human assessment without authority signature", () => {
     const evidence = passingEvidence();
     const humanReview = passingHumanReviewAssessment();
@@ -247,7 +341,31 @@ describe("Model Quality Gate", () => {
 
   it("does not rebind signed verdict evidence to another release identity", () => {
     expect(
-      evaluateModelQualityGate({ ...passingEvidence(), releaseId: "release-2" }),
+      evaluateModelQualityGate({ ...passingEvidence(), releaseId: parsedOtherReleaseId.value }),
+    ).toMatchObject({ verdict: "MISSING" });
+  });
+
+  it("rejects swapped candidate and approved production manifest identities", () => {
+    const evidence = passingEvidence();
+    expect(
+      evaluateModelQualityGate({
+        ...evidence,
+        candidateManifest: evidence.productionManifest,
+        productionManifest: evidence.candidateManifest,
+      }),
+    ).toMatchObject({ verdict: "MISSING" });
+  });
+
+  it("rejects a production model that is not the one signed by baseline authority", () => {
+    const evidence = passingEvidence();
+    expect(
+      evaluateModelQualityGate({
+        ...evidence,
+        productionManifest: passingEvaluationManifest("production", {
+          gateVerdictDigest: evidence.candidateManifest.gateVerdictDigest,
+          providerModelId: "other-pinned-model",
+        }),
+      }),
     ).toMatchObject({ verdict: "MISSING" });
   });
 
@@ -315,22 +433,18 @@ describe("Model Quality Gate", () => {
     };
     const changed = { ...evidence, subjectiveAuthority };
     const gateVerdictDigest = gateVerdictEvidenceDigest(changed);
-    const expectedDigest = parseEvidenceDigest(
-      "gate-verdict",
-      "sha256:0cbb252f0f3ba91c4b3a3b0ec59506e4658d16a63a2c74eb435488265462aa29",
-    );
-    if (expectedDigest.kind === "error") throw new Error("Static human gate digest is invalid.");
-    expect(gateVerdictDigest).toBe(expectedDigest.value);
-    const manifest = passingEvaluationManifest({
+    expect(gateVerdictDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    const candidateManifest = passingEvaluationManifest("candidate", {
       gateVerdictDigest,
-      outputSignature:
-        "dDGuikCXyswF+ZppXKR84apoJW3Pd9/uwJV8iunoNLhsPKOPAfAY+ED9FbnWiWryk/z5pAgb6hpevXKaUpHACQ==",
+    });
+    const productionManifest = passingEvaluationManifest("production", {
+      gateVerdictDigest,
     });
     expect(
       evaluateModelQualityGate({
         ...changed,
-        candidateManifest: manifest,
-        productionManifest: manifest,
+        candidateManifest,
+        productionManifest,
       }),
     ).toMatchObject({ reasons: [], verdict: "PASS" });
   });

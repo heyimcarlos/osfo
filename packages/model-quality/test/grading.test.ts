@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { gradeSample, qualifyModelGrader } from "../src/grading";
+import { gradeSample, parseModelGraderCalibration, qualifyModelGrader } from "../src/grading";
 
 describe("Model Quality graders", () => {
   it("runs deterministic graders first and stops subjective grading after a hard failure", () => {
@@ -20,7 +20,7 @@ describe("Model Quality graders", () => {
   });
 
   it("qualifies a model grader only from independent adjudicated cases and exact bounds", () => {
-    const qualified = qualifyModelGrader({
+    const qualifiedCalibration = parseModelGraderCalibration({
       criticalFalsePasses: Array.from({ length: 299 }, (_, index) => ({
         caseId: `critical-${index}`,
         failed: false,
@@ -34,7 +34,7 @@ describe("Model Quality graders", () => {
         failed: index === 0,
       })),
     });
-    const repeatedCriticalRuns = qualifyModelGrader({
+    const repeatedCalibration = parseModelGraderCalibration({
       criticalFalsePasses: Array.from({ length: 1_495 }, (_, index) => ({
         caseId: `critical-${index % 299}`,
         failed: false,
@@ -42,6 +42,11 @@ describe("Model Quality graders", () => {
       falseFailures: [],
       otherFalsePasses: [],
     });
+    if (qualifiedCalibration.kind === "error" || repeatedCalibration.kind === "error") {
+      throw new Error("Calibration fixture identities are invalid.");
+    }
+    const qualified = qualifyModelGrader(qualifiedCalibration.value);
+    const repeatedCriticalRuns = qualifyModelGrader(repeatedCalibration.value);
 
     expect(qualified).toMatchObject({
       criticalIndependentCases: 299,
