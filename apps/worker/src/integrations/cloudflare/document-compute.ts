@@ -63,6 +63,7 @@ const render = async (
     sandbox.exists(evidencePath),
   ]);
   let providerOperationId: string;
+  let renderedPageCount: number;
   if (!cachedOutput.exists || !cachedEvidence.exists) {
     providerOperationId = attemptOperationId;
     await sandbox.writeFile(
@@ -80,17 +81,41 @@ const render = async (
         `The document renderer exited with code ${result.exitCode}`,
       );
     }
-    await sandbox.writeFile(evidencePath, providerOperationId);
+    renderedPageCount = decodeRenderedPageCount(result.stdout);
+    await sandbox.writeFile(
+      evidencePath,
+      JSON.stringify({ providerOperationId, renderedPageCount }),
+    );
   } else {
-    providerOperationId = (await sandbox.readFile(evidencePath)).content;
+    const evidence = decodeCachedEvidence((await sandbox.readFile(evidencePath)).content);
+    providerOperationId = evidence.providerOperationId;
+    renderedPageCount = evidence.renderedPageCount;
   }
   const file = await sandbox.readFile(outputPath, { encoding: "base64" });
   return {
     _tag: "Completed",
     bytes: decodeBase64(file.content),
     cost: incurred(providerOperationId, conservativeVendorUsdMicros),
+    renderedPageCount,
   };
 };
+
+const RenderEvidence = Schema.fromJsonString(
+  Schema.Struct({
+    providerOperationId: Schema.String.check(Schema.isMinLength(1)),
+    renderedPageCount: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(20)),
+  }),
+);
+
+const RendererOutput = Schema.fromJsonString(
+  Schema.Struct({
+    renderedPageCount: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(20)),
+  }),
+);
+
+const decodeCachedEvidence = Schema.decodeSync(RenderEvidence);
+const decodeRenderedPageCount = (output: string) =>
+  Schema.decodeSync(RendererOutput)(output.trim()).renderedPageCount;
 
 const sandboxFor = (binding: DurableObjectNamespace<Sandbox>, artifactId: ArtifactId) =>
   getSandbox(binding, artifactId, {

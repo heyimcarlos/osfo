@@ -2,10 +2,15 @@ import argparse
 import datetime
 import json
 import re
+import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
 
 from docx import Document
+from docx.enum.text import WD_LINE_SPACING
+from docx.shared import Inches, Pt
+from pypdf import PdfReader
 from reportlab.lib.pagesizes import LETTER
 from reportlab.pdfgen import canvas
 
@@ -29,7 +34,7 @@ def read_source(path: Path) -> list[dict[str, object]]:
     return pages
 
 
-def render_pdf(pages: list[dict[str, object]], output: Path) -> None:
+def render_pdf(pages: list[dict[str, object]], output: Path) -> int:
     document = canvas.Canvas(str(output), pagesize=LETTER, invariant=1, pageCompression=1)
     for page in pages:
         document.setFont("Helvetica-Bold", 16)
@@ -41,10 +46,30 @@ def render_pdf(pages: list[dict[str, object]], output: Path) -> None:
             y -= 20
         document.showPage()
     document.save()
+    return len(PdfReader(output).pages)
 
 
-def render_docx(pages: list[dict[str, object]], output: Path) -> None:
+def render_docx(pages: list[dict[str, object]], output: Path) -> int:
     document = Document()
+    for section in document.sections:
+        section.top_margin = Inches(0.5)
+        section.bottom_margin = Inches(0.5)
+        section.left_margin = Inches(0.5)
+        section.right_margin = Inches(0.5)
+    normal = document.styles["Normal"]
+    normal.font.name = "Liberation Mono"
+    normal.font.size = Pt(8)
+    normal.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+    normal.paragraph_format.line_spacing = Pt(10)
+    normal.paragraph_format.space_before = Pt(0)
+    normal.paragraph_format.space_after = Pt(0)
+    heading = document.styles["Heading 1"]
+    heading.font.name = "Liberation Mono"
+    heading.font.size = Pt(12)
+    heading.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+    heading.paragraph_format.line_spacing = Pt(14)
+    heading.paragraph_format.space_before = Pt(0)
+    heading.paragraph_format.space_after = Pt(4)
     fixed_time = datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc)
     document.core_properties.created = fixed_time
     document.core_properties.modified = fixed_time
@@ -70,6 +95,25 @@ def render_docx(pages: list[dict[str, object]], output: Path) -> None:
             deterministic.external_attr = item.external_attr
             target.writestr(deterministic, content)
     temporary.unlink()
+    with tempfile.TemporaryDirectory() as rendered_directory:
+        subprocess.run(
+            [
+                "libreoffice",
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                rendered_directory,
+                str(output),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        rendered_pages = len(PdfReader(Path(rendered_directory) / f"{output.stem}.pdf").pages)
+    if rendered_pages != len(pages):
+        raise ValueError("DOCX layout does not preserve one rendered page per source page")
+    return rendered_pages
 
 
 def main() -> None:
@@ -80,9 +124,10 @@ def main() -> None:
     arguments = parser.parse_args()
     pages = read_source(arguments.input)
     if arguments.format == "pdf":
-        render_pdf(pages, arguments.output)
+        rendered_pages = render_pdf(pages, arguments.output)
     else:
-        render_docx(pages, arguments.output)
+        rendered_pages = render_docx(pages, arguments.output)
+    print(json.dumps({"renderedPageCount": rendered_pages}))
 
 
 if __name__ == "__main__":

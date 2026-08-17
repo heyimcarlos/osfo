@@ -26,6 +26,7 @@ describe("Document Generation", () => {
             providerOperationId: "provider-pdf-1",
             usdMicros: 12_345n,
           },
+          renderedPageCount: 1,
         },
       });
 
@@ -62,6 +63,7 @@ describe("Document Generation", () => {
           _tag: "Completed",
           bytes: docx,
           cost: { _tag: "ProvenNoUse" },
+          renderedPageCount: 2,
         },
       });
 
@@ -205,6 +207,7 @@ describe("Document Generation", () => {
               providerOperationId: "provider-cost-overrun",
               usdMicros: 50_001n,
             },
+            renderedPageCount: 1,
           },
         });
 
@@ -303,6 +306,37 @@ describe("Document Generation", () => {
 
       expect(error).toMatchObject({ _tag: "Denied", reason: "missingEntitlement" });
       expect(fixture.computeCalls()).toBe(0);
+    }),
+  );
+
+  it.effect("denies retained document export after downgrade to Free", () =>
+    Effect.gen(function* () {
+      const pdf = yield* Effect.promise(() => makePdf(1));
+      const fixture = makeFixture({ computeResult: completed(pdf) });
+      const artifact = yield* fixture.documents.generate(generationRequest("pdf"));
+      const authorization = artifactAuthorization("free-export-176", "file.read");
+
+      const error = yield* fixture.documents
+        .export({
+          actionId: ActionId.make("free-export-176"),
+          artifactId: artifact.artifactId,
+          authorization: {
+            ...authorization,
+            allowance: {
+              _tag: "Metered",
+              allowancePeriodId,
+              endsAt: date("2026-09-01T00:00:00.000Z"),
+              plan: "free",
+              planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+              startsAt: date("2026-08-01T00:00:00.000Z"),
+              usage: [],
+            },
+            subscription: { ...authorization.subscription, plan: "free" },
+          },
+        })
+        .pipe(Effect.flip);
+
+      expect(error).toMatchObject({ _tag: "Denied", reason: "missingEntitlement" });
     }),
   );
 });
@@ -435,6 +469,7 @@ const completed = (bytes: Uint8Array): DocumentGeneration.ComputeResult => ({
   _tag: "Completed",
   bytes,
   cost: { _tag: "ProvenNoUse" },
+  renderedPageCount: 1,
 });
 
 // oxlint-disable-next-line effecttsgo/async-function -- pdf-lib exposes a Promise boundary.

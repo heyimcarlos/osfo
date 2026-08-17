@@ -55,7 +55,12 @@ export type CostEvidence =
 
 /** Closed result from one safely repeatable disposable compute attempt. */
 export type ComputeResult =
-  | { readonly _tag: "Completed"; readonly bytes: Uint8Array; readonly cost: CostEvidence }
+  | {
+      readonly _tag: "Completed";
+      readonly bytes: Uint8Array;
+      readonly cost: CostEvidence;
+      readonly renderedPageCount: number;
+    }
   | { readonly _tag: "Interrupted"; readonly cost: CostEvidence; readonly evidence: string };
 
 /** Input for one exact generated document intent. */
@@ -322,12 +327,21 @@ export const make = (options: MakeOptions): Interface => ({
           message: "Disposable document compute was interrupted",
         });
       }
+      if (computed.renderedPageCount !== request.source.pages.length) {
+        yield* recordComputedCost;
+        yield* options.compute.dispose(artifactId);
+        return yield* new DocumentArtifact.InvalidGeneratedArtifact({
+          artifactId,
+          message: "Rendered pagination does not match the bounded source",
+          reason: "invalidDocument",
+        });
+      }
 
       const artifact = yield* DocumentArtifact.parse(
         artifactId,
         request.format,
         computed.bytes,
-        request.source.pages.length,
+        computed.renderedPageCount,
       ).pipe(
         Effect.tapError(() => recordComputedCost),
         Effect.tapError(() => options.compute.dispose(artifactId)),
@@ -422,11 +436,29 @@ const readAuthorized = (
         message: "The retained document does not exist",
       });
     }
-    const permitted = options.authorization.recheck(
-      { ...request.authorization, resourceOwnerUserId: stored.userId },
-      { actionId: request.actionId, kind },
-    );
+    const authorization = {
+      ...request.authorization,
+      requestVendorUsdMicros: 0n,
+      resourceOwnerUserId: stored.userId,
+    };
+    const permitted = options.authorization.recheck(authorization, {
+      actionId: request.actionId,
+      kind,
+    });
     if (Predicate.isTagged(permitted, "Denied")) return yield* Effect.fail(permitted);
+    if (kind === "file.read") {
+      const documentPermitted = options.authorization.recheck(authorization, {
+        actionId: request.actionId,
+        artifactKind: "document",
+        bytes: BigInt(stored.artifact.byteLength),
+        kind: "document.generate",
+        pages: BigInt(stored.artifact.pageCount),
+        researchSearches: 0n,
+      });
+      if (Predicate.isTagged(documentPermitted, "Denied")) {
+        return yield* Effect.fail(documentPermitted);
+      }
+    }
     return stored;
   });
 
