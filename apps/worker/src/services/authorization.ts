@@ -1,6 +1,6 @@
 import { Predicate, Result, Schema } from "effect";
 
-import { AllowancePeriodId, Plan, PlanPolicyVersion, UserId } from "../domain";
+import { AllowancePeriodId, ChannelBindingId, Plan, PlanPolicyVersion, UserId } from "../domain";
 import { type AllowanceKind, RecordedAllowanceUse } from "../domain/allowance";
 import {
   AuthorizationOperation,
@@ -10,7 +10,7 @@ import {
   type AuthorizationOperationName as AuthorizationOperationNameType,
 } from "../domain/authorization-operation";
 import { type Capability, type PlanPolicyCatalog, policyFor } from "../domain/plan-policy";
-import { AuthSessionAuthorityFact } from "../domain/auth-session";
+import { AuthSessionAuthorityFact, AuthSessionId } from "../domain/auth-session";
 import { ChannelBindingAuthorityFact } from "../domain/channel-binding";
 import { DeletionAccessFact } from "../domain/deletion-case";
 import { UserAccessFact } from "../domain/user-suspension";
@@ -24,20 +24,20 @@ const ActingAuthority = Schema.Union([
     userId: UserId,
   }),
 ]);
-const OriginatingAuthority = Schema.Union([
-  Schema.TaggedStruct("AuthSession", { authSessionId: Schema.String }),
-  Schema.TaggedStruct("ChannelBinding", { channelBindingId: Schema.String }),
+export const OriginatingAuthority = Schema.Union([
+  Schema.TaggedStruct("AuthSession", { authSessionId: AuthSessionId }),
+  Schema.TaggedStruct("ChannelBinding", { channelBindingId: ChannelBindingId }),
   Schema.TaggedStruct("DurableTrigger", {
     triggerId: Schema.String,
     triggerType: Schema.Literals(["scheduledTask", "workflow"]),
   }),
 ]);
-const Approval = Schema.Struct({
+export const Approval = Schema.Struct({
   actionId: Schema.String,
   operation: AuthorizationOperationName,
   userId: UserId,
 });
-const Allowance = Schema.Union([
+export const Allowance = Schema.Union([
   Schema.TaggedStruct("Unavailable", {}),
   Schema.TaggedStruct("Metered", {
     allowancePeriodId: AllowancePeriodId,
@@ -49,29 +49,41 @@ const Allowance = Schema.Union([
   }),
 ]);
 
+/** Current Integration Connection fact used by Authorization. */
+export const GmailConnection = Schema.NullOr(
+  Schema.Union([
+    Schema.TaggedStruct("Connected", { userId: UserId }),
+    Schema.TaggedStruct("Revoked", { userId: UserId }),
+  ]),
+);
+
+/** Current live resource facts used by Authorization. */
+export const LiveResourceFacts = Schema.Struct({
+  activeGmSummonsInSession: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  activeReminders: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  concurrentWorkflows: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  retainedFileBytes: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+});
+
+/** Current Subscription fact used for Plan Entitlement checks. */
+export const AuthorizationSubscription = Schema.Struct({
+  plan: Plan,
+  planPolicyVersion: PlanPolicyVersion,
+});
+
 /** Current facts evaluated by launch Authorization in deterministic gate order. */
 export const AuthorizationContext = Schema.Struct({
   allowance: Allowance,
   approval: Schema.NullOr(Approval),
   authority: Schema.NullOr(ActingAuthority),
   deletionAccess: DeletionAccessFact,
-  gmailConnection: Schema.NullOr(
-    Schema.Union([
-      Schema.TaggedStruct("Connected", { userId: UserId }),
-      Schema.TaggedStruct("Revoked", { userId: UserId }),
-    ]),
-  ),
-  liveFacts: Schema.Struct({
-    activeGmSummonsInSession: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
-    activeReminders: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
-    concurrentWorkflows: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
-    retainedFileBytes: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
-  }),
+  gmailConnection: GmailConnection,
+  liveFacts: LiveResourceFacts,
   now: Schema.Date,
   originatingAuthority: OriginatingAuthority,
   requestVendorUsdMicros: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
   resourceOwnerUserId: Schema.NullOr(UserId),
-  subscription: Schema.Struct({ plan: Plan, planPolicyVersion: PlanPolicyVersion }),
+  subscription: AuthorizationSubscription,
   user: UserAccessFact,
 });
 

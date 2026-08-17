@@ -18,8 +18,8 @@ export const userSuspensionEvents = pgTable(
   },
   (table) => [
     check("user_suspension_events_action_check", sql`${table.action} in ('suspended', 'restored')`),
-    check("user_suspension_events_actor_check", sql`length(${table.adminActorId}) > 0`),
-    check("user_suspension_events_reason_check", sql`length(${table.reason}) > 0`),
+    check("user_suspension_events_actor_check", sql`length(btrim(${table.adminActorId})) > 0`),
+    check("user_suspension_events_reason_check", sql`length(btrim(${table.reason})) > 0`),
     index("user_suspension_events_user_order_index").on(
       table.userId,
       table.occurredAt,
@@ -42,7 +42,7 @@ export const deletionCases = pgTable(
   },
   (table) => [
     uniqueIndex("deletion_cases_user_unique").on(table.userId),
-    check("deletion_cases_actor_check", sql`length(${table.requestedByAdminId}) > 0`),
-    check("deletion_cases_reason_check", sql`length(${table.reason}) > 0`),
+    check("deletion_cases_actor_check", sql`length(btrim(${table.requestedByAdminId})) > 0`),
+    check("deletion_cases_reason_check", sql`length(btrim(${table.reason})) > 0`),
   ],
 );

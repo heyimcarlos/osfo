@@ -11,6 +11,7 @@ import * as AccountAuthorities from "../src/composition/account-authorities";
 import * as Db from "../src/db";
 import { AllowancePeriodId, ChannelBindingId, PlanPolicyVersion, UserId } from "../src/domain";
 import { ActionId } from "../src/domain/action-execution";
+import { AuthorizationOperation } from "../src/domain/authorization-operation";
 import { AdminActorId, AdminReason } from "../src/domain/account-administration";
 import { AuthSessionId } from "../src/domain/auth-session";
 import { PhoneNumber } from "../src/domain/phone-account";
@@ -76,15 +77,11 @@ describe("Separate account authorities", () => {
       Effect.gen(function* () {
         const authSessionId = AuthSessionId.make("auth-session-1");
         const revoked = yield* authorities.authSessions.revoke({
-          adminActorId,
           authSessionId,
-          reason,
           userId,
         });
         const repeated = yield* authorities.authSessions.revoke({
-          adminActorId,
           authSessionId,
-          reason,
           userId,
         });
         const fact = yield* authorities.authSessions.inspect(userId, authSessionId);
@@ -101,16 +98,12 @@ describe("Separate account authorities", () => {
       Effect.gen(function* () {
         const phoneNumber = PhoneNumber.make("+14165550199");
         const started = yield* phoneAccounts.beginReplacement({
-          adminActorId,
           phoneNumber,
-          reason,
           userId,
         });
         const replaced = yield* phoneAccounts.completeReplacement({
-          adminActorId,
           code: Redacted.make(twilio.code),
           phoneNumber,
-          reason,
           userId,
         });
         const firstSession = yield* authorities.authSessions.inspect(
@@ -144,17 +137,13 @@ describe("Separate account authorities", () => {
           }),
         );
         const collision = yield* phoneAccounts.beginReplacement({
-          adminActorId,
           phoneNumber: PhoneNumber.make("+14165550188"),
-          reason,
           userId,
         });
         const rejected = yield* phoneAccounts
           .completeReplacement({
-            adminActorId,
             code: Redacted.make("000000"),
             phoneNumber: PhoneNumber.make("+14165550177"),
-            reason,
             userId,
           })
           .pipe(Effect.exit);
@@ -235,6 +224,73 @@ describe("Separate account authorities", () => {
     ),
   );
 
+  it.effect("serializes concurrent opposing User Suspension transitions", () =>
+    withFixture((authorities) =>
+      Effect.gen(function* () {
+        yield* authorities.userSuspensions.suspend({ adminActorId, reason, userId });
+        yield* Effect.all(
+          [
+            authorities.userSuspensions.restore({ adminActorId, reason, userId }),
+            authorities.userSuspensions.suspend({ adminActorId, reason, userId }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        const [fact, history] = yield* Effect.all([
+          authorities.userSuspensions.inspect(userId),
+          authorities.userSuspensions.history(userId),
+        ]);
+        const latest = history.at(-1);
+
+        expect(latest).toBeDefined();
+        expect(fact._tag).toBe(latest?.action === "suspended" ? "SuspendedUser" : "ActiveUser");
+        for (const [index, event] of history.entries()) {
+          const previous = history[index - 1];
+          if (previous !== undefined) {
+            expect(event.occurredAt.getTime()).toBeGreaterThan(previous.occurredAt.getTime());
+          }
+        }
+      }),
+    ),
+  );
+
+  it.effect("returns manual support for concurrent Phone Account replacement collisions", () =>
+    withFixture((_authorities, fixture, twilio, phoneAccounts) =>
+      Effect.gen(function* () {
+        const otherUserId = UserId.make("user-authority-2");
+        const replacement = PhoneNumber.make("+14165550155");
+        yield* Effect.promise(() =>
+          fixture.database.insert(users).values({
+            email: "other@phone-user.osfo.invalid",
+            id: otherUserId,
+            name: "Other Osfo User",
+            phoneNumber: "+14165550111",
+            phoneNumberVerified: true,
+          }),
+        );
+        const results = yield* Effect.all(
+          [
+            phoneAccounts.completeReplacement({
+              code: Redacted.make(twilio.code),
+              phoneNumber: replacement,
+              userId,
+            }),
+            phoneAccounts.completeReplacement({
+              code: Redacted.make(twilio.code),
+              phoneNumber: replacement,
+              userId: otherUserId,
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+
+        expect(results.map((result) => result._tag).toSorted()).toEqual([
+          "ManualSupportRequired",
+          "PhoneAccountReplaced",
+        ]);
+      }),
+    ),
+  );
+
   it.effect("returns typed missing-User outcomes from application authorities", () =>
     withFixture((authorities) =>
       Effect.gen(function* () {
@@ -310,14 +366,13 @@ describe("Separate account authorities", () => {
           let providerContacts = 0;
 
           yield* mutateAuthority(authorities, testCase.mutation, authSessionId);
-          const executor = ActionExecutor.make(authorization, authorities);
+          const executor = ActionExecutor.make(authorization, protectedEffectOwners(authorities));
           const result = yield* executor.executeThinkApprovedAction(
-            stableProtectedEffectContext(),
+            { requestVendorUsdMicros: 0n },
             { _tag: "AuthSession", authSessionId, userId },
-            ActionExecutor.ThinkApprovedActionExecution.make({
-              _tag: "ThinkApprovedActionExecution",
+            AuthorizationOperation.make({
               actionId,
-              operation: "gmail.send",
+              kind: "gmail.send",
             }),
             (providerActionId) =>
               Effect.sync(() => {
@@ -356,7 +411,7 @@ describe("Separate account authorities", () => {
         const authorization = makeAuthorization(retainedCatalog);
         const admitted = authorization.admit(
           AuthorizationContext.make({
-            ...stableProtectedEffectContext(),
+            ...stableAuthorizationContext(),
             approval: { actionId, operation: "gmail.send", userId },
             authority,
             deletionAccess: { _tag: "DeletionAccessAvailable" },
@@ -375,14 +430,13 @@ describe("Separate account authorities", () => {
         let providerContacts = 0;
         const result = yield* ActionExecutor.make(
           authorization,
-          authorities,
+          protectedEffectOwners(authorities),
         ).executeThinkApprovedAction(
-          stableProtectedEffectContext(),
+          { requestVendorUsdMicros: 0n },
           { _tag: "ChannelBinding", channelBindingId, userId },
-          ActionExecutor.ThinkApprovedActionExecution.make({
-            _tag: "ThinkApprovedActionExecution",
+          AuthorizationOperation.make({
             actionId,
-            operation: "gmail.send",
+            kind: "gmail.send",
           }),
           () =>
             Effect.sync(() => {
@@ -398,6 +452,62 @@ describe("Separate account authorities", () => {
 
         expect(admitted._tag).toBe("Admitted");
         expect(result).toMatchObject({ _tag: "Denied", reason: "authorityRevoked" });
+        expect(providerContacts).toBe(0);
+      }),
+    ),
+  );
+
+  it.effect("rechecks current live resources before provider contact", () =>
+    withFixture((authorities) =>
+      Effect.gen(function* () {
+        const authSessionId = AuthSessionId.make("auth-session-1");
+        const actionId = ActionId.make("protected-live-resources");
+        const authority = yield* authorities.authSessions.inspect(userId, authSessionId);
+        const authorization = makeAuthorization(retainedCatalog);
+        const operation = AuthorizationOperation.make({ actionId, kind: "support.gmSummon" });
+        const admitted = authorization.admit(
+          AuthorizationContext.make({
+            ...stableAuthorizationContext(),
+            approval: { actionId, operation: operation.kind, userId },
+            authority,
+            deletionAccess: { _tag: "DeletionAccessAvailable" },
+            now: testDate("2026-08-16T12:00:00.000Z"),
+            originatingAuthority: { _tag: "AuthSession", authSessionId },
+            user: { _tag: "ActiveUser", userId },
+          }),
+          operation,
+        );
+        let providerContacts = 0;
+        const owners: ActionExecutor.AuthorityOwners = {
+          ...protectedEffectOwners(authorities),
+          liveResources: {
+            inspect: () =>
+              Effect.succeed({
+                activeGmSummonsInSession: 1n,
+                activeReminders: 0n,
+                concurrentWorkflows: 0n,
+                retainedFileBytes: 0n,
+              }),
+          },
+        };
+        const result = yield* ActionExecutor.make(authorization, owners).executeThinkApprovedAction(
+          { requestVendorUsdMicros: 0n },
+          { _tag: "AuthSession", authSessionId, userId },
+          operation,
+          () =>
+            Effect.sync(() => {
+              providerContacts += 1;
+              return {
+                _tag: "Applied" as const,
+                actionId,
+                evidence: "The provider accepted the summon",
+                providerOperationId: "provider-operation-live-resource",
+              };
+            }),
+        );
+
+        expect(admitted._tag).toBe("Admitted");
+        expect(result).toMatchObject({ _tag: "Denied", reason: "liveResourceLimitReached" });
         expect(providerContacts).toBe(0);
       }),
     ),
@@ -449,7 +559,7 @@ const mutateAuthority = (
 ) => {
   switch (mutation) {
     case "revoke-session":
-      return authorities.authSessions.revoke({ adminActorId, authSessionId, reason, userId });
+      return authorities.authSessions.revoke({ authSessionId, userId });
     case "suspend-user":
       return authorities.userSuspensions.suspend({ adminActorId, reason, userId });
     case "request-deletion":
@@ -471,7 +581,7 @@ const currentAuthorizationContext = (
       authorities.userSuspensions.inspect(userId),
     ]);
     return AuthorizationContext.make({
-      ...stableProtectedEffectContext(),
+      ...stableAuthorizationContext(),
       approval: { actionId, operation: "gmail.send", userId },
       authority,
       deletionAccess,
@@ -481,7 +591,15 @@ const currentAuthorizationContext = (
     });
   });
 
-const stableProtectedEffectContext = (): ActionExecutor.ProtectedEffectContext => ({
+const stableAuthorizationContext = (): Pick<
+  AuthorizationContext,
+  | "allowance"
+  | "gmailConnection"
+  | "liveFacts"
+  | "requestVendorUsdMicros"
+  | "resourceOwnerUserId"
+  | "subscription"
+> => ({
   allowance: {
     _tag: "Metered",
     allowancePeriodId: AllowancePeriodId.make("period-protected-effect"),
@@ -501,6 +619,36 @@ const stableProtectedEffectContext = (): ActionExecutor.ProtectedEffectContext =
   requestVendorUsdMicros: 0n,
   resourceOwnerUserId: userId,
   subscription: { plan: "adventurer", planPolicyVersion: PlanPolicyVersion.make("launch-v1") },
+});
+
+const protectedEffectOwners = (authorities: Authorities): ActionExecutor.AuthorityOwners => ({
+  ...authorities,
+  approvals: {
+    inspect: (_userId, operation) =>
+      Effect.succeed({ actionId: operation.actionId, operation: operation.kind, userId }),
+  },
+  integrationConnections: {
+    inspectGmail: () => Effect.succeed({ _tag: "Connected", userId }),
+  },
+  liveResources: {
+    inspect: () =>
+      Effect.succeed({
+        activeGmSummonsInSession: 0n,
+        activeReminders: 0n,
+        concurrentWorkflows: 0n,
+        retainedFileBytes: 0n,
+      }),
+  },
+  resourceOwnership: {
+    inspect: () => Effect.succeed(userId),
+  },
+  subscriptions: {
+    inspect: () =>
+      Effect.succeed({
+        plan: "adventurer",
+        planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+      }),
+  },
 });
 
 const seedUser = (database: TestDatabaseFixture["database"]) =>

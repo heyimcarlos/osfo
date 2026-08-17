@@ -1,6 +1,6 @@
 import { userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { users } from "@osfo/db/schema/auth";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 
 import * as Db from "../../db";
@@ -82,6 +82,7 @@ export const make = Effect.gen(function* () {
             action,
             adminActorId: command.adminActorId,
             eventId,
+            occurredAt: sql`clock_timestamp()`,
             reason: command.reason,
             userId: command.userId,
           });

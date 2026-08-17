@@ -121,6 +121,7 @@ const modelCallUsageRetryDelaySeconds = 60;
 const gatewayCostMaximumLookups = 3;
 const defaultTestProtectedActionState: TestProtectedActionState = {
   authority: "active",
+  currentFact: "current",
   providerOutcome: "applied",
 };
 

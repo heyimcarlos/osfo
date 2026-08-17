@@ -156,6 +156,18 @@ describe("Postgres migrations", () => {
               `INSERT INTO user_suspension_events
                (event_id, user_id, action, admin_actor_id, reason)
              VALUES ('event-empty-reason', 'user-1', 'suspended', 'admin-1', '')`,
+              `INSERT INTO user_suspension_events
+               (event_id, user_id, action, admin_actor_id, reason)
+             VALUES ('event-blank-actor', 'user-1', 'suspended', '   ', 'Valid reason')`,
+              `INSERT INTO user_suspension_events
+               (event_id, user_id, action, admin_actor_id, reason)
+             VALUES ('event-blank-reason', 'user-1', 'suspended', 'admin-1', '   ')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_admin_id, reason)
+             VALUES ('deletion-case-blank-actor', 'user-2', '   ', 'Valid reason')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_admin_id, reason)
+             VALUES ('deletion-case-blank-reason', 'user-2', 'admin-1', '   ')`,
               `INSERT INTO deletion_cases
                (deletion_case_id, user_id, requested_by_admin_id, reason)
              VALUES ('deletion-case-duplicate', 'user-1', 'admin-1', 'Duplicate')`,

@@ -1,7 +1,6 @@
 import { Context, Effect, Layer, Schema } from "effect";
 
 import { UserId } from "../domain";
-import type { AdminActorId, AdminReason } from "../domain/account-administration";
 import { type AuthSessionAuthorityFact, AuthSessionId } from "../domain/auth-session";
 
 /** Safe failure when the Better Auth AuthSession authority is unavailable. */
@@ -18,9 +17,7 @@ export class AuthSessionOwnershipMismatch extends Schema.TaggedError<AuthSession
 
 /** Administrative AuthSession revocation command. */
 export interface RevokeCommand {
-  readonly adminActorId: AdminActorId;
   readonly authSessionId: AuthSessionId;
-  readonly reason: AdminReason;
   readonly userId: UserId;
 }
 

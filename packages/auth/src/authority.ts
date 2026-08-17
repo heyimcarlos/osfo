@@ -1,6 +1,7 @@
 import type { Database } from "@osfo/db";
 import { sessions, users } from "@osfo/db/schema/auth";
 import { and, eq, ne } from "drizzle-orm";
+import { DrizzleQueryError } from "drizzle-orm/errors";
 
 /* oxlint-disable effecttsgo/async-function -- This package exposes Better Auth-owned Promise capabilities to request adapters. */
 
@@ -112,31 +113,47 @@ export const createPhoneAccountAuthority = (
       hasCollision: collision !== undefined,
     };
   },
-  replaceAndRevokeSessions: (userId, phoneNumber) =>
-    database.transaction(async (transaction) => {
-      const [user] = await transaction
-        .select({ phoneNumber: users.phoneNumber, phoneNumberVerified: users.phoneNumberVerified })
-        .from(users)
-        .where(eq(users.id, userId))
-        .for("update")
-        .limit(1);
-      if (user === undefined) return "user-missing";
-      if (user.phoneNumber === null || user.phoneNumberVerified !== true) {
-        return "phone-unverified";
-      }
-      const [collision] = await transaction
-        .select({ id: users.id })
-        .from(users)
-        .where(and(eq(users.phoneNumber, phoneNumber), ne(users.id, userId)))
-        .limit(1);
-      if (collision !== undefined) return "phone-collision";
-      if (await options.replacementBlocked(transaction, userId)) return "deletion-requested";
-      if (user.phoneNumber === phoneNumber) return "unchanged";
-      await transaction
-        .update(users)
-        .set({ phoneNumber, phoneNumberVerified: true })
-        .where(eq(users.id, userId));
-      await transaction.delete(sessions).where(eq(sessions.userId, userId));
-      return "replaced";
-    }),
+  replaceAndRevokeSessions: async (userId, phoneNumber) => {
+    try {
+      return await database.transaction(async (transaction) => {
+        const [user] = await transaction
+          .select({
+            phoneNumber: users.phoneNumber,
+            phoneNumberVerified: users.phoneNumberVerified,
+          })
+          .from(users)
+          .where(eq(users.id, userId))
+          .for("update")
+          .limit(1);
+        if (user === undefined) return "user-missing";
+        if (user.phoneNumber === null || user.phoneNumberVerified !== true) {
+          return "phone-unverified";
+        }
+        const [collision] = await transaction
+          .select({ id: users.id })
+          .from(users)
+          .where(and(eq(users.phoneNumber, phoneNumber), ne(users.id, userId)))
+          .limit(1);
+        if (collision !== undefined) return "phone-collision";
+        if (await options.replacementBlocked(transaction, userId)) return "deletion-requested";
+        if (user.phoneNumber === phoneNumber) return "unchanged";
+        await transaction
+          .update(users)
+          .set({ phoneNumber, phoneNumberVerified: true })
+          .where(eq(users.id, userId));
+        await transaction.delete(sessions).where(eq(sessions.userId, userId));
+        return "replaced";
+      });
+    } catch (cause) {
+      if (isPhoneNumberCollision(cause)) return "phone-collision";
+      throw cause;
+    }
+  },
 });
+
+const isPhoneNumberCollision = (cause: unknown): boolean => {
+  const databaseCause = cause instanceof DrizzleQueryError ? cause.cause : cause;
+  return (
+    databaseCause instanceof Error && databaseCause.message.includes("users_phone_number_unique")
+  );
+};

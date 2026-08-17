@@ -1,11 +1,7 @@
 import { Context, Effect, Layer, type Redacted, Schema } from "effect";
 
 import type { UserId } from "../domain";
-import type {
-  AdminActorId,
-  AdminReason,
-  ManualSupportRequired,
-} from "../domain/account-administration";
+import type { ManualSupportRequired } from "../domain/account-administration";
 import { PhoneNumber } from "../domain/phone-account";
 import { Service as DeletionCase } from "./deletion-case";
 import type { DbUnavailable } from "../db";
@@ -38,9 +34,7 @@ export class PhoneVerificationRejected extends Schema.TaggedError<PhoneVerificat
 
 /** Administrative Phone Account replacement command. */
 export interface ReplacementCommand {
-  readonly adminActorId: AdminActorId;
   readonly phoneNumber: PhoneNumber;
-  readonly reason: AdminReason;
   readonly userId: UserId;
 }
 
