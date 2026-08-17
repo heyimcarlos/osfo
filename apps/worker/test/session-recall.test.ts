@@ -38,6 +38,23 @@ const managedTurnMetadata = (routeId: ConversationRouteId, sessionId: SessionId)
       userId: "user-session-recall",
     },
     conservativeVendorUsdMicros: 30_000,
+    coreMemoryAuthorization: {
+      authority: {
+        _tag: "AuthSession",
+        authSessionId: "auth-session-session-recall",
+        expiresAt: "2026-09-01T00:00:00.000Z",
+        userId: "user-session-recall",
+      },
+      deletionAccess: { _tag: "DeletionAccessAvailable" },
+      now: "2026-08-17T00:00:00.000Z",
+      originatingAuthority: {
+        _tag: "AuthSession",
+        authSessionId: "auth-session-session-recall",
+      },
+      resourceOwnerUserId: "user-session-recall",
+      subscription: { plan: "free", planPolicyVersion: "launch-v1" },
+      user: { _tag: "ActiveUser", userId: "user-session-recall" },
+    },
     maxInputTokens: 32_000,
     maxOutputTokens: 4_000,
     maxRetries: 0 as const,

@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "@effect/vitest";
 import { PDFDocument } from "pdf-lib";
-import { Effect } from "effect";
+import { DateTime, Effect } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 
 import { AllowancePeriodId, UserId } from "../src/domain";
@@ -39,7 +39,7 @@ describe("Generated document download", () => {
       const response = yield* DocumentDownload.serve(
         env.ARTIFACTS,
         Effect.succeed({
-          authSessionExpiresAt: new Date("2026-12-31T00:00:00.000Z"),
+          authSessionExpiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-12-31T00:00:00.000Z")),
           authSessionId: "active-session",
           userId,
         }),
@@ -54,7 +54,7 @@ describe("Generated document download", () => {
       const leaked = yield* DocumentDownload.serve(
         env.ARTIFACTS,
         Effect.succeed({
-          authSessionExpiresAt: new Date("2026-12-31T00:00:00.000Z"),
+          authSessionExpiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-12-31T00:00:00.000Z")),
           authSessionId: "other-session",
           userId: UserId.make("other-user"),
         }),

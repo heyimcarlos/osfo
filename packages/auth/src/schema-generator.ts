@@ -14,7 +14,6 @@ export const auth: Auth = createAuth({
   google: {
     clientId: "schema-google-client",
     clientSecret: "schema-google-secret",
-    kind: "disabled",
   },
   secret: "schema-generation-only-secret-value",
   sendOTP: () => Promise.resolve(),

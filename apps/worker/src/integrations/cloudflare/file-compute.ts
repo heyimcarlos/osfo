@@ -9,7 +9,7 @@ import {
   FileNormalizationProvenance,
   type launchFileComputeLimits,
 } from "../../services/files";
-import fileTaskSource from "./file-task.py";
+import fileTaskSource from "./file-task.txt";
 
 const taskTimeoutMilliseconds = 30_000;
 

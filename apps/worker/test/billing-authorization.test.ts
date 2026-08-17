@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { allowancePeriods } from "@osfo/db/schema/allowances";
-import { users } from "@osfo/db/schema/auth";
+import { sessions, users } from "@osfo/db/schema/auth";
 import { billingCustomers, billingSubscriptions } from "@osfo/db/schema/billing";
 import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
@@ -82,6 +82,15 @@ describe("billing Authorization", () => {
               email: "live-billing-authority@example.test",
               id: userId,
               name: "Live Billing Authority",
+            }),
+          );
+          yield* Effect.promise(() =>
+            fixture.database.insert(sessions).values({
+              expiresAt: new Date("2026-08-16T13:00:00.000Z"),
+              id: "session-live-billing-authority",
+              token: "token-live-billing-authority",
+              updatedAt: new Date("2026-08-16T11:00:00.000Z"),
+              userId,
             }),
           );
           yield* Effect.promise(() =>

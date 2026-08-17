@@ -17,6 +17,7 @@ import { makeR2FileObjects } from "../src/integrations/cloudflare/file-objects";
 import { makeFileCompute } from "../src/integrations/cloudflare/file-compute";
 import type { OsfoAgent } from "../src/agents/osfo/agent";
 import { AgentId, AllowancePeriodId, PlanPolicyVersion, UserId } from "../src/domain";
+import { AuthSessionId } from "../src/domain/auth-session";
 import { DbTimestamp } from "../src/db";
 import { FileAnalysisId, FileId, FileUploadId } from "../src/domain/file";
 import { FileDigest, inspectFileContent } from "../src/domain/file-content";
@@ -253,7 +254,7 @@ describe("Agent-owned file ingestion", () => {
             ...authorizationContext(),
             authority: {
               _tag: "RevokedAuthSession",
-              authSessionId: "session-files",
+              authSessionId: AuthSessionId.make("session-files"),
               userId: UserId.make("user-files"),
             },
           },
@@ -563,7 +564,7 @@ describe("Agent-owned file ingestion", () => {
         ...authorizationContext("adventurer"),
         authority: {
           _tag: "RevokedAuthSession" as const,
-          authSessionId: "session-files",
+          authSessionId: AuthSessionId.make("session-files"),
           userId: UserId.make("user-files"),
         },
       };
@@ -837,7 +838,7 @@ describe("Agent-owned file ingestion", () => {
         ...authorizationContext(),
         authority: {
           _tag: "RevokedAuthSession" as const,
-          authSessionId: "session-files",
+          authSessionId: AuthSessionId.make("session-files"),
           userId: UserId.make("user-files"),
         },
       };
@@ -923,7 +924,7 @@ describe("Agent-owned file ingestion", () => {
         ...approved,
         authority: {
           _tag: "RevokedAuthSession" as const,
-          authSessionId: "session-files",
+          authSessionId: AuthSessionId.make("session-files"),
           userId: UserId.make("user-files"),
         },
       };
@@ -1807,7 +1808,7 @@ const authorizationContext = (plan: "adventurer" | "free" = "free"): Authorizati
   approval: null,
   authority: {
     _tag: "AuthSession",
-    authSessionId: "session-files",
+    authSessionId: AuthSessionId.make("session-files"),
     expiresAt: new Date("2026-09-01T00:00:00.000Z"),
     userId: UserId.make("user-files"),
   },
@@ -1820,7 +1821,10 @@ const authorizationContext = (plan: "adventurer" | "free" = "free"): Authorizati
     retainedFileBytes: 0n,
   },
   now: new Date("2026-08-16T12:00:00.000Z"),
-  originatingAuthority: { _tag: "AuthSession", authSessionId: "session-files" },
+  originatingAuthority: {
+    _tag: "AuthSession",
+    authSessionId: AuthSessionId.make("session-files"),
+  },
   requestVendorUsdMicros: 0n,
   resourceOwnerUserId: UserId.make("user-files"),
   subscription: { plan, planPolicyVersion: PlanPolicyVersion.make("launch-v1") },

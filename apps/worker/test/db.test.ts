@@ -10,6 +10,7 @@ import { DateTime, Effect, Layer } from "effect";
 
 import { database, dbUnavailable, layerFromDatabase } from "../src/db";
 import { AgentId, PlanPolicyVersion, UserId } from "../src/domain";
+import { AuthSessionId } from "../src/domain/auth-session";
 import { loadCurrentFileAuthorization } from "../src/integrations/postgres/file-authorization";
 import { AuthorizationContext } from "../src/services/authorization";
 import * as AgentDirectory from "../src/services/agent-directory";
@@ -186,7 +187,7 @@ layer(serviceLayer)("Control-plane services", (it) => {
         approval: null,
         authority: {
           _tag: "AuthSession",
-          authSessionId: "file-session",
+          authSessionId: AuthSessionId.make("file-session"),
           expiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-09-01T00:00:00.000Z")),
           userId,
         },
@@ -199,7 +200,10 @@ layer(serviceLayer)("Control-plane services", (it) => {
           retainedFileBytes: 0n,
         },
         now,
-        originatingAuthority: { _tag: "AuthSession", authSessionId: "file-session" },
+        originatingAuthority: {
+          _tag: "AuthSession",
+          authSessionId: AuthSessionId.make("file-session"),
+        },
         requestVendorUsdMicros: 0n,
         resourceOwnerUserId: userId,
         subscription: { plan: "free", planPolicyVersion: PlanPolicyVersion.make("launch-v1") },

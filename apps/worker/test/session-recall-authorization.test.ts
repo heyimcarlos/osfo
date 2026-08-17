@@ -20,6 +20,23 @@ const metadata = Schema.decodeSync(ManagedTurnMetadata)({
     userId,
   },
   conservativeVendorUsdMicros: 30_000,
+  coreMemoryAuthorization: {
+    authority: {
+      _tag: "AuthSession",
+      authSessionId: "auth-session-recall-authorization",
+      expiresAt: "2026-09-01T00:00:00.000Z",
+      userId,
+    },
+    deletionAccess: { _tag: "DeletionAccessAvailable" },
+    now: "2026-08-17T00:00:00.000Z",
+    originatingAuthority: {
+      _tag: "AuthSession",
+      authSessionId: "auth-session-recall-authorization",
+    },
+    resourceOwnerUserId: userId,
+    subscription: { plan: "free", planPolicyVersion: "launch-v1" },
+    user: { _tag: "ActiveUser", userId },
+  },
   maxInputTokens: 32_000,
   maxOutputTokens: 4_000,
   maxRetries: 0,

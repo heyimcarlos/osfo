@@ -8,7 +8,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 
 const image = "osfo-file-task-vitest";
-const taskPath = join(import.meta.dirname, "../src/integrations/cloudflare/file-task.py");
+const taskPath = join(import.meta.dirname, "../src/integrations/cloudflare/file-task.txt");
 
 const TaskResult = Schema.Union([
   Schema.Struct({

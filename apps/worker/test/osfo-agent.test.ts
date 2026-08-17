@@ -103,7 +103,7 @@ describe("Osfo Agent and Think Session foundation", () => {
         }),
       );
       yield* Effect.promise(async () =>
-        agent.replaceCurrentSession({
+        replaceOwnedSession(agent, {
           expectedCurrentSessionId: initialSessionId,
           replacedAt: "2026-08-15T13:00:00.000Z",
           replacementSessionId,
@@ -2052,7 +2052,7 @@ const coreMemoryAuthorization = () =>
     approval: null,
     authority: {
       _tag: "ChannelBinding",
-      channelBindingId: "binding-core-memory",
+      channelBindingId: ChannelBindingId.make("binding-core-memory"),
       userId: UserId.make("user-core-memory"),
     },
     deletionAccess: { _tag: "DeletionAccessAvailable" },
@@ -2066,7 +2066,7 @@ const coreMemoryAuthorization = () =>
     now: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z")),
     originatingAuthority: {
       _tag: "ChannelBinding",
-      channelBindingId: "binding-core-memory",
+      channelBindingId: ChannelBindingId.make("binding-core-memory"),
     },
     requestVendorUsdMicros: 0n,
     resourceOwnerUserId: UserId.make("user-core-memory"),
@@ -2079,14 +2079,14 @@ const revokedCoreMemoryAuthorization = () =>
     ...coreMemoryAuthorization(),
     authority: {
       _tag: "RevokedChannelBinding",
-      channelBindingId: "binding-core-memory",
+      channelBindingId: ChannelBindingId.make("binding-core-memory"),
       userId: UserId.make("user-core-memory"),
     },
   });
 
 const approvalAuthorization = (authority: "active" | "revoked") =>
   Schema.encodeSync(AuthorizationContext)(
-    currentTestAuthorization({ authority, providerOutcome: "applied" }),
+    currentTestAuthorization({ authority, currentFact: "current", providerOutcome: "applied" }),
   );
 
 const managedTurnMetadata = (name: string) => {
@@ -2095,6 +2095,11 @@ const managedTurnMetadata = (name: string) => {
   return ManagedTurnMetadata.make({
     _tag: "OsfoManagedTurn",
     allowancePeriodId: AllowancePeriodId.make(`period-${name}`),
+    authorityIdentity: {
+      _tag: "ChannelBinding",
+      channelBindingId: ChannelBindingId.make("binding-core-memory"),
+      userId: UserId.make("user-core-memory"),
+    },
     conservativeVendorUsdMicros: 1,
     coreMemoryAuthorization: Schema.encodeSync(CoreMemoryAuthorizationSnapshot)(
       snapshotCoreMemoryAuthorization(authorization),
@@ -2103,9 +2108,15 @@ const managedTurnMetadata = (name: string) => {
     maxOutputTokens: profile.context.maxOutputTokens,
     maxRetries: profile.maxRetries,
     maxSteps: Number(currentPolicy.plans.free.operationLimits.modelStepsPerRequest),
+    originatingAuthority: {
+      _tag: "ChannelBinding",
+      channelBindingId: "binding-core-memory",
+    },
     plan: "free",
     planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+    routeId: ConversationRouteId.make(`route-${name}`),
     route: profile.route,
+    sessionId: SessionId.make(`session-${name}`),
     submissionId: ThinkSubmissionId.make(`submission-${name}`),
     targetInputTokens: profile.context.targetInputTokens,
   });

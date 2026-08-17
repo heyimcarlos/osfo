@@ -38,7 +38,7 @@ import * as DocumentArtifact from "../../domain/document-artifact";
 import * as DocumentGenerationComposition from "../../composition/document-generation";
 import { database as workerDatabase, DbTimestamp } from "../../db";
 import * as Billing from "../../db/billing";
-import { decodeOsfoStage, decodeRuntimeConfig } from "../../env";
+import { decodeOsfoStage } from "../../env";
 import * as ProviderAuthorizationPostgres from "../../integrations/postgres/provider-authorization";
 import * as SessionRecallAuthorizationPostgres from "../../integrations/postgres/session-recall-authorization";
 import {
@@ -149,12 +149,6 @@ import {
   type CurrentSessionReplacementConflict,
 } from "../../services/session-replacement";
 import {
-  gmailSendActionName,
-  presentGmailSendAction,
-  sanitizeGmailSendActionInput,
-} from "./gmail-send-action";
-import * as GmailRuntime from "./gmail-runtime";
-import {
   type AgentInitializationConflict,
   type AcceptanceReceiptConflict,
   AgentRequestInvalid,
@@ -218,6 +212,7 @@ import {
 import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-authorization";
 import { makeAgentSessionLifecycle } from "./session-lifecycle";
 import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
+import { effectToolSchema } from "./effect-tool-schema";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries. */
 
@@ -458,10 +453,7 @@ export class OsfoAgent extends Think<Env> {
       },
     }),
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-    present: (pending) =>
-      pending.descriptor.action === gmailSendActionName
-        ? presentGmailSendAction(pending)
-        : presentProtectedAction(pending),
+    present: presentProtectedAction,
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
   readonly #modelCallUsage = makeDurableModelCallUsage({
@@ -549,25 +541,13 @@ export class OsfoAgent extends Think<Env> {
         Effect.andThen(this.#sessionRecall.recall(request)),
       ),
   });
-  readonly #gmailRuntime = Option.flatMap(this.#runtime, (runtime) =>
-    Option.map(Result.getSuccess(decodeRuntimeConfig(this.env)), (config) =>
-      GmailRuntime.make({
-        activeTurnMetadata: () =>
-          Schema.decodeUnknownOption(ManagedTurnMetadata)(this.activeTurnMetadata),
-        agentId: AgentId.make(this.name),
-        auth: config.auth,
-        runtime,
-      }),
-    ),
-  );
-
   /** Resolve a safe model before trusted per-turn metadata selects the exact managed route. */
   override getModel() {
     return launchModelAccessPolicy.plans.free.route;
   }
 
-  /** Register document, Gmail, and test actions in their owning stages. */
-  override getActions(): Record<string, ReturnType<typeof action>> {
+  /** Register document and test actions in their owning stages. */
+  override getActions() {
     const documentActions = {
       [documentDeleteActionName]: action({
         approval: true,
@@ -576,7 +556,7 @@ export class OsfoAgent extends Think<Env> {
         description: "Delete one retained generated PDF or DOCX owned by the current User.",
         execute: (input, context) => this.#deleteDocument(input, context.toolCallId),
         idempotencyKey: ({ ctx }) => `document-delete:${ctx.toolCallId}`,
-        inputSchema: Schema.toStandardSchemaV1(RetainedDocumentInput),
+        inputSchema: effectToolSchema(RetainedDocumentInput),
         kind: "durable-pause",
         permissions: ["files:delete"],
       }),
@@ -584,7 +564,7 @@ export class OsfoAgent extends Think<Env> {
         description: "Generate one bounded PDF or DOCX with at most 20 pages and 5 MB.",
         execute: (input, context) => this.#generateDocument(input, context.toolCallId),
         idempotencyKey: ({ ctx }) => `document-generate:${ctx.toolCallId}`,
-        inputSchema: Schema.toStandardSchemaV1(GenerateDocumentInput),
+        inputSchema: effectToolSchema(GenerateDocumentInput),
         permissions: ["documents:generate"],
         timeoutMs: 90_000,
       }),
@@ -600,32 +580,21 @@ export class OsfoAgent extends Think<Env> {
               this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
           })
         : makeOsfoActions({ clearCoreMemory: executeClear });
-    const gmail = Option.isNone(stage) ? undefined : Option.getOrUndefined(this.#gmailRuntime);
     return {
       ...documentActions,
       ...osfoActions,
-      ...(gmail === undefined ? {} : { [gmailSendActionName]: gmail.action }),
     };
   }
 
-  /** Register Session Recall, document export, and production Gmail tools. */
+  /** Register Session Recall and document export tools. */
   override getTools(): ToolSet {
-    const stage = decodeOsfoStage(this.env.OSFO_STAGE);
-    const gmailTools =
-      Option.isNone(stage) || stage.value === "test"
-        ? {}
-        : Option.match(this.#gmailRuntime, {
-            onNone: () => ({}),
-            onSome: ({ tools }) => tools,
-          });
     return {
       ...this.#sessionRecallTools,
       exportDocument: tool({
         description: "Export one retained generated PDF or DOCX owned by the current User.",
         execute: (input, context) => this.#exportDocument(input, context.toolCallId),
-        inputSchema: Schema.toStandardSchemaV1(RetainedDocumentInput),
+        inputSchema: effectToolSchema(RetainedDocumentInput),
       }),
-      ...gmailTools,
     };
   }
 
@@ -639,13 +608,7 @@ export class OsfoAgent extends Think<Env> {
               input: sanitizeDocumentDeleteInput(approval.descriptor.input),
             }),
           })
-        : approval.source === "action" && approval.descriptor.action === gmailSendActionName
-          ? Object.assign({}, approval, {
-              descriptor: Object.assign({}, approval.descriptor, {
-                input: sanitizeGmailSendActionInput(approval.descriptor.input),
-              }),
-            })
-          : sanitizePendingApproval(approval),
+        : sanitizePendingApproval(approval),
     );
   }
 
@@ -1639,7 +1602,7 @@ export class OsfoAgent extends Think<Env> {
     return runtime.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const authorization = yield* currentAuthorization();
+          const currentContext = yield* currentAuthorization();
           const database = yield* workerDatabase;
           return yield* DocumentGenerationComposition.make(
             env,
@@ -1647,7 +1610,7 @@ export class OsfoAgent extends Think<Env> {
             currentAuthorization,
           ).generate({
             actionId,
-            authorization,
+            authorization: currentContext,
             format: input.format,
             owner: { _tag: "ToolCall", toolCallId },
             source: input.source,
@@ -1666,7 +1629,7 @@ export class OsfoAgent extends Think<Env> {
     const artifact = await runtime.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const authorization = yield* currentAuthorization();
+          const currentContext = yield* currentAuthorization();
           const database = yield* workerDatabase;
           return yield* DocumentGenerationComposition.make(
             env,
@@ -1674,7 +1637,7 @@ export class OsfoAgent extends Think<Env> {
             currentAuthorization,
           ).reference({
             actionId: ActionId.make(toolCallId),
-            authorization,
+            authorization: currentContext,
             contentId: input.contentId,
           });
         }),
@@ -1699,13 +1662,13 @@ export class OsfoAgent extends Think<Env> {
     await runtime.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const authorization = yield* currentAuthorization();
+          const currentContext = yield* currentAuthorization();
           const database = yield* workerDatabase;
           return yield* DocumentGenerationComposition.make(
             env,
             database,
             currentAuthorization,
-          ).delete({ actionId, authorization, contentId: input.contentId });
+          ).delete({ actionId, authorization: currentContext, contentId: input.contentId });
         }),
       ),
     );
@@ -1749,16 +1712,16 @@ export class OsfoAgent extends Think<Env> {
           ),
         ),
       ),
-      Effect.map((authorization) =>
+      Effect.map((currentContext) =>
         AuthorizationContext.make({
-          ...authorization,
+          ...currentContext,
           approval:
             approval === undefined
               ? null
               : {
                   actionId: approval.actionId,
                   operation: approval.operation,
-                  userId: authorization.user.userId,
+                  userId: currentContext.user.userId,
                 },
           requestVendorUsdMicros,
         }),
@@ -2069,8 +2032,8 @@ export class OsfoAgent extends Think<Env> {
         runtime.runPromise(
           Effect.scoped(
             ProviderAuthorizationPostgres.make({ provider }).pipe(
-              Effect.flatMap((authorization) =>
-                authorization.admit({
+              Effect.flatMap((providerAuthorization) =>
+                providerAuthorization.admit({
                   _tag: "Bound",
                   agentId: AgentId.make(this.name),
                   channelBindingId,
@@ -2126,13 +2089,13 @@ export class OsfoAgent extends Think<Env> {
       },
     };
     return {
-      acceptance: <AuthorizationFailure>(authorization: {
+      acceptance: <AuthorizationFailure>(authorizationOwner: {
         readonly inspect: (
           channelBindingId: ChannelBindingId,
         ) => Effect.Effect<AuthorizationContext, AuthorizationFailure>;
       }) => ({
         ...recovery,
-        authorization,
+        authorization: authorizationOwner,
         session: {
           ...recovery.session,
           replace: (

@@ -1,3 +1,4 @@
+# Loaded as a text Worker asset and written to the sandbox as file-task.py.
 import csv
 import io
 import json

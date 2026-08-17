@@ -1,8 +1,8 @@
-import { Result, Schema } from "effect";
+import { Effect, Option, Result, Schema } from "effect";
 import { getAgentByName } from "agents";
 
 import * as App from "./app";
-import { decodeRuntimeConfig } from "./env";
+import { decodeOsfoStage, decodeRuntimeConfig } from "./env";
 import { RuntimeProbeResult } from "./layers";
 import * as DocumentCostReconciliation from "./document-cost-reconciliation";
 
@@ -28,7 +28,13 @@ const worker = {
     const config = decodeRuntimeConfig(env);
 
     return Result.match(config, {
-      onFailure: () => Promise.resolve(App.environmentErrorResponse()),
+      onFailure: () =>
+        isHealthRequest(request)
+          ? Option.match(decodeOsfoStage(env.OSFO_STAGE), {
+              onNone: () => Promise.resolve(App.environmentErrorResponse()),
+              onSome: (stage) => Effect.runPromise(App.healthResponse(stage)),
+            })
+          : Promise.resolve(App.environmentErrorResponse()),
       onSuccess: (parsedConfig) => fetchApp(request, App.make(adaptBindings(env), parsedConfig)),
     });
   },
@@ -98,3 +104,6 @@ const fetchApp = async (request: Request, app: ReturnType<typeof App.make>): Pro
     await app.dispose();
   }
 };
+
+const isHealthRequest = (request: Request): boolean =>
+  request.method === "GET" && new URL(request.url).pathname === "/health";

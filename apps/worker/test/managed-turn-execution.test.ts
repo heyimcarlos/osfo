@@ -121,7 +121,7 @@ describe("managed Think Submission execution", () => {
                 };
               },
             });
-            vi.spyOn(instance, "getActions").mockReturnValue({});
+            vi.spyOn(instance, "getActions").mockImplementation(() => Object.create(null));
             vi.spyOn(instance, "resolveModel").mockReturnValue(model);
             vi.spyOn(instance, "onStepEnd").mockImplementation(async () => {});
             const inspectAuthorization = vi
@@ -267,7 +267,7 @@ describe("managed Think Submission execution", () => {
                 }),
               }),
             });
-            vi.spyOn(instance, "getActions").mockReturnValue({});
+            vi.spyOn(instance, "getActions").mockImplementation(() => Object.create(null));
             vi.spyOn(instance, "resolveModel").mockReturnValue(model);
             vi.spyOn(instance, "onStepEnd").mockImplementation(async () => {});
             vi.spyOn(ProviderAuthorizationPostgres, "make").mockReturnValue(
@@ -432,7 +432,7 @@ describe("managed Think Submission execution", () => {
         });
         await evictDurableObject(agent);
       });
-      vi.spyOn(OsfoAgent.prototype, "getActions").mockReturnValue({});
+      vi.spyOn(OsfoAgent.prototype, "getActions").mockImplementation(() => Object.create(null));
       vi.spyOn(OsfoAgent.prototype, "resolveModel").mockReturnValue(model);
       vi.spyOn(OsfoAgent.prototype, "onStepEnd").mockImplementation(async () => {});
 
@@ -543,7 +543,7 @@ describe("managed Think Submission execution", () => {
               };
             },
           });
-          vi.spyOn(instance, "getActions").mockReturnValue({});
+          vi.spyOn(instance, "getActions").mockImplementation(() => Object.create(null));
           vi.spyOn(instance, "resolveModel").mockReturnValue(model);
           vi.spyOn(instance, "onStepEnd").mockImplementation(async () => {});
           await instance.onStart();

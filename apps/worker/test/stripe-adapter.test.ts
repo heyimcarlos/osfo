@@ -117,8 +117,9 @@ describe("Stripe adapter", () => {
         pending_webhooks: 1,
         type: "invoice.paid",
       });
-      const signature = client.webhooks.generateTestHeaderString({ payload: rawBody, secret });
-
+      const signature = yield* Effect.promise(() =>
+        client.webhooks.generateTestHeaderStringAsync({ payload: rawBody, secret }),
+      );
       const verified = yield* adapter.verify(rawBody, signature);
       const mutated = yield* adapter.verify(`${rawBody} `, signature).pipe(Effect.exit);
       const checkoutBody = JSON.stringify({
@@ -130,16 +131,15 @@ describe("Stripe adapter", () => {
             object: "checkout.session",
           },
         },
-        id: "evt_checkout_recovery",
+        id: "evt_checkoutrecovery",
         livemode: false,
         object: "event",
         pending_webhooks: 1,
         type: "checkout.session.completed",
       });
-      const checkoutSignature = client.webhooks.generateTestHeaderString({
-        payload: checkoutBody,
-        secret,
-      });
+      const checkoutSignature = yield* Effect.promise(() =>
+        client.webhooks.generateTestHeaderStringAsync({ payload: checkoutBody, secret }),
+      );
       const verifiedCheckout = yield* adapter.verify(checkoutBody, checkoutSignature);
 
       expect(verified).toEqual({
@@ -151,7 +151,7 @@ describe("Stripe adapter", () => {
       expect(mutated._tag).toBe("Failure");
       expect(verifiedCheckout).toEqual({
         billingCheckoutSessionId: "checkout-local-recovery",
-        externalEventId: "evt_checkout_recovery",
+        externalEventId: "evt_checkoutrecovery",
         externalObjectId: "cs_test_recovery",
         type: "checkout.session.completed",
       });

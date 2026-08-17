@@ -17,6 +17,7 @@ import {
   ActionPresentationUnavailable,
   type PendingThinkAction,
 } from "./think-action-approvals";
+import { effectToolSchema } from "./effect-tool-schema";
 
 const actionName = "osfoTestGmailSend";
 const testUserId = UserId.make("test-protected-action-user");
@@ -29,7 +30,7 @@ const TestActionInput = Schema.Struct({
   ),
   subject: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
 });
-const inputSchema = Schema.toStandardSchemaV1(TestActionInput);
+const inputSchema = effectToolSchema(TestActionInput);
 type TestActionInput = typeof TestActionInput.Type;
 
 /** Test-only current authority and provider state used to verify the real Think Action path. */
@@ -141,12 +142,12 @@ export const currentTestAuthorization = (state: TestProtectedActionState): Autho
       state.authority === "active"
         ? {
             _tag: "ChannelBinding",
-            channelBindingId: "test-protected-action-binding",
+            channelBindingId: testChannelBindingId,
             userId: testUserId,
           }
         : {
             _tag: "RevokedChannelBinding",
-            channelBindingId: "test-protected-action-binding",
+            channelBindingId: testChannelBindingId,
             userId: testUserId,
           },
     deletionAccess: { _tag: "DeletionAccessAvailable" },
@@ -160,7 +161,7 @@ export const currentTestAuthorization = (state: TestProtectedActionState): Autho
     now: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z")),
     originatingAuthority: {
       _tag: "ChannelBinding",
-      channelBindingId: "test-protected-action-binding",
+      channelBindingId: testChannelBindingId,
     },
     requestVendorUsdMicros: 0n,
     resourceOwnerUserId: testUserId,

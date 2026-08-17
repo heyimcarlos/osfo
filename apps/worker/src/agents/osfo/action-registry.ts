@@ -23,6 +23,7 @@ import {
   testProtectedActionName,
   type TestProtectedActionState,
 } from "./test-protected-action";
+import { effectToolSchema } from "./effect-tool-schema";
 
 type SanitizedPendingApprovalInput =
   | ClearCoreMemory
@@ -49,7 +50,7 @@ export const makeOsfoActions = (options: {
       execute: async (input, context) =>
         await options.clearCoreMemory(input, ActionId.make(context.toolCallId)),
       idempotencyKey: ({ ctx }) => `core-memory-clear:${ctx.toolCallId}`,
-      inputSchema: Schema.toStandardSchemaV1(ClearCoreMemoryInput),
+      inputSchema: effectToolSchema(ClearCoreMemoryInput),
       kind: "durable-pause",
       permissions: ["memory:clear"],
     }),

@@ -9,6 +9,7 @@ import { estimateStringTokens } from "agents/experimental/memory/utils";
 import { Effect, Schema } from "effect";
 
 import { AuthorizationContext } from "../../services/authorization";
+import { effectToolSchema } from "./effect-tool-schema";
 
 const positiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0));
 const configurableTokenBudget = Schema.Finite.check(
@@ -218,7 +219,7 @@ export const coreMemoryTools = (session: Session): ToolSet => ({
         ),
       );
     },
-    inputSchema: Schema.toStandardSchemaV1(SetCoreMemoryInput),
+    inputSchema: effectToolSchema(SetCoreMemoryInput),
   }),
 });
 

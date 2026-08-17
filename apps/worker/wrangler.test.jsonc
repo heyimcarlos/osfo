@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "osfo-test",
   "main": "src/worker.ts",
-  "rules": [{ "type": "Text", "globs": ["**/*.sql", "**/*.py"], "fallthrough": true }],
+  "rules": [{ "type": "Text", "globs": ["**/*.sql", "**/*.txt"], "fallthrough": true }],
   "compatibility_date": "2026-08-12",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {

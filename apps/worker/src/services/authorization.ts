@@ -121,7 +121,7 @@ export const restoreCoreMemoryAuthorization = (
   AuthorizationContext.make({
     allowance: { _tag: "Unavailable" },
     approval: null,
-    authority: snapshot.authority,
+    authority: restoreActingAuthority(snapshot.authority),
     deletionAccess: snapshot.deletionAccess,
     gmailConnection: null,
     liveFacts: {
@@ -131,12 +131,37 @@ export const restoreCoreMemoryAuthorization = (
       retainedFileBytes: 0n,
     },
     now: snapshot.now,
-    originatingAuthority: snapshot.originatingAuthority,
+    originatingAuthority: restoreOriginatingAuthority(snapshot.originatingAuthority),
     requestVendorUsdMicros: 0n,
     resourceOwnerUserId: snapshot.resourceOwnerUserId,
     subscription: snapshot.subscription,
     user: snapshot.user,
   });
+
+const restoreActingAuthority = (
+  authority: CoreMemoryAuthorizationSnapshotType["authority"],
+): AuthorizationContext["authority"] => {
+  if (authority === null) return null;
+  if (Predicate.isTagged(authority, "AuthSession"))
+    return { ...authority, authSessionId: AuthSessionId.make(authority.authSessionId) };
+  if (Predicate.isTagged(authority, "RevokedAuthSession"))
+    return { ...authority, authSessionId: AuthSessionId.make(authority.authSessionId) };
+  if (Predicate.isTagged(authority, "ChannelBinding"))
+    return { ...authority, channelBindingId: ChannelBindingId.make(authority.channelBindingId) };
+  if (Predicate.isTagged(authority, "RevokedChannelBinding"))
+    return { ...authority, channelBindingId: ChannelBindingId.make(authority.channelBindingId) };
+  return authority;
+};
+
+const restoreOriginatingAuthority = (
+  authority: CoreMemoryAuthorizationSnapshotType["originatingAuthority"],
+): AuthorizationContext["originatingAuthority"] => {
+  if (Predicate.isTagged(authority, "AuthSession"))
+    return { ...authority, authSessionId: AuthSessionId.make(authority.authSessionId) };
+  if (Predicate.isTagged(authority, "ChannelBinding"))
+    return { ...authority, channelBindingId: ChannelBindingId.make(authority.channelBindingId) };
+  return authority;
+};
 
 /** Closed reasons returned by deterministic launch Authorization denial. */
 export const AuthorizationDenialReason = Schema.Literals([
