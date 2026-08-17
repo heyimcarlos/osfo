@@ -52,7 +52,7 @@ type OnboardingState =
   | { readonly _tag: "RegistrationComplete" }
   | { readonly _tag: "Submitting"; readonly returnTo: SubmissionReturn };
 
-/** Complete localized phone-first web and invited WhatsApp registration journey. */
+/** Complete localized phone-first web and invited messaging registration journey. */
 export function GetStartedScreen({
   dependencies = defaultDependencies,
   invitationToken,
@@ -68,7 +68,12 @@ export function GetStartedScreen({
   const [invitation, setInvitation] = useState<InvitationResponse>();
   const [bindingConsent, setBindingConsent] = useState<"accepted" | "refused" | null>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
-  const text = copy[locale];
+  const provider =
+    state._tag === "EnrollmentPending"
+      ? providerFromEnrollmentUrl(state.enrollmentUrl)
+      : (invitation?.provider ?? "whatsapp");
+  const text =
+    provider === "telegram" ? { ...copy[locale], ...telegramCopy[locale] } : copy[locale];
 
   useEffect(() => {
     if (invitationToken === undefined) return;
@@ -246,9 +251,11 @@ export function GetStartedScreen({
       {state._tag === "Phone" ? (
         <PhoneAuthForm
           dependencies={dependencies.phoneAuth}
-          {...(invitationToken === undefined ? {} : { invitationToken })}
+          {...(invitationToken === undefined || invitation?.maskedPhoneNumber == null
+            ? {}
+            : { invitationToken })}
           locale={locale}
-          lockedPhoneNumber={invitation !== undefined}
+          lockedPhoneNumber={invitation?.maskedPhoneNumber != null}
           {...(invitation?.maskedPhoneNumber === null || invitation?.maskedPhoneNumber === undefined
             ? {}
             : { maskedPhoneNumber: invitation.maskedPhoneNumber })}
@@ -523,6 +530,9 @@ const getWebEnrollmentToken = (): string => {
   return token;
 };
 
+const providerFromEnrollmentUrl = (url: URL): "telegram" | "whatsapp" =>
+  url.hostname.toLowerCase() === "t.me" ? "telegram" : "whatsapp";
+
 const copy = {
   en: {
     aiNotice: "Osfo uses AI to process setup details and future messages.",
@@ -565,7 +575,7 @@ const copy = {
     helpLegend: "What would you like help with?",
     keepProfile: "Keep my existing profile",
     linkUnavailable: "This link is unavailable",
-    linkUnavailableBody: "Request a fresh registration link in WhatsApp, then try again.",
+    linkUnavailableBody: "Request a fresh registration link in your messaging app, then try again.",
     loading: "Checking your link",
     loadingBody: "Osfo is checking this registration invitation.",
     nameLabel: "Preferred name",
@@ -632,7 +642,8 @@ const copy = {
     helpLegend: "¿Con qué quieres ayuda?",
     keepProfile: "Conservar mi perfil actual",
     linkUnavailable: "Este enlace no está disponible",
-    linkUnavailableBody: "Pide un nuevo enlace de registro en WhatsApp e inténtalo de nuevo.",
+    linkUnavailableBody:
+      "Pide un nuevo enlace de registro en tu aplicación de mensajería e inténtalo de nuevo.",
     loading: "Comprobando tu enlace",
     loadingBody: "Osfo está comprobando esta invitación de registro.",
     nameLabel: "Nombre preferido",
@@ -659,5 +670,50 @@ const copy = {
     whatsAppNotice:
       "WhatsApp procesa los mensajes del canal. Una conexión permite que Osfo dirija un remitente autenticado al usuario correcto.",
     working: "Procesando...",
+  },
+} as const;
+
+const telegramCopy = {
+  en: {
+    bindAccept: "Connect this invited Telegram identity to my Osfo account.",
+    bindRefuse: "Do not connect this Telegram identity.",
+    bindingBody:
+      "SMS verification and Telegram identity are separate evidence. This choice is not preselected.",
+    bindingTitle: "Telegram binding consent",
+    chooseConsent: "Choose whether to connect the invited Telegram identity.",
+    continueWhatsApp: "Continue in Telegram",
+    enrollmentNotice:
+      "Continue in Telegram opens one single-use enrollment link. Only that provider-authenticated message can connect your Telegram identity.",
+    linkUnavailableBody: "Request a fresh registration link in Telegram, then try again.",
+    pendingBody:
+      "Registration is complete, but your Telegram connection is pending. Use the enrollment link to connect your Telegram identity.",
+    pendingTitle: "Telegram connection pending",
+    registrationCompleteBody:
+      "Your registration is complete. You chose not to connect the invited Telegram identity.",
+    stopNotice:
+      "Osfo requires your consent before it connects Telegram or sends proactive messages.",
+    whatsAppNotice:
+      "Telegram processes channel messages. A Channel Binding is required so Osfo can route an authenticated sender to the correct user.",
+  },
+  es: {
+    bindAccept: "Conectar esta identidad de Telegram invitada con mi cuenta de Osfo.",
+    bindRefuse: "No conectar esta identidad de Telegram.",
+    bindingBody:
+      "La verificación por SMS y la identidad de Telegram son pruebas separadas. Esta opción no está preseleccionada.",
+    bindingTitle: "Consentimiento de conexión de Telegram",
+    chooseConsent: "Elige si quieres conectar la identidad de Telegram invitada.",
+    continueWhatsApp: "Continuar en Telegram",
+    enrollmentNotice:
+      "Continuar en Telegram abre un enlace de inscripción de un solo uso. Solo ese mensaje autenticado por el proveedor puede conectar tu identidad.",
+    linkUnavailableBody: "Pide un nuevo enlace de registro en Telegram e inténtalo de nuevo.",
+    pendingBody:
+      "El registro está completo, pero la conexión de Telegram está pendiente. Usa el enlace de inscripción para conectar tu identidad.",
+    pendingTitle: "Conexión de Telegram pendiente",
+    registrationCompleteBody:
+      "Tu registro está completo. Elegiste no conectar la identidad de Telegram invitada.",
+    stopNotice:
+      "Osfo requiere tu consentimiento antes de conectar Telegram o enviar mensajes proactivos.",
+    whatsAppNotice:
+      "Telegram procesa los mensajes del canal. Una conexión permite que Osfo dirija un remitente autenticado al usuario correcto.",
   },
 } as const;

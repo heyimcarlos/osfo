@@ -42,6 +42,7 @@ describe("Postgres migrations", () => {
             "deletion_cases",
             "inbound_whatsapp_events",
             "migrations",
+            "provider_event_receipts",
             "rate_limits",
             "registration_invitations",
             "sessions",

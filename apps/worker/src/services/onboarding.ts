@@ -14,6 +14,12 @@ import * as Registration from "./registration";
 
 export { HelpArea, OnboardingLocale, RegistrationToken } from "@osfo/api";
 
+/** Messaging providers proven by the onboarding adapters. */
+export const ChannelProvider = Schema.Literals(["telegram", "whatsapp"]);
+
+/** Messaging provider accepted by shared onboarding policy. */
+export type ChannelProvider = typeof ChannelProvider.Type;
+
 /** Explicit setup facts supplied by the person. */
 export const SetupProfile = Schema.Struct({
   helpAreas: Schema.Array(HelpArea),
@@ -32,32 +38,59 @@ export const SetupProfile = Schema.Struct({
 /** Explicit setup facts supplied by the person. */
 export type SetupProfile = typeof SetupProfile.Type;
 
-/** Authenticated normalized event for one unknown WhatsApp sender. */
-export const UnknownWhatsAppMessage = Schema.Struct({
+/** Provider-neutral facts for one authenticated unknown channel sender. */
+export const UnknownChannelMessage = Schema.Struct({
   channelIdentity: ChannelIdentity,
   eventId: Schema.String,
-  invitedPhoneNumber: Schema.String,
   locale: OnboardingLocale,
   message: Schema.String,
+});
+
+/** Provider-neutral facts for one authenticated unknown channel sender. */
+export type UnknownChannelMessage = typeof UnknownChannelMessage.Type;
+
+/** Authenticated normalized event for one unknown WhatsApp sender. */
+export const UnknownWhatsAppMessage = Schema.Struct({
+  ...UnknownChannelMessage.fields,
+  invitedPhoneNumber: Schema.String,
 });
 
 /** Authenticated normalized event for one unknown WhatsApp sender. */
 export type UnknownWhatsAppMessage = typeof UnknownWhatsAppMessage.Type;
 
-/** Authenticated normalized enrollment event produced by the Meta adapter in #174. */
-export const WhatsAppEnrollment = Schema.Struct({
+/** Authenticated normalized event for one unknown Telegram sender. */
+export const UnknownTelegramMessage = UnknownChannelMessage;
+
+/** Authenticated normalized event for one unknown Telegram sender. */
+export type UnknownTelegramMessage = typeof UnknownTelegramMessage.Type;
+
+/** Authenticated normalized enrollment event for a provider channel. */
+export const ChannelEnrollment = Schema.Struct({
   channelIdentity: ChannelIdentity,
   eventId: Schema.String,
   token: Schema.RedactedFromValue(RegistrationToken),
 });
 
+/** Authenticated normalized enrollment event for a provider channel. */
+export type ChannelEnrollment = typeof ChannelEnrollment.Type;
+
+/** Authenticated normalized enrollment event produced by the Meta adapter in #174. */
+export const WhatsAppEnrollment = ChannelEnrollment;
+
 /** Authenticated normalized enrollment event produced by the Meta adapter in #174. */
 export type WhatsAppEnrollment = typeof WhatsAppEnrollment.Type;
+
+/** Authenticated normalized Telegram deep-link enrollment event. */
+export const TelegramEnrollment = ChannelEnrollment;
+
+/** Authenticated normalized Telegram deep-link enrollment event. */
+export type TelegramEnrollment = typeof TelegramEnrollment.Type;
 
 /** Public view of one Registration Invitation. */
 export const InvitationView = Schema.Struct({
   locale: OnboardingLocale,
   maskedPhoneNumber: Schema.NullOr(Schema.String),
+  provider: Schema.NullOr(ChannelProvider),
   state: Schema.Literals(["live", "expired", "consumed", "invalid"]),
 });
 
@@ -198,7 +231,10 @@ export class RegistrationTurn extends Context.Service<RegistrationTurn, Registra
 
 /** Public URL projections needed by onboarding policy. */
 export interface OnboardingLinksPort {
-  readonly enrollment: (token: Redacted.Redacted<RegistrationToken>) => URL;
+  readonly enrollment: (token: Redacted.Redacted<RegistrationToken>) => {
+    readonly provider: ChannelProvider;
+    readonly url: URL;
+  };
   readonly registrationHome: () => URL;
   readonly verification: (token: Redacted.Redacted<RegistrationToken>) => URL;
 }
@@ -228,8 +264,9 @@ export const StoredInvitation = Schema.Struct({
   expiryReason: Schema.NullOr(Schema.Literals(["elapsed", "replaced"])),
   invitationId: RegistrationInvitationId,
   invitedPhoneNumber: Schema.NullOr(Schema.String),
-  kind: Schema.Literals(["whatsapp_first", "web_enrollment"]),
+  kind: Schema.Literals(["telegram_first", "whatsapp_first", "web_enrollment"]),
   locale: OnboardingLocale,
+  provider: ChannelProvider,
   state: Schema.Literals(["live", "expired", "consumed"]),
   userId: Schema.NullOr(UserId),
 });
@@ -261,6 +298,7 @@ export type StoredWelcomeRoute = typeof StoredWelcomeRoute.Type;
 export const StoredChannelBinding = Schema.Struct({
   channelBindingId: ChannelBindingId,
   channelIdentity: ChannelIdentity,
+  provider: ChannelProvider,
   userId: UserId,
 });
 
@@ -348,6 +386,7 @@ export interface EnrollPersistenceInput {
   readonly enrollmentDigest: string;
   readonly invitationId: RegistrationInvitationId;
   readonly now: Date;
+  readonly provider: ChannelProvider;
   readonly userId: UserId;
 }
 
@@ -358,11 +397,29 @@ export interface WebEnrollmentPersistenceInput {
   readonly invitationId: RegistrationInvitationId;
   readonly locale: OnboardingLocale;
   readonly now: Date;
+  readonly provider: ChannelProvider;
   readonly userId: UserId;
 }
 
 /** Application-owned control-plane persistence operations for onboarding. */
 export interface PersistencePort {
+  readonly beginProviderEvent: (
+    provider: ChannelProvider,
+    eventId: string,
+    now: Date,
+  ) => Effect.Effect<
+    "Ambiguous" | "Claimed" | "Completed" | "InProgress",
+    OnboardingPersistenceUnavailable
+  >;
+  readonly completeProviderEvent: (
+    provider: ChannelProvider,
+    eventId: string,
+    now: Date,
+  ) => Effect.Effect<void, OnboardingPersistenceUnavailable>;
+  readonly markProviderEventOutboundAttempted: (
+    provider: ChannelProvider,
+    eventId: string,
+  ) => Effect.Effect<void, OnboardingPersistenceUnavailable>;
   readonly complete: (
     input: CompletePersistenceInput,
     decide: (context: CompletePersistenceContext) => CompletePersistenceDecision,
@@ -382,16 +439,20 @@ export interface PersistencePort {
   readonly findByDigest: (
     digest: string,
   ) => Effect.Effect<StoredInvitation | null, OnboardingPersistenceUnavailable>;
-  readonly findLiveWhatsApp: (
+  readonly findLiveChannel: (
+    provider: ChannelProvider,
     channelIdentity: ChannelIdentity,
   ) => Effect.Effect<RegistrationInvitationId | null, OnboardingPersistenceUnavailable>;
-  readonly insertWhatsApp: (input: {
+  readonly insertChannel: (input: {
     readonly channelIdentity: ChannelIdentity;
     readonly createdAt: Date;
     readonly expiresAt: Date;
     readonly invitationId: RegistrationInvitationId;
-    readonly invitedPhoneNumber: string;
+    readonly invitedPhoneNumber: string | null;
+    readonly kind: "telegram_first" | "whatsapp_first";
     readonly locale: OnboardingLocale;
+    readonly provider: ChannelProvider;
+    readonly providerEventId: string;
     readonly tokenDigest: string;
   }) => Effect.Effect<boolean, OnboardingPersistenceRejected>;
   readonly readCurrentBinding: (query: {
@@ -413,8 +474,29 @@ export class Persistence extends Context.Service<Persistence, PersistencePort>()
 
 /** Onboarding application operations. */
 export interface Interface {
+  readonly beginTelegramEvent: (
+    eventId: string,
+  ) => Effect.Effect<
+    "Ambiguous" | "Claimed" | "Completed" | "InProgress",
+    OnboardingPersistenceUnavailable
+  >;
+  readonly completeTelegramEvent: (
+    eventId: string,
+  ) => Effect.Effect<void, OnboardingPersistenceUnavailable>;
+  readonly markTelegramEventOutboundAttempted: (
+    eventId: string,
+  ) => Effect.Effect<void, OnboardingPersistenceUnavailable>;
   readonly issueWhatsAppInvitation: (
     input: UnknownWhatsAppMessage,
+  ) => Effect.Effect<
+    RegistrationTurnIssued,
+    | OnboardingExecutionUnavailable
+    | OnboardingIdentityUnavailable
+    | OnboardingPersistenceRejected
+    | OnboardingPersistenceUnavailable
+  >;
+  readonly issueTelegramInvitation: (
+    input: UnknownTelegramMessage,
   ) => Effect.Effect<
     RegistrationTurnIssued,
     | OnboardingExecutionUnavailable
@@ -460,6 +542,17 @@ export interface Interface {
     | OnboardingPersistenceUnavailable
     | RegistrationInvitationUnavailable
   >;
+  readonly enrollTelegram: (
+    input: TelegramEnrollment,
+  ) => Effect.Effect<
+    ChannelOnboardingState,
+    | ChannelBindingConflict
+    | OnboardingExecutionUnavailable
+    | OnboardingIdentityUnavailable
+    | OnboardingPersistenceRejected
+    | OnboardingPersistenceUnavailable
+    | RegistrationInvitationUnavailable
+  >;
   readonly expireInvitations: Effect.Effect<number, OnboardingPersistenceUnavailable>;
 }
 
@@ -489,6 +582,7 @@ export const make = Effect.gen(function* () {
       return {
         locale,
         maskedPhoneNumber: null,
+        provider: row.provider,
         state: "expired" as const,
       };
     }
@@ -500,6 +594,7 @@ export const make = Effect.gen(function* () {
       locale,
       maskedPhoneNumber:
         row.invitedPhoneNumber === null ? null : maskPhoneNumber(row.invitedPhoneNumber),
+      provider: row.provider,
       state,
     };
     return view;
@@ -524,13 +619,19 @@ export const make = Effect.gen(function* () {
     return Redacted.make(invitation.invitedPhoneNumber);
   });
 
-  const issueWhatsAppInvitation = Effect.fn("Onboarding.issueWhatsAppInvitation")(function* (
-    input: UnknownWhatsAppMessage,
-  ) {
+  const issueChannelInvitation = Effect.fn("Onboarding.issueChannelInvitation")(function* (input: {
+    readonly channelIdentity: ChannelIdentity;
+    readonly eventId: string;
+    readonly invitedPhoneNumber: string | null;
+    readonly kind: "telegram_first" | "whatsapp_first";
+    readonly locale: OnboardingLocale;
+    readonly message: string;
+    readonly provider: ChannelProvider;
+  }) {
     const now = yield* DateTime.now;
     const nowDate = DateTime.toDateUtc(now);
     yield* persistence.expireLive(nowDate);
-    const existing = yield* persistence.findLiveWhatsApp(input.channelIdentity);
+    const existing = yield* persistence.findLiveChannel(input.provider, input.channelIdentity);
     if (existing !== null) {
       const invitationId = existing;
       const response = yield* registrationTurn.begin({
@@ -550,17 +651,20 @@ export const make = Effect.gen(function* () {
     const generated = yield* generateInvitationIdentity(crypto);
     const invitationId = RegistrationInvitationId.make(`registration-invitation-${generated.id}`);
     const expiresAt = DateTime.toDateUtc(DateTime.add(now, { hours: 24 }));
-    const inserted = yield* persistence.insertWhatsApp({
+    const inserted = yield* persistence.insertChannel({
       channelIdentity: input.channelIdentity,
       createdAt: nowDate,
       expiresAt,
       invitationId,
       invitedPhoneNumber: input.invitedPhoneNumber,
+      kind: input.kind,
       locale: input.locale,
+      provider: input.provider,
+      providerEventId: input.eventId,
       tokenDigest: generated.digest,
     });
     if (!inserted) {
-      const concurrent = yield* persistence.findLiveWhatsApp(input.channelIdentity);
+      const concurrent = yield* persistence.findLiveChannel(input.provider, input.channelIdentity);
       if (concurrent === null) {
         return yield* new OnboardingPersistenceRejected({
           cause: { channelIdentity: input.channelIdentity },
@@ -593,6 +697,22 @@ export const make = Effect.gen(function* () {
     return { invitationId, response, verifyUrl };
   });
 
+  const issueWhatsAppInvitation: Interface["issueWhatsAppInvitation"] = (input) =>
+    issueChannelInvitation({
+      ...input,
+      invitedPhoneNumber: input.invitedPhoneNumber,
+      kind: "whatsapp_first",
+      provider: "whatsapp",
+    });
+
+  const issueTelegramInvitation: Interface["issueTelegramInvitation"] = (input) =>
+    issueChannelInvitation({
+      ...input,
+      invitedPhoneNumber: null,
+      kind: "telegram_first",
+      provider: "telegram",
+    });
+
   const complete = Effect.fn("Onboarding.complete")(function* (input: CompleteInput) {
     const currentTime = yield* DateTime.now;
     const invitation =
@@ -604,7 +724,7 @@ export const make = Effect.gen(function* () {
             input.invitationToken,
             DateTime.toDateUtc(currentTime),
           );
-    if (invitation !== null && invitation.kind !== "whatsapp_first") {
+    if (invitation !== null && invitation.kind === "web_enrollment") {
       return yield* new RegistrationInvitationUnavailable({ reason: "invalid" });
     }
     if (invitation?.state === "consumed" && invitation.userId !== input.userId) {
@@ -743,8 +863,8 @@ export const make = Effect.gen(function* () {
     };
   });
 
-  const enrollWhatsApp = Effect.fn("Onboarding.enrollWhatsApp")(function* (
-    input: WhatsAppEnrollment,
+  const enrollChannel = Effect.fn("Onboarding.enrollChannel")(function* (
+    input: WhatsAppEnrollment & { readonly provider: ChannelProvider },
   ) {
     const now = yield* DateTime.now;
     const invitation = yield* readUsableInvitation(
@@ -753,7 +873,11 @@ export const make = Effect.gen(function* () {
       input.token,
       DateTime.toDateUtc(now),
     );
-    if (invitation.kind !== "web_enrollment" || invitation.userId === null) {
+    if (
+      invitation.kind !== "web_enrollment" ||
+      invitation.userId === null ||
+      invitation.provider !== input.provider
+    ) {
       return yield* new RegistrationInvitationUnavailable({ reason: "invalid" });
     }
     const userId = invitation.userId;
@@ -789,6 +913,7 @@ export const make = Effect.gen(function* () {
               enrollmentDigest,
               invitationId: invitation.invitationId,
               now: nowDate,
+              provider: input.provider,
               userId,
             },
             (context) =>
@@ -820,16 +945,36 @@ export const make = Effect.gen(function* () {
     return result;
   });
 
+  const enrollWhatsApp: Interface["enrollWhatsApp"] = (input) =>
+    enrollChannel({ ...input, provider: "whatsapp" });
+
+  const enrollTelegram: Interface["enrollTelegram"] = (input) =>
+    enrollChannel({ ...input, provider: "telegram" });
+
   const expireInvitations = persistence.expireLive(
     yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
   );
 
   return Service.of({
+    beginTelegramEvent: (eventId) =>
+      DateTime.now.pipe(
+        Effect.map(DateTime.toDateUtc),
+        Effect.flatMap((now) => persistence.beginProviderEvent("telegram", eventId, now)),
+      ),
     complete,
+    completeTelegramEvent: (eventId) =>
+      DateTime.now.pipe(
+        Effect.map(DateTime.toDateUtc),
+        Effect.flatMap((now) => persistence.completeProviderEvent("telegram", eventId, now)),
+      ),
+    enrollTelegram,
     enrollWhatsApp,
     expireInvitations,
     inspectInvitation,
+    issueTelegramInvitation,
     issueWhatsAppInvitation,
+    markTelegramEventOutboundAttempted: (eventId) =>
+      persistence.markProviderEventOutboundAttempted("telegram", eventId),
     phoneVerificationTarget,
   });
 });
@@ -840,6 +985,7 @@ export const layerWithoutDependencies = Layer.effect(Service, make);
 const invalidInvitationView: InvitationView = {
   locale: "en",
   maskedPhoneNumber: null,
+  provider: null,
   state: "invalid",
 };
 
@@ -1052,6 +1198,7 @@ const createWebEnrollment = Effect.fn("Onboarding.createWebEnrollment")(function
   const nowDate = DateTime.toDateUtc(now);
   yield* persistence.expireLive(nowDate);
   const suppliedDigest = yield* digestToken(crypto, suppliedToken);
+  const enrollment = links.enrollment(suppliedToken);
   const invitationId = RegistrationInvitationId.make(
     `registration-invitation-${yield* secureUuid(crypto)}`,
   );
@@ -1061,10 +1208,11 @@ const createWebEnrollment = Effect.fn("Onboarding.createWebEnrollment")(function
     invitationId,
     locale,
     now: nowDate,
+    provider: enrollment.provider,
     userId,
   });
   return {
     _tag: "EnrollmentPending",
-    enrollmentUrl: links.enrollment(suppliedToken),
+    enrollmentUrl: enrollment.url,
   } as const;
 });

@@ -568,6 +568,7 @@ const runtimeConfig: RuntimeConfig = {
     webhookVerifyToken: Redacted.make("test-only-meta-webhook-token"),
   },
   stage: "test",
+  telegram: { kind: "disabled" },
   whatsApp: { phoneNumber: "14165550100" },
   twilioVerify: {
     accountSid: Redacted.make(`AC${"1".repeat(32)}`),
@@ -589,6 +590,12 @@ const testBindings: App.Bindings = {
       commitWelcome: () =>
         Promise.resolve({ _tag: "PersonalWelcomeCommitted", messageId: "welcome-test" }),
       initialize: () => Promise.resolve({ _tag: "AgentInitialized" }),
+      submitManagedConversation: () =>
+        Promise.resolve({
+          accepted: true,
+          status: "pending" as const,
+          submissionId: "submission-test",
+        }),
       probeRuntime: () =>
         Promise.resolve({
           activationId: "test-agent-activation",

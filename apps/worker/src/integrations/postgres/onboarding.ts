@@ -1,8 +1,12 @@
 import { agents } from "@osfo/db/schema/agents";
 import { users } from "@osfo/db/schema/auth";
-import { channelBindings, registrationInvitations } from "@osfo/db/schema/onboarding";
+import {
+  channelBindings,
+  providerEventReceipts,
+  registrationInvitations,
+} from "@osfo/db/schema/onboarding";
 import { and, eq, isNull, lt, or } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 
 import { database, decodeOptionalRow, type Database } from "../../db";
 import { AgentId } from "../../domain";
@@ -50,6 +54,7 @@ export const make = Effect.gen(function* () {
             invitedPhoneNumber: registrationInvitations.invitedPhoneNumber,
             kind: registrationInvitations.kind,
             locale: registrationInvitations.locale,
+            provider: registrationInvitations.provider,
             state: registrationInvitations.state,
             userId: registrationInvitations.userId,
           })
@@ -65,7 +70,10 @@ export const make = Effect.gen(function* () {
       Effect.map((record) => record ?? null),
     );
 
-  const findLiveWhatsApp: Onboarding.PersistencePort["findLiveWhatsApp"] = (channelIdentity) =>
+  const findLiveChannel: Onboarding.PersistencePort["findLiveChannel"] = (
+    provider,
+    channelIdentity,
+  ) =>
     Effect.tryPromise({
       try: () =>
         db
@@ -73,13 +81,13 @@ export const make = Effect.gen(function* () {
           .from(registrationInvitations)
           .where(
             and(
-              eq(registrationInvitations.provider, "whatsapp"),
+              eq(registrationInvitations.provider, provider),
               eq(registrationInvitations.channelIdentity, channelIdentity),
               eq(registrationInvitations.state, "live"),
             ),
           )
           .limit(1),
-      catch: (cause) => unavailable("findLiveWhatsApp", cause),
+      catch: (cause) => unavailable("findLiveChannel", cause),
     }).pipe(
       Effect.flatMap((rows) =>
         decodeOptionalRow(
@@ -88,7 +96,7 @@ export const make = Effect.gen(function* () {
           "issueRegistrationInvitation",
         ),
       ),
-      Effect.mapError((cause) => unavailable("findLiveWhatsApp", cause)),
+      Effect.mapError((cause) => unavailable("findLiveChannel", cause)),
       Effect.map((record) => record?.invitationId ?? null),
     );
 
@@ -162,11 +170,31 @@ export const make = Effect.gen(function* () {
     );
 
   return Onboarding.Persistence.of({
+    beginProviderEvent: (provider, eventId, now) =>
+      Effect.tryPromise({
+        try: () => beginProviderEventTransaction(db, provider, eventId, now),
+        catch: (cause) => unavailable("beginProviderEvent", cause),
+      }),
     complete: (input, decide) =>
       Effect.tryPromise({
         try: () => completeTransaction(db, input, decide),
         catch: (cause) => rejected("complete", input.userId, cause),
       }),
+    completeProviderEvent: (provider, eventId, now) =>
+      Effect.tryPromise({
+        try: () =>
+          db
+            .update(providerEventReceipts)
+            .set({ completedAt: now, leaseExpiresAt: null, state: "completed" })
+            .where(
+              and(
+                eq(providerEventReceipts.provider, provider),
+                eq(providerEventReceipts.eventId, eventId),
+                eq(providerEventReceipts.purpose, "onboarding"),
+              ),
+            ),
+        catch: (cause) => unavailable("completeProviderEvent", cause),
+      }).pipe(Effect.asVoid),
     createWebEnrollment: (input) =>
       Effect.tryPromise({
         try: () => createWebEnrollmentTransaction(db, input),
@@ -188,22 +216,11 @@ export const make = Effect.gen(function* () {
         catch: (cause) => unavailable("expireLive", cause),
       }),
     findByDigest,
-    findLiveWhatsApp,
-    insertWhatsApp: (input) =>
+    findLiveChannel,
+    insertChannel: (input) =>
       Effect.tryPromise({
-        try: async () => {
-          const inserted = await db
-            .insert(registrationInvitations)
-            .values({
-              ...input,
-              kind: "whatsapp_first",
-              provider: "whatsapp",
-            })
-            .onConflictDoNothing()
-            .returning({ invitationId: registrationInvitations.invitationId });
-          return inserted.length > 0;
-        },
-        catch: (cause) => rejected("insertWhatsApp", input.invitationId, cause),
+        try: () => insertChannelTransaction(db, input),
+        catch: (cause) => rejected("insertChannel", input.invitationId, cause),
       }),
     readCurrentBinding: (query) =>
       Effect.tryPromise({
@@ -238,6 +255,84 @@ const unavailable = (operation: string, cause: unknown) =>
 
 const rejected = (operation: string, operationId: string, cause: unknown) =>
   new Onboarding.OnboardingPersistenceRejected({ cause, operation, operationId });
+
+const insertChannelTransaction = async (
+  db: Database,
+  input: Parameters<Onboarding.PersistencePort["insertChannel"]>[0],
+) =>
+  db.transaction(async (transaction) => {
+    const invitation = await transaction
+      .insert(registrationInvitations)
+      .values(input)
+      .onConflictDoNothing()
+      .returning({ invitationId: registrationInvitations.invitationId });
+    if (invitation.length > 0) return true;
+    return false;
+  });
+
+const beginProviderEventTransaction = async (
+  db: Database,
+  provider: Onboarding.ChannelProvider,
+  eventId: string,
+  now: Date,
+) =>
+  db.transaction(async (transaction) => {
+    const read = () =>
+      transaction
+        .select({
+          leaseExpiresAt: providerEventReceipts.leaseExpiresAt,
+          purpose: providerEventReceipts.purpose,
+          state: providerEventReceipts.state,
+        })
+        .from(providerEventReceipts)
+        .where(
+          and(
+            eq(providerEventReceipts.provider, provider),
+            eq(providerEventReceipts.eventId, eventId),
+          ),
+        )
+        .for("update")
+        .limit(1)
+        .then((rows) => rows[0]);
+    const existing = await read();
+    if (existing?.state === "completed") return "Completed" as const;
+    if (existing?.state === "outbound_attempted") return "Ambiguous" as const;
+    if (existing !== undefined) {
+      if (
+        existing.purpose !== "onboarding" ||
+        existing.leaseExpiresAt === null ||
+        existing.leaseExpiresAt.getTime() > now.getTime()
+      ) {
+        return "InProgress" as const;
+      }
+      await transaction
+        .update(providerEventReceipts)
+        .set({ leaseExpiresAt: providerEventLeaseExpiry(now) })
+        .where(
+          and(
+            eq(providerEventReceipts.provider, provider),
+            eq(providerEventReceipts.eventId, eventId),
+          ),
+        );
+      return "Claimed" as const;
+    }
+    const inserted = await transaction
+      .insert(providerEventReceipts)
+      .values({
+        eventId,
+        leaseExpiresAt: providerEventLeaseExpiry(now),
+        provider,
+        purpose: "onboarding",
+      })
+      .onConflictDoNothing()
+      .returning({ eventId: providerEventReceipts.eventId });
+    if (inserted.length > 0) return "Claimed" as const;
+    const raced = await read();
+    return raced?.state === "completed" ? ("Completed" as const) : ("InProgress" as const);
+  });
+
+const providerEventLeaseExpiry = (now: Date) =>
+  DateTime.toDateUtc(DateTime.add(DateTime.makeUnsafe(now), { minutes: 1 }));
 
 const completeTransaction = async (
   db: Database,
@@ -279,7 +374,12 @@ const completeTransaction = async (
     const activeBindings =
       invitation?.channelIdentity === null || invitation?.channelIdentity === undefined
         ? []
-        : await readActiveBindings(transaction, invitation.channelIdentity, input.userId);
+        : await readActiveBindings(
+            transaction,
+            invitation.channelIdentity,
+            invitation.provider,
+            input.userId,
+          );
     const decision = decide({
       activeBindings,
       invitation,
@@ -295,7 +395,7 @@ const completeTransaction = async (
         channelBindingId: channel.channelBindingId,
         channelIdentity: invitation.channelIdentity,
         createdAt: input.now,
-        provider: "whatsapp",
+        provider: invitation.provider,
         userId: input.userId,
       });
     }
@@ -337,6 +437,7 @@ const enrollTransaction = async (
     const activeBindings = await readActiveBindings(
       transaction,
       input.channelIdentity,
+      input.provider,
       input.userId,
     );
     const decision = decide({ activeBindings, invitation });
@@ -347,7 +448,7 @@ const enrollTransaction = async (
         channelBindingId: channel.channelBindingId,
         channelIdentity: input.channelIdentity,
         createdAt: input.now,
-        provider: "whatsapp",
+        provider: input.provider,
         userId: input.userId,
       });
     }
@@ -402,7 +503,7 @@ const createWebEnrollmentTransaction = async (
       invitationId: input.invitationId,
       kind: "web_enrollment",
       locale: input.locale,
-      provider: "whatsapp",
+      provider: input.provider,
       tokenDigest: input.digest,
       userId: input.userId,
     });
@@ -426,6 +527,7 @@ const readLockedInvitation = async (
       invitedPhoneNumber: registrationInvitations.invitedPhoneNumber,
       kind: registrationInvitations.kind,
       locale: registrationInvitations.locale,
+      provider: registrationInvitations.provider,
       state: registrationInvitations.state,
       userId: registrationInvitations.userId,
     })
@@ -439,18 +541,20 @@ const readLockedInvitation = async (
 const readActiveBindings = async (
   transaction: Transaction,
   channelIdentity: Onboarding.StoredChannelBinding["channelIdentity"],
+  provider: Onboarding.ChannelProvider,
   userId: Onboarding.StoredChannelBinding["userId"],
 ): Promise<ReadonlyArray<Onboarding.StoredChannelBinding>> => {
   const rows = await transaction
     .select({
       channelBindingId: channelBindings.channelBindingId,
       channelIdentity: channelBindings.channelIdentity,
+      provider: channelBindings.provider,
       userId: channelBindings.userId,
     })
     .from(channelBindings)
     .where(
       and(
-        eq(channelBindings.provider, "whatsapp"),
+        eq(channelBindings.provider, provider),
         isNull(channelBindings.revokedAt),
         or(
           eq(channelBindings.channelIdentity, channelIdentity),
@@ -459,7 +563,7 @@ const readActiveBindings = async (
       ),
     )
     .for("update");
-  return rows.map((row) => Schema.decodeSync(Onboarding.StoredChannelBinding)(row));
+  return rows.map((row) => Schema.decodeUnknownSync(Onboarding.StoredChannelBinding)(row));
 };
 
 const expireByDigest = (db: Database, digest: string, now: Date) =>

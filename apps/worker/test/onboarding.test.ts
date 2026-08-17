@@ -2,20 +2,218 @@ import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { users } from "@osfo/db/schema/auth";
-import { Effect, Exit, Layer, Redacted } from "effect";
+import { channelBindings, registrationInvitations } from "@osfo/db/schema/onboarding";
+import { DateTime, Effect, Exit, Layer, Redacted } from "effect";
 import { TestClock } from "effect/testing";
 
 import * as Db from "../src/db";
 import { ChannelIdentity, UserId } from "../src/domain";
 import * as OnboardingPostgres from "../src/integrations/postgres/onboarding";
+import * as MessagingAdmissionPostgres from "../src/integrations/postgres/messaging-admission";
 import * as OnboardingLinks from "../src/integrations/public/onboarding-links";
 import { handleWhatsAppOnboardingCommand } from "../src/handlers/whatsapp-onboarding";
 import * as Onboarding from "../src/services/onboarding";
+import * as MessagingAdmission from "../src/services/messaging-admission";
 import * as Registration from "../src/services/registration";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/strict-effect-provide -- These tests are Effect application entry points and assert tagged public results. */
 
 describe("Onboarding application service", () => {
+  it.effect(
+    "binds an unknown Telegram User ID only after SMS verification and explicit consent",
+    () =>
+      Effect.acquireUseRelease(
+        makeTestDatabase,
+        (fixture) =>
+          Effect.gen(function* () {
+            yield* applyMigrations(fixture.client);
+            yield* seedUser(fixture.database, "user-telegram-first", "+14165550190");
+            const harness = makeHarness(fixture.database, { enrollmentProvider: "telegram" });
+            const program = Effect.gen(function* () {
+              const onboarding = yield* Onboarding.Service;
+              const issued = yield* onboarding.issueTelegramInvitation({
+                channelIdentity: ChannelIdentity.make("telegram:900100200"),
+                eventId: "telegram-update-301",
+                locale: "es",
+                message: "Necesito ayuda para planificar mi semana.",
+              });
+              const invitationToken = tokenFromUrl(issued.verifyUrl);
+              const inspected = yield* onboarding.inspectInvitation(invitationToken);
+              const completed = yield* onboarding.complete({
+                bindingConsent: "accepted",
+                existingProfileChoice: null,
+                invitationToken,
+                profile: {
+                  helpAreas: ["scheduling-reminders"],
+                  locale: "es",
+                  preferredName: "Luz",
+                },
+                userId: UserId.make("user-telegram-first"),
+                webEnrollmentToken: null,
+              });
+
+              expect(inspected).toEqual({
+                locale: "es",
+                maskedPhoneNumber: null,
+                provider: "telegram",
+                state: "live",
+              });
+              expect(completed.channel._tag).toBe("BindingCreated");
+              expect(harness.welcomes).toEqual([
+                {
+                  helpAreas: ["scheduling-reminders"],
+                  locale: "es",
+                  preferredName: "Luz",
+                },
+              ]);
+            });
+
+            yield* program.pipe(Effect.provide(harness.layer));
+          }),
+        closeTestDatabase,
+      ),
+  );
+
+  it.effect("does not admit a Telegram onboarding update replayed after binding", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          yield* seedUser(fixture.database, "user-telegram-transition", "+14165550196");
+          const onboardingHarness = makeHarness(fixture.database, {
+            enrollmentProvider: "telegram",
+          });
+          const submissions: Array<string> = [];
+          const eventId = "telegram-update-318";
+          const identity = ChannelIdentity.make("telegram:900100214");
+          const program = Effect.gen(function* () {
+            const onboarding = yield* Onboarding.Service;
+            expect(yield* onboarding.beginTelegramEvent(eventId)).toBe("Claimed");
+            const issued = yield* onboarding.issueTelegramInvitation({
+              channelIdentity: identity,
+              eventId,
+              locale: "en",
+              message: "Help me get started.",
+            });
+            yield* onboarding.complete({
+              bindingConsent: "accepted",
+              existingProfileChoice: null,
+              invitationToken: tokenFromUrl(issued.verifyUrl),
+              profile: { helpAreas: [], locale: "en", preferredName: null },
+              userId: UserId.make("user-telegram-transition"),
+              webEnrollmentToken: null,
+            });
+            yield* onboarding.markTelegramEventOutboundAttempted(eventId);
+          });
+          yield* program.pipe(Effect.provide(onboardingHarness.layer));
+          const invitationRows = yield* Effect.promise(() =>
+            fixture.database
+              .select({
+                channelIdentity: registrationInvitations.channelIdentity,
+                provider: registrationInvitations.provider,
+                providerEventId: registrationInvitations.providerEventId,
+                state: registrationInvitations.state,
+              })
+              .from(registrationInvitations),
+          );
+          expect(invitationRows).toContainEqual({
+            channelIdentity: null,
+            provider: "telegram",
+            providerEventId: eventId,
+            state: "consumed",
+          });
+          yield* Effect.promise(() =>
+            fixture.database.update(channelBindings).set({
+              revokedAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T20:01:00.000Z")),
+            }),
+          );
+
+          const admissionLayer = MessagingAdmission.layerWithoutDependencies.pipe(
+            Layer.provideMerge(MessagingAdmissionPostgres.layerWithoutDependencies),
+            Layer.provideMerge(Db.layerFromDatabase(fixture.database)),
+            Layer.provideMerge(
+              Layer.succeed(
+                MessagingAdmission.AgentSubmission,
+                MessagingAdmission.AgentSubmission.of({
+                  submit: (_agentId, input) => {
+                    submissions.push(input.submissionId);
+                    return Effect.succeed({ accepted: true });
+                  },
+                }),
+              ),
+            ),
+          );
+          const result = yield* MessagingAdmission.Service.pipe(
+            Effect.flatMap((admission) =>
+              admission.accept({
+                channelIdentity: identity,
+                eventId,
+                message: "Help me get started.",
+                provider: "telegram",
+              }),
+            ),
+            Effect.provide(admissionLayer),
+          );
+
+          expect(result).toEqual({ _tag: "Duplicate" });
+          expect(submissions).toEqual([]);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("uses one digest-only Telegram enrollment token once for web-first setup", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          yield* seedUser(fixture.database, "user-telegram-web", "+14165550191");
+          const harness = makeHarness(fixture.database, { enrollmentProvider: "telegram" });
+          const program = Effect.gen(function* () {
+            const onboarding = yield* Onboarding.Service;
+            const enrollmentToken = token("e");
+            const pending = yield* onboarding.complete({
+              bindingConsent: "web-enrollment",
+              existingProfileChoice: null,
+              invitationToken: null,
+              profile: { helpAreas: [], locale: "en", preferredName: null },
+              userId: UserId.make("user-telegram-web"),
+              webEnrollmentToken: enrollmentToken,
+            });
+            const first = yield* onboarding.enrollTelegram({
+              channelIdentity: ChannelIdentity.make("telegram:900100201"),
+              eventId: "telegram-update-302",
+              token: enrollmentToken,
+            });
+            const retry = yield* onboarding.enrollTelegram({
+              channelIdentity: ChannelIdentity.make("telegram:900100201"),
+              eventId: "telegram-update-302",
+              token: enrollmentToken,
+            });
+            const reuse = yield* Effect.exit(
+              onboarding.enrollTelegram({
+                channelIdentity: ChannelIdentity.make("telegram:900100202"),
+                eventId: "telegram-update-303",
+                token: enrollmentToken,
+              }),
+            );
+
+            expect(pending.channel).toMatchObject({
+              _tag: "EnrollmentPending",
+              enrollmentUrl: new URL(`https://t.me/osfo_test_bot?start=${"e".repeat(64)}`),
+            });
+            expect(first).toEqual(retry);
+            expect(Exit.isFailure(reuse)).toBe(true);
+          });
+
+          yield* program.pipe(Effect.provide(harness.layer));
+        }),
+      closeTestDatabase,
+    ),
+  );
+
   it.effect("gives an unknown WhatsApp sender one resumable Registration Invitation", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
@@ -56,6 +254,7 @@ describe("Onboarding application service", () => {
             expect(inspected).toEqual({
               locale: "en",
               maskedPhoneNumber: "••••••••0171",
+              provider: "whatsapp",
               state: "live",
             });
           });
@@ -95,6 +294,7 @@ describe("Onboarding application service", () => {
             expect(expired).toEqual({
               locale: "es",
               maskedPhoneNumber: null,
+              provider: "whatsapp",
               state: "expired",
             });
             expect(replacement.invitationId).not.toBe(first.invitationId);
@@ -504,6 +704,171 @@ describe("Onboarding application service", () => {
       closeTestDatabase,
     ),
   );
+
+  it.effect("preserves expiry, refusal, matching, and conflict recovery through Telegram", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          yield* seedUser(fixture.database, "user-telegram-refused", "+14165550192");
+          yield* seedUser(fixture.database, "user-telegram-owner", "+14165550193");
+          yield* seedUser(fixture.database, "user-telegram-other", "+14165550194");
+          const harness = makeHarness(fixture.database, { enrollmentProvider: "telegram" });
+          const program = Effect.gen(function* () {
+            const onboarding = yield* Onboarding.Service;
+            const expiring = yield* onboarding.issueTelegramInvitation({
+              channelIdentity: ChannelIdentity.make("telegram:900100210"),
+              eventId: "telegram-update-310",
+              locale: "es",
+              message: "Necesito ayuda.",
+            });
+            yield* TestClock.adjust(24 * 60 * 60 * 1_000 + 1);
+            const expired = yield* onboarding.inspectInvitation(tokenFromUrl(expiring.verifyUrl));
+            const replacement = yield* onboarding.issueTelegramInvitation({
+              channelIdentity: ChannelIdentity.make("telegram:900100210"),
+              eventId: "telegram-update-311",
+              locale: "es",
+              message: "Necesito ayuda.",
+            });
+
+            const refusedInvitation = yield* onboarding.issueTelegramInvitation({
+              channelIdentity: ChannelIdentity.make("telegram:900100211"),
+              eventId: "telegram-update-312",
+              locale: "en",
+              message: "Help me.",
+            });
+            const refused = yield* onboarding.complete({
+              bindingConsent: "refused",
+              existingProfileChoice: null,
+              invitationToken: tokenFromUrl(refusedInvitation.verifyUrl),
+              profile: { helpAreas: [], locale: "en", preferredName: null },
+              userId: UserId.make("user-telegram-refused"),
+              webEnrollmentToken: null,
+            });
+            const refusedEnrollmentToken = token("3");
+            yield* onboarding.complete({
+              bindingConsent: "web-enrollment",
+              existingProfileChoice: "apply",
+              invitationToken: null,
+              profile: { helpAreas: ["research"], locale: "en", preferredName: null },
+              userId: UserId.make("user-telegram-refused"),
+              webEnrollmentToken: refusedEnrollmentToken,
+            });
+            const laterBinding = yield* onboarding.enrollTelegram({
+              channelIdentity: ChannelIdentity.make("telegram:900100211"),
+              eventId: "telegram-update-313",
+              token: refusedEnrollmentToken,
+            });
+
+            const sharedIdentity = ChannelIdentity.make("telegram:900100212");
+            const ownerToken = token("4");
+            yield* onboarding.complete({
+              bindingConsent: "web-enrollment",
+              existingProfileChoice: null,
+              invitationToken: null,
+              profile: { helpAreas: [], locale: "en", preferredName: null },
+              userId: UserId.make("user-telegram-owner"),
+              webEnrollmentToken: ownerToken,
+            });
+            const ownerBinding = yield* onboarding.enrollTelegram({
+              channelIdentity: sharedIdentity,
+              eventId: "telegram-update-314",
+              token: ownerToken,
+            });
+            const matchingToken = token("5");
+            yield* onboarding.complete({
+              bindingConsent: "web-enrollment",
+              existingProfileChoice: null,
+              invitationToken: null,
+              profile: { helpAreas: [], locale: "en", preferredName: null },
+              userId: UserId.make("user-telegram-owner"),
+              webEnrollmentToken: matchingToken,
+            });
+            const matching = yield* onboarding.enrollTelegram({
+              channelIdentity: sharedIdentity,
+              eventId: "telegram-update-315",
+              token: matchingToken,
+            });
+            const conflictToken = token("6");
+            yield* onboarding.complete({
+              bindingConsent: "web-enrollment",
+              existingProfileChoice: null,
+              invitationToken: null,
+              profile: { helpAreas: [], locale: "en", preferredName: null },
+              userId: UserId.make("user-telegram-other"),
+              webEnrollmentToken: conflictToken,
+            });
+            const conflict = yield* Effect.exit(
+              onboarding.enrollTelegram({
+                channelIdentity: sharedIdentity,
+                eventId: "telegram-update-316",
+                token: conflictToken,
+              }),
+            );
+
+            expect(expired).toMatchObject({ provider: "telegram", state: "expired" });
+            expect(replacement.invitationId).not.toBe(expiring.invitationId);
+            expect(refused.channel).toEqual({ _tag: "ConsentRefused" });
+            expect(laterBinding._tag).toBe("BindingCreated");
+            expect(matching._tag).toBe("BindingExisting");
+            expect(
+              "channelBindingId" in matching &&
+                "channelBindingId" in ownerBinding &&
+                matching.channelBindingId === ownerBinding.channelBindingId,
+            ).toBe(true);
+            expect(Exit.isFailure(conflict)).toBe(true);
+          });
+
+          yield* program.pipe(Effect.provide(harness.layer));
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("recovers a Telegram-first welcome without duplicating stable resources", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          yield* seedUser(fixture.database, "user-telegram-recovery", "+14165550195");
+          const harness = makeHarness(fixture.database, {
+            enrollmentProvider: "telegram",
+            failWelcomeOnce: true,
+          });
+          const program = Effect.gen(function* () {
+            const onboarding = yield* Onboarding.Service;
+            const issued = yield* onboarding.issueTelegramInvitation({
+              channelIdentity: ChannelIdentity.make("telegram:900100213"),
+              eventId: "telegram-update-317",
+              locale: "en",
+              message: "Help me research.",
+            });
+            const input: Onboarding.CompleteInput = {
+              bindingConsent: "accepted",
+              existingProfileChoice: null,
+              invitationToken: tokenFromUrl(issued.verifyUrl),
+              profile: { helpAreas: ["research"], locale: "en", preferredName: "Ari" },
+              userId: UserId.make("user-telegram-recovery"),
+              webEnrollmentToken: null,
+            };
+
+            const interrupted = yield* Effect.exit(onboarding.complete(input));
+            const recovered = yield* onboarding.complete(input);
+            const retried = yield* onboarding.complete(input);
+
+            expect(Exit.isFailure(interrupted)).toBe(true);
+            expect(recovered).toEqual(retried);
+            expect(recovered.channel._tag).toBe("BindingCreated");
+            expect(harness.welcomes).toEqual([input.profile, input.profile]);
+          });
+
+          yield* program.pipe(Effect.provide(harness.layer));
+        }),
+      closeTestDatabase,
+    ),
+  );
 });
 
 const makeLayer = (database: Parameters<typeof Db.layerFromDatabase>[0]) =>
@@ -511,7 +876,10 @@ const makeLayer = (database: Parameters<typeof Db.layerFromDatabase>[0]) =>
 
 const makeHarness = (
   database: Parameters<typeof Db.layerFromDatabase>[0],
-  options?: { readonly failWelcomeOnce?: boolean },
+  options?: {
+    readonly enrollmentProvider?: "telegram" | "whatsapp";
+    readonly failWelcomeOnce?: boolean;
+  },
 ) => {
   const welcomes: Array<Onboarding.SetupProfile> = [];
   const turns: Array<{ readonly eventId: string; readonly verifyUrl: string }> = [];
@@ -523,8 +891,10 @@ const makeHarness = (
     Layer.provideMerge(BrowserCrypto.layer),
     Layer.provideMerge(
       OnboardingLinks.layer({
+        enrollmentProvider: options?.enrollmentProvider ?? "whatsapp",
         officialWhatsAppNumber: "14165550100",
         publicBaseUrl: new URL("https://osfo.ai"),
+        telegramBotUsername: "osfo_test_bot",
       }),
     ),
     Layer.provideMerge(

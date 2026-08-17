@@ -54,6 +54,7 @@ const adaptBindings = (env: Env): App.Bindings => ({
         probeRuntime: async () =>
           Schema.decodePromise(RuntimeProbeResult)(await agent.probeRuntime()),
         recoverWhatsAppMessage: async (input) => agent.recoverWhatsAppMessage(input),
+        submitManagedConversation: (input) => agent.submitManagedConversation(input),
       };
     },
   },

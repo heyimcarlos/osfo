@@ -222,7 +222,58 @@ describe("Osfo Cloudflare host", () => {
   it("rejects incomplete authentication configuration", () => {
     expect(Result.isFailure(decodeRuntimeConfig({ OSFO_STAGE: "test" }))).toBe(true);
   });
+
+  it("enables Telegram only with complete non-production configuration and redacts secrets", () => {
+    const decoded = decodeRuntimeConfig({
+      ...completeRuntimeInput,
+      TELEGRAM_ALLOWED_USER_IDS: "12345,67890",
+      TELEGRAM_BOT_TOKEN: "telegram-test-bot-token",
+      TELEGRAM_BOT_USERNAME: "osfo_test_bot",
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: "telegram_test_webhook_secret",
+    });
+
+    expect(Result.isSuccess(decoded)).toBe(true);
+    expect(Result.getOrThrow(decoded).telegram).toMatchObject({
+      allowedUserIds: ["12345", "67890"],
+      botUsername: "osfo_test_bot",
+      kind: "enabled",
+    });
+    expect(String(decoded)).not.toContain("telegram-test-bot-token");
+    expect(String(decoded)).not.toContain("telegram_test_webhook_secret");
+  });
+
+  it("rejects partial Telegram configuration and all production activation", () => {
+    expect(
+      Result.isFailure(
+        decodeRuntimeConfig({ ...completeRuntimeInput, TELEGRAM_BOT_TOKEN: "partial" }),
+      ),
+    ).toBe(true);
+    expect(
+      Result.isFailure(
+        decodeRuntimeConfig({
+          ...completeRuntimeInput,
+          OSFO_STAGE: "production",
+          TELEGRAM_ALLOWED_USER_IDS: "12345",
+          TELEGRAM_BOT_TOKEN: "telegram-test-bot-token",
+          TELEGRAM_BOT_USERNAME: "osfo_test_bot",
+          TELEGRAM_WEBHOOK_SECRET_TOKEN: "telegram_test_webhook_secret",
+        }),
+      ),
+    ).toBe(true);
+  });
 });
+
+const completeRuntimeInput = {
+  BETTER_AUTH_API_KEY: "test-only-better-auth-dashboard-api-key",
+  BETTER_AUTH_BASE_URL: "https://osfo.test",
+  BETTER_AUTH_SECRET: "test-only-better-auth-secret-32-characters",
+  BETTER_AUTH_TRUSTED_ORIGINS: '["https://osfo.test"]',
+  OSFO_STAGE: "test",
+  TWILIO_ACCOUNT_SID: `AC${"1".repeat(32)}`,
+  TWILIO_AUTH_TOKEN: "test-only-twilio-token",
+  TWILIO_VERIFY_SERVICE_SID: `VA${"2".repeat(32)}`,
+  WHATSAPP_PHONE_NUMBER: "14165550100",
+} as const;
 
 const decodeRuntimeProbe = (response: Response) =>
   Effect.promise(() => response.json()).pipe(

@@ -10,16 +10,23 @@ import * as Handlers from "./handlers";
 import * as RuntimeProbes from "./handlers/runtime-probes";
 import * as InvitationAuth from "./handlers/invitation-auth";
 import * as WhatsApp from "./handlers/whatsapp";
+import * as TelegramRoutes from "./handlers/telegram";
 import type { ExecutionUnit } from "./layers";
 import * as AuthMiddleware from "./middleware/auth";
 import * as OnboardingCloudflare from "./integrations/cloudflare/onboarding";
+import * as MessagingAdmissionCloudflare from "./integrations/cloudflare/messaging-admission";
+import * as MessagingAdmissionPostgres from "./integrations/postgres/messaging-admission";
 import * as OnboardingPostgres from "./integrations/postgres/onboarding";
 import * as OnboardingLinks from "./integrations/public/onboarding-links";
 import * as Onboarding from "./services/onboarding";
+import * as MessagingAdmission from "./services/messaging-admission";
 import * as Registration from "./services/registration";
 
 /** Cloudflare bindings used by the Worker route tree. */
-export type Bindings = RuntimeProbes.Bindings & OnboardingCloudflare.Bindings & WhatsApp.Bindings;
+export type Bindings = RuntimeProbes.Bindings &
+  OnboardingCloudflare.Bindings &
+  MessagingAdmissionCloudflare.Bindings &
+  WhatsApp.Bindings;
 
 /** Options used to assemble the Worker route tree. */
 export interface Options {
@@ -32,8 +39,11 @@ export interface Options {
 /** Assemble typed product routes, Better Auth, and Cloudflare host probes. */
 export const layer = (options: Options) => {
   const onboardingLinks = OnboardingLinks.layer({
+    enrollmentProvider: options.config.telegram.kind === "enabled" ? "telegram" : "whatsapp",
     officialWhatsAppNumber: options.config.whatsApp.phoneNumber,
     publicBaseUrl: new URL(options.config.auth.baseURL),
+    telegramBotUsername:
+      options.config.telegram.kind === "enabled" ? options.config.telegram.botUsername : "disabled",
   });
   const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
     Layer.provide(Handlers.layer(options.runtime)),
@@ -59,11 +69,24 @@ export const layer = (options: Options) => {
   const whatsapp = WhatsApp.layer({ config: options.config, env: options.env }).pipe(
     HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)),
   );
+  const messagingAdmission = MessagingAdmission.layerWithoutDependencies.pipe(
+    Layer.provide(MessagingAdmissionPostgres.layerWithoutDependencies),
+    Layer.provide(MessagingAdmissionCloudflare.layer(options.env)),
+    Layer.provide(options.authDependencies),
+  );
+  const telegram =
+    options.config.telegram.kind === "enabled"
+      ? TelegramRoutes.layer({
+          stage: options.config.stage,
+          telegram: options.config.telegram,
+        }).pipe(Layer.provide(onboardingRequest), Layer.provide(messagingAdmission))
+      : Layer.empty;
 
   return Layer.mergeAll(
     api,
     invitationAuth,
     whatsapp,
+    telegram,
     Auth.layer({
       config: options.config.auth,
       dependencies: options.authDependencies,

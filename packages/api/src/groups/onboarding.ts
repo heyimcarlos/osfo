@@ -35,6 +35,7 @@ export type RegistrationToken = typeof RegistrationToken.Type;
 export const InvitationResponse = Schema.Struct({
   locale: OnboardingLocale,
   maskedPhoneNumber: Schema.NullOr(Schema.String),
+  provider: Schema.NullOr(Schema.Literals(["telegram", "whatsapp"])),
   state: Schema.Literals(["live", "expired", "consumed", "invalid"]),
 });
 
