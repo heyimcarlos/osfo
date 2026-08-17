@@ -74,20 +74,27 @@ export type InboundRoute =
   | {
       readonly _tag: "Bound";
       readonly agentId: AgentId;
-      readonly authorization: AuthorizationContext;
       readonly channelBindingId: ChannelBindingId;
     }
   | { readonly _tag: "Unbound" };
 
-/** Stable facts sent to the named Agent acceptance RPC. */
-export const AgentAcceptanceInput = Schema.Struct({
-  authorization: AuthorizationContext,
+/** Stable identities used to recover Agent acceptance before new allowance admission. */
+export const AgentRecoveryInput = Schema.Struct({
   channelBindingId: ChannelBindingId,
-  message: WhatsAppMessageText,
   providerMessageId: ProviderMessageId,
   receiptId: AcceptanceReceiptId,
   submissionId: ThinkSubmissionId,
   userMessageId: UserMessageId,
+});
+
+/** Stable identities used to recover Agent acceptance before new allowance admission. */
+export type AgentRecoveryInput = typeof AgentRecoveryInput.Type;
+
+/** Stable facts sent to the named Agent acceptance RPC. */
+export const AgentAcceptanceInput = Schema.Struct({
+  ...AgentRecoveryInput.fields,
+  authorization: AuthorizationContext,
+  message: WhatsAppMessageText,
 });
 
 /** Stable facts sent to the named Agent acceptance RPC. */
@@ -109,6 +116,10 @@ export interface Interface<Failure> {
       AcceptanceReceipt | { readonly _tag: "ManagedConversationDenied"; readonly reason: string },
       Failure
     >;
+    readonly recover: (
+      agentId: AgentId,
+      input: AgentRecoveryInput,
+    ) => Effect.Effect<AcceptanceReceipt | null, Failure>;
   };
   readonly allowances: {
     readonly recordAcceptedMessage: (receipt: AcceptanceReceipt) => Effect.Effect<void, Failure>;
@@ -119,6 +130,9 @@ export interface Interface<Failure> {
     ) => Effect.Effect<{ readonly _tag: string }, Failure>;
   };
   readonly persistence: {
+    readonly admit: (
+      route: Extract<InboundRoute, { readonly _tag: "Bound" }>,
+    ) => Effect.Effect<AuthorizationContext, Failure>;
     readonly route: (input: RouteInput) => Effect.Effect<InboundRoute, Failure>;
   };
 }
@@ -153,14 +167,23 @@ export const make = <Failure>(options: Interface<Failure>): Service<Failure> => 
       const identityDigest = yield* digest(
         encodeIdentity([route.channelBindingId, message.providerMessageId]),
       );
-      const receipt = yield* options.agent.accept(route.agentId, {
-        authorization: route.authorization,
+      const recoveryInput = AgentRecoveryInput.make({
         channelBindingId: route.channelBindingId,
-        message: message.message,
         providerMessageId: message.providerMessageId,
         receiptId: AcceptanceReceiptId.make(`receipt-${identityDigest}`),
         submissionId: ThinkSubmissionId.make(`submission-${identityDigest}`),
         userMessageId: UserMessageId.make(`message-${identityDigest}`),
+      });
+      const recovered = yield* options.agent.recover(route.agentId, recoveryInput);
+      if (recovered !== null) {
+        yield* options.allowances.recordAcceptedMessage(recovered);
+        return { _tag: "MessageAccepted", receipt: recovered } as const;
+      }
+      const authorization = yield* options.persistence.admit(route);
+      const receipt = yield* options.agent.accept(route.agentId, {
+        ...recoveryInput,
+        authorization,
+        message: message.message,
       });
       if (Predicate.isTagged(receipt, "ManagedConversationDenied")) {
         return { _tag: "MessageDenied", reason: receipt.reason } as const;

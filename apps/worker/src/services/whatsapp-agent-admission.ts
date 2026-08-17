@@ -11,7 +11,7 @@ import {
 import { ManagedTurnMetadata } from "../domain/managed-conversation";
 import { retainedCatalog } from "../domain/plan-policy";
 import type * as ChannelBindingAuthority from "./channel-binding-authority";
-import type { AgentAcceptanceInput } from "./whatsapp-admission";
+import type { AgentAcceptanceInput, AgentRecoveryInput } from "./whatsapp-admission";
 import type { AcceptanceReceiptInput } from "./whatsapp-acceptance-receipt";
 import { make as makeAuthorization } from "./authorization";
 import { admitManagedConversation, type ManagedConversationDenied } from "./managed-conversation";
@@ -86,61 +86,8 @@ export const accept = <Receipt extends AcceptanceReceiptInput, StoreFailure>(opt
 }) =>
   Effect.gen(function* () {
     const { dependencies, input } = options;
-    const existing = yield* dependencies.store.readAcceptanceReceipt(
-      input.channelBindingId,
-      input.providerMessageId,
-    );
-    if (existing !== null) {
-      return yield* dependencies.store.recordAcceptanceReceipt({
-        allowancePeriodId: existing.allowancePeriodId,
-        channelBindingId: input.channelBindingId,
-        providerMessageId: input.providerMessageId,
-        receiptId: input.receiptId,
-        sessionId: existing.sessionId,
-        thinkSubmissionId: input.submissionId,
-        userMessageId: input.userMessageId,
-      });
-    }
-
-    const inspected = yield* dependencies.think.inspect(input.submissionId);
-    if (inspected !== null) {
-      const metadata = yield* Schema.decodeUnknownEffect(WhatsAppSubmissionMetadata)(
-        inspected.metadata,
-      ).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ThinkSubmissionUnavailable({
-              cause,
-              message: "The accepted WhatsApp submission has invalid recovery facts",
-              operation: "inspectSubmission",
-            }),
-        ),
-      );
-      const expectedIdempotencyKey = `whatsapp-${input.receiptId}`;
-      if (
-        inspected.submissionId !== input.submissionId ||
-        inspected.idempotencyKey !== expectedIdempotencyKey ||
-        metadata.submissionId !== input.submissionId ||
-        metadata.whatsappAcceptance.channelBindingId !== input.channelBindingId ||
-        metadata.whatsappAcceptance.providerMessageId !== input.providerMessageId ||
-        metadata.whatsappAcceptance.userMessageId !== input.userMessageId
-      ) {
-        return yield* new ThinkSubmissionUnavailable({
-          cause: inspected,
-          message: "The accepted WhatsApp submission conflicts with its stable identity chain",
-          operation: "inspectSubmission",
-        });
-      }
-      return yield* dependencies.store.recordAcceptanceReceipt({
-        allowancePeriodId: metadata.allowancePeriodId,
-        channelBindingId: input.channelBindingId,
-        providerMessageId: input.providerMessageId,
-        receiptId: input.receiptId,
-        sessionId: metadata.whatsappAcceptance.sessionId,
-        thinkSubmissionId: input.submissionId,
-        userMessageId: input.userMessageId,
-      });
-    }
+    const recovered = yield* recover({ dependencies, input });
+    if (recovered !== null) return recovered;
 
     const userId = input.authorization.resourceOwnerUserId;
     if (userId === null) {
@@ -222,6 +169,69 @@ export const accept = <Receipt extends AcceptanceReceiptInput, StoreFailure>(opt
       providerMessageId: input.providerMessageId,
       receiptId: input.receiptId,
       sessionId: agent.currentSessionId,
+      thinkSubmissionId: input.submissionId,
+      userMessageId: input.userMessageId,
+    });
+  });
+
+/** Recover durable Agent acceptance without requiring fresh authority or allowance facts. */
+export const recover = <Receipt extends AcceptanceReceiptInput, StoreFailure>(options: {
+  readonly dependencies: Interface<Receipt, StoreFailure>;
+  readonly input: AgentRecoveryInput;
+}) =>
+  Effect.gen(function* () {
+    const { dependencies, input } = options;
+    const existing = yield* dependencies.store.readAcceptanceReceipt(
+      input.channelBindingId,
+      input.providerMessageId,
+    );
+    if (existing !== null) {
+      return yield* dependencies.store.recordAcceptanceReceipt({
+        allowancePeriodId: existing.allowancePeriodId,
+        channelBindingId: input.channelBindingId,
+        providerMessageId: input.providerMessageId,
+        receiptId: input.receiptId,
+        sessionId: existing.sessionId,
+        thinkSubmissionId: input.submissionId,
+        userMessageId: input.userMessageId,
+      });
+    }
+
+    const inspected = yield* dependencies.think.inspect(input.submissionId);
+    if (inspected === null) return null;
+    const metadata = yield* Schema.decodeUnknownEffect(WhatsAppSubmissionMetadata)(
+      inspected.metadata,
+    ).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ThinkSubmissionUnavailable({
+            cause,
+            message: "The accepted WhatsApp submission has invalid recovery facts",
+            operation: "inspectSubmission",
+          }),
+      ),
+    );
+    const expectedIdempotencyKey = `whatsapp-${input.receiptId}`;
+    if (
+      inspected.submissionId !== input.submissionId ||
+      inspected.idempotencyKey !== expectedIdempotencyKey ||
+      metadata.submissionId !== input.submissionId ||
+      metadata.whatsappAcceptance.channelBindingId !== input.channelBindingId ||
+      metadata.whatsappAcceptance.providerMessageId !== input.providerMessageId ||
+      metadata.whatsappAcceptance.userMessageId !== input.userMessageId
+    ) {
+      return yield* new ThinkSubmissionUnavailable({
+        cause: inspected,
+        message: "The accepted WhatsApp submission conflicts with its stable identity chain",
+        operation: "inspectSubmission",
+      });
+    }
+    return yield* dependencies.store.recordAcceptanceReceipt({
+      allowancePeriodId: metadata.allowancePeriodId,
+      channelBindingId: input.channelBindingId,
+      providerMessageId: input.providerMessageId,
+      receiptId: input.receiptId,
+      sessionId: metadata.whatsappAcceptance.sessionId,
       thinkSubmissionId: input.submissionId,
       userMessageId: input.userMessageId,
     });

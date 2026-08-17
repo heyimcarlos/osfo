@@ -49,7 +49,7 @@ import {
   SubmitManagedConversationInput,
 } from "../../services/managed-conversation";
 import * as WhatsAppAgentAdmission from "../../services/whatsapp-agent-admission";
-import { AgentAcceptanceInput } from "../../services/whatsapp-admission";
+import { AgentAcceptanceInput, AgentRecoveryInput } from "../../services/whatsapp-admission";
 import {
   launchModelAccessPolicy,
   type ManagedRouteUnavailable,
@@ -558,6 +558,47 @@ export class OsfoAgent extends Think<Env> {
           },
         },
         input: parsed,
+      }),
+    );
+  }
+
+  /** Recover one stable WhatsApp acceptance before callers request fresh admission facts. */
+  async recoverWhatsAppMessage(
+    input: typeof AgentRecoveryInput.Encoded,
+  ): Promise<
+    | AcceptanceReceipt
+    | AcceptanceReceiptConflict
+    | AgentRequestInvalid
+    | AgentStateNotFound
+    | AgentStoreRecordInvalid
+    | AgentStoreUnavailable
+    | ThinkSubmissionUnavailable
+    | null
+  > {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeResult(AgentRecoveryInput)(input);
+    if (Result.isFailure(decoded)) return invalidRequest("acceptWhatsAppMessage");
+    return runRpc(
+      WhatsAppAgentAdmission.recover<
+        AcceptanceReceipt,
+        | AcceptanceReceiptConflict
+        | AgentStateNotFound
+        | AgentStoreRecordInvalid
+        | AgentStoreUnavailable
+      >({
+        dependencies: {
+          authority: {
+            readCurrentBinding: ({ channelBindingId, userId }) =>
+              this.#isCurrentWhatsAppBinding(channelBindingId, userId),
+          },
+          store: this.#store,
+          think: {
+            inspect: (submissionId) =>
+              callThinkSubmission("inspectSubmission", () => this.inspectSubmission(submissionId)),
+            submit: (submission) => callThinkSubmission("runTurn", () => this.runTurn(submission)),
+          },
+        },
+        input: decoded.success,
       }),
     );
   }

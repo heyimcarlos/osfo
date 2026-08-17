@@ -186,7 +186,13 @@ describe("Osfo Agent and Think Session foundation", () => {
             submissionId,
           });
           const acceptedSubmission = await instance.inspectSubmission(submissionId);
-          const receipt = await instance.acceptWhatsAppMessage(input);
+          const receipt = await instance.recoverWhatsAppMessage({
+            channelBindingId: input.channelBindingId,
+            providerMessageId: input.providerMessageId,
+            receiptId: input.receiptId,
+            submissionId: input.submissionId,
+            userMessageId: input.userMessageId,
+          });
           const receiptRows = Array.from(
             state.storage.sql.exec<{ count: number }>(
               "SELECT count(*) AS count FROM osfo_acceptance_receipts",

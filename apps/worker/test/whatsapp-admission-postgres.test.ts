@@ -11,6 +11,7 @@ import { DateTime, Deferred, Effect, Fiber, Schema } from "effect";
 import { layerFromDatabase } from "../src/db";
 import * as Billing from "../src/db/billing";
 import {
+  AgentId,
   AllowancePeriodId,
   AcceptanceReceiptId,
   ChannelBindingId,
@@ -28,11 +29,11 @@ import {
 } from "../src/integrations/postgres/onboarding";
 import { make } from "../src/integrations/postgres/whatsapp-admission";
 import * as Allowances from "../src/services/allowances";
-import { AuthorizationContext } from "../src/services/authorization";
 import * as WhatsAppAgentAdmission from "../src/services/whatsapp-agent-admission";
 import { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
 import {
   type AgentAcceptanceInput,
+  type AgentRecoveryInput,
   InboundWhatsAppMessage,
   make as makeAdmission,
   WhatsAppMessageText,
@@ -54,17 +55,22 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
         const arrivals = yield* Deferred.make<void>();
         const receipts = new Map<string, AcceptanceReceipt>();
         let waiting = 0;
-        const admission = yield* makeRealAdmission(database, (acceptance) =>
-          Effect.gen(function* () {
-            waiting += 1;
-            if (waiting === 2) yield* Deferred.succeed(arrivals, undefined);
-            yield* Deferred.await(arrivals);
-            const existing = receipts.get(acceptance.submissionId);
-            if (existing !== undefined) return existing;
-            const receipt = receiptFromAcceptance(acceptance);
-            receipts.set(acceptance.submissionId, receipt);
-            return receipt;
-          }),
+        const admission = yield* makeRealAdmission(
+          database,
+          (acceptance) =>
+            Effect.gen(function* () {
+              waiting += 1;
+              if (waiting === 2) yield* Deferred.succeed(arrivals, undefined);
+              yield* Deferred.await(arrivals);
+              const existing = receipts.get(acceptance.submissionId);
+              if (existing !== undefined) return existing;
+              const receipt = receiptFromAcceptance(acceptance);
+              receipts.set(acceptance.submissionId, receipt);
+              return receipt;
+            }),
+          {
+            recover: (recovery) => Effect.succeed(receipts.get(recovery.submissionId) ?? null),
+          },
         );
 
         const concurrent = yield* Effect.all([admission.admit(input), admission.admit(input)], {
@@ -170,6 +176,55 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
     }),
   );
 
+  it.effect(
+    "recovers an accepted message after its original period expires without current admission",
+    () =>
+      Effect.gen(function* () {
+        const database = fixture.database;
+        const seeded = yield* Effect.promise(() =>
+          seedBoundUser(database, "expired-recovery", "14165550136"),
+        );
+        let freshAcceptances = 0;
+        const admission = yield* makeRealAdmission(
+          database,
+          () =>
+            Effect.sync(() => {
+              freshAcceptances += 1;
+              return { _tag: "ManagedConversationDenied" as const, reason: "unexpected" };
+            }),
+          {
+            now: date("2026-09-02T12:00:00.000Z"),
+            recover: (input) =>
+              Effect.succeed(
+                recoveredReceipt(input, seeded.allowancePeriodId, "2026-08-31T23:59:00Z"),
+              ),
+          },
+        );
+
+        const outcome = yield* admission.admit(
+          routeMessage("14165550136", "wamid.expired-recovery"),
+        );
+        const usage = yield* Effect.promise(() =>
+          database
+            .select()
+            .from(allowanceUsage)
+            .where(eq(allowanceUsage.allowancePeriodId, seeded.allowancePeriodId)),
+        );
+
+        expect(outcome).toMatchObject({
+          _tag: "MessageAccepted",
+          receipt: { allowancePeriodId: seeded.allowancePeriodId },
+        });
+        expect(freshAcceptances).toBe(0);
+        expect(usage).toHaveLength(1);
+        expect(usage[0]).toMatchObject({
+          allowanceKind: "acceptedMessages",
+          quantity: 1n,
+          sourceType: "acceptanceReceipt",
+        });
+      }),
+  );
+
   it.effect("denies a binding revoked after routing before any new Think submission", () =>
     Effect.gen(function* () {
       const database = fixture.database;
@@ -181,20 +236,17 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
       const routed = yield* persistence.route({ ...message, contentDigest: "race-digest" });
       const bound = yield* Schema.decodeUnknownEffect(
         Schema.Struct({
-          agentId: Schema.String,
-          authorization: Schema.Unknown,
+          agentId: AgentId,
           channelBindingId: ChannelBindingId,
         }),
       )(routed);
-      const authorization = yield* Schema.decodeUnknownEffect(AuthorizationContext)(
-        bound.authorization,
-      );
       yield* Effect.promise(() =>
         database
           .update(channelBindings)
           .set({ revokedAt: date("2026-08-16T12:00:01.000Z") })
           .where(eq(channelBindings.channelBindingId, bound.channelBindingId)),
       );
+      const authorization = yield* persistence.admit({ ...bound, _tag: "Bound" });
       const submissions = new Map<string, WhatsAppAgentAdmission.SubmissionInput>();
       const authority = makeChannelBindingAuthority(database);
 
@@ -262,6 +314,13 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
       yield* Effect.promise(() => seedBoundUser(database, "new", "14165550123"));
 
       const repeated = yield* admission.route(routeInput());
+      const repeatedBound = yield* Schema.decodeUnknownEffect(
+        Schema.TaggedStruct("Bound", {
+          agentId: AgentId,
+          channelBindingId: ChannelBindingId,
+        }),
+      )(repeated);
+      const repeatedAuthorization = yield* admission.admit(repeatedBound);
       const oldAuthority = yield* readCurrentBinding({
         channelBindingId: ChannelBindingId.make("binding-old"),
         userId: UserId.make("user-old"),
@@ -274,8 +333,10 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
       expect(first).toMatchObject({ _tag: "Bound", channelBindingId: "binding-old" });
       expect(repeated).toMatchObject({
         _tag: "Bound",
-        authorization: { authority: { _tag: "RevokedChannelBinding" } },
         channelBindingId: "binding-old",
+      });
+      expect(repeatedAuthorization).toMatchObject({
+        authority: { _tag: "RevokedChannelBinding" },
       });
       expect(oldAuthority).toBeNull();
       expect(newAuthority).toMatchObject({
@@ -347,17 +408,27 @@ const makeRealAdmission = (
   ) => Effect.Effect<
     AcceptanceReceipt | { readonly _tag: "ManagedConversationDenied"; readonly reason: string }
   >,
+  options?: {
+    readonly now?: Date;
+    readonly recover?: (input: AgentRecoveryInput) => Effect.Effect<AcceptanceReceipt | null>;
+  },
 ) =>
   Effect.gen(function* () {
-    const now = date("2026-08-16T12:00:00.000Z");
+    const now = options?.now ?? date("2026-08-16T12:00:00.000Z");
     const persistence = yield* make({ now: Effect.succeed(now) });
     const allowances = Allowances.make({
       billing: Billing.make(database),
       catalog: retainedCatalog,
       now: Effect.succeed(now),
     });
-    return makeAdmission({
-      agent: { accept: (_agentId, input) => accept(input) },
+    return makeAdmission<
+      | Effect.Error<ReturnType<typeof persistence.admit>>
+      | Effect.Error<ReturnType<typeof persistence.route>>
+    >({
+      agent: {
+        accept: (_agentId, input) => accept(input),
+        recover: (_agentId, input) => options?.recover?.(input) ?? Effect.succeed(null),
+      },
       allowances: {
         recordAcceptedMessage: (receipt) =>
           allowances
@@ -369,7 +440,10 @@ const makeRealAdmission = (
             .pipe(Effect.orDie, Effect.asVoid),
       },
       onboarding: { handle: () => Effect.succeed({ _tag: "OnboardingAccepted" }) },
-      persistence: { route: (input) => persistence.route(input) },
+      persistence: {
+        admit: (route) => persistence.admit(route),
+        route: (input) => persistence.route(input),
+      },
     });
   });
 
@@ -389,6 +463,20 @@ const receiptFromAcceptance = (input: AgentAcceptanceInput): AcceptanceReceipt =
     userMessageId: input.userMessageId,
   });
 };
+
+const recoveredReceipt = (
+  input: AgentRecoveryInput,
+  allowancePeriodId: AllowancePeriodId,
+  acceptedAt: string,
+): AcceptanceReceipt =>
+  Schema.decodeSync(AcceptanceReceipt)({
+    ...input,
+    _tag: "AcceptanceReceipt",
+    acceptedAt,
+    allowancePeriodId,
+    sessionId: SessionId.make(`session-${input.submissionId}`),
+    thinkSubmissionId: input.submissionId,
+  });
 
 const routeMessage = (channelIdentity: string, providerMessageId: string) =>
   Schema.decodeSync(InboundWhatsAppMessage)({

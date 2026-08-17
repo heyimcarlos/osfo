@@ -593,6 +593,7 @@ const testBindings: App.Bindings = {
           kind: "RuntimeProbe" as const,
           stage: "test" as const,
         }),
+      recoverWhatsAppMessage: () => Promise.resolve(null),
     }),
   },
   REGISTRATION_DIALOGUE: {

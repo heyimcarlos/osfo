@@ -53,6 +53,7 @@ const adaptBindings = (env: Env): App.Bindings => ({
           Schema.decodePromise(AgentRpcTag)(await agent.initialize(input)),
         probeRuntime: async () =>
           Schema.decodePromise(RuntimeProbeResult)(await agent.probeRuntime()),
+        recoverWhatsAppMessage: async (input) => agent.recoverWhatsAppMessage(input),
       };
     },
   },

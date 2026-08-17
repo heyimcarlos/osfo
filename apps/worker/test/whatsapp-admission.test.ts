@@ -22,19 +22,41 @@ class SimulatedAgentFailure extends Schema.TaggedError<SimulatedAgentFailure>()(
 ) {}
 
 describe("WhatsApp inbound admission", () => {
+  it.effect("recovers an existing receipt when current allowance admission is unavailable", () =>
+    Effect.gen(function* () {
+      const receipt = acceptanceReceipt();
+      let recorded = 0;
+      const service = admission({
+        admit: () =>
+          Effect.fail(
+            new SimulatedAgentFailure({ message: "No current allowance period is available" }),
+          ),
+        record: () => Effect.sync(() => void (recorded += 1)),
+        recover: () => Effect.succeed(receipt),
+      });
+
+      const outcome = yield* service.admit(textMessage());
+
+      expect(outcome).toEqual({ _tag: "MessageAccepted", receipt });
+      expect(recorded).toBe(1);
+    }),
+  );
+
   it.effect("records accepted-message use only after the Acceptance Receipt is recoverable", () =>
     Effect.gen(function* () {
       const calls: Array<string> = [];
       const receipt = acceptanceReceipt();
       const service = admission({
         accept: () => Effect.sync(() => (calls.push("accept"), receipt)),
+        admit: () => Effect.sync(() => (calls.push("admit"), authorization())),
         record: () => Effect.sync(() => (calls.push("record"), undefined)),
+        recover: () => Effect.sync(() => (calls.push("recover"), null)),
       });
 
       const outcome = yield* service.admit(textMessage());
 
       expect(outcome).toEqual({ _tag: "MessageAccepted", receipt });
-      expect(calls).toEqual(["accept", "record"]);
+      expect(calls).toEqual(["recover", "admit", "accept", "record"]);
     }),
   );
 
@@ -44,28 +66,26 @@ describe("WhatsApp inbound admission", () => {
       Effect.gen(function* () {
         const receipt = acceptanceReceipt();
         const acceptedInputs: Array<AgentAcceptanceInput> = [];
-        let attempt = 0;
+        let recoverable: AcceptanceReceipt | null = null;
         let recorded = 0;
         const service = admission({
           accept: (_agentId, input) =>
             Effect.suspend(() => {
               acceptedInputs.push(input);
-              attempt += 1;
-              return attempt === 1
-                ? Effect.fail(
-                    new SimulatedAgentFailure({ message: "response lost after Think accepted" }),
-                  )
-                : Effect.succeed(receipt);
+              recoverable = receipt;
+              return Effect.fail(
+                new SimulatedAgentFailure({ message: "response lost after Think accepted" }),
+              );
             }),
           record: () => Effect.sync(() => void (recorded += 1)),
+          recover: () => Effect.succeed(recoverable),
         });
 
         yield* Effect.flip(service.admit(textMessage()));
         const recovered = yield* service.admit(textMessage());
 
         expect(recovered).toEqual({ _tag: "MessageAccepted", receipt });
-        expect(acceptedInputs).toHaveLength(2);
-        expect(acceptedInputs[1]).toEqual(acceptedInputs[0]);
+        expect(acceptedInputs).toHaveLength(1);
         expect(recorded).toBe(1);
       }),
   );
@@ -133,12 +153,17 @@ describe("WhatsApp inbound admission", () => {
 
 const admission = (overrides: {
   readonly accept?: Interface<TestFailure>["agent"]["accept"];
+  readonly admit?: Interface<TestFailure>["persistence"]["admit"];
   readonly onboard?: Interface<TestFailure>["onboarding"]["handle"];
   readonly record?: Interface<TestFailure>["allowances"]["recordAcceptedMessage"];
+  readonly recover?: Interface<TestFailure>["agent"]["recover"];
   readonly route?: Interface<TestFailure>["persistence"]["route"];
 }) =>
   make<TestFailure>({
-    agent: { accept: overrides.accept ?? (() => Effect.succeed(acceptanceReceipt())) },
+    agent: {
+      accept: overrides.accept ?? (() => Effect.succeed(acceptanceReceipt())),
+      recover: overrides.recover ?? (() => Effect.succeed(null)),
+    },
     allowances: {
       recordAcceptedMessage: overrides.record ?? (() => Effect.void),
     },
@@ -146,13 +171,13 @@ const admission = (overrides: {
       handle: overrides.onboard ?? (() => Effect.succeed({ _tag: "InvitationIssued" as const })),
     },
     persistence: {
+      admit: overrides.admit ?? (() => Effect.succeed(authorization())),
       route:
         overrides.route ??
         (() =>
           Effect.succeed({
             _tag: "Bound" as const,
             agentId: AgentId.make("agent-1"),
-            authorization: authorization(),
             channelBindingId: ChannelBindingId.make("binding-1"),
           })),
     },

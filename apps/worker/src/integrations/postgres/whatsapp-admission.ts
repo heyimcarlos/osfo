@@ -1,19 +1,20 @@
 import { agents } from "@osfo/db/schema/agents";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { inboundWhatsAppEvents } from "@osfo/db/schema/messaging";
-import { channelBindings } from "@osfo/db/schema/onboarding";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { DateTime, Effect, Schema } from "effect";
 
 import { database } from "../../db";
 import * as Billing from "../../db/billing";
 import {
   AgentId,
+  ChannelIdentity,
   ChannelBindingId as ChannelBindingIdSchema,
   UserId as UserIdSchema,
 } from "../../domain";
-import type { RouteInput } from "../../services/whatsapp-admission";
+import type { InboundRoute, RouteInput } from "../../services/whatsapp-admission";
 import { AuthorizationContext } from "../../services/authorization";
+import { readActiveWhatsAppBinding, readWhatsAppBinding } from "./onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect and persistence result values use the standard _tag discriminator. */
 
@@ -72,17 +73,10 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
 
               let resolvedChannelBindingId = stored.resolvedChannelBindingId;
               if (stored.bindingResolvedAt === null) {
-                const [binding] = await transaction
-                  .select({ channelBindingId: channelBindings.channelBindingId })
-                  .from(channelBindings)
-                  .where(
-                    and(
-                      eq(channelBindings.provider, "whatsapp"),
-                      eq(channelBindings.channelIdentity, stored.channelIdentity),
-                      isNull(channelBindings.revokedAt),
-                    ),
-                  )
-                  .limit(1);
+                const binding = await readActiveWhatsAppBinding(
+                  transaction,
+                  ChannelIdentity.make(stored.channelIdentity),
+                );
                 resolvedChannelBindingId = binding?.channelBindingId ?? null;
                 await transaction
                   .update(inboundWhatsAppEvents)
@@ -96,27 +90,26 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
               }
               if (resolvedChannelBindingId === null) return { _tag: "Unbound" as const };
 
+              const binding = await readWhatsAppBinding(
+                transaction,
+                ChannelBindingIdSchema.make(resolvedChannelBindingId),
+              );
+              if (binding === null) return { _tag: "Incomplete" as const };
               const [bindingRoute] = await transaction
                 .select({
                   agentId: agents.agentId,
-                  channelBindingId: channelBindings.channelBindingId,
-                  plan: billingSubscriptions.plan,
-                  planPolicyVersion: billingSubscriptions.planPolicyVersion,
-                  revokedAt: channelBindings.revokedAt,
-                  userId: channelBindings.userId,
                 })
-                .from(channelBindings)
-                .innerJoin(agents, eq(agents.userId, channelBindings.userId))
-                .innerJoin(
-                  billingSubscriptions,
-                  eq(billingSubscriptions.userId, channelBindings.userId),
-                )
-                .where(eq(channelBindings.channelBindingId, resolvedChannelBindingId))
+                .from(agents)
+                .where(eq(agents.userId, binding.userId))
                 .limit(1);
               if (bindingRoute === undefined) {
                 return { _tag: "Incomplete" as const };
               }
-              return { _tag: "Bound" as const, ...bindingRoute };
+              return {
+                _tag: "Bound" as const,
+                agentId: bindingRoute.agentId,
+                channelBindingId: binding.channelBindingId,
+              };
             }),
           catch: (cause) =>
             new WhatsAppAdmissionPersistenceUnavailable({
@@ -139,21 +132,60 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
         }
         if (fixed._tag === "Unbound") return fixed;
 
-        const userId = UserIdSchema.make(fixed.userId);
+        return {
+          _tag: "Bound",
+          agentId: AgentId.make(fixed.agentId),
+          channelBindingId: ChannelBindingIdSchema.make(fixed.channelBindingId),
+        } as const;
+      });
+
+    const admit = (fixedRoute: Extract<InboundRoute, { readonly _tag: "Bound" }>) =>
+      Effect.gen(function* () {
+        const now = yield* options?.now ?? DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+        const facts = yield* Effect.tryPromise({
+          // oxlint-disable-next-line effecttsgo/async-function -- boundary: this adapter composes related Drizzle reads.
+          try: async () => {
+            const binding = await readWhatsAppBinding(db, fixedRoute.channelBindingId);
+            if (binding === null) return null;
+            const [record] = await db
+              .select({
+                agentId: agents.agentId,
+                plan: billingSubscriptions.plan,
+                planPolicyVersion: billingSubscriptions.planPolicyVersion,
+              })
+              .from(agents)
+              .innerJoin(billingSubscriptions, eq(billingSubscriptions.userId, agents.userId))
+              .where(eq(agents.userId, binding.userId))
+              .limit(1);
+            return record === undefined ? null : { ...binding, ...record };
+          },
+          catch: (cause) =>
+            new WhatsAppAdmissionPersistenceUnavailable({
+              cause,
+              message: "PostgreSQL could not load the fixed inbound WhatsApp route",
+            }),
+        });
+        if (facts === null || facts.agentId !== fixedRoute.agentId) {
+          return yield* new WhatsAppAdmissionPersistenceUnavailable({
+            cause: { facts, fixedRoute },
+            message: "The fixed inbound WhatsApp route is incomplete",
+          });
+        }
+        const userId = UserIdSchema.make(facts.userId);
         const allowance = yield* billing.admit(userId, now);
         const authorization = yield* Schema.decodeEffect(AuthorizationContext)({
           allowance: { _tag: "Metered", ...allowance },
           approval: null,
           authority:
-            fixed.revokedAt === null
+            facts.revokedAt === null
               ? {
                   _tag: "ChannelBinding",
-                  channelBindingId: fixed.channelBindingId,
+                  channelBindingId: facts.channelBindingId,
                   userId,
                 }
               : {
                   _tag: "RevokedChannelBinding",
-                  channelBindingId: fixed.channelBindingId,
+                  channelBindingId: facts.channelBindingId,
                   userId,
                 },
           deletionAccess: { _tag: "DeletionAccessAvailable" },
@@ -167,11 +199,11 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
           now,
           originatingAuthority: {
             _tag: "ChannelBinding",
-            channelBindingId: fixed.channelBindingId,
+            channelBindingId: facts.channelBindingId,
           },
           requestVendorUsdMicros: 0n,
           resourceOwnerUserId: userId,
-          subscription: { plan: fixed.plan, planPolicyVersion: fixed.planPolicyVersion },
+          subscription: { plan: facts.plan, planPolicyVersion: facts.planPolicyVersion },
           user: { _tag: "ActiveUser", userId },
         }).pipe(
           Effect.mapError(
@@ -182,15 +214,10 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
               }),
           ),
         );
-        return {
-          _tag: "Bound",
-          agentId: AgentId.make(fixed.agentId),
-          authorization,
-          channelBindingId: ChannelBindingIdSchema.make(fixed.channelBindingId),
-        } as const;
+        return authorization;
       });
 
-    return { route };
+    return { admit, route };
   });
 
 const sameEvent = (stored: typeof inboundWhatsAppEvents.$inferSelect, input: RouteInput): boolean =>

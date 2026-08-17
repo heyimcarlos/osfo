@@ -33,6 +33,9 @@ interface WhatsAppAgentStub {
   readonly acceptWhatsAppMessage: (
     input: WhatsAppAdmission.AgentAcceptanceInput,
   ) => Promise<AgentAcceptanceRpcResult>;
+  readonly recoverWhatsAppMessage: (
+    input: WhatsAppAdmission.AgentRecoveryInput,
+  ) => Promise<AgentAcceptanceRpcResult | null>;
 }
 
 /** Cloudflare binding needed for direct named-Agent admission. */
@@ -65,6 +68,19 @@ export const layer = (options: { readonly config: RuntimeConfig; readonly env: B
                 message: "The named Agent could not accept the WhatsApp message",
               }),
           }).pipe(Effect.flatMap(decodeAgentAcceptance)),
+        recover: (agentId, input) =>
+          Effect.tryPromise({
+            try: () => options.env.OSFO_AGENT.getByName(agentId).recoverWhatsAppMessage(input),
+            catch: (cause) =>
+              new WhatsAppAdmission.WhatsAppAdmissionUnavailable({
+                cause,
+                message: "The named Agent could not recover the WhatsApp message",
+              }),
+          }).pipe(
+            Effect.flatMap((result) =>
+              result === null ? Effect.succeed(null) : decodeAgentRecovery(result),
+            ),
+          ),
       },
       allowances: {
         recordAcceptedMessage: (receipt) =>
@@ -98,6 +114,16 @@ export const layer = (options: { readonly config: RuntimeConfig; readonly env: B
           ),
       },
       persistence: {
+        admit: (route) =>
+          persistence.admit(route).pipe(
+            Effect.mapError(
+              (cause) =>
+                new WhatsAppAdmission.WhatsAppAdmissionUnavailable({
+                  cause,
+                  message: "The inbound WhatsApp message could not be admitted",
+                }),
+            ),
+          ),
         route: (input) =>
           persistence.route(input).pipe(
             Effect.mapError(
@@ -151,6 +177,19 @@ const handleRequest = (
     ),
   );
 };
+
+const decodeAgentRecovery = (
+  result: AgentAcceptanceRpcResult,
+): Effect.Effect<AcceptanceReceipt, WhatsAppAdmission.WhatsAppAdmissionUnavailable> =>
+  Schema.decodeUnknownEffect(AcceptanceReceipt)(result).pipe(
+    Effect.mapError(
+      (cause) =>
+        new WhatsAppAdmission.WhatsAppAdmissionUnavailable({
+          cause,
+          message: "The named Agent returned invalid recovery facts",
+        }),
+    ),
+  );
 
 const admitFact = (
   admission: WhatsAppAdmission.Service<WhatsAppAdmission.WhatsAppAdmissionUnavailable>,

@@ -31,6 +31,14 @@ const WelcomeRouteRecord = Schema.Struct({
 
 const UserPhoneRecord = Schema.Struct({ phoneNumber: Schema.NullOr(Schema.String) });
 
+const StoredWhatsAppBinding = Schema.Struct({
+  ...Onboarding.StoredChannelBinding.fields,
+  revokedAt: Schema.NullOr(Schema.Date),
+});
+
+/** Storage-local Channel Binding facts needed by inbound receipt fixation. */
+export type StoredWhatsAppBinding = typeof StoredWhatsAppBinding.Type;
+
 /** Postgres implementation of the onboarding control-plane persistence port. */
 export const make = Effect.gen(function* () {
   const db = yield* database;
@@ -442,6 +450,53 @@ const createWebEnrollmentTransaction = async (
   });
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+/** Resolve one active WhatsApp binding inside the caller-owned PostgreSQL transaction. */
+export const readActiveWhatsAppBinding = async (
+  transaction: Transaction,
+  channelIdentity: Onboarding.StoredChannelBinding["channelIdentity"],
+): Promise<StoredWhatsAppBinding | null> => {
+  const [row] = await transaction
+    .select({
+      channelBindingId: channelBindings.channelBindingId,
+      channelIdentity: channelBindings.channelIdentity,
+      revokedAt: channelBindings.revokedAt,
+      userId: channelBindings.userId,
+    })
+    .from(channelBindings)
+    .where(
+      and(
+        eq(channelBindings.provider, "whatsapp"),
+        eq(channelBindings.channelIdentity, channelIdentity),
+        isNull(channelBindings.revokedAt),
+      ),
+    )
+    .limit(1);
+  return row === undefined ? null : Schema.decodeSync(StoredWhatsAppBinding)(row);
+};
+
+/** Read one fixed WhatsApp binding through the storage module that owns its predicate. */
+export const readWhatsAppBinding = async (
+  db: Pick<Transaction, "select">,
+  channelBindingId: Onboarding.StoredChannelBinding["channelBindingId"],
+): Promise<StoredWhatsAppBinding | null> => {
+  const [row] = await db
+    .select({
+      channelBindingId: channelBindings.channelBindingId,
+      channelIdentity: channelBindings.channelIdentity,
+      revokedAt: channelBindings.revokedAt,
+      userId: channelBindings.userId,
+    })
+    .from(channelBindings)
+    .where(
+      and(
+        eq(channelBindings.channelBindingId, channelBindingId),
+        eq(channelBindings.provider, "whatsapp"),
+      ),
+    )
+    .limit(1);
+  return row === undefined ? null : Schema.decodeSync(StoredWhatsAppBinding)(row);
+};
 
 const readLockedInvitation = async (
   transaction: Transaction,
