@@ -123,6 +123,7 @@ export const layer = (options: { readonly config: RuntimeConfig; readonly env: B
                   message: "The inbound WhatsApp message could not be admitted",
                 }),
             ),
+            Effect.asVoid,
           ),
         route: (input) =>
           persistence.route(input).pipe(

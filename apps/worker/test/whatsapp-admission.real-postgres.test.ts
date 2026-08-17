@@ -260,7 +260,10 @@ const makeRealAdmission = (
             .pipe(Effect.orDie, Effect.asVoid),
       },
       onboarding: { handle: () => Effect.succeed({ _tag: "OnboardingAccepted" }) },
-      persistence,
+      persistence: {
+        admit: (route) => persistence.admit(route).pipe(Effect.asVoid),
+        route: (input) => persistence.route(input),
+      },
     });
   });
 

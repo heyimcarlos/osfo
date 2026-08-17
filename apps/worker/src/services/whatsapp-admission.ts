@@ -9,7 +9,6 @@ import {
   ThinkSubmissionId,
   UserMessageId,
 } from "../domain";
-import type { AuthorizationContext } from "./authorization";
 import type { AcceptanceReceipt } from "./whatsapp-acceptance-receipt";
 import type { WhatsAppOnboardingCommand } from "./whatsapp-onboarding";
 
@@ -131,7 +130,7 @@ export interface Interface<Failure> {
   readonly persistence: {
     readonly admit: (
       route: Extract<InboundRoute, { readonly _tag: "Bound" }>,
-    ) => Effect.Effect<AuthorizationContext, Failure>;
+    ) => Effect.Effect<void, Failure>;
     readonly route: (input: RouteInput) => Effect.Effect<InboundRoute, Failure>;
   };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { DateTime, Effect, Redacted, Schema } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 
 import { AgentId, ChannelBindingId, ChannelIdentity, ProviderMessageId } from "../src/domain";
 import {
@@ -10,7 +10,6 @@ import {
   type WhatsAppAdmissionUnavailable,
   WhatsAppMessageText,
 } from "../src/services/whatsapp-admission";
-import { AuthorizationContext } from "../src/services/authorization";
 import { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
 import type { WhatsAppOnboardingCommand } from "../src/services/whatsapp-onboarding";
 
@@ -48,7 +47,7 @@ describe("WhatsApp inbound admission", () => {
       const receipt = acceptanceReceipt();
       const service = admission({
         accept: () => Effect.sync(() => (calls.push("accept"), receipt)),
-        admit: () => Effect.sync(() => (calls.push("admit"), authorization())),
+        admit: () => Effect.sync(() => void calls.push("admit")),
         record: () => Effect.sync(() => (calls.push("record"), undefined)),
         recover: () => Effect.sync(() => (calls.push("recover"), null)),
       });
@@ -171,7 +170,7 @@ const admission = (overrides: {
       handle: overrides.onboard ?? (() => Effect.succeed({ _tag: "InvitationIssued" as const })),
     },
     persistence: {
-      admit: overrides.admit ?? (() => Effect.succeed(authorization())),
+      admit: overrides.admit ?? (() => Effect.void),
       route:
         overrides.route ??
         (() =>
@@ -206,38 +205,3 @@ const acceptanceReceipt = (): AcceptanceReceipt =>
     thinkSubmissionId: "submission-fixed",
     userMessageId: "message-fixed",
   });
-
-const authorization = () =>
-  Schema.decodeSync(AuthorizationContext)({
-    allowance: {
-      _tag: "Metered" as const,
-      allowancePeriodId: "period-1",
-      endsAt: date("2026-09-01T00:00:00.000Z"),
-      plan: "free" as const,
-      planPolicyVersion: "launch-v1",
-      startsAt: date("2026-08-01T00:00:00.000Z"),
-      usage: [],
-    },
-    approval: null,
-    authority: {
-      _tag: "ChannelBinding" as const,
-      channelBindingId: "binding-1",
-      userId: "user-1",
-    },
-    deletionAccess: { _tag: "DeletionAccessAvailable" as const },
-    gmailConnection: null,
-    liveFacts: {
-      activeGmSummonsInSession: 0n,
-      activeReminders: 0n,
-      concurrentWorkflows: 0n,
-      retainedFileBytes: 0n,
-    },
-    now: date("2026-08-16T12:00:00.000Z"),
-    originatingAuthority: { _tag: "ChannelBinding" as const, channelBindingId: "binding-1" },
-    requestVendorUsdMicros: 0n,
-    resourceOwnerUserId: "user-1",
-    subscription: { plan: "free" as const, planPolicyVersion: "launch-v1" },
-    user: { _tag: "ActiveUser" as const, userId: "user-1" },
-  });
-
-const date = (iso: string) => DateTime.toDateUtc(DateTime.makeUnsafe(iso));
