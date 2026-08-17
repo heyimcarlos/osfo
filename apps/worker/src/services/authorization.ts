@@ -10,6 +10,10 @@ import {
   type AuthorizationOperationName as AuthorizationOperationNameType,
 } from "../domain/authorization-operation";
 import { type Capability, type PlanPolicyCatalog, policyFor } from "../domain/plan-policy";
+import {
+  CoreMemoryAuthorizationSnapshot,
+  type CoreMemoryAuthorizationSnapshot as CoreMemoryAuthorizationSnapshotType,
+} from "../domain/core-memory-authorization";
 
 const ActiveUser = Schema.TaggedStruct("ActiveUser", { userId: UserId });
 const SuspendedUser = Schema.TaggedStruct("SuspendedUser", { userId: UserId });
@@ -94,6 +98,44 @@ export const AuthorizationContext = Schema.Struct({
 
 /** Current facts evaluated by launch Authorization in deterministic gate order. */
 export type AuthorizationContext = typeof AuthorizationContext.Type;
+
+/** Capture only facts used by memory.clear admission and protected-effect recheck. */
+export const snapshotCoreMemoryAuthorization = (
+  context: AuthorizationContext,
+): CoreMemoryAuthorizationSnapshotType =>
+  CoreMemoryAuthorizationSnapshot.make({
+    authority: context.authority,
+    deletionAccess: context.deletionAccess,
+    now: context.now,
+    originatingAuthority: context.originatingAuthority,
+    resourceOwnerUserId: context.resourceOwnerUserId,
+    subscription: context.subscription,
+    user: context.user,
+  });
+
+/** Restore a complete unmetered context for memory.clear policy evaluation. */
+export const restoreCoreMemoryAuthorization = (
+  snapshot: CoreMemoryAuthorizationSnapshot,
+): AuthorizationContext =>
+  AuthorizationContext.make({
+    allowance: { _tag: "Unavailable" },
+    approval: null,
+    authority: snapshot.authority,
+    deletionAccess: snapshot.deletionAccess,
+    gmailConnection: null,
+    liveFacts: {
+      activeGmSummonsInSession: 0n,
+      activeReminders: 0n,
+      concurrentWorkflows: 0n,
+      retainedFileBytes: 0n,
+    },
+    now: snapshot.now,
+    originatingAuthority: snapshot.originatingAuthority,
+    requestVendorUsdMicros: 0n,
+    resourceOwnerUserId: snapshot.resourceOwnerUserId,
+    subscription: snapshot.subscription,
+    user: snapshot.user,
+  });
 
 /** Closed reasons returned by deterministic launch Authorization denial. */
 export const AuthorizationDenialReason = Schema.Literals([

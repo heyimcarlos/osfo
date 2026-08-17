@@ -56,7 +56,7 @@ export const makeTestProtectedAction = (options: TestProtectedActionOptions) =>
       Effect.runPromise(
         executeThinkApprovedAction(
           makeAuthorization(retainedCatalog),
-          currentAuthorization(options.readState()),
+          currentTestAuthorization(options.readState()),
           ThinkApprovedActionExecution.make({
             _tag: "ThinkApprovedActionExecution",
             actionId: ActionId.make(context.toolCallId),
@@ -125,7 +125,8 @@ export const sanitizeTestProtectedActionInput = (
 /** Name registered with Think for the test-only protected Action. */
 export const testProtectedActionName = actionName;
 
-const currentAuthorization = (state: TestProtectedActionState): AuthorizationContext =>
+/** Test-stage current authority used by protected Action integration tests. */
+export const currentTestAuthorization = (state: TestProtectedActionState): AuthorizationContext =>
   AuthorizationContext.make({
     allowance: { _tag: "Unavailable" },
     approval: null,
@@ -162,6 +163,9 @@ const currentAuthorization = (state: TestProtectedActionState): AuthorizationCon
     },
     user: { _tag: "ActiveUser", userId: testUserId },
   });
+
+/** Test-stage User that owns protected Action integration Agents. */
+export const testProtectedActionUserId = testUserId;
 
 const contactTestProvider = (
   state: TestProtectedActionState,

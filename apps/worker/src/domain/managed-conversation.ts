@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 import { AllowancePeriodId, Plan, PlanPolicyVersion, ThinkSubmissionId } from "../domain";
 import { ManagedModelRoute } from "./model-access-policy";
+import { CoreMemoryAuthorizationSnapshotEncoded } from "./core-memory-authorization";
 
 const positiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0));
 
@@ -15,6 +16,7 @@ export const CancelManagedConversationInput = Schema.Struct({
 export const ManagedTurnMetadata = Schema.TaggedStruct("OsfoManagedTurn", {
   allowancePeriodId: AllowancePeriodId,
   conservativeVendorUsdMicros: positiveInteger,
+  coreMemoryAuthorization: CoreMemoryAuthorizationSnapshotEncoded,
   maxInputTokens: positiveInteger,
   maxOutputTokens: positiveInteger,
   maxRetries: Schema.Literal(0),

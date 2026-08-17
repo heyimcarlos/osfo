@@ -17,7 +17,9 @@ import {
   AuthorizationContext,
   type AuthorizationDenialReason,
   make as makeAuthorization,
+  snapshotCoreMemoryAuthorization,
 } from "./authorization";
+import { CoreMemoryAuthorizationSnapshot } from "../domain/core-memory-authorization";
 
 const boundedIdentity = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
 const boundedMessage = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64_000));
@@ -86,6 +88,9 @@ export const admitManagedConversation = (
         resetAt: null,
       } as const;
     }
+    const coreMemoryAuthorization = yield* Schema.encodeEffect(CoreMemoryAuthorizationSnapshot)(
+      snapshotCoreMemoryAuthorization(input.authorization),
+    ).pipe(Effect.orDie);
     return {
       _tag: "ManagedConversationAdmitted",
       idempotencyKey: input.idempotencyKey,
@@ -94,6 +99,7 @@ export const admitManagedConversation = (
         _tag: "OsfoManagedTurn",
         allowancePeriodId: admission.allowancePeriod.allowancePeriodId,
         conservativeVendorUsdMicros: Number(maxVendorUsdMicros),
+        coreMemoryAuthorization,
         maxInputTokens: profile.context.maxInputTokens,
         maxOutputTokens: profile.context.maxOutputTokens,
         maxRetries: profile.maxRetries,

@@ -1,31 +1,21 @@
-import { action, type Session } from "@cloudflare/think";
+import type { Session } from "@cloudflare/think";
+import { tool, type ToolSet } from "ai";
 import {
   AgentContextProvider,
   type ContextBlock,
   type SqlProvider,
 } from "agents/experimental/memory/session";
 import { estimateStringTokens } from "agents/experimental/memory/utils";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Schema } from "effect";
 
-import { ActionId } from "../../domain/action-execution";
-import {
-  ActionPresentation,
-  ActionPresentationId,
-  ActionPresentationUnavailable,
-  type PendingThinkAction,
-} from "./think-action-approvals";
+import { AuthorizationContext } from "../../services/authorization";
 
-const userContextLabel = "User Context";
-const agentNotesLabel = "Agent Notes";
-const userContextMaxTokens = 1_200;
-const agentNotesMaxTokens = 800;
 const positiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0));
 const configurableTokenBudget = Schema.Finite.check(
   Schema.isInt(),
   Schema.isGreaterThan(0),
   Schema.isLessThanOrEqualTo(8_000),
 );
-const coreMemoryClearAction = "osfoClearCoreMemory";
 
 /** The two independently managed Core Memory blocks. */
 export const CoreMemoryBlockName = Schema.Literals(["userContext", "agentNotes"]);
@@ -33,8 +23,42 @@ export const CoreMemoryBlockName = Schema.Literals(["userContext", "agentNotes"]
 /** The two independently managed Core Memory blocks. */
 export type CoreMemoryBlockName = typeof CoreMemoryBlockName.Type;
 
+const coreMemoryBlocks = {
+  agentNotes: {
+    defaultMaxTokens: 800,
+    description:
+      "Proactively keep current goals, commitments, environment facts, workflow facts, and continuity useful across Sessions. Store the narrowest durable conclusion. Never store hidden reasoning, chain-of-thought, a task log, or a Session transcript.",
+    label: "Agent Notes",
+    storageKey: "agent_notes",
+  },
+  userContext: {
+    defaultMaxTokens: 1_200,
+    description:
+      "Proactively keep only narrow durable User facts and useful inferences. Sensitive or high-impact health, religion, politics, sexuality, legal-status, or financial-condition inferences require strong direct evidence or User confirmation. Apply a current User correction immediately. Never store hidden reasoning, chain-of-thought, a transcript, or situational explanatory baggage.",
+    label: "User Context",
+    storageKey: "user_context",
+  },
+} as const satisfies Record<
+  CoreMemoryBlockName,
+  {
+    readonly defaultMaxTokens: number;
+    readonly description: string;
+    readonly label: string;
+    readonly storageKey: string;
+  }
+>;
+const coreMemoryBlockNames = ["userContext", "agentNotes"] as const;
+
+const SetCoreMemoryInput = Schema.Struct({
+  action: Schema.Literals(["append", "replace"]),
+  block: CoreMemoryBlockName,
+  content: Schema.String.check(Schema.isMaxLength(10_000)),
+});
+
 /** Direct User correction that replaces the complete selected block. */
 export const CorrectCoreMemoryInput = Schema.Struct({
+  actionId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  authorization: AuthorizationContext,
   block: CoreMemoryBlockName,
   content: Schema.String.check(Schema.isMaxLength(10_000)),
 });
@@ -45,8 +69,22 @@ export type CorrectCoreMemoryInput = typeof CorrectCoreMemoryInput.Type;
 /** RPC representation of a direct User correction. */
 export type CorrectCoreMemoryEncoded = typeof CorrectCoreMemoryInput.Encoded;
 
+/** Authorized inspection request for both Core Memory blocks. */
+export const InspectCoreMemoryInput = Schema.Struct({
+  actionId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  authorization: AuthorizationContext,
+});
+
+/** Parsed authorized Core Memory inspection request. */
+export type InspectCoreMemoryInput = typeof InspectCoreMemoryInput.Type;
+
+/** RPC representation of one Core Memory inspection request. */
+export type InspectCoreMemoryEncoded = typeof InspectCoreMemoryInput.Encoded;
+
 /** User-selected finite budget for one Core Memory block. */
 export const BoundCoreMemoryInput = Schema.Struct({
+  actionId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  authorization: AuthorizationContext,
   block: CoreMemoryBlockName,
   maxTokens: configurableTokenBudget,
 });
@@ -128,21 +166,61 @@ export interface CoreMemoryBound {
 /** Add Agent-wide User Context and Agent Notes to one Think Session view. */
 export const configureCoreMemory = (session: Session, sqlProvider: SqlProvider): Promise<Session> =>
   Promise.all([readBudget(sqlProvider, "userContext"), readBudget(sqlProvider, "agentNotes")]).then(
-    ([userContextBudget, agentNotesBudget]) =>
-      session
-        .withContext(userContextLabel, {
-          description:
-            "Proactively keep only narrow durable User facts and useful inferences. Sensitive or high-impact health, religion, politics, sexuality, legal-status, or financial-condition inferences require strong direct evidence or User confirmation. Apply a current User correction immediately. Never store hidden reasoning, chain-of-thought, a transcript, or situational explanatory baggage.",
-          maxTokens: userContextBudget,
-          provider: contentProvider(sqlProvider, "userContext"),
-        })
-        .withContext(agentNotesLabel, {
-          description:
-            "Proactively keep current goals, commitments, environment facts, workflow facts, and continuity useful across Sessions. Store the narrowest durable conclusion. Never store hidden reasoning, chain-of-thought, a task log, or a Session transcript.",
-          maxTokens: agentNotesBudget,
-          provider: contentProvider(sqlProvider, "agentNotes"),
-        }),
+    ([userContextBudget, agentNotesBudget]) => {
+      const budgets = {
+        agentNotes: agentNotesBudget,
+        userContext: userContextBudget,
+      };
+      return coreMemoryBlockNames.reduce((configured, block) => {
+        const definition = coreMemoryBlocks[block];
+        return configured.withContext(definition.label, {
+          description: definition.description,
+          maxTokens: budgets[block],
+          provider: contentProvider(sqlProvider, block),
+        });
+      }, session);
+    },
   );
+
+/** Build the validated model-write tool that overrides Think's generic context writer. */
+export const coreMemoryTools = (session: Session): ToolSet => ({
+  set_context: tool({
+    description:
+      "Write narrow durable non-sensitive Core Memory. Hidden reasoning and sensitive or high-impact content are prohibited. A User must add confirmed sensitive facts through direct correction.",
+    execute: (input) => {
+      if (hiddenReasoning.test(input.content)) {
+        return Promise.resolve("Rejected: hidden reasoning cannot be stored in Core Memory.");
+      }
+      if (containsSensitiveUserAssertion(input.content, input.block)) {
+        return Promise.resolve(
+          "Rejected: model-authored sensitive content cannot be stored in Core Memory.",
+        );
+      }
+      const update =
+        input.action === "append"
+          ? session.appendContextBlock(coreMemoryLabelFor(input.block), input.content)
+          : session.replaceContextBlock(coreMemoryLabelFor(input.block), input.content);
+      return Effect.runPromise(
+        Effect.tryPromise({
+          catch: (cause) =>
+            new CoreMemoryUnavailable({
+              cause,
+              message: "Core Memory could not be updated",
+              operation: "correct",
+            }),
+          try: () => update,
+        }).pipe(
+          Effect.match({
+            onFailure: (failure) => `Error: ${failure.message}`,
+            onSuccess: (block) =>
+              `Written to ${block.label}. Usage: ${block.tokens}/${block.maxTokens ?? "unbounded"} tokens.`,
+          }),
+        ),
+      );
+    },
+    inputSchema: Schema.toStandardSchemaV1(SetCoreMemoryInput),
+  }),
+});
 
 /** Inspect both user-readable Core Memory blocks through Think's public Session interface. */
 export const inspectCoreMemory = (
@@ -151,8 +229,8 @@ export const inspectCoreMemory = (
   Effect.tryPromise({
     try: () =>
       session.refreshSystemPrompt().then(() => {
-        const userContext = requireBlock(session, userContextLabel);
-        const agentNotes = requireBlock(session, agentNotesLabel);
+        const userContext = requireBlock(session, labelFor("userContext"));
+        const agentNotes = requireBlock(session, labelFor("agentNotes"));
         return {
           _tag: "CoreMemoryInspected",
           agentNotes: inspectBlock(agentNotes),
@@ -265,73 +343,6 @@ export const clearCoreMemory = (
       }),
   });
 
-/** Build the destructive Core Memory Action that Think releases only after exact Approval. */
-export const makeCoreMemoryClearAction = (options: {
-  readonly clear: (
-    input: ClearCoreMemoryInput,
-  ) => Promise<CoreMemoryCleared | CoreMemoryUnavailable>;
-}) =>
-  action({
-    approval: true,
-    approvalRisk: "high",
-    approvalSummary: "Clear the selected Core Memory block",
-    description: "Clear one selected Core Memory block after exact human Approval.",
-    // oxlint-disable-next-line effecttsgo/async-function -- Think Actions require a Promise-returning execute callback.
-    execute: async (input) => await options.clear(input),
-    idempotencyKey: ({ ctx }) => `core-memory-clear:${ctx.toolCallId}`,
-    inputSchema: Schema.toStandardSchemaV1(ClearCoreMemoryInput),
-    kind: "durable-pause",
-    permissions: ["memory:clear"],
-  });
-
-/** Project the exact selected block into a client-safe Approval presentation. */
-export const presentCoreMemoryClearAction = (
-  pending: PendingThinkAction,
-): Effect.Effect<ActionPresentation, ActionPresentationUnavailable> => {
-  if (pending.descriptor.action !== coreMemoryClearAction) {
-    return Effect.fail(
-      new ActionPresentationUnavailable({
-        action: pending.descriptor.action,
-        message: "The Action definition has no client-safe presentation",
-      }),
-    );
-  }
-  return Schema.decodeUnknownEffect(ClearCoreMemoryInput)(pending.descriptor.input).pipe(
-    Effect.mapError(
-      () =>
-        new ActionPresentationUnavailable({
-          action: pending.descriptor.action,
-          message: "The Core Memory clear input cannot be projected safely",
-        }),
-    ),
-    Effect.map((input) =>
-      ActionPresentation.make({
-        actionDefinitionVersion: "osfo-core-memory-clear-v1",
-        actionId: ActionId.make(pending.descriptor.toolCallId),
-        consequences: [`Permanently clear the ${labelFor(input.block)} block.`],
-        description: `Clear the ${labelFor(input.block)} block.`,
-        fields: [{ label: "Block", name: "block", value: labelFor(input.block) }],
-        operation: "memory.clear",
-        presentationId: ActionPresentationId.make(pending.executionId),
-        title: `Clear ${labelFor(input.block)}`,
-      }),
-    ),
-  );
-};
-
-/** Remove fields not owned by the Core Memory clear Action input. */
-/* oxlint-disable osfo/no-unknown-parameters -- This parses Think's untyped descriptor boundary. */
-export const sanitizeCoreMemoryClearActionInput = (
-  input: unknown,
-): ClearCoreMemoryInput | Record<string, never> =>
-  Schema.decodeUnknownOption(ClearCoreMemoryInput)(input).pipe(
-    Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
-  );
-/* oxlint-enable osfo/no-unknown-parameters */
-
-/** Name registered with Think for the Core Memory clear Action. */
-export const coreMemoryClearActionName = coreMemoryClearAction;
-
 const requireBlock = (session: Session, label: string): ContextBlock => {
   const block = session.getContextBlock(label);
   if (block === null) throw new Error(`Required Core Memory block is missing: ${label}`);
@@ -344,21 +355,39 @@ const inspectBlock = (block: ContextBlock): CoreMemoryBlockInspection => ({
   tokens: block.tokens,
 });
 
-const labelFor = (block: CoreMemoryBlockName) =>
-  block === "userContext" ? userContextLabel : agentNotesLabel;
+export const coreMemoryLabelFor = (block: CoreMemoryBlockName) => coreMemoryBlocks[block].label;
 
-const maxTokensFor = (block: CoreMemoryBlockName) =>
-  block === "userContext" ? userContextMaxTokens : agentNotesMaxTokens;
+const labelFor = coreMemoryLabelFor;
+
+const maxTokensFor = (block: CoreMemoryBlockName) => coreMemoryBlocks[block].defaultMaxTokens;
 
 const contentProvider = (sqlProvider: SqlProvider, block: CoreMemoryBlockName) =>
-  new AgentContextProvider(sqlProvider, `osfo_core_memory_${blockKey(block)}`);
+  new AgentContextProvider(sqlProvider, `osfo_core_memory_${coreMemoryBlocks[block].storageKey}`);
 
 const budgetProvider = (sqlProvider: SqlProvider, block: CoreMemoryBlockName) =>
-  new AgentContextProvider(sqlProvider, `osfo_core_memory_${blockKey(block)}_max_tokens`);
+  new AgentContextProvider(
+    sqlProvider,
+    `osfo_core_memory_${coreMemoryBlocks[block].storageKey}_max_tokens`,
+  );
 
-const blockKey = (block: CoreMemoryBlockName) =>
-  block === "userContext" ? "user_context" : "agent_notes";
+const hiddenReasoning = /(?:chain[- ]of[- ]thought|hidden reasoning|<thinking>|reasoning:)/iu;
+const unambiguousSensitiveInference =
+  /\b(?:aids|anxiety|arrested?|atheist|autism|autistic|bankruptcy|bankrupt|bisexual|buddhist|cancer|christian|citizenship|convicted?|credit score|criminal|democrat|depression|diabetes|diagnosis|disabled|disability|gay|hindu|hiv|immigrant|immigration|insolvent|islam|jewish|lawsuit|legal status|lesbian|low[- ]income|medical|medication|mental illness|muslim|political|poverty|pregnant|queer|religion|religious|republican|sexual|therapy|transgender|undocumented)\b/iu;
+const contextualSensitiveInference =
+  /\b(?:conservative|debt|financial|health|income|liberal|poor|salary|voters?|voting|wealth|wealthy)\b/iu;
+const safeOperationalContext =
+  /\b(?:(?:quarterly )?financial (?:report|results)|(?:service|database) (?:has poor )?health|vote on (?:the )?(?:deployment|release) proposal|conservative (?:retry policy|backoff))\b/giu;
 
+const containsSensitiveUserAssertion = (content: string, block: CoreMemoryBlockName): boolean =>
+  content
+    .split("\n")
+    .some(
+      (line) =>
+        unambiguousSensitiveInference.test(line) ||
+        (contextualSensitiveInference.test(line) &&
+          (block === "userContext" ||
+            contextualSensitiveInference.test(line.replace(safeOperationalContext, "")))),
+    );
 const readBudget = (sqlProvider: SqlProvider, block: CoreMemoryBlockName) =>
   budgetProvider(sqlProvider, block)
     .get()

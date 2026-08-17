@@ -181,6 +181,7 @@ export const AgentRequestOperation = Schema.Literals([
   "cancelManagedConversation",
   "boundCoreMemory",
   "correctCoreMemory",
+  "inspectCoreMemory",
   "initialize",
   "readRoute",
   "readSession",
