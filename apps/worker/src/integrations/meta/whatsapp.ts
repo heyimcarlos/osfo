@@ -44,6 +44,11 @@ export type IgnoredMetaEvent =
       readonly phoneNumberId: string;
     }
   | {
+      readonly _tag: "ProviderEcho";
+      readonly phoneNumberId: string;
+      readonly providerMessageId: string;
+    }
+  | {
       readonly _tag: "UnsupportedDirectMessage";
       readonly phoneNumberId: string;
       readonly providerMessageId: string;
@@ -52,12 +57,25 @@ export type IgnoredMetaEvent =
 /** Closed normalized output of one authenticated Meta webhook body. */
 export type MetaInboundFact = IgnoredMetaEvent | InboundWhatsAppMessage;
 
-const MessageContext = Schema.Struct({ group_id: Schema.optional(Schema.String) });
+const MessageContext = Schema.Struct({
+  forwarded: Schema.optional(Schema.Boolean),
+  frequently_forwarded: Schema.optional(Schema.Boolean),
+  from: Schema.optional(WhatsAppDirectChannelIdentity),
+  group_id: Schema.optional(Schema.String),
+  id: Schema.optional(ProviderMessageId),
+  referred_product: Schema.optional(
+    Schema.Struct({
+      catalog_id: Schema.String,
+      product_retailer_id: Schema.String,
+    }),
+  ),
+});
 const MessageBase = {
   context: Schema.optional(MessageContext),
   from: WhatsAppDirectChannelIdentity,
   id: ProviderMessageId,
   timestamp: Schema.String,
+  to: Schema.optional(WhatsAppDirectChannelIdentity),
 };
 const UnsupportedMessageType = Schema.String.check(
   Schema.makeFilter(
@@ -229,6 +247,13 @@ export const authenticateAndDecode = (
           return [{ _tag: "NonMessageEvent", phoneNumberId } as const];
         }
         return change.value.messages.map((message): MetaInboundFact => {
+          if (message.to !== undefined) {
+            return {
+              _tag: "ProviderEcho",
+              phoneNumberId,
+              providerMessageId: message.id,
+            };
+          }
           if (message.context?.group_id !== undefined) {
             return {
               _tag: "GroupMessageRejected",

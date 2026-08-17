@@ -87,6 +87,44 @@ describe("Meta WhatsApp adapter", () => {
     }),
   );
 
+  it.effect("decodes a signed direct reply with closed reply and product context", () =>
+    Effect.gen(function* () {
+      const body = encodeJsonText(
+        webhook([
+          {
+            ...textMessage(),
+            context: {
+              forwarded: true,
+              frequently_forwarded: false,
+              from: "14165550100",
+              id: "wamid.business-message",
+              referred_product: {
+                catalog_id: "catalog-1",
+                product_retailer_id: "product-1",
+              },
+            },
+            id: "wamid.direct-reply",
+          },
+        ]),
+      );
+
+      const decoded = yield* authenticateAndDecode(
+        request(body, yield* sign(body, "meta-app-secret")),
+        Redacted.make("meta-app-secret"),
+      );
+
+      expect(decoded).toEqual([
+        {
+          _tag: "TextMessage",
+          channelIdentity: "14165550123",
+          message: "Please help",
+          phoneNumberId: "123456789",
+          providerMessageId: "wamid.direct-reply",
+        },
+      ]);
+    }),
+  );
+
   it.effect("rejects a signed payload outside the closed webhook schema", () =>
     Effect.gen(function* () {
       const body = encodeJsonText({
@@ -108,6 +146,7 @@ describe("Meta WhatsApp adapter", () => {
       const body = encodeJsonText(
         webhook([
           {
+            context: { from: "14165550100", id: "wamid.button-prompt" },
             from: "14165550123",
             id: "wamid.malformed-text",
             timestamp: "1786924800",
@@ -125,11 +164,37 @@ describe("Meta WhatsApp adapter", () => {
     }),
   );
 
-  it.effect("rejects signed excess properties at root and message boundaries", () =>
+  it.effect("rejects signed excess properties at root, message, and context boundaries", () =>
     Effect.gen(function* () {
       const rootBody = encodeJsonText({ ...webhook([textMessage()]), unexpected: true });
       const nestedBody = encodeJsonText(
         webhook([{ ...textMessage(), unexpected: "provider-field" }]),
+      );
+      const contextBody = encodeJsonText(
+        webhook([
+          {
+            ...textMessage(),
+            context: {
+              from: "14165550100",
+              id: "wamid.business-message",
+              unexpected: true,
+            },
+          },
+        ]),
+      );
+      const productBody = encodeJsonText(
+        webhook([
+          {
+            ...textMessage(),
+            context: {
+              referred_product: {
+                catalog_id: "catalog-1",
+                product_retailer_id: "product-1",
+                unexpected: true,
+              },
+            },
+          },
+        ]),
       );
 
       const rootRejected = yield* Effect.flip(
@@ -144,9 +209,23 @@ describe("Meta WhatsApp adapter", () => {
           Redacted.make("meta-app-secret"),
         ),
       );
+      const contextRejected = yield* Effect.flip(
+        authenticateAndDecode(
+          request(contextBody, yield* sign(contextBody, "meta-app-secret")),
+          Redacted.make("meta-app-secret"),
+        ),
+      );
+      const productRejected = yield* Effect.flip(
+        authenticateAndDecode(
+          request(productBody, yield* sign(productBody, "meta-app-secret")),
+          Redacted.make("meta-app-secret"),
+        ),
+      );
 
       expect(rootRejected).toMatchObject({ _tag: "MetaWebhookPayloadInvalid" });
       expect(nestedRejected).toMatchObject({ _tag: "MetaWebhookPayloadInvalid" });
+      expect(contextRejected).toMatchObject({ _tag: "MetaWebhookPayloadInvalid" });
+      expect(productRejected).toMatchObject({ _tag: "MetaWebhookPayloadInvalid" });
     }),
   );
 
@@ -211,7 +290,15 @@ describe("Meta WhatsApp adapter", () => {
             timestamp: "1786924800",
             type: "button",
           },
-          { ...textMessage(), context: { group_id: "group-1" }, id: "wamid.group" },
+          {
+            ...textMessage(),
+            context: {
+              from: "14165550100",
+              group_id: "group-1",
+              id: "wamid.group-prompt",
+            },
+            id: "wamid.group",
+          },
         ]),
       );
       const signature = yield* sign(body, "meta-app-secret");
@@ -308,6 +395,36 @@ describe("Meta WhatsApp adapter", () => {
         },
       ]);
       expect(status).toEqual([{ _tag: "NonMessageEvent", phoneNumberId: "123456789" }]);
+    }),
+  );
+
+  it.effect("classifies a signed provider echo outside UserMessage admission", () =>
+    Effect.gen(function* () {
+      const body = encodeJsonText(
+        webhook([
+          {
+            from: "14165550100",
+            id: "wamid.provider-echo",
+            text: { body: "A business reply" },
+            timestamp: "1786924800",
+            to: "14165550123",
+            type: "text",
+          },
+        ]),
+      );
+
+      const decoded = yield* authenticateAndDecode(
+        request(body, yield* sign(body, "meta-app-secret")),
+        Redacted.make("meta-app-secret"),
+      );
+
+      expect(decoded).toEqual([
+        {
+          _tag: "ProviderEcho",
+          phoneNumberId: "123456789",
+          providerMessageId: "wamid.provider-echo",
+        },
+      ]);
     }),
   );
 });

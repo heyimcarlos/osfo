@@ -21,6 +21,7 @@ export default defineConfig({
       "test/whatsapp-agent-admission.test.ts",
       "test/whatsapp-admission.test.ts",
       "test/whatsapp-admission-postgres.test.ts",
+      "test/whatsapp-handler.test.ts",
     ],
     testTimeout: 15_000,
   },
