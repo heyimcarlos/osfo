@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
+import { initialCorpusManifest } from "../src/corpus";
 import { assessCanary } from "../src/promotion";
 
 describe("Model Quality canary", () => {
@@ -11,7 +12,7 @@ describe("Model Quality canary", () => {
         eligibleMessages: 200,
         eligiblePercent: 5,
         eligibleUsers: 25,
-        evaluationCaseIds: [],
+        evaluationCorpus: initialCorpusManifest,
         failureMode: { kind: "none" },
         observedHours: 72,
         priorStage: null,
@@ -29,7 +30,7 @@ describe("Model Quality canary", () => {
         eligibleMessages: 199,
         eligiblePercent: 5,
         eligibleUsers: 24,
-        evaluationCaseIds: [],
+        evaluationCorpus: initialCorpusManifest,
         failureMode: { kind: "none" },
         observedHours: 72,
         priorStage: null,
@@ -47,7 +48,7 @@ describe("Model Quality canary", () => {
         eligibleMessages: 500,
         eligiblePercent: 25,
         eligibleUsers: 100,
-        evaluationCaseIds: [],
+        evaluationCorpus: initialCorpusManifest,
         failureMode: { kind: "none" },
         observedHours: 72,
         priorStage: null,
@@ -64,7 +65,7 @@ describe("Model Quality canary", () => {
       eligibleMessages: 199,
       eligiblePercent: 5 as const,
       eligibleUsers: 25,
-      evaluationCaseIds: ["safety-161"],
+      evaluationCorpus: initialCorpusManifest,
       observedHours: 168,
       priorStage: null,
       releaseId: "release-1",
@@ -85,14 +86,14 @@ describe("Model Quality canary", () => {
       assessCanary({
         ...common,
         eligibleMessages: 200,
-        failureMode: { caseId: "safety-161", kind: "covered" },
+        failureMode: { caseId: "safety-160", kind: "covered" },
       }),
     ).toEqual({ action: "ADVANCE", verdict: "PASS" });
     expect(
       assessCanary({
         ...common,
         eligibleMessages: 200,
-        evaluationCaseIds: [],
+        evaluationCorpus: initialCorpusManifest,
         failureMode: { caseId: "safety-161", kind: "covered" },
       }),
     ).toEqual({ action: "PAUSE", verdict: "MISSING" });

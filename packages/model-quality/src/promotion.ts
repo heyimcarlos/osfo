@@ -1,5 +1,6 @@
 import type { EvidenceVerdict } from "./statistics";
 import { isEvidenceCount } from "./evidence-count";
+import type { CorpusManifest } from "./corpus";
 
 /** Evidence collected for one stable eligible-User canary cohort. */
 export type CanaryEvidence = {
@@ -8,7 +9,7 @@ export type CanaryEvidence = {
   readonly eligibleMessages: number;
   readonly eligiblePercent: 5 | 25;
   readonly eligibleUsers: number;
-  readonly evaluationCaseIds: ReadonlyArray<string>;
+  readonly evaluationCorpus: CorpusManifest;
   readonly failureMode:
     | { readonly kind: "none" }
     | { readonly description: string; readonly kind: "uncovered" }
@@ -42,12 +43,14 @@ export const assessCanary = (evidence: CanaryEvidence): CanaryAssessment => {
   }
   if (evidence.confirmedCriticalFailures > 0) return { action: "ROLLBACK", verdict: "FAIL" };
   if (evidence.failureMode.kind === "uncovered") return { action: "PAUSE", verdict: "MISSING" };
-  if (
-    evidence.failureMode.kind === "covered" &&
-    (evidence.failureMode.caseId.length === 0 ||
-      !evidence.evaluationCaseIds.includes(evidence.failureMode.caseId))
-  ) {
-    return { action: "PAUSE", verdict: "MISSING" };
+  if (evidence.failureMode.kind === "covered") {
+    const caseId = evidence.failureMode.caseId;
+    if (
+      caseId.length === 0 ||
+      !evidence.evaluationCorpus.cases.some((item) => item.id === caseId)
+    ) {
+      return { action: "PAUSE", verdict: "MISSING" };
+    }
   }
   const correctSequence =
     evidence.stage === "five-percent"

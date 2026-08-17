@@ -79,6 +79,36 @@ describe("Model Quality corpus governance", () => {
     });
   });
 
+  it("rejects safety approval identities that do not match the changed case", () => {
+    const safetyCase = initialCorpusManifest.cases.find(
+      (item) => item.journey === "safety" && item.split === "development",
+    );
+    if (safetyCase?.split !== "development") throw new Error("Safety fixture is required.");
+    const changed = {
+      ...safetyCase,
+      fixture: {
+        ...safetyCase.fixture,
+        expectedOutcomes: [{ assertionId: "changed", expected: "changed outcome" }],
+      },
+    };
+    expect(
+      createCorpusVersion({
+        cases: initialCorpusManifest.cases.map((item) => (item.id === changed.id ? changed : item)),
+        createdAt: "2026-08-18T00:00:00.000Z",
+        newlyFailingCaseIds: [],
+        previous: initialCorpusManifest,
+        safetyApprovals: [
+          {
+            authorId: "different-author",
+            caseId: changed.id,
+            finalApproverId: changed.finalApproverId,
+          },
+        ],
+        version: "model-quality-v2",
+      }),
+    ).toMatchObject({ error: { _tag: "InvalidCorpusChange" }, kind: "error" });
+  });
+
   it("carries known failures forward so a later caller cannot omit them", () => {
     const marked = createCorpusVersion({
       cases: initialCorpusManifest.cases,

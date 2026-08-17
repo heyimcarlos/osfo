@@ -29,7 +29,9 @@ human label, trace, sample, or powered comparison stays `MISSING`.
 The initial corpus manifest contains 600 authored or synthetic cases. Pull request plans can use
 only development cases. Complete release plans include the sealed holdout. Corpus successors are
 immutable, digest-addressed, linked to their previous version, and cannot remove a known failing
-case. Holdout output must not be given to prompt or route tuning.
+case. Sealed fixtures resolve through an access-controlled release vault that is not a package
+export. If that vault is unavailable, complete release evidence is `MISSING`. Holdout content and
+output must not be given to prompt or route tuning.
 
 Production signals create review leads only. Random human reading of private conversations is
 prohibited. Source deletion creates an immediate deletion request for each declared evaluation

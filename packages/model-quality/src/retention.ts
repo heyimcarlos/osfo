@@ -8,15 +8,29 @@ export type EvaluationRecordClass =
 /** Parsed retention-expiry result. */
 export type EvaluationExpiryResult =
   | { readonly kind: "success"; readonly value: number }
-  | { readonly error: { readonly _tag: "InvalidRetentionInstant" }; readonly kind: "error" };
+  | {
+      readonly error: { readonly _tag: "InvalidRetentionPolicy"; readonly message: string };
+      readonly kind: "error";
+    };
 
 /** Calculate the maximum retained-until epoch millisecond for an evaluation record. */
 export const evaluationExpiry = (
   recordClass: EvaluationRecordClass,
   createdAtEpochMs: number,
+  necessary: boolean,
 ): EvaluationExpiryResult => {
-  if (!Number.isFinite(createdAtEpochMs) || createdAtEpochMs < 0) {
-    return { error: { _tag: "InvalidRetentionInstant" }, kind: "error" };
+  if (
+    !Number.isFinite(createdAtEpochMs) ||
+    createdAtEpochMs < 0 ||
+    (recordClass === "consented-real-trace" && !necessary)
+  ) {
+    return {
+      error: {
+        _tag: "InvalidRetentionPolicy",
+        message: "Retention requires a valid instant and documented necessity for real traces.",
+      },
+      kind: "error",
+    };
   }
   const hours =
     recordClass === "temporary-content"

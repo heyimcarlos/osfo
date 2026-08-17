@@ -93,11 +93,6 @@ export type EvaluationManifest = EvaluationManifestInput & {
   readonly contentDigest: EvidenceDigest<"manifest">;
 };
 
-/** Product authority allowed to approve a new evaluation baseline. */
-export type BaselineApprovalAuthority = {
-  readonly approvedApproverIds: ReadonlyArray<string>;
-};
-
 /** Expected failure when baseline evidence is not authorized or internally consistent. */
 export type InvalidBaselineApproval = {
   readonly _tag: "InvalidBaselineApproval";
@@ -139,14 +134,21 @@ export const configurationDigest = (
 /** Create and freeze an immutable evaluation evidence manifest. */
 export const createEvaluationManifest = (
   input: EvaluationManifestInput,
-  authority: BaselineApprovalAuthority,
 ): EvaluationManifestResult => {
+  const approvedAt = Date.parse(input.approvedBaseline.approvedAt);
+  const createdAt = Date.parse(input.createdAt);
+  const startedAt = Date.parse(input.outputEvidence.utcWindow.startedAt);
+  const endedAt = Date.parse(input.outputEvidence.utcWindow.endedAt);
   if (
-    !authority.approvedApproverIds.includes(input.approvedBaseline.approverId) ||
+    !baselineApproverIds.has(input.approvedBaseline.approverId) ||
     input.approvedBaseline.corpusDigest !== input.corpusDigest ||
     input.approvedBaseline.graderDigest !== input.graderDigest ||
     input.approvedBaseline.rubricDigest !== input.rubricDigest ||
-    !Number.isFinite(Date.parse(input.approvedBaseline.approvedAt))
+    !Number.isFinite(approvedAt) ||
+    !Number.isFinite(createdAt) ||
+    !Number.isFinite(startedAt) ||
+    !Number.isFinite(endedAt) ||
+    startedAt > endedAt
   ) {
     return {
       error: {
@@ -174,6 +176,8 @@ export const createEvaluationManifest = (
     value: Object.freeze({ ...unsigned, contentDigest: digestValue("manifest", unsigned) }),
   };
 };
+
+const baselineApproverIds = new Set(["quality-owner-1"]);
 
 /** Verify content integrity and the exact approved corpus, rubric, and grader baseline. */
 export const verifyEvaluationManifest = (manifest: EvaluationManifest): boolean => {

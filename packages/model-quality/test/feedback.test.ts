@@ -23,17 +23,21 @@ describe("privacy-safe production feedback", () => {
 
   it("enforces retention limits", () => {
     const createdAt = Date.parse("2026-08-17T00:00:00.000Z");
-    expect(evaluationExpiry("temporary-content", createdAt)).toEqual({
+    expect(evaluationExpiry("temporary-content", createdAt, false)).toEqual({
       kind: "success",
       value: Date.parse("2026-08-18T00:00:00.000Z"),
     });
-    expect(evaluationExpiry("content-free-metadata", createdAt)).toEqual({
+    expect(evaluationExpiry("content-free-metadata", createdAt, false)).toEqual({
       kind: "success",
       value: Date.parse("2026-09-16T00:00:00.000Z"),
     });
-    expect(evaluationExpiry("consented-real-trace", createdAt)).toEqual({
+    expect(evaluationExpiry("consented-real-trace", createdAt, true)).toEqual({
       kind: "success",
       value: Date.parse("2026-11-15T00:00:00.000Z"),
+    });
+    expect(evaluationExpiry("consented-real-trace", createdAt, false)).toMatchObject({
+      error: { _tag: "InvalidRetentionPolicy" },
+      kind: "error",
     });
   });
 
@@ -50,17 +54,28 @@ describe("privacy-safe production feedback", () => {
     ]);
     if (registry.kind === "error") throw new Error("Test registry must be valid.");
     expect(propagateSourceDeletion(registry.value, "2026-08-17T12:00:00.000Z")).toEqual({
-      liveDeletions: [
-        { copyId: "raw-output", requestedAt: "2026-08-17T12:00:00.000Z", sourceId: "thread-1" },
-        { copyId: "review-bundle", requestedAt: "2026-08-17T12:00:00.000Z", sourceId: "thread-1" },
-      ],
-      providerRecoveryExpiries: [
-        {
-          copyId: "hosted-grader-copy",
-          recoveryExpiresAt: "2026-09-16T12:00:00.000Z",
-          sourceId: "thread-1",
-        },
-      ],
+      kind: "success",
+      value: {
+        liveDeletions: [
+          { copyId: "raw-output", requestedAt: "2026-08-17T12:00:00.000Z", sourceId: "thread-1" },
+          {
+            copyId: "review-bundle",
+            requestedAt: "2026-08-17T12:00:00.000Z",
+            sourceId: "thread-1",
+          },
+        ],
+        providerRecoveryExpiries: [
+          {
+            copyId: "hosted-grader-copy",
+            recoveryExpiresAt: "2026-09-16T12:00:00.000Z",
+            sourceId: "thread-1",
+          },
+        ],
+      },
+    });
+    expect(propagateSourceDeletion(registry.value, "invalid")).toMatchObject({
+      error: { _tag: "InvalidDeletionRequest" },
+      kind: "error",
     });
   });
 

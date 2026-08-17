@@ -65,19 +65,30 @@ export type SourceDeletionPlan = {
   readonly providerRecoveryExpiries: ReadonlyArray<ProviderRecoveryExpiry>;
 };
 
+/** Parsed deletion-propagation outcome. */
+export type SourceDeletionPlanResult =
+  | { readonly kind: "success"; readonly value: SourceDeletionPlan }
+  | { readonly error: { readonly _tag: "InvalidDeletionRequest" }; readonly kind: "error" };
+
 /** Start deletion from every registered evaluation copy when its source is deleted or redacted. */
 export const propagateSourceDeletion = (
   registry: EvaluationCopyRegistry,
   requestedAt: string,
-): SourceDeletionPlan => ({
-  liveDeletions: registry.copies
-    .filter((copy) => copy.location === "live")
-    .map((copy) => ({ copyId: copy.copyId, requestedAt, sourceId: registry.sourceId })),
-  providerRecoveryExpiries: registry.copies
-    .filter((copy) => copy.location === "provider-recovery")
-    .map((copy) => ({
-      copyId: copy.copyId,
-      recoveryExpiresAt: copy.recoveryExpiresAt,
-      sourceId: registry.sourceId,
-    })),
-});
+): SourceDeletionPlanResult =>
+  !Number.isFinite(Date.parse(requestedAt))
+    ? { error: { _tag: "InvalidDeletionRequest" }, kind: "error" }
+    : {
+        kind: "success",
+        value: {
+          liveDeletions: registry.copies
+            .filter((copy) => copy.location === "live")
+            .map((copy) => ({ copyId: copy.copyId, requestedAt, sourceId: registry.sourceId })),
+          providerRecoveryExpiries: registry.copies
+            .filter((copy) => copy.location === "provider-recovery")
+            .map((copy) => ({
+              copyId: copy.copyId,
+              recoveryExpiresAt: copy.recoveryExpiresAt,
+              sourceId: registry.sourceId,
+            })),
+        },
+      };

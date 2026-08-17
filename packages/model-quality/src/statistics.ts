@@ -89,7 +89,6 @@ export const requiredPairedCaseCount = (input: PairedPowerInput): StatisticsResu
 /** Repeated outputs clustered under one independent case identity. */
 export type CaseRunScores = {
   readonly caseId: string;
-  readonly requiredRuns: 3 | 5;
   readonly runs: ReadonlyArray<number>;
 };
 
@@ -97,6 +96,7 @@ export type CaseRunScores = {
 export type PairedComparisonInput = PairedPowerInput & {
   readonly baselineByCase: ReadonlyArray<CaseRunScores>;
   readonly candidateByCase: ReadonlyArray<CaseRunScores>;
+  readonly corpusCases: ReadonlyArray<{ readonly id: string; readonly repetitions: 3 | 5 }>;
 };
 
 /** Result of a paired, case-clustered non-inferiority comparison. */
@@ -115,9 +115,13 @@ export const pairedNonInferiority = (
 ): PairedComparison | StatisticsFailure => {
   const power = requiredPairedCaseCount(input);
   if (power.kind === "error") return power;
-  const baseline = parseCaseScores(input.baselineByCase);
+  const repetitions = new Map(input.corpusCases.map((item) => [item.id, item.repetitions]));
+  if (repetitions.size !== input.corpusCases.length) {
+    return invalidStatistics("Corpus case identities must be unique.");
+  }
+  const baseline = parseCaseScores(input.baselineByCase, repetitions);
   if (baseline.kind === "error") return baseline;
-  const candidate = parseCaseScores(input.candidateByCase);
+  const candidate = parseCaseScores(input.candidateByCase, repetitions);
   if (candidate.kind === "error") return candidate;
   const baselineIds = [...baseline.value.keys()];
   const candidateIds = [...candidate.value.keys()];
@@ -127,14 +131,9 @@ export const pairedNonInferiority = (
   ) {
     return invalidStatistics("Paired case identities must match.");
   }
-  const mismatchedRuns = baselineIds.some(
-    (caseId) =>
-      baseline.value.get(caseId)?.requiredRuns !== candidate.value.get(caseId)?.requiredRuns,
-  );
-  if (mismatchedRuns) return invalidStatistics("Paired case repetition requirements must match.");
   const differences = baselineIds.map((caseId) => {
-    const baselineScore = baseline.value.get(caseId)?.score ?? 0;
-    const candidateScore = candidate.value.get(caseId)?.score ?? 0;
+    const baselineScore = baseline.value.get(caseId) ?? 0;
+    const candidateScore = candidate.value.get(caseId) ?? 0;
     return candidateScore - baselineScore;
   });
   const difference = mean(differences);
@@ -157,20 +156,21 @@ export const pairedNonInferiority = (
 
 const parseCaseScores = (
   cases: ReadonlyArray<CaseRunScores>,
-): StatisticsResult<
-  ReadonlyMap<string, { readonly requiredRuns: 3 | 5; readonly score: number }>
-> => {
-  const scores = new Map<string, { readonly requiredRuns: 3 | 5; readonly score: number }>();
+  repetitions: ReadonlyMap<string, 3 | 5>,
+): StatisticsResult<ReadonlyMap<string, number>> => {
+  const scores = new Map<string, number>();
   for (const item of cases) {
+    const requiredRuns = repetitions.get(item.caseId);
     if (
       item.caseId.length === 0 ||
       scores.has(item.caseId) ||
-      item.runs.length !== item.requiredRuns ||
+      requiredRuns === undefined ||
+      item.runs.length !== requiredRuns ||
       item.runs.some((score) => !Number.isFinite(score) || score < 0 || score > 1)
     ) {
       return invalidStatistics("Case identities must be unique and every case needs bounded runs.");
     }
-    scores.set(item.caseId, { requiredRuns: item.requiredRuns, score: mean(item.runs) });
+    scores.set(item.caseId, mean(item.runs));
   }
   if (scores.size === 0) return invalidStatistics("Paired analysis requires independent cases.");
   return success(scores);

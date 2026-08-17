@@ -28,44 +28,41 @@ const rubricDigest = digestValue("rubric", "rubric");
 
 describe("Model Quality evidence manifests", () => {
   it("creates an immutable, verifiable manifest bound to the complete configuration", () => {
-    const result = createEvaluationManifest(
-      {
-        approvedBaseline: {
-          approvedAt: "2026-08-16T00:00:00.000Z",
-          approverId: "quality-owner-1",
-          corpusDigest: initialCorpusManifest.contentDigest,
-          graderDigest,
-          rubricDigest,
-        },
-        configuration,
+    const result = createEvaluationManifest({
+      approvedBaseline: {
+        approvedAt: "2026-08-16T00:00:00.000Z",
+        approverId: "quality-owner-1",
         corpusDigest: initialCorpusManifest.contentDigest,
-        corpusVersion: initialCorpusManifest.version,
-        createdAt: "2026-08-17T00:00:00.000Z",
-        dependencyDigest,
-        fixtureDigest: digestValue("fixture", "fixtures"),
         graderDigest,
-        humanLabelSetVersion: "labels-v1",
-        inferenceSettingsDigest: digestValue("inference-settings", "inference-settings"),
-        outputEvidence: {
-          artifactChecksumsDigest: digestValue("artifact-checksums", "artifacts"),
-          costDigest: digestValue("cost", "cost"),
-          latencyDigest: digestValue("latency", "latency"),
-          rawOutputsDigest: digestValue("raw-outputs", "outputs"),
-          scoreDigest: digestValue("scores", "scores"),
-          tokenUseDigest: digestValue("token-use", "tokens"),
-          traceDigest: digestValue("traces", "traces"),
-          utcWindow: {
-            endedAt: "2026-08-17T01:00:00.000Z",
-            startedAt: "2026-08-17T00:00:00.000Z",
-          },
-        },
-        powerCalculationDigest: digestValue("power-calculation", "power-calculation"),
-        providerModelId: "pinned-model-2026-08-01",
         rubricDigest,
-        sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
       },
-      { approvedApproverIds: ["quality-owner-1"] },
-    );
+      configuration,
+      corpusDigest: initialCorpusManifest.contentDigest,
+      corpusVersion: initialCorpusManifest.version,
+      createdAt: "2026-08-17T00:00:00.000Z",
+      dependencyDigest,
+      fixtureDigest: digestValue("fixture", "fixtures"),
+      graderDigest,
+      humanLabelSetVersion: "labels-v1",
+      inferenceSettingsDigest: digestValue("inference-settings", "inference-settings"),
+      outputEvidence: {
+        artifactChecksumsDigest: digestValue("artifact-checksums", "artifacts"),
+        costDigest: digestValue("cost", "cost"),
+        latencyDigest: digestValue("latency", "latency"),
+        rawOutputsDigest: digestValue("raw-outputs", "outputs"),
+        scoreDigest: digestValue("scores", "scores"),
+        tokenUseDigest: digestValue("token-use", "tokens"),
+        traceDigest: digestValue("traces", "traces"),
+        utcWindow: {
+          endedAt: "2026-08-17T01:00:00.000Z",
+          startedAt: "2026-08-17T00:00:00.000Z",
+        },
+      },
+      powerCalculationDigest: digestValue("power-calculation", "power-calculation"),
+      providerModelId: "pinned-model-2026-08-01",
+      rubricDigest,
+      sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
+    });
 
     expect(result.kind).toBe("success");
     if (result.kind === "error") return;
@@ -81,10 +78,31 @@ describe("Model Quality evidence manifests", () => {
 
   it("rejects a self-attested baseline without product approval authority", () => {
     const input = makeManifestInput();
-    expect(createEvaluationManifest(input, { approvedApproverIds: [] })).toMatchObject({
+    expect(
+      createEvaluationManifest({
+        ...input,
+        approvedBaseline: { ...input.approvedBaseline, approverId: "self-attested-caller" },
+      }),
+    ).toMatchObject({
       error: { _tag: "InvalidBaselineApproval" },
       kind: "error",
     });
+  });
+
+  it("rejects invalid or reversed evidence windows", () => {
+    const input = makeManifestInput();
+    expect(
+      createEvaluationManifest({
+        ...input,
+        outputEvidence: {
+          ...input.outputEvidence,
+          utcWindow: {
+            endedAt: "2026-08-17T00:00:00.000Z",
+            startedAt: "2026-08-17T01:00:00.000Z",
+          },
+        },
+      }),
+    ).toMatchObject({ error: { _tag: "InvalidBaselineApproval" }, kind: "error" });
   });
 
   it("invalidates PASS after seven days or any material evidence change", () => {

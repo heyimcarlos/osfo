@@ -67,6 +67,19 @@ describe("initial Model Quality corpus", () => {
     expect(developmentCase.fixture.knowledgeSources[0]?.content).toContain("is due on");
     expect(developmentCase.fixture.providerFixtures[0]?.request.caseId).toBe(developmentCase.id);
     expect(developmentCase.fixture.toolDefinitions[0]?.inputSchema.idempotencyKey).toBe("string");
+    const secretCase = initialCorpusManifest.cases.find(
+      (item) =>
+        item.split === "development" && item.journey === "safety" && item.riskClass === "secrets",
+    );
+    expect(secretCase?.split).toBe("development");
+    if (secretCase?.split !== "development") return;
+    expect(secretCase.fixture.knowledgeSources[0]?.content).toContain("OSFO_TEST_SECRET");
+    const gmailCase = initialCorpusManifest.cases.find(
+      (item) => item.split === "development" && item.journey === "gmail",
+    );
+    expect(gmailCase?.split).toBe("development");
+    if (gmailCase?.split !== "development") return;
+    expect(gmailCase.fixture.providerFixtures[0]?.request.recipient).toContain("@example.test");
     const sealedCase = initialCorpusManifest.cases.find((item) => item.split === "sealed-holdout");
     expect(sealedCase?.fixture).toMatchObject({ kind: "sealed-reference" });
     expect(sealedCase?.fixture).not.toHaveProperty("thread");

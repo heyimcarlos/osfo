@@ -48,7 +48,7 @@ export type CorpusCase = CorpusCaseBase &
     | { readonly fixture: CaseFixture; readonly split: "development" }
     | {
         readonly fixture: {
-          readonly contentDigest: EvidenceDigest<"fixture">;
+          readonly referenceDigest: EvidenceDigest<"fixture">;
           readonly kind: "sealed-reference";
           readonly reference: string;
         };
@@ -93,32 +93,37 @@ const makeCases = (journey: Journey, size: number): ReadonlyArray<CorpusCase> =>
   return Array.from({ length: size }, (_, offset): CorpusCase => {
     const ordinal = offset + 1;
     const id = `${journey}-${ordinal.toString().padStart(3, "0")}`;
-    const fixture = makeCaseFixture(id, journey, offset);
+    const planRoute = ordinal % 2 === 0 ? "adventurer" : "free";
+    const riskClass =
+      journey === "safety"
+        ? (criticalRiskClasses[offset % criticalRiskClasses.length] ?? "authority")
+        : "ordinary";
     const common = {
       authorId: `corpus-author-${ordinal % 4}`,
       finalApproverId: `corpus-approver-${ordinal % 3}`,
       id,
       journey,
-      planRoute: ordinal % 2 === 0 ? "adventurer" : "free",
+      planRoute,
       provenance: ordinal % 2 === 0 ? "synthetic" : "authored",
       repetitions: journey === "safety" ? 5 : 3,
-      riskClass:
-        journey === "safety"
-          ? (criticalRiskClasses[offset % criticalRiskClasses.length] ?? "authority")
-          : "ordinary",
+      riskClass,
       reviewState: "approved",
     } as const;
     return offset >= holdoutStart
       ? Object.freeze({
           ...common,
           fixture: Object.freeze({
-            contentDigest: digestValue("fixture", fixture),
             kind: "sealed-reference" as const,
             reference: `holdout://${id}`,
+            referenceDigest: digestValue("fixture", { id, vaultVersion: "model-quality-v1" }),
           }),
           split: "sealed-holdout" as const,
         })
-      : Object.freeze({ ...common, fixture, split: "development" as const });
+      : Object.freeze({
+          ...common,
+          fixture: makeCaseFixture(id, journey, planRoute, riskClass, offset),
+          split: "development" as const,
+        });
   });
 };
 
@@ -194,7 +199,12 @@ export const createCorpusVersion = (input: CreateCorpusVersionInput): CreateCorp
     const changedSafetyCase =
       item.journey === "safety" &&
       (previous === undefined || digestValue("fixture", item) !== digestValue("fixture", previous));
-    const approval = input.safetyApprovals.find((candidate) => candidate.caseId === item.id);
+    const approval = input.safetyApprovals.find(
+      (candidate) =>
+        candidate.caseId === item.id &&
+        candidate.authorId === item.authorId &&
+        candidate.finalApproverId === item.finalApproverId,
+    );
     if (changedSafetyCase && approval === undefined) {
       return invalidCorpusChange(`Safety case ${item.id} requires recorded independent approval.`);
     }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
+import { initialCorpusManifest } from "../src/corpus";
+
 import {
   exactBinomialUpperBound,
   pairedNonInferiority,
@@ -37,6 +39,7 @@ describe("Model Quality statistics", () => {
         anticipatedDifference: 0,
         baselineByCase: caseScores([1, 1, 0, 1]),
         candidateByCase: caseScores([1, 1, 0, 1]),
+        corpusCases: initialCorpusManifest.cases,
         discordanceRate: 0.1,
         margin: 0.02,
         pilotIndependentCases: 100,
@@ -55,6 +58,7 @@ describe("Model Quality statistics", () => {
         anticipatedDifference: 0,
         baselineByCase: caseScores(Array.from({ length: 102 }, () => 1)),
         candidateByCase: caseScores(Array.from({ length: 102 }, () => 1)),
+        corpusCases: initialCorpusManifest.cases,
         discordanceRate: 0,
         margin: 0.05,
         pilotIndependentCases: 100,
@@ -73,8 +77,9 @@ describe("Model Quality statistics", () => {
     expect(
       pairedNonInferiority({
         anticipatedDifference: 0,
-        baselineByCase: [{ caseId: "case-a", requiredRuns: 3, runs: [1, 1, 1] }],
-        candidateByCase: [{ caseId: "case-b", requiredRuns: 3, runs: [1, 1, 1] }],
+        baselineByCase: [{ caseId: "ordinary-001", runs: [1, 1, 1] }],
+        candidateByCase: [{ caseId: "ordinary-002", runs: [1, 1, 1] }],
+        corpusCases: initialCorpusManifest.cases,
         discordanceRate: 0,
         margin: 0.02,
         pilotIndependentCases: 100,
@@ -103,8 +108,9 @@ describe("Model Quality statistics", () => {
     expect(
       pairedNonInferiority({
         anticipatedDifference: 0,
-        baselineByCase: [{ caseId: "safety-001", requiredRuns: 5, runs: [1] }],
-        candidateByCase: [{ caseId: "safety-001", requiredRuns: 5, runs: [1] }],
+        baselineByCase: [{ caseId: "safety-001", runs: [1, 1, 1] }],
+        candidateByCase: [{ caseId: "safety-001", runs: [1, 1, 1] }],
+        corpusCases: initialCorpusManifest.cases,
         discordanceRate: 0,
         margin: 0.05,
         pilotIndependentCases: 100,
@@ -115,7 +121,8 @@ describe("Model Quality statistics", () => {
 
 const caseScores = (scores: ReadonlyArray<number>) =>
   scores.map((score, index) => ({
-    caseId: `case-${index}`,
-    requiredRuns: 3 as const,
+    caseId:
+      initialCorpusManifest.cases.filter((item) => item.repetitions === 3)[index]?.id ??
+      `missing-${index}`,
     runs: [score, score, score],
   }));

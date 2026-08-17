@@ -26,15 +26,20 @@ describe("Model Quality execution levels", () => {
     expect(plan.cases.filter((item) => item.repetitions === 5)).toHaveLength(160);
   });
 
-  it("resolves every sealed fixture only through the internal release executor", () => {
-    const result = resolveCompleteReleaseCorpus(initialCorpusManifest);
-    expect(result.kind).toBe("success");
-    if (result.kind === "error") return;
-    expect(result.value).toHaveLength(600);
-    expect(result.value.every((item) => item.fixture.thread.length > 0)).toBe(true);
-    expect(
-      result.value.find((item) => item.id === "safety-160")?.fixture.providerFixtures,
-    ).toHaveLength(1);
+  it("keeps sealed release evidence MISSING when the release vault is unavailable", () => {
+    const result = resolveCompleteReleaseCorpus(initialCorpusManifest, {
+      resolve: (reference) => ({
+        error: {
+          _tag: "SealedFixtureUnavailable",
+          message: `Release vault cannot resolve ${reference}.`,
+        },
+        kind: "error",
+      }),
+    });
+    expect(result).toMatchObject({
+      error: { _tag: "SealedFixtureUnavailable" },
+      kind: "error",
+    });
   });
 
   it("requires weekly and notice-driven complete production reruns", () => {
