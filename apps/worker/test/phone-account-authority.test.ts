@@ -1,11 +1,21 @@
+import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import { users } from "@osfo/db/schema/auth";
 import { deletionCases } from "@osfo/db/schema/user-lifecycle";
-import { Effect, Exit, Redacted } from "effect";
+import { Effect, Exit, Layer, Redacted } from "effect";
 
+import * as Db from "../src/db";
 import { UserId } from "../src/domain";
 import { AuthSessionId } from "../src/domain/auth-session";
 import { PhoneNumber } from "../src/domain/phone-account";
+import * as PhoneAccountAdapter from "../src/integrations/auth/phone-account";
+import {
+  TwilioVerify,
+  phoneAccountVerificationLayerWithoutDependencies,
+} from "../src/integrations/twilio/verify";
+import * as DeletionCase from "../src/services/deletion-case";
+import * as PhoneAccount from "../src/services/phone-account";
+import type { AccountAuthorityFixture } from "./account-authority-fixture";
 import {
   adminActorId,
   reason,
@@ -13,11 +23,11 @@ import {
   withAccountAuthorityFixture,
 } from "./account-authority-fixture";
 
-/* oxlint-disable eslint/no-underscore-dangle -- Tests assert tagged public outcomes. */
+/* oxlint-disable eslint/no-underscore-dangle, effecttsgo/strict-effect-provide -- Tests assert tagged outcomes and the local fixture is the Phone Account composition entry point. */
 
 describe("Phone Account authority", () => {
   it.effect("replaces one Phone Account and atomically revokes every AuthSession", () =>
-    withAccountAuthorityFixture(({ authorities, phoneAccounts, twilio }) =>
+    withPhoneAccountFixture(({ authorities, phoneAccounts, twilio }) =>
       Effect.gen(function* () {
         const phoneNumber = PhoneNumber.make("+14165550199");
         const started = yield* phoneAccounts.beginReplacement({ phoneNumber, userId });
@@ -45,7 +55,7 @@ describe("Phone Account authority", () => {
   );
 
   it.effect("requires manual support for a collision and rejected code", () =>
-    withAccountAuthorityFixture(({ database, phoneAccounts }) =>
+    withPhoneAccountFixture(({ database, phoneAccounts }) =>
       Effect.gen(function* () {
         yield* Effect.promise(() =>
           database.database.insert(users).values({
@@ -76,7 +86,7 @@ describe("Phone Account authority", () => {
   );
 
   it.effect("returns manual support for concurrent replacement collisions", () =>
-    withAccountAuthorityFixture(({ database, phoneAccounts, twilio }) =>
+    withPhoneAccountFixture(({ database, phoneAccounts, twilio }) =>
       Effect.gen(function* () {
         const otherUserId = UserId.make("user-authority-2");
         const replacement = PhoneNumber.make("+14165550155");
@@ -115,7 +125,7 @@ describe("Phone Account authority", () => {
   );
 
   it.effect("checks the Deletion Case fence inside replacement", () =>
-    withAccountAuthorityFixture(({ database, phoneStore }) =>
+    withPhoneAccountFixture(({ database, phoneStore }) =>
       Effect.gen(function* () {
         yield* Effect.promise(() =>
           database.database.insert(deletionCases).values({
@@ -136,7 +146,7 @@ describe("Phone Account authority", () => {
   );
 
   it.effect("routes account recovery to manual support", () =>
-    withAccountAuthorityFixture(({ phoneAccounts }) =>
+    withPhoneAccountFixture(({ phoneAccounts }) =>
       Effect.gen(function* () {
         const result = yield* phoneAccounts.requestRecovery;
 
@@ -148,3 +158,54 @@ describe("Phone Account authority", () => {
     ),
   );
 });
+
+const withPhoneAccountFixture = <A, E>(
+  use: (
+    fixture: AccountAuthorityFixture & {
+      readonly phoneAccounts: PhoneAccount.Interface;
+      readonly phoneStore: PhoneAccount.StorePort;
+      readonly twilio: ReturnType<typeof makeTwilio>;
+    },
+  ) => Effect.Effect<A, E>,
+) =>
+  withAccountAuthorityFixture((fixture) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const twilio = makeTwilio();
+        const base = Layer.mergeAll(
+          BrowserCrypto.layer,
+          Db.layerFromDatabase(fixture.database.database),
+          Layer.succeed(TwilioVerify, twilio.service),
+        );
+        const phoneStore = yield* PhoneAccountAdapter.make.pipe(Effect.provide(base));
+        const verification = yield* PhoneAccount.Verification.pipe(
+          Effect.provide(
+            phoneAccountVerificationLayerWithoutDependencies.pipe(Layer.provide(base)),
+          ),
+        );
+        const phoneAccounts = yield* PhoneAccount.make.pipe(
+          Effect.provideService(PhoneAccount.Store, phoneStore),
+          Effect.provideService(PhoneAccount.Verification, verification),
+          Effect.provideService(DeletionCase.Service, fixture.authorities.deletionCases),
+        );
+        return yield* use({ ...fixture, phoneAccounts, phoneStore, twilio });
+      }),
+    ),
+  );
+
+const makeTwilio = () => {
+  const code = "123456";
+  const sent: Array<string> = [];
+  return {
+    code,
+    sent,
+    service: TwilioVerify.of({
+      sendCode: (phoneNumber) =>
+        Effect.sync(() => {
+          sent.push(phoneNumber);
+        }),
+      verifyCode: (_phoneNumber, submittedCode) =>
+        Effect.succeed(Redacted.value(submittedCode) === code),
+    }),
+  };
+};

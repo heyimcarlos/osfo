@@ -1,6 +1,6 @@
 import { defineConfig } from "vitest/config";
 
-/** Node test configuration for Worker services backed by embedded PostgreSQL. */
+/** Node test configuration for Worker services backed by isolated PGlite databases. */
 export default defineConfig({
   test: {
     include: [

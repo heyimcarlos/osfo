@@ -25,13 +25,13 @@ class TestPostgresError extends Data.TaggedError("TestPostgresError")<{
 
 const migrationsDirectory = fileURLToPath(new URL("../src/migrations", import.meta.url));
 
-/** Embedded PostgreSQL database and Drizzle client used by integration tests. */
+/** Isolated PGlite database and Drizzle client used by integration tests. */
 export interface TestDatabase {
   readonly client: PGlite;
   readonly database: Database;
 }
 
-/** Create one isolated Postgres-compatible database for a test. */
+/** Create one isolated PGlite database for a test. */
 export const makeTestDatabase = Effect.sync((): TestDatabase => {
   const client = new PGlite();
   const database = drizzle(client, { schema: tables });
@@ -103,7 +103,7 @@ const applyMigration = (client: PGlite, migration: TestMigration) =>
     });
   });
 
-/** Close one embedded PostgreSQL test database. */
+/** Close one isolated PGlite test database. */
 export const closeTestDatabase = ({ client }: TestDatabase) => Effect.promise(() => client.close());
 
 const query = <Row extends TestRow = TestRow>(

@@ -1,7 +1,8 @@
 import type { Database } from "@osfo/db";
 import { sessions, users } from "@osfo/db/schema/auth";
 import { and, eq, ne } from "drizzle-orm";
-import { DrizzleQueryError } from "drizzle-orm/errors";
+
+import { isPhoneNumberUniqueViolation } from "./postgres-failure";
 
 /* oxlint-disable effecttsgo/async-function -- This package exposes Better Auth-owned Promise capabilities to request adapters. */
 
@@ -145,15 +146,8 @@ export const createPhoneAccountAuthority = (
         return "replaced";
       });
     } catch (cause) {
-      if (isPhoneNumberCollision(cause)) return "phone-collision";
+      if (isPhoneNumberUniqueViolation(cause)) return "phone-collision";
       throw cause;
     }
   },
 });
-
-const isPhoneNumberCollision = (cause: unknown): boolean => {
-  const databaseCause = cause instanceof DrizzleQueryError ? cause.cause : cause;
-  return (
-    databaseCause instanceof Error && databaseCause.message.includes("users_phone_number_unique")
-  );
-};
