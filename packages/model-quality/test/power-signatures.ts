@@ -1,0 +1,96 @@
+import { pairedPowerPlanSigningDigest, type PairedPowerPlanInput } from "../src/statistics";
+
+const signatures = new Map<string, string>([
+  [
+    "sha256:3766fcae2d22acaa78da8efc001901b9a3b5df0112e07077070a6af9c5db701a",
+    "1vPuLA6DxWlfwJe/K/vzY/mAyOCPOCDF2wxFdumW5NRHlRFyXtHx3TE6EacTVz2sVInwSM9jXnyBrSxO23AmBA==",
+  ],
+  [
+    "sha256:2d18073bf9e4e4b61d7c25aec2da2a3b85b31aca2b427b10e5615132bf03f0e7",
+    "8Sw23wsua7gGOvvYgpS5rKLoJDsMDF5pWe5TAxRQd6GbHrYLc8rwA9XRu4xw3Qnn7MupBuSoUYY1G0JK0KHtBQ==",
+  ],
+  [
+    "sha256:3384b690697f26b2f4c29d3fbeb8eb6f89757adaabe72a672413d73e19b575bd",
+    "Wsz1KszkBZ4zsP2pbpj/RrK0vqYZ1RwaHBxk10Ren6IObQgGOGmOXllqvL5Sd3BUc0Rf4YkRULUKmX+YB9D3Cw==",
+  ],
+  [
+    "sha256:dce930ec1720ac81a2a00bdc917b0286bd77a62098b558d864fa232be678becf",
+    "y0s6dT2KyBZxnm06DMZ+7zuWr17kaBkXZzRtIwUIFgRaIWvLsLk5KsbOz0OVDCepomIZ8TkAcfayEeErTzVyAQ==",
+  ],
+  [
+    "sha256:8cc0c739500a35ffaac74ec4eead29d3bd30accf4c32454cb60d52c2695bee44",
+    "rOw0a1/UY1SyqRZUSx8Qubvv5xqxj8zIQ133t6oPe+PRSswninJ7Yfye/GRMzcylDHRnkCdKc1LCfOlPD0krBQ==",
+  ],
+  [
+    "sha256:b7d1cf04e401c9f651f22603a6c12a3a09134a9aca75f450be69885912ef94cc",
+    "jmYY+abTJK2K/9oQeYE0HbZVObvASZlfMJ7hHZzpk5hpFhSdS8bcpJulGfvUbXC0BmnHu2t8niCFlSSPG31JAw==",
+  ],
+  [
+    "sha256:fcd1ebbd5fe09b6d0b161b80dcc9934632d40d9f120c6ed0743e29752945b31c",
+    "KAb6SM2TpQmPWQ92gX9a5T4RgtW6zS1evKC6P9m7n6oPZwZATlhgcQqL9W+Z27MtoUl7PqCFGIwanwhjKECUAQ==",
+  ],
+  [
+    "sha256:9b14887ff5dcf7958b16062bea045b7a7ef06b519b77193696cfd904f31a0f0b",
+    "uNoV0/NdLSde/f0YxunPvsIqwsXqtYEkpGnDtd6iZ+TgsNCn7pGb61/kLLXfYIG7HjwSPA08o2VCBgYG5AmTBg==",
+  ],
+  [
+    "sha256:23276662c541fa8749d60d5504bb1cb3f9f3b07d25ad638b0a0a4292eed641f1",
+    "OA9TbUafQgGn27i/bIRSCQpXcebwyhbDBAK3dNctE4aR+UUxrYOsa6MjfLVucOO954PEjkZBY6FKl4BpGFZNDQ==",
+  ],
+  [
+    "sha256:c3ce3bde0935865788edd759c06400d0b5ce502748d95e1d9615018a4ed88f41",
+    "aAXSc6JxXcT8dLlC5vhrHWU4PDmV4IK0vlwFH7s12Z2ATjDhQC4C5Ek0Say2G4Zsymf4uhyOmmf7ThkZ7/ZkBw==",
+  ],
+  [
+    "sha256:b71e272e978fec326a098a9fe4d227a071c75c6b33f9d7e38ab7795e92090b14",
+    "itRaIlgQ/wsErRWtbPLjmBwy+YlFfBYs6cBXcDBofzQBmh739tD2JlHpO6ubhJhy9HTyaRzml7xfldwJLbpkAA==",
+  ],
+  [
+    "sha256:beeeedb155e6162b50db453d3ada81d193ece7b640e4c61cb1a480e0d1763ae9",
+    "jr7FnOoQZdav4m/MEE8FSre0uiv+joWw78hBaVxPXc5Pg4sxQKwrOsaTG3c/2rKkqYw1P/aez+3pwf/wW/RPAw==",
+  ],
+  [
+    "sha256:8fcba42b7e0c954dc3647c103e83019cf04b0a58c72cb075a953873bfd79cb29",
+    "ZDIA87msjRFvZWGy43/DTzxOkm/KYa+GBLfo5SN+yKiXHYjRju37Rz1E3E3uuDJeh80ZfzsibQx/gZuqID2ZAg==",
+  ],
+  [
+    "sha256:485784a7f2f6a7d81a07aa6ec81dc4aacc5f6acce2cb0652f1ef45209df93d28",
+    "RQlczVn/dNAmRJBD3BSVKD4p5BECf5kcYTEcz//3xWWZJoCTfqFEyf2IFEc/EWUWMD18+NQ2p5fjKydTIvHFCA==",
+  ],
+  [
+    "sha256:f3ec21e07c5dae9cee2fe40ce3279cce7ae79839cb1ef6d740ae9c998a3f006e",
+    "mK151wX6kLRG3W2Lw9zDko7zHd0DwKAeN7GBV/VRtMGCRdVPI/yJIa4eJ5xeqsSosdL3xJcVcsK+df/J0X6QDA==",
+  ],
+  [
+    "sha256:b432212e63a221763a1fbbdd364a218c8bbbda19d57d157460fe3abffbf4786e",
+    "FvXHb/MIc02/19TZ3A7XNDI4Fx2weD/T5IO27i1/skF1dKkmTkdoNGEX1vfGzt53n3iniaScnTwqUxoH2kQoAQ==",
+  ],
+  [
+    "sha256:59c1035e6178ed49a4e1b67d1de424c733f2edf285ec57623fbb9c620436f7ad",
+    "RRmAp4iiClUHx8oZwDW9LqtmhrA4ye9lFdz+vOoYKSXdYOwj75ZrMKbr3GslsU2/heIGRnCs/3J1nIXHpb0IBQ==",
+  ],
+  [
+    "sha256:84e47053ff8b75b7f51979bca8f18973221f1128c7531f88bb3532c8fc19c535",
+    "SISOKwDhSXWB7F2ONd/RuNDixpPkXXlddul+ttaMXku0dUTOZjSqfVsSBgkM6sM5SNw1SXySefHFYN85aW5gDw==",
+  ],
+  [
+    "sha256:44ec05a7000b5d31f6c5f1ad484ae832e4d97f3bdcad54939d638fe5f0512b93",
+    "+yq6dpR+5Ikupwp3zLvIrvBZ3yuzg2LdMp5TeN40dl6TGlvROjmoJTPGBPNwnkLgUWGo88zsUS42A36ScZTgBQ==",
+  ],
+  [
+    "sha256:1c75118b4f50d4aa774c8afd36e079ca9a91339eccb75755b9ef8e40a194af1d",
+    "UOr9Q9UvLodUldC35MI8xvKPaIzJlM4BOvex7fI88M+4/4MCc/RdhtzVbPTvppmdb+avhLzy0Lp+J3gqZKGEAg==",
+  ],
+  [
+    "sha256:3461cc467b2f15633883e1beac3e52747b8a071d220fb16584b516efa28e01e5",
+    "cMXvfjmKt5S+3Odqma1XX6XtYWQkjZXwTIhpjvbmGeA+iCfLLH2PbsSzu19mnPgGxtWUa2dU0SMT2/knsDnpCA==",
+  ],
+  [
+    "sha256:d9637406b1cc48ea8c6c207dcf3ea1cd4cd8ae6cfbd661a406f30d79a958a86c",
+    "qvtodq4M+YsJ9Y2y5AgUO16Ov/fhgGbuKi23KoMOoQTu/eRTza+aIkd0m/Nom1ualhb9mEgziMaPTKtALNqIAQ==",
+  ],
+]);
+
+/** Return the static authority signature for one product-owned test declaration. */
+export const powerPlanSignature = (input: Omit<PairedPowerPlanInput, "signature">): string =>
+  signatures.get(pairedPowerPlanSigningDigest(input)) ?? "MISSING_TEST_SIGNATURE";

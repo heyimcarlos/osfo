@@ -73,7 +73,7 @@ describe("Model Quality evidence manifests", () => {
         },
       },
       outputSignature:
-        "bmlX+f4BqqLvJGbxsSVmMzzvZtM5/is99erC0Vwzb8DBctEcp7b0QuS5KJJY4j2OzEzNW8h0b4nJhWXcK02vCQ==",
+        "Z7WRr7vcjzUZpCWqfl8abnO4aVHMmA1PCMxS5I9ShD5TmH0c6pghsfjMxoXREmX3VG1YiIaPvru7GiG+Q3fLBg==",
       powerCalculationDigest: testPowerDigest,
       providerModelId: "pinned-model-2026-08-01",
       rubricDigest,
@@ -81,7 +81,7 @@ describe("Model Quality evidence manifests", () => {
       sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
     };
     expect(evaluationOutputSigningDigest(input)).toBe(
-      "sha256:b3f3de67f3f53fc28305aae74e25eb8e760ab847e437245926b8363798dda6c3",
+      "sha256:b0b14cdf7e80e60dd2231174638d7cb2fb6b290f712d018c65534e452f420c7e",
     );
     const result = createEvaluationManifest(input);
 
@@ -259,7 +259,7 @@ const makeManifestInput = () => ({
     },
   },
   outputSignature:
-    "bmlX+f4BqqLvJGbxsSVmMzzvZtM5/is99erC0Vwzb8DBctEcp7b0QuS5KJJY4j2OzEzNW8h0b4nJhWXcK02vCQ==",
+    "Z7WRr7vcjzUZpCWqfl8abnO4aVHMmA1PCMxS5I9ShD5TmH0c6pghsfjMxoXREmX3VG1YiIaPvru7GiG+Q3fLBg==",
   powerCalculationDigest: testPowerDigest,
   providerModelId: "pinned-model-2026-08-01",
   rubricDigest,

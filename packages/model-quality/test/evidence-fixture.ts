@@ -8,7 +8,12 @@ import {
   type BehaviorConfiguration,
 } from "../src/manifest";
 import { createReleasePass } from "../src/release-verdict";
-import { createPairedPowerPlan, type CaseRunScores } from "../src/statistics";
+import {
+  createPairedPowerPlan,
+  type CaseRunScores,
+  type PairedPowerPlanInput,
+} from "../src/statistics";
+import { powerPlanSignature } from "./power-signatures";
 
 const reviewedJourneys = [
   "ordinary",
@@ -102,17 +107,30 @@ const pairedPlan = (
   margin: number,
   pilotCases: typeof developmentCases,
 ) => {
+  const pilotBaselineByCase = pilotCases.map((item) => ({
+    caseId: item.id,
+    fixtureDigest: digestValue("fixture", item.fixture),
+    runs: Array.from({ length: item.repetitions }, () => 0),
+  }));
+  const pilotCandidateByCase = pilotCases.map((item, index) => ({
+    caseId: item.id,
+    fixtureDigest: digestValue("fixture", item.fixture),
+    runs: Array.from({ length: item.repetitions }, () => (index < pilotCases.length * 0.8 ? 1 : 0)),
+  }));
+  const unsigned = {
+    authorityId: "quality-power-owner-1",
+    candidateEvaluationStartedAt: "2026-08-17T00:00:00.000Z",
+    caseIds,
+    corpusDigest: initialCorpusManifest.contentDigest,
+    declaredAt: "2026-08-16T00:00:00.000Z",
+    margin,
+    pilotBaselineByCase,
+    pilotCandidateByCase,
+  } satisfies Omit<PairedPowerPlanInput, "signature">;
   const result = createPairedPowerPlan(
     {
-      candidateEvaluationStartedAt: "2026-08-17T00:00:00.000Z",
-      caseIds,
-      declaredAt: "2026-08-16T00:00:00.000Z",
-      margin,
-      pilotObservations: pilotCases.map((item, index) => ({
-        caseId: item.id,
-        difference: index < pilotCases.length * 0.8 ? 1 : 0,
-        fixtureDigest: digestValue("fixture", item.fixture),
-      })),
+      ...unsigned,
+      signature: powerPlanSignature(unsigned),
     },
     initialCorpusManifest,
   );
@@ -151,7 +169,7 @@ export const testStratumPairedEvidence = reviewedJourneys.flatMap((journey) =>
 );
 const parsedGateVerdictDigest = parseEvidenceDigest(
   "gate-verdict",
-  "sha256:5d940c8cbd5641253ca75a47b540633fab3dfa508a7d78f646823d9327d7f577",
+  "sha256:f367bf8c3328399422e50cd930e7f26f58fac72d88de880446233e1d8400b64c",
 );
 if (parsedGateVerdictDigest.kind === "error") throw new Error("Static gate digest is invalid.");
 export const testGateVerdictDigest = parsedGateVerdictDigest.value;
@@ -174,7 +192,7 @@ export const passingEvaluationManifest = (overrides?: {
   readonly outputSignature?: string;
 }) => {
   const humanReview = passingHumanReviewAssessment();
-  const result = createEvaluationManifest({
+  const input = {
     approvedBaseline: {
       approvedAt: "2026-08-16T00:00:00.000Z",
       approverId: "quality-owner-1",
@@ -211,13 +229,14 @@ export const passingEvaluationManifest = (overrides?: {
     },
     outputSignature:
       overrides?.outputSignature ??
-      "bmlX+f4BqqLvJGbxsSVmMzzvZtM5/is99erC0Vwzb8DBctEcp7b0QuS5KJJY4j2OzEzNW8h0b4nJhWXcK02vCQ==",
+      "Z7WRr7vcjzUZpCWqfl8abnO4aVHMmA1PCMxS5I9ShD5TmH0c6pghsfjMxoXREmX3VG1YiIaPvru7GiG+Q3fLBg==",
     powerCalculationDigest: testPowerDigest,
     providerModelId: "pinned-model-2026-08-01",
     rubricDigest: testRubricDigest,
     releaseId: "release-1",
     sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
-  });
+  };
+  const result = createEvaluationManifest(input);
   if (result.kind === "error") throw new Error(result.error.message);
   return result.value;
 };

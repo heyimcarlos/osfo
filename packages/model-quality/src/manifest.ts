@@ -270,7 +270,7 @@ MCowBQYDK2VwAyEAbM5VhS3D2z1GkbpJXOOYIyFsR0VgibH6w+yLQCGUduo=
 -----END PUBLIC KEY-----`;
 
 const outputEvidencePublicKey = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAfd2Pwlf37dcAAdg5Z5qXuqXxVh+1kTW4SzDsYm+0eiQ=
+MCowBQYDK2VwAyEAvtNhpYEvQk3Z/E68DRPFfPjPcymXaRscaJ1FKlQhfMg=
 -----END PUBLIC KEY-----`;
 
 const verifyBaselineApproval = (approval: EvaluationManifestInput["approvedBaseline"]): boolean =>

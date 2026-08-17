@@ -8,7 +8,9 @@ import {
   exactBinomialUpperBound,
   pairedNonInferiority,
   requiredPairedCaseCount,
+  type PairedPowerPlanInput,
 } from "../src/statistics";
+import { powerPlanSignature } from "./power-signatures";
 
 describe("Model Quality statistics", () => {
   it("calculates one-sided exact-binomial upper confidence bounds", () => {
@@ -83,15 +85,25 @@ describe("Model Quality statistics", () => {
         powerPlan: powerPlan(1, { discordanceRate: 0, margin: 0.02 }),
       }),
     ).toEqual({
-      error: { _tag: "InvalidStatisticsInput", message: "Paired case identities must match." },
+      error: {
+        _tag: "InvalidStatisticsInput",
+        message: "Paired case identities must match.",
+      },
       kind: "error",
     });
   });
 
   it("returns tagged errors for non-finite statistical inputs", () => {
     expect(
-      exactBinomialUpperBound({ confidence: Number.NaN, failures: 0, total: 299 }),
-    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+      exactBinomialUpperBound({
+        confidence: Number.NaN,
+        failures: 0,
+        total: 299,
+      }),
+    ).toMatchObject({
+      error: { _tag: "InvalidStatisticsInput" },
+      kind: "error",
+    });
     expect(
       requiredPairedCaseCount({
         anticipatedDifference: Number.NaN,
@@ -99,7 +111,10 @@ describe("Model Quality statistics", () => {
         margin: 0.02,
         pilotIndependentCases: 100,
       }),
-    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+    ).toMatchObject({
+      error: { _tag: "InvalidStatisticsInput" },
+      kind: "error",
+    });
   });
 
   it("rejects impossible anticipated differences before power calculation", () => {
@@ -110,7 +125,10 @@ describe("Model Quality statistics", () => {
         margin: 0.02,
         pilotIndependentCases: 100,
       }),
-    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+    ).toMatchObject({
+      error: { _tag: "InvalidStatisticsInput" },
+      kind: "error",
+    });
     expect(
       requiredPairedCaseCount({
         anticipatedDifference: 2,
@@ -118,7 +136,10 @@ describe("Model Quality statistics", () => {
         margin: 0.02,
         pilotIndependentCases: 100,
       }),
-    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+    ).toMatchObject({
+      error: { _tag: "InvalidStatisticsInput" },
+      kind: "error",
+    });
   });
 
   it("rejects selected runs that omit required ordinary or safety repetitions", () => {
@@ -141,15 +162,17 @@ describe("Model Quality statistics", () => {
           },
         ],
         corpusManifest: initialCorpusManifest,
-        powerPlan: unwrapPowerPlan({
-          candidateEvaluationStartedAt: "2026-08-17T00:00:00.000Z",
-          caseIds: [safetyCase.id],
-          declaredAt: "2026-08-16T00:00:00.000Z",
-          margin: 0.05,
-          pilotObservations: pilotObservations(0),
-        }),
+        powerPlan: unwrapPowerPlan(
+          powerPlanInputForCaseIds([safetyCase.id], {
+            discordanceRate: 0,
+            margin: 0.05,
+          }),
+        ),
       }),
-    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+    ).toMatchObject({
+      error: { _tag: "InvalidStatisticsInput" },
+      kind: "error",
+    });
   });
 
   it("rejects development cases from final paired power even when both arms match", () => {
@@ -160,39 +183,74 @@ describe("Model Quality statistics", () => {
     expect(
       createPairedPowerPlan(
         {
-          candidateEvaluationStartedAt: "2026-08-17T00:00:00.000Z",
+          ...powerPlanInput(1, { discordanceRate: 0, margin: 0.05 }),
           caseIds: [developmentCase.id],
-          declaredAt: "2026-08-16T00:00:00.000Z",
-          margin: 0.05,
-          pilotObservations: pilotObservations(0),
         },
         initialCorpusManifest,
       ),
-    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+    ).toMatchObject({
+      error: { _tag: "InvalidStatisticsInput" },
+      kind: "error",
+    });
   });
 
   it("derives final power only from product-owned pilot observations", () => {
     const firstSealed = sealedCases[0];
-    const observations = pilotObservations(0.1);
-    const firstPilot = observations[0];
+    const evidence = pilotEvidence(0.1);
+    const firstPilot = evidence.pilotBaselineByCase[0];
     if (firstSealed === undefined || firstPilot === undefined) {
       throw new Error("Pilot and sealed cases are required.");
     }
     expect(
       createPairedPowerPlan(
         {
-          candidateEvaluationStartedAt: "2026-08-17T00:00:00.000Z",
-          caseIds: [firstSealed.id],
-          declaredAt: "2026-08-16T00:00:00.000Z",
-          margin: 0.05,
-          pilotObservations: [
-            { ...firstPilot, fixtureDigest: digestValue("fixture", "caller-pilot") },
-            ...observations.slice(1),
+          ...powerPlanInput(1, { discordanceRate: 0.1, margin: 0.05 }),
+          ...evidence,
+          pilotBaselineByCase: [
+            {
+              ...firstPilot,
+              fixtureDigest: digestValue("fixture", "caller-pilot"),
+            },
+            ...evidence.pilotBaselineByCase.slice(1),
           ],
         },
         initialCorpusManifest,
       ),
-    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+    ).toMatchObject({
+      error: { _tag: "InvalidStatisticsInput" },
+      kind: "error",
+    });
+  });
+
+  it("rejects invented pilot outcomes and backdated declarations without authority signatures", () => {
+    const signed = powerPlanInput(1, { discordanceRate: 0.1, margin: 0.05 });
+    const forgedRuns = signed.pilotCandidateByCase.map((item, index) =>
+      index === 0 ? { ...item, runs: item.runs.map(() => 0) } : item,
+    );
+    expect(
+      createPairedPowerPlan({ ...signed, pilotCandidateByCase: forgedRuns }, initialCorpusManifest),
+    ).toMatchObject({
+      error: { _tag: "InvalidStatisticsInput" },
+      kind: "error",
+    });
+    expect(
+      createPairedPowerPlan(
+        { ...signed, declaredAt: "2026-08-15T00:00:00.000Z" },
+        initialCorpusManifest,
+      ),
+    ).toMatchObject({
+      error: { _tag: "InvalidStatisticsInput" },
+      kind: "error",
+    });
+    expect(
+      createPairedPowerPlan(
+        { ...signed, corpusDigest: digestValue("corpus", "different-corpus") },
+        initialCorpusManifest,
+      ),
+    ).toMatchObject({
+      error: { _tag: "InvalidStatisticsInput" },
+      kind: "error",
+    });
   });
 
   it("rejects a caller-rehashed power plan that replaces a sealed case", () => {
@@ -214,7 +272,10 @@ describe("Model Quality statistics", () => {
           contentDigest: digestValue("power-calculation", forgedUnsigned),
         },
       }),
-    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+    ).toMatchObject({
+      error: { _tag: "InvalidStatisticsInput" },
+      kind: "error",
+    });
   });
 
   it("rejects a caller-rehashed required case count", () => {
@@ -232,7 +293,10 @@ describe("Model Quality statistics", () => {
           contentDigest: digestValue("power-calculation", forgedUnsigned),
         },
       }),
-    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+    ).toMatchObject({
+      error: { _tag: "InvalidStatisticsInput" },
+      kind: "error",
+    });
   });
 
   it("rejects different fixture digests between paired arms", () => {
@@ -242,11 +306,19 @@ describe("Model Quality statistics", () => {
     expect(
       pairedNonInferiority({
         baselineByCase: baseline,
-        candidateByCase: [{ ...first, fixtureDigest: digestValue("fixture", "different-fixture") }],
+        candidateByCase: [
+          {
+            ...first,
+            fixtureDigest: digestValue("fixture", "different-fixture"),
+          },
+        ],
         corpusManifest: initialCorpusManifest,
         powerPlan: powerPlan(1, { discordanceRate: 0, margin: 0.05 }),
       }),
-    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+    ).toMatchObject({
+      error: { _tag: "InvalidStatisticsInput" },
+      kind: "error",
+    });
   });
 });
 
@@ -271,26 +343,53 @@ const caseScores = (scores: ReadonlyArray<number>) =>
 const powerPlan = (
   count: number,
   overrides: { readonly discordanceRate: number; readonly margin: number },
-) =>
-  unwrapPowerPlan({
+) => unwrapPowerPlan(powerPlanInput(count, overrides));
+
+export const powerPlanInput = (
+  count: number,
+  overrides: { readonly discordanceRate: number; readonly margin: number },
+): PairedPowerPlanInput =>
+  powerPlanInputForCaseIds(
+    sealedCases.slice(0, count).map((item) => item.id),
+    overrides,
+  );
+
+const powerPlanInputForCaseIds = (
+  caseIds: ReadonlyArray<string>,
+  overrides: { readonly discordanceRate: number; readonly margin: number },
+): PairedPowerPlanInput => {
+  const unsigned = {
+    authorityId: "quality-power-owner-1",
     candidateEvaluationStartedAt: "2026-08-17T00:00:00.000Z",
-    caseIds: sealedCases.slice(0, count).map((item) => item.id),
+    caseIds,
+    corpusDigest: initialCorpusManifest.contentDigest,
     declaredAt: "2026-08-16T00:00:00.000Z",
     margin: overrides.margin,
-    pilotObservations: pilotObservations(overrides.discordanceRate),
-  });
+    ...pilotEvidence(overrides.discordanceRate),
+  } satisfies Omit<PairedPowerPlanInput, "signature">;
+  return { ...unsigned, signature: powerPlanSignature(unsigned) };
+};
 
-const pilotObservations = (discordanceRate: number) => {
+const pilotEvidence = (discordanceRate: number) => {
   const cases = initialCorpusManifest.cases
     .filter((item) => item.split === "development")
     .slice(0, 100);
   const discordantCases = discordanceRate * cases.length;
-  return cases.map((item, index) => ({
+  const pilotBaselineByCase = cases.map((item) => ({
     caseId: item.id,
-    difference: index < discordantCases / 2 ? 1 : index < discordantCases ? -1 : 0,
     fixtureDigest:
       item.split === "development" ? digestValue("fixture", item.fixture) : neverCase(),
+    runs: Array.from({ length: item.repetitions }, () => 0.5),
   }));
+  const pilotCandidateByCase = cases.map((item, index) => ({
+    caseId: item.id,
+    fixtureDigest:
+      item.split === "development" ? digestValue("fixture", item.fixture) : neverCase(),
+    runs: Array.from({ length: item.repetitions }, () =>
+      index < discordantCases / 2 ? 1 : index < discordantCases ? 0 : 0.5,
+    ),
+  }));
+  return { pilotBaselineByCase, pilotCandidateByCase };
 };
 
 const neverCase = (): never => {

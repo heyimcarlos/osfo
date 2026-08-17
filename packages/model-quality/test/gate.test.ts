@@ -317,14 +317,14 @@ describe("Model Quality Gate", () => {
     const gateVerdictDigest = gateVerdictEvidenceDigest(changed);
     const expectedDigest = parseEvidenceDigest(
       "gate-verdict",
-      "sha256:fcf68b3725c079d83608d75baa793969b999d1b6b004362fcf00c6fe8544b18f",
+      "sha256:5573616f465dd85d45f4689e67af1c36165f38abb2e3bd67e48df8baa3a4869d",
     );
     if (expectedDigest.kind === "error") throw new Error("Static human gate digest is invalid.");
     expect(gateVerdictDigest).toBe(expectedDigest.value);
     const manifest = passingEvaluationManifest({
       gateVerdictDigest,
       outputSignature:
-        "BBVSEVY3+3ikywvsAo/1xYN5tYAQ/CJSSNnd3XO5E7uBAtGXpnMomIhvZ3U8E9FkmbaMNJJ0s3OmhLK/R+l7Dw==",
+        "/3rklcb74zjujHsEEFG/GmHEPtsjtpy+FRwXbxyoa75+4rd5mj7FdqRfEKZnuzl7g35RCWB1Lyz8XdXCQlaSDQ==",
     });
     expect(
       evaluateModelQualityGate({

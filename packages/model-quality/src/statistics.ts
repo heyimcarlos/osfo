@@ -1,5 +1,14 @@
+import { verify as verifySignature } from "node:crypto";
+
 import { verifyCorpusManifest, type CorpusLineage, type CorpusManifest } from "./corpus";
-import { parseCaseId, parseEvidenceInstant, type CaseId, type EvidenceInstant } from "./identity";
+import {
+  parseApprovalId,
+  parseCaseId,
+  parseEvidenceInstant,
+  type ApprovalId,
+  type CaseId,
+  type EvidenceInstant,
+} from "./identity";
 import { digestValue, type EvidenceDigest } from "./manifest";
 
 /** PASS, FAIL, and MISSING evidence states used by quality calculations. */
@@ -134,7 +143,10 @@ export const verifyCompleteCorpusRuns = (
     return false;
   const expected = new Map<
     string,
-    { readonly fixtureDigest: EvidenceDigest<"fixture">; readonly repetitions: 3 | 5 }
+    {
+      readonly fixtureDigest: EvidenceDigest<"fixture">;
+      readonly repetitions: 3 | 5;
+    }
   >(
     corpusManifest.cases.map((item) => [
       item.id,
@@ -160,37 +172,58 @@ export const verifyCompleteCorpusRuns = (
   });
 };
 
-/** One product-owned initial-run observation used to estimate paired power. */
-export type PilotObservationInput = {
-  readonly caseId: string;
-  readonly difference: number;
-  readonly fixtureDigest: EvidenceDigest<"fixture">;
-};
-
-/** Parsed initial-run observation bound to one development fixture. */
-export type PilotObservation = Omit<PilotObservationInput, "caseId" | "difference"> & {
+/** Parsed initial-run observation derived from signed paired development runs. */
+export type PilotObservation = {
   readonly caseId: CaseId;
   readonly difference: -1 | 0 | 1;
+  readonly fixtureDigest: EvidenceDigest<"fixture">;
 };
 
 /** Inputs fixed before candidate evaluation for final paired power. */
 export type PairedPowerPlanInput = {
+  readonly authorityId: string;
   readonly candidateEvaluationStartedAt: string;
   readonly caseIds: ReadonlyArray<string>;
+  readonly corpusDigest: EvidenceDigest<"corpus">;
   readonly declaredAt: string;
   readonly margin: number;
-  readonly pilotObservations: ReadonlyArray<PilotObservationInput>;
+  readonly pilotBaselineByCase: ReadonlyArray<CaseRunScores>;
+  readonly pilotCandidateByCase: ReadonlyArray<CaseRunScores>;
+  readonly signature: string;
 };
 
 /** Immutable final-power plan bound to sealed corpus cases. */
 export type PairedPowerPlan = ParsedPairedPowerInput & {
+  readonly authorityId: ApprovalId;
   readonly candidateEvaluationStartedAt: EvidenceInstant;
   readonly caseIds: ReadonlyArray<CaseId>;
   readonly contentDigest: EvidenceDigest<"power-calculation">;
   readonly corpusDigest: EvidenceDigest<"corpus">;
   readonly declaredAt: EvidenceInstant;
+  readonly pilotBaselineByCase: ReadonlyArray<CaseRunScores>;
+  readonly pilotCandidateByCase: ReadonlyArray<CaseRunScores>;
   readonly pilotObservations: ReadonlyArray<PilotObservation>;
+  readonly pilotRunEvidenceDigest: EvidenceDigest<"scores">;
   readonly requiredCases: number;
+  readonly signature: string;
+};
+
+const powerPlanAuthorityIds = new Set(["quality-power-owner-1"]);
+
+const powerPlanAuthorityPublicKey = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAYmDUW0aBFMQmi3lGHgfcyNy2B3p1eXmZb3B41/HtDss=
+-----END PUBLIC KEY-----`;
+
+/** Produce the canonical digest signed by the independent power-plan authority. */
+export const pairedPowerPlanSigningDigest = (
+  input: PairedPowerPlanInput | Omit<PairedPowerPlanInput, "signature">,
+): EvidenceDigest<"power-calculation"> => {
+  if ("signature" in input) {
+    const { signature: ignoredSignature, ...unsigned } = input;
+    void ignoredSignature;
+    return digestValue("power-calculation", unsigned);
+  }
+  return digestValue("power-calculation", input);
 };
 
 /** Create the sealed holdout power plan before candidate evaluation starts. */
@@ -199,19 +232,35 @@ export const createPairedPowerPlan = (
   corpusManifest: CorpusManifest,
   corpusLineage: CorpusLineage = [],
 ): StatisticsResult<PairedPowerPlan> => {
-  const powerInput = parsePilotPowerInput(input.pilotObservations, input.margin, corpusManifest);
-  if (powerInput.kind === "error") return powerInput;
   if (!verifyCorpusManifest(corpusManifest, corpusLineage)) {
     return invalidStatistics("The corpus manifest content digest does not match.");
   }
+  const pilotEvidence = parsePilotRunEvidence(
+    input.pilotBaselineByCase,
+    input.pilotCandidateByCase,
+    corpusManifest,
+  );
+  if (pilotEvidence.kind === "error") return pilotEvidence;
+  const powerInput = parsePilotPowerInput(pilotEvidence.value, input.margin);
+  if (powerInput.kind === "error") return powerInput;
   const declaredAt = parseEvidenceInstant(input.declaredAt);
   const candidateStartedAt = parseEvidenceInstant(input.candidateEvaluationStartedAt);
+  const authorityId = parseApprovalId(input.authorityId);
   if (
     declaredAt.kind === "error" ||
     candidateStartedAt.kind === "error" ||
-    Date.parse(declaredAt.value) >= Date.parse(candidateStartedAt.value)
+    authorityId.kind === "error" ||
+    input.corpusDigest !== corpusManifest.contentDigest ||
+    Date.parse(declaredAt.value) >= Date.parse(candidateStartedAt.value) ||
+    !powerPlanAuthorityIds.has(input.authorityId) ||
+    !verifySignature(
+      null,
+      Buffer.from(pairedPowerPlanSigningDigest(input)),
+      powerPlanAuthorityPublicKey,
+      Buffer.from(input.signature, "base64"),
+    )
   ) {
-    return invalidStatistics("Power must be declared before candidate evaluation starts.");
+    return invalidStatistics("Power evidence must be signed and declared before evaluation.");
   }
   const uniqueIds = new Set(input.caseIds);
   const parsedCaseIds = input.caseIds.map(parseCaseId);
@@ -231,30 +280,26 @@ export const createPairedPowerPlan = (
   const caseIds = parsedCaseIds.flatMap((result) =>
     result.kind === "success" ? [result.value] : [],
   );
-  const pilotObservations = input.pilotObservations.flatMap((observation) => {
-    const caseId = parseCaseId(observation.caseId);
-    const difference = observation.difference;
-    return caseId.kind === "success" && (difference === -1 || difference === 0 || difference === 1)
-      ? [
-          Object.freeze({
-            caseId: caseId.value,
-            difference,
-            fixtureDigest: observation.fixtureDigest,
-          }),
-        ]
-      : [];
+  const pilotObservations = pilotEvidence.value;
+  const pilotBaselineByCase = freezeCaseRuns(input.pilotBaselineByCase);
+  const pilotCandidateByCase = freezeCaseRuns(input.pilotCandidateByCase);
+  const pilotRunEvidenceDigest = digestValue("scores", {
+    baselineByCase: pilotBaselineByCase,
+    candidateByCase: pilotCandidateByCase,
   });
-  if (pilotObservations.length !== input.pilotObservations.length) {
-    return invalidStatistics("Parsed pilot observations are incomplete.");
-  }
   const unsigned = Object.freeze({
     ...powerInput.value,
+    authorityId: authorityId.value,
     candidateEvaluationStartedAt: candidateStartedAt.value,
     caseIds: Object.freeze(caseIds),
     corpusDigest: corpusManifest.contentDigest,
     declaredAt: declaredAt.value,
+    pilotBaselineByCase,
+    pilotCandidateByCase,
     pilotObservations: Object.freeze(pilotObservations),
+    pilotRunEvidenceDigest,
     requiredCases: requiredCases.value,
+    signature: input.signature,
   });
   return {
     kind: "success",
@@ -299,7 +344,10 @@ export const pairedNonInferiority = (
       .filter((item) => item.split === "sealed-holdout")
       .map((item) => [
         item.id,
-        { fixtureDigest: item.fixture.contentDigest, repetitions: item.repetitions },
+        {
+          fixtureDigest: item.fixture.contentDigest,
+          repetitions: item.repetitions,
+        },
       ]),
   );
   const baseline = parseCaseScores(input.baselineByCase, sealedCases);
@@ -351,7 +399,10 @@ const parseCaseScores = (
   cases: ReadonlyArray<CaseRunScores>,
   sealedCases: ReadonlyMap<
     string,
-    { readonly fixtureDigest: EvidenceDigest<"fixture">; readonly repetitions: 3 | 5 }
+    {
+      readonly fixtureDigest: EvidenceDigest<"fixture">;
+      readonly repetitions: 3 | 5;
+    }
   >,
 ): StatisticsResult<ReadonlyMap<string, number>> => {
   const scores = new Map<string, number>();
@@ -376,7 +427,12 @@ const parseCaseScores = (
 const powerPlanIsValid = (plan: PairedPowerPlan, corpusManifest: CorpusManifest): boolean => {
   const { contentDigest, ...unsigned } = plan;
   const parsed = parsePairedPowerInput(plan);
-  const pilotInput = parsePilotPowerInput(plan.pilotObservations, plan.margin, corpusManifest);
+  const pilotInput = parsePilotPowerInput(plan.pilotObservations, plan.margin);
+  const pilotEvidence = parsePilotRunEvidence(
+    plan.pilotBaselineByCase,
+    plan.pilotCandidateByCase,
+    corpusManifest,
+  );
   const declaredAt = parseEvidenceInstant(plan.declaredAt);
   const candidateStartedAt = parseEvidenceInstant(plan.candidateEvaluationStartedAt);
   const parsedCaseIds = plan.caseIds.map(parseCaseId);
@@ -387,6 +443,16 @@ const powerPlanIsValid = (plan: PairedPowerPlan, corpusManifest: CorpusManifest)
   return (
     parsed.kind === "success" &&
     pilotInput.kind === "success" &&
+    pilotEvidence.kind === "success" &&
+    digestValue("scores", {
+      baselineByCase: plan.pilotBaselineByCase,
+      candidateByCase: plan.pilotCandidateByCase,
+    }) === plan.pilotRunEvidenceDigest &&
+    digestValue("power-calculation", plan.pilotObservations) ===
+      digestValue(
+        "power-calculation",
+        pilotEvidence.kind === "success" ? pilotEvidence.value : [],
+      ) &&
     pilotInput.value.anticipatedDifference === plan.anticipatedDifference &&
     pilotInput.value.discordanceRate === plan.discordanceRate &&
     pilotInput.value.pilotIndependentCases === plan.pilotIndependentCases &&
@@ -400,28 +466,39 @@ const powerPlanIsValid = (plan: PairedPowerPlan, corpusManifest: CorpusManifest)
     parsedCaseIds.every((result) => result.kind === "success") &&
     plan.caseIds.every((caseId) => sealedIds.has(caseId)) &&
     plan.corpusDigest === corpusManifest.contentDigest &&
+    powerPlanAuthorityIds.has(plan.authorityId) &&
+    verifySignature(
+      null,
+      Buffer.from(
+        pairedPowerPlanSigningDigest({
+          authorityId: plan.authorityId,
+          candidateEvaluationStartedAt: plan.candidateEvaluationStartedAt,
+          caseIds: plan.caseIds,
+          corpusDigest: plan.corpusDigest,
+          declaredAt: plan.declaredAt,
+          margin: plan.margin,
+          pilotBaselineByCase: plan.pilotBaselineByCase,
+          pilotCandidateByCase: plan.pilotCandidateByCase,
+        }),
+      ),
+      powerPlanAuthorityPublicKey,
+      Buffer.from(plan.signature, "base64"),
+    ) &&
     contentDigest === digestValue("power-calculation", unsigned)
   );
 };
 
 const parsePilotPowerInput = (
-  observations: ReadonlyArray<PilotObservationInput>,
+  observations: ReadonlyArray<PilotObservation>,
   margin: number,
-  corpusManifest: CorpusManifest,
 ): StatisticsResult<ParsedPairedPowerInput> => {
-  const developmentCases = new Map<string, EvidenceDigest<"fixture">>(
-    corpusManifest.cases.flatMap((item) =>
-      item.split === "development" ? [[item.id, digestValue("fixture", item.fixture)]] : [],
-    ),
-  );
   if (
     observations.length === 0 ||
     new Set(observations.map((item) => item.caseId)).size !== observations.length ||
     observations.some(
       (item) =>
         parseCaseId(item.caseId).kind === "error" ||
-        (item.difference !== -1 && item.difference !== 0 && item.difference !== 1) ||
-        developmentCases.get(item.caseId) !== item.fixtureDigest,
+        (item.difference !== -1 && item.difference !== 0 && item.difference !== 1),
     )
   ) {
     return invalidStatistics("Paired power requires unique product-owned pilot observations.");
@@ -434,6 +511,67 @@ const parsePilotPowerInput = (
     pilotIndependentCases: observations.length,
   });
 };
+
+const parsePilotRunEvidence = (
+  baselineByCase: ReadonlyArray<CaseRunScores>,
+  candidateByCase: ReadonlyArray<CaseRunScores>,
+  corpusManifest: CorpusManifest,
+): StatisticsResult<ReadonlyArray<PilotObservation>> => {
+  const developmentCases = new Map<
+    string,
+    {
+      readonly fixtureDigest: EvidenceDigest<"fixture">;
+      readonly repetitions: 3 | 5;
+    }
+  >(
+    corpusManifest.cases.flatMap((item) =>
+      item.split === "development"
+        ? [
+            [
+              item.id,
+              {
+                fixtureDigest: digestValue("fixture", item.fixture),
+                repetitions: item.repetitions,
+              },
+            ],
+          ]
+        : [],
+    ),
+  );
+  const baseline = parseCaseScores(baselineByCase, developmentCases);
+  if (baseline.kind === "error") return baseline;
+  const candidate = parseCaseScores(candidateByCase, developmentCases);
+  if (candidate.kind === "error") return candidate;
+  const caseIds = [...baseline.value.keys()];
+  if (!sameCaseIdentities(caseIds, [...candidate.value.keys()])) {
+    return invalidStatistics("Signed pilot arms must contain identical development cases.");
+  }
+  const observations = caseIds.flatMap((caseId) => {
+    const parsedCaseId = parseCaseId(caseId);
+    const fixtureDigest = developmentCases.get(caseId)?.fixtureDigest;
+    const baselineScore = baseline.value.get(caseId);
+    const candidateScore = candidate.value.get(caseId);
+    if (
+      parsedCaseId.kind === "error" ||
+      fixtureDigest === undefined ||
+      baselineScore === undefined ||
+      candidateScore === undefined
+    ) {
+      return [];
+    }
+    const rawDifference = candidateScore - baselineScore;
+    const difference: -1 | 0 | 1 = rawDifference > 0 ? 1 : rawDifference < 0 ? -1 : 0;
+    return [Object.freeze({ caseId: parsedCaseId.value, difference, fixtureDigest })];
+  });
+  return observations.length === caseIds.length
+    ? success(Object.freeze(observations))
+    : invalidStatistics("Parsed pilot evidence became incomplete.");
+};
+
+const freezeCaseRuns = (runs: ReadonlyArray<CaseRunScores>): ReadonlyArray<CaseRunScores> =>
+  Object.freeze(
+    runs.map((item) => Object.freeze({ ...item, runs: Object.freeze([...item.runs]) })),
+  );
 
 const sameCaseIdentities = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean => {
   if (left.length !== right.length) return false;
@@ -488,4 +626,7 @@ const invalidStatistics = (message: string): StatisticsFailure => ({
   kind: "error",
 });
 
-const success = <T>(value: T): StatisticsResult<T> => ({ kind: "success", value });
+const success = <T>(value: T): StatisticsResult<T> => ({
+  kind: "success",
+  value,
+});
