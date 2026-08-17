@@ -256,7 +256,6 @@ const makeDependencies = (
 });
 
 const acceptanceInput = (): AgentAcceptanceInput => ({
-  authorization: authorization(),
   channelBindingId: ChannelBindingId.make("binding-1"),
   message: WhatsAppMessageText.make("Please help"),
   providerMessageId: ProviderMessageId.make("wamid.1"),

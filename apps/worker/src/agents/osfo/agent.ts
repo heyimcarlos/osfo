@@ -531,7 +531,7 @@ export class OsfoAgent extends Think<Env> {
     | ManagedRouteUnavailable
     | PlanPolicyNotFound
     | ThinkSubmissionUnavailable
-    | WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable
+    | WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable
   > {
     await this.#migrationsReady;
     const decoded = Schema.decodeResult(AgentAcceptanceInput)(input);
@@ -1047,7 +1047,7 @@ export class OsfoAgent extends Think<Env> {
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) {
       return Effect.fail(
-        new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({
+        new WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable({
           cause: invalidOsfoEnvironment,
           message: "Current WhatsApp authorization could not be checked",
         }),
@@ -1069,7 +1069,7 @@ export class OsfoAgent extends Think<Env> {
           ),
         ),
       catch: (cause) =>
-        new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({
+        new WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable({
           cause,
           message: "Current WhatsApp authorization could not be checked",
         }),

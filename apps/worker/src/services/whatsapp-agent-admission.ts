@@ -16,8 +16,8 @@ import { type AuthorizationContext, make as makeAuthorization } from "./authoriz
 import { admitManagedConversation, type ManagedConversationDenied } from "./managed-conversation";
 
 /** Expected failure when current WhatsApp authorization facts cannot be checked. */
-export class WhatsAppAuthorityUnavailable extends Schema.TaggedError<WhatsAppAuthorityUnavailable>()(
-  "WhatsAppAuthorityUnavailable",
+export class WhatsAppAuthorizationUnavailable extends Schema.TaggedError<WhatsAppAuthorizationUnavailable>()(
+  "WhatsAppAuthorizationUnavailable",
   { cause: Schema.Defect(), message: Schema.String },
 ) {}
 
@@ -81,7 +81,7 @@ export interface Interface<
   readonly authorization: {
     readonly inspect: (
       channelBindingId: ChannelBindingId,
-    ) => Effect.Effect<AuthorizationContext, WhatsAppAuthorityUnavailable>;
+    ) => Effect.Effect<AuthorizationContext, WhatsAppAuthorizationUnavailable>;
   };
   readonly store: {
     readonly inspect: () => Effect.Effect<{ readonly currentSessionId: SessionId }, StoreFailure>;

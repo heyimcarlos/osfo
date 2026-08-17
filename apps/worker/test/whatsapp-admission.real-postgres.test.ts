@@ -51,7 +51,7 @@ describe("WhatsApp admission with native PostgreSQL", () => {
                 submissions.add(input.submissionId);
                 const existing = receipts.get(input.submissionId);
                 if (existing !== undefined) return existing;
-                const receipt = receiptFromAcceptance(input);
+                const receipt = receiptFromAcceptance(input, seeded.allowancePeriodId);
                 receipts.set(input.submissionId, receipt);
                 return receipt;
               }),
@@ -119,9 +119,11 @@ describe("WhatsApp admission with native PostgreSQL", () => {
     withRealPostgresFixture(({ database }) =>
       Effect.scoped(
         Effect.gen(function* () {
-          yield* Effect.promise(() => seedBoundUser(database, "conflict", "14165550203"));
+          const seeded = yield* Effect.promise(() =>
+            seedBoundUser(database, "conflict", "14165550203"),
+          );
           const admission = yield* makeRealAdmission(database, (input) =>
-            Effect.succeed(receiptFromAcceptance(input)),
+            Effect.succeed(receiptFromAcceptance(input, seeded.allowancePeriodId)),
           );
           const original = routeMessage("14165550203", "wamid.native-conflict");
           yield* admission.admit(original);
@@ -262,14 +264,14 @@ const makeRealAdmission = (
     });
   });
 
-const receiptFromAcceptance = (input: AgentAcceptanceInput): AcceptanceReceipt => {
-  const allowance = Schema.decodeUnknownSync(
-    Schema.Struct({ allowancePeriodId: AllowancePeriodId }),
-  )(input.authorization.allowance);
+const receiptFromAcceptance = (
+  input: AgentAcceptanceInput,
+  allowancePeriodId: AllowancePeriodId,
+): AcceptanceReceipt => {
   return Schema.decodeSync(AcceptanceReceipt)({
     _tag: "AcceptanceReceipt",
     acceptedAt: "2026-08-16T12:00:00Z",
-    allowancePeriodId: allowance.allowancePeriodId,
+    allowancePeriodId,
     channelBindingId: input.channelBindingId,
     providerMessageId: input.providerMessageId,
     receiptId: input.receiptId,

@@ -62,7 +62,7 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
               yield* Deferred.await(arrivals);
               const existing = receipts.get(acceptance.submissionId);
               if (existing !== undefined) return existing;
-              const receipt = receiptFromAcceptance(acceptance);
+              const receipt = receiptFromAcceptance(acceptance, seeded.allowancePeriodId);
               receipts.set(acceptance.submissionId, receipt);
               return receipt;
             }),
@@ -251,7 +251,7 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
         }),
       );
 
-      expect(failure).toMatchObject({ _tag: "WhatsAppAuthorityUnavailable" });
+      expect(failure).toMatchObject({ _tag: "WhatsAppAuthorizationUnavailable" });
       expect(submissions).toBe(0);
     }),
   );
@@ -268,7 +268,7 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
         Effect.gen(function* () {
           yield* Deferred.succeed(routed, undefined);
           yield* Deferred.await(release);
-          return receiptFromAcceptance(acceptance);
+          return receiptFromAcceptance(acceptance, seeded.allowancePeriodId);
         }),
       );
       const fiber = yield* Effect.forkChild(
@@ -369,7 +369,7 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
           channelBindingId: ChannelBindingId,
         }),
       )(routed);
-      const authorization = yield* persistence.admit({ ...bound, _tag: "Bound" });
+      yield* persistence.admit({ ...bound, _tag: "Bound" });
       yield* Effect.promise(() =>
         database
           .update(channelBindings)
@@ -385,7 +385,7 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
               persistence.admit({ ...bound, _tag: "Bound" }).pipe(
                 Effect.mapError(
                   (cause) =>
-                    new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({
+                    new WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable({
                       cause,
                       message: "Current binding could not be read",
                     }),
@@ -408,7 +408,6 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
           },
         },
         input: {
-          authorization,
           channelBindingId: bound.channelBindingId,
           message: message.message,
           providerMessageId: message.providerMessageId,
@@ -502,7 +501,7 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
         seedBoundUser(database, "changed-facts", "14165550135"),
       );
       const admission = yield* makeRealAdmission(database, (acceptance) =>
-        Effect.succeed(receiptFromAcceptance(acceptance)),
+        Effect.succeed(receiptFromAcceptance(acceptance, seeded.allowancePeriodId)),
       );
       const input = routeMessage("14165550135", "wamid.conflict");
       const accepted = yield* admission.admit(input);
@@ -597,7 +596,7 @@ const admitThroughAgent = (
         channelBindingId: ChannelBindingId,
       }),
     )(route);
-    const authorization = yield* persistence.admit(bound);
+    yield* persistence.admit(bound);
     yield* options?.afterInitialAdmission ?? Effect.void;
     let submissions = 0;
     const outcome = yield* WhatsAppAgentAdmission.accept({
@@ -607,7 +606,7 @@ const admitThroughAgent = (
             persistence.admit(bound).pipe(
               Effect.mapError(
                 (cause) =>
-                  new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({
+                  new WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable({
                     cause,
                     message: "Current binding could not be read",
                   }),
@@ -631,7 +630,6 @@ const admitThroughAgent = (
         },
       },
       input: {
-        authorization,
         channelBindingId: bound.channelBindingId,
         message: message.message,
         providerMessageId: message.providerMessageId,
@@ -643,14 +641,14 @@ const admitThroughAgent = (
     return { outcome, submissions };
   });
 
-const receiptFromAcceptance = (input: AgentAcceptanceInput): AcceptanceReceipt => {
-  const allowance = Schema.decodeUnknownSync(
-    Schema.Struct({ allowancePeriodId: AllowancePeriodId }),
-  )(input.authorization.allowance);
+const receiptFromAcceptance = (
+  input: AgentAcceptanceInput,
+  allowancePeriodId: AllowancePeriodId,
+): AcceptanceReceipt => {
   return Schema.decodeSync(AcceptanceReceipt)({
     _tag: "AcceptanceReceipt",
     acceptedAt: "2026-08-16T12:00:00Z",
-    allowancePeriodId: allowance.allowancePeriodId,
+    allowancePeriodId,
     channelBindingId: input.channelBindingId,
     providerMessageId: input.providerMessageId,
     receiptId: input.receiptId,

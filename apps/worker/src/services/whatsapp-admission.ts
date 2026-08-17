@@ -9,7 +9,7 @@ import {
   ThinkSubmissionId,
   UserMessageId,
 } from "../domain";
-import { AuthorizationContext } from "./authorization";
+import type { AuthorizationContext } from "./authorization";
 import type { AcceptanceReceipt } from "./whatsapp-acceptance-receipt";
 import type { WhatsAppOnboardingCommand } from "./whatsapp-onboarding";
 
@@ -93,7 +93,6 @@ export type AgentRecoveryInput = typeof AgentRecoveryInput.Type;
 /** Stable facts sent to the named Agent acceptance RPC. */
 export const AgentAcceptanceInput = Schema.Struct({
   ...AgentRecoveryInput.fields,
-  authorization: AuthorizationContext,
   message: WhatsAppMessageText,
 });
 
@@ -179,10 +178,9 @@ export const make = <Failure>(options: Interface<Failure>): Service<Failure> => 
         yield* options.allowances.recordAcceptedMessage(recovered);
         return { _tag: "MessageAccepted", receipt: recovered } as const;
       }
-      const authorization = yield* options.persistence.admit(route);
+      yield* options.persistence.admit(route);
       const receipt = yield* options.agent.accept(route.agentId, {
         ...recoveryInput,
-        authorization,
         message: message.message,
       });
       if (Predicate.isTagged(receipt, "ManagedConversationDenied")) {

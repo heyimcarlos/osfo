@@ -81,7 +81,6 @@ describe("Osfo Agent and Think Session foundation", () => {
       );
 
       const input = {
-        authorization: whatsappAuthorization(channelBindingId),
         channelBindingId,
         message: "Please help with my schedule",
         providerMessageId: "wamid.whatsapp-acceptance",
