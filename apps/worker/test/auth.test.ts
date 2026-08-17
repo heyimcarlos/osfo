@@ -569,6 +569,13 @@ const runtimeConfig: RuntimeConfig = {
   },
   stage: "test",
   telegram: { kind: "disabled" },
+  stripe: {
+    adventurerPriceId: "price_adventurer",
+    adventurerProductId: "prod_adventurer",
+    portalConfigurationId: "bpc_approved",
+    secretKey: Redacted.make("sk_test_osfo"),
+    webhookSecret: Redacted.make("whsec_test_osfo"),
+  },
   whatsApp: { phoneNumber: "14165550100" },
   twilioVerify: {
     accountSid: Redacted.make(`AC${"1".repeat(32)}`),

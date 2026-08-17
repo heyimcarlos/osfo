@@ -37,6 +37,8 @@ describe("Postgres migrations", () => {
             "agents",
             "allowance_periods",
             "allowance_usage",
+            "billing_checkout_sessions",
+            "billing_customers",
             "billing_subscriptions",
             "channel_bindings",
             "deletion_cases",
@@ -49,6 +51,7 @@ describe("Postgres migrations", () => {
             "user_suspension_events",
             "users",
             "verifications",
+            "webhook_events",
           ]);
         }),
       closeTestDatabase,
@@ -311,5 +314,94 @@ describe("Postgres migrations", () => {
           }),
         closeTestDatabase,
       ),
+  );
+
+  it.effect("enforces Stripe billing projection and webhook invariants", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(client);
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO users (id, name, email, updated_at)
+              VALUES ('stripe-user-1', 'Stripe User 1', 'stripe-1@example.test', now()),
+                     ('stripe-user-2', 'Stripe User 2', 'stripe-2@example.test', now());
+              INSERT INTO billing_subscriptions (
+                billing_subscription_id, user_id, plan, plan_policy_version
+              ) VALUES
+                ('stripe-subscription-local-1', 'stripe-user-1', 'free', 'launch-v1'),
+                ('stripe-subscription-local-2', 'stripe-user-2', 'free', 'launch-v1');
+              INSERT INTO billing_customers (billing_customer_id, user_id, stripe_customer_id)
+              VALUES ('billing-customer-1', 'stripe-user-1', 'cus_customer1');
+              INSERT INTO billing_checkout_sessions (
+                billing_checkout_session_id, user_id, billing_customer_id, target_plan,
+                stripe_product_id, stripe_price_id, state
+              ) VALUES (
+                'checkout-attempt-1', 'stripe-user-1', 'billing-customer-1', 'adventurer',
+                'prod_adventurer', 'price_adventurer', 'creating'
+              );
+              INSERT INTO webhook_events (
+                webhook_event_id, provider, external_event_id, event_type, external_object_id
+              ) VALUES (
+                'webhook-event-1', 'stripe', 'evt_1', 'invoice.paid', 'in_1'
+              );
+            `),
+          );
+
+          const rejectedStatements = [
+            `INSERT INTO billing_customers (billing_customer_id, user_id)
+             VALUES ('billing-customer-duplicate-user', 'stripe-user-1')`,
+            `INSERT INTO billing_customers (billing_customer_id, user_id, stripe_customer_id)
+             VALUES ('billing-customer-duplicate-stripe', 'stripe-user-2', 'cus_customer1')`,
+            `INSERT INTO billing_checkout_sessions (
+               billing_checkout_session_id, user_id, billing_customer_id, target_plan,
+               stripe_product_id, stripe_price_id, state
+             ) VALUES (
+               'checkout-wrong-owner', 'stripe-user-2', 'billing-customer-1', 'adventurer',
+               'prod_adventurer', 'price_adventurer', 'creating'
+             )`,
+            `INSERT INTO billing_checkout_sessions (
+               billing_checkout_session_id, user_id, billing_customer_id, target_plan,
+               stripe_product_id, stripe_price_id, state
+             ) VALUES (
+               'checkout-bad-state', 'stripe-user-2', 'billing-customer-1', 'adventurer',
+               'prod_adventurer', 'price_adventurer', 'unknown'
+             )`,
+            `UPDATE billing_subscriptions
+             SET pending_plan = 'free', pending_plan_effective_at = NULL
+             WHERE user_id = 'stripe-user-1'`,
+            `UPDATE billing_subscriptions
+             SET billing_customer_id = 'billing-customer-1'
+             WHERE user_id = 'stripe-user-2'`,
+            `UPDATE billing_subscriptions
+             SET stripe_subscription_id = 'sub_1', stripe_product_id = NULL,
+                 stripe_price_id = 'price_adventurer', stripe_status = 'active'
+             WHERE user_id = 'stripe-user-1'`,
+            `UPDATE billing_subscriptions
+             SET stripe_current_period_start = '2026-08-01T00:00:00Z',
+                 stripe_current_period_end = '2026-09-01T00:00:00Z'
+             WHERE user_id = 'stripe-user-1'`,
+            `UPDATE billing_subscriptions
+             SET stripe_subscription_id = 'sub_1', stripe_product_id = 'prod_adventurer',
+                 stripe_price_id = 'price_adventurer', stripe_status = 'active',
+                 stripe_current_period_start = '2026-09-01T00:00:00Z',
+                 stripe_current_period_end = '2026-08-01T00:00:00Z'
+             WHERE user_id = 'stripe-user-1'`,
+            `INSERT INTO webhook_events (
+               webhook_event_id, provider, external_event_id, event_type, external_object_id
+             ) VALUES ('webhook-event-duplicate', 'stripe', 'evt_1', 'invoice.paid', 'in_1')`,
+          ];
+
+          for (const statement of rejectedStatements) {
+            const result = yield* Effect.tryPromise({
+              try: () => client.exec(statement),
+              catch: (cause) => new MigrationConstraintRejected({ cause }),
+            }).pipe(Effect.exit);
+            expect(Exit.isFailure(result)).toBe(true);
+          }
+        }),
+      closeTestDatabase,
+    ),
   );
 });

@@ -27,6 +27,7 @@ export const allowancePeriods = pgTable(
     endsAt: timestamp("ends_at", { mode: "date", withTimezone: true }).notNull(),
     plan: text("plan", { enum: planValues }).notNull(),
     planPolicyVersion: text("plan_policy_version").notNull(),
+    stripeInvoiceId: text("stripe_invoice_id"),
     startsAt: timestamp("starts_at", { mode: "date", withTimezone: true }).notNull(),
     userId: text("user_id")
       .notNull()
@@ -41,6 +42,7 @@ export const allowancePeriods = pgTable(
     }).onDelete("cascade"),
     unique("allowance_periods_user_start_unique").on(table.userId, table.startsAt),
     unique("allowance_periods_user_period_unique").on(table.userId, table.allowancePeriodId),
+    unique("allowance_periods_stripe_invoice_id_unique").on(table.stripeInvoiceId),
     index("allowance_periods_user_bounds_index").on(table.userId, table.startsAt, table.endsAt),
   ],
 );
