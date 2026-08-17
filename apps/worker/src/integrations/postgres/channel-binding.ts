@@ -17,7 +17,7 @@ const StoredChannelBinding = Schema.Struct({
   userId: UserId,
 });
 
-/** Storage-local WhatsApp Channel Binding facts. */
+/** Storage-local Channel Binding facts for supported messaging providers. */
 export type StoredChannelBinding = typeof StoredChannelBinding.Type;
 
 type Transaction = Parameters<Parameters<Db.Database["transaction"]>[0]>[0];

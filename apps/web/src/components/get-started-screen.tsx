@@ -228,7 +228,7 @@ export function GetStartedScreen({
             <ul className="list-disc space-y-2 pl-5 text-sm leading-relaxed">
               <li>{text.aiNotice}</li>
               <li>{text.storageNotice}</li>
-              <li>{text.whatsAppNotice}</li>
+              <li>{text.providerNotice}</li>
               <li>{text.stopNotice}</li>
             </ul>
             <p className="text-sm">
@@ -354,7 +354,7 @@ export function GetStartedScreen({
               className="inline-flex min-h-11 w-full items-center justify-between rounded-lg bg-primary px-4 font-black uppercase text-primary-foreground outline-none hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50"
               href={state.enrollmentUrl.href}
             >
-              {text.continueWhatsApp}
+              {text.continueProvider}
               <ExternalLink data-icon="inline-end" />
             </a>
           </CardContent>
@@ -537,7 +537,7 @@ const copy = {
     confirmFree: "Confirm Free and finish",
     continue: "Continue",
     continueSms: "Continue to phone verification",
-    continueWhatsApp: "Continue in WhatsApp",
+    continueProvider: "Continue in WhatsApp",
     enrollmentNotice:
       "Continue in WhatsApp will send one enrollment message. Only that provider-authenticated message can connect your WhatsApp identity.",
     existingBody:
@@ -585,7 +585,7 @@ const copy = {
       "Before proactive WhatsApp messages begin, Osfo explains how to stop them. You can reply STOP at any time.",
     storageNotice:
       "Osfo stores messages and the optional profile facts that you accept. Temporary registration dialogue is deleted.",
-    whatsAppNotice:
+    providerNotice:
       "WhatsApp processes channel messages. A Channel Binding is required so Osfo can route an authenticated sender to the correct user.",
     working: "Working...",
   },
@@ -605,7 +605,7 @@ const copy = {
     confirmFree: "Confirmar Free y terminar",
     continue: "Continuar",
     continueSms: "Continuar con la verificación",
-    continueWhatsApp: "Continuar en WhatsApp",
+    continueProvider: "Continuar en WhatsApp",
     enrollmentNotice:
       "Continuar en WhatsApp enviará un mensaje de inscripción. Solo ese mensaje autenticado por el proveedor puede conectar tu identidad.",
     existingBody:
@@ -654,7 +654,7 @@ const copy = {
       "Antes de iniciar mensajes proactivos, Osfo explica cómo detenerlos. Puedes responder STOP en cualquier momento.",
     storageNotice:
       "Osfo guarda los mensajes y los datos opcionales que aceptes. El diálogo temporal de registro se elimina.",
-    whatsAppNotice:
+    providerNotice:
       "WhatsApp procesa los mensajes del canal. Una conexión permite que Osfo dirija un remitente autenticado al usuario correcto.",
     working: "Procesando...",
   },
@@ -668,7 +668,7 @@ const telegramCopy = {
       "SMS verification and Telegram identity are separate evidence. This choice is not preselected.",
     bindingTitle: "Telegram binding consent",
     chooseConsent: "Choose whether to connect the invited Telegram identity.",
-    continueWhatsApp: "Continue in Telegram",
+    continueProvider: "Continue in Telegram",
     enrollmentNotice:
       "Continue in Telegram opens one single-use enrollment link. Only that provider-authenticated message can connect your Telegram identity.",
     linkUnavailableBody: "Request a fresh registration link in Telegram, then try again.",
@@ -679,7 +679,7 @@ const telegramCopy = {
       "Your registration is complete. You chose not to connect the invited Telegram identity.",
     stopNotice:
       "Osfo requires your consent before it connects Telegram or sends proactive messages.",
-    whatsAppNotice:
+    providerNotice:
       "Telegram processes channel messages. A Channel Binding is required so Osfo can route an authenticated sender to the correct user.",
   },
   es: {
@@ -689,7 +689,7 @@ const telegramCopy = {
       "La verificación por SMS y la identidad de Telegram son pruebas separadas. Esta opción no está preseleccionada.",
     bindingTitle: "Consentimiento de conexión de Telegram",
     chooseConsent: "Elige si quieres conectar la identidad de Telegram invitada.",
-    continueWhatsApp: "Continuar en Telegram",
+    continueProvider: "Continuar en Telegram",
     enrollmentNotice:
       "Continuar en Telegram abre un enlace de inscripción de un solo uso. Solo ese mensaje autenticado por el proveedor puede conectar tu identidad.",
     linkUnavailableBody: "Pide un nuevo enlace de registro en Telegram e inténtalo de nuevo.",
@@ -700,7 +700,7 @@ const telegramCopy = {
       "Tu registro está completo. Elegiste no conectar la identidad de Telegram invitada.",
     stopNotice:
       "Osfo requiere tu consentimiento antes de conectar Telegram o enviar mensajes proactivos.",
-    whatsAppNotice:
+    providerNotice:
       "Telegram procesa los mensajes del canal. Una conexión permite que Osfo dirija un remitente autenticado al usuario correcto.",
   },
 } as const;

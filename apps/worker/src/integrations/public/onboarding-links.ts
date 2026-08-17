@@ -10,7 +10,7 @@ export interface Options {
   readonly telegramBotUsername: string;
 }
 
-/** Project onboarding outcomes into public web and WhatsApp URLs. */
+/** Project onboarding outcomes into public web, WhatsApp, and Telegram URLs. */
 export const layer = (options: Options) =>
   Layer.succeed(
     Onboarding.OnboardingLinks,
