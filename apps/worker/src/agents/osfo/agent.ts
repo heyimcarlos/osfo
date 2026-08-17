@@ -15,7 +15,8 @@ import {
 } from "@cloudflare/think";
 import { tool, type ToolSet } from "ai";
 import { createCompactFunction } from "agents/experimental/memory/utils";
-import { DateTime, Effect, Option, Predicate, Result, Schema } from "effect";
+import type { ToolSet } from "ai";
+import { DateTime, Effect, Exit, Option, Predicate, Result, Schema } from "effect";
 import { HelpArea, OnboardingLocale } from "@osfo/api";
 
 import type { AssistantMessageId as AssistantMessageIdType, SessionId, UserId } from "../../domain";
@@ -37,9 +38,11 @@ import { database as workerDatabase } from "../../db";
 import * as Billing from "../../db/billing";
 import { decodeOsfoStage } from "../../env";
 import * as ProviderAuthorizationPostgres from "../../integrations/postgres/provider-authorization";
+import * as SessionRecallAuthorizationPostgres from "../../integrations/postgres/session-recall-authorization";
 import {
   CancelManagedConversationInput,
   ManagedTurnMetadata,
+  type ManagedTurnAuthorityIdentity,
 } from "../../domain/managed-conversation";
 import {
   ModelCallUsageDispatchUnavailable,
@@ -53,6 +56,8 @@ import {
 import {
   admitManagedConversation,
   type ManagedConversationDenied,
+  type ManagedConversationAdmitted,
+  type ManagedSessionReplacementAdmitted,
   SubmitManagedConversationInput,
 } from "../../services/managed-conversation";
 import * as WhatsAppAgentAdmission from "../../services/whatsapp-agent-admission";
@@ -82,6 +87,23 @@ import { makeActionApprovals } from "../../services/action-approvals";
 import * as DocumentGeneration from "../../services/document-generation";
 import { makeDurableModelCallUsage } from "../../services/model-call-usage";
 import {
+  makeSessionLifecycle,
+  type SessionAuthorizationFactsFound,
+  SessionLifecycleNotFound,
+  SessionLifecycleUnavailable,
+} from "../../services/session-lifecycle";
+import {
+  makeSessionRecall,
+  SessionRecallAuthorizationUnavailable,
+  SessionRecallStoreUnavailable,
+} from "../../services/session-recall";
+import { makeSessionRecallAuthorization } from "../../services/session-recall-authorization";
+import {
+  CurrentSessionActivationUnavailable,
+  type CurrentSessionReplaced,
+  type CurrentSessionReplacementConflict,
+} from "../../services/session-replacement";
+import {
   type AgentInitializationConflict,
   type AcceptanceReceiptConflict,
   AgentRequestInvalid,
@@ -90,15 +112,21 @@ import {
   type AgentStoreRecordInvalid,
   type AgentStoreUnavailable,
   CommittedTurnConflict,
-  type CurrentSessionReplacementConflict,
   ThinkSessionReadUnavailable,
   ThinkSessionRecordInvalid,
   ThinkSessionWriteUnavailable,
 } from "./db/errors";
 import { applyAgentMigrations } from "./db/migrate";
 import { makeModelCallUsageStore } from "./db/model-call-usage";
+import { makeSessionExecution } from "./session-execution";
+import { makeAgentSessionCommand } from "./session-command";
 import { ThinkSubmissionUnavailable } from "../../services/think-submission";
 import type { AcceptanceReceipt } from "../../services/provider-acceptance-receipt";
+import type {
+  SessionCommandReceipt,
+  SessionCommandReceiptConflict,
+  SessionCommandReceiptInput,
+} from "../../services/session-command-receipt";
 import {
   AgentInitializationInput,
   type AgentInitializationEncoded,
@@ -106,10 +134,7 @@ import {
   type AgentFound,
   type CommittedTurnReceipt,
   type ConversationRouteFound,
-  type CurrentSessionReplaced,
   makeAgentStore,
-  ReplaceCurrentSessionInput,
-  type ReplaceCurrentSessionEncoded,
 } from "./db/store";
 import {
   ActionPresentation,
@@ -135,6 +160,8 @@ import {
   testProtectedActionName,
   type TestProtectedActionState,
 } from "./test-protected-action";
+import { makeAgentSessionLifecycle } from "./session-lifecycle";
+import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries. */
 
@@ -155,7 +182,6 @@ const GatewayProviderMetadata = Schema.Struct({
     }),
   ),
 });
-
 const GatewayCostSettlement = Schema.Struct({
   allowancePeriodId: AllowancePeriodId,
   attemptId: ModelCallAttemptId,
@@ -307,6 +333,11 @@ export class OsfoAgent extends Think<Env> {
     persistence: this.#modelCallUsagePersistence,
   });
   readonly #store = makeAgentStore(this.#db);
+  readonly #sessionExecution = makeSessionExecution({
+    hasPendingOrRunning: callThinkSubmission("listSubmissions", () =>
+      this.listSubmissions({ limit: 1, status: ["pending", "running"] }),
+    ).pipe(Effect.map((submissions) => submissions.length > 0)),
+  });
   readonly #migrationsReady = this.ctx.blockConcurrencyWhile(() =>
     Effect.runPromise(applyAgentMigrations(this.ctx.storage)),
   );
@@ -315,10 +346,81 @@ export class OsfoAgent extends Think<Env> {
       db: this.env.DB,
     }),
   );
+  readonly #sessionRecallSearch = makeThinkSessionRecallSearch((sessionId, query, limit) =>
+    Session.create(this).forSession(sessionId).search(query, { limit }),
+  );
+  readonly #sessionLifecycle = makeSessionLifecycle({
+    inspect: this.#store.inspect().pipe(
+      Effect.mapError((failure) => sessionLifecycleStoreFailure("inspect", failure)),
+      Effect.map(({ agentId }) => ({ agentId })),
+    ),
+    readRoute: (requestedRouteId) =>
+      this.#store.readRoute(requestedRouteId).pipe(
+        Effect.mapError((failure) => sessionLifecycleStoreFailure("readRoute", failure)),
+        Effect.map(({ currentSessionId, routeId }) => ({ currentSessionId, routeId })),
+      ),
+  });
+  readonly #sessionRecall = makeSessionRecall({
+    search: this.#sessionRecallSearch,
+    store: {
+      readRecallPage: (recallRouteId, cursor, limit) =>
+        this.#store.readRouteSessionPage(recallRouteId, cursor, limit).pipe(
+          Effect.mapError((failure) =>
+            Predicate.isTagged(failure, "SessionRecallCursorInvalid")
+              ? failure
+              : sessionRecallStoreFailure(failure),
+          ),
+          Effect.map((page) => ({
+            candidates: page.candidates,
+            currentSessionId: page.currentSessionId,
+            hasMore: page.hasMore,
+            routeId: page.routeId,
+          })),
+        ),
+    },
+  });
+  readonly #sessionRecallAuthorization = makeSessionRecallAuthorization({
+    inspectAuthorization: (identity) => this.#inspectSessionRecallAuthorization(identity),
+    readCurrentSession: (routeId) =>
+      this.#sessionLifecycle.readAuthorizationFacts(routeId).pipe(
+        Effect.map(({ currentSessionId }) => currentSessionId),
+        Effect.mapError(
+          (cause) =>
+            new SessionRecallAuthorizationUnavailable({
+              cause,
+              message: "Current Session Recall route facts are unavailable",
+            }),
+        ),
+      ),
+  });
+  readonly #agentSessionLifecycle = makeAgentSessionLifecycle({
+    activateCurrentSession: () => this.#activateCurrentSession(),
+    store: this.#store,
+  });
+  readonly #sessionCommand = makeAgentSessionCommand({
+    activateCurrentSession: () => this.#activateCurrentSession(),
+    store: this.#store,
+  });
+  readonly #sessionRecallTools = makeSessionRecallTools({
+    authorize: (metadata) => this.#sessionRecallAuthorization.authorize(metadata),
+    readActiveTurn: () =>
+      Option.getOrUndefined(
+        Schema.decodeUnknownOption(ManagedTurnMetadata)(this.activeTurnMetadata),
+      ),
+    recall: (request) =>
+      Effect.promise(() => this.#migrationsReady).pipe(
+        Effect.andThen(this.#sessionRecall.recall(request)),
+      ),
+  });
 
   /** Resolve a safe model before trusted per-turn metadata selects the exact managed route. */
   override getModel() {
     return launchModelAccessPolicy.plans.free.route;
+  }
+
+  /** Expose exact Session Recall only as a model-invoked read tool. */
+  override getTools(): ToolSet {
+    return this.#sessionRecallTools;
   }
 
   /** Register a typed protected Action only in the Worker test stage. */
@@ -415,6 +517,41 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  /** Pin the canonical Session for the full durable Think Submission lifecycle. */
+  override async onSubmissionStatus(submission: ThinkSubmissionInspection): Promise<void> {
+    const owner = Schema.decodeResult(ThinkSubmissionId)(submission.submissionId);
+    if (Result.isFailure(owner)) {
+      try {
+        if (submission.status === "running") {
+          await this.cancelSubmission(
+            submission.submissionId,
+            "Invalid managed submission identity",
+          );
+        }
+      } finally {
+        await Effect.runPromise(this.#sessionExecution.submissionChanged);
+      }
+      return;
+    }
+    try {
+      if (submission.status !== "running") return;
+
+      const metadata = Schema.decodeUnknownResult(ManagedTurnMetadata)(submission.metadata);
+      if (Result.isFailure(metadata) || metadata.success.submissionId !== owner.success) {
+        await this.cancelSubmission(submission.submissionId, "Invalid managed turn authority");
+        return;
+      }
+      const activated = await Effect.runPromiseExit(
+        Effect.promise(() => this.#activateSession(metadata.success.sessionId)),
+      );
+      if (Exit.isFailure(activated)) {
+        await this.cancelSubmission(submission.submissionId, "Managed Session activation failed");
+      }
+    } finally {
+      await Effect.runPromise(this.#sessionExecution.submissionChanged);
+    }
+  }
+
   /** Reuse Think's zero-based step index as the stable model-call attempt position. */
   override beforeStep(context: PrepareStepContext): void {
     this.#activeModelStepNumber = ModelStepNumber.make(context.stepNumber + 1);
@@ -496,8 +633,15 @@ export class OsfoAgent extends Think<Env> {
   override async configureSession(session: Session): Promise<Session> {
     await this.#migrationsReady;
     const current = await Effect.runPromise(this.#readOptionalPrimarySessionId());
+    return this.#configureSession(
+      session,
+      Option.getOrElse(current, () => pendingSessionId),
+    );
+  }
+
+  #configureSession(session: Session, sessionId: string): Session {
     return session
-      .forSession(Option.getOrElse(current, () => pendingSessionId))
+      .forSession(sessionId)
       .onCompaction(
         createCompactFunction({
           summarize: summarizeManagedSession,
@@ -578,27 +722,51 @@ export class OsfoAgent extends Think<Env> {
     input: SubmitManagedConversationRequest,
   ): Promise<
     | AgentRequestInvalid
+    | AgentStateNotFound
+    | AgentStoreRecordInvalid
+    | AgentStoreUnavailable
+    | CurrentSessionActivationUnavailable
+    | CurrentSessionReplaced
+    | CurrentSessionReplacementConflict
     | ManagedConversationDenied
     | ManagedRouteUnavailable
     | PlanPolicyNotFound
+    | SessionLifecycleNotFound
+    | SessionLifecycleUnavailable
     | SubmitMessagesResult
     | ThinkSubmissionUnavailable
   > {
     await this.#migrationsReady;
     const decoded = Schema.decodeResult(SubmitManagedConversationInput)(input);
     if (Result.isFailure(decoded)) return invalidRequest("submitManagedConversation");
-    const admission = await runRpc(admitManagedConversation(decoded.success));
-    if (!Predicate.isTagged(admission, "ManagedConversationAdmitted")) return admission;
+    const lifecycle = this.#agentSessionLifecycle;
+    const sessionLifecycle = this.#sessionLifecycle;
+    const submitTurn = (admission: ManagedConversationAdmitted) =>
+      this.runTurn({
+        idempotencyKey: admission.idempotencyKey,
+        input: {
+          id: admission.submissionId,
+          metadata: { turnMetadata: admission.metadata },
+          parts: [{ text: admission.message, type: "text" }],
+          role: "user",
+        },
+        metadata: admission.metadata,
+        mode: "submit",
+        submissionId: admission.submissionId,
+      });
+    const operation = Effect.gen(function* () {
+      const session = yield* sessionLifecycle.readAuthorizationFacts(decoded.success.routeId);
+      const admission = yield* admitManagedConversation(decoded.success, session);
+      if (Predicate.isTagged(admission, "ManagedSessionReplacementAdmitted")) {
+        return yield* lifecycle.replaceCurrent(admission);
+      }
+      if (!Predicate.isTagged(admission, "ManagedConversationAdmitted")) return admission;
+      return yield* callThinkSubmission("runTurn", () => submitTurn(admission));
+    });
     return runRpc(
-      callThinkSubmission("runTurn", () =>
-        this.runTurn({
-          idempotencyKey: admission.idempotencyKey,
-          input: admission.message,
-          metadata: admission.metadata,
-          mode: "submit",
-          submissionId: admission.submissionId,
-        }),
-      ),
+      decoded.success.message.trim() === "/new"
+        ? this.#sessionExecution.runWhenIdle(operation)
+        : this.#sessionExecution.run(operation),
     );
   }
 
@@ -612,9 +780,15 @@ export class OsfoAgent extends Think<Env> {
     | AgentStateNotFound
     | AgentStoreRecordInvalid
     | AgentStoreUnavailable
+    | CurrentSessionActivationUnavailable
+    | CurrentSessionReplacementConflict
     | ManagedConversationDenied
     | ManagedRouteUnavailable
     | PlanPolicyNotFound
+    | SessionLifecycleNotFound
+    | SessionLifecycleUnavailable
+    | SessionCommandReceipt
+    | SessionCommandReceiptConflict
     | ThinkSubmissionUnavailable
     | WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable
   > {
@@ -626,30 +800,38 @@ export class OsfoAgent extends Think<Env> {
       decodeWhatsAppThinkSubmissionInspection,
       decodeWhatsAppThinkSubmissionAccepted,
     );
-    return runRpc(
-      WhatsAppAgentAdmission.accept<
-        AcceptanceReceipt,
-        | AcceptanceReceiptConflict
-        | AgentStateNotFound
-        | AgentStoreRecordInvalid
-        | AgentStoreUnavailable
-      >({
-        dependencies: {
-          ...bridge.acceptance({
-            inspect: (channelBindingId) =>
-              this.#inspectCurrentProviderAuthorization("whatsapp", channelBindingId).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable({
-                      cause,
-                      message: "Current WhatsApp authorization could not be checked",
-                    }),
-                ),
+    const operation = WhatsAppAgentAdmission.accept<
+      AcceptanceReceipt,
+      | AcceptanceReceiptConflict
+      | AgentStateNotFound
+      | AgentStoreRecordInvalid
+      | AgentStoreUnavailable
+      | CurrentSessionActivationUnavailable
+      | CurrentSessionReplacementConflict
+      | SessionLifecycleNotFound
+      | SessionLifecycleUnavailable
+      | SessionCommandReceiptConflict
+    >({
+      dependencies: {
+        ...bridge.acceptance({
+          inspect: (channelBindingId) =>
+            this.#inspectCurrentProviderAuthorization("whatsapp", channelBindingId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable({
+                    cause,
+                    message: "Current WhatsApp authorization could not be checked",
+                  }),
               ),
-          }),
-        },
-        input: parsed,
-      }),
+            ),
+        }),
+      },
+      input: parsed,
+    });
+    return runRpc(
+      parsed.message.trim() === "/new"
+        ? this.#sessionExecution.runWhenIdle(operation)
+        : this.#sessionExecution.run(operation),
     );
   }
 
@@ -663,26 +845,33 @@ export class OsfoAgent extends Think<Env> {
     | AgentStateNotFound
     | AgentStoreRecordInvalid
     | AgentStoreUnavailable
+    | CurrentSessionActivationUnavailable
     | ThinkSubmissionUnavailable
+    | SessionCommandReceipt
+    | SessionCommandReceiptConflict
     | null
   > {
     await this.#migrationsReady;
     const decoded = Schema.decodeResult(AgentRecoveryInput)(input);
     if (Result.isFailure(decoded)) return invalidRequest("recoverWhatsAppMessage");
     return runRpc(
-      WhatsAppAgentAdmission.recover<
-        AcceptanceReceipt,
-        | AcceptanceReceiptConflict
-        | AgentStateNotFound
-        | AgentStoreRecordInvalid
-        | AgentStoreUnavailable
-      >({
-        dependencies: this.#providerAgentBridge(
-          decodeWhatsAppThinkSubmissionInspection,
-          decodeWhatsAppThinkSubmissionAccepted,
-        ).recovery,
-        input: decoded.success,
-      }),
+      this.#sessionExecution.run(
+        WhatsAppAgentAdmission.recover<
+          AcceptanceReceipt,
+          | AcceptanceReceiptConflict
+          | AgentStateNotFound
+          | AgentStoreRecordInvalid
+          | AgentStoreUnavailable
+          | CurrentSessionActivationUnavailable
+          | SessionCommandReceiptConflict
+        >({
+          dependencies: this.#providerAgentBridge(
+            decodeWhatsAppThinkSubmissionInspection,
+            decodeWhatsAppThinkSubmissionAccepted,
+          ).recovery,
+          input: decoded.success,
+        }),
+      ),
     );
   }
 
@@ -695,30 +884,39 @@ export class OsfoAgent extends Think<Env> {
       decodeTelegramThinkSubmissionInspection,
       decodeTelegramThinkSubmissionAccepted,
     );
-    return runRpc(
-      TelegramAgentAdmission.accept<
-        AcceptanceReceipt,
-        | AcceptanceReceiptConflict
-        | AgentStateNotFound
-        | AgentStoreRecordInvalid
-        | AgentStoreUnavailable
-      >({
-        dependencies: {
-          ...bridge.acceptance({
-            inspect: (channelBindingId) =>
-              this.#inspectCurrentProviderAuthorization("telegram", channelBindingId).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new TelegramAgentAdmission.TelegramAuthorizationUnavailable({
-                      cause,
-                      message: "Current Telegram authorization could not be checked",
-                    }),
-                ),
+    const parsed = decoded.success;
+    const operation = TelegramAgentAdmission.accept<
+      AcceptanceReceipt,
+      | AcceptanceReceiptConflict
+      | AgentStateNotFound
+      | AgentStoreRecordInvalid
+      | AgentStoreUnavailable
+      | CurrentSessionActivationUnavailable
+      | CurrentSessionReplacementConflict
+      | SessionLifecycleNotFound
+      | SessionLifecycleUnavailable
+      | SessionCommandReceiptConflict
+    >({
+      dependencies: {
+        ...bridge.acceptance({
+          inspect: (channelBindingId) =>
+            this.#inspectCurrentProviderAuthorization("telegram", channelBindingId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new TelegramAgentAdmission.TelegramAuthorizationUnavailable({
+                    cause,
+                    message: "Current Telegram authorization could not be checked",
+                  }),
               ),
-          }),
-        },
-        input: decoded.success,
-      }),
+            ),
+        }),
+      },
+      input: parsed,
+    });
+    return runRpc(
+      parsed.message.trim() === "/new"
+        ? this.#sessionExecution.runWhenIdle(operation)
+        : this.#sessionExecution.run(operation),
     );
   }
 
@@ -734,6 +932,8 @@ export class OsfoAgent extends Think<Env> {
         | AgentStateNotFound
         | AgentStoreRecordInvalid
         | AgentStoreUnavailable
+        | CurrentSessionActivationUnavailable
+        | SessionCommandReceiptConflict
       >({
         dependencies: this.#providerAgentBridge(
           decodeTelegramThinkSubmissionInspection,
@@ -927,28 +1127,6 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
-  /** Replace one route's current Session while retaining canonical history. */
-  async replaceCurrentSession(
-    input: ReplaceCurrentSessionEncoded,
-  ): Promise<
-    | AgentRequestInvalid
-    | AgentStateNotFound
-    | AgentStoreRecordInvalid
-    | AgentStoreUnavailable
-    | CurrentSessionReplaced
-    | CurrentSessionReplacementConflict
-  > {
-    await this.#migrationsReady;
-    const outcome = await runRpc(
-      Schema.decodeEffect(ReplaceCurrentSessionInput)(input).pipe(
-        Effect.mapError(() => invalidRequest("replaceCurrentSession")),
-        Effect.flatMap((parsed) => this.#store.replaceCurrentSession(parsed)),
-      ),
-    );
-    if ("currentSessionId" in outcome) await this.#activateCurrentSession();
-    return outcome;
-  }
-
   /** Read the current and historical Session identities for one route. */
   async readRoute(
     routeId: string,
@@ -964,6 +1142,24 @@ export class OsfoAgent extends Think<Env> {
       Schema.decodeEffect(ConversationRouteIdSchema)(routeId).pipe(
         Effect.mapError(() => invalidRequest("readRoute")),
         Effect.flatMap((parsed) => this.#store.readRoute(parsed)),
+      ),
+    );
+  }
+
+  /** Read Agent ownership and current Session facts for Authorization. */
+  async readSessionAuthorizationFacts(
+    routeId: string,
+  ): Promise<
+    | AgentRequestInvalid
+    | SessionAuthorizationFactsFound
+    | SessionLifecycleNotFound
+    | SessionLifecycleUnavailable
+  > {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeEffect(ConversationRouteIdSchema)(routeId).pipe(
+        Effect.mapError(() => invalidRequest("readSessionAuthorizationFacts")),
+        Effect.flatMap((parsed) => this.#sessionLifecycle.readAuthorizationFacts(parsed)),
       ),
     );
   }
@@ -1188,7 +1384,22 @@ export class OsfoAgent extends Think<Env> {
   }
 
   async #activateCurrentSession(): Promise<void> {
-    this.session = await this.configureSession(Session.create(this));
+    await this.#migrationsReady;
+    const current = await Effect.runPromise(this.#readOptionalPrimarySessionId());
+    this.session = this.#configureSession(
+      Session.create(this),
+      Option.getOrElse(current, () => pendingSessionId),
+    );
+    await this.#finishSessionActivation();
+  }
+
+  async #activateSession(sessionId: SessionId): Promise<void> {
+    await this.#migrationsReady;
+    this.session = this.#configureSession(Session.create(this), sessionId);
+    await this.#finishSessionActivation();
+  }
+
+  async #finishSessionActivation(): Promise<void> {
     this.session.internal_onMessagesChanged(async () => {
       await this.syncMessagesFromStorage();
     });
@@ -1390,7 +1601,19 @@ export class OsfoAgent extends Think<Env> {
     const recovery = {
       store: {
         readAcceptanceReceipt: this.#store.readAcceptanceReceipt,
+        readSessionCommandReceipt: this.#store.readSessionCommandReceipt,
         recordAcceptanceReceipt: this.#store.recordAcceptanceReceipt,
+      },
+      session: {
+        recover: (receipt: SessionCommandReceipt) =>
+          Effect.tryPromise({
+            try: () => this.#activateCurrentSession(),
+            catch: (cause) =>
+              new CurrentSessionActivationUnavailable({
+                cause,
+                message: "Think could not activate the recovered Session command",
+              }),
+          }).pipe(Effect.as(receipt)),
       },
       think: {
         inspect: (submissionId: ThinkSubmissionId) =>
@@ -1409,6 +1632,13 @@ export class OsfoAgent extends Think<Env> {
       }) => ({
         ...recovery,
         authorization,
+        session: {
+          ...recovery.session,
+          replace: (
+            command: ManagedSessionReplacementAdmitted,
+            receipt: SessionCommandReceiptInput,
+          ) => this.#sessionCommand.replace(command, receipt),
+        },
         store: { ...recovery.store, inspect: this.#store.inspect() },
         think: {
           ...recovery.think,
@@ -1418,6 +1648,7 @@ export class OsfoAgent extends Think<Env> {
                 idempotencyKey: submission.idempotencyKey,
                 input: {
                   id: submission.message.userMessageId,
+                  metadata: { turnMetadata: submission.metadata },
                   parts: [{ text: submission.message.text, type: "text" }],
                   role: "user",
                 },
@@ -1430,6 +1661,32 @@ export class OsfoAgent extends Think<Env> {
       }),
       recovery,
     };
+  }
+
+  #inspectSessionRecallAuthorization(identity: ManagedTurnAuthorityIdentity) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new SessionRecallAuthorizationUnavailable({
+          cause: invalidOsfoEnvironment,
+          message: "Current Session Recall authorization facts are unavailable",
+        }),
+      );
+    }
+    return Effect.tryPromise({
+      try: (signal) =>
+        runtime.runPromise(
+          Effect.scoped(
+            SessionRecallAuthorizationPostgres.inspect(AgentId.make(this.name), identity),
+          ),
+          { signal },
+        ),
+      catch: (cause) =>
+        new SessionRecallAuthorizationUnavailable({
+          cause,
+          message: "Current Session Recall authorization facts are unavailable",
+        }),
+    });
   }
 
   #findThinkMessageOwner(
@@ -1506,6 +1763,39 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 }
+
+type SessionLifecycleStoreSourceFailure =
+  | AgentStateNotFound
+  | AgentStoreRecordInvalid
+  | AgentStoreUnavailable;
+
+const sessionLifecycleStoreFailure = (
+  operation: "inspect" | "readRoute",
+  failure: SessionLifecycleStoreSourceFailure,
+): SessionLifecycleNotFound | SessionLifecycleUnavailable =>
+  Predicate.isTagged(failure, "AgentStateNotFound")
+    ? new SessionLifecycleNotFound({
+        message: failure.message,
+        subject: failure.subject === "agent" ? "agent" : "route",
+      })
+    : new SessionLifecycleUnavailable({
+        cause: failure,
+        message: "Agent-owned Session lifecycle storage is unavailable",
+        operation,
+      });
+
+const sessionRecallStoreFailure = (
+  failure: SessionLifecycleStoreSourceFailure,
+): SessionLifecycleNotFound | SessionRecallStoreUnavailable =>
+  Predicate.isTagged(failure, "AgentStateNotFound")
+    ? new SessionLifecycleNotFound({
+        message: failure.message,
+        subject: failure.subject === "agent" ? "agent" : "route",
+      })
+    : new SessionRecallStoreUnavailable({
+        cause: failure,
+        message: "Agent-owned Session Recall storage is unavailable",
+      });
 
 const invalidRequest = (operation: AgentRequestOperation): AgentRequestInvalid =>
   new AgentRequestInvalid({

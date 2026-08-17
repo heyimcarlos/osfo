@@ -26,6 +26,18 @@ const TwilioVerifyServiceSid = Schema.String.check(
     (value) => /^VA[0-9a-fA-F]{32}$/.test(value) || "must be a Twilio Verify Service SID",
   ),
 );
+const StripeSecret = Schema.String.check(Schema.isMinLength(1));
+const StripeProductId = Schema.String.check(
+  Schema.makeFilter((value) => /^prod_[A-Za-z0-9]+$/u.test(value) || "must be a Stripe Product ID"),
+);
+const StripePriceId = Schema.String.check(
+  Schema.makeFilter((value) => /^price_[A-Za-z0-9]+$/u.test(value) || "must be a Stripe Price ID"),
+);
+const StripePortalConfigurationId = Schema.String.check(
+  Schema.makeFilter(
+    (value) => /^bpc_[A-Za-z0-9]+$/u.test(value) || "must be a Stripe Portal Configuration ID",
+  ),
+);
 const WhatsAppPhoneNumber = Schema.String.check(
   Schema.makeFilter(
     (value) => /^[1-9]\d{7,14}$/u.test(value) || "must be an E.164 number without the plus sign",
@@ -66,6 +78,11 @@ const RawRuntimeConfig = Schema.Struct({
   TELEGRAM_BOT_TOKEN: Schema.optional(Schema.String),
   TELEGRAM_BOT_USERNAME: Schema.optional(Schema.String),
   TELEGRAM_WEBHOOK_SECRET_TOKEN: Schema.optional(Schema.String),
+  STRIPE_ADVENTURER_PRICE_ID: StripePriceId,
+  STRIPE_ADVENTURER_PRODUCT_ID: StripeProductId,
+  STRIPE_PORTAL_CONFIGURATION_ID: StripePortalConfigurationId,
+  STRIPE_SECRET_KEY: StripeSecret,
+  STRIPE_WEBHOOK_SECRET: StripeSecret,
   TWILIO_ACCOUNT_SID: TwilioAccountSid,
   TWILIO_AUTH_TOKEN: TwilioAuthToken,
   TWILIO_VERIFY_SERVICE_SID: TwilioVerifyServiceSid,
@@ -108,6 +125,13 @@ export interface RuntimeConfig {
         readonly kind: "enabled";
         readonly webhookSecret: Redacted.Redacted;
       };
+  readonly stripe: {
+    readonly adventurerPriceId: string;
+    readonly adventurerProductId: string;
+    readonly portalConfigurationId: string;
+    readonly secretKey: Redacted.Redacted;
+    readonly webhookSecret: Redacted.Redacted;
+  };
   readonly whatsApp: {
     readonly phoneNumber: string;
   };
@@ -131,6 +155,11 @@ export interface RuntimeConfigInput {
   readonly TELEGRAM_BOT_TOKEN?: string;
   readonly TELEGRAM_BOT_USERNAME?: string;
   readonly TELEGRAM_WEBHOOK_SECRET_TOKEN?: string;
+  readonly STRIPE_ADVENTURER_PRICE_ID?: string;
+  readonly STRIPE_ADVENTURER_PRODUCT_ID?: string;
+  readonly STRIPE_PORTAL_CONFIGURATION_ID?: string;
+  readonly STRIPE_SECRET_KEY?: string;
+  readonly STRIPE_WEBHOOK_SECRET?: string;
   readonly TWILIO_ACCOUNT_SID?: string;
   readonly TWILIO_AUTH_TOKEN?: string;
   readonly TWILIO_VERIFY_SERVICE_SID?: string;
@@ -180,6 +209,13 @@ export const decodeRuntimeConfig = (input: RuntimeConfigInput) =>
         webhookVerifyToken: Redacted.make(raw.META_WEBHOOK_VERIFY_TOKEN),
       },
       stage: raw.OSFO_STAGE,
+      stripe: {
+        adventurerPriceId: raw.STRIPE_ADVENTURER_PRICE_ID,
+        adventurerProductId: raw.STRIPE_ADVENTURER_PRODUCT_ID,
+        portalConfigurationId: raw.STRIPE_PORTAL_CONFIGURATION_ID,
+        secretKey: Redacted.make(raw.STRIPE_SECRET_KEY),
+        webhookSecret: Redacted.make(raw.STRIPE_WEBHOOK_SECRET),
+      },
       telegram: telegramConfig,
       whatsApp: { phoneNumber: raw.WHATSAPP_PHONE_NUMBER },
       twilioVerify: {

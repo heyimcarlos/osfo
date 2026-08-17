@@ -42,6 +42,16 @@ describe("Osfo Cloudflare host", () => {
         info: { title: "Osfo API", version: "0.1.0" },
         paths: {
           "/health": { get: { operationId: "health.get" } },
+          "/v1/billing": { get: { operationId: "billing.inspect" } },
+          "/v1/billing/checkout": {
+            post: { operationId: "billing.checkout" },
+          },
+          "/v1/billing/portal": {
+            post: { operationId: "billing.portal" },
+          },
+          "/v1/billing/reconcile": {
+            post: { operationId: "billing.reconcile" },
+          },
           "/v1/registration": {
             put: { operationId: "registration.complete" },
           },
@@ -125,6 +135,25 @@ describe("Osfo Cloudflare host", () => {
     }),
   );
 
+  it.effect("rejects an invalid Stripe signature before persistence", () =>
+    Effect.gen(function* () {
+      const response = yield* Effect.promise(() =>
+        exports.default.fetch(
+          new Request("https://osfo.test/v1/webhooks/stripe", {
+            body: '{"id":"evt_invalid"}',
+            headers: { "stripe-signature": "invalid" },
+            method: "POST",
+          }),
+        ),
+      );
+
+      expect(response.status).toBe(400);
+      expect(yield* Effect.promise(() => response.json())).toEqual({
+        message: "Invalid Stripe signature",
+      });
+    }),
+  );
+
   it.effect("reuses one runtime inside an Osfo Agent activation", () =>
     Effect.gen(function* () {
       const first = yield* Effect.promise(() =>
@@ -197,7 +226,7 @@ describe("Osfo Cloudflare host", () => {
   });
 
   it("decodes complete authentication configuration without exposing secrets", () => {
-    const decoded = decodeRuntimeConfig({
+    const input = {
       BETTER_AUTH_API_KEY: "test-only-better-auth-dashboard-api-key",
       BETTER_AUTH_BASE_URL: "https://osfo.test",
       BETTER_AUTH_SECRET: "test-only-better-auth-secret-32-characters",
@@ -205,13 +234,24 @@ describe("Osfo Cloudflare host", () => {
       META_APP_SECRET: "test-only-meta-app-secret",
       META_WEBHOOK_VERIFY_TOKEN: "test-only-meta-webhook-token",
       OSFO_STAGE: "test",
+      STRIPE_ADVENTURER_PRICE_ID: "price_adventurer",
+      STRIPE_ADVENTURER_PRODUCT_ID: "prod_adventurer",
+      STRIPE_PORTAL_CONFIGURATION_ID: "bpc_approved",
+      STRIPE_SECRET_KEY: "sk_test_osfo",
+      STRIPE_WEBHOOK_SECRET: "whsec_test_osfo",
       TWILIO_ACCOUNT_SID: `AC${"1".repeat(32)}`,
       TWILIO_AUTH_TOKEN: "test-only-twilio-token",
       TWILIO_VERIFY_SERVICE_SID: `VA${"2".repeat(32)}`,
       WHATSAPP_PHONE_NUMBER: "14165550100",
-    });
+    };
+    const decoded = decodeRuntimeConfig(input);
 
     expect(Result.isSuccess(decoded)).toBe(true);
+    expect(
+      Result.isFailure(
+        decodeRuntimeConfig({ ...input, STRIPE_PORTAL_CONFIGURATION_ID: "unapproved" }),
+      ),
+    ).toBe(true);
     expect(String(decoded)).not.toContain("test-only-better-auth-dashboard-api-key");
     expect(String(decoded)).not.toContain("test-only-twilio-token");
     expect(String(decoded)).not.toContain("test-only-better-auth-secret");
@@ -271,6 +311,11 @@ const completeRuntimeInput = {
   META_APP_SECRET: "test-only-meta-app-secret",
   META_WEBHOOK_VERIFY_TOKEN: "test-only-meta-webhook-token",
   OSFO_STAGE: "test",
+  STRIPE_ADVENTURER_PRICE_ID: "price_adventurer",
+  STRIPE_ADVENTURER_PRODUCT_ID: "prod_adventurer",
+  STRIPE_PORTAL_CONFIGURATION_ID: "bpc_approved",
+  STRIPE_SECRET_KEY: "sk_test_osfo",
+  STRIPE_WEBHOOK_SECRET: "whsec_test_osfo",
   TWILIO_ACCOUNT_SID: `AC${"1".repeat(32)}`,
   TWILIO_AUTH_TOKEN: "test-only-twilio-token",
   TWILIO_VERIFY_SERVICE_SID: `VA${"2".repeat(32)}`,

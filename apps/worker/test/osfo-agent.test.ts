@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { Session } from "@cloudflare/think";
 import { describe, expect, it } from "@effect/vitest";
 import { and, eq, isNull } from "drizzle-orm";
 import { DateTime, Effect, Schema } from "effect";
@@ -7,6 +8,7 @@ import { DateTime, Effect, Schema } from "effect";
 import {
   AgentId,
   AgentInitializationId,
+  AcceptanceReceiptId,
   AllowancePeriodId,
   AssistantMessageId,
   ChannelBindingId,
@@ -35,6 +37,7 @@ import {
 } from "../src/agents/osfo/db/schema";
 import { AuthorizationContext } from "../src/services/authorization";
 import { admitManagedConversation } from "../src/services/managed-conversation";
+import { replaceOwnedSession } from "./support/session-store";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/prefer-typed-schema-decoder, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Worker integration tests cross Promise, RPC, Effect, and raw SQLite test boundaries. */
 
@@ -204,6 +207,88 @@ describe("Osfo Agent and Think Session foundation", () => {
     }),
   );
 
+  it.effect("atomically replaces the current Session with one immutable command receipt", () =>
+    Effect.gen(function* () {
+      const agentId = AgentId.make("agent-command-receipt-atomic");
+      const routeId = ConversationRouteId.make("route-command-receipt-atomic");
+      const initialSessionId = SessionId.make("session-command-receipt-initial");
+      const replacementSessionId = SessionId.make("session-command-receipt-replacement");
+      const agent = env.OSFO_AGENT.getByName(agentId);
+      yield* Effect.promise(
+        async () =>
+          await agent.initialize({
+            agentId,
+            initializationId: AgentInitializationId.make("init-command-receipt-atomic"),
+            initializedAt: "2026-08-16T12:00:00.000Z",
+            routeId,
+            sessionId: initialSessionId,
+          }),
+      );
+
+      const observed = yield* Effect.promise(() =>
+        runInDurableObject(agent, async (_instance, state) => {
+          const store = makeAgentStore(makeAgentDb(state.storage));
+          const input = {
+            expectedCurrentSessionId: initialSessionId,
+            receipt: {
+              allowancePeriodId: AllowancePeriodId.make("period-command-receipt"),
+              channelBindingId: ChannelBindingId.make("binding-command-receipt"),
+              command: "/new" as const,
+              providerMessageId: ProviderMessageId.make("provider-command-receipt"),
+              receiptId: Schema.decodeUnknownSync(AcceptanceReceiptId)("receipt-command-receipt"),
+              userMessageId: UserMessageId.make("message-command-receipt"),
+            },
+            replacedAt: DbTimestamp.make("2026-08-16T12:01:00.000Z"),
+            replacementSessionId,
+            routeId,
+          };
+          const [first, replay] = await Promise.all([
+            Effect.runPromise(store.replaceCurrentSessionWithCommandReceipt(input)),
+            Effect.runPromise(store.replaceCurrentSessionWithCommandReceipt(input)),
+          ]);
+          const conflict = await Effect.runPromise(
+            Effect.flip(
+              store.replaceCurrentSessionWithCommandReceipt({
+                ...input,
+                receipt: {
+                  ...input.receipt,
+                  userMessageId: UserMessageId.make("message-command-receipt-conflict"),
+                },
+              }),
+            ),
+          );
+          const replacementConflict = await Effect.runPromise(
+            Effect.flip(
+              store.replaceCurrentSessionWithCommandReceipt({
+                ...input,
+                replacementSessionId: SessionId.make("session-command-receipt-changed"),
+              }),
+            ),
+          );
+          const route = await Effect.runPromise(store.readRoute(routeId));
+          return { conflict, first, replacementConflict, replay, route };
+        }),
+      );
+
+      expect(observed.replay).toEqual(observed.first);
+      expect(observed.first).toMatchObject({
+        _tag: "SessionCommandReceipt",
+        currentSessionId: replacementSessionId,
+        historicalSessionId: initialSessionId,
+      });
+      expect(observed.conflict).toMatchObject({ _tag: "SessionCommandReceiptConflict" });
+      expect(observed.replacementConflict).toMatchObject({
+        _tag: "SessionCommandReceiptConflict",
+        existingReplacementSessionId: replacementSessionId,
+        requestedReplacementSessionId: "session-command-receipt-changed",
+      });
+      expect(observed.route).toMatchObject({
+        currentSessionId: replacementSessionId,
+        historicalSessionIds: [initialSessionId],
+      });
+    }),
+  );
+
   it.effect("recovers a real Think acceptance into one SQLite Acceptance Receipt", () =>
     Effect.gen(function* () {
       const agentId = AgentId.make("agent-whatsapp-think-recovery");
@@ -218,12 +303,16 @@ describe("Osfo Agent and Think Session foundation", () => {
       const authorization = yield* Schema.decodeUnknownEffect(AuthorizationContext)(
         whatsappAuthorization(channelBindingId),
       );
-      const managed = yield* admitManagedConversation({
-        authorization,
-        idempotencyKey: `whatsapp-${receiptId}`,
-        message: "Recover accepted work",
-        submissionId,
-      });
+      const managed = yield* admitManagedConversation(
+        {
+          authorization,
+          idempotencyKey: `whatsapp-${receiptId}`,
+          message: "Recover accepted work",
+          routeId,
+          submissionId,
+        },
+        { currentSessionId: sessionId, routeId },
+      );
       const admitted = yield* Schema.decodeUnknownEffect(
         Schema.TaggedStruct("ManagedConversationAdmitted", {
           idempotencyKey: Schema.String,
@@ -550,116 +639,6 @@ describe("Osfo Agent and Think Session foundation", () => {
     }),
   );
 
-  it.effect("keeps exactly one current Session and retains route history", () =>
-    Effect.gen(function* () {
-      const agentId = Schema.decodeUnknownSync(AgentId)("agent-route-history");
-      const initializationId =
-        Schema.decodeUnknownSync(AgentInitializationId)("init-route-history");
-      const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-history");
-      const initialSessionId = Schema.decodeUnknownSync(SessionId)("session-initial");
-      const replacementSessionId = Schema.decodeUnknownSync(SessionId)("session-replacement");
-      const agent = env.OSFO_AGENT.getByName(agentId);
-
-      yield* Effect.promise(
-        async () =>
-          await agent.initialize({
-            agentId,
-            initializationId,
-            initializedAt: "2026-08-15T12:00:00.000Z",
-            routeId,
-            sessionId: initialSessionId,
-          }),
-      );
-      yield* Effect.promise(() =>
-        runInDurableObject(agent, async (instance) => {
-          await instance.session.appendMessage({
-            id: "historical-user-message",
-            parts: [{ text: "Keep this history", type: "text" }],
-            role: "user",
-          });
-        }),
-      );
-
-      const firstReplacement = yield* Effect.promise(
-        async () =>
-          await agent.replaceCurrentSession({
-            expectedCurrentSessionId: initialSessionId,
-            replacedAt: "2026-08-15T13:00:00.000Z",
-            replacementSessionId,
-            routeId,
-          }),
-      );
-      const repeatedReplacement = yield* Effect.promise(
-        async () =>
-          await agent.replaceCurrentSession({
-            expectedCurrentSessionId: initialSessionId,
-            replacedAt: "2026-08-15T13:00:00.000Z",
-            replacementSessionId,
-            routeId,
-          }),
-      );
-      yield* Effect.promise(() => evictDurableObject(agent));
-      const replayedInitialization = yield* Effect.promise(
-        async () =>
-          await agent.initialize({
-            agentId,
-            initializationId,
-            initializedAt: "2026-08-15T12:00:00.000Z",
-            routeId,
-            sessionId: initialSessionId,
-          }),
-      );
-      const historicalReuse = yield* Effect.promise(
-        async () =>
-          await agent.replaceCurrentSession({
-            expectedCurrentSessionId: replacementSessionId,
-            replacedAt: "2026-08-15T14:00:00.000Z",
-            replacementSessionId: initialSessionId,
-            routeId,
-          }),
-      );
-      const route = yield* Effect.promise(async () => await agent.readRoute(routeId));
-      const historicalSession = yield* Effect.promise(
-        async () => await agent.readSession(initialSessionId),
-      );
-
-      expect(firstReplacement).toEqual({
-        _tag: "CurrentSessionReplaced",
-        currentSessionId: "session-replacement",
-        historicalSessionId: "session-initial",
-        routeId: "route-history",
-      });
-      expect(repeatedReplacement).toEqual(firstReplacement);
-      expect(replayedInitialization).toEqual({
-        _tag: "AgentInitialized",
-        agentId: "agent-route-history",
-        currentSessionId: "session-replacement",
-        routeId: "route-history",
-      });
-      expect(historicalReuse).toMatchObject({
-        _tag: "CurrentSessionReplacementConflict",
-        replacementOwnerRouteId: "route-history",
-      });
-      expect(route).toEqual({
-        _tag: "ConversationRouteFound",
-        currentSessionId: "session-replacement",
-        historicalSessionIds: ["session-initial"],
-        routeId: "route-history",
-      });
-      expect(historicalSession).toEqual({
-        _tag: "SessionHistoryFound",
-        messages: [
-          {
-            id: "historical-user-message",
-            parts: [{ text: "Keep this history", type: "text" }],
-            role: "user",
-          },
-        ],
-        sessionId: "session-initial",
-      });
-    }),
-  );
-
   it.effect("enforces Agent-local ownership and idempotency invariants in SQLite", () =>
     Effect.gen(function* () {
       const agentId = Schema.decodeUnknownSync(AgentId)("agent-database-invariants");
@@ -676,6 +655,8 @@ describe("Osfo Agent and Think Session foundation", () => {
       const secondarySessionId = Schema.decodeUnknownSync(SessionId)("secondary-current");
       const secondCurrentSessionId = Schema.decodeUnknownSync(SessionId)("second-current");
       const orphanSessionId = Schema.decodeUnknownSync(SessionId)("orphan-session");
+      const invalidSequenceSessionId = Schema.decodeUnknownSync(SessionId)("invalid-sequence");
+      const duplicateSequenceSessionId = Schema.decodeUnknownSync(SessionId)("duplicate-sequence");
       const initializedAt = Schema.decodeUnknownSync(DbTimestamp)("2026-08-15T12:00:00.000Z");
       const agent = env.OSFO_AGENT.getByName(agentId);
 
@@ -734,6 +715,7 @@ describe("Osfo Agent and Think Session foundation", () => {
           db.insert(sessionOwnership)
             .values({
               becameCurrentAt: initializedAt,
+              ownershipSequence: 2,
               replacedAt: null,
               routeId: secondaryRouteId,
               sessionId: secondarySessionId,
@@ -744,6 +726,31 @@ describe("Osfo Agent and Think Session foundation", () => {
               .insert(sessionOwnership)
               .values({
                 becameCurrentAt: initializedAt,
+                ownershipSequence: 0,
+                replacedAt: initializedAt,
+                routeId: secondaryRouteId,
+                sessionId: invalidSequenceSessionId,
+              })
+              .run(),
+          ).toThrow(/constraint/i);
+          expect(() =>
+            db
+              .insert(sessionOwnership)
+              .values({
+                becameCurrentAt: initializedAt,
+                ownershipSequence: 2,
+                replacedAt: initializedAt,
+                routeId: secondaryRouteId,
+                sessionId: duplicateSequenceSessionId,
+              })
+              .run(),
+          ).toThrow(/constraint/i);
+          expect(() =>
+            db
+              .insert(sessionOwnership)
+              .values({
+                becameCurrentAt: initializedAt,
+                ownershipSequence: 3,
                 replacedAt: null,
                 routeId: secondaryRouteId,
                 sessionId: secondCurrentSessionId,
@@ -755,6 +762,7 @@ describe("Osfo Agent and Think Session foundation", () => {
               .insert(sessionOwnership)
               .values({
                 becameCurrentAt: initializedAt,
+                ownershipSequence: 4,
                 replacedAt: null,
                 routeId: missingRouteId,
                 sessionId: orphanSessionId,
@@ -954,7 +962,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       );
       yield* Effect.promise(
         async () =>
-          await agent.replaceCurrentSession({
+          await replaceOwnedSession(agent, {
             expectedCurrentSessionId: originalSessionId,
             replacedAt: "2026-08-15T13:00:00.000Z",
             replacementSessionId,
@@ -1025,7 +1033,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       );
       yield* Effect.promise(
         async () =>
-          await agent.replaceCurrentSession({
+          await replaceOwnedSession(agent, {
             expectedCurrentSessionId: firstSessionId,
             replacedAt: "2026-08-15T12:00:00.1Z",
             replacementSessionId: secondSessionId,
@@ -1034,8 +1042,9 @@ describe("Osfo Agent and Think Session foundation", () => {
       );
       yield* Effect.promise(() =>
         runInDurableObject(agent, async (instance) => {
+          const secondSession = Session.create(instance).forSession(secondSessionId);
           for (const id of ["assistant-m-third", "assistant-b-fourth"]) {
-            await instance.session.appendMessage({
+            await secondSession.appendMessage({
               id,
               parts: [{ text: id, type: "text" }],
               role: "assistant",
@@ -1170,7 +1179,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       );
       yield* Effect.promise(
         async () =>
-          await agent.replaceCurrentSession({
+          await replaceOwnedSession(agent, {
             expectedCurrentSessionId: firstSessionId,
             replacedAt: "2026-08-15T13:00:00.000Z",
             replacementSessionId: secondSessionId,
@@ -1323,6 +1332,68 @@ describe("Osfo Agent and Think Session foundation", () => {
     }),
   );
 
+  it.effect("upgrades a populated 0002 Agent database to 0003 without losing receipts", () =>
+    Effect.gen(function* () {
+      const agent = env.OSFO_AGENT.getByName("agent-migration-populated-0002");
+      const observed = yield* Effect.promise(() =>
+        runInDurableObject(agent, async (_instance, state) => {
+          resetOsfoTables(state.storage);
+          await Effect.runPromise(applyMigrationChain(state.storage, agentMigrations.slice(0, 3)));
+          state.storage.sql.exec(
+            "INSERT INTO osfo_conversation_routes (is_primary, route_id) VALUES (1, ?)",
+            "route-upgrade-0002",
+          );
+          state.storage.sql.exec(
+            `INSERT INTO osfo_session_ownership
+              (became_current_at, replaced_at, route_id, session_id)
+             VALUES (?, NULL, ?, ?)`,
+            "2026-08-16T12:00:00.000Z",
+            "route-upgrade-0002",
+            "session-upgrade-0002",
+          );
+          state.storage.sql.exec(
+            `INSERT INTO osfo_acceptance_receipts
+              (allowance_period_id, channel_binding_id, provider_message_id, receipt_id,
+               session_id, think_submission_id, user_message_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            "period-upgrade-0002",
+            "binding-upgrade-0002",
+            "provider-upgrade-0002",
+            "receipt-upgrade-0002",
+            "session-upgrade-0002",
+            "submission-upgrade-0002",
+            "message-upgrade-0002",
+          );
+
+          const upgraded = await Effect.runPromise(
+            applyMigrationChain(state.storage, agentMigrations),
+          );
+          const repeated = await Effect.runPromise(
+            applyMigrationChain(state.storage, agentMigrations),
+          );
+          const ownership = state.storage.sql
+            .exec<{ ownership_sequence: number; session_id: string }>(
+              "SELECT session_id, ownership_sequence FROM osfo_session_ownership",
+            )
+            .one();
+          const receipt = state.storage.sql
+            .exec<{ receipt_id: string; session_id: string }>(
+              "SELECT receipt_id, session_id FROM osfo_acceptance_receipts",
+            )
+            .one();
+          return { ownership, receipt, repeated, upgraded };
+        }),
+      );
+
+      expect(observed).toEqual({
+        ownership: { ownership_sequence: 1, session_id: "session-upgrade-0002" },
+        receipt: { receipt_id: "receipt-upgrade-0002", session_id: "session-upgrade-0002" },
+        repeated: { appliedVersions: [], currentVersion: 4 },
+        upgraded: { appliedVersions: [4], currentVersion: 4 },
+      });
+    }),
+  );
+
   it.effect("rolls back an interrupted migration and retries it safely", () =>
     Effect.gen(function* () {
       const agent = env.OSFO_AGENT.getByName("agent-migration-interruption");
@@ -1420,7 +1491,10 @@ describe("Osfo Agent and Think Session foundation", () => {
         }),
       );
 
-      expect(observed).toEqual({ failureTag: "AgentMigrationDefinitionMismatch", ledger: [] });
+      expect(observed).toEqual({
+        failureTag: "AgentMigrationDefinitionMismatch",
+        ledger: [],
+      });
     }),
   );
 
@@ -1443,7 +1517,10 @@ describe("Osfo Agent and Think Session foundation", () => {
           const failure = await Effect.runPromise(
             Effect.flip(applyMigrationChain(state.storage, agentMigrations)),
           );
-          return { failureTag: failure._tag, failureVersion: failure.version };
+          return {
+            failureTag: failure._tag,
+            failureVersion: failure.version,
+          };
         }),
       );
 
@@ -1462,7 +1539,10 @@ describe("Osfo Agent and Think Session foundation", () => {
           resetOsfoTables(state.storage);
           const before = readNonOsfoTableDefinitions(state.storage);
           await Effect.runPromise(applyMigrationChain(state.storage, agentMigrations));
-          return { after: readNonOsfoTableDefinitions(state.storage), before };
+          return {
+            after: readNonOsfoTableDefinitions(state.storage),
+            before,
+          };
         }),
       );
 
@@ -1506,11 +1586,13 @@ const whatsappAuthorization = (channelBindingId: string) => ({
 
 const resetOsfoTables = (storage: DurableObjectStorage): void => {
   storage.sql.exec("DROP TABLE IF EXISTS osfo_acceptance_receipts");
+  storage.sql.exec("DROP TABLE IF EXISTS osfo_session_command_receipts");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_model_call_usage_evidence");
+  storage.sql.exec("DROP TABLE IF EXISTS osfo_session_recall_cursors");
+  storage.sql.exec("DROP TABLE IF EXISTS osfo_agent_initialization");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_committed_turns");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_session_ownership");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_conversation_routes");
-  storage.sql.exec("DROP TABLE IF EXISTS osfo_agent_initialization");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_schema_migrations");
 };
 

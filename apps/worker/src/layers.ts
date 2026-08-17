@@ -1,4 +1,5 @@
 import { Context, Effect, Layer, ManagedRuntime, Random, Schema } from "effect";
+import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 
 import * as Db from "./db";
 import { OsfoStage, type OsfoStage as OsfoStageType } from "./env";
@@ -72,7 +73,11 @@ export const makeOsfoAgentRuntime = (
   database: Db.Options,
 ) =>
   ManagedRuntime.make(
-    Layer.merge(makeExecutionUnitLayer("osfo-agent", identity, stage), Db.layer(database)),
+    Layer.mergeAll(
+      makeExecutionUnitLayer("osfo-agent", identity, stage),
+      Db.layer(database),
+      BrowserCrypto.layer,
+    ),
   );
 
 /** Create an activation-scoped registration runtime. */

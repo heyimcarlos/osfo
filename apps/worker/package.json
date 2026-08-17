@@ -30,7 +30,8 @@
     "effect": "catalog:",
     "fflate": "0.8.2",
     "pdf-lib": "1.17.1",
-    "postgres": "3.4.9"
+    "postgres": "3.4.9",
+    "stripe": "22.5.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",

@@ -1,4 +1,10 @@
-import { Api, type HelpArea, type OnboardingLocale, RegistrationToken } from "@osfo/api";
+import {
+  Api,
+  type BillingReconciliationRequest,
+  type HelpArea,
+  type OnboardingLocale,
+  RegistrationToken,
+} from "@osfo/api";
 import { Effect, Layer, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { HttpApiClient } from "effect/unstable/httpapi";
@@ -55,6 +61,45 @@ export const completeOnboarding = (payload: CompleteOnboardingPayload) =>
     return yield* client.onboarding.complete({
       payload: { ...payload, invitationToken },
     });
+  }).pipe(
+    // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The browser API client owns its Fetch runtime.
+    Effect.provide(httpClientLayer),
+  );
+
+/** Inspect the authenticated User's current safe billing state. */
+export const inspectBilling = Effect.gen(function* () {
+  const client = yield* HttpApiClient.make(Api, { baseUrl: apiBaseURL });
+  return yield* client.billing.inspect();
+}).pipe(
+  // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The browser API client owns its Fetch runtime.
+  Effect.provide(httpClientLayer),
+);
+
+/** Start or recover Stripe-hosted Adventurer Checkout. */
+export const startBillingCheckout = Effect.gen(function* () {
+  const client = yield* HttpApiClient.make(Api, { baseUrl: apiBaseURL });
+  return yield* client.billing.checkout({ payload: {} });
+}).pipe(
+  // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The browser API client owns its Fetch runtime.
+  Effect.provide(httpClientLayer),
+);
+
+/** Open Stripe Customer Portal for ordinary billing changes. */
+export const openBillingPortal = Effect.gen(function* () {
+  const client = yield* HttpApiClient.make(Api, { baseUrl: apiBaseURL });
+  return yield* client.billing.portal({ payload: {} });
+}).pipe(
+  // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The browser API client owns its Fetch runtime.
+  Effect.provide(httpClientLayer),
+);
+
+/** Reconcile current Stripe state after a hosted Checkout or Portal return. */
+export const reconcileBilling = (payload: BillingReconciliationRequest) =>
+  Effect.gen(function* () {
+    const client = yield* HttpApiClient.make(Api, { baseUrl: apiBaseURL });
+    return yield* payload.reason === "checkoutReturn"
+      ? client.billing.reconcile({ payload })
+      : client.billing.reconcile({ payload });
   }).pipe(
     // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The browser API client owns its Fetch runtime.
     Effect.provide(httpClientLayer),

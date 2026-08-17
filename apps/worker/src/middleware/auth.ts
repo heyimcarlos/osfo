@@ -58,6 +58,7 @@ export const currentUser = (config: WorkerAuth.AuthRouteConfig) =>
     );
     if (!hasAccess) return yield* new Unauthorized({});
     return CurrentUser.of({
+      authSessionExpiresAt: session.session.expiresAt,
       authSessionId: session.session.id,
       userId: session.user.id,
     });

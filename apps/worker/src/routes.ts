@@ -8,6 +8,7 @@ import { productApiLayer } from "./cors";
 import type { RuntimeConfig } from "./env";
 import * as Handlers from "./handlers";
 import * as RuntimeProbes from "./handlers/runtime-probes";
+import * as StripeWebhook from "./handlers/stripe-webhook";
 import * as InvitationAuth from "./handlers/invitation-auth";
 import * as WhatsApp from "./handlers/whatsapp";
 import * as TelegramRoutes from "./handlers/telegram";
@@ -49,7 +50,7 @@ export const layer = (options: Options) => {
       options.config.telegram.kind === "enabled" ? options.config.telegram.botUsername : "disabled",
   });
   const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
-    Layer.provide(Handlers.layer(options.runtime)),
+    Layer.provide(Handlers.layer(options.runtime, options.config)),
     Layer.provide(Onboarding.layerWithoutDependencies),
     Layer.provide(OnboardingPostgres.layerWithoutDependencies),
     Layer.provide(onboardingLinks),
@@ -119,6 +120,9 @@ export const layer = (options: Options) => {
           Layer.provide(telegramDelivery),
         )
       : Layer.empty;
+  const stripeWebhook = StripeWebhook.layer(options.config).pipe(
+    HttpRouter.provideRequest(options.authDependencies),
+  );
 
   return Layer.mergeAll(
     api,
@@ -126,6 +130,7 @@ export const layer = (options: Options) => {
     whatsapp,
     documentDownload,
     telegram,
+    stripeWebhook,
     Auth.layer({
       config: options.config.auth,
       dependencies: options.authDependencies,

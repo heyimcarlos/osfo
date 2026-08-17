@@ -1,0 +1,651 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "ed2551b6-56ad-4aca-8f59-38bf1f79babe",
+  "prevId": "4c0bcc62-018b-415e-bdc7-7be0abc7964d",
+  "tables": {
+    "osfo_acceptance_receipts": {
+      "name": "osfo_acceptance_receipts",
+      "columns": {
+        "accepted_at": {
+          "name": "accepted_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "CURRENT_TIMESTAMP"
+        },
+        "allowance_period_id": {
+          "name": "allowance_period_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "channel_binding_id": {
+          "name": "channel_binding_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "receipt_id": {
+          "name": "receipt_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "think_submission_id": {
+          "name": "think_submission_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_message_id": {
+          "name": "user_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_acceptance_receipts_think_submission_id_unique": {
+          "name": "osfo_acceptance_receipts_think_submission_id_unique",
+          "columns": ["think_submission_id"],
+          "isUnique": true
+        },
+        "osfo_acceptance_receipts_user_message_id_unique": {
+          "name": "osfo_acceptance_receipts_user_message_id_unique",
+          "columns": ["user_message_id"],
+          "isUnique": true
+        },
+        "osfo_acceptance_receipt_channel_message_unique": {
+          "name": "osfo_acceptance_receipt_channel_message_unique",
+          "columns": ["channel_binding_id", "provider_message_id"],
+          "isUnique": true
+        },
+        "osfo_acceptance_receipts_by_session": {
+          "name": "osfo_acceptance_receipts_by_session",
+          "columns": ["session_id", "accepted_at"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "osfo_acceptance_receipts_session_id_osfo_session_ownership_session_id_fk": {
+          "name": "osfo_acceptance_receipts_session_id_osfo_session_ownership_session_id_fk",
+          "tableFrom": "osfo_acceptance_receipts",
+          "tableTo": "osfo_session_ownership",
+          "columnsFrom": ["session_id"],
+          "columnsTo": ["session_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "osfo_agent_initialization": {
+      "name": "osfo_agent_initialization",
+      "columns": {
+        "agent_id": {
+          "name": "agent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "initialization_id": {
+          "name": "initialization_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "initialized_at": {
+          "name": "initialized_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "initial_route_id": {
+          "name": "initial_route_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "initial_session_id": {
+          "name": "initial_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "singleton_key": {
+          "name": "singleton_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_agent_initialization_agent_id_unique": {
+          "name": "osfo_agent_initialization_agent_id_unique",
+          "columns": ["agent_id"],
+          "isUnique": true
+        },
+        "osfo_agent_initialization_initialization_id_unique": {
+          "name": "osfo_agent_initialization_initialization_id_unique",
+          "columns": ["initialization_id"],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "osfo_agent_initialization_initial_route_id_osfo_conversation_routes_route_id_fk": {
+          "name": "osfo_agent_initialization_initial_route_id_osfo_conversation_routes_route_id_fk",
+          "tableFrom": "osfo_agent_initialization",
+          "tableTo": "osfo_conversation_routes",
+          "columnsFrom": ["initial_route_id"],
+          "columnsTo": ["route_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        },
+        "osfo_agent_initialization_initial_session_id_osfo_session_ownership_session_id_fk": {
+          "name": "osfo_agent_initialization_initial_session_id_osfo_session_ownership_session_id_fk",
+          "tableFrom": "osfo_agent_initialization",
+          "tableTo": "osfo_session_ownership",
+          "columnsFrom": ["initial_session_id"],
+          "columnsTo": ["session_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_agent_initialization_singleton": {
+          "name": "osfo_agent_initialization_singleton",
+          "value": "\"osfo_agent_initialization\".\"singleton_key\" = 'agent'"
+        }
+      }
+    },
+    "osfo_committed_turns": {
+      "name": "osfo_committed_turns",
+      "columns": {
+        "assistant_message_id": {
+          "name": "assistant_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "observation_sequence": {
+          "name": "observation_sequence",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "CURRENT_TIMESTAMP"
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "think_request_id": {
+          "name": "think_request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_committed_turns_assistant_message_id_unique": {
+          "name": "osfo_committed_turns_assistant_message_id_unique",
+          "columns": ["assistant_message_id"],
+          "isUnique": true
+        },
+        "osfo_committed_turns_by_session": {
+          "name": "osfo_committed_turns_by_session",
+          "columns": ["session_id", "observation_sequence"],
+          "isUnique": false
+        },
+        "osfo_committed_turn_think_request_unique": {
+          "name": "osfo_committed_turn_think_request_unique",
+          "columns": ["think_request_id"],
+          "isUnique": true,
+          "where": "\"osfo_committed_turns\".\"think_request_id\" IS NOT NULL"
+        }
+      },
+      "foreignKeys": {
+        "osfo_committed_turns_session_id_osfo_session_ownership_session_id_fk": {
+          "name": "osfo_committed_turns_session_id_osfo_session_ownership_session_id_fk",
+          "tableFrom": "osfo_committed_turns",
+          "tableTo": "osfo_session_ownership",
+          "columnsFrom": ["session_id"],
+          "columnsTo": ["session_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_committed_turn_source": {
+          "name": "osfo_committed_turn_source",
+          "value": "\"osfo_committed_turns\".\"source\" IN ('hook', 'reconciliation')"
+        }
+      }
+    },
+    "osfo_conversation_routes": {
+      "name": "osfo_conversation_routes",
+      "columns": {
+        "is_primary": {
+          "name": "is_primary",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "route_id": {
+          "name": "route_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_one_primary_route": {
+          "name": "osfo_one_primary_route",
+          "columns": ["is_primary"],
+          "isUnique": true,
+          "where": "\"osfo_conversation_routes\".\"is_primary\" = 1"
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "osfo_conversation_route_primary_boolean": {
+          "name": "osfo_conversation_route_primary_boolean",
+          "value": "\"osfo_conversation_routes\".\"is_primary\" IN (0, 1)"
+        }
+      }
+    },
+    "osfo_model_call_usage_evidence": {
+      "name": "osfo_model_call_usage_evidence",
+      "columns": {
+        "allowance_period_id": {
+          "name": "allowance_period_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "attempt_id": {
+          "name": "attempt_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "dispatched_at": {
+          "name": "dispatched_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "items_json": {
+          "name": "items_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_model_call_usage_pending": {
+          "name": "osfo_model_call_usage_pending",
+          "columns": ["recorded_at"],
+          "isUnique": false,
+          "where": "\"osfo_model_call_usage_evidence\".\"dispatched_at\" IS NULL"
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "osfo_session_command_receipts": {
+      "name": "osfo_session_command_receipts",
+      "columns": {
+        "accepted_at": {
+          "name": "accepted_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "CURRENT_TIMESTAMP"
+        },
+        "allowance_period_id": {
+          "name": "allowance_period_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "channel_binding_id": {
+          "name": "channel_binding_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "command": {
+          "name": "command",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "current_session_id": {
+          "name": "current_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "historical_session_id": {
+          "name": "historical_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "receipt_id": {
+          "name": "receipt_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "route_id": {
+          "name": "route_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_message_id": {
+          "name": "user_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_session_command_receipts_user_message_id_unique": {
+          "name": "osfo_session_command_receipts_user_message_id_unique",
+          "columns": ["user_message_id"],
+          "isUnique": true
+        },
+        "osfo_session_command_receipt_channel_message_unique": {
+          "name": "osfo_session_command_receipt_channel_message_unique",
+          "columns": ["channel_binding_id", "provider_message_id"],
+          "isUnique": true
+        },
+        "osfo_session_command_receipts_by_route": {
+          "name": "osfo_session_command_receipts_by_route",
+          "columns": ["route_id", "accepted_at"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "osfo_session_command_receipts_current_session_id_osfo_session_ownership_session_id_fk": {
+          "name": "osfo_session_command_receipts_current_session_id_osfo_session_ownership_session_id_fk",
+          "tableFrom": "osfo_session_command_receipts",
+          "tableTo": "osfo_session_ownership",
+          "columnsFrom": ["current_session_id"],
+          "columnsTo": ["session_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        },
+        "osfo_session_command_receipts_historical_session_id_osfo_session_ownership_session_id_fk": {
+          "name": "osfo_session_command_receipts_historical_session_id_osfo_session_ownership_session_id_fk",
+          "tableFrom": "osfo_session_command_receipts",
+          "tableTo": "osfo_session_ownership",
+          "columnsFrom": ["historical_session_id"],
+          "columnsTo": ["session_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        },
+        "osfo_session_command_receipts_route_id_osfo_conversation_routes_route_id_fk": {
+          "name": "osfo_session_command_receipts_route_id_osfo_conversation_routes_route_id_fk",
+          "tableFrom": "osfo_session_command_receipts",
+          "tableTo": "osfo_conversation_routes",
+          "columnsFrom": ["route_id"],
+          "columnsTo": ["route_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "osfo_session_ownership": {
+      "name": "osfo_session_ownership",
+      "columns": {
+        "became_current_at": {
+          "name": "became_current_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "ownership_sequence": {
+          "name": "ownership_sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "replaced_at": {
+          "name": "replaced_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "route_id": {
+          "name": "route_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_session_ownership_ownership_sequence_unique": {
+          "name": "osfo_session_ownership_ownership_sequence_unique",
+          "columns": ["ownership_sequence"],
+          "isUnique": true
+        },
+        "osfo_one_current_session_per_route": {
+          "name": "osfo_one_current_session_per_route",
+          "columns": ["route_id"],
+          "isUnique": true,
+          "where": "\"osfo_session_ownership\".\"replaced_at\" IS NULL"
+        },
+        "osfo_sessions_by_route": {
+          "name": "osfo_sessions_by_route",
+          "columns": ["route_id", "ownership_sequence"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "osfo_session_ownership_route_id_osfo_conversation_routes_route_id_fk": {
+          "name": "osfo_session_ownership_route_id_osfo_conversation_routes_route_id_fk",
+          "tableFrom": "osfo_session_ownership",
+          "tableTo": "osfo_conversation_routes",
+          "columnsFrom": ["route_id"],
+          "columnsTo": ["route_id"],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "osfo_session_recall_cursors": {
+      "name": "osfo_session_recall_cursors",
+      "columns": {
+        "after_ownership_sequence": {
+          "name": "after_ownership_sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cursor": {
+          "name": "cursor",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+15 minutes'))"
+        },
+        "route_id": {
+          "name": "route_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "snapshot_current_session_id": {
+          "name": "snapshot_current_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "snapshot_max_ownership_sequence": {
+          "name": "snapshot_max_ownership_sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "osfo_session_recall_cursors_by_expiry": {
+          "name": "osfo_session_recall_cursors_by_expiry",
+          "columns": ["expires_at"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "osfo_session_recall_cursors_route_id_osfo_conversation_routes_route_id_fk": {
+          "name": "osfo_session_recall_cursors_route_id_osfo_conversation_routes_route_id_fk",
+          "tableFrom": "osfo_session_recall_cursors",
+          "tableTo": "osfo_conversation_routes",
+          "columnsFrom": ["route_id"],
+          "columnsTo": ["route_id"],
+          "onDelete": "cascade",
+          "onUpdate": "restrict"
+        },
+        "osfo_session_recall_cursors_snapshot_current_session_id_osfo_session_ownership_session_id_fk": {
+          "name": "osfo_session_recall_cursors_snapshot_current_session_id_osfo_session_ownership_session_id_fk",
+          "tableFrom": "osfo_session_recall_cursors",
+          "tableTo": "osfo_session_ownership",
+          "columnsFrom": ["snapshot_current_session_id"],
+          "columnsTo": ["session_id"],
+          "onDelete": "cascade",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}
