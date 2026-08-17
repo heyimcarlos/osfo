@@ -3,6 +3,8 @@ import {
   defaultContextOverflowClassifier,
   Session,
   Think,
+  type ActionAuthorizationContext,
+  type ActionAuthorizationDecision,
   type ChatErrorContext,
   type ChatResponseResult,
   type PrepareStepContext,
@@ -73,7 +75,6 @@ import {
 } from "../../domain/model-access-policy";
 import { currentPolicy, retainedCatalog, type PlanPolicyNotFound } from "../../domain/plan-policy";
 import * as AgentDirectory from "../../services/agent-directory";
-import { AuthorizationContext } from "../../services/authorization";
 import {
   invalidOsfoEnvironment,
   makeOsfoAgentRuntime,
@@ -81,8 +82,34 @@ import {
   type RuntimeProbeResult,
 } from "../../layers";
 import { makeAgentDb } from "./db/client";
+import {
+  BoundCoreMemoryInput,
+  type BoundCoreMemoryEncoded,
+  boundCoreMemory,
+  clearCoreMemory,
+  configureCoreMemory,
+  coreMemoryTools,
+  type CoreMemoryBudgetExceeded,
+  type CoreMemoryBound,
+  type CoreMemoryCorrected,
+  type CoreMemoryInspected,
+  CoreMemoryUnavailable,
+  CorrectCoreMemoryInput,
+  type CorrectCoreMemoryEncoded,
+  correctCoreMemory,
+  inspectCoreMemory,
+  InspectCoreMemoryInput,
+  type InspectCoreMemoryEncoded,
+} from "./core-memory";
 import * as Allowances from "../../services/allowances";
 import { makeActionApprovals } from "../../services/action-approvals";
+import {
+  make as makeAuthorization,
+  restoreCoreMemoryAuthorization,
+  type ApprovalRequired,
+  type AuthorizationContext,
+  type Denied,
+} from "../../services/authorization";
 import * as DocumentGeneration from "../../services/document-generation";
 import { makeDurableModelCallUsage } from "../../services/model-call-usage";
 import {
@@ -149,7 +176,8 @@ import {
   ActionPresentationUnavailable,
   ActionApprovalRequestInvalid,
   ApprovalActorAuthorizationUnavailable,
-  type ApprovalActorUnauthorized,
+  type ApprovalActor,
+  ApprovalActorUnauthorized,
   type ApprovalAlreadyResolved,
   type ApprovalDecisionAccepted,
   CancelActionApprovalRequest,
@@ -159,12 +187,17 @@ import {
   type ThinkApprovalUnavailable,
 } from "./think-action-approvals";
 import {
-  makeTestProtectedAction,
-  presentTestProtectedAction,
-  sanitizeTestProtectedActionInput,
-  testProtectedActionName,
+  coreMemoryClearActionName,
+  makeOsfoActions,
+  presentOsfoAction,
+  sanitizePendingApproval,
+} from "./action-registry";
+import {
+  currentTestAuthorization,
+  testProtectedActionUserId,
   type TestProtectedActionState,
 } from "./test-protected-action";
+import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-authorization";
 import { makeAgentSessionLifecycle } from "./session-lifecycle";
 import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
 
@@ -179,6 +212,7 @@ const defaultTestProtectedActionState: TestProtectedActionState = {
   currentFact: "current",
   providerOutcome: "applied",
 };
+const authorization = makeAuthorization(retainedCatalog);
 
 const GatewayProviderMetadata = Schema.Struct({
   cloudflare: Schema.optional(
@@ -319,6 +353,7 @@ export class OsfoAgent extends Think<Env> {
   readonly #db = makeAgentDb(this.ctx.storage);
   #activeModelStepNumber = ModelStepNumber.make(1);
   readonly #completedModelSteps = new Set<number>();
+  readonly #currentApprovalAuthorization = new Map<ActionId, AuthorizationContext>();
   readonly #actionApprovals = makeActionApprovals({
     authorizer: { ownsAgent: (userId) => this.#userOwnsAgent(userId) },
     lifecycle: makeThinkActionApprovalAdapter({
@@ -461,19 +496,21 @@ export class OsfoAgent extends Think<Env> {
       }),
     };
     const stage = decodeOsfoStage(this.env.OSFO_STAGE);
-    if (Option.isNone(stage)) return documentActions;
-    const gmail = Option.getOrUndefined(this.#gmailRuntime);
-    const actions =
-      gmail === undefined
-        ? documentActions
-        : { ...documentActions, [gmailSendActionName]: gmail.action };
-    if (stage.value !== "test") return actions;
+    const executeClear = (input: Parameters<typeof clearCoreMemory>[1], actionId: ActionId) =>
+      this.#clearCoreMemory(input, actionId);
+    const osfoActions =
+      Option.isSome(stage) && stage.value === "test"
+        ? makeOsfoActions({
+            clearCoreMemory: executeClear,
+            testProtectedActionState: () =>
+              this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
+          })
+        : makeOsfoActions({ clearCoreMemory: executeClear });
+    const gmail = Option.isNone(stage) ? undefined : Option.getOrUndefined(this.#gmailRuntime);
     return {
-      ...actions,
-      [testProtectedActionName]: makeTestProtectedAction({
-        readState: () =>
-          this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
-      }),
+      ...documentActions,
+      ...osfoActions,
+      ...(gmail === undefined ? {} : { [gmailSendActionName]: gmail.action }),
     };
   }
 
@@ -502,13 +539,7 @@ export class OsfoAgent extends Think<Env> {
   override async pendingApprovals(executionId?: string): Promise<Array<PendingApproval>> {
     const pending = await super.pendingApprovals(executionId);
     return pending.map((approval) =>
-      approval.source === "action" && approval.descriptor.action === testProtectedActionName
-        ? Object.assign({}, approval, {
-            descriptor: Object.assign({}, approval.descriptor, {
-              input: sanitizeTestProtectedActionInput(approval.descriptor.input),
-            }),
-          })
-        : approval.source === "action" && approval.descriptor.action === documentDeleteActionName
+      approval.source === "action" && approval.descriptor.action === documentDeleteActionName
           ? Object.assign({}, approval, {
               descriptor: Object.assign({}, approval.descriptor, {
                 input: sanitizeDocumentDeleteInput(approval.descriptor.input),
@@ -520,14 +551,14 @@ export class OsfoAgent extends Think<Env> {
                   input: sanitizeGmailSendActionInput(approval.descriptor.input),
                 }),
               })
-            : Object.assign({}, approval, {
-                descriptor: Object.assign({}, approval.descriptor, { input: {} }),
-              }),
+          : sanitizePendingApproval(approval),
     );
   }
 
   /** Apply only the route and limits pinned to the current durable Think Submission. */
-  override beforeTurn(_context: TurnContext): Promise<TurnConfig> {
+  override async beforeTurn(_context: TurnContext): Promise<TurnConfig> {
+    const system = await this.session.refreshSystemPrompt();
+    const tools = { ...this.getTools(), ...coreMemoryTools(this.session) };
     return Effect.runPromise(
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata).pipe(
         Effect.map((metadata) => {
@@ -547,10 +578,30 @@ export class OsfoAgent extends Think<Env> {
             maxSteps: metadata.maxSteps,
             model: metadata.route,
             sendReasoning: false,
+            system,
+            tools,
           };
         }),
       ),
     );
+  }
+
+  /** Admit each Action through Osfo policy after Think validates its exact input. */
+  override async authorizeAction(
+    context: ActionAuthorizationContext,
+  ): Promise<ActionAuthorizationDecision> {
+    if (context.action !== coreMemoryClearActionName) return super.authorizeAction(context);
+    const current = await runRpc(this.#readCoreMemoryAuthorization());
+    if (Predicate.isTagged(current, "CoreMemoryUnavailable")) {
+      return { allowed: false, reason: current.message };
+    }
+    const admission = authorization.admit(current, {
+      actionId: context.toolCallId,
+      kind: "memory.clear",
+    });
+    return Predicate.isTagged(admission, "Denied")
+      ? { allowed: false, reason: admission.reason }
+      : { allowed: true, grantedPermissions: ["memory:clear"] };
   }
 
   /** Pin the canonical Session for the full durable Think Submission lifecycle. */
@@ -669,14 +720,18 @@ export class OsfoAgent extends Think<Env> {
   override async configureSession(session: Session): Promise<Session> {
     await this.#migrationsReady;
     const current = await Effect.runPromise(this.#readOptionalPrimarySessionId());
-    return this.#configureSession(
+    return await this.#configureSession(
       session,
       Option.getOrElse(current, () => pendingSessionId),
     );
   }
 
-  #configureSession(session: Session, sessionId: string): Session {
-    return session
+  async #configureSession(session: Session, sessionId: string): Promise<Session> {
+    const configured = session.forSession(sessionId).withContext("Operating Contract", {
+      provider: { get: async () => this.getSystemPrompt() },
+    });
+    const coreMemory = await configureCoreMemory(configured, this);
+    return coreMemory
       .forSession(sessionId)
       .onCompaction(
         createCompactFunction({
@@ -684,6 +739,146 @@ export class OsfoAgent extends Think<Env> {
         }),
       )
       .compactAfter(launchModelAccessPolicy.plans.free.context.targetInputTokens);
+  }
+
+  /** Change one Core Memory block's independent User-selected budget. */
+  async boundCoreMemory(
+    input: BoundCoreMemoryEncoded,
+  ): Promise<
+    | AgentRequestInvalid
+    | ApprovalRequired
+    | CoreMemoryBound
+    | CoreMemoryBudgetExceeded
+    | CoreMemoryUnavailable
+    | Denied
+  > {
+    await this.#migrationsReady;
+    await this.#activateCurrentSession();
+    const session = this.session;
+    const applyBound = (parsed: BoundCoreMemoryInput) => boundCoreMemory(session, this, parsed);
+    const outcome = await runRpc(
+      Effect.gen(function* () {
+        const parsed = yield* Schema.decodeEffect(BoundCoreMemoryInput)(input).pipe(
+          Effect.mapError(() => invalidRequest("boundCoreMemory")),
+        );
+        const admission = authorization.admit(parsed.authorization, {
+          actionId: parsed.actionId,
+          kind: "memory.correct",
+        });
+        if (!Predicate.isTagged(admission, "Admitted")) return admission;
+        return yield* applyBound(parsed);
+      }),
+    );
+    if (Predicate.isTagged(outcome, "CoreMemoryBound")) await this.#activateCurrentSession();
+    return outcome;
+  }
+
+  /** Inspect Agent-wide User Context and Agent Notes before or after any turn. */
+  async inspectCoreMemory(
+    input: InspectCoreMemoryEncoded,
+  ): Promise<
+    AgentRequestInvalid | ApprovalRequired | CoreMemoryInspected | CoreMemoryUnavailable | Denied
+  > {
+    await this.#migrationsReady;
+    await this.#activateCurrentSession();
+    const session = this.session;
+    return runRpc(
+      Effect.gen(function* () {
+        const parsed = yield* Schema.decodeEffect(InspectCoreMemoryInput)(input).pipe(
+          Effect.mapError(() => invalidRequest("inspectCoreMemory")),
+        );
+        const admission = authorization.admit(parsed.authorization, {
+          actionId: parsed.actionId,
+          kind: "memory.inspect",
+        });
+        if (!Predicate.isTagged(admission, "Admitted")) return admission;
+        return yield* inspectCoreMemory(session);
+      }),
+    );
+  }
+
+  /** Immediately replace one Core Memory block from a direct User correction. */
+  async correctCoreMemory(
+    input: CorrectCoreMemoryEncoded,
+  ): Promise<
+    | AgentRequestInvalid
+    | ApprovalRequired
+    | CoreMemoryBudgetExceeded
+    | CoreMemoryCorrected
+    | CoreMemoryUnavailable
+    | Denied
+  > {
+    await this.#migrationsReady;
+    await this.#activateCurrentSession();
+    const session = this.session;
+    return runRpc(
+      Effect.gen(function* () {
+        const parsed = yield* Schema.decodeEffect(CorrectCoreMemoryInput)(input).pipe(
+          Effect.mapError(() => invalidRequest("correctCoreMemory")),
+        );
+        const admission = authorization.admit(parsed.authorization, {
+          actionId: parsed.actionId,
+          kind: "memory.correct",
+        });
+        if (!Predicate.isTagged(admission, "Admitted")) return admission;
+        return yield* correctCoreMemory(session, parsed);
+      }),
+    );
+  }
+
+  async #clearCoreMemory(input: Parameters<typeof clearCoreMemory>[1], actionId: ActionId) {
+    await this.#migrationsReady;
+    const current = this.#currentApprovalAuthorization.get(actionId);
+    if (current === undefined) {
+      return new CoreMemoryUnavailable({
+        cause: actionId,
+        message: "Current Core Memory authority is unavailable",
+        operation: "clear",
+      });
+    }
+    const recheck = authorization.recheck(
+      {
+        ...current,
+        approval: { actionId, operation: "memory.clear", userId: current.user.userId },
+      },
+      { actionId, kind: "memory.clear" },
+    );
+    if (Predicate.isTagged(recheck, "Denied")) return recheck;
+    await this.#activateCurrentSession();
+    return runRpc(clearCoreMemory(this.session, input));
+  }
+
+  #readCoreMemoryAuthorization() {
+    const metadata = Schema.decodeUnknownOption(ManagedTurnMetadata)(this.activeTurnMetadata);
+    if (Option.isSome(metadata)) {
+      return Schema.decodeEffect(CoreMemoryAuthorizationSnapshot)(
+        metadata.value.coreMemoryAuthorization,
+      ).pipe(
+        Effect.map(restoreCoreMemoryAuthorization),
+        Effect.mapError(
+          (cause) =>
+            new CoreMemoryUnavailable({
+              cause,
+              message: "Core Memory authority could not be restored",
+              operation: "clear",
+            }),
+        ),
+      );
+    }
+    const stage = decodeOsfoStage(this.env.OSFO_STAGE);
+    return Option.isSome(stage) && stage.value === "test"
+      ? Effect.succeed(
+          currentTestAuthorization(
+            this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
+          ),
+        )
+      : Effect.fail(
+          new CoreMemoryUnavailable({
+            cause: this.activeTurnMetadata,
+            message: "Core Memory authority is unavailable outside an admitted turn",
+            operation: "clear",
+          }),
+        );
   }
 
   /** Reconcile committed Think messages when a new Agent activation starts. */
@@ -1032,6 +1227,7 @@ export class OsfoAgent extends Think<Env> {
     input: DecideActionApprovalRequest,
   ): Promise<
     | ActionPresentationNotFound
+    | ActionPresentationUnavailable
     | ActionApprovalRequestInvalid
     | ApprovalActorAuthorizationUnavailable
     | ApprovalActorUnauthorized
@@ -1050,11 +1246,37 @@ export class OsfoAgent extends Think<Env> {
             }),
         ),
         Effect.flatMap((parsed) =>
-          this.#actionApprovals.dispatch(
-            parsed.actor,
-            parsed.presentationId,
-            parsed.decision === "approve" ? "approved" : "rejected",
-            parsed.reason,
+          this.#actionApprovals.read(parsed.actor, parsed.presentationId).pipe(
+            Effect.flatMap((found) => {
+              const actionId = found.presentation.actionId;
+              if (
+                parsed.decision === "approve" &&
+                found.presentation.operation === "memory.clear"
+              ) {
+                if (!authorizationMatchesActor(parsed.authorization, parsed.actor)) {
+                  return Effect.fail(
+                    new ApprovalActorUnauthorized({
+                      message: "The current Authorization context does not match the actor",
+                      presentationId: parsed.presentationId,
+                      userId: parsed.actor.userId,
+                    }),
+                  );
+                }
+                this.#currentApprovalAuthorization.set(actionId, parsed.authorization);
+              }
+              return this.#actionApprovals
+                .dispatch(
+                  parsed.actor,
+                  parsed.presentationId,
+                  parsed.decision === "approve" ? "approved" : "rejected",
+                  parsed.reason,
+                )
+                .pipe(
+                  Effect.ensuring(
+                    Effect.sync(() => this.#currentApprovalAuthorization.delete(actionId)),
+                  ),
+                );
+            }),
           ),
         ),
       ),
@@ -1422,7 +1644,7 @@ export class OsfoAgent extends Think<Env> {
   async #activateCurrentSession(): Promise<void> {
     await this.#migrationsReady;
     const current = await Effect.runPromise(this.#readOptionalPrimarySessionId());
-    this.session = this.#configureSession(
+    this.session = await this.#configureSession(
       Session.create(this),
       Option.getOrElse(current, () => pendingSessionId),
     );
@@ -1431,7 +1653,7 @@ export class OsfoAgent extends Think<Env> {
 
   async #activateSession(sessionId: SessionId): Promise<void> {
     await this.#migrationsReady;
-    this.session = this.#configureSession(Session.create(this), sessionId);
+    this.session = await this.#configureSession(Session.create(this), sessionId);
     await this.#finishSessionActivation();
   }
 
@@ -1563,6 +1785,10 @@ export class OsfoAgent extends Think<Env> {
   }
 
   #userOwnsAgent(userId: UserId) {
+    const stage = decodeOsfoStage(this.env.OSFO_STAGE);
+    if (Option.isSome(stage) && stage.value === "test") {
+      return Effect.succeed(userId === testProtectedActionUserId);
+    }
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) {
       return Effect.fail(approvalActorAuthorizationUnavailable(userId, invalidOsfoEnvironment));
@@ -1978,6 +2204,26 @@ const readAiGatewayLogId = (
   );
 };
 
+const authorizationMatchesActor = (
+  context: AuthorizationContext,
+  actor: ApprovalActor,
+): boolean => {
+  const authority = context.authority;
+  if (authority === null || authority.userId !== actor.userId) return false;
+  if (Predicate.isTagged(actor, "AuthSession")) {
+    return (
+      (Predicate.isTagged(authority, "AuthSession") ||
+        Predicate.isTagged(authority, "RevokedAuthSession")) &&
+      authority.authSessionId === actor.authSessionId
+    );
+  }
+  return (
+    (Predicate.isTagged(authority, "ChannelBinding") ||
+      Predicate.isTagged(authority, "RevokedChannelBinding")) &&
+    authority.channelBindingId === actor.channelBindingId
+  );
+};
+
 const summarizeManagedSession = (prompt: string): Promise<string> => {
   const initialMarker = "CONVERSATION TO SUMMARIZE:\n";
   const updateMarker = "PREVIOUS SUMMARY:\n";
@@ -2052,7 +2298,7 @@ const runRpc = <A, E>(effect: Effect.Effect<A, E>): Promise<A | E> =>
     ),
   );
 
-const presentProtectedAction = (pending: Parameters<typeof presentTestProtectedAction>[0]) =>
+const presentProtectedAction = (pending: Parameters<typeof presentOsfoAction>[0]) =>
   pending.descriptor.action === documentDeleteActionName
     ? Schema.decodeUnknownEffect(RetainedDocumentInput)(pending.descriptor.input).pipe(
         Effect.mapError(
@@ -2075,7 +2321,7 @@ const presentProtectedAction = (pending: Parameters<typeof presentTestProtectedA
           }),
         ),
       )
-    : presentTestProtectedAction(pending);
+    : presentOsfoAction(pending);
 
 /* oxlint-disable osfo/no-unknown-parameters -- This is the parser at Think's descriptor boundary. */
 const sanitizeDocumentDeleteInput = (input: unknown) =>

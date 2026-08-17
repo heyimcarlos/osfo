@@ -3,6 +3,7 @@ import { Effect, Option, Schema } from "effect";
 
 import { ChannelBindingId, UserId } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
+import { AuthorizationContext } from "../../services/authorization";
 import { AuthSessionId } from "../../domain/auth-session";
 
 const boundedText = (maximum: number) =>
@@ -64,6 +65,7 @@ export type ReadActionPresentationRequest = typeof ReadActionPresentationRequest
 /** RPC request for one exact Approval decision. */
 export const DecideActionApprovalRequest = Schema.Struct({
   actor: ApprovalActor,
+  authorization: AuthorizationContext,
   decision: Schema.Literals(["approve", "reject"]),
   presentationId: ActionPresentationId,
   reason: Schema.optional(boundedText(500)),

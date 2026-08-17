@@ -1,5 +1,5 @@
 import { action } from "@cloudflare/think";
-import { Effect, Option, Schema } from "effect";
+import { DateTime, Effect, Option, Schema } from "effect";
 
 import { ChannelBindingId, PlanPolicyVersion, UserId } from "../../domain";
 import {
@@ -10,7 +10,10 @@ import {
 import { AuthorizationOperation } from "../../domain/authorization-operation";
 import { retainedCatalog } from "../../domain/plan-policy";
 import * as ActionExecutor from "../../services/action-executor";
-import { make as makeAuthorization } from "../../services/authorization";
+import {
+  AuthorizationContext,
+  make as makeAuthorization,
+} from "../../services/authorization";
 import {
   ActionPresentation,
   ActionPresentationId,
@@ -132,6 +135,45 @@ export const sanitizeTestProtectedActionInput = (
 /** Name registered with Think for the test-only protected Action. */
 export const testProtectedActionName = actionName;
 
+/** Test-stage current authority used by protected Action integration tests. */
+export const currentTestAuthorization = (state: TestProtectedActionState): AuthorizationContext =>
+  AuthorizationContext.make({
+    allowance: { _tag: "Unavailable" },
+    approval: null,
+    authority:
+      state.authority === "active"
+        ? {
+            _tag: "ChannelBinding",
+            channelBindingId: "test-protected-action-binding",
+            userId: testUserId,
+          }
+        : {
+            _tag: "RevokedChannelBinding",
+            channelBindingId: "test-protected-action-binding",
+            userId: testUserId,
+          },
+    deletionAccess: { _tag: "DeletionAccessAvailable" },
+    gmailConnection: { _tag: "Connected", userId: testUserId },
+    liveFacts: {
+      activeGmSummonsInSession: 0n,
+      activeReminders: 0n,
+      concurrentWorkflows: 0n,
+      retainedFileBytes: 0n,
+    },
+    now: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z")),
+    originatingAuthority: {
+      _tag: "ChannelBinding",
+      channelBindingId: "test-protected-action-binding",
+    },
+    requestVendorUsdMicros: 0n,
+    resourceOwnerUserId: testUserId,
+    subscription: {
+      plan: "adventurer",
+      planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+    },
+    user: { _tag: "ActiveUser", userId: testUserId },
+  });
+
 const stableAuthorizationContext = (): ActionExecutor.ProtectedEffectContext => ({
   requestVendorUsdMicros: 0n,
 });
@@ -198,6 +240,9 @@ const currentAuthorities = (
     inspect: () => Effect.succeed({ _tag: "ActiveUser" as const, userId: testUserId }),
   },
 });
+
+/** Test-stage User that owns protected Action integration Agents. */
+export const testProtectedActionUserId = testUserId;
 
 const contactTestProvider = (
   state: TestProtectedActionState,
