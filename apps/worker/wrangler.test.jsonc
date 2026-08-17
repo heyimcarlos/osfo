@@ -22,8 +22,10 @@
       "localConnectionString": "postgres://osfo:osfo@127.0.0.1:5432/osfo_test",
     },
   ],
+  "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "osfo-test-generated-artifacts" }],
   "durable_objects": {
     "bindings": [
+      { "name": "DOCUMENT_SANDBOX", "class_name": "Sandbox" },
       { "name": "OSFO_AGENT", "class_name": "OsfoAgent" },
       { "name": "REGISTRATION_DIALOGUE", "class_name": "RegistrationDialogue" },
     ],
@@ -32,6 +34,15 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["OsfoAgent", "RegistrationDialogue"],
+    },
+    { "tag": "v2", "new_sqlite_classes": ["Sandbox"] },
+  ],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./document-sandbox/Dockerfile",
+      "instance_type": "lite",
+      "max_instances": 20,
     },
   ],
   "workflows": [

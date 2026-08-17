@@ -11,12 +11,14 @@
     "agent-db:generate": "drizzle-kit generate --config drizzle.agent.config.ts",
     "build": "wrangler deploy --dry-run --outdir dist",
     "dev": "bun --cwd ../..  alchemy dev --stage development --env-file apps/worker/.env",
-    "test": "vitest run --config vitest.config.ts && vitest run --config vitest.db.config.ts",
+    "test": "vitest run --config vitest.config.ts && vitest run --config vitest.db.config.ts && bun run test:renderer",
+    "test:renderer": "docker build --file document-sandbox/Dockerfile --tag osfo-document-renderer-test document-sandbox",
     "test:postgres": "vitest run --config vitest.real-db.config.ts",
     "typecheck": "wrangler types --check && tsc --noEmit"
   },
   "dependencies": {
     "@chat-adapter/telegram": "4.38.0",
+    "@cloudflare/sandbox": "0.12.7",
     "@cloudflare/think": "0.15.1",
     "@effect/platform-browser": "catalog:",
     "@osfo/api": "workspace:*",
@@ -26,6 +28,8 @@
     "ai": "7.0.66",
     "drizzle-orm": "0.45.2",
     "effect": "catalog:",
+    "fflate": "0.8.2",
+    "pdf-lib": "1.17.1",
     "postgres": "3.4.9",
     "stripe": "22.5.0"
   },

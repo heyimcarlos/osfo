@@ -5,6 +5,7 @@ import * as Redacted from "effect/Redacted";
 
 import { Hyperdrive } from "./Db";
 import { ExecutionUnitWorkflow } from "./ExecutionUnitWorkflow";
+import { Artifacts } from "./Artifacts";
 
 /** Cloudflare Worker and execution-unit bindings for one Osfo runtime stage. */
 export default Cloudflare.Worker(
@@ -34,11 +35,17 @@ export default Cloudflare.Worker(
         flags: ["nodejs_compat"],
       },
       env: {
+        ARTIFACTS: Artifacts,
         BETTER_AUTH_API_KEY: Config.redacted("BETTER_AUTH_API_KEY"),
         BETTER_AUTH_BASE_URL: Config.string("BETTER_AUTH_BASE_URL"),
         BETTER_AUTH_SECRET: Config.redacted("BETTER_AUTH_SECRET"),
         BETTER_AUTH_TRUSTED_ORIGINS: Config.string("BETTER_AUTH_TRUSTED_ORIGINS"),
         DB: Hyperdrive,
+        DOCUMENT_SANDBOX: Cloudflare.Container("DocumentSandbox", {
+          className: "Sandbox",
+          context: "./apps/worker/document-sandbox",
+          instanceType: "lite",
+        }),
         EXECUTION_UNIT_WORKFLOW: ExecutionUnitWorkflow,
         META_APP_SECRET: Config.redacted("META_APP_SECRET"),
         META_WEBHOOK_VERIFY_TOKEN: Config.redacted("META_WEBHOOK_VERIFY_TOKEN"),

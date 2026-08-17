@@ -32,6 +32,9 @@ export default defineConfig({
     fileParallelism: false,
     include: [
       "test/action-approval.test.ts",
+      "test/document-artifacts-r2.test.ts",
+      "test/document-compute.test.ts",
+      "test/document-download.test.ts",
       "test/managed-turn-execution.test.ts",
       "test/model-access-policy.test.ts",
       "test/osfo-agent.test.ts",

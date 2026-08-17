@@ -4,7 +4,7 @@ import {
   CurrentUser,
   Unauthorized,
 } from "@osfo/api/middleware/auth";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 
 import * as WorkerAuth from "../auth";
@@ -21,43 +21,66 @@ export const layer = (config: WorkerAuth.AuthRouteConfig) =>
       const db = yield* Db.Db;
       const twilio = yield* TwilioVerify;
 
-      return Auth.of((effect) =>
-        Effect.gen(function* () {
-          const request = yield* HttpServerRequest.HttpServerRequest;
-          const canAccess = yield* AccountAccess.make;
-          const auth = yield* WorkerAuth.make(config, canAccess);
-          const session = yield* Effect.tryPromise({
-            try: () => auth.api.getSession({ headers: new Headers(request.headers) }),
-            catch: () =>
-              new AuthenticationUnavailable({
-                message: "Authentication is temporarily unavailable",
-              }),
-          });
-
-          if (session === null) {
-            return yield* new Unauthorized({});
-          }
-
-          const hasAccess = yield* canAccess(UserId.make(session.user.id)).pipe(
-            Effect.mapError(
-              () =>
-                new AuthenticationUnavailable({
-                  message: "Authentication is temporarily unavailable",
-                }),
-            ),
-          );
-          if (!hasAccess) return yield* new Unauthorized({});
-
-          return yield* Effect.provideService(
-            effect,
-            CurrentUser,
-            CurrentUser.of({
-              authSessionExpiresAt: session.session.expiresAt,
-              authSessionId: session.session.id,
-              userId: session.user.id,
-            }),
-          );
-        }).pipe(Effect.provideService(Db.Db, db), Effect.provideService(TwilioVerify, twilio)),
+      return Auth.of((effect, _options) =>
+        Effect.provideServiceEffect(
+          effect,
+          CurrentUser,
+          currentUser(config).pipe(
+            Effect.provideService(Db.Db, db),
+            Effect.provideService(TwilioVerify, twilio),
+          ),
+        ),
       );
+    }),
+  );
+
+/** Read the current valid Better Auth User and Session for a protected HTTP effect. */
+export const currentUser = (config: WorkerAuth.AuthRouteConfig) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const canAccess = yield* AccountAccess.make;
+    const auth = yield* WorkerAuth.make(config, canAccess);
+    const session = yield* Effect.tryPromise({
+      try: () => auth.api.getSession({ headers: new Headers(request.headers) }),
+      catch: () =>
+        new AuthenticationUnavailable({
+          message: "Authentication is temporarily unavailable",
+        }),
+    });
+    if (session === null) return yield* new Unauthorized({});
+    const hasAccess = yield* canAccess(UserId.make(session.user.id)).pipe(
+      Effect.mapError(
+        () =>
+          new AuthenticationUnavailable({
+            message: "Authentication is temporarily unavailable",
+          }),
+      ),
+    );
+    if (!hasAccess) return yield* new Unauthorized({});
+    return CurrentUser.of({
+      authSessionExpiresAt: session.session.expiresAt,
+      authSessionId: session.session.id,
+      userId: session.user.id,
+    });
+  });
+
+/** Expected denial when no current session can authorize a document download. */
+export class DocumentDownloadUnauthorized extends Schema.TaggedError<DocumentDownloadUnauthorized>()(
+  "DocumentDownloadUnauthorized",
+  {},
+) {}
+
+/** Expected outage while loading current authorization for a document download. */
+export class DocumentDownloadAuthorizationUnavailable extends Schema.TaggedError<DocumentDownloadAuthorizationUnavailable>()(
+  "DocumentDownloadAuthorizationUnavailable",
+  {},
+) {}
+
+/** Project current HTTP authorization facts into document-download-specific typed outcomes. */
+export const currentDownloadUser = (config: WorkerAuth.AuthRouteConfig) =>
+  currentUser(config).pipe(
+    Effect.catchTags({
+      AuthenticationUnavailable: () => new DocumentDownloadAuthorizationUnavailable({}),
+      Unauthorized: () => new DocumentDownloadUnauthorized({}),
     }),
   );

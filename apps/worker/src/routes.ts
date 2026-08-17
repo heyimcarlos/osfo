@@ -24,12 +24,13 @@ import * as Onboarding from "./services/onboarding";
 import * as TelegramAdmission from "./services/telegram-message-admission";
 import * as TelegramDelivery from "./services/telegram-onboarding-delivery";
 import * as Registration from "./services/registration";
+import * as DocumentDownload from "./integrations/cloudflare/document-download";
 
 /** Cloudflare bindings used by the Worker route tree. */
 export type Bindings = RuntimeProbes.Bindings &
   OnboardingCloudflare.Bindings &
   TelegramAdmissionCloudflare.Bindings &
-  WhatsApp.Bindings;
+  WhatsApp.Bindings & { readonly ARTIFACTS?: R2Bucket };
 
 /** Options used to assemble the Worker route tree. */
 export interface Options {
@@ -69,9 +70,21 @@ export const layer = (options: Options) => {
   const invitationAuth = InvitationAuth.layer({
     config: options.config.auth,
   }).pipe(HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)));
-  const whatsapp = WhatsApp.layer({ config: options.config, env: options.env }).pipe(
-    HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)),
-  );
+  const whatsapp = WhatsApp.layer({
+    config: options.config,
+    env: options.env,
+  }).pipe(HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)));
+  const documentDownload =
+    options.env.ARTIFACTS === undefined
+      ? Layer.empty
+      : HttpRouter.add(
+          "GET",
+          "/documents/export",
+          DocumentDownload.serve(
+            options.env.ARTIFACTS,
+            AuthMiddleware.currentDownloadUser(options.config.auth),
+          ),
+        ).pipe(HttpRouter.provideRequest(options.authDependencies));
   const telegramAdmission = TelegramAdmission.layerWithoutDependencies.pipe(
     Layer.provide(TelegramAdmissionPostgres.layerWithoutDependencies),
     Layer.provide(TelegramAdmissionCloudflare.layer(options.env)),
@@ -115,6 +128,7 @@ export const layer = (options: Options) => {
     api,
     invitationAuth,
     whatsapp,
+    documentDownload,
     telegram,
     stripeWebhook,
     Auth.layer({

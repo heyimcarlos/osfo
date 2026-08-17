@@ -18,6 +18,7 @@ export default defineConfig({
       "test/checkout-evidence.test.ts",
       "test/db.test.ts",
       "test/deletion-case-authority.test.ts",
+      "test/document-generation.test.ts",
       "test/meta-whatsapp.test.ts",
       "test/onboarding.test.ts",
       "test/onboarding-public-surface.test.ts",
