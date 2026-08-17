@@ -787,6 +787,74 @@ describe("Agent-owned file ingestion", () => {
     }),
   );
 
+  it.effect("finishes analysis cleanup after authority loss without returning the result", () =>
+    Effect.gen(function* () {
+      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-analysis-cleanup-denied"));
+      const cleanupFailure = new FileComputeFailed({
+        basis: null,
+        message: "Disposable file compute cleanup failed",
+        reason: "parser_failure",
+        vendorUsdMicros: 0n,
+      });
+      const analysisCalls = { analyze: 0, reconcile: 0, release: 0 };
+      const shared = {
+        analysisCalls,
+        analysisResults: [
+          {
+            _tag: "AnalysisCompleted" as const,
+            resultText: "private stored result",
+            vendorCost: null,
+          },
+        ],
+        objects: new Map<string, Uint8Array>(),
+        releaseFailures: [cleanupFailure],
+        usage: [],
+      };
+      const fileId = FileId.make("file-analysis-cleanup-denied");
+      const analysisId = FileAnalysisId.make("analysis-cleanup-denied");
+      yield* withFileService(agent, shared, (files) =>
+        files.upload({
+          actionId: "upload-analysis-cleanup-denied",
+          bytes: new TextEncoder().encode("cleanup after authority loss"),
+          context: authorizationContext(),
+          declaredMediaType: "text/plain",
+          fileId,
+          fileName: "cleanup.txt",
+          uploadId: FileUploadId.make("upload-analysis-cleanup-denied"),
+        }),
+      );
+      const request = {
+        actionId: "analysis-cleanup-denied",
+        analysisId,
+        context: authorizationContext(),
+        fileId,
+        prompt: "Summarize",
+      } as const;
+      const first = yield* Effect.flip(
+        withFileService(agent, shared, (files) => files.analyze(request)),
+      );
+      const revoked = {
+        ...authorizationContext(),
+        authority: {
+          _tag: "RevokedAuthSession" as const,
+          authSessionId: "session-files",
+          userId: UserId.make("user-files"),
+        },
+      };
+      const denied = yield* withFileService(
+        agent,
+        { ...shared, currentContext: revoked },
+        (files) => files.analyze(request),
+      );
+      const recovered = yield* withFileService(agent, shared, (files) => files.analyze(request));
+
+      expect(first).toEqual(cleanupFailure);
+      expect(denied).toMatchObject({ _tag: "Denied", reason: "authorityRevoked" });
+      expect(recovered).toMatchObject({ resultText: "private stored result", state: "completed" });
+      expect(analysisCalls).toEqual({ analyze: 1, reconcile: 0, release: 2 });
+    }),
+  );
+
   it.effect("recovers stored analysis evidence when finalization fails after cleanup", () =>
     Effect.gen(function* () {
       const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-analysis-finalize-retry"));

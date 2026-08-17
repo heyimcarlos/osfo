@@ -571,6 +571,17 @@ export const makeFiles = <AllowanceError, ContextError, ObjectError, Persistence
           message: "The file has no normalized content to analyze",
         });
       }
+      let existingAnalysis = yield* options.store.findAnalysis(input.analysisId);
+      const now = yield* options.now;
+      if (
+        existingAnalysis !== null &&
+        existingAnalysis.fileId === input.fileId &&
+        existingAnalysis.prompt === input.prompt &&
+        (existingAnalysis.state === "completed_cleanup_pending" ||
+          existingAnalysis.state === "failed_cleanup_pending")
+      ) {
+        existingAnalysis = yield* finishAnalysisCleanup(file.userId, existingAnalysis, now);
+      }
       const admittedContext = yield* options.currentAuthorizationContext(input.context);
       const retainedFileBytes = yield* options.store.retainedBytes(file.userId);
       const policy = options.catalog.policies.find(
@@ -587,7 +598,6 @@ export const makeFiles = <AllowanceError, ContextError, ObjectError, Persistence
         retainedFileBytes,
         analysisVendorUsdMicros,
       );
-      const existingAnalysis = yield* options.store.findAnalysis(input.analysisId);
       let allowancePeriodId = existingAnalysis?.allowancePeriodId;
       if (allowancePeriodId === undefined) {
         const admission = options.authorization.admit(context, {
@@ -602,7 +612,6 @@ export const makeFiles = <AllowanceError, ContextError, ObjectError, Persistence
         }
         allowancePeriodId = admission.allowancePeriod.allowancePeriodId;
       }
-      const now = yield* options.now;
       const analysis = yield* options.store.beginAnalysis({
         allowancePeriodId,
         analysisId: input.analysisId,
