@@ -8,6 +8,8 @@ export default defineConfig({
       "test/auth.test.ts",
       "test/authorization.test.ts",
       "test/db.test.ts",
+      "test/gmail.test.ts",
+      "test/gmail-api.test.ts",
       "test/onboarding.test.ts",
       "test/plan-policy.test.ts",
       "test/registration.test.ts",

@@ -14,11 +14,35 @@ import * as TwilioVerify from "../src/integrations/twilio/verify";
 const authConfig = {
   baseURL: "https://osfo.test/",
   dashboard: { kind: "disabled" as const },
+  google: { clientId: "test-google-client", clientSecret: Redacted.make("test-google-secret") },
   secret: Redacted.make("test-only-better-auth-secret-32-characters"),
   trustedOrigins: ["https://osfo.test"],
 };
 
 describe("temporary credential authentication", () => {
+  it.effect("rejects Google as a sign-in method because it is link-only", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const app = makeAuthApp(
+            Db.layerFromDatabase(fixture.database),
+            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
+          );
+
+          const response = yield* request(app.handler, "/auth/sign-in/social", {
+            callbackURL: "https://osfo.test/settings/integrations",
+            provider: "google",
+          });
+
+          expect(response.status).toBe(400);
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
   it.effect("creates and signs in a User with an email and password", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
@@ -514,6 +538,7 @@ const request = (
 
 const AuthResponse = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
 type AuthRequestBody =
+  | { readonly callbackURL: string; readonly provider: "google" }
   | {
       readonly code?: string;
       readonly phoneNumber: string;

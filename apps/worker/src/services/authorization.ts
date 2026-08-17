@@ -2,6 +2,7 @@ import { Predicate, Result, Schema } from "effect";
 
 import { AllowancePeriodId, Plan, PlanPolicyVersion, UserId } from "../domain";
 import { type AllowanceKind, RecordedAllowanceUse } from "../domain/allowance";
+import { OriginatingAuthority } from "../domain/authority";
 import {
   AuthorizationOperation,
   type AuthorizationOperation as AuthorizationOperationType,
@@ -39,14 +40,6 @@ const ActingAuthority = Schema.Union([
     triggerId: Schema.String,
     triggerType: Schema.Literals(["scheduledTask", "workflow"]),
     userId: UserId,
-  }),
-]);
-const OriginatingAuthority = Schema.Union([
-  Schema.TaggedStruct("AuthSession", { authSessionId: Schema.String }),
-  Schema.TaggedStruct("ChannelBinding", { channelBindingId: Schema.String }),
-  Schema.TaggedStruct("DurableTrigger", {
-    triggerId: Schema.String,
-    triggerType: Schema.Literals(["scheduledTask", "workflow"]),
   }),
 ]);
 const Approval = Schema.Struct({
@@ -465,7 +458,7 @@ const allowanceKindsFor = (operation: AuthorizationOperationType): ReadonlyArray
     case "workflow.manage":
       return operation.change === "start" ? ["workflowStarts"] : [];
     case "gmail.search":
-      return ["gmailSearches"];
+      return ["gmailSearches", "gmailMessagesExamined"];
     case "gmail.read":
       return ["gmailMessagesExamined"];
     case "gmail.send":

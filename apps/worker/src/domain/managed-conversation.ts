@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 import { AllowancePeriodId, Plan, PlanPolicyVersion, ThinkSubmissionId } from "../domain";
 import { ManagedModelRoute } from "./model-access-policy";
+import { OriginatingAuthority } from "./authority";
 
 const positiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0));
 
@@ -19,6 +20,7 @@ export const ManagedTurnMetadata = Schema.TaggedStruct("OsfoManagedTurn", {
   maxOutputTokens: positiveInteger,
   maxRetries: Schema.Literal(0),
   maxSteps: positiveInteger,
+  originatingAuthority: OriginatingAuthority,
   plan: Plan,
   planPolicyVersion: PlanPolicyVersion,
   route: ManagedModelRoute,

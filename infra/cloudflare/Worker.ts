@@ -20,6 +20,8 @@ export default Cloudflare.Worker(
         BETTER_AUTH_BASE_URL: Config.string("BETTER_AUTH_BASE_URL"),
         BETTER_AUTH_SECRET: Config.redacted("BETTER_AUTH_SECRET"),
         BETTER_AUTH_TRUSTED_ORIGINS: Config.string("BETTER_AUTH_TRUSTED_ORIGINS"),
+        GOOGLE_CLIENT_ID: Config.string("GOOGLE_CLIENT_ID"),
+        GOOGLE_CLIENT_SECRET: Config.redacted("GOOGLE_CLIENT_SECRET"),
         DB: Hyperdrive,
         EXECUTION_UNIT_WORKFLOW: ExecutionUnitWorkflow,
         OSFO_AGENT: Cloudflare.DurableObject("OsfoAgent", {

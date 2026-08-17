@@ -15,12 +15,12 @@ export const ThinkApprovedActionExecution = Schema.TaggedStruct("ThinkApprovedAc
 export type ThinkApprovedActionExecution = typeof ThinkApprovedActionExecution.Type;
 
 /** Execute a Think-approved Action only after its current authority passes Osfo recheck. */
-export const executeThinkApprovedAction = (
+export const executeThinkApprovedAction = <E>(
   authorization: Authorization,
   context: AuthorizationContext,
   approvedExecution: ThinkApprovedActionExecution,
-  contactProvider: (actionId: ActionId) => Effect.Effect<ActionExecutionResult>,
-): Effect.Effect<ActionExecutionResult | Denied> => {
+  contactProvider: (actionId: ActionId) => Effect.Effect<ActionExecutionResult, E>,
+): Effect.Effect<ActionExecutionResult | Denied, E> => {
   const operation = AuthorizationOperation.make({
     actionId: approvedExecution.actionId,
     kind: approvedExecution.operation,

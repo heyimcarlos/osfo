@@ -28,7 +28,7 @@ import {
 } from "../../domain";
 import { database as workerDatabase } from "../../db";
 import * as Billing from "../../db/billing";
-import { decodeOsfoStage } from "../../env";
+import { decodeOsfoStage, decodeRuntimeConfig } from "../../env";
 import {
   CancelManagedConversationInput,
   ManagedTurnMetadata,
@@ -63,6 +63,12 @@ import { makeAgentDb } from "./db/client";
 import * as Allowances from "../../services/allowances";
 import { makeActionApprovals } from "../../services/action-approvals";
 import { makeDurableModelCallUsage } from "../../services/model-call-usage";
+import {
+  gmailSendActionName,
+  presentGmailSendAction,
+  sanitizeGmailSendActionInput,
+} from "./gmail-send-action";
+import * as GmailRuntime from "./gmail-runtime";
 import {
   type AgentInitializationConflict,
   AgentRequestInvalid,
@@ -251,7 +257,10 @@ export class OsfoAgent extends Think<Env> {
       },
     }),
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-    present: presentTestProtectedAction,
+    present: (pending) =>
+      pending.descriptor.action === gmailSendActionName
+        ? presentGmailSendAction(pending)
+        : presentTestProtectedAction(pending),
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
   readonly #modelCallUsage = makeDurableModelCallUsage({
@@ -266,22 +275,50 @@ export class OsfoAgent extends Think<Env> {
   readonly #runtime = Option.map(decodeOsfoStage(this.env.OSFO_STAGE), (stage) =>
     makeOsfoAgentRuntime(this.ctx.id.name ?? this.ctx.id.toString(), stage, { db: this.env.DB }),
   );
+  readonly #gmailRuntime = Option.flatMap(this.#runtime, (runtime) =>
+    Option.map(Result.getSuccess(decodeRuntimeConfig(this.env)), (config) =>
+      GmailRuntime.make({
+        activeTurnMetadata: () =>
+          Schema.decodeUnknownOption(ManagedTurnMetadata)(this.activeTurnMetadata),
+        agentId: AgentId.make(this.name),
+        auth: config.auth,
+        runtime,
+      }),
+    ),
+  );
 
   /** Resolve a safe model before trusted per-turn metadata selects the exact managed route. */
   override getModel() {
     return launchModelAccessPolicy.plans.free.route;
   }
 
-  /** Register a typed protected Action only in the Worker test stage. */
+  /** Register production Gmail send and the isolated test Action in their owning stages. */
   override getActions() {
     const stage = decodeOsfoStage(this.env.OSFO_STAGE);
-    if (Option.isNone(stage) || stage.value !== "test") return {};
-    return {
-      [testProtectedActionName]: makeTestProtectedAction({
-        readState: () =>
-          this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
-      }),
-    };
+    if (Option.isNone(stage)) return {};
+    const gmail = Option.getOrUndefined(this.#gmailRuntime);
+    if (gmail === undefined) return {};
+    return stage.value === "test"
+      ? {
+          [gmailSendActionName]: gmail.action,
+          [testProtectedActionName]: makeTestProtectedAction({
+            readState: () =>
+              this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
+          }),
+        }
+      : {
+          [gmailSendActionName]: gmail.action,
+        };
+  }
+
+  /** Give production Think turns bounded Gmail search, read, and local draft tools. */
+  override getTools() {
+    const stage = decodeOsfoStage(this.env.OSFO_STAGE);
+    if (Option.isNone(stage) || stage.value === "test") return {};
+    return Option.match(this.#gmailRuntime, {
+      onNone: () => ({}),
+      onSome: ({ tools }) => tools,
+    });
   }
 
   /** Keep inherited pending-Approval RPC output client-safe for every registered Action. */
@@ -294,9 +331,15 @@ export class OsfoAgent extends Think<Env> {
               input: sanitizeTestProtectedActionInput(approval.descriptor.input),
             }),
           })
-        : Object.assign({}, approval, {
-            descriptor: Object.assign({}, approval.descriptor, { input: {} }),
-          }),
+        : approval.source === "action" && approval.descriptor.action === gmailSendActionName
+          ? Object.assign({}, approval, {
+              descriptor: Object.assign({}, approval.descriptor, {
+                input: sanitizeGmailSendActionInput(approval.descriptor.input),
+              }),
+            })
+          : Object.assign({}, approval, {
+              descriptor: Object.assign({}, approval.descriptor, { input: {} }),
+            }),
     );
   }
 

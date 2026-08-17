@@ -13,6 +13,10 @@ export interface AuthRouteConfig {
     | { readonly kind: "disabled" }
     | { readonly apiKey: Redacted.Redacted; readonly kind: "enabled" };
   readonly secret: Redacted.Redacted;
+  readonly google: {
+    readonly clientId: string;
+    readonly clientSecret: Redacted.Redacted;
+  };
   readonly trustedOrigins: ReadonlyArray<string>;
 }
 
@@ -58,6 +62,10 @@ export const make = (config: AuthRouteConfig) =>
             }
           : { kind: "disabled" },
       secret: Redacted.value(config.secret),
+      google: {
+        clientId: config.google.clientId,
+        clientSecret: Redacted.value(config.google.clientSecret),
+      },
       sendOTP: ({ phoneNumber }) => runPromise(twilio.sendCode(phoneNumber)),
       trustedOrigins: config.trustedOrigins,
       verifyOTP: ({ code, phoneNumber }) => runPromise(twilio.verifyCode(phoneNumber, code)),

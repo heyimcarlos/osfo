@@ -127,6 +127,8 @@ describe("Osfo Cloudflare host", () => {
       BETTER_AUTH_BASE_URL: "https://osfo.test",
       BETTER_AUTH_SECRET: "test-only-better-auth-secret-32-characters",
       BETTER_AUTH_TRUSTED_ORIGINS: '["https://osfo.test"]',
+      GOOGLE_CLIENT_ID: "test-google-client",
+      GOOGLE_CLIENT_SECRET: "test-google-secret",
       OSFO_STAGE: "test",
       TWILIO_ACCOUNT_SID: `AC${"1".repeat(32)}`,
       TWILIO_AUTH_TOKEN: "test-only-twilio-token",

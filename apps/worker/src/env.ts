@@ -41,6 +41,8 @@ const RawRuntimeConfig = Schema.Struct({
   BETTER_AUTH_BASE_URL: Schema.URLFromString,
   BETTER_AUTH_SECRET: BetterAuthSecret,
   BETTER_AUTH_TRUSTED_ORIGINS: TrustedOrigins,
+  GOOGLE_CLIENT_ID: Schema.String.check(Schema.isMinLength(1)),
+  GOOGLE_CLIENT_SECRET: Schema.String.check(Schema.isMinLength(1)),
   OSFO_STAGE: OsfoStage,
   TWILIO_ACCOUNT_SID: TwilioAccountSid,
   TWILIO_AUTH_TOKEN: TwilioAuthToken,
@@ -56,6 +58,10 @@ export interface RuntimeConfig {
       | { readonly kind: "disabled" }
       | { readonly apiKey: Redacted.Redacted; readonly kind: "enabled" };
     readonly secret: Redacted.Redacted;
+    readonly google: {
+      readonly clientId: string;
+      readonly clientSecret: Redacted.Redacted;
+    };
     readonly trustedOrigins: ReadonlyArray<string>;
   };
   readonly stage: OsfoStage;
@@ -75,6 +81,8 @@ export interface RuntimeConfigInput {
   readonly BETTER_AUTH_BASE_URL?: string;
   readonly BETTER_AUTH_SECRET?: string;
   readonly BETTER_AUTH_TRUSTED_ORIGINS?: string;
+  readonly GOOGLE_CLIENT_ID?: string;
+  readonly GOOGLE_CLIENT_SECRET?: string;
   readonly OSFO_STAGE?: string;
   readonly TWILIO_ACCOUNT_SID?: string;
   readonly TWILIO_AUTH_TOKEN?: string;
@@ -92,6 +100,10 @@ export const decodeRuntimeConfig = (input: RuntimeConfigInput) =>
         kind: "enabled",
       },
       secret: Redacted.make(raw.BETTER_AUTH_SECRET),
+      google: {
+        clientId: raw.GOOGLE_CLIENT_ID,
+        clientSecret: Redacted.make(raw.GOOGLE_CLIENT_SECRET),
+      },
       trustedOrigins: raw.BETTER_AUTH_TRUSTED_ORIGINS.map((origin) => origin.origin),
     },
     stage: raw.OSFO_STAGE,

@@ -15,6 +15,13 @@
       "when": 1786922135174,
       "tag": "0001_opposite_miek",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786925774265,
+      "tag": "0002_smooth_anthem",
+      "breakpoints": true
     }
   ]
 }
