@@ -39,10 +39,12 @@ describe("Postgres migrations", () => {
             "allowance_usage",
             "billing_subscriptions",
             "channel_bindings",
+            "deletion_cases",
             "migrations",
             "rate_limits",
             "registration_invitations",
             "sessions",
+            "user_suspension_events",
             "users",
             "verifications",
           ]);
@@ -114,6 +116,9 @@ describe("Postgres migrations", () => {
                 'period-1', 'user-1', 'subscription-1',
                 'free', 'launch-v1', '2026-08-01T00:00:00Z', '2026-09-01T00:00:00Z'
               );
+              INSERT INTO deletion_cases (
+                deletion_case_id, user_id, requested_by_admin_id, reason
+              ) VALUES ('deletion-case-1', 'user-1', 'admin-1', 'User request');
             `),
             );
 
@@ -145,6 +150,15 @@ describe("Postgres migrations", () => {
               `INSERT INTO allowance_usage
                (user_id, allowance_period_id, allowance_kind, source_type, source_id, quantity, basis)
              VALUES ('user-1', 'period-1', 'acceptedMessages', 'acceptanceReceipt', 'receipt-basis', 1, 'estimated')`,
+              `INSERT INTO user_suspension_events
+               (event_id, user_id, action, admin_actor_id, reason)
+             VALUES ('event-invalid-action', 'user-1', 'paused', 'admin-1', 'Invalid action')`,
+              `INSERT INTO user_suspension_events
+               (event_id, user_id, action, admin_actor_id, reason)
+             VALUES ('event-empty-reason', 'user-1', 'suspended', 'admin-1', '')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_admin_id, reason)
+             VALUES ('deletion-case-duplicate', 'user-1', 'admin-1', 'Duplicate')`,
             ];
 
             for (const statement of rejectedStatements) {

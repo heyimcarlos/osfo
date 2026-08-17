@@ -5,6 +5,9 @@ import { HttpEffect, HttpRouter } from "effect/unstable/http";
 import { handleAuthRequest } from "./cors";
 import * as Db from "./db";
 import { TwilioVerify } from "./integrations/twilio/verify";
+import * as UserLifecyclePostgres from "./integrations/postgres/user-lifecycle";
+import { UserId } from "./domain";
+import * as UserLifecycle from "./services/user-lifecycle";
 
 /** Trusted Better Auth configuration parsed from Worker bindings. */
 export interface AuthRouteConfig {
@@ -43,12 +46,17 @@ export const layer = (options: Options) => {
 export const make = (config: AuthRouteConfig) =>
   Effect.gen(function* () {
     const database = yield* Db.database;
+    const userLifecyclePersistence = yield* UserLifecyclePostgres.make;
     const twilio = yield* TwilioVerify;
     const context = yield* Effect.context();
     const runPromise = Effect.runPromiseWith(context);
 
     return createAuth({
       baseURL: config.baseURL,
+      canCreateSession: (userId) =>
+        runPromise(
+          UserLifecycle.canCreateAuthSession(userLifecyclePersistence, UserId.make(userId)),
+        ),
       database,
       dashboard:
         config.dashboard.kind === "enabled"
@@ -60,6 +68,7 @@ export const make = (config: AuthRouteConfig) =>
       secret: Redacted.value(config.secret),
       sendOTP: ({ phoneNumber }) => runPromise(twilio.sendCode(phoneNumber)),
       trustedOrigins: config.trustedOrigins,
-      verifyOTP: ({ code, phoneNumber }) => runPromise(twilio.verifyCode(phoneNumber, code)),
+      verifyOTP: ({ code, phoneNumber }) =>
+        runPromise(twilio.verifyCode(phoneNumber, Redacted.make(code))),
     });
   });

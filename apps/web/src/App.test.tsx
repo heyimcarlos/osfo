@@ -4,16 +4,29 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { AuthScreen } from "./components/auth-screen";
 import { GetStartedScreen } from "./components/get-started-screen";
 import { PlanDetails, PrivacyNotice } from "./components/public-information";
-import { ChatPreview } from "./App";
+import { ChatPreview, presentUserLabel } from "./App";
 
 describe("App", () => {
-  it("renders the TryAgent-inspired credential sign-in surface", () => {
+  it("renders only the phone sign-in surface", () => {
     const html = renderToStaticMarkup(<AuthScreen onAuthenticated={() => undefined} />);
 
-    expect(html).toContain("Welcome back");
-    expect(html).toContain("Email and password");
-    expect(html).toContain("SMS code");
-    expect(html).toContain('autoComplete="current-password"');
+    expect(html).toContain("Continue by SMS");
+    expect(html).toContain('autoComplete="tel-national"');
+    expect(html).not.toContain("Email and password");
+    expect(html).not.toContain('type="password"');
+  });
+
+  it("uses a name or masked phone number without presenting an internal email", () => {
+    expect(presentUserLabel({ name: "Ari", phoneNumber: "+14165550101" })).toBe("Ari");
+    expect(presentUserLabel({ name: "Osfo User", phoneNumber: "+14165550101" })).toBe(
+      "••••••••0101",
+    );
+    expect(
+      presentUserLabel({
+        name: "14165550101@phone-user.osfo.invalid",
+        phoneNumber: "+14165550101",
+      }),
+    ).toBe("••••••••0101");
   });
 
   it("renders the reusable chat after authentication", () => {

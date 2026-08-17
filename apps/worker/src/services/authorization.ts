@@ -10,23 +10,14 @@ import {
   type AuthorizationOperationName as AuthorizationOperationNameType,
 } from "../domain/authorization-operation";
 import { type Capability, type PlanPolicyCatalog, policyFor } from "../domain/plan-policy";
+import {
+  AuthSessionAuthorityFact,
+  DeletionAccessFact,
+  UserAccessFact,
+} from "../domain/user-lifecycle";
 
-const ActiveUser = Schema.TaggedStruct("ActiveUser", { userId: UserId });
-const SuspendedUser = Schema.TaggedStruct("SuspendedUser", { userId: UserId });
-const DeletionAccess = Schema.Union([
-  Schema.TaggedStruct("DeletionAccessAvailable", {}),
-  Schema.TaggedStruct("DeletionAccessRevoked", {}),
-]);
 const ActingAuthority = Schema.Union([
-  Schema.TaggedStruct("AuthSession", {
-    authSessionId: Schema.String,
-    expiresAt: Schema.Date,
-    userId: UserId,
-  }),
-  Schema.TaggedStruct("RevokedAuthSession", {
-    authSessionId: Schema.String,
-    userId: UserId,
-  }),
+  AuthSessionAuthorityFact,
   Schema.TaggedStruct("ChannelBinding", {
     channelBindingId: Schema.String,
     userId: UserId,
@@ -71,7 +62,7 @@ export const AuthorizationContext = Schema.Struct({
   allowance: Allowance,
   approval: Schema.NullOr(Approval),
   authority: Schema.NullOr(ActingAuthority),
-  deletionAccess: DeletionAccess,
+  deletionAccess: DeletionAccessFact,
   gmailConnection: Schema.NullOr(
     Schema.Union([
       Schema.TaggedStruct("Connected", { userId: UserId }),
@@ -89,7 +80,7 @@ export const AuthorizationContext = Schema.Struct({
   requestVendorUsdMicros: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
   resourceOwnerUserId: Schema.NullOr(UserId),
   subscription: Schema.Struct({ plan: Plan, planPolicyVersion: PlanPolicyVersion }),
-  user: Schema.Union([ActiveUser, SuspendedUser]),
+  user: UserAccessFact,
 });
 
 /** Current facts evaluated by launch Authorization in deterministic gate order. */

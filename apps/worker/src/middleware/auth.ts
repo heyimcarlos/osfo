@@ -9,7 +9,10 @@ import { HttpServerRequest } from "effect/unstable/http";
 
 import * as WorkerAuth from "../auth";
 import * as Db from "../db";
+import { UserId } from "../domain";
+import * as UserLifecycle from "../services/user-lifecycle";
 import { TwilioVerify } from "../integrations/twilio/verify";
+import * as UserLifecyclePostgres from "../integrations/postgres/user-lifecycle";
 
 /** Authenticate protected product endpoints through Better Auth. */
 export const layer = (config: WorkerAuth.AuthRouteConfig) =>
@@ -35,10 +38,24 @@ export const layer = (config: WorkerAuth.AuthRouteConfig) =>
             return yield* new Unauthorized({});
           }
 
+          const userLifecyclePersistence = yield* UserLifecyclePostgres.make;
+          const hasAccess = yield* UserLifecycle.canCreateAuthSession(
+            userLifecyclePersistence,
+            UserId.make(session.user.id),
+          ).pipe(
+            Effect.mapError(
+              () =>
+                new AuthenticationUnavailable({
+                  message: "Authentication is temporarily unavailable",
+                }),
+            ),
+          );
+          if (!hasAccess) return yield* new Unauthorized({});
+
           return yield* Effect.provideService(
             effect,
             CurrentUser,
-            CurrentUser.of({ userId: session.user.id }),
+            CurrentUser.of({ authSessionId: session.session.id, userId: session.user.id }),
           );
         }).pipe(Effect.provideService(Db.Db, db), Effect.provideService(TwilioVerify, twilio)),
       );

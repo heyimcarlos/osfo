@@ -3,6 +3,7 @@ import { HttpApiError, HttpApiMiddleware } from "effect/unstable/httpapi";
 
 /** Authenticated User available to protected API handlers. */
 export interface CurrentUserValue {
+  readonly authSessionId: string;
   readonly userId: string;
 }
 

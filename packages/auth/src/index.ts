@@ -3,11 +3,13 @@ import * as authSchema from "@osfo/db/schema/auth";
 import { dash } from "@better-auth/infra";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { APIError } from "better-auth/api";
 import { phoneNumber, type PhoneNumberOptions } from "better-auth/plugins/phone-number";
 
 /** Runtime dependencies and trusted configuration for one Better Auth instance. */
 export interface AuthOptions {
   readonly baseURL: string;
+  readonly canCreateSession: (userId: string) => Promise<boolean>;
   readonly database: Database;
   readonly dashboard: DashboardOptions;
   readonly secret: string;
@@ -48,8 +50,23 @@ const makeOptions = (options: AuthOptions): BetterAuthOptions => ({
     schema: authSchema,
     transaction: true,
   }),
-  // Temporary test entrypoint. Osfo v1 launch remains phone-only.
-  emailAndPassword: { enabled: true },
+  databaseHooks: {
+    session: {
+      create: {
+        // oxlint-disable-next-line effecttsgo/async-function -- Better Auth owns this Promise hook boundary.
+        before: async (session) => {
+          if (!(await options.canCreateSession(session.userId))) {
+            // Better Auth requires APIError to stop its framework-owned session transaction.
+            throw new APIError("FORBIDDEN", {
+              message: "Account access requires manual support.",
+            });
+          }
+          return { data: session };
+        },
+      },
+    },
+  },
+  emailAndPassword: { enabled: false },
   rateLimit: {
     customRules: {
       "/phone-number/send-otp": { max: 5, window: 60 * 60 },

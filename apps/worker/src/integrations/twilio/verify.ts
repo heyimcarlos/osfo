@@ -1,10 +1,14 @@
-import { Context, Effect, Layer, type Redacted, Schema } from "effect";
+import { Context, Effect, Layer, Redacted, Schema } from "effect";
 import {
   FetchHttpClient,
   HttpClient,
   HttpClientRequest,
   HttpClientResponse,
 } from "effect/unstable/http";
+
+import * as UserLifecycle from "../../services/user-lifecycle";
+
+/* oxlint-disable eslint/no-underscore-dangle -- Effect tagged errors use the _tag discriminator. */
 
 const TwilioVerificationStatus = Schema.Literals([
   "approved",
@@ -57,7 +61,7 @@ interface TwilioVerifyService {
   ) => Effect.Effect<void, TwilioVerifyRejected | TwilioVerifyUnavailable>;
   readonly verifyCode: (
     phoneNumber: string,
-    code: string,
+    code: Redacted.Redacted,
   ) => Effect.Effect<boolean, TwilioVerifyUnavailable>;
 }
 
@@ -126,11 +130,11 @@ export const make = (
 
     const verifyCode = Effect.fn("TwilioVerify.verifyCode")(function* (
       phoneNumber: string,
-      code: string,
+      code: Redacted.Redacted,
     ) {
       const request = HttpClientRequest.post(`${serviceURL}/VerificationCheck`).pipe(
         HttpClientRequest.basicAuth(options.accountSid, options.authToken),
-        HttpClientRequest.bodyUrlParams({ Code: code, To: phoneNumber }),
+        HttpClientRequest.bodyUrlParams({ Code: Redacted.value(code), To: phoneNumber }),
       );
       const response = yield* client.execute(request).pipe(
         Effect.mapError(
@@ -174,3 +178,33 @@ export const layerWithoutDependencies = (options: Options) =>
 /** Production Twilio Verify Layer backed by the Worker Fetch HTTP client. */
 export const layer = (options: Options) =>
   layerWithoutDependencies(options).pipe(Layer.provide(FetchHttpClient.layer));
+
+/** Adapt Twilio Verify to the provider-neutral User lifecycle phone verification port. */
+export const makeUserLifecyclePhoneVerification = Effect.map(TwilioVerify, (twilio) =>
+  UserLifecycle.PhoneVerification.of({
+    sendCode: (phoneNumber) =>
+      twilio
+        .sendCode(phoneNumber)
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "TwilioVerifyRejected"
+              ? new UserLifecycle.PhoneVerificationRequestRejected({ message: error.message })
+              : new UserLifecycle.PhoneVerificationUnavailable({ message: error.message }),
+          ),
+        ),
+    verifyCode: (phoneNumber, code) =>
+      twilio
+        .verifyCode(phoneNumber, code)
+        .pipe(
+          Effect.mapError(
+            (error) => new UserLifecycle.PhoneVerificationUnavailable({ message: error.message }),
+          ),
+        ),
+  }),
+);
+
+/** User lifecycle phone verification Layer backed by an existing Twilio Verify capability. */
+export const userLifecycleLayerWithoutDependencies = Layer.effect(
+  UserLifecycle.PhoneVerification,
+  makeUserLifecyclePhoneVerification,
+);

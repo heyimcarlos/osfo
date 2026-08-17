@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { DateTime, Schema } from "effect";
 
 import { UserId } from "../src/domain";
+import { AuthSessionId } from "../src/domain/user-lifecycle";
 import type { AuthorizationOperationName } from "../src/domain/authorization-operation";
 import { AuthorizationContext, make } from "../src/services/authorization";
 import { retainedCatalog } from "../src/domain/plan-policy";
@@ -71,7 +72,7 @@ describe("Authorization", () => {
           ...free,
           authority: {
             _tag: "RevokedAuthSession" as const,
-            authSessionId: "auth-session-001",
+            authSessionId: AuthSessionId.make("auth-session-001"),
             userId: free.user.userId,
           },
         },
@@ -297,7 +298,7 @@ describe("Authorization", () => {
           ...exhausted,
           authority: {
             _tag: "RevokedAuthSession",
-            authSessionId: "auth-session-001",
+            authSessionId: AuthSessionId.make("auth-session-001"),
             userId: exhausted.user.userId,
           },
         },
@@ -310,7 +311,7 @@ describe("Authorization", () => {
           ...exhausted,
           authority: {
             _tag: "AuthSession",
-            authSessionId: "auth-session-different",
+            authSessionId: AuthSessionId.make("auth-session-different"),
             expiresAt: date("2026-08-20T00:00:00.000Z"),
             userId: exhausted.user.userId,
           },

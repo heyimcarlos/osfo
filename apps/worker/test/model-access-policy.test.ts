@@ -3,6 +3,7 @@ import { DateTime, Effect, Predicate, Schema } from "effect";
 
 import { AllowancePeriodId, PlanPolicyVersion, ThinkSubmissionId } from "../src/domain";
 import type { AllowanceItem, AllowanceSource } from "../src/domain/allowance";
+import { AuthSessionId } from "../src/domain/user-lifecycle";
 import { launchModelAccessPolicy, selectManagedRoute } from "../src/domain/model-access-policy";
 import { ActionId, ambiguousActionResult } from "../src/domain/action-execution";
 import {
@@ -344,7 +345,7 @@ describe("managed model access policy", () => {
           },
           authority: {
             _tag: "RevokedAuthSession",
-            authSessionId: "auth-managed",
+            authSessionId: AuthSessionId.make("auth-managed"),
             userId: context.user.userId,
           },
           gmailConnection: { _tag: "Connected", userId: context.user.userId },
