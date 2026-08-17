@@ -165,6 +165,92 @@ describe("Postgres migrations", () => {
     ),
   );
 
+  it.effect("preserves populated billing and Telegram facts across 0004 to 0005 and retry", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          const migrations = yield* readMigrations;
+          const through0004 = migrations.filter(
+            (migration) => migration.name.startsWith("000") && migration.name <= "0004_zzzz.sql",
+          );
+          yield* applyMigrations(client, through0004);
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO users (id, name, email, updated_at)
+              VALUES ('user-stripe-upgrade', 'Stripe Upgrade', 'stripe-upgrade@example.test', now());
+              INSERT INTO billing_subscriptions (
+                billing_subscription_id, user_id, plan, plan_policy_version
+              ) VALUES (
+                'subscription-stripe-upgrade', 'user-stripe-upgrade', 'adventurer', 'launch-v1'
+              );
+              INSERT INTO allowance_periods (
+                allowance_period_id, billing_subscription_id, plan, plan_policy_version,
+                starts_at, ends_at, user_id
+              ) VALUES (
+                'period-stripe-upgrade', 'subscription-stripe-upgrade', 'adventurer', 'launch-v1',
+                now() - interval '1 day', now() + interval '1 day', 'user-stripe-upgrade'
+              );
+              INSERT INTO telegram_onboarding_deliveries (
+                event_id, claim_token, state, lease_expires_at
+              ) VALUES (
+                'telegram-stripe-upgrade', 'claim-stripe-upgrade', 'prepared', now() + interval '1 minute'
+              );
+            `),
+          );
+
+          yield* applyMigrations(client, migrations);
+          yield* applyMigrations(client, migrations);
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO billing_customers (
+                billing_customer_id, stripe_customer_id, user_id
+              ) VALUES (
+                'customer-stripe-upgrade', 'cus_stripeupgrade', 'user-stripe-upgrade'
+              );
+              UPDATE billing_subscriptions
+              SET billing_customer_id = 'customer-stripe-upgrade'
+              WHERE billing_subscription_id = 'subscription-stripe-upgrade';
+            `),
+          );
+
+          const preserved = yield* Effect.promise(() =>
+            client.query(`
+              SELECT
+                s.plan,
+                s.billing_customer_id,
+                p.plan AS allowance_plan,
+                t.state AS telegram_state
+              FROM billing_subscriptions s
+              JOIN allowance_periods p
+                ON p.billing_subscription_id = s.billing_subscription_id
+              CROSS JOIN telegram_onboarding_deliveries t
+              WHERE s.billing_subscription_id = 'subscription-stripe-upgrade'
+                AND t.event_id = 'telegram-stripe-upgrade'
+            `),
+          );
+          const applied0005 = yield* Effect.promise(() =>
+            client.query<{ readonly count: number }>(`
+              SELECT count(*)::integer AS count
+              FROM migrations
+              WHERE name = '0005_classy_juggernaut.sql'
+            `),
+          );
+
+          expect(preserved.rows).toEqual([
+            {
+              allowance_plan: "free",
+              billing_customer_id: "customer-stripe-upgrade",
+              plan: "free",
+              telegram_state: "prepared",
+            },
+          ]);
+          expect(applied0005.rows).toEqual([{ count: 1 }]);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
   it.effect("rolls back every statement when a deployment migration fails", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
