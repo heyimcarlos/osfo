@@ -86,7 +86,7 @@ export function App() {
 }
 
 /** Present a User without exposing Better Auth's internal placeholder email. */
-export const presentUserLabel = (user: {
+const presentUserLabel = (user: {
   readonly name: string;
   readonly phoneNumber?: string | null | undefined;
 }) => {
@@ -104,7 +104,7 @@ const LoadingScreen = () => (
 );
 
 /** Presentation-only chat shown after authentication succeeds. */
-export function ChatPreview({ userLabel = "Test user" }: { readonly userLabel?: string }) {
+function ChatPreview({ userLabel = "Test user" }: { readonly userLabel?: string }) {
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState(initialMessages);
 

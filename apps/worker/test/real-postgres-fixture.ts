@@ -121,8 +121,7 @@ const prepareDatabase = (client: ReturnType<typeof postgres>) =>
       try: () =>
         // oxlint-disable-next-line effecttsgo/async-function -- Postgres.js owns this Promise transaction callback.
         client.begin(async (transaction) => {
-          await transaction.unsafe("DROP SCHEMA public CASCADE");
-          await transaction.unsafe("CREATE SCHEMA public");
+          await resetPublicSchema(transaction);
           for (const migration of migrations) {
             for (const statement of migration.statements) {
               // oxlint-disable-next-line eslint/no-await-in-loop -- Migration statements must keep deployment order.
@@ -143,11 +142,16 @@ const cleanupDatabase = (client: ReturnType<typeof postgres>) =>
     try: () =>
       // oxlint-disable-next-line effecttsgo/async-function -- Postgres.js owns this cleanup transaction callback.
       client.begin(async (transaction) => {
-        await transaction.unsafe("DROP SCHEMA public CASCADE");
-        await transaction.unsafe("CREATE SCHEMA public");
+        await resetPublicSchema(transaction);
       }),
     catch: () =>
       new RealPostgresTestUnavailable({
         message: "Could not clean the dedicated native PostgreSQL test database",
       }),
   });
+
+// oxlint-disable-next-line effecttsgo/async-function -- Postgres.js owns this fixture transaction helper.
+const resetPublicSchema = async (transaction: postgres.TransactionSql) => {
+  await transaction.unsafe("DROP SCHEMA public CASCADE");
+  await transaction.unsafe("CREATE SCHEMA public");
+};
