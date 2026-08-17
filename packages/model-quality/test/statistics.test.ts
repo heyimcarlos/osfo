@@ -36,7 +36,7 @@ describe("Model Quality statistics", () => {
         margin: 0.02,
         pilotIndependentCases: 100,
       }),
-    ).toEqual({ kind: "success", value: 2141 });
+    ).toEqual({ kind: "success", value: 2163 });
 
     expect(
       pairedNonInferiority({
@@ -48,7 +48,7 @@ describe("Model Quality statistics", () => {
     ).toMatchObject({
       independentCases: 4,
       kind: "success",
-      requiredCases: 2141,
+      requiredCases: 2163,
       verdict: "MISSING",
     });
   });
@@ -140,6 +140,40 @@ describe("Model Quality statistics", () => {
       error: { _tag: "InvalidStatisticsInput" },
       kind: "error",
     });
+  });
+
+  it("requires at least two final cases for a zero-variance favorable pilot", () => {
+    expect(
+      requiredPairedCaseCount({
+        anticipatedDifference: 1,
+        discordanceRate: 1,
+        margin: 0.02,
+        pilotIndependentCases: 100,
+      }),
+    ).toEqual({ kind: "success", value: 2 });
+  });
+
+  it("keeps small signed pilot score differences continuous", () => {
+    const source = powerPlanInput(4, { discordanceRate: 0.1, margin: 0.02 });
+    const { signature: ignoredSignature, ...base } = source;
+    expect(ignoredSignature).toBe(source.signature);
+    const tinyImprovement = 0.000_001;
+    const unsigned = {
+      ...base,
+      pilotCandidateByCase: base.pilotBaselineByCase.map((item) => ({
+        caseId: item.caseId,
+        fixtureDigest: item.fixtureDigest,
+        runs: item.runs.map((score) => score + tinyImprovement),
+      })),
+    };
+    const result = createPairedPowerPlan(
+      { ...unsigned, signature: powerPlanSignature(unsigned) },
+      initialCorpusManifest,
+    );
+    expect(result).toMatchObject({ kind: "success" });
+    if (result.kind === "error") return;
+    expect(result.value.anticipatedDifference).toBeCloseTo(tinyImprovement, 12);
+    expect(result.value.requiredCases).toBeGreaterThan(2);
   });
 
   it("rejects selected runs that omit required ordinary or safety repetitions", () => {

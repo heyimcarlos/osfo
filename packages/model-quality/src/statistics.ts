@@ -117,10 +117,16 @@ export const requiredPairedCaseCount = (input: PairedPowerInput): StatisticsResu
     value.discordanceRate === 0
       ? 1 - 0.05 ** (1 / value.pilotIndependentCases)
       : value.discordanceRate;
-  const variance = Math.max(0, estimatedDiscordance - value.anticipatedDifference ** 2);
+  const observedVariance = Math.max(0, estimatedDiscordance - value.anticipatedDifference ** 2);
+  const variance =
+    value.discordanceRate > 0 && value.pilotIndependentCases > 1
+      ? (observedVariance * value.pilotIndependentCases) / (value.pilotIndependentCases - 1)
+      : observedVariance;
   const zAlpha = 1.6448536269514722;
   const zPower = 1.2815515655446004;
-  return success(Math.ceil(((zAlpha + zPower) ** 2 * variance) / distanceFromMargin ** 2));
+  return success(
+    Math.max(2, Math.ceil(((zAlpha + zPower) ** 2 * variance) / distanceFromMargin ** 2)),
+  );
 };
 
 /** Repeated outputs clustered under one independent case identity. */
@@ -175,7 +181,7 @@ export const verifyCompleteCorpusRuns = (
 /** Parsed initial-run observation derived from signed paired development runs. */
 export type PilotObservation = {
   readonly caseId: CaseId;
-  readonly difference: -1 | 0 | 1;
+  readonly difference: number;
   readonly fixtureDigest: EvidenceDigest<"fixture">;
 };
 
@@ -498,7 +504,9 @@ const parsePilotPowerInput = (
     observations.some(
       (item) =>
         parseCaseId(item.caseId).kind === "error" ||
-        (item.difference !== -1 && item.difference !== 0 && item.difference !== 1),
+        !Number.isFinite(item.difference) ||
+        item.difference < -1 ||
+        item.difference > 1,
     )
   ) {
     return invalidStatistics("Paired power requires unique product-owned pilot observations.");
@@ -559,9 +567,13 @@ const parsePilotRunEvidence = (
     ) {
       return [];
     }
-    const rawDifference = candidateScore - baselineScore;
-    const difference: -1 | 0 | 1 = rawDifference > 0 ? 1 : rawDifference < 0 ? -1 : 0;
-    return [Object.freeze({ caseId: parsedCaseId.value, difference, fixtureDigest })];
+    return [
+      Object.freeze({
+        caseId: parsedCaseId.value,
+        difference: candidateScore - baselineScore,
+        fixtureDigest,
+      }),
+    ];
   });
   return observations.length === caseIds.length
     ? success(Object.freeze(observations))

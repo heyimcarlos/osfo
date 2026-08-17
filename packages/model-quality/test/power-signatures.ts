@@ -2,6 +2,10 @@ import { pairedPowerPlanSigningDigest, type PairedPowerPlanInput } from "../src/
 
 const signatures = new Map<string, string>([
   [
+    "sha256:7271b77d7b8d98ac45ea1366b93ed76f09f3e8696aeefd687a098830c150ae53",
+    "etYAE46Kb/F1mopQ4ztQ/TbVOInkiNuwoJ+P1/fFHN7YRghEAJG1IBc7NMcwFDt5jLwRRd7DLJD6haxX+CsKCQ==",
+  ],
+  [
     "sha256:3766fcae2d22acaa78da8efc001901b9a3b5df0112e07077070a6af9c5db701a",
     "1vPuLA6DxWlfwJe/K/vzY/mAyOCPOCDF2wxFdumW5NRHlRFyXtHx3TE6EacTVz2sVInwSM9jXnyBrSxO23AmBA==",
   ],
