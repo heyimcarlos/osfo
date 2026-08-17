@@ -403,9 +403,14 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
                 ),
               ),
           },
+          session: {
+            recover: () => Effect.die("Session command must not recover after authority denial"),
+            replace: () => Effect.die("Session must not change after authority denial"),
+          },
           store: {
             inspect: Effect.die("receipt store must not be read after authority denial"),
             readAcceptanceReceipt: () => Effect.succeed(null),
+            readSessionCommandReceipt: () => Effect.succeed(null),
             recordAcceptanceReceipt: () =>
               Effect.die("receipt must not be written after authority denial"),
           },
@@ -617,9 +622,14 @@ const admitThroughAgent = (
               ),
             ),
         },
+        session: {
+          recover: () => Effect.die("denied authority must not recover a Session command"),
+          replace: () => Effect.die("denied authority must not replace a Session"),
+        },
         store: {
           inspect: Effect.die("denied lifecycle authority must not inspect Agent state"),
           readAcceptanceReceipt: () => Effect.succeed(null),
+          readSessionCommandReceipt: () => Effect.succeed(null),
           recordAcceptanceReceipt: () =>
             Effect.die("denied lifecycle authority must not record a receipt"),
         },

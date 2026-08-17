@@ -11,6 +11,7 @@ import {
 import type { AuthorizationDenialReason } from "./authorization";
 import type { ManagedConversationDenied } from "./managed-conversation";
 import type { AcceptanceReceipt } from "./provider-acceptance-receipt";
+import type { SessionCommandReceipt } from "./session-command-receipt";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schemas use the standard _tag discriminator. */
 
@@ -64,6 +65,7 @@ export type AgentAcceptanceInput = typeof AgentAcceptanceInput.Type;
 
 /** Observable result shared by authenticated WhatsApp and Telegram adapters. */
 export type AdmissionOutcome =
+  | { readonly _tag: "CommandAccepted"; readonly receipt: SessionCommandReceipt }
   | { readonly _tag: "MessageAccepted"; readonly receipt: AcceptanceReceipt }
   | { readonly _tag: "MessageDenied"; readonly reason: AuthorizationDenialReason }
   | { readonly _tag: "OnboardingAccepted" };
@@ -74,14 +76,19 @@ export interface Interface<Message, RouteInput, IdentityFailure, Failure> {
     readonly accept: (
       agentId: AgentId,
       input: AgentAcceptanceInput,
-    ) => Effect.Effect<AcceptanceReceipt | ManagedConversationDenied, Failure>;
+    ) => Effect.Effect<
+      AcceptanceReceipt | ManagedConversationDenied | SessionCommandReceipt,
+      Failure
+    >;
     readonly recover: (
       agentId: AgentId,
       input: AgentRecoveryInput,
-    ) => Effect.Effect<AcceptanceReceipt | null, Failure>;
+    ) => Effect.Effect<AcceptanceReceipt | SessionCommandReceipt | null, Failure>;
   };
   readonly allowances: {
-    readonly recordAcceptedMessage: (receipt: AcceptanceReceipt) => Effect.Effect<void, Failure>;
+    readonly recordAcceptedMessage: (
+      receipt: AcceptanceReceipt | SessionCommandReceipt,
+    ) => Effect.Effect<void, Failure>;
   };
   readonly identity: {
     readonly deriveAdmission: (
@@ -133,7 +140,7 @@ export const make = <Message, RouteInput, IdentityFailure, Failure>(
       const recovered = yield* options.agent.recover(route.agentId, recoveryInput);
       if (recovered !== null) {
         yield* options.allowances.recordAcceptedMessage(recovered);
-        return { _tag: "MessageAccepted", receipt: recovered } as const;
+        return acceptedOutcome(recovered);
       }
       yield* options.persistence.admit(route);
       const receipt = yield* options.agent.accept(route.agentId, {
@@ -144,6 +151,13 @@ export const make = <Message, RouteInput, IdentityFailure, Failure>(
         return { _tag: "MessageDenied", reason: receipt.reason } as const;
       }
       yield* options.allowances.recordAcceptedMessage(receipt);
-      return { _tag: "MessageAccepted", receipt } as const;
+      return acceptedOutcome(receipt);
     }),
 });
+
+const acceptedOutcome = (
+  receipt: AcceptanceReceipt | SessionCommandReceipt,
+): Extract<AdmissionOutcome, { readonly _tag: "CommandAccepted" | "MessageAccepted" }> =>
+  Predicate.isTagged(receipt, "SessionCommandReceipt")
+    ? { _tag: "CommandAccepted", receipt }
+    : { _tag: "MessageAccepted", receipt };

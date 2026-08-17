@@ -24,6 +24,8 @@ export default defineConfig({
       "test/provider-admission-postgres.test.ts",
       "test/provider-message-admission.test.ts",
       "test/registration.test.ts",
+      "test/session-recall-authorization.test.ts",
+      "test/session-recall-authorization-postgres.test.ts",
       "test/twilio-verify.test.ts",
       "test/user-suspension-authority.test.ts",
       "test/whatsapp-agent-admission.test.ts",
