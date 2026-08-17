@@ -20,11 +20,14 @@ export const AgentStoreOperation = Schema.Literals([
   "initialize",
   "inspect",
   "readRoute",
+  "readRouteSessionPage",
   "readSessionOwnership",
   "replaceCurrentSession",
   "recordCommittedTurn",
   "readAcceptanceReceipt",
   "recordAcceptanceReceipt",
+  "readSessionCommandReceipt",
+  "replaceCurrentSessionWithCommandReceipt",
   "readCommittedTurns",
 ]);
 
@@ -123,19 +126,6 @@ export class AgentStateNotFound extends Schema.TaggedError<AgentStateNotFound>()
   },
 ) {}
 
-/** Expected failure when a Session replacement does not match current state. */
-export class CurrentSessionReplacementConflict extends Schema.TaggedError<CurrentSessionReplacementConflict>()(
-  "CurrentSessionReplacementConflict",
-  {
-    actualCurrentSessionId: Schema.NullOr(SessionId),
-    expectedCurrentSessionId: SessionId,
-    message: Schema.String,
-    replacementOwnerRouteId: Schema.NullOr(ConversationRouteId),
-    replacementSessionId: SessionId,
-    routeId: ConversationRouteId,
-  },
-) {}
-
 /** Expected failure when one committed-turn key names conflicting observation facts. */
 export class CommittedTurnConflict extends Schema.TaggedError<CommittedTurnConflict>()(
   "CommittedTurnConflict",
@@ -205,11 +195,11 @@ export const AgentRequestOperation = Schema.Literals([
   "commitWelcome",
   "cancelManagedConversation",
   "initialize",
+  "readSessionAuthorizationFacts",
   "readRoute",
   "readSession",
   "recoverWhatsAppMessage",
   "recoverTelegramMessage",
-  "replaceCurrentSession",
   "submitManagedConversation",
 ]);
 

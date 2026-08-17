@@ -582,7 +582,7 @@ const operationCases: ReadonlyArray<OperationCase> = [
   both(operation("conversation.accept")),
   both({ ...operation("conversation.run"), modelSteps: 1n }),
   both(operation("session.recall")),
-  both(operation("session.replace"), true),
+  both(operation("session.replace")),
   both(operation("session.delete"), true),
   both(operation("memory.inspect")),
   both(operation("memory.correct")),

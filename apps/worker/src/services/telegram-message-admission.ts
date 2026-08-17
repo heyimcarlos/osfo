@@ -4,6 +4,7 @@ import { ChannelIdentity, ProviderMessageId } from "../domain";
 import type { AgentId } from "../domain";
 import type { ManagedConversationDenied } from "./managed-conversation";
 import type { AcceptanceReceipt } from "./provider-acceptance-receipt";
+import type { SessionCommandReceipt } from "./session-command-receipt";
 import * as ProviderAdmission from "./provider-message-admission";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schemas use the standard _tag discriminator. */
@@ -36,7 +37,7 @@ export class TelegramAdmissionUnavailable extends Schema.TaggedError<TelegramAdm
 export interface PersistencePort {
   readonly admit: (route: BoundChannel) => Effect.Effect<void, TelegramAdmissionUnavailable>;
   readonly recordAccepted: (
-    receipt: AcceptanceReceipt,
+    receipt: AcceptanceReceipt | SessionCommandReceipt,
   ) => Effect.Effect<void, TelegramAdmissionUnavailable>;
   readonly route: (
     input: TelegramRouteInput,
@@ -53,11 +54,17 @@ export interface AgentAdmissionPort {
   readonly accept: (
     agentId: AgentId,
     input: ProviderAdmission.AgentAcceptanceInput,
-  ) => Effect.Effect<AcceptanceReceipt | ManagedConversationDenied, TelegramAdmissionUnavailable>;
+  ) => Effect.Effect<
+    AcceptanceReceipt | ManagedConversationDenied | SessionCommandReceipt,
+    TelegramAdmissionUnavailable
+  >;
   readonly recover: (
     agentId: AgentId,
     input: ProviderAdmission.AgentRecoveryInput,
-  ) => Effect.Effect<AcceptanceReceipt | null, TelegramAdmissionUnavailable>;
+  ) => Effect.Effect<
+    AcceptanceReceipt | SessionCommandReceipt | null,
+    TelegramAdmissionUnavailable
+  >;
 }
 
 /** Effect service for recoverable Telegram submission to the named Agent. */
@@ -127,7 +134,7 @@ export const make = Effect.gen(function* () {
         .admit(input)
         .pipe(
           Effect.map((outcome): AdmissionResult =>
-            outcome._tag === "MessageAccepted"
+            outcome._tag === "MessageAccepted" || outcome._tag === "CommandAccepted"
               ? { _tag: "Accepted" }
               : outcome._tag === "MessageDenied"
                 ? { _tag: "Denied" }

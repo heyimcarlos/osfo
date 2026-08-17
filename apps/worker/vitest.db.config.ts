@@ -34,6 +34,8 @@ export default defineConfig({
       "test/stripe-billing-eligibility.test.ts",
       "test/stripe-adapter.test.ts",
       "test/stripe-webhooks.test.ts",
+      "test/session-recall-authorization.test.ts",
+      "test/session-recall-authorization-postgres.test.ts",
       "test/twilio-verify.test.ts",
       "test/user-suspension-authority.test.ts",
       "test/whatsapp-agent-admission.test.ts",
