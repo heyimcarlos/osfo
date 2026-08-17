@@ -39,6 +39,24 @@ import { admitManagedConversation } from "../src/services/managed-conversation";
 /* oxlint-disable effecttsgo/async-function, effecttsgo/prefer-typed-schema-decoder, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Worker integration tests cross Promise, RPC, Effect, and raw SQLite test boundaries. */
 
 describe("Osfo Agent and Think Session foundation", () => {
+  it.effect("identifies malformed WhatsApp recovery RPC input", () =>
+    Effect.gen(function* () {
+      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-invalid-whatsapp-recovery"));
+      const invalid = yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance) => {
+          // @ts-expect-error Test the public RPC decoder with a malformed wire value.
+          return await instance.recoverWhatsAppMessage({});
+        }),
+      );
+
+      expect(invalid).toMatchObject({
+        _tag: "AgentRequestInvalid",
+        message: "The Agent RPC input is invalid",
+        operation: "recoverWhatsAppMessage",
+      });
+    }),
+  );
+
   it.effect("returns the exact Acceptance Receipt when one WhatsApp message is replayed", () =>
     Effect.gen(function* () {
       const agentId = Schema.decodeUnknownSync(AgentId)("agent-whatsapp-acceptance");

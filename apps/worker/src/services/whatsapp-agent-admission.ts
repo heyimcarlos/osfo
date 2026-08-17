@@ -54,6 +54,27 @@ export interface SubmissionInput {
 }
 
 /** Concrete dependencies used by recoverable WhatsApp acceptance inside one named Agent. */
+export interface RecoveryInterface<
+  Receipt extends AcceptanceReceiptInput = AcceptanceReceiptInput,
+  StoreFailure = never,
+> {
+  readonly store: {
+    readonly readAcceptanceReceipt: (
+      channelBindingId: ChannelBindingId,
+      providerMessageId: ProviderMessageId,
+    ) => Effect.Effect<Receipt | null, StoreFailure>;
+    readonly recordAcceptanceReceipt: (
+      input: AcceptanceReceiptInput,
+    ) => Effect.Effect<Receipt, StoreFailure>;
+  };
+  readonly think: {
+    readonly inspect: (
+      submissionId: string,
+    ) => Effect.Effect<SubmissionInspection | null, ThinkSubmissionUnavailable>;
+  };
+}
+
+/** Concrete dependencies used by new WhatsApp acceptance inside one named Agent. */
 export interface Interface<
   Receipt extends AcceptanceReceiptInput = AcceptanceReceiptInput,
   StoreFailure = never,
@@ -176,7 +197,7 @@ export const accept = <Receipt extends AcceptanceReceiptInput, StoreFailure>(opt
 
 /** Recover durable Agent acceptance without requiring fresh authority or allowance facts. */
 export const recover = <Receipt extends AcceptanceReceiptInput, StoreFailure>(options: {
-  readonly dependencies: Interface<Receipt, StoreFailure>;
+  readonly dependencies: RecoveryInterface<Receipt, StoreFailure>;
   readonly input: AgentRecoveryInput;
 }) =>
   Effect.gen(function* () {

@@ -537,6 +537,7 @@ export class OsfoAgent extends Think<Env> {
     const decoded = Schema.decodeResult(AgentAcceptanceInput)(input);
     if (Result.isFailure(decoded)) return invalidRequest("acceptWhatsAppMessage");
     const parsed = decoded.success;
+    const recovery = this.#whatsappRecoveryDependencies();
     return runRpc(
       WhatsAppAgentAdmission.accept<
         AcceptanceReceipt,
@@ -546,14 +547,14 @@ export class OsfoAgent extends Think<Env> {
         | AgentStoreUnavailable
       >({
         dependencies: {
+          ...recovery,
           authority: {
             readCurrentBinding: ({ channelBindingId, userId }) =>
               this.#isCurrentWhatsAppBinding(channelBindingId, userId),
           },
-          store: this.#store,
+          store: { ...recovery.store, inspect: this.#store.inspect },
           think: {
-            inspect: (submissionId) =>
-              callThinkSubmission("inspectSubmission", () => this.inspectSubmission(submissionId)),
+            ...recovery.think,
             submit: (submission) => callThinkSubmission("runTurn", () => this.runTurn(submission)),
           },
         },
@@ -577,7 +578,7 @@ export class OsfoAgent extends Think<Env> {
   > {
     await this.#migrationsReady;
     const decoded = Schema.decodeResult(AgentRecoveryInput)(input);
-    if (Result.isFailure(decoded)) return invalidRequest("acceptWhatsAppMessage");
+    if (Result.isFailure(decoded)) return invalidRequest("recoverWhatsAppMessage");
     return runRpc(
       WhatsAppAgentAdmission.recover<
         AcceptanceReceipt,
@@ -586,18 +587,7 @@ export class OsfoAgent extends Think<Env> {
         | AgentStoreRecordInvalid
         | AgentStoreUnavailable
       >({
-        dependencies: {
-          authority: {
-            readCurrentBinding: ({ channelBindingId, userId }) =>
-              this.#isCurrentWhatsAppBinding(channelBindingId, userId),
-          },
-          store: this.#store,
-          think: {
-            inspect: (submissionId) =>
-              callThinkSubmission("inspectSubmission", () => this.inspectSubmission(submissionId)),
-            submit: (submission) => callThinkSubmission("runTurn", () => this.runTurn(submission)),
-          },
-        },
+        dependencies: this.#whatsappRecoveryDependencies(),
         input: decoded.success,
       }),
     );
@@ -1074,6 +1064,19 @@ export class OsfoAgent extends Think<Env> {
           message: "Current WhatsApp authority could not be checked",
         }),
     });
+  }
+
+  #whatsappRecoveryDependencies() {
+    return {
+      store: {
+        readAcceptanceReceipt: this.#store.readAcceptanceReceipt,
+        recordAcceptanceReceipt: this.#store.recordAcceptanceReceipt,
+      },
+      think: {
+        inspect: (submissionId: string) =>
+          callThinkSubmission("inspectSubmission", () => this.inspectSubmission(submissionId)),
+      },
+    };
   }
 
   #findThinkMessageOwner(

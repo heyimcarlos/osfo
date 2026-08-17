@@ -206,6 +206,7 @@ export const AgentRequestOperation = Schema.Literals([
   "initialize",
   "readRoute",
   "readSession",
+  "recoverWhatsAppMessage",
   "replaceCurrentSession",
   "submitManagedConversation",
 ]);
