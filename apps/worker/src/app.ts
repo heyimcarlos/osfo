@@ -54,8 +54,11 @@ const runInvitationExpiry = (env: Bindings, config: RuntimeConfig) => {
     Registration.layerWithoutDependencies,
     OnboardingCloudflare.layer(env),
     OnboardingLinks.layer({
+      enrollmentProvider: config.telegram.kind === "enabled" ? "telegram" : "whatsapp",
       officialWhatsAppNumber: config.whatsApp.phoneNumber,
       publicBaseUrl: new URL(config.auth.baseURL),
+      telegramBotUsername:
+        config.telegram.kind === "enabled" ? config.telegram.botUsername : "disabled",
     }),
   ).pipe(Layer.provideMerge(base));
   const onboarding = Onboarding.layerWithoutDependencies.pipe(Layer.provide(dependencies));

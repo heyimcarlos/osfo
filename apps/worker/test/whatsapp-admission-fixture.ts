@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 
 import { type AllowancePeriodId, SessionId } from "../src/domain";
-import { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
+import { AcceptanceReceipt } from "../src/services/provider-acceptance-receipt";
 import type { ManagedConversationDenied } from "../src/services/managed-conversation";
 import {
   type AgentAcceptanceInput,
@@ -70,12 +70,15 @@ export const recoveredReceipt = (
   acceptedAt: string,
 ): AcceptanceReceipt =>
   Schema.decodeSync(AcceptanceReceipt)({
-    ...input,
     _tag: "AcceptanceReceipt",
     acceptedAt,
     allowancePeriodId,
+    channelBindingId: input.channelBindingId,
+    providerMessageId: input.providerMessageId,
+    receiptId: input.receiptId,
     sessionId: SessionId.make(`session-${input.submissionId}`),
     thinkSubmissionId: input.submissionId,
+    userMessageId: input.userMessageId,
   });
 
 /** Build the supported direct-message fact shared by both PostgreSQL engines. */

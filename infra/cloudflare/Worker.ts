@@ -1,6 +1,7 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Stack } from "alchemy/Stack";
 import * as Config from "effect/Config";
+import * as Redacted from "effect/Redacted";
 
 import { Hyperdrive } from "./Db";
 import { ExecutionUnitWorkflow } from "./ExecutionUnitWorkflow";
@@ -9,6 +10,23 @@ import { ExecutionUnitWorkflow } from "./ExecutionUnitWorkflow";
 export default Cloudflare.Worker(
   "Api",
   Stack.useSync(({ stage }) => {
+    const telegramEnv =
+      stage === "production"
+        ? {}
+        : {
+            TELEGRAM_ALLOWED_USER_IDS: Config.redacted("TELEGRAM_ALLOWED_USER_IDS").pipe(
+              Config.withDefault(Redacted.make("")),
+            ),
+            TELEGRAM_BOT_TOKEN: Config.redacted("TELEGRAM_BOT_TOKEN").pipe(
+              Config.withDefault(Redacted.make("")),
+            ),
+            TELEGRAM_BOT_USERNAME: Config.string("TELEGRAM_BOT_USERNAME").pipe(
+              Config.withDefault(""),
+            ),
+            TELEGRAM_WEBHOOK_SECRET_TOKEN: Config.redacted("TELEGRAM_WEBHOOK_SECRET_TOKEN").pipe(
+              Config.withDefault(Redacted.make("")),
+            ),
+          };
     const workerOptions = {
       compatibility: {
         // Alchemy 2.0.0-beta.72 bundles a local Workerd runtime that supports dates through 2026-07-11.
@@ -31,6 +49,7 @@ export default Cloudflare.Worker(
         REGISTRATION_DIALOGUE: Cloudflare.DurableObject("RegistrationDialogue", {
           className: "RegistrationDialogue",
         }),
+        ...telegramEnv,
         TWILIO_ACCOUNT_SID: Config.string("TWILIO_ACCOUNT_SID"),
         TWILIO_AUTH_TOKEN: Config.redacted("TWILIO_AUTH_TOKEN"),
         TWILIO_VERIFY_SERVICE_SID: Config.string("TWILIO_VERIFY_SERVICE_SID"),

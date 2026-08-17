@@ -28,7 +28,7 @@ import { make } from "../src/integrations/postgres/whatsapp-admission";
 import * as Allowances from "../src/services/allowances";
 import type { ManagedConversationDenied } from "../src/services/managed-conversation";
 import * as WhatsAppAgentAdmission from "../src/services/whatsapp-agent-admission";
-import { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
+import { AcceptanceReceipt } from "../src/services/provider-acceptance-receipt";
 import {
   type AgentAcceptanceInput,
   type AgentRecoveryInput,

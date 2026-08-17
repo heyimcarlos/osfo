@@ -3,7 +3,7 @@ import { check, index, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm
 
 import { users } from "./auth";
 
-/** Finite-lived web or WhatsApp invitations used only during onboarding. */
+/** Finite-lived web or messaging-provider invitations used only during onboarding. */
 export const registrationInvitations = pgTable(
   "registration_invitations",
   {
@@ -11,6 +11,7 @@ export const registrationInvitations = pgTable(
     tokenDigest: text("token_digest").notNull().unique(),
     kind: text("kind").default("whatsapp_first").notNull(),
     provider: text("provider").notNull(),
+    providerEventId: text("provider_event_id"),
     channelIdentity: text("channel_identity"),
     invitedPhoneNumber: text("invited_phone_number"),
     locale: text("locale").notNull(),
@@ -25,10 +26,13 @@ export const registrationInvitations = pgTable(
     consumedAt: timestamp("consumed_at", { withTimezone: true }),
   },
   (table) => [
-    check("registration_invitations_provider_check", sql`${table.provider} = 'whatsapp'`),
+    check(
+      "registration_invitations_provider_check",
+      sql`${table.provider} in ('telegram', 'whatsapp')`,
+    ),
     check(
       "registration_invitations_kind_check",
-      sql`${table.kind} in ('whatsapp_first', 'web_enrollment')`,
+      sql`${table.kind} in ('telegram_first', 'whatsapp_first', 'web_enrollment')`,
     ),
     check(
       "registration_invitations_state_check",
@@ -56,6 +60,9 @@ export const registrationInvitations = pgTable(
     ),
     check("registration_invitations_expiry_check", sql`${table.createdAt} < ${table.expiresAt}`),
     index("registration_invitations_expiry_index").on(table.state, table.expiresAt),
+    uniqueIndex("registration_invitations_provider_event_unique")
+      .on(table.provider, table.providerEventId)
+      .where(sql`${table.providerEventId} is not null`),
     uniqueIndex("registration_invitations_live_channel_unique")
       .on(table.provider, table.channelIdentity)
       .where(sql`${table.state} = 'live' and ${table.channelIdentity} is not null`),
@@ -81,7 +88,7 @@ export const channelBindings = pgTable(
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
   },
   (table) => [
-    check("channel_bindings_provider_check", sql`${table.provider} = 'whatsapp'`),
+    check("channel_bindings_provider_check", sql`${table.provider} in ('telegram', 'whatsapp')`),
     uniqueIndex("channel_bindings_active_identity_unique")
       .on(table.provider, table.channelIdentity)
       .where(sql`${table.revokedAt} is null`),

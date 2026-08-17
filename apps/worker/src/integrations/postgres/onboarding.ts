@@ -50,6 +50,7 @@ export const make = Effect.gen(function* () {
             invitedPhoneNumber: registrationInvitations.invitedPhoneNumber,
             kind: registrationInvitations.kind,
             locale: registrationInvitations.locale,
+            provider: registrationInvitations.provider,
             state: registrationInvitations.state,
             userId: registrationInvitations.userId,
           })
@@ -65,7 +66,10 @@ export const make = Effect.gen(function* () {
       Effect.map((record) => record ?? null),
     );
 
-  const findLiveWhatsApp: Onboarding.PersistencePort["findLiveWhatsApp"] = (channelIdentity) =>
+  const findLiveChannel: Onboarding.PersistencePort["findLiveChannel"] = (
+    provider,
+    channelIdentity,
+  ) =>
     Effect.tryPromise({
       try: () =>
         db
@@ -73,13 +77,13 @@ export const make = Effect.gen(function* () {
           .from(registrationInvitations)
           .where(
             and(
-              eq(registrationInvitations.provider, "whatsapp"),
+              eq(registrationInvitations.provider, provider),
               eq(registrationInvitations.channelIdentity, channelIdentity),
               eq(registrationInvitations.state, "live"),
             ),
           )
           .limit(1),
-      catch: (cause) => unavailable("findLiveWhatsApp", cause),
+      catch: (cause) => unavailable("findLiveChannel", cause),
     }).pipe(
       Effect.flatMap((rows) =>
         decodeOptionalRow(
@@ -88,7 +92,7 @@ export const make = Effect.gen(function* () {
           "issueRegistrationInvitation",
         ),
       ),
-      Effect.mapError((cause) => unavailable("findLiveWhatsApp", cause)),
+      Effect.mapError((cause) => unavailable("findLiveChannel", cause)),
       Effect.map((record) => record?.invitationId ?? null),
     );
 
@@ -188,28 +192,18 @@ export const make = Effect.gen(function* () {
         catch: (cause) => unavailable("expireLive", cause),
       }),
     findByDigest,
-    findLiveWhatsApp,
-    insertWhatsApp: (input) =>
+    findLiveChannel,
+    insertWhatsAppInvitation: (input) =>
       Effect.tryPromise({
-        try: async () => {
-          const inserted = await db
-            .insert(registrationInvitations)
-            .values({
-              ...input,
-              kind: "whatsapp_first",
-              provider: "whatsapp",
-            })
-            .onConflictDoNothing()
-            .returning({ invitationId: registrationInvitations.invitationId });
-          return inserted.length > 0;
-        },
-        catch: (cause) => rejected("insertWhatsApp", input.invitationId, cause),
+        try: () => insertWhatsAppInvitationTransaction(db, input),
+        catch: (cause) => rejected("insertWhatsAppInvitation", input.invitationId, cause),
       }),
     readCurrentBinding: (query) =>
       Effect.tryPromise({
         try: () =>
-          ChannelBindingPostgres.readCurrentWhatsAppBinding(
+          ChannelBindingPostgres.readCurrentBinding(
             db,
+            query.provider,
             query.userId,
             query.channelBindingId,
           ),
@@ -221,6 +215,7 @@ export const make = Effect.gen(function* () {
             : Onboarding.StoredChannelBinding.make({
                 channelBindingId: binding.channelBindingId,
                 channelIdentity: binding.channelIdentity,
+                provider: binding.provider,
                 userId: binding.userId,
               }),
         ),
@@ -238,6 +233,20 @@ const unavailable = (operation: string, cause: unknown) =>
 
 const rejected = (operation: string, operationId: string, cause: unknown) =>
   new Onboarding.OnboardingPersistenceRejected({ cause, operation, operationId });
+
+const insertWhatsAppInvitationTransaction = async (
+  db: Database,
+  input: Onboarding.WhatsAppInvitationPersistenceInput,
+) =>
+  db.transaction(async (transaction) => {
+    const invitation = await transaction
+      .insert(registrationInvitations)
+      .values({ ...input, kind: "whatsapp_first", provider: "whatsapp" })
+      .onConflictDoNothing()
+      .returning({ invitationId: registrationInvitations.invitationId });
+    if (invitation.length > 0) return true;
+    return false;
+  });
 
 const completeTransaction = async (
   db: Database,
@@ -279,7 +288,12 @@ const completeTransaction = async (
     const activeBindings =
       invitation?.channelIdentity === null || invitation?.channelIdentity === undefined
         ? []
-        : await readActiveBindings(transaction, invitation.channelIdentity, input.userId);
+        : await readActiveBindings(
+            transaction,
+            invitation.channelIdentity,
+            invitation.provider,
+            input.userId,
+          );
     const decision = decide({
       activeBindings,
       invitation,
@@ -295,7 +309,7 @@ const completeTransaction = async (
         channelBindingId: channel.channelBindingId,
         channelIdentity: invitation.channelIdentity,
         createdAt: input.now,
-        provider: "whatsapp",
+        provider: invitation.provider,
         userId: input.userId,
       });
     }
@@ -337,6 +351,7 @@ const enrollTransaction = async (
     const activeBindings = await readActiveBindings(
       transaction,
       input.channelIdentity,
+      input.provider,
       input.userId,
     );
     const decision = decide({ activeBindings, invitation });
@@ -347,7 +362,7 @@ const enrollTransaction = async (
         channelBindingId: channel.channelBindingId,
         channelIdentity: input.channelIdentity,
         createdAt: input.now,
-        provider: "whatsapp",
+        provider: input.provider,
         userId: input.userId,
       });
     }
@@ -402,7 +417,7 @@ const createWebEnrollmentTransaction = async (
       invitationId: input.invitationId,
       kind: "web_enrollment",
       locale: input.locale,
-      provider: "whatsapp",
+      provider: input.provider,
       tokenDigest: input.digest,
       userId: input.userId,
     });
@@ -426,6 +441,7 @@ const readLockedInvitation = async (
       invitedPhoneNumber: registrationInvitations.invitedPhoneNumber,
       kind: registrationInvitations.kind,
       locale: registrationInvitations.locale,
+      provider: registrationInvitations.provider,
       state: registrationInvitations.state,
       userId: registrationInvitations.userId,
     })
@@ -439,18 +455,20 @@ const readLockedInvitation = async (
 const readActiveBindings = async (
   transaction: Transaction,
   channelIdentity: Onboarding.StoredChannelBinding["channelIdentity"],
+  provider: Onboarding.ChannelProvider,
   userId: Onboarding.StoredChannelBinding["userId"],
 ): Promise<ReadonlyArray<Onboarding.StoredChannelBinding>> => {
   const rows = await transaction
     .select({
       channelBindingId: channelBindings.channelBindingId,
       channelIdentity: channelBindings.channelIdentity,
+      provider: channelBindings.provider,
       userId: channelBindings.userId,
     })
     .from(channelBindings)
     .where(
       and(
-        eq(channelBindings.provider, "whatsapp"),
+        eq(channelBindings.provider, provider),
         isNull(channelBindings.revokedAt),
         or(
           eq(channelBindings.channelIdentity, channelIdentity),
@@ -459,7 +477,7 @@ const readActiveBindings = async (
       ),
     )
     .for("update");
-  return rows.map((row) => Schema.decodeSync(Onboarding.StoredChannelBinding)(row));
+  return rows.map((row) => Schema.decodeUnknownSync(Onboarding.StoredChannelBinding)(row));
 };
 
 const expireByDigest = (db: Database, digest: string, now: Date) =>

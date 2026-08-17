@@ -41,14 +41,6 @@ export const layer = Layer.unwrap(
                       payload.invitationToken,
                     ),
                   );
-            const webEnrollmentToken =
-              payload.webEnrollmentToken === null
-                ? null
-                : Redacted.make(
-                    yield* Schema.decodeEffect(Onboarding.RegistrationToken)(
-                      payload.webEnrollmentToken,
-                    ),
-                  );
             return yield* onboarding.complete({
               bindingConsent: payload.bindingConsent,
               existingProfileChoice: payload.existingProfileChoice,
@@ -59,7 +51,6 @@ export const layer = Layer.unwrap(
                 preferredName: payload.preferredName,
               },
               userId: UserId.make(currentUser.userId),
-              webEnrollmentToken,
             });
           }).pipe(Effect.mapError(toPublicError)),
         ),
@@ -75,7 +66,7 @@ const toPublicError = (error: { readonly _tag: string }) => {
   }
   if (error._tag === "ChannelBindingConflict") {
     return new ChannelBindingNeedsSupport({
-      message: "This WhatsApp identity needs manual support before it can be connected.",
+      message: "This channel identity needs manual support before it can be connected.",
     });
   }
   if (error._tag === "OnboardingPhoneVerificationRequired") {

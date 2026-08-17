@@ -61,6 +61,7 @@ describe("GetStartedScreen acceptance journeys", () => {
         return Effect.succeed({
           locale: "en",
           maskedPhoneNumber: "••••••••0185",
+          provider: "whatsapp",
           state: "live",
         });
       },
@@ -104,7 +105,7 @@ describe("GetStartedScreen acceptance journeys", () => {
               agentId: AgentId.make("agent-existing"),
               channel: {
                 _tag: "EnrollmentPending",
-                enrollmentUrl: new URL("https://wa.me/1"),
+                enrollmentUrl: new URL(`https://t.me/osfo_test_bot?start=${"7".repeat(64)}`),
               },
               completedAt,
               profileConfirmationRequired: false,
@@ -126,13 +127,18 @@ describe("GetStartedScreen acceptance journeys", () => {
     await user.click(screen.getByRole("button", { name: "Keep my existing profile" }));
     await waitFor(() => expect(dependencies.completeCalls).toHaveLength(2));
     expect(dependencies.completeCalls[1]).toMatchObject({ existingProfileChoice: "keep" });
-    expect(await screen.findByRole("link", { name: /Continue in WhatsApp/u })).toBeTruthy();
+    expect(await screen.findByRole("link", { name: /Continue in Telegram/u })).toBeTruthy();
   });
 
   it("shows safe recovery for an expired, consumed, replaced, or invalid link", async () => {
     const dependencies = makeDependencies({
       inspectInvitation: () =>
-        Effect.succeed({ locale: "en", maskedPhoneNumber: null, state: "expired" }),
+        Effect.succeed({
+          locale: "en",
+          maskedPhoneNumber: null,
+          provider: null,
+          state: "expired",
+        }),
     });
     render(
       <GetStartedScreen
@@ -246,6 +252,76 @@ describe("GetStartedScreen acceptance journeys", () => {
     expect(document.body.textContent).not.toContain("Setup complete");
     expect(document.body.textContent).not.toContain("You are ready");
     expect(document.body.textContent).not.toContain("Your personal Osfo Agent is ready");
+  });
+
+  it("shows Telegram web enrollment and keeps the Agent pending until the deep link is used", async () => {
+    const user = userEvent.setup();
+    const completedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z"));
+    const dependencies = makeDependencies({
+      complete: () =>
+        Effect.succeed({
+          agentId: AgentId.make("agent-telegram-pending"),
+          channel: {
+            _tag: "EnrollmentPending",
+            enrollmentUrl: new URL(`https://t.me/osfo_test_bot?start=${"a".repeat(64)}`),
+          },
+          completedAt,
+          profileConfirmationRequired: false,
+          userId: UserId.make("user-telegram-pending"),
+        }),
+    });
+    render(
+      <GetStartedScreen
+        dependencies={dependencies}
+        enrollmentProvider="telegram"
+        isAuthenticated
+        onComplete={() => undefined}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(document.body.textContent).toContain("Telegram processes channel messages");
+    expect(document.body.textContent).not.toContain("WhatsApp");
+    expect(document.body.textContent).not.toContain("STOP");
+    await user.click(screen.getByRole("button", { name: /Continue to phone verification/u }));
+    await user.click(screen.getByRole("button", { name: /Confirm Free/u }));
+
+    expect(await screen.findByText("Telegram connection pending")).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: /Continue in Telegram/u }).getAttribute("href"),
+    ).toMatch(/^https:\/\/t\.me\/osfo_test_bot\?start=/u);
+    expect(document.body.textContent).not.toContain("You are ready");
+  });
+
+  it("uses normal SMS verification for a Telegram-first invitation before consent", async () => {
+    const user = userEvent.setup();
+    const dependencies = makeDependencies({
+      inspectInvitation: () =>
+        Effect.succeed({
+          locale: "en",
+          maskedPhoneNumber: null,
+          provider: "telegram",
+          state: "live",
+        }),
+    });
+    render(
+      <GetStartedScreen
+        dependencies={dependencies}
+        invitationToken={"b".repeat(64)}
+        onComplete={() => undefined}
+      />,
+    );
+
+    await screen.findByText("How can Osfo help?");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(screen.getByRole("button", { name: /Continue to phone verification/u }));
+
+    expect(screen.getByLabelText("Phone number").hasAttribute("disabled")).toBe(false);
+    await user.type(screen.getByLabelText("Phone number"), "4165550199");
+    await user.click(screen.getByRole("button", { name: "Send code" }));
+    await user.type(await screen.findByLabelText("Verification code"), "123456");
+    await user.click(screen.getByRole("button", { name: "Verify and continue" }));
+    expect(screen.getByText(/Telegram identity are separate evidence/u)).toBeTruthy();
   });
 
   it("localizes pending WhatsApp enrollment without ready claims", async () => {
@@ -369,7 +445,8 @@ describe("GetStartedScreen acceptance journeys", () => {
         inspections += 1;
         return Effect.succeed({
           locale: "en",
-          maskedPhoneNumber: "••••••••0189",
+          maskedPhoneNumber: null,
+          provider: "telegram",
           state: "live",
         });
       },

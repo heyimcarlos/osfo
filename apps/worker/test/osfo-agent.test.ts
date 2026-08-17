@@ -57,6 +57,59 @@ describe("Osfo Agent and Think Session foundation", () => {
     }),
   );
 
+  it.effect("recovers Telegram acceptance in the established canonical Session", () =>
+    Effect.gen(function* () {
+      const agentId = AgentId.make("agent-telegram-acceptance");
+      const channelBindingId = ChannelBindingId.make("binding-telegram-acceptance");
+      const sessionId = SessionId.make("session-telegram-canonical");
+      const agent = env.OSFO_AGENT.getByName(agentId);
+      yield* Effect.promise(
+        async () =>
+          await agent.initialize({
+            agentId,
+            initializationId: "init-telegram-acceptance",
+            initializedAt: "2026-08-17T00:00:00.000Z",
+            routeId: "route-telegram-acceptance",
+            sessionId,
+          }),
+      );
+      const input = {
+        channelBindingId,
+        message: "Plan my day",
+        providerMessageId: "telegram-update-9001",
+        receiptId: "receipt-telegram-acceptance",
+        submissionId: "submission-telegram-acceptance",
+        userMessageId: "message-telegram-acceptance",
+      } as const;
+      const receipt = yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance, state) => {
+          state.storage.sql.exec(
+            `INSERT INTO osfo_acceptance_receipts
+              (allowance_period_id, channel_binding_id, provider_message_id, receipt_id,
+               session_id, think_submission_id, user_message_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            "period-telegram-acceptance",
+            channelBindingId,
+            input.providerMessageId,
+            input.receiptId,
+            sessionId,
+            input.submissionId,
+            input.userMessageId,
+          );
+          return await instance.acceptTelegramMessage(input);
+        }),
+      );
+
+      expect(receipt).toMatchObject({
+        _tag: "AcceptanceReceipt",
+        channelBindingId,
+        providerMessageId: input.providerMessageId,
+        sessionId,
+        thinkSubmissionId: input.submissionId,
+      });
+    }),
+  );
+
   it.effect("returns the exact Acceptance Receipt when one WhatsApp message is replayed", () =>
     Effect.gen(function* () {
       const agentId = Schema.decodeUnknownSync(AgentId)("agent-whatsapp-acceptance");

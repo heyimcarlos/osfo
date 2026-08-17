@@ -249,6 +249,7 @@ const date = (iso: string) => DateTime.toDateUtc(DateTime.makeUnsafe(iso));
 
 const testOnboarding = Onboarding.Service.of({
   complete: () => Effect.die("unexpected onboarding completion"),
+  enrollTelegram: () => Effect.die("unexpected Telegram enrollment"),
   enrollWhatsApp: () => Effect.die("unexpected WhatsApp enrollment"),
   expireInvitations: Effect.die("unexpected invitation expiry"),
   inspectInvitation: () => Effect.die("unexpected invitation inspection"),
@@ -268,6 +269,7 @@ const config: RuntimeConfig = {
     webhookVerifyToken: Redacted.make("verify-me"),
   },
   stage: "test",
+  telegram: { kind: "disabled" },
   twilioVerify: {
     accountSid: Redacted.make("AC00000000000000000000000000000000"),
     authToken: Redacted.make("test-only-twilio-token"),

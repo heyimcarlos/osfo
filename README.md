@@ -96,6 +96,40 @@ The selected Twilio Verify Service must define the programmable rate-limit key
 `phone_number`. Configure one bucket for one send per 30 seconds and one bucket
 for five sends per hour. The Worker supplies this key on every SMS request.
 
+### Telegram dogfooding
+
+Telegram is a non-production onboarding and acceptance transport. Create a bot
+with BotFather, then set the four `TELEGRAM_*` values shown in
+`apps/worker/.env.example`. Also set `VITE_ENROLLMENT_PROVIDER=telegram` in the
+web app so the pre-completion disclosure and enrollment copy match the Worker
+transport. `TELEGRAM_ALLOWED_USER_IDS` is a comma-separated list of numeric
+Telegram User IDs. The Worker rejects partial configuration, users outside this
+list, invalid webhook secrets, and every production activation.
+
+Register this webhook URL with Telegram's `setWebhook` Bot API method:
+
+```text
+https://<development-worker>/messengers/telegram/webhook
+```
+
+Supply `TELEGRAM_WEBHOOK_SECRET_TOKEN` as the `secret_token` for that request.
+The same value must arrive in Telegram's
+`X-Telegram-Bot-Api-Secret-Token` header. Web-first enrollment opens the bot with
+a single-use `start` token. Only the token digest is stored.
+
+This adapter uses Think's documented manual-ingress shape. The Worker completes
+allowlist, onboarding, consent, and stable Agent lookup before it submits to the
+named Agent. It does not use Think's default per-thread sub-agent routing, and
+Chat SDK state is not conversation authority.
+
+Telegram `sendMessage` has no idempotency key. A `not_applied` or `prepared` delivery means that
+Telegram was definitely not contacted, so its fenced lease can be taken over. Immediately before
+provider contact Osfo durably changes the delivery to `ambiguous`; it never resends that event and
+returns a retryable failure. A successful provider response advances the same fenced claim to
+`applied`. This conservative policy can suppress one response if the Worker stops before contact,
+but it cannot silently acknowledge ambiguity or duplicate a Telegram send. The User can recover
+with a new Telegram event.
+
 ## Verification
 
 Use Bun 1.3.14 and Node 24.18.0.

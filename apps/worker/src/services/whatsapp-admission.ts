@@ -1,4 +1,5 @@
-import { Effect, Option, Predicate, Redacted, Schema } from "effect";
+import { Option, Redacted, Schema } from "effect";
+import type { Effect } from "effect";
 import { RegistrationToken } from "@osfo/api";
 
 import {
@@ -9,10 +10,11 @@ import {
   ThinkSubmissionId,
   UserMessageId,
 } from "../domain";
-import type { AcceptanceReceipt } from "./whatsapp-acceptance-receipt";
+import type { AcceptanceReceipt } from "./provider-acceptance-receipt";
 import type { AuthorizationDenialReason } from "./authorization";
 import type { ManagedConversationDenied } from "./managed-conversation";
 import type { WhatsAppOnboardingCommand } from "./whatsapp-onboarding";
+import * as ProviderAdmission from "./provider-message-admission";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schemas use the standard _tag discriminator. */
 
@@ -58,23 +60,15 @@ export const InboundWhatsAppMessage = Schema.Union([
 /** Supported direct-message facts produced by the authenticated Meta adapter. */
 export type InboundWhatsAppMessage = typeof InboundWhatsAppMessage.Type;
 
-/** Truncated SHA-256 digest of authenticated provider message content. */
-export const WhatsAppProviderContentDigest = Schema.String.check(
-  Schema.isMinLength(40),
-  Schema.isMaxLength(40),
-  Schema.isPattern(/^[0-9a-f]+$/u),
-).pipe(Schema.brand("WhatsAppProviderContentDigest"));
+/** @deprecated Use the provider-neutral content digest. */
+export const WhatsAppProviderContentDigest = ProviderAdmission.ProviderContentDigest;
 
-/** Truncated SHA-256 digest of the stable WhatsApp admission identity chain. */
-export const WhatsAppAdmissionIdentityDigest = Schema.String.check(
-  Schema.isMinLength(40),
-  Schema.isMaxLength(40),
-  Schema.isPattern(/^[0-9a-f]+$/u),
-).pipe(Schema.brand("WhatsAppAdmissionIdentityDigest"));
+/** @deprecated Use the provider-neutral admission identity digest. */
+export const WhatsAppAdmissionIdentityDigest = ProviderAdmission.ProviderAdmissionIdentityDigest;
 
 /** Provider-event facts fixed before Channel Binding resolution. */
 export type RouteInput = InboundWhatsAppMessage & {
-  readonly contentDigest: typeof WhatsAppProviderContentDigest.Type;
+  readonly contentDigest: ProviderAdmission.ProviderContentDigest;
 };
 
 /** Expected failure when stable inbound identities cannot be derived. */
@@ -157,10 +151,13 @@ export interface WhatsAppStableIdentity {
   readonly deriveAdmission: (
     route: Extract<InboundRoute, { readonly _tag: "Bound" }>,
     providerMessageId: ProviderMessageId,
-  ) => Effect.Effect<typeof WhatsAppAdmissionIdentityDigest.Type, WhatsAppIdentityUnavailable>;
+  ) => Effect.Effect<
+    ProviderAdmission.ProviderAdmissionIdentityDigest,
+    WhatsAppIdentityUnavailable
+  >;
   readonly deriveContent: (
     message: InboundWhatsAppMessage,
-  ) => Effect.Effect<typeof WhatsAppProviderContentDigest.Type, WhatsAppIdentityUnavailable>;
+  ) => Effect.Effect<ProviderAdmission.ProviderContentDigest, WhatsAppIdentityUnavailable>;
 }
 
 /** Inbound admission operations exposed to an authenticated HTTP adapter. */
@@ -172,43 +169,29 @@ export interface Service<Failure> {
 
 /** Construct inbound admission from caller-shaped provider, Agent, and persistence ports. */
 export const make = <Failure>(options: Interface<Failure>): Service<Failure> => ({
-  admit: (
-    message: InboundWhatsAppMessage,
-  ): Effect.Effect<AdmissionOutcome, Failure | WhatsAppIdentityUnavailable> =>
-    Effect.gen(function* () {
-      const contentDigest = yield* options.identity.deriveContent(message);
-      const route = yield* options.persistence.route({ ...message, contentDigest });
-      if (route._tag === "Unbound") {
-        yield* options.onboarding.handle(onboardingCommand(message));
-        return { _tag: "OnboardingAccepted" } as const;
-      }
-      const identityDigest = yield* options.identity.deriveAdmission(
-        route,
-        message.providerMessageId,
-      );
-      const recoveryInput = AgentRecoveryInput.make({
-        channelBindingId: route.channelBindingId,
-        providerMessageId: message.providerMessageId,
-        receiptId: AcceptanceReceiptId.make(`receipt-${identityDigest}`),
-        submissionId: ThinkSubmissionId.make(`submission-${identityDigest}`),
-        userMessageId: UserMessageId.make(`message-${identityDigest}`),
-      });
-      const recovered = yield* options.agent.recover(route.agentId, recoveryInput);
-      if (recovered !== null) {
-        yield* options.allowances.recordAcceptedMessage(recovered);
-        return { _tag: "MessageAccepted", receipt: recovered } as const;
-      }
-      yield* options.persistence.admit(route);
-      const receipt = yield* options.agent.accept(route.agentId, {
-        ...recoveryInput,
-        message: message.message,
-      });
-      if (Predicate.isTagged(receipt, "ManagedConversationDenied")) {
-        return { _tag: "MessageDenied", reason: receipt.reason } as const;
-      }
-      yield* options.allowances.recordAcceptedMessage(receipt);
-      return { _tag: "MessageAccepted", receipt } as const;
+  admit: ProviderAdmission.make({
+    agent: {
+      accept: (agentId, input) =>
+        options.agent.accept(
+          agentId,
+          AgentAcceptanceInput.make({ ...input, message: WhatsAppMessageText.make(input.message) }),
+        ),
+      recover: (agentId, input) => options.agent.recover(agentId, AgentRecoveryInput.make(input)),
+    },
+    allowances: options.allowances,
+    identity: options.identity,
+    message: (message: InboundWhatsAppMessage) => ({
+      providerMessageId: message.providerMessageId,
+      text: message.message,
     }),
+    onboarding: (message: InboundWhatsAppMessage) =>
+      options.onboarding.handle(onboardingCommand(message)),
+    persistence: options.persistence,
+    routeInput: (message: InboundWhatsAppMessage, contentDigest): RouteInput => ({
+      ...message,
+      contentDigest,
+    }),
+  }).admit,
 });
 
 const onboardingCommand = (message: InboundWhatsAppMessage): WhatsAppOnboardingCommand => {

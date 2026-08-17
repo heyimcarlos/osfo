@@ -51,6 +51,7 @@ export function App() {
         <Suspense fallback={<LoadingScreen />}>
           <GetStartedScreen
             {...(invitationToken === undefined ? {} : { invitationToken })}
+            enrollmentProvider={configuredEnrollmentProvider}
             onComplete={() => {
               globalThis.location.assign("/");
             }}
@@ -73,6 +74,7 @@ export function App() {
       <Suspense fallback={<LoadingScreen />}>
         <GetStartedScreen
           {...(invitationToken === undefined ? {} : { invitationToken })}
+          enrollmentProvider={configuredEnrollmentProvider}
           isAuthenticated
           onComplete={() => {
             globalThis.location.assign("/");
@@ -96,6 +98,9 @@ const presentUserLabel = (user: {
   const visible = user.phoneNumber.slice(-4);
   return `${"•".repeat(Math.max(4, user.phoneNumber.length - visible.length))}${visible}`;
 };
+
+const configuredEnrollmentProvider =
+  import.meta.env.VITE_ENROLLMENT_PROVIDER === "telegram" ? "telegram" : "whatsapp";
 
 const LoadingScreen = () => (
   <main className="grid min-h-dvh place-items-center bg-background text-sm text-muted-foreground">
