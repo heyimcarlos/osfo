@@ -6,15 +6,6 @@
   "compatibility_date": "2026-08-12",
   "compatibility_flags": ["nodejs_compat"],
   "ai": { "binding": "AI" },
-  "r2_buckets": [{ "binding": "FILES", "bucket_name": "osfo-test-files" }],
-  "containers": [
-    {
-      "class_name": "Sandbox",
-      "image": "./Dockerfile.files",
-      "instance_type": "lite",
-      "max_instances": 1,
-    },
-  ],
   "vars": {
     "OSFO_STAGE": "test",
     "WHATSAPP_PHONE_NUMBER": "14165550100",
@@ -25,6 +16,10 @@
       "BETTER_AUTH_BASE_URL",
       "BETTER_AUTH_SECRET",
       "BETTER_AUTH_TRUSTED_ORIGINS",
+      "GOOGLE_CLIENT_ID",
+      "GOOGLE_CLIENT_SECRET",
+      "META_APP_SECRET",
+      "META_WEBHOOK_VERIFY_TOKEN",
       "TWILIO_ACCOUNT_SID",
       "TWILIO_AUTH_TOKEN",
       "TWILIO_VERIFY_SERVICE_SID",
@@ -37,11 +32,15 @@
       "localConnectionString": "postgres://osfo:osfo@127.0.0.1:5432/osfo_test",
     },
   ],
+  "r2_buckets": [
+    { "binding": "ARTIFACTS", "bucket_name": "osfo-test-generated-artifacts" },
+    { "binding": "FILES", "bucket_name": "osfo-test-files" },
+  ],
   "ai": { "binding": "AI" },
   "durable_objects": {
     "bindings": [
+      { "name": "DOCUMENT_SANDBOX", "class_name": "Sandbox" },
       { "name": "OSFO_AGENT", "class_name": "OsfoAgent" },
-      { "name": "FILE_COMPUTE", "class_name": "Sandbox" },
       {
         "name": "REGISTRATION_DIALOGUE",
         "class_name": "RegistrationDialogue",
@@ -54,6 +53,14 @@
       "new_sqlite_classes": ["OsfoAgent", "RegistrationDialogue"],
     },
     { "tag": "v2", "new_sqlite_classes": ["Sandbox"] },
+  ],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./document-sandbox/Dockerfile",
+      "instance_type": "lite",
+      "max_instances": 20,
+    },
   ],
   "triggers": { "crons": ["0 * * * *"] },
   "workflows": [

@@ -8,6 +8,7 @@ import { DateTime, Effect, Schema } from "effect";
 import {
   AgentId,
   AgentInitializationId,
+  ChannelBindingId,
   ConversationRouteId,
   SessionId,
   UserId,
@@ -22,6 +23,7 @@ import {
   testProtectedActionName,
   type TestProtectedActionState,
 } from "../src/agents/osfo/test-protected-action";
+import { gmailSendActionName } from "../src/agents/osfo/gmail-send-action";
 import type { OsfoAgent } from "../src/agents/osfo/agent";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, effecttsgo/prefer-typed-schema-decoder, effecttsgo/prefer-schema-over-json, typescript/await-thenable, typescript/no-unsafe-type-assertion, osfo/no-chained-type-assertions, osfo/no-unknown-parameters, osfo/no-unknown-returns, eslint/no-underscore-dangle -- Worker integration tests cross Think's Promise, private Action compiler, and Durable Object boundaries. */
@@ -77,22 +79,61 @@ describe("Think Action and exact Approval", () => {
     }),
   );
 
-  it.effect("rechecks current authority immediately before provider contact", () =>
-    Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(
-        Schema.decodeUnknownSync(AgentId)("agent-think-action-authority-loss"),
-      );
-      const parked = yield* Effect.promise(() => parkTestAction(agent, "call-authority-loss"));
-      yield* Effect.promise(() =>
-        configureTestAction(agent, { authority: "revoked", providerOutcome: "applied" }),
-      );
+  for (const testCase of [
+    {
+      authority: "revoked",
+      currentFact: "current",
+      denial: "authorityRevoked",
+      name: "authority revocation",
+    },
+    {
+      authority: "active",
+      currentFact: "ownership-lost",
+      denial: "ownershipRequired",
+      name: "ownership loss",
+    },
+    {
+      authority: "active",
+      currentFact: "entitlement-lost",
+      denial: "missingEntitlement",
+      name: "entitlement loss",
+    },
+    {
+      authority: "active",
+      currentFact: "integration-revoked",
+      denial: "integrationConnectionRequired",
+      name: "Integration Connection revocation",
+    },
+    {
+      authority: "active",
+      currentFact: "approval-revoked",
+      denial: "approvalRequired",
+      name: "Approval revocation",
+    },
+  ] as const) {
+    it.effect(`rechecks current ${testCase.name} before provider contact`, () =>
+      Effect.gen(function* () {
+        const agent = env.OSFO_AGENT.getByName(
+          Schema.decodeUnknownSync(AgentId)(`agent-think-action-${testCase.currentFact}`),
+        );
+        const parked = yield* Effect.promise(() =>
+          parkTestAction(agent, `call-${testCase.currentFact}`),
+        );
+        yield* Effect.promise(() =>
+          configureTestAction(agent, {
+            authority: testCase.authority,
+            currentFact: testCase.currentFact,
+            providerOutcome: "not-applied",
+          }),
+        );
 
-      const result = yield* Effect.promise(
-        async () => await agent.approveExecution(parked.executionId),
-      );
-      expect(result).toEqual({ _tag: "Denied", reason: "authorityRevoked", resetAt: null });
-    }),
-  );
+        const result = yield* Effect.promise(
+          async () => await agent.approveExecution(parked.executionId),
+        );
+        expect(result).toEqual({ _tag: "Denied", reason: testCase.denial, resetAt: null });
+      }),
+    );
+  }
 
   it.effect("returns explicit provider ambiguity", () =>
     Effect.gen(function* () {
@@ -102,6 +143,7 @@ describe("Think Action and exact Approval", () => {
       yield* Effect.promise(() =>
         configureTestAction(ambiguousAgent, {
           authority: "active",
+          currentFact: "current",
           providerOutcome: "ambiguous",
         }),
       );
@@ -149,6 +191,54 @@ describe("Think Action and exact Approval", () => {
     }),
   );
 
+  it.effect("binds the production Gmail Action identity to every exact send field", () =>
+    Effect.gen(function* () {
+      const agent = env.OSFO_AGENT.getByName(
+        Schema.decodeUnknownSync(AgentId)("agent-gmail-action-material-change"),
+      );
+      const first = yield* Effect.promise(() =>
+        parkAction(agent, gmailSendActionName, "gmail-call-first", {
+          body: "Original body",
+          recipient: "sam@example.com",
+          scheduledFor: null,
+          selectedResourceId: "gmail-message-selected",
+          subject: "Trip details",
+        }),
+      );
+      const changed = yield* Effect.promise(() =>
+        parkAction(agent, gmailSendActionName, "gmail-call-changed", {
+          body: "Changed body",
+          recipient: "sam@example.com",
+          scheduledFor: null,
+          selectedResourceId: "gmail-message-selected",
+          subject: "Trip details",
+        }),
+      );
+      const pending: Array<PendingApproval> = yield* Effect.promise(
+        (): Promise<Array<PendingApproval>> => agent.pendingApprovals(),
+      );
+
+      expect(pending.map(({ descriptor }) => descriptor.input)).toEqual([
+        {
+          body: "Original body",
+          recipient: "sam@example.com",
+          scheduledFor: null,
+          selectedResourceId: "gmail-message-selected",
+          subject: "Trip details",
+        },
+        {
+          body: "Changed body",
+          recipient: "sam@example.com",
+          scheduledFor: null,
+          selectedResourceId: "gmail-message-selected",
+          subject: "Trip details",
+        },
+      ]);
+      expect(new Set([first.executionId, changed.executionId]).size).toBe(2);
+      expect(first.executionId).not.toBe(changed.executionId);
+    }),
+  );
+
   it.effect("projects only definition-owned safe material and authenticates decisions", () =>
     Effect.gen(function* () {
       const pending = makePending("actpause_safe", "call-safe");
@@ -167,7 +257,7 @@ describe("Think Action and exact Approval", () => {
       });
       const actor = {
         _tag: "ChannelBinding" as const,
-        channelBindingId: "binding-owner",
+        channelBindingId: ChannelBindingId.make("binding-owner"),
         userId: UserId.make("user-owner"),
       };
 
@@ -203,6 +293,15 @@ const ParkedAction = Schema.Struct({
   status: Schema.String,
 });
 type ParkedAction = typeof ParkedAction.Type;
+type ParkedActionInput =
+  | { readonly recipient: string; readonly subject: string }
+  | {
+      readonly body: string;
+      readonly recipient: string;
+      readonly scheduledFor: null;
+      readonly selectedResourceId: string | null;
+      readonly subject: string;
+    };
 
 const parkTestAction = async (
   agent: DurableObjectStub<OsfoAgent>,
@@ -211,6 +310,13 @@ const parkTestAction = async (
     recipient: "sam@example.com",
     subject: "Trip details",
   },
+): Promise<ParkedAction> => parkAction(agent, testProtectedActionName, toolCallId, input);
+
+const parkAction = async (
+  agent: DurableObjectStub<OsfoAgent>,
+  actionName: string,
+  toolCallId: string,
+  input: ParkedActionInput,
 ): Promise<ParkedAction> =>
   runInDurableObject(agent, async (instance) => {
     await instance.initialize({
@@ -235,7 +341,7 @@ const parkTestAction = async (
       >;
     };
     const tools = await compile._compileActionTools();
-    const protectedAction = tools[testProtectedActionName];
+    const protectedAction = tools[actionName];
     if (protectedAction?.execute === undefined) throw new Error("Test Action is not registered");
     const result = await protectedAction.execute(
       {

@@ -1,27 +1,9 @@
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 
-import * as Onboarding from "../services/onboarding";
+import type * as Onboarding from "../services/onboarding";
+import type { WhatsAppOnboardingCommand } from "../services/whatsapp-onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schemas use the standard _tag discriminator. */
-
-/** Closed command facts supplied after a future Meta adapter verifies and decodes an event. */
-export const WhatsAppOnboardingCommand = Schema.Union([
-  Schema.TaggedStruct("UnknownSenderMessage", {
-    channelIdentity: Onboarding.UnknownWhatsAppMessage.fields.channelIdentity,
-    eventId: Schema.String,
-    invitedPhoneNumber: Schema.String,
-    locale: Onboarding.OnboardingLocale,
-    message: Schema.String,
-  }),
-  Schema.TaggedStruct("EnrollmentControlMessage", {
-    channelIdentity: Onboarding.WhatsAppEnrollment.fields.channelIdentity,
-    eventId: Schema.String,
-    token: Onboarding.WhatsAppEnrollment.fields.token,
-  }),
-]);
-
-/** Closed onboarding command accepted from the future provider-authenticated Meta adapter. */
-export type WhatsAppOnboardingCommand = typeof WhatsAppOnboardingCommand.Type;
 
 /** Route verified provider facts without treating enrollment control as a UserMessage. */
 export const handleWhatsAppOnboardingCommand = Effect.fn("WhatsAppOnboarding.handleCommand")(

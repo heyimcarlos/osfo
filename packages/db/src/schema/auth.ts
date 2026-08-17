@@ -8,6 +8,7 @@ import {
   integer,
   index,
   jsonb,
+  unique,
 } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
@@ -69,7 +70,10 @@ export const accounts = pgTable(
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
   },
-  (table) => [index("accounts_userId_idx").on(table.userId)],
+  (table) => [
+    index("accounts_userId_idx").on(table.userId),
+    unique("accounts_id_user_account_unique").on(table.id, table.userId, table.accountId),
+  ],
 );
 
 export const verifications = pgTable(

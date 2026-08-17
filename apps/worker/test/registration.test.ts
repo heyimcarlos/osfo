@@ -27,7 +27,7 @@ describe("Registration HTTP API", () => {
           const sentNumbers: Array<string> = [];
           const app = makeApp(fixture.database, {
             sendCode: (phoneNumber) => Effect.sync(() => sentNumbers.push(phoneNumber)),
-            verifyCode: (_phoneNumber, code) => Effect.succeed(code === "123456"),
+            verifyCode: (_phoneNumber, code) => Effect.succeed(Redacted.value(code) === "123456"),
           });
           const token = "7".repeat(64);
           const digest = yield* sha256(token);
@@ -66,6 +66,7 @@ describe("Registration HTTP API", () => {
           expect(inspectedBody).toEqual({
             locale: "en",
             maskedPhoneNumber: "••••••••0183",
+            provider: "whatsapp",
             state: "live",
           });
           expect(sent.status).toBe(200);
@@ -85,13 +86,11 @@ describe("Registration HTTP API", () => {
       (fixture) =>
         Effect.gen(function* () {
           yield* applyMigrations(fixture.client);
-          const app = makeApp(fixture.database);
-          const signUp = yield* sendJson(app.handler, "POST", "/auth/sign-up/email", {
-            email: "web-onboarding@osfo.test",
-            name: "Web Onboarding",
-            password: "test-password",
-          });
-          const cookie = signUp.headers.get("set-cookie")?.split(";", 1)[0];
+          const app = makeApp(fixture.database, acceptingTwilio);
+          const cookie = yield* authenticatePhone(app.handler, "+14165550180");
+          yield* Effect.promise(() =>
+            fixture.database.update(users).set({ phoneNumberVerified: false }).execute(),
+          );
           const payload = {
             existingProfileChoice: null,
             bindingConsent: "web-enrollment",
@@ -117,7 +116,15 @@ describe("Registration HTTP API", () => {
           expect(unverified.status).toBe(403);
           expect(first.status).toBe(200);
           expect(firstBody.channel._tag).toBe("EnrollmentPending");
-          expect(retriedBody).toEqual(firstBody);
+          expect(firstBody.channel).toMatchObject({ _tag: "EnrollmentPending" });
+          expect(retriedBody.channel).toMatchObject({ _tag: "EnrollmentPending" });
+          if (
+            firstBody.channel._tag === "EnrollmentPending" &&
+            retriedBody.channel._tag === "EnrollmentPending"
+          ) {
+            expect(firstBody.channel.enrollmentUrl.href).not.toContain("e".repeat(64));
+            expect(retriedBody.channel.enrollmentUrl).not.toEqual(firstBody.channel.enrollmentUrl);
+          }
 
           yield* Effect.promise(app.dispose);
         }),
@@ -131,13 +138,8 @@ describe("Registration HTTP API", () => {
       (fixture) =>
         Effect.gen(function* () {
           yield* applyMigrations(fixture.client);
-          const app = makeApp(fixture.database);
-          const signUp = yield* sendJson(app.handler, "POST", "/auth/sign-up/email", {
-            email: "registered@osfo.test",
-            name: "Registered User",
-            password: "test-password",
-          });
-          const cookie = signUp.headers.get("set-cookie")?.split(";", 1)[0];
+          const app = makeApp(fixture.database, acceptingTwilio);
+          const cookie = yield* authenticatePhone(app.handler, "+14165550181");
           expect(cookie).toContain("better-auth.session_token");
 
           const first = yield* sendJson(app.handler, "PUT", "/v1/registration", {}, cookie);
@@ -234,13 +236,8 @@ describe("Registration HTTP API", () => {
       (fixture) =>
         Effect.gen(function* () {
           yield* applyMigrations(fixture.client);
-          const app = makeApp(fixture.database);
-          const signUp = yield* sendJson(app.handler, "POST", "/auth/sign-up/email", {
-            email: "conflicting-registration@osfo.test",
-            name: "Conflicting Registration",
-            password: "test-password",
-          });
-          const cookie = signUp.headers.get("set-cookie")?.split(";", 1)[0];
+          const app = makeApp(fixture.database, acceptingTwilio);
+          const cookie = yield* authenticatePhone(app.handler, "+14165550182");
           const first = yield* sendJson(app.handler, "PUT", "/v1/registration", {}, cookie);
           const [storedUser] = yield* Effect.promise(() =>
             fixture.database.select({ id: users.id }).from(users),
@@ -341,6 +338,25 @@ const sendJson = (
   );
 };
 
+const acceptingTwilio: TwilioVerify.TwilioVerify["Service"] = {
+  sendCode: () => Effect.void,
+  verifyCode: (_phoneNumber, code) => Effect.succeed(Redacted.value(code) === "123456"),
+};
+
+const authenticatePhone = (handler: (request: Request) => Promise<Response>, phoneNumber: string) =>
+  Effect.gen(function* () {
+    const sent = yield* sendJson(handler, "POST", "/auth/phone-number/send-otp", { phoneNumber });
+    const verified = yield* sendJson(handler, "POST", "/auth/phone-number/verify", {
+      code: "123456",
+      phoneNumber,
+    });
+    expect(sent.status).toBe(200);
+    expect(verified.status).toBe(200);
+    const cookie = verified.headers.get("set-cookie")?.split(";", 1)[0];
+    expect(cookie).toContain("better-auth.session_token");
+    return yield* Schema.decodeUnknownEffect(Schema.String)(cookie);
+  });
+
 type JsonValue =
   | boolean
   | null
@@ -374,10 +390,23 @@ const runtimeConfig: RuntimeConfig = {
   auth: {
     baseURL: "https://osfo.test/",
     dashboard: { kind: "disabled" },
+    google: { clientId: "test-google-client", clientSecret: Redacted.make("test-google-secret") },
     secret: Redacted.make("test-only-better-auth-secret-32-characters"),
     trustedOrigins: ["https://osfo.test"],
   },
+  meta: {
+    appSecret: Redacted.make("test-only-meta-app-secret"),
+    webhookVerifyToken: Redacted.make("test-only-meta-webhook-token"),
+  },
   stage: "test",
+  telegram: { kind: "disabled" },
+  stripe: {
+    adventurerPriceId: "price_adventurer",
+    adventurerProductId: "prod_adventurer",
+    portalConfigurationId: "bpc_approved",
+    secretKey: Redacted.make("sk_test_osfo"),
+    webhookSecret: Redacted.make("whsec_test_osfo"),
+  },
   whatsApp: { phoneNumber: "14165550100" },
   twilioVerify: {
     accountSid: Redacted.make(`AC${"1".repeat(32)}`),
@@ -390,9 +419,27 @@ const testBindings: App.Bindings = {
   DB: { connectionString: "postgres://unused.invalid/osfo" },
   OSFO_AGENT: {
     getByName: (identity) => ({
+      acceptWhatsAppMessage: () =>
+        Promise.resolve({
+          _tag: "ManagedConversationDenied",
+          reason: "userSuspended",
+          resetAt: null,
+        }),
+      acceptTelegramMessage: () =>
+        Promise.resolve({
+          _tag: "ManagedConversationDenied",
+          reason: "userSuspended",
+          resetAt: null,
+        }),
       commitWelcome: () =>
         Promise.resolve({ _tag: "PersonalWelcomeCommitted", messageId: "welcome-test" }),
       initialize: () => Promise.resolve({ _tag: "AgentInitialized" }),
+      submitManagedConversation: () =>
+        Promise.resolve({
+          accepted: true,
+          status: "pending" as const,
+          submissionId: "submission-test",
+        }),
       probeRuntime: () =>
         Promise.resolve({
           activationId: "test-agent-activation",
@@ -401,11 +448,18 @@ const testBindings: App.Bindings = {
           kind: "RuntimeProbe" as const,
           stage: "test" as const,
         }),
+      recoverWhatsAppMessage: () => Promise.resolve(null),
+      recoverTelegramMessage: () => Promise.resolve(null),
     }),
   },
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => ({
-      begin: () => Promise.resolve({ _tag: "RegistrationTurnCompleted", response: "Register" }),
+      begin: () =>
+        Promise.resolve({
+          _tag: "RegistrationTurnCompleted",
+          response: "Register",
+          verifyUrl: "https://osfo.ai/verify/test",
+        }),
       deleteDialogue: () => Promise.resolve(),
       probeRuntime: () =>
         Promise.resolve({

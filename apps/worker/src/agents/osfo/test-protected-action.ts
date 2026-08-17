@@ -1,17 +1,15 @@
 import { action } from "@cloudflare/think";
 import { DateTime, Effect, Option, Schema } from "effect";
 
-import { PlanPolicyVersion, UserId } from "../../domain";
+import { ChannelBindingId, PlanPolicyVersion, UserId } from "../../domain";
 import {
   ActionId,
   ambiguousActionResult,
   type ActionExecutionResult,
 } from "../../domain/action-execution";
+import { AuthorizationOperation } from "../../domain/authorization-operation";
 import { retainedCatalog } from "../../domain/plan-policy";
-import {
-  ThinkApprovedActionExecution,
-  executeThinkApprovedAction,
-} from "../../services/action-executor";
+import * as ActionExecutor from "../../services/action-executor";
 import { AuthorizationContext, make as makeAuthorization } from "../../services/authorization";
 import {
   ActionPresentation,
@@ -22,6 +20,7 @@ import {
 
 const actionName = "osfoTestGmailSend";
 const testUserId = UserId.make("test-protected-action-user");
+const testChannelBindingId = ChannelBindingId.make("test-protected-action-binding");
 const TestActionInput = Schema.Struct({
   recipient: Schema.String.check(
     Schema.isMinLength(3),
@@ -36,6 +35,12 @@ type TestActionInput = typeof TestActionInput.Type;
 /** Test-only current authority and provider state used to verify the real Think Action path. */
 export interface TestProtectedActionState {
   readonly authority: "active" | "revoked";
+  readonly currentFact:
+    | "approval-revoked"
+    | "current"
+    | "entitlement-lost"
+    | "integration-revoked"
+    | "ownership-lost";
   readonly providerOutcome: "applied" | "ambiguous" | "not-applied";
 }
 
@@ -54,13 +59,15 @@ export const makeTestProtectedAction = (options: TestProtectedActionOptions) =>
     // oxlint-disable-next-line effecttsgo/async-function -- Think Actions require a Promise-returning execute callback.
     execute: async (input, context) =>
       Effect.runPromise(
-        executeThinkApprovedAction(
+        ActionExecutor.make(
           makeAuthorization(retainedCatalog),
-          currentAuthorization(options.readState()),
-          ThinkApprovedActionExecution.make({
-            _tag: "ThinkApprovedActionExecution",
+          currentAuthorities(options.readState),
+        ).executeThinkApprovedAction(
+          stableAuthorizationContext(),
+          { _tag: "ChannelBinding", channelBindingId: testChannelBindingId, userId: testUserId },
+          AuthorizationOperation.make({
             actionId: ActionId.make(context.toolCallId),
-            operation: "gmail.send",
+            kind: "gmail.send",
           }),
           (actionId) => contactTestProvider(options.readState(), actionId, input.recipient),
         ),
@@ -125,7 +132,8 @@ export const sanitizeTestProtectedActionInput = (
 /** Name registered with Think for the test-only protected Action. */
 export const testProtectedActionName = actionName;
 
-const currentAuthorization = (state: TestProtectedActionState): AuthorizationContext =>
+/** Test-stage current authority used by protected Action integration tests. */
+export const currentTestAuthorization = (state: TestProtectedActionState): AuthorizationContext =>
   AuthorizationContext.make({
     allowance: { _tag: "Unavailable" },
     approval: null,
@@ -162,6 +170,76 @@ const currentAuthorization = (state: TestProtectedActionState): AuthorizationCon
     },
     user: { _tag: "ActiveUser", userId: testUserId },
   });
+
+const stableAuthorizationContext = (): ActionExecutor.ProtectedEffectContext => ({
+  requestVendorUsdMicros: 0n,
+});
+
+const currentAuthorities = (
+  readState: () => TestProtectedActionState,
+): ActionExecutor.AuthorityOwners => ({
+  approvals: {
+    inspect: (_userId, operation) =>
+      Effect.succeed(
+        readState().currentFact === "approval-revoked"
+          ? null
+          : { actionId: operation.actionId, operation: operation.kind, userId: testUserId },
+      ),
+  },
+  authSessions: {
+    inspect: (_userId, authSessionId) =>
+      Effect.succeed({ _tag: "RevokedAuthSession" as const, authSessionId, userId: testUserId }),
+  },
+  channelBindings: {
+    inspect: (_userId, channelBindingId) =>
+      Effect.succeed(
+        readState().authority === "active"
+          ? { _tag: "ChannelBinding" as const, channelBindingId, userId: testUserId }
+          : { _tag: "RevokedChannelBinding" as const, channelBindingId, userId: testUserId },
+      ),
+  },
+  deletionCases: {
+    inspect: () => Effect.succeed({ _tag: "DeletionAccessAvailable" as const }),
+  },
+  integrationConnections: {
+    inspectGmail: () =>
+      Effect.succeed(
+        readState().currentFact === "integration-revoked"
+          ? { _tag: "Revoked" as const, userId: testUserId }
+          : { _tag: "Connected" as const, userId: testUserId },
+      ),
+  },
+  liveResources: {
+    inspect: () =>
+      Effect.succeed({
+        activeGmSummonsInSession: 0n,
+        activeReminders: 0n,
+        concurrentWorkflows: 0n,
+        retainedFileBytes: 0n,
+      }),
+  },
+  resourceOwnership: {
+    inspect: () =>
+      Effect.succeed(
+        readState().currentFact === "ownership-lost"
+          ? UserId.make("another-test-user")
+          : testUserId,
+      ),
+  },
+  subscriptions: {
+    inspect: () =>
+      Effect.succeed({
+        plan: readState().currentFact === "entitlement-lost" ? "free" : "adventurer",
+        planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+      }),
+  },
+  userSuspensions: {
+    inspect: () => Effect.succeed({ _tag: "ActiveUser" as const, userId: testUserId }),
+  },
+});
+
+/** Test-stage User that owns protected Action integration Agents. */
+export const testProtectedActionUserId = testUserId;
 
 const contactTestProvider = (
   state: TestProtectedActionState,

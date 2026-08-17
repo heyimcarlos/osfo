@@ -1,8 +1,10 @@
 import type { PendingApproval } from "@cloudflare/think";
 import { Effect, Option, Schema } from "effect";
 
-import { UserId } from "../../domain";
+import { ChannelBindingId, UserId } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
+import { AuthorizationContext } from "../../services/authorization";
+import { AuthSessionId } from "../../domain/auth-session";
 
 const boundedText = (maximum: number) =>
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maximum));
@@ -38,12 +40,12 @@ export type ActionPresentation = typeof ActionPresentation.Type;
 /** Worker-authenticated authority allowed to read or resolve an Approval. */
 export const ApprovalActor = Schema.Union([
   Schema.TaggedStruct("AuthSession", {
-    authSessionId: boundedText(200),
+    authSessionId: AuthSessionId,
     expiresAt: Schema.DateFromString,
     userId: UserId,
   }),
   Schema.TaggedStruct("ChannelBinding", {
-    channelBindingId: boundedText(200),
+    channelBindingId: ChannelBindingId,
     userId: UserId,
   }),
 ]);
@@ -63,6 +65,7 @@ export type ReadActionPresentationRequest = typeof ReadActionPresentationRequest
 /** RPC request for one exact Approval decision. */
 export const DecideActionApprovalRequest = Schema.Struct({
   actor: ApprovalActor,
+  authorization: AuthorizationContext,
   decision: Schema.Literals(["approve", "reject"]),
   presentationId: ActionPresentationId,
   reason: Schema.optional(boundedText(500)),
