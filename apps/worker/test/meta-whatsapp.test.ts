@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Redacted } from "effect";
 
 import { authenticateAndDecode, verifyChallenge } from "../src/integrations/meta/whatsapp";
+import { encodeJsonText, sign, webhook } from "./whatsapp-webhook-fixture";
 
 describe("Meta WhatsApp adapter", () => {
   it.effect("matches a fixed known Meta HMAC-SHA256 vector", () =>
@@ -447,26 +448,6 @@ const textMessage = () => ({
   type: "text",
 });
 
-const webhook = (messages: ReadonlyArray<object>) => ({
-  entry: [
-    {
-      changes: [
-        {
-          field: "messages",
-          value: {
-            contacts: [{ profile: { name: "Ada" }, wa_id: "14165550123" }],
-            messaging_product: "whatsapp",
-            metadata: { display_phone_number: "14165550100", phone_number_id: "123456789" },
-            messages,
-          },
-        },
-      ],
-      id: "waba-1",
-    },
-  ],
-  object: "whatsapp_business_account",
-});
-
 const statusWebhook = () => ({
   entry: [
     {
@@ -501,25 +482,3 @@ const statusWebhook = () => ({
   ],
   object: "whatsapp_business_account",
 });
-
-const encodeJsonText = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
-
-const sign = (body: string, secret: string) =>
-  Effect.gen(function* () {
-    const key = yield* Effect.promise(() =>
-      crypto.subtle.importKey(
-        "raw",
-        new TextEncoder().encode(secret),
-        { hash: "SHA-256", name: "HMAC" },
-        false,
-        ["sign"],
-      ),
-    );
-    const bytes = yield* Effect.promise(() =>
-      crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)),
-    );
-    const hex = Array.from(new Uint8Array(bytes), (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    ).join("");
-    return `sha256=${hex}`;
-  });
