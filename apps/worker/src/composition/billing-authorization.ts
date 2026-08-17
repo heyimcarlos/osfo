@@ -7,6 +7,8 @@ import { type AllowancePeriodId, UserId } from "../domain";
 import { AuthSessionId } from "../domain/auth-session";
 import * as DeletionCasePostgres from "../integrations/postgres/deletion-case";
 import * as UserSuspensionPostgres from "../integrations/postgres/user-suspension";
+import * as AuthSessionAdapter from "../integrations/auth/auth-session";
+import * as AuthSession from "../services/auth-session";
 import { admit, type BillingOperation } from "../services/billing-authorization";
 
 /* oxlint-disable effecttsgo/strict-effect-provide -- This composition boundary owns the concrete request-scoped PostgreSQL adapters. */
@@ -23,6 +25,10 @@ export const make = (
     const databaseLayer = Db.layerFromDatabase(database);
     const deletionCases = yield* DeletionCasePostgres.make.pipe(Effect.provide(databaseLayer));
     const userSuspensions = yield* UserSuspensionPostgres.make.pipe(Effect.provide(databaseLayer));
+    const authSessionStore = yield* AuthSessionAdapter.make.pipe(Effect.provide(databaseLayer));
+    const authSessions = yield* AuthSession.make.pipe(
+      Effect.provideService(AuthSession.Store, authSessionStore),
+    );
 
     return (currentUser: CurrentUserValue, operation: BillingOperation) =>
       Effect.gen(function* () {
@@ -30,6 +36,8 @@ export const make = (
         const authSessionId = yield* Schema.decodeEffect(AuthSessionId)(currentUser.authSessionId);
         const now = yield* environment.now;
         const allowancePeriodId = yield* environment.allowancePeriodId;
+        const authSession = yield* authSessions.inspect(userId, authSessionId);
+        if (authSession._tag === "RevokedAuthSession") return false;
         const freePeriodEnd = DateTime.toDateUtc(
           DateTime.add(DateTime.fromDateUnsafe(now), { days: 30 }),
         );
@@ -43,7 +51,7 @@ export const make = (
         ]);
         return admit(
           {
-            authSessionExpiresAt: currentUser.authSessionExpiresAt,
+            authSessionExpiresAt: authSession.expiresAt,
             authSessionId,
             deletionAccess,
             ...subscription,

@@ -178,6 +178,7 @@ export const decideStripeTransition = (
     snapshot.payment._tag === "Paid" &&
     snapshot.period !== null &&
     snapshot.period.startsAt < snapshot.period.endsAt &&
+    snapshot.period.startsAt <= confirmedAt &&
     confirmedAt < snapshot.period.endsAt;
   if (paidActive) {
     const startsPaidPeriod =

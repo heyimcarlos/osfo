@@ -35,6 +35,7 @@ export const replay = (
         if (transition._tag === "ProcessedDuplicate") return transition;
         return {
           _tag: "Pending",
+          attempt: transition.attempt,
           event: {
             billingCheckoutSessionId:
               stored.billingCheckoutSessionId === null

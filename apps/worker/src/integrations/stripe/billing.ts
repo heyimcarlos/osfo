@@ -12,6 +12,8 @@ import {
   StripePriceId,
   StripeProductId,
   StripeSubscriptionId,
+  StripeWebhookEventId,
+  StripeWebhookObjectId,
   UserId,
 } from "../../domain";
 import {
@@ -27,6 +29,7 @@ import {
   InvalidStripeSignature,
   PermanentStripeWebhookFailure,
   type StripeGateway as StripeWebhookGateway,
+  type StripeWebhookTransport,
   type VerifiedStripeEvent,
 } from "../../services/stripe-webhooks";
 
@@ -54,14 +57,14 @@ const RawSubscription = Schema.Struct({
   metadata: Schema.Record(Schema.String, Schema.String),
   status: Schema.String,
 });
-const VerifiedEvent = Schema.Struct({
+const VerifiedEventEnvelope = Schema.Struct({
   data: Schema.Struct({
     object: Schema.Struct({
-      client_reference_id: Schema.optionalKey(Schema.NullOr(BillingCheckoutSessionId)),
-      id: Schema.String,
+      client_reference_id: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      id: StripeWebhookObjectId,
     }),
   }),
-  id: Schema.String,
+  id: StripeWebhookEventId,
   type: Schema.String,
 });
 const CheckoutLocator = Schema.Struct({ subscription: Schema.NullOr(StripeReference) });
@@ -216,7 +219,7 @@ export const parseSubscriptionSnapshot = (
 /** Construct the explicit Stripe SDK adapter used by billing and webhook services. */
 export const make = (
   options: MakeOptions,
-): StripeBillingGateway & StripeWebhookGateway & ReconciliationGateway => {
+): StripeBillingGateway & StripeWebhookGateway & StripeWebhookTransport & ReconciliationGateway => {
   const fetchSubscription: ReconciliationGateway["fetchSubscription"] = (subscriptionId) =>
     Effect.gen(function* () {
       const subscription = yield* tryStripe("retrieveSubscription", () =>
@@ -385,16 +388,61 @@ export const make = (
           ),
         catch: () => new InvalidStripeSignature({ message: "Invalid Stripe signature" }),
       }).pipe(
-        Effect.flatMap((event) => Schema.decodeUnknownEffect(VerifiedEvent)(event)),
+        Effect.flatMap((rawEvent) =>
+          Schema.decodeUnknownEffect(VerifiedEventEnvelope)(rawEvent).pipe(
+            Effect.mapError(() => new InvalidStripeSignature({ message: "Invalid Stripe signature" })),
+          ),
+        ),
+        Effect.flatMap((event): Effect.Effect<VerifiedStripeEvent> =>
+          event.type.startsWith("checkout.session.") && event.data.object.client_reference_id !== null && event.data.object.client_reference_id !== undefined
+            ? Schema.decodeEffect(BillingCheckoutSessionId)(event.data.object.client_reference_id).pipe(
+                Effect.map((billingCheckoutSessionId) => ({
+                  billingCheckoutSessionId,
+                  externalEventId: event.id,
+                  externalObjectId: event.data.object.id,
+                  type: event.type,
+                })),
+                Effect.catch(() =>
+                  Effect.succeed({
+                    billingCheckoutSessionId: null,
+                    decodeErrorCode: "invalid_stripe_event" as const,
+                    externalEventId: event.id,
+                    externalObjectId: event.data.object.id,
+                    type: event.type,
+                  }),
+                ),
+              )
+            : Effect.succeed({
+                billingCheckoutSessionId: null,
+                externalEventId: event.id,
+                externalObjectId: event.data.object.id,
+                type: event.type,
+              }),
+        ),
+        Effect.mapError(() => new InvalidStripeSignature({ message: "Invalid Stripe signature" })),
+      ),
+    verifyWebhook: (rawBody, signature) =>
+      Effect.tryPromise({
+        try: () =>
+          options.client.webhooks.constructEventAsync(
+            rawBody,
+            signature,
+            Redacted.value(options.webhookSecret),
+          ),
+        catch: () => new InvalidStripeSignature({ message: "Invalid Stripe signature" }),
+      }).pipe(
+        Effect.flatMap((rawEvent) =>
+          Schema.decodeUnknownEffect(VerifiedEventEnvelope)(rawEvent).pipe(
+            Effect.mapError(() => new InvalidStripeSignature({ message: "Invalid Stripe signature" })),
+          ),
+        ),
         Effect.map((event) => ({
-          billingCheckoutSessionId: event.type.startsWith("checkout.session.")
-            ? (event.data.object.client_reference_id ?? null)
-            : null,
+          billingCheckoutSessionId: null,
           externalEventId: event.id,
           externalObjectId: event.data.object.id,
           type: event.type,
         })),
-        Effect.mapError(() => new InvalidStripeSignature({ message: "Invalid Stripe event" })),
+        Effect.mapError(() => new InvalidStripeSignature({ message: "Invalid Stripe signature" })),
       ),
   };
 };

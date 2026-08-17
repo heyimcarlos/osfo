@@ -207,9 +207,11 @@ export interface MakeOptions {
 export interface Interface {
   readonly openPortal: (
     userId: UserId,
+    authorize?: Effect.Effect<void, BillingPersistenceUnavailable>,
   ) => Effect.Effect<URL, BillingPersistenceUnavailable | StripeRequestFailed>;
   readonly startCheckout: (
     userId: UserId,
+    authorize?: Effect.Effect<void, BillingPersistenceUnavailable>,
   ) => Effect.Effect<
     { readonly billingCheckoutSessionId: BillingCheckoutSessionId; readonly url: URL },
     BillingPersistenceUnavailable | CheckoutIneligible | StripeRequestFailed
@@ -218,7 +220,7 @@ export interface Interface {
 
 /** Construct explicit Stripe billing operations from application-owned ports. */
 export const make = (options: MakeOptions): Interface => {
-  const ensureCustomer = (userId: UserId) =>
+  const ensureCustomer = (userId: UserId, authorize: Effect.Effect<void, BillingPersistenceUnavailable>) =>
     Effect.gen(function* () {
       const candidateId = yield* options.ids.customer;
       const local = yield* options.persistence.prepareCustomer(userId, candidateId);
@@ -228,6 +230,7 @@ export const make = (options: MakeOptions): Interface => {
           stripeCustomerId: local.stripeCustomerId,
         };
       }
+      yield* authorize;
       const stripeCustomerId = yield* options.stripe.createCustomer({
         idempotencyKey: local.billingCustomerId,
         metadata: { billingCustomerId: local.billingCustomerId, userId },
@@ -242,6 +245,7 @@ export const make = (options: MakeOptions): Interface => {
       readonly billingCustomerId: BillingCustomerId;
       readonly stripeCustomerId: StripeCustomerId;
     },
+    authorize: Effect.Effect<void, BillingPersistenceUnavailable>,
     attempt = 1,
   ): ReturnType<Interface["startCheckout"]> =>
     Effect.gen(function* () {
@@ -266,10 +270,11 @@ export const make = (options: MakeOptions): Interface => {
           });
         }
         yield* options.waitForCheckoutClaim;
-        return yield* createCheckout(userId, customer, attempt + 1);
+        return yield* createCheckout(userId, customer, authorize, attempt + 1);
       }
 
       if (checkout.stripeCheckoutSessionId !== null && checkout.state === "open") {
+        yield* authorize;
         const existing = yield* options.stripe.retrieveCheckout(checkout.stripeCheckoutSessionId);
         if (existing.state === "open" && existing.url !== null) {
           return {
@@ -283,7 +288,7 @@ export const make = (options: MakeOptions): Interface => {
             state: existing.state,
             stripeSubscriptionId: existing.stripeSubscriptionId,
           });
-          if (existing.state === "expired") return yield* createCheckout(userId, customer);
+          if (existing.state === "expired") return yield* createCheckout(userId, customer, authorize);
           return yield* new StripeRequestFailed({
             kind: "permanent",
             message: "The existing Stripe Checkout Session is already complete",
@@ -292,6 +297,7 @@ export const make = (options: MakeOptions): Interface => {
         }
       }
 
+      yield* authorize;
       const created = yield* options.stripe
         .createCheckout({
           cancelUrl: options.urls.cancel,
@@ -318,24 +324,25 @@ export const make = (options: MakeOptions): Interface => {
     });
 
   return {
-    openPortal: (userId) =>
+    openPortal: (userId, authorize = Effect.void) =>
       Effect.gen(function* () {
-        const customer = yield* ensureCustomer(userId);
+        const customer = yield* ensureCustomer(userId, authorize);
+        yield* authorize;
         return yield* options.stripe.createPortal({
           configurationId: options.portal.configurationId,
           customerId: customer.stripeCustomerId,
           returnUrl: options.portal.returnUrl,
         });
       }),
-    startCheckout: (userId) =>
+    startCheckout: (userId, authorize = Effect.void) =>
       Effect.gen(function* () {
         const now = yield* options.now;
         const eligibility = yield* options.persistence.inspectCheckoutEligibility(userId, now);
         if (eligibility._tag === "Ineligible") {
           return yield* new CheckoutIneligible({ reason: eligibility.reason });
         }
-        const customer = yield* ensureCustomer(userId);
-        return yield* createCheckout(userId, customer);
+        const customer = yield* ensureCustomer(userId, authorize);
+        return yield* createCheckout(userId, customer, authorize);
       }),
   };
 };

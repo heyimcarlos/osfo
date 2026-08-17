@@ -24,6 +24,7 @@ import type { RuntimeConfig } from "../env";
 import type { BillingOperation } from "../services/billing-authorization";
 import { reconcileBillingReturn } from "../services/billing-return";
 import { StripeStateUnavailable } from "../services/billing-subscriptions";
+import { BillingPersistenceUnavailable } from "../services/stripe-billing";
 
 /* oxlint-disable effecttsgo/crypto-random-uuid-in-effect -- The HTTP composition boundary supplies secure persisted identities. */
 
@@ -52,8 +53,22 @@ export const layer = (config: RuntimeConfig) =>
             Effect.gen(function* () {
               const currentUser = yield* CurrentUser;
               yield* requireBillingAuthorization(authorize, currentUser, "subscription.manage");
+              const authorizeExternalEffect = requireBillingAuthorization(
+                authorize,
+                currentUser,
+                "subscription.manage",
+              ).pipe(
+                Effect.mapError(
+                  () =>
+                    new BillingPersistenceUnavailable({
+                      cause: { userId: currentUser.userId },
+                      message: "The current billing authorization is unavailable",
+                      operation: "authorizeCheckout",
+                    }),
+                ),
+              );
               const checkout = yield* services.stripeBilling
-                .startCheckout(UserId.make(currentUser.userId))
+                .startCheckout(UserId.make(currentUser.userId), authorizeExternalEffect)
                 .pipe(Effect.mapError(toBillingUnavailable));
               return { url: checkout.url };
             }),
@@ -62,8 +77,22 @@ export const layer = (config: RuntimeConfig) =>
             Effect.gen(function* () {
               const currentUser = yield* CurrentUser;
               yield* requireBillingAuthorization(authorize, currentUser, "subscription.manage");
+              const authorizeExternalEffect = requireBillingAuthorization(
+                authorize,
+                currentUser,
+                "subscription.manage",
+              ).pipe(
+                Effect.mapError(
+                  () =>
+                    new BillingPersistenceUnavailable({
+                      cause: { userId: currentUser.userId },
+                      message: "The current billing authorization is unavailable",
+                      operation: "authorizePortal",
+                    }),
+                ),
+              );
               const url = yield* services.stripeBilling
-                .openPortal(UserId.make(currentUser.userId))
+                .openPortal(UserId.make(currentUser.userId), authorizeExternalEffect)
                 .pipe(Effect.mapError(toBillingUnavailable));
               return { url };
             }),

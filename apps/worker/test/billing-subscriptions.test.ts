@@ -42,13 +42,16 @@ const paidSnapshot = BillingSubscriptions.StripeSubscriptionSnapshot.make({
 
 const confirmedAt = new Date("2026-08-16T12:30:00.000Z");
 
-const makeService = (persistence: BillingSubscriptions.Persistence) => {
+const makeService = (
+  persistence: BillingSubscriptions.Persistence,
+  now: Effect.Effect<Date> = Effect.succeed(confirmedAt),
+) => {
   let identity = 0;
   return BillingSubscriptions.make(persistence, {
     allowancePeriodId: Effect.sync(() =>
       AllowancePeriodId.make(`allowance-period-generated-${identity++}`),
     ),
-    now: Effect.succeed(confirmedAt),
+    now,
   });
 };
 
@@ -94,6 +97,31 @@ describe("BillingSubscriptions", () => {
         shortenActivePeriod: { allowancePeriodId: activePeriodId, endsAt: confirmedAt },
       },
       result: { _tag: "AccessEnded" },
+    });
+  });
+
+  it("does not grant paid access before Stripe's confirmed period starts", () => {
+    const decision = BillingSubscriptions.decideStripeTransition(
+      {
+        plan: "free",
+        stripeCurrentPeriodEnd: null,
+        stripeLatestInvoiceId: null,
+      },
+      null,
+      BillingSubscriptions.StripeSubscriptionSnapshot.make({
+        ...paidSnapshot,
+        period: {
+          endsAt: periodEnd,
+          startsAt: new Date("2026-08-16T13:00:00.000Z"),
+        },
+      }),
+      confirmedAt,
+      new Date("2026-09-15T12:30:00.000Z"),
+    );
+
+    expect(decision).toMatchObject({
+      _tag: "Observe",
+      result: { _tag: "Unchanged" },
     });
   });
 
@@ -146,7 +174,8 @@ describe("BillingSubscriptions", () => {
             }),
           );
           const billing = Billing.make(fixture.database);
-          const service = makeService(billing);
+          let currentTime = confirmedAt;
+          const service = makeService(billing, Effect.sync(() => currentTime));
 
           const result = yield* applyCurrent(
             service,
@@ -185,6 +214,7 @@ describe("BillingSubscriptions", () => {
           });
 
           const renewalEnd = new Date("2026-10-16T12:00:00.000Z");
+          currentTime = periodEnd;
           const renewal = BillingSubscriptions.StripeSubscriptionSnapshot.make({
             ...paidSnapshot,
             payment: {

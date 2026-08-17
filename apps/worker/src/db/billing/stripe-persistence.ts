@@ -211,7 +211,13 @@ export const makeStripePersistence = (database: Database): Persistence => ({
           stripeCheckoutSessionId: session.stripeCheckoutSessionId,
           updatedAt: sql`clock_timestamp()`,
         })
-        .where(eq(billingCheckoutSessions.billingCheckoutSessionId, billingCheckoutSessionId))
+        .where(
+          and(
+            eq(billingCheckoutSessions.billingCheckoutSessionId, billingCheckoutSessionId),
+            eq(billingCheckoutSessions.state, "creating"),
+            sql`${billingCheckoutSessions.stripeCheckoutSessionId} is null`,
+          ),
+        )
         .then(() => undefined),
     ),
   storeRetrievedCheckout: (billingCheckoutSessionId, session) =>

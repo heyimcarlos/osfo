@@ -126,6 +126,28 @@ export const StripeCheckoutSessionId = Schema.String.check(
 /** Verified Stripe Checkout Session identity. */
 export type StripeCheckoutSessionId = typeof StripeCheckoutSessionId.Type;
 
+/** Stripe-assigned identity for one signature-verified webhook Event. */
+export const StripeWebhookEventId = Schema.String.check(
+  Schema.makeFilter((value) => /^evt_[A-Za-z0-9]+$/u.test(value) || "must be a Stripe Event ID"),
+).pipe(Schema.brand("StripeWebhookEventId"));
+
+/** Stripe-assigned identity for one signature-verified webhook Event. */
+export type StripeWebhookEventId = typeof StripeWebhookEventId.Type;
+
+/** Stripe-owned object identity carried by one signature-verified webhook Event. */
+export const StripeWebhookObjectId = Schema.String.check(
+  Schema.makeFilter((value) => value.length > 0 || "must not be empty"),
+).pipe(Schema.brand("StripeWebhookObjectId"));
+
+/** Stripe-owned object identity carried by one signature-verified webhook Event. */
+export type StripeWebhookObjectId = typeof StripeWebhookObjectId.Type;
+
+/** Osfo-local durable identity for one retained Stripe webhook record. */
+export const StripeWebhookRecordId = Schema.String.pipe(Schema.brand("StripeWebhookRecordId"));
+
+/** Osfo-local durable identity for one retained Stripe webhook record. */
+export type StripeWebhookRecordId = typeof StripeWebhookRecordId.Type;
+
 /** Verified Stripe Customer Portal configuration identity. */
 export const StripePortalConfigurationId = Schema.String.check(
   Schema.makeFilter(

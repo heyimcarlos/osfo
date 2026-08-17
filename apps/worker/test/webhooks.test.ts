@@ -60,10 +60,11 @@ describe("Webhook persistence", () => {
               .where(eq(webhookEvents.webhookEventId, "webhook-local-1")),
           );
 
-          expect(first).toEqual({ _tag: "Pending", webhookEventId: "webhook-local-1" });
-          expect(redelivery).toEqual({ _tag: "Pending", webhookEventId: "webhook-local-1" });
+          expect(first).toEqual({ _tag: "Pending", attempt: 1, webhookEventId: "webhook-local-1" });
+          expect(redelivery).toEqual({ _tag: "Pending", attempt: 2, webhookEventId: "webhook-local-1" });
           expect(replayed).toEqual({
             _tag: "Pending",
+            attempt: 3,
             event: { provider: "stripe", ...event },
             webhookEventId: "webhook-local-1",
           });
@@ -140,6 +141,7 @@ describe("Webhook persistence", () => {
 
           expect(receipt).toEqual({
             _tag: "Pending",
+            attempt: 1,
             webhookEventId: "webhook-checkout-failed",
           });
           expect(checkout).toMatchObject({

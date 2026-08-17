@@ -20,9 +20,13 @@ export interface Interface extends Persistence {
 /** Construct provider-neutral webhook persistence. */
 export const make = (options: MakeOptions): Interface => ({
   fail: (webhookEventId, errorCode, checkoutEvidence) =>
-    fail(options.database, webhookEventId, errorCode, checkoutEvidence),
+    fail(options.database, webhookEventId, 0, errorCode, checkoutEvidence),
+  failClaimed: (webhookEventId, attempt, errorCode, checkoutEvidence) =>
+    fail(options.database, webhookEventId, attempt, errorCode, checkoutEvidence),
   markProcessed: (webhookEventId, checkoutEvidence) =>
-    markProcessed(options.database, webhookEventId, checkoutEvidence),
+    markProcessed(options.database, webhookEventId, 0, checkoutEvidence),
+  markProcessedClaimed: (webhookEventId, attempt, checkoutEvidence) =>
+    markProcessed(options.database, webhookEventId, attempt, checkoutEvidence),
   receive: (event) =>
     options.webhookEventId.pipe(
       Effect.flatMap((webhookEventId) => receive(options.database, webhookEventId, event)),

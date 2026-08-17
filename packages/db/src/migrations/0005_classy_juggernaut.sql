@@ -70,10 +70,32 @@ ALTER TABLE "billing_subscriptions" ADD CONSTRAINT "billing_subscriptions_pendin
 ALTER TABLE "billing_subscriptions" ADD CONSTRAINT "billing_subscriptions_stripe_identity_check" CHECK (("billing_subscriptions"."stripe_subscription_id" is null and "billing_subscriptions"."stripe_product_id" is null and "billing_subscriptions"."stripe_price_id" is null and "billing_subscriptions"."stripe_status" is null and "billing_subscriptions"."stripe_current_period_start" is null and "billing_subscriptions"."stripe_current_period_end" is null) or ("billing_subscriptions"."stripe_subscription_id" is not null and "billing_subscriptions"."stripe_product_id" is not null and "billing_subscriptions"."stripe_price_id" is not null and "billing_subscriptions"."stripe_status" is not null));--> statement-breakpoint
 ALTER TABLE "billing_subscriptions" ADD CONSTRAINT "billing_subscriptions_stripe_period_pair_check" CHECK (("billing_subscriptions"."stripe_current_period_start" is null) = ("billing_subscriptions"."stripe_current_period_end" is null));--> statement-breakpoint
 ALTER TABLE "billing_subscriptions" ADD CONSTRAINT "billing_subscriptions_stripe_period_bounds_check" CHECK ("billing_subscriptions"."stripe_current_period_start" is null or "billing_subscriptions"."stripe_current_period_start" < "billing_subscriptions"."stripe_current_period_end");--> statement-breakpoint
-UPDATE "allowance_periods" AS "period"
-SET "plan" = 'free'
+INSERT INTO "allowance_periods" (
+  "allowance_period_id", "billing_subscription_id", "ends_at", "plan", "plan_policy_version", "starts_at", "user_id"
+)
+SELECT
+  "period"."allowance_period_id" || ':free-cutover',
+  "period"."billing_subscription_id",
+  "period"."ends_at",
+  'free',
+  "period"."plan_policy_version",
+  transaction_timestamp(),
+  "period"."user_id"
+FROM "allowance_periods" AS "period"
 WHERE "period"."plan" = 'adventurer'
-  AND "period"."ends_at" > clock_timestamp()
+  AND "period"."starts_at" < transaction_timestamp()
+  AND transaction_timestamp() < "period"."ends_at"
+  AND EXISTS (
+    SELECT 1
+    FROM "billing_subscriptions" AS "subscription"
+    WHERE "subscription"."billing_subscription_id" = "period"."billing_subscription_id"
+      AND "subscription"."plan" = 'adventurer'
+  );--> statement-breakpoint
+UPDATE "allowance_periods" AS "period"
+SET "ends_at" = transaction_timestamp()
+WHERE "period"."plan" = 'adventurer'
+  AND "period"."starts_at" < transaction_timestamp()
+  AND transaction_timestamp() < "period"."ends_at"
   AND EXISTS (
     SELECT 1
     FROM "billing_subscriptions" AS "subscription"

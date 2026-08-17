@@ -219,7 +219,7 @@ describe("Postgres migrations", () => {
               SELECT
                 s.plan,
                 s.billing_customer_id,
-                p.plan AS allowance_plan,
+                array_agg(p.plan ORDER BY p.starts_at) AS allowance_plans,
                 t.state AS telegram_state
               FROM billing_subscriptions s
               JOIN allowance_periods p
@@ -227,6 +227,7 @@ describe("Postgres migrations", () => {
               CROSS JOIN telegram_onboarding_deliveries t
               WHERE s.billing_subscription_id = 'subscription-stripe-upgrade'
                 AND t.event_id = 'telegram-stripe-upgrade'
+              GROUP BY s.plan, s.billing_customer_id, t.state
             `),
           );
           const applied0005 = yield* Effect.promise(() =>
@@ -239,7 +240,7 @@ describe("Postgres migrations", () => {
 
           expect(preserved.rows).toEqual([
             {
-              allowance_plan: "free",
+              allowance_plans: ["adventurer", "free"],
               billing_customer_id: "customer-stripe-upgrade",
               plan: "free",
               telegram_state: "prepared",

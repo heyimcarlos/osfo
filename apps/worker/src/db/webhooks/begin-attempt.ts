@@ -14,7 +14,7 @@ export const beginAttempt = async (
   status: "failed" | "pending" | "processed",
 ) => {
   if (status === "processed") return { _tag: "ProcessedDuplicate" } as const;
-  await transaction
+  const [updated] = await transaction
     .update(webhookEvents)
     .set({
       attempts: sql`${webhookEvents.attempts} + 1`,
@@ -22,6 +22,9 @@ export const beginAttempt = async (
       status: "pending",
       updatedAt: sql`clock_timestamp()`,
     })
-    .where(eq(webhookEvents.webhookEventId, webhookEventId));
-  return { _tag: "Pending", webhookEventId } as const;
+    .where(eq(webhookEvents.webhookEventId, webhookEventId))
+    .returning({ attempts: webhookEvents.attempts });
+  return updated === undefined
+    ? ({ _tag: "ProcessedDuplicate" } as const)
+    : ({ _tag: "Pending", attempt: updated.attempts, webhookEventId } as const);
 };

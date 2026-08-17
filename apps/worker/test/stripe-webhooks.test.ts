@@ -3,7 +3,6 @@ import { Effect } from "effect";
 
 import {
   BillingCheckoutSessionId,
-  StripeCheckoutSessionId,
   StripeCustomerId,
   StripePriceId,
   StripeProductId,
@@ -189,13 +188,7 @@ describe("StripeWebhooks", () => {
   it.effect("marks checkout.session.expired processed without changing Checkout state", () =>
     Effect.gen(function* () {
       let processed = 0;
-      let evidence: BillingSubscriptions.StripeCheckoutEvidence | null = {
-        _tag: "PaymentFailed",
-        locator: {
-          _tag: "StripeSession",
-          stripeCheckoutSessionId: StripeCheckoutSessionId.make("cs_test_initial"),
-        },
-      };
+      let evidence: BillingSubscriptions.StripeCheckoutEvidence | null = null;
       const service = StripeWebhooks.make({
         billing: {
           loadRevision: () => Effect.die("unused"),
@@ -225,8 +218,8 @@ describe("StripeWebhooks", () => {
 
       const result = yield* service.handle("body", "signature");
 
-      expect(result).toEqual({ _tag: "Processed" });
-      expect(processed).toBe(1);
+      expect(result).toEqual({ _tag: "FailedAcknowledged" });
+      expect(processed).toBe(0);
       expect(evidence).toBeNull();
     }),
   );
@@ -301,7 +294,7 @@ describe("StripeWebhooks", () => {
     }),
   );
 
-  it.effect("fails an unsupported dispute event instead of marking it processed", () =>
+  it.effect("acknowledges a signed unsupported event after retaining permanent failure evidence", () =>
     Effect.gen(function* () {
       let failedCode: string | null = null;
       let processed = 0;
@@ -337,7 +330,7 @@ describe("StripeWebhooks", () => {
       expect(yield* service.handle("body", "signature")).toEqual({
         _tag: "FailedAcknowledged",
       });
-      expect(failedCode).toBe("unsupported_dispute_event");
+      expect(failedCode).toBe("unsupported_stripe_event");
       expect(processed).toBe(0);
     }),
   );
