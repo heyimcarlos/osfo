@@ -7,7 +7,12 @@ import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/t
 import { Cause, Data, DateTime, Effect, Exit, Schema } from "effect";
 
 import * as Billing from "../src/db/billing";
-import { AllowancePeriodId, BillingSubscriptionId, UserId } from "../src/domain";
+import {
+  AcceptanceReceiptId,
+  AllowancePeriodId,
+  BillingSubscriptionId,
+  UserId,
+} from "../src/domain";
 import { retainedCatalog } from "../src/domain/plan-policy";
 import * as Allowances from "../src/services/allowances";
 import { AuthorizationContext, make as makeAuthorization } from "../src/services/authorization";
@@ -62,8 +67,9 @@ describe("Allowances", () => {
         Effect.gen(function* () {
           yield* applyMigrations(fixture.client);
           const seeded = yield* seedPeriod(fixture.database, "idempotency", "free");
+          const billing = Billing.make(fixture.database);
           const allowances = Allowances.make({
-            billing: Billing.make(fixture.database),
+            billing,
             catalog: retainedCatalog,
             now: Effect.succeed(seeded.now),
           });
@@ -79,6 +85,12 @@ describe("Allowances", () => {
           const conflict = yield* allowances
             .record(seeded.allowancePeriodId, source, [{ ...item, quantity: 2n }])
             .pipe(Effect.flip);
+          const qualificationEvidence = yield* billing.readQualificationAcceptanceEvidence([
+            {
+              acceptanceReceiptId: AcceptanceReceiptId.make(source.sourceId),
+              allowancePeriodId: seeded.allowancePeriodId,
+            },
+          ]);
 
           expect(first).toEqual({ _tag: "Recorded" });
           expect(repeated).toEqual({ _tag: "ExistingUsage" });
@@ -87,6 +99,15 @@ describe("Allowances", () => {
             allowanceKind: "acceptedMessages",
             allowancePeriodId: seeded.allowancePeriodId,
           });
+          expect(qualificationEvidence).toEqual([
+            expect.objectContaining({
+              acceptanceReceiptId: source.sourceId,
+              allowanceConsumptionId: `${seeded.allowancePeriodId}:acceptedMessages:acceptanceReceipt:${source.sourceId}`,
+              authority: "allowance_usage",
+              productFactId: `${seeded.allowancePeriodId}:acceptedMessages:acceptanceReceipt:${source.sourceId}`,
+              store: "PostgreSQL",
+            }),
+          ]);
         }),
       closeTestDatabase,
     ),

@@ -116,6 +116,7 @@ export type AllowanceInspection = typeof AllowanceInspection.Type;
 export const BillingDatabaseOperation = Schema.Literals([
   "admitAllowance",
   "inspectAllowances",
+  "readQualificationAcceptanceEvidence",
   "recordUsage",
   "loadBillingSubscription",
   "applyStripeSnapshot",

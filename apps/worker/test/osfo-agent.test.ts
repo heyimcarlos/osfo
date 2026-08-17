@@ -634,7 +634,11 @@ describe("Osfo Agent and Think Session foundation", () => {
             ...input,
             userMessageId: "message-whatsapp-conflict",
           });
-          return { conflict, first, repeated };
+          const store = makeAgentStore(makeAgentDb(state.storage));
+          const qualificationEvidence = await Effect.runPromise(
+            store.readQualificationAcceptanceEvidence(UserMessageId.make(input.userMessageId)),
+          );
+          return { conflict, first, qualificationEvidence, repeated };
         }),
       );
 
@@ -654,6 +658,14 @@ describe("Osfo Agent and Think Session foundation", () => {
         _tag: "AcceptanceReceiptConflict",
         existingUserMessageId: "message-whatsapp-acceptance",
         userMessageId: "message-whatsapp-conflict",
+      });
+      expect(results.qualificationEvidence).toMatchObject({
+        acceptanceReceiptId: "receipt-whatsapp-acceptance",
+        authority: "osfo_acceptance_receipts",
+        productFactId: "receipt-whatsapp-acceptance",
+        rootId: "message-whatsapp-acceptance",
+        store: "AgentSQLite",
+        thinkSubmissionId: "submission-whatsapp-acceptance",
       });
     }),
   );

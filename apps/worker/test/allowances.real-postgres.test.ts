@@ -5,7 +5,12 @@ import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { DateTime, Effect, Schema } from "effect";
 
 import * as Billing from "../src/db/billing";
-import { AllowancePeriodId, BillingSubscriptionId, UserId } from "../src/domain";
+import {
+  AcceptanceReceiptId,
+  AllowancePeriodId,
+  BillingSubscriptionId,
+  UserId,
+} from "../src/domain";
 import { retainedCatalog } from "../src/domain/plan-policy";
 import * as Allowances from "../src/services/allowances";
 import { AuthorizationContext, make as makeAuthorization } from "../src/services/authorization";
@@ -89,6 +94,16 @@ describe("Allowances with real PostgreSQL", () => {
           { concurrency: "unbounded" },
         );
         const after = yield* billing.admit(userId, now);
+        const qualificationEvidence = yield* billing.readQualificationAcceptanceEvidence([
+          {
+            acceptanceReceiptId: AcceptanceReceiptId.make("acceptance-30"),
+            allowancePeriodId,
+          },
+          {
+            acceptanceReceiptId: AcceptanceReceiptId.make("acceptance-31"),
+            allowancePeriodId,
+          },
+        ]);
         const rows = yield* Effect.tryPromise({
           try: () => database.select().from(allowanceUsage),
           catch: () =>
@@ -99,6 +114,24 @@ describe("Allowances with real PostgreSQL", () => {
 
         expect(completed).toEqual([{ _tag: "Recorded" }, { _tag: "Recorded" }]);
         expect(rows).toHaveLength(3);
+        expect(qualificationEvidence).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              acceptanceReceiptId: "acceptance-30",
+              allowanceConsumptionId: `${allowancePeriodId}:acceptedMessages:acceptanceReceipt:acceptance-30`,
+              authority: "allowance_usage",
+              productFactId: `${allowancePeriodId}:acceptedMessages:acceptanceReceipt:acceptance-30`,
+              store: "PostgreSQL",
+            }),
+            expect.objectContaining({
+              acceptanceReceiptId: "acceptance-31",
+              allowanceConsumptionId: `${allowancePeriodId}:acceptedMessages:acceptanceReceipt:acceptance-31`,
+              authority: "allowance_usage",
+              productFactId: `${allowancePeriodId}:acceptedMessages:acceptanceReceipt:acceptance-31`,
+              store: "PostgreSQL",
+            }),
+          ]),
+        );
         expect(after.usage).toContainEqual({ allowanceKind: "acceptedMessages", quantity: 31n });
         expect(authorization.admit(authorizationContext(after, now), operation)).toMatchObject({
           _tag: "Denied",

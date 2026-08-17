@@ -21,7 +21,9 @@ import {
   SessionId,
   ThinkRequestId,
   type ThinkRequestId as ThinkRequestIdType,
+  type UserMessageId,
 } from "../../../domain";
+import type { AgentSqliteProductEvidence } from "../../../qualification/semantic-evidence";
 import {
   AcceptanceReceipt,
   type AcceptanceReceiptInput,
@@ -271,6 +273,33 @@ const SessionRecallCursorStateRecord = Schema.Struct({
 type SessionRecallCursorStateRecord = typeof SessionRecallCursorStateRecord.Type;
 /** Construct deep Agent-local persistence operations over a typed Durable SQLite client. */
 export const makeAgentStore = (db: AgentDb) => {
+  const readQualificationAcceptanceEvidence = (rootId: UserMessageId) =>
+    execute("readAcceptanceReceipt", () =>
+      db
+        .select(acceptanceReceiptFields)
+        .from(acceptanceReceipts)
+        .where(eq(acceptanceReceipts.userMessageId, rootId))
+        .limit(1)
+        .get(),
+    ).pipe(
+      Effect.flatMap((row) =>
+        row === undefined
+          ? Effect.succeed(null)
+          : decodeAcceptanceReceipt("readAcceptanceReceipt", row).pipe(
+              Effect.map((receipt): AgentSqliteProductEvidence => ({
+                acceptanceReceiptId: receipt.receiptId,
+                authority: "osfo_acceptance_receipts",
+                evidenceId: `agent-sqlite:${receipt.receiptId}`,
+                occurredAt: receipt.acceptedAt,
+                productFactId: receipt.receiptId,
+                rootId: receipt.userMessageId,
+                store: "AgentSQLite",
+                thinkSubmissionId: receipt.thinkSubmissionId,
+              })),
+            ),
+      ),
+    );
+
   const readAcceptanceReceipt = (
     channelBindingId: ChannelBindingId,
     providerMessageId: ProviderMessageId,
@@ -968,6 +997,7 @@ export const makeAgentStore = (db: AgentDb) => {
     });
 
   return {
+    readQualificationAcceptanceEvidence,
     readAcceptanceReceipt,
     readSessionCommandReceipt,
     recordAcceptanceReceipt,
