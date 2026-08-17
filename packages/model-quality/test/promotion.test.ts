@@ -2,11 +2,18 @@ import { describe, expect, it } from "@effect/vitest";
 
 import { initialCorpusManifest } from "../src/corpus";
 import { assessCanary } from "../src/promotion";
+import { passingCurrentReleaseEvidence, passingReleasePass } from "./evidence-fixture";
+
+const releaseEvidence = {
+  currentEvidence: passingCurrentReleaseEvidence,
+  releasePass: passingReleasePass(),
+};
 
 describe("Model Quality canary", () => {
   it("stops promotion and signals rollback after one confirmed critical failure", () => {
     expect(
       assessCanary({
+        ...releaseEvidence,
         cohortId: "cohort-a",
         confirmedCriticalFailures: 1,
         eligibleMessages: 200,
@@ -25,6 +32,7 @@ describe("Model Quality canary", () => {
   it("reports insufficient stage evidence as MISSING", () => {
     expect(
       assessCanary({
+        ...releaseEvidence,
         cohortId: "cohort-a",
         confirmedCriticalFailures: 0,
         eligibleMessages: 199,
@@ -43,6 +51,7 @@ describe("Model Quality canary", () => {
   it("does not enter the 25% stage without a passing 5% stage for the same release", () => {
     expect(
       assessCanary({
+        ...releaseEvidence,
         cohortId: "cohort-b",
         confirmedCriticalFailures: 0,
         eligibleMessages: 500,
@@ -60,6 +69,7 @@ describe("Model Quality canary", () => {
 
   it("pauses after seven days or until a new failure mode has an evaluation case", () => {
     const common = {
+      ...releaseEvidence,
       cohortId: "cohort-a",
       confirmedCriticalFailures: 0,
       eligibleMessages: 199,
@@ -95,6 +105,26 @@ describe("Model Quality canary", () => {
         eligibleMessages: 200,
         evaluationCorpus: initialCorpusManifest,
         failureMode: { caseId: "safety-161", failureModeId: "safety-161", kind: "covered" },
+      }),
+    ).toEqual({ action: "PAUSE", verdict: "MISSING" });
+  });
+
+  it("does not promote without a current verified release PASS", () => {
+    expect(
+      assessCanary({
+        ...releaseEvidence,
+        cohortId: "cohort-a",
+        confirmedCriticalFailures: 0,
+        eligibleMessages: 200,
+        eligiblePercent: 5,
+        eligibleUsers: 25,
+        evaluationCorpus: initialCorpusManifest,
+        failureMode: { kind: "none" },
+        observedHours: 72,
+        priorStage: null,
+        releaseId: "release-1",
+        releasePass: null,
+        stage: "five-percent",
       }),
     ).toEqual({ action: "PAUSE", verdict: "MISSING" });
   });

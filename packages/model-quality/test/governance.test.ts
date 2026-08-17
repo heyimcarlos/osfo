@@ -1,8 +1,50 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { createCorpusVersion, initialCorpusManifest } from "../src/corpus";
+import { createCorpusVersion, initialCorpusManifest, parseCorpusManifest } from "../src/corpus";
+import { digestValue } from "../src/manifest";
 
 describe("Model Quality corpus governance", () => {
+  it("rejects a caller-rehashed manifest that relabels a development fixture as holdout", () => {
+    const developmentCase = initialCorpusManifest.cases.find(
+      (item) => item.split === "development",
+    );
+    if (developmentCase?.split !== "development") throw new Error("Development case required.");
+    const relabelledContents = {
+      ...initialCorpusManifest,
+      cases: [
+        {
+          ...developmentCase,
+          split: "sealed-holdout" as const,
+        },
+        ...initialCorpusManifest.cases.slice(1),
+      ],
+    };
+    const { contentDigest: ignoredDigest, ...unsigned } = relabelledContents;
+    expect(ignoredDigest).toBe(initialCorpusManifest.contentDigest);
+    const relabelled = { ...unsigned, contentDigest: digestValue("corpus", unsigned) };
+    expect(parseCorpusManifest(relabelled, null)).toMatchObject({
+      error: { _tag: "InvalidCorpusManifest" },
+      kind: "error",
+    });
+  });
+
+  it("rejects a caller-rehashed replacement of the product-owned root fixture", () => {
+    const firstCase = initialCorpusManifest.cases[0];
+    if (firstCase?.split !== "development") throw new Error("Development case required.");
+    const unsigned = {
+      ...initialCorpusManifest,
+      cases: [
+        { ...firstCase, fixture: { ...firstCase.fixture, prompt: "caller replacement" } },
+        ...initialCorpusManifest.cases.slice(1),
+      ],
+    };
+    const { contentDigest: ignoredDigest, ...contents } = unsigned;
+    expect(ignoredDigest).toBe(initialCorpusManifest.contentDigest);
+    expect(
+      parseCorpusManifest({ ...contents, contentDigest: digestValue("corpus", contents) }, null),
+    ).toMatchObject({ error: { _tag: "InvalidCorpusManifest" }, kind: "error" });
+  });
+
   it("does not remove a known failing case to make a candidate pass", () => {
     const result = createCorpusVersion({
       cases: initialCorpusManifest.cases.filter((item) => item.id !== "ordinary-001"),
@@ -48,6 +90,27 @@ describe("Model Quality corpus governance", () => {
     expect(
       firstResultCase?.split === "development" && Object.isFrozen(firstResultCase.fixture.thread),
     ).toBe(true);
+  });
+
+  it("accepts a valid successor whose direct predecessor is itself a successor", () => {
+    const second = createCorpusVersion({
+      cases: initialCorpusManifest.cases,
+      createdAt: "2026-08-18T00:00:00.000Z",
+      newlyFailingCaseIds: [],
+      previous: initialCorpusManifest,
+      safetyApprovals: [],
+      version: "model-quality-v2",
+    });
+    if (second.kind === "error") throw new Error(second.error.message);
+    const third = createCorpusVersion({
+      cases: second.value.cases,
+      createdAt: "2026-08-19T00:00:00.000Z",
+      newlyFailingCaseIds: [],
+      previous: second.value,
+      safetyApprovals: [],
+      version: "model-quality-v3",
+    });
+    expect(third.kind).toBe("success");
   });
 
   it("rejects a changed safety case without recorded independent approval", () => {

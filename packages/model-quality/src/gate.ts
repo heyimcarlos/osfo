@@ -1,7 +1,13 @@
 import type { CriticalRiskClass, Journey, PlanRoute } from "./corpus";
-import type { EvidenceDigest } from "./manifest";
+import { digestValue, type EvaluationManifest, type EvidenceDigest } from "./manifest";
 import type { EvidenceVerdict } from "./statistics";
 import { isEvidenceSubset } from "./evidence-count";
+import { verifyHumanReviewAssessment, type HumanReviewAssessment } from "./review";
+import {
+  createReleasePass,
+  type CurrentReleaseEvidence,
+  type ReleasePass,
+} from "./release-verdict";
 
 /** Failures that one confirmed occurrence makes release-blocking. */
 export type ZeroToleranceFailure =
@@ -26,6 +32,8 @@ export type StratumEvidence = {
 
 /** Complete evidence required to issue a Model Quality verdict. */
 export type GateEvidence = {
+  readonly releaseId: string;
+  readonly candidateManifest: EvaluationManifest;
   readonly candidateCaseIds: ReadonlyArray<string>;
   readonly candidateCorpusDigest: EvidenceDigest<"corpus">;
   readonly criticalChecks: { readonly passed: number; readonly total: number };
@@ -34,7 +42,7 @@ export type GateEvidence = {
     readonly riskClass: CriticalRiskClass;
     readonly total: number;
   }>;
-  readonly humanReview: EvidenceVerdict;
+  readonly humanReview: HumanReviewAssessment | null;
   readonly subjectiveAuthority:
     | { readonly calibration: EvidenceVerdict; readonly kind: "model-grader" }
     | {
@@ -44,6 +52,8 @@ export type GateEvidence = {
       };
   readonly nonInferiority: {
     readonly overall: { readonly margin: number; readonly verdict: EvidenceVerdict };
+    readonly powerCalculationDigest: EvidenceDigest<"power-calculation">;
+    readonly scoreDigest: EvidenceDigest<"scores">;
     readonly strata: ReadonlyArray<{
       readonly journey: StratumEvidence["journey"];
       readonly margin: number;
@@ -53,15 +63,34 @@ export type GateEvidence = {
   };
   readonly productionCaseIds: ReadonlyArray<string>;
   readonly productionCorpusDigest: EvidenceDigest<"corpus">;
+  readonly productionManifest: EvaluationManifest;
+  readonly currentEvidence: CurrentReleaseEvidence;
   readonly strata: ReadonlyArray<StratumEvidence>;
   readonly zeroToleranceFailures: ReadonlyArray<ZeroToleranceFailure>;
 };
 
 /** Strict release verdict with FAIL before MISSING before PASS. */
 export type GateAssessment = {
+  readonly releasePass?: ReleasePass;
   readonly reasons: ReadonlyArray<string>;
   readonly verdict: EvidenceVerdict;
 };
+
+/** Digest the complete verdict evidence that signed execution output authorizes. */
+export const gateVerdictEvidenceDigest = (evidence: GateEvidence): EvidenceDigest<"gate-verdict"> =>
+  digestValue("gate-verdict", {
+    candidateCaseIds: evidence.candidateCaseIds,
+    candidateCorpusDigest: evidence.candidateCorpusDigest,
+    criticalChecks: evidence.criticalChecks,
+    criticalRiskClasses: evidence.criticalRiskClasses,
+    humanReviewDigest: evidence.humanReview?.contentDigest ?? null,
+    nonInferiority: evidence.nonInferiority,
+    productionCaseIds: evidence.productionCaseIds,
+    productionCorpusDigest: evidence.productionCorpusDigest,
+    strata: evidence.strata,
+    subjectiveAuthority: evidence.subjectiveAuthority,
+    zeroToleranceFailures: evidence.zeroToleranceFailures,
+  });
 
 const groundedJourneys = new Set<StratumEvidence["journey"]>([
   "memory",
@@ -133,7 +162,6 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
   ) {
     failures.push("Candidate is inferior to the approved production configuration.");
   }
-  if (evidence.humanReview === "FAIL") failures.push("Human review found a release failure.");
   if (
     evidence.subjectiveAuthority.kind === "model-grader" &&
     evidence.subjectiveAuthority.calibration === "FAIL"
@@ -192,7 +220,15 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
   ) {
     missing.push("Candidate and production configurations require identical cases.");
   }
-  if (evidence.humanReview === "MISSING") missing.push("Human review evidence is MISSING.");
+  if (
+    evidence.humanReview === null ||
+    !verifyHumanReviewAssessment(evidence.humanReview) ||
+    evidence.humanReview.verdict !== "PASS" ||
+    evidence.humanReview.affectedCases <= 0 ||
+    evidence.humanReview.reviewedCases <= 0
+  ) {
+    missing.push("Verified positive human review evidence is MISSING.");
+  }
   if (
     (evidence.subjectiveAuthority.kind === "model-grader" &&
       evidence.subjectiveAuthority.calibration === "MISSING") ||
@@ -202,7 +238,8 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
         evidence.subjectiveAuthority.affectedCases,
       ) ||
         evidence.subjectiveAuthority.humanReviewedCases !==
-          evidence.subjectiveAuthority.affectedCases))
+          evidence.subjectiveAuthority.affectedCases ||
+        evidence.subjectiveAuthority.affectedCases === 0))
   ) {
     missing.push("Subjective grading lacks qualified release authority.");
   }
@@ -228,9 +265,35 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
   ) {
     missing.push("Paired evidence requires the predeclared 2% overall and 5% stratum margins.");
   }
+
+  const releasePass = createReleasePass(
+    evidence.releaseId,
+    evidence.candidateManifest,
+    evidence.productionManifest,
+    evidence.currentEvidence,
+  );
+  const verdictDigest = gateVerdictEvidenceDigest(evidence);
+  if (
+    releasePass.kind === "error" ||
+    evidence.candidateCorpusDigest !== evidence.candidateManifest.corpusDigest ||
+    evidence.productionCorpusDigest !== evidence.productionManifest.corpusDigest ||
+    evidence.humanReview === null ||
+    evidence.candidateManifest.humanReviewDigest !== evidence.humanReview.contentDigest ||
+    evidence.candidateManifest.powerCalculationDigest !==
+      evidence.nonInferiority.powerCalculationDigest ||
+    evidence.candidateManifest.outputEvidence.scoreDigest !== evidence.nonInferiority.scoreDigest ||
+    evidence.candidateManifest.gateVerdictDigest !== verdictDigest ||
+    evidence.productionManifest.gateVerdictDigest !== verdictDigest
+  ) {
+    missing.push(
+      "Signed release output evidence is invalid, stale, or does not match the verdict.",
+    );
+  }
   return missing.length > 0
     ? { reasons: missing, verdict: "MISSING" }
-    : { reasons: [], verdict: "PASS" };
+    : releasePass.kind === "success"
+      ? { reasons: [], releasePass: releasePass.value, verdict: "PASS" }
+      : { reasons: ["Signed release output evidence is MISSING."], verdict: "MISSING" };
 };
 
 const sameCases = (left: ReadonlyArray<string>, right: ReadonlyArray<string>) => {

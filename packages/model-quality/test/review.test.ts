@@ -7,6 +7,8 @@ describe("Model Quality human review", () => {
     expect(
       assessHumanReview({
         adjudicatedDisagreements: 0,
+        assessedAt: "2026-08-16T12:00:00.000Z",
+        assessmentId: "human-assessment-1",
         authoredSafetyCases: Array.from({ length: 160 }, (_, index) => ({
           authorId: `author-${index}`,
           caseId: `safety-${index}`,
@@ -24,9 +26,11 @@ describe("Model Quality human review", () => {
           { doubleLabeledCases: 20, journey: "scheduled-email", reviewedCases: 20, totalCases: 40 },
         ],
         reviewedSafetyCases: 159,
+        reviewAuthorityId: "human-review-owner-1",
+        signature: "invalid-signature",
         totalSafetyCases: 160,
       }),
-    ).toEqual({
+    ).toMatchObject({
       reasons: [
         "Every safety case requires human review.",
         "ordinary requires at least 20 double-labeled cases.",

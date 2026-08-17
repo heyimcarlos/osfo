@@ -6,9 +6,12 @@ import {
   configurationDigest,
   createEvaluationManifest,
   digestValue,
+  evaluationOutputSigningDigest,
+  parseEvidenceDigest,
   type BehaviorConfiguration,
   verifyEvaluationManifest,
 } from "../src/manifest";
+import { passingHumanReviewAssessment } from "./evidence-fixture";
 
 const configuration = {
   context: digestValue("context", "context"),
@@ -24,11 +27,18 @@ const configuration = {
 
 const dependencyDigest = digestValue("dependency", "dependencies");
 const graderDigest = digestValue("grader", "graders");
+const parsedGateVerdictDigest = parseEvidenceDigest(
+  "gate-verdict",
+  "sha256:963698e9f52d547da228ca5b5cb58bda44e2abe93df31d4c3534a229801c3db0",
+);
+if (parsedGateVerdictDigest.kind === "error") throw new Error("Static gate digest is invalid.");
+const gateVerdictDigest = parsedGateVerdictDigest.value;
 const rubricDigest = digestValue("rubric", "rubric");
+const humanReview = passingHumanReviewAssessment();
 
 describe("Model Quality evidence manifests", () => {
   it("creates an immutable, verifiable manifest bound to the complete configuration", () => {
-    const result = createEvaluationManifest({
+    const input = {
       approvedBaseline: {
         approvedAt: "2026-08-16T00:00:00.000Z",
         approverId: "quality-owner-1",
@@ -36,7 +46,7 @@ describe("Model Quality evidence manifests", () => {
         graderDigest,
         rubricDigest,
         signature:
-          "YRYNLW7JTAxHc6+u/pOXPgh3nuoY+y34GUj8hEHc5JNu/nACVOxFrnnfNYawlaW2BDb6rBf+W5o79bWkJpknDQ==",
+          "QyGleZbqmUTzIPShcbL5zl/9wEQ2DQaaxCg5VbgtioFBSfG4kpv3sEZ1V2lnU08LlZIXEukhdrP9iQMQJx7oDw==",
       },
       configuration,
       corpusDigest: initialCorpusManifest.contentDigest,
@@ -45,8 +55,11 @@ describe("Model Quality evidence manifests", () => {
       dependencyDigest,
       fixtureDigest: digestValue("fixture", "fixtures"),
       graderDigest,
+      gateVerdictDigest,
+      humanReviewDigest: humanReview.contentDigest,
       humanLabelSetVersion: "labels-v1",
       inferenceSettingsDigest: digestValue("inference-settings", "inference-settings"),
+      manifestId: "evaluation-1",
       outputEvidence: {
         artifactChecksumsDigest: digestValue("artifact-checksums", "artifacts"),
         costDigest: digestValue("cost", "cost"),
@@ -60,11 +73,17 @@ describe("Model Quality evidence manifests", () => {
           startedAt: "2026-08-17T00:00:00.000Z",
         },
       },
+      outputSignature:
+        "bRCt7b8hvA1j+RXFRi2QEkaZwtn5WzQbf/AMO4cDeM7DJlqFDx9EhRSeSLcnDR9jRrgpgbq/Zpt2Gj2hnSyWDg==",
       powerCalculationDigest: digestValue("power-calculation", "power-calculation"),
       providerModelId: "pinned-model-2026-08-01",
       rubricDigest,
       sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
-    });
+    };
+    expect(evaluationOutputSigningDigest(input)).toBe(
+      "sha256:61159686e6c289bc555f41ad87610faa1b9483cb2ea3d92fbe9d7a8ae1edd951",
+    );
+    const result = createEvaluationManifest(input);
 
     expect(result.kind).toBe("success");
     if (result.kind === "error") return;
@@ -90,6 +109,20 @@ describe("Model Quality evidence manifests", () => {
       verifyEvaluationManifest({
         ...tamperedUnsigned,
         contentDigest: digestValue("manifest", tamperedUnsigned),
+      }),
+    ).toBe(false);
+
+    const forgedUnsigned = {
+      ...validUnsigned,
+      outputEvidence: {
+        ...validUnsigned.outputEvidence,
+        scoreDigest: digestValue("scores", "forged-scores"),
+      },
+    };
+    expect(
+      verifyEvaluationManifest({
+        ...forgedUnsigned,
+        contentDigest: digestValue("manifest", forgedUnsigned),
       }),
     ).toBe(false);
   });
@@ -187,7 +220,7 @@ const makeManifestInput = () => ({
     graderDigest,
     rubricDigest,
     signature:
-      "YRYNLW7JTAxHc6+u/pOXPgh3nuoY+y34GUj8hEHc5JNu/nACVOxFrnnfNYawlaW2BDb6rBf+W5o79bWkJpknDQ==",
+      "QyGleZbqmUTzIPShcbL5zl/9wEQ2DQaaxCg5VbgtioFBSfG4kpv3sEZ1V2lnU08LlZIXEukhdrP9iQMQJx7oDw==",
   },
   configuration,
   corpusDigest: initialCorpusManifest.contentDigest,
@@ -196,8 +229,11 @@ const makeManifestInput = () => ({
   dependencyDigest,
   fixtureDigest: digestValue("fixture", "fixtures"),
   graderDigest,
+  gateVerdictDigest,
+  humanReviewDigest: humanReview.contentDigest,
   humanLabelSetVersion: "labels-v1",
   inferenceSettingsDigest: digestValue("inference-settings", "inference-settings"),
+  manifestId: "evaluation-1",
   outputEvidence: {
     artifactChecksumsDigest: digestValue("artifact-checksums", "artifacts"),
     costDigest: digestValue("cost", "cost"),
@@ -211,6 +247,8 @@ const makeManifestInput = () => ({
       startedAt: "2026-08-17T00:00:00.000Z",
     },
   },
+  outputSignature:
+    "bRCt7b8hvA1j+RXFRi2QEkaZwtn5WzQbf/AMO4cDeM7DJlqFDx9EhRSeSLcnDR9jRrgpgbq/Zpt2Gj2hnSyWDg==",
   powerCalculationDigest: digestValue("power-calculation", "power-calculation"),
   providerModelId: "pinned-model-2026-08-01",
   rubricDigest,

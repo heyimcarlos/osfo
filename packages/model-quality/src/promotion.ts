@@ -1,6 +1,12 @@
 import type { EvidenceVerdict } from "./statistics";
 import { isEvidenceCount } from "./evidence-count";
 import { verifyCorpusManifest, type CorpusManifest } from "./corpus";
+import { parseReleaseId } from "./identity";
+import {
+  verifyReleasePass,
+  type CurrentReleaseEvidence,
+  type ReleasePass,
+} from "./release-verdict";
 
 /** Evidence collected for one stable eligible-User canary cohort. */
 export type CanaryEvidence = {
@@ -10,6 +16,7 @@ export type CanaryEvidence = {
   readonly eligiblePercent: 5 | 25;
   readonly eligibleUsers: number;
   readonly evaluationCorpus: CorpusManifest;
+  readonly currentEvidence: CurrentReleaseEvidence;
   readonly failureMode:
     | { readonly kind: "none" }
     | { readonly description: string; readonly kind: "uncovered" }
@@ -21,6 +28,7 @@ export type CanaryEvidence = {
     readonly verdict: "PASS";
   } | null;
   readonly releaseId: string;
+  readonly releasePass: ReleasePass | null;
   readonly stage: "five-percent" | "twenty-five-percent";
 };
 
@@ -32,7 +40,17 @@ export type CanaryAssessment = {
 
 /** Assess canary duration, cohort, message, stop, and rollback controls. */
 export const assessCanary = (evidence: CanaryEvidence): CanaryAssessment => {
-  if (!verifyCorpusManifest(evidence.evaluationCorpus)) {
+  const releaseId = parseReleaseId(evidence.releaseId);
+  if (
+    !verifyCorpusManifest(evidence.evaluationCorpus) ||
+    releaseId.kind === "error" ||
+    evidence.releasePass === null ||
+    evidence.releasePass.releaseId !== releaseId.value ||
+    evidence.releasePass.candidateManifest.corpusDigest !==
+      evidence.evaluationCorpus.contentDigest ||
+    evidence.releasePass.candidateManifest.corpusVersion !== evidence.evaluationCorpus.version ||
+    !verifyReleasePass(evidence.releasePass, evidence.currentEvidence)
+  ) {
     return { action: "PAUSE", verdict: "MISSING" };
   }
   if (
