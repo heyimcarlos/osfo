@@ -16,7 +16,7 @@ describe("provider message admission identities", () => {
     expect(identity).toBe("b".repeat(40));
     expect(() =>
       Schema.decodeSync(ProviderAdmission.ProviderContentDigest)("not-a-digest"),
-    ).toThrow("Expected a string matching the pattern");
+    ).toThrow(/length of at least 40/);
 
     // @ts-expect-error Content evidence cannot stand in for an admission identity digest.
     acceptsIdentity(content);
