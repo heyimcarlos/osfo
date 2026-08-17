@@ -88,13 +88,11 @@ export const makeModelCallUsageStore = (db: AgentDb) => {
   ).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(StoredPendingUsage))),
     Effect.map((rows) =>
-      rows.map(
-        (row): PendingModelCallUsage => ({
-          allowancePeriodId: row.allowancePeriodId,
-          attemptId: row.attemptId,
-          items: row.itemsJson,
-        }),
-      ),
+      rows.map((row): PendingModelCallUsage => ({
+        allowancePeriodId: row.allowancePeriodId,
+        attemptId: row.attemptId,
+        items: row.itemsJson,
+      })),
     ),
     Effect.mapError((failure) =>
       Schema.is(ModelCallUsageStoreUnavailable)(failure)

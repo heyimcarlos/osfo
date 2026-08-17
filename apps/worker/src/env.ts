@@ -84,24 +84,21 @@ export interface RuntimeConfigInput {
 
 /** Decode and redact all Worker authentication configuration before use. */
 export const decodeRuntimeConfig = (input: RuntimeConfigInput) =>
-  Result.map(
-    Schema.decodeUnknownResult(RawRuntimeConfig)(input),
-    (raw): RuntimeConfig => ({
-      auth: {
-        baseURL: raw.BETTER_AUTH_BASE_URL.href,
-        dashboard: {
-          apiKey: Redacted.make(raw.BETTER_AUTH_API_KEY),
-          kind: "enabled",
-        },
-        secret: Redacted.make(raw.BETTER_AUTH_SECRET),
-        trustedOrigins: raw.BETTER_AUTH_TRUSTED_ORIGINS.map((origin) => origin.origin),
+  Result.map(Schema.decodeUnknownResult(RawRuntimeConfig)(input), (raw): RuntimeConfig => ({
+    auth: {
+      baseURL: raw.BETTER_AUTH_BASE_URL.href,
+      dashboard: {
+        apiKey: Redacted.make(raw.BETTER_AUTH_API_KEY),
+        kind: "enabled",
       },
-      stage: raw.OSFO_STAGE,
-      whatsApp: { phoneNumber: raw.WHATSAPP_PHONE_NUMBER },
-      twilioVerify: {
-        accountSid: Redacted.make(raw.TWILIO_ACCOUNT_SID),
-        authToken: Redacted.make(raw.TWILIO_AUTH_TOKEN),
-        serviceSid: raw.TWILIO_VERIFY_SERVICE_SID,
-      },
-    }),
-  );
+      secret: Redacted.make(raw.BETTER_AUTH_SECRET),
+      trustedOrigins: raw.BETTER_AUTH_TRUSTED_ORIGINS.map((origin) => origin.origin),
+    },
+    stage: raw.OSFO_STAGE,
+    whatsApp: { phoneNumber: raw.WHATSAPP_PHONE_NUMBER },
+    twilioVerify: {
+      accountSid: Redacted.make(raw.TWILIO_ACCOUNT_SID),
+      authToken: Redacted.make(raw.TWILIO_AUTH_TOKEN),
+      serviceSid: raw.TWILIO_VERIFY_SERVICE_SID,
+    },
+  }));
