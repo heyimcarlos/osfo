@@ -23,10 +23,6 @@ export interface AuthOptions {
   readonly canCreateSession: (userId: string) => Promise<boolean>;
   readonly database: Database;
   readonly dashboard: DashboardOptions;
-  readonly google: {
-    readonly clientId: string;
-    readonly clientSecret: string;
-  };
   readonly secret: string;
   readonly sendOTP: PhoneNumberOptions["sendOTP"];
   readonly trustedOrigins: ReadonlyArray<string>;
@@ -92,16 +88,27 @@ const makeOptions = (options: AuthOptions): BetterAuthOptions => ({
     storage: "database",
   },
   secret: options.secret,
-  socialProviders: {
-    google: {
-      clientId: options.google.clientId,
-      clientSecret: options.google.clientSecret,
-    },
-  },
   session: { modelName: "sessions" },
   trustedOrigins: [...options.trustedOrigins],
   user: {
     additionalFields: {
+      helpAreas: {
+        defaultValue: [],
+        input: false,
+        required: true,
+        type: "string[]",
+      },
+      locale: {
+        defaultValue: "en",
+        input: false,
+        required: true,
+        type: "string",
+      },
+      preferredName: {
+        input: false,
+        required: false,
+        type: "string",
+      },
       registrationCompletedAt: {
         input: false,
         required: false,

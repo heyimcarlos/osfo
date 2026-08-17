@@ -80,9 +80,9 @@ CREATE TABLE "users" (
 	"updated_at" timestamp DEFAULT now() NOT NULL,
 	"phone_number" text,
 	"phone_number_verified" boolean,
-	"preferred_name" text,
-	"help_areas" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"help_areas" text[] DEFAULT '{}' NOT NULL,
 	"locale" text DEFAULT 'en' NOT NULL,
+	"preferred_name" text,
 	"registration_completed_at" timestamp,
 	CONSTRAINT "users_email_unique" UNIQUE("email"),
 	CONSTRAINT "users_phone_number_unique" UNIQUE("phone_number")

@@ -1,5 +1,5 @@
 {
-  "id": "0a2153d8-19d2-460e-b52d-f8cef4ac31fe",
+  "id": "bbfd4f21-0c25-4ca3-b6ec-9d486c1b226d",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -621,18 +621,12 @@
           "primaryKey": false,
           "notNull": false
         },
-        "preferred_name": {
-          "name": "preferred_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "help_areas": {
           "name": "help_areas",
-          "type": "jsonb",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": true,
-          "default": "'[]'::jsonb"
+          "default": "'{}'"
         },
         "locale": {
           "name": "locale",
@@ -640,6 +634,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'en'"
+        },
+        "preferred_name": {
+          "name": "preferred_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "registration_completed_at": {
           "name": "registration_completed_at",

@@ -11,10 +11,6 @@ export const auth: Auth = createAuth({
   canCreateSession: () => Promise.resolve(true),
   database,
   dashboard: { apiKey: "schema-generation-only-api-key", kind: "enabled" },
-  google: {
-    clientId: "schema-google-client",
-    clientSecret: "schema-google-secret",
-  },
   secret: "schema-generation-only-secret-value",
   sendOTP: () => Promise.resolve(),
   trustedOrigins: ["https://schema.invalid"],

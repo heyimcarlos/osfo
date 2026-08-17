@@ -261,10 +261,6 @@ const config: RuntimeConfig = {
   auth: {
     baseURL: "https://osfo.test/",
     dashboard: { kind: "disabled" },
-    google: {
-      clientId: "test-google-client",
-      clientSecret: Redacted.make("test-google-secret"),
-    },
     secret: Redacted.make("test-only-better-auth-secret-32-characters"),
     trustedOrigins: ["https://osfo.test"],
   },

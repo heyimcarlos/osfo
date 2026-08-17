@@ -15,7 +15,6 @@ import * as TwilioVerify from "../src/integrations/twilio/verify";
 const authConfig = {
   baseURL: "https://osfo.test/",
   dashboard: { kind: "disabled" as const },
-  google: { clientId: "test-google-client", clientSecret: Redacted.make("test-google-secret") },
   secret: Redacted.make("test-only-better-auth-secret-32-characters"),
   trustedOrigins: ["https://osfo.test"],
 };
@@ -41,40 +40,6 @@ describe("launch authentication policy", () => {
 
           expect(response.status).toBe(400);
           expect(storedUsers).toEqual([]);
-
-          yield* Effect.promise(app.dispose);
-        }),
-      closeTestDatabase,
-    ),
-  );
-
-  it.effect("starts normal Google sign-in without Gmail scopes", () =>
-    Effect.acquireUseRelease(
-      makeTestDatabase,
-      (fixture) =>
-        Effect.gen(function* () {
-          yield* applyMigrations(fixture.client);
-          const app = makeAuthApp(
-            Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
-          );
-
-          const response = yield* request(app.handler, "/auth/sign-in/social", {
-            callbackURL: "https://osfo.test/",
-            provider: "google",
-          });
-          const body = yield* Effect.promise(() => response.json()).pipe(
-            Effect.flatMap((value) =>
-              Schema.decodeUnknownEffect(
-                Schema.Struct({ redirect: Schema.Boolean, url: Schema.String }),
-              )(value),
-            ),
-          );
-          const scopes = new URL(body.url).searchParams.get("scope") ?? "";
-
-          expect(response.status).toBe(200);
-          expect(body.redirect).toBe(true);
-          expect(scopes).not.toContain("gmail.");
 
           yield* Effect.promise(app.dispose);
         }),
@@ -580,7 +545,6 @@ const request = (
 
 const AuthResponse = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
 type AuthRequestBody =
-  | { readonly callbackURL: string; readonly provider: "google" }
   | {
       readonly code?: string;
       readonly phoneNumber: string;

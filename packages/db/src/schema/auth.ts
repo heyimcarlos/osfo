@@ -1,14 +1,5 @@
 import { relations } from "drizzle-orm";
-import {
-  pgTable,
-  text,
-  bigint,
-  timestamp,
-  boolean,
-  integer,
-  index,
-  jsonb,
-} from "drizzle-orm/pg-core";
+import { pgTable, text, bigint, timestamp, boolean, integer, index } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: text("id").primaryKey(),
@@ -23,9 +14,9 @@ export const users = pgTable("users", {
     .notNull(),
   phoneNumber: text("phone_number").unique(),
   phoneNumberVerified: boolean("phone_number_verified"),
-  preferredName: text("preferred_name"),
-  helpAreas: jsonb("help_areas").$type<ReadonlyArray<string>>().default([]).notNull(),
+  helpAreas: text("help_areas").array().$type<ReadonlyArray<string>>().default([]).notNull(),
   locale: text("locale").default("en").notNull(),
+  preferredName: text("preferred_name"),
   registrationCompletedAt: timestamp("registration_completed_at"),
 });
 
