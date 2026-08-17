@@ -18,10 +18,10 @@ CREATE TABLE "gmail_send_attempts" (
 	CONSTRAINT "gmail_send_attempts_terminal_contact_check" CHECK ("gmail_send_attempts"."outcome" = 'pending' or "gmail_send_attempts"."contacted_at" is not null)
 );
 --> statement-breakpoint
-ALTER TABLE "accounts" ADD CONSTRAINT "accounts_id_user_account_unique" UNIQUE("id","user_id","account_id");--> statement-breakpoint
 ALTER TABLE "gmail_connections" ADD CONSTRAINT "gmail_connections_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "gmail_connections" ADD CONSTRAINT "gmail_connections_owned_account_fk" FOREIGN KEY ("credential_reference","user_id","provider_account_id") REFERENCES "public"."accounts"("id","user_id","account_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "gmail_connections_user_unique" ON "gmail_connections" USING btree ("user_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "gmail_connections_provider_account_unique" ON "gmail_connections" USING btree ("provider_account_id");--> statement-breakpoint
 CREATE INDEX "gmail_connections_user_revoked_index" ON "gmail_connections" USING btree ("user_id","revoked_at");--> statement-breakpoint
-CREATE INDEX "gmail_send_attempts_connection_index" ON "gmail_send_attempts" USING btree ("connection_id");
+CREATE INDEX "gmail_send_attempts_connection_index" ON "gmail_send_attempts" USING btree ("connection_id");--> statement-breakpoint
+ALTER TABLE "accounts" ADD CONSTRAINT "accounts_id_user_account_unique" UNIQUE("id","user_id","account_id");

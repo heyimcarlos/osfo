@@ -7,6 +7,7 @@ export default defineConfig({
   test: {
     env: {
       VITE_API_URL: "https://api.osfo.test",
+      VITE_ENROLLMENT_PROVIDER: "whatsapp",
     },
   },
 });

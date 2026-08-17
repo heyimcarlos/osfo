@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "@effect/vitest";
-import { createAuth } from "@osfo/auth";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
+import { sessions, users, verifications } from "@osfo/db/schema/auth";
+import { userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { allowancePeriods } from "@osfo/db/schema/allowances";
-import { accounts, sessions, users, verifications } from "@osfo/db/schema/auth";
+import { accounts } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { gmailConnections } from "@osfo/db/schema/gmail";
 import { count, eq } from "drizzle-orm";
@@ -23,79 +24,8 @@ const authConfig = {
   trustedOrigins: ["https://osfo.test"],
 };
 
-describe("temporary credential authentication", () => {
-  it.effect("rejects Google as a sign-in method because it is link-only", () =>
-    Effect.acquireUseRelease(
-      makeTestDatabase,
-      (fixture) =>
-        Effect.gen(function* () {
-          yield* applyMigrations(fixture.client);
-          const app = makeAuthApp(
-            Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
-          );
-
-          const response = yield* request(app.handler, "/auth/sign-in/social", {
-            callbackURL: "https://osfo.test/settings/integrations",
-            provider: "google",
-          });
-
-          expect(response.status).toBe(400);
-          yield* Effect.promise(app.dispose);
-        }),
-      closeTestDatabase,
-    ),
-  );
-
-  it.effect("rejects Google linking from a disabled Better Auth instance", () =>
-    Effect.acquireUseRelease(
-      makeTestDatabase,
-      (fixture) =>
-        Effect.gen(function* () {
-          yield* applyMigrations(fixture.client);
-          const auth = createAuth({
-            baseURL: "https://osfo.test",
-            database: fixture.database,
-            dashboard: { kind: "disabled" },
-            google: {
-              clientId: "test-google-client",
-              clientSecret: "test-google-secret",
-              kind: "disabled",
-            },
-            secret: "test-only-better-auth-secret-32-characters",
-            sendOTP: () => Promise.resolve(),
-            trustedOrigins: ["https://osfo.test"],
-            verifyOTP: () => Promise.resolve(false),
-          });
-          const signedUp = yield* request(auth.handler, "/auth/sign-up/email", {
-            email: "disabled-google-link@osfo.test",
-            name: "Disabled Google link",
-            password: "test-password",
-          });
-          const response = yield* Effect.promise(() =>
-            auth.handler(
-              new Request("https://osfo.test/auth/link-social", {
-                body: encodeJsonText({
-                  callbackURL: "https://osfo.test/settings/integrations",
-                  provider: "google",
-                }),
-                headers: {
-                  "content-type": "application/json",
-                  cookie: cookiePair(signedUp.headers.get("set-cookie")),
-                  origin: "https://osfo.test",
-                },
-                method: "POST",
-              }),
-            ),
-          );
-
-          expect(response.status).toBe(400);
-        }),
-      closeTestDatabase,
-    ),
-  );
-
-  it.effect("creates and signs in a User with an email and password", () =>
+describe("launch authentication policy", () => {
+  it.effect("does not expose email-and-password authentication", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
       (fixture) =>
@@ -111,25 +41,10 @@ describe("temporary credential authentication", () => {
             name: "Osfo Tester",
             password: "test-password",
           });
-          const signIn = yield* request(app.handler, "/auth/sign-in/email", {
-            email: "tester@osfo.test",
-            password: "test-password",
-          });
           const storedUsers = yield* Effect.promise(() => fixture.database.select().from(users));
-          const storedSessions = yield* Effect.promise(() =>
-            fixture.database.select().from(sessions),
-          );
 
-          expect(response.status).toBe(200);
-          expect(signIn.status).toBe(200);
-          expect(signIn.headers.get("set-cookie")).toContain("better-auth.session_token");
-          expect(response.headers.get("set-cookie")).toContain("better-auth.session_token");
-          expect(storedUsers).toHaveLength(1);
-          expect(storedUsers[0]).toMatchObject({
-            email: "tester@osfo.test",
-            name: "Osfo Tester",
-          });
-          expect(storedSessions).toHaveLength(2);
+          expect(response.status).toBe(400);
+          expect(storedUsers).toEqual([]);
 
           yield* Effect.promise(app.dispose);
         }),
@@ -560,6 +475,50 @@ describe("phone authentication", () => {
     ),
   );
 
+  it.effect("does not create a new AuthSession for a suspended User", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const twilio = makeTestTwilio();
+          const app = makeAuthApp(
+            Db.layerFromDatabase(fixture.database),
+            Layer.succeed(TwilioVerify.TwilioVerify, twilio.service),
+          );
+          const phoneNumber = "+14165550109";
+
+          yield* request(app.handler, "/auth/phone-number/send-otp", { phoneNumber });
+          const first = yield* request(app.handler, "/auth/phone-number/verify", {
+            code: twilio.code,
+            phoneNumber,
+          });
+          const firstBody = yield* responseJson(first);
+          yield* Effect.promise(() =>
+            fixture.database.insert(userSuspensionEvents).values({
+              action: "suspended",
+              adminActorId: "admin-test",
+              eventId: "suspension-test",
+              reason: "Test suspension",
+              userId: firstBody.user.id,
+            }),
+          );
+          twilio.advanceBy(30 * 1_000);
+          yield* request(app.handler, "/auth/phone-number/send-otp", { phoneNumber });
+          const suspendedSignIn = yield* request(app.handler, "/auth/phone-number/verify", {
+            code: twilio.code,
+            phoneNumber,
+          });
+
+          expect(first.status).toBe(200);
+          expect(suspendedSignIn.status).toBe(403);
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
   it.effect("rejects an invalid code without creating a User", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
@@ -837,7 +796,8 @@ const makeTestTwilio = (options?: { readonly unavailable?: boolean }) => {
           return false;
         }
         verification.attempts += 1;
-        const approved = verification.attempts <= 5 && submittedCode === verification.code;
+        const approved =
+          verification.attempts <= 5 && Redacted.value(submittedCode) === verification.code;
         if (approved) {
           pending.delete(phoneNumber);
           return true;
@@ -980,7 +940,19 @@ const encodeJwtPart = (value: Readonly<Record<string, boolean | number | string>
 
 const runtimeConfig: RuntimeConfig = {
   auth: authConfig,
+  meta: {
+    appSecret: Redacted.make("test-only-meta-app-secret"),
+    webhookVerifyToken: Redacted.make("test-only-meta-webhook-token"),
+  },
   stage: "test",
+  telegram: { kind: "disabled" },
+  stripe: {
+    adventurerPriceId: "price_adventurer",
+    adventurerProductId: "prod_adventurer",
+    portalConfigurationId: "bpc_approved",
+    secretKey: Redacted.make("sk_test_osfo"),
+    webhookSecret: Redacted.make("whsec_test_osfo"),
+  },
   whatsApp: { phoneNumber: "14165550100" },
   twilioVerify: {
     accountSid: Redacted.make(`AC${"1".repeat(32)}`),
@@ -993,9 +965,27 @@ const testBindings: App.Bindings = {
   DB: { connectionString: "postgres://unused.invalid/osfo" },
   OSFO_AGENT: {
     getByName: (identity) => ({
+      acceptWhatsAppMessage: () =>
+        Promise.resolve({
+          _tag: "ManagedConversationDenied",
+          reason: "userSuspended",
+          resetAt: null,
+        }),
+      acceptTelegramMessage: () =>
+        Promise.resolve({
+          _tag: "ManagedConversationDenied",
+          reason: "userSuspended",
+          resetAt: null,
+        }),
       commitWelcome: () =>
         Promise.resolve({ _tag: "PersonalWelcomeCommitted", messageId: "welcome-test" }),
       initialize: () => Promise.resolve({ _tag: "AgentInitialized" }),
+      submitManagedConversation: () =>
+        Promise.resolve({
+          accepted: true,
+          status: "pending" as const,
+          submissionId: "submission-test",
+        }),
       probeRuntime: () =>
         Promise.resolve({
           activationId: "test-agent-activation",
@@ -1004,11 +994,18 @@ const testBindings: App.Bindings = {
           kind: "RuntimeProbe" as const,
           stage: "test" as const,
         }),
+      recoverWhatsAppMessage: () => Promise.resolve(null),
+      recoverTelegramMessage: () => Promise.resolve(null),
     }),
   },
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => ({
-      begin: () => Promise.resolve({ _tag: "RegistrationTurnCompleted", response: "Register" }),
+      begin: () =>
+        Promise.resolve({
+          _tag: "RegistrationTurnCompleted",
+          response: "Register",
+          verifyUrl: "https://osfo.ai/verify/test",
+        }),
       deleteDialogue: () => Promise.resolve(),
       probeRuntime: () =>
         Promise.resolve({

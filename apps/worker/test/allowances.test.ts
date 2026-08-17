@@ -326,27 +326,47 @@ const seedPeriod = (database: Database, suffix: string, plan: SeedPlan) =>
         name: `User ${suffix}`,
       }),
     );
+    const subscriptionValues = {
+      billingSubscriptionId,
+      createdAt: startsAt,
+      plan,
+      planPolicyVersion: "launch-v1",
+      updatedAt: startsAt,
+      userId,
+    };
+    const paidSubscriptionValues = {
+      ...subscriptionValues,
+      stripeCurrentPeriodEnd: endsAt,
+      stripeCurrentPeriodStart: startsAt,
+      stripeLatestInvoiceId: "in_allowance",
+      stripePriceId: "price_adventurer",
+      stripeProductId: "prod_adventurer",
+      stripeStatus: "active",
+      stripeSubscriptionId: "sub_allowance",
+    };
     yield* Effect.promise(() =>
-      database.insert(billingSubscriptions).values({
-        billingSubscriptionId,
-        createdAt: startsAt,
-        plan,
-        planPolicyVersion: "launch-v1",
-        updatedAt: startsAt,
-        userId,
-      }),
+      database
+        .insert(billingSubscriptions)
+        .values(plan === "adventurer" ? paidSubscriptionValues : subscriptionValues),
     );
+    const periodValues = {
+      allowancePeriodId,
+      billingSubscriptionId,
+      createdAt: startsAt,
+      endsAt,
+      plan,
+      planPolicyVersion: "launch-v1",
+      startsAt,
+      userId,
+    };
     yield* Effect.promise(() =>
-      database.insert(allowancePeriods).values({
-        allowancePeriodId,
-        billingSubscriptionId,
-        createdAt: startsAt,
-        endsAt,
-        plan,
-        planPolicyVersion: "launch-v1",
-        startsAt,
-        userId,
-      }),
+      database
+        .insert(allowancePeriods)
+        .values(
+          plan === "adventurer"
+            ? { ...periodValues, stripeInvoiceId: "in_allowance" }
+            : periodValues,
+        ),
     );
 
     return { allowancePeriodId, billingSubscriptionId, endsAt, now, userId };

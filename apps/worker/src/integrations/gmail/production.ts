@@ -11,6 +11,7 @@ import * as GmailApi from "./api";
 export const make = (database: Database, config: AuthRouteConfig) => {
   const auth = createAuth({
     baseURL: config.baseURL,
+    canCreateSession: () => Promise.resolve(false),
     database,
     dashboard: { kind: "disabled" },
     google: {

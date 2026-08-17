@@ -24,6 +24,13 @@ export const DbOperation = Schema.Literals([
   "enrollWhatsApp",
   "expireRegistrationInvitation",
   "resolveAgentOwner",
+  "inspectChannelBinding",
+  "inspectUserSuspension",
+  "inspectDeletionCase",
+  "inspectBillingSubscription",
+  "suspendUser",
+  "restoreUser",
+  "requestDeletion",
 ]);
 
 /** Database operations used in safe failures and telemetry. */

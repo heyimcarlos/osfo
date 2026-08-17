@@ -1,8 +1,7 @@
 import { Predicate, Result, Schema } from "effect";
 
-import { AllowancePeriodId, Plan, PlanPolicyVersion, UserId } from "../domain";
+import { AllowancePeriodId, ChannelBindingId, Plan, PlanPolicyVersion, UserId } from "../domain";
 import { type AllowanceKind, RecordedAllowanceUse } from "../domain/allowance";
-import { OriginatingAuthority } from "../domain/authority";
 import {
   AuthorizationOperation,
   type AuthorizationOperation as AuthorizationOperationType,
@@ -11,43 +10,40 @@ import {
   type AuthorizationOperationName as AuthorizationOperationNameType,
 } from "../domain/authorization-operation";
 import { type Capability, type PlanPolicyCatalog, policyFor } from "../domain/plan-policy";
+import { AuthSessionAuthorityFact, AuthSessionId } from "../domain/auth-session";
+import { ChannelBindingAuthorityFact } from "../domain/channel-binding";
+import { DeletionAccessFact } from "../domain/deletion-case";
+import { UserAccessFact } from "../domain/user-suspension";
 
-const ActiveUser = Schema.TaggedStruct("ActiveUser", { userId: UserId });
-const SuspendedUser = Schema.TaggedStruct("SuspendedUser", { userId: UserId });
-const DeletionAccess = Schema.Union([
-  Schema.TaggedStruct("DeletionAccessAvailable", {}),
-  Schema.TaggedStruct("DeletionAccessRevoked", {}),
-]);
 const ActingAuthority = Schema.Union([
-  Schema.TaggedStruct("AuthSession", {
-    authSessionId: Schema.String,
-    expiresAt: Schema.Date,
-    userId: UserId,
-  }),
-  Schema.TaggedStruct("RevokedAuthSession", {
-    authSessionId: Schema.String,
-    userId: UserId,
-  }),
-  Schema.TaggedStruct("ChannelBinding", {
-    channelBindingId: Schema.String,
-    userId: UserId,
-  }),
-  Schema.TaggedStruct("RevokedChannelBinding", {
-    channelBindingId: Schema.String,
-    userId: UserId,
-  }),
+  AuthSessionAuthorityFact,
+  ChannelBindingAuthorityFact,
   Schema.TaggedStruct("DurableTrigger", {
     triggerId: Schema.String,
     triggerType: Schema.Literals(["scheduledTask", "workflow"]),
     userId: UserId,
   }),
 ]);
-const Approval = Schema.Struct({
+
+/** Stable authority identity that originated one protected operation. */
+export const OriginatingAuthority = Schema.Union([
+  Schema.TaggedStruct("AuthSession", { authSessionId: AuthSessionId }),
+  Schema.TaggedStruct("ChannelBinding", { channelBindingId: ChannelBindingId }),
+  Schema.TaggedStruct("DurableTrigger", {
+    triggerId: Schema.String,
+    triggerType: Schema.Literals(["scheduledTask", "workflow"]),
+  }),
+]);
+
+/** Exact User, operation, and Action approved for one protected effect. */
+export const Approval = Schema.Struct({
   actionId: Schema.String,
   operation: AuthorizationOperationName,
   userId: UserId,
 });
-const Allowance = Schema.Union([
+
+/** Current allowance facts used to admit or deny one operation. */
+export const Allowance = Schema.Union([
   Schema.TaggedStruct("Unavailable", {}),
   Schema.TaggedStruct("Metered", {
     allowancePeriodId: AllowancePeriodId,
@@ -59,30 +55,42 @@ const Allowance = Schema.Union([
   }),
 ]);
 
+/** Current Integration Connection fact used by Authorization. */
+export const GmailConnection = Schema.NullOr(
+  Schema.Union([
+    Schema.TaggedStruct("Connected", { userId: UserId }),
+    Schema.TaggedStruct("Revoked", { userId: UserId }),
+  ]),
+);
+
+/** Current live resource facts used by Authorization. */
+export const LiveResourceFacts = Schema.Struct({
+  activeGmSummonsInSession: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  activeReminders: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  concurrentWorkflows: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  retainedFileBytes: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+});
+
+/** Current Subscription fact used for Plan Entitlement checks. */
+export const AuthorizationSubscription = Schema.Struct({
+  plan: Plan,
+  planPolicyVersion: PlanPolicyVersion,
+});
+
 /** Current facts evaluated by launch Authorization in deterministic gate order. */
 export const AuthorizationContext = Schema.Struct({
   allowance: Allowance,
   approval: Schema.NullOr(Approval),
   authority: Schema.NullOr(ActingAuthority),
-  deletionAccess: DeletionAccess,
-  gmailConnection: Schema.NullOr(
-    Schema.Union([
-      Schema.TaggedStruct("Connected", { userId: UserId }),
-      Schema.TaggedStruct("Revoked", { userId: UserId }),
-    ]),
-  ),
-  liveFacts: Schema.Struct({
-    activeGmSummonsInSession: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
-    activeReminders: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
-    concurrentWorkflows: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
-    retainedFileBytes: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
-  }),
+  deletionAccess: DeletionAccessFact,
+  gmailConnection: GmailConnection,
+  liveFacts: LiveResourceFacts,
   now: Schema.Date,
   originatingAuthority: OriginatingAuthority,
   requestVendorUsdMicros: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
   resourceOwnerUserId: Schema.NullOr(UserId),
-  subscription: Schema.Struct({ plan: Plan, planPolicyVersion: PlanPolicyVersion }),
-  user: Schema.Union([ActiveUser, SuspendedUser]),
+  subscription: AuthorizationSubscription,
+  user: UserAccessFact,
 });
 
 /** Current facts evaluated by launch Authorization in deterministic gate order. */
@@ -389,7 +397,6 @@ const exceedsOperationLimit = (
 
 const requiresApproval = (operation: AuthorizationOperationType) => {
   switch (operation.kind) {
-    case "session.replace":
     case "session.delete":
     case "memory.clear":
     case "memory.forgetKnowledge":
@@ -458,7 +465,7 @@ const allowanceKindsFor = (operation: AuthorizationOperationType): ReadonlyArray
     case "workflow.manage":
       return operation.change === "start" ? ["workflowStarts"] : [];
     case "gmail.search":
-      return ["gmailSearches", "gmailMessagesExamined"];
+      return ["gmailSearches"];
     case "gmail.read":
       return ["gmailMessagesExamined"];
     case "gmail.send":

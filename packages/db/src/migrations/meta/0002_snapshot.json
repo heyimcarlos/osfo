@@ -1,5 +1,5 @@
 {
-  "id": "3c767591-90f0-4a4d-bbba-bb308f1a8e7e",
+  "id": "7a1b6eac-7cc6-4fd1-9cf3-3723852fd42d",
   "prevId": "eeb3d5d1-e03a-41ad-bd14-14075a0f525f",
   "version": "7",
   "dialect": "postgresql",
@@ -407,13 +407,7 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "accounts_id_user_account_unique": {
-          "name": "accounts_id_user_account_unique",
-          "nullsNotDistinct": false,
-          "columns": ["id", "user_id", "account_id"]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -801,199 +795,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.gmail_connections": {
-      "name": "gmail_connections",
-      "schema": "",
-      "columns": {
-        "connection_id": {
-          "name": "connection_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "credential_reference": {
-          "name": "credential_reference",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "granted_at": {
-          "name": "granted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider_account_id": {
-          "name": "provider_account_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "revoked_at": {
-          "name": "revoked_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "gmail_connections_user_unique": {
-          "name": "gmail_connections_user_unique",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "gmail_connections_provider_account_unique": {
-          "name": "gmail_connections_provider_account_unique",
-          "columns": [
-            {
-              "expression": "provider_account_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "gmail_connections_user_revoked_index": {
-          "name": "gmail_connections_user_revoked_index",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "revoked_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "gmail_connections_user_id_users_id_fk": {
-          "name": "gmail_connections_user_id_users_id_fk",
-          "tableFrom": "gmail_connections",
-          "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "gmail_connections_owned_account_fk": {
-          "name": "gmail_connections_owned_account_fk",
-          "tableFrom": "gmail_connections",
-          "tableTo": "accounts",
-          "columnsFrom": ["credential_reference", "user_id", "provider_account_id"],
-          "columnsTo": ["id", "user_id", "account_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "gmail_connections_grant_before_revocation_check": {
-          "name": "gmail_connections_grant_before_revocation_check",
-          "value": "\"gmail_connections\".\"revoked_at\" is null or \"gmail_connections\".\"granted_at\" <= \"gmail_connections\".\"revoked_at\""
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.gmail_send_attempts": {
-      "name": "gmail_send_attempts",
-      "schema": "",
-      "columns": {
-        "action_id": {
-          "name": "action_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "connection_id": {
-          "name": "connection_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "contacted_at": {
-          "name": "contacted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "gmail_send_attempts_connection_index": {
-          "name": "gmail_send_attempts_connection_index",
-          "columns": [
-            {
-              "expression": "connection_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "gmail_send_attempts_outcome_check": {
-          "name": "gmail_send_attempts_outcome_check",
-          "value": "\"gmail_send_attempts\".\"outcome\" in ('pending', 'applied', 'notApplied', 'ambiguous')"
-        },
-        "gmail_send_attempts_terminal_contact_check": {
-          "name": "gmail_send_attempts_terminal_contact_check",
-          "value": "\"gmail_send_attempts\".\"outcome\" = 'pending' or \"gmail_send_attempts\".\"contacted_at\" is not null"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.channel_bindings": {
       "name": "channel_bindings",
       "schema": "",
@@ -1346,6 +1147,186 @@
         "registration_invitations_expiry_check": {
           "name": "registration_invitations_expiry_check",
           "value": "\"registration_invitations\".\"created_at\" < \"registration_invitations\".\"expires_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.deletion_cases": {
+      "name": "deletion_cases",
+      "schema": "",
+      "columns": {
+        "deletion_case_id": {
+          "name": "deletion_case_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_by_admin_id": {
+          "name": "requested_by_admin_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "deletion_cases_user_unique": {
+          "name": "deletion_cases_user_unique",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "deletion_cases_user_id_users_id_fk": {
+          "name": "deletion_cases_user_id_users_id_fk",
+          "tableFrom": "deletion_cases",
+          "tableTo": "users",
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "deletion_cases_actor_check": {
+          "name": "deletion_cases_actor_check",
+          "value": "length(btrim(\"deletion_cases\".\"requested_by_admin_id\")) > 0"
+        },
+        "deletion_cases_reason_check": {
+          "name": "deletion_cases_reason_check",
+          "value": "length(btrim(\"deletion_cases\".\"reason\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.user_suspension_events": {
+      "name": "user_suspension_events",
+      "schema": "",
+      "columns": {
+        "event_id": {
+          "name": "event_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "admin_actor_id": {
+          "name": "admin_actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "user_suspension_events_user_order_index": {
+          "name": "user_suspension_events_user_order_index",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "event_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "user_suspension_events_user_id_users_id_fk": {
+          "name": "user_suspension_events_user_id_users_id_fk",
+          "tableFrom": "user_suspension_events",
+          "tableTo": "users",
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "user_suspension_events_action_check": {
+          "name": "user_suspension_events_action_check",
+          "value": "\"user_suspension_events\".\"action\" in ('suspended', 'restored')"
+        },
+        "user_suspension_events_actor_check": {
+          "name": "user_suspension_events_actor_check",
+          "value": "length(btrim(\"user_suspension_events\".\"admin_actor_id\")) > 0"
+        },
+        "user_suspension_events_reason_check": {
+          "name": "user_suspension_events_reason_check",
+          "value": "length(btrim(\"user_suspension_events\".\"reason\")) > 0"
         }
       },
       "isRLSEnabled": false

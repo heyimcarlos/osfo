@@ -8,6 +8,7 @@ import { DateTime, Deferred, Effect, Exit, Fiber, Redacted, Schema } from "effec
 
 import { AllowancePeriodId, PlanPolicyVersion, ToolCallId, UserId } from "../src/domain";
 import { ActionId } from "../src/domain/action-execution";
+import { AuthSessionId } from "../src/domain/auth-session";
 import {
   GmailConnectionId,
   GmailConnectionGrant,
@@ -669,7 +670,7 @@ describe("Gmail Integration Connection", () => {
         allowance: { _tag: "Unavailable" as const },
         authority: {
           _tag: "AuthSession" as const,
-          authSessionId: `session-${owner}`,
+          authSessionId: AuthSessionId.make(`session-${owner}`),
           expiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-10-17T12:01:00.000Z")),
           userId: owner,
         },
@@ -1094,7 +1095,7 @@ const context = (userId: UserId, plan: "free" | "adventurer"): AuthorizationCont
   approval: null,
   authority: {
     _tag: "AuthSession",
-    authSessionId: `session-${userId}`,
+    authSessionId: AuthSessionId.make(`session-${userId}`),
     expiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-17T12:01:00.000Z")),
     userId,
   },
@@ -1107,7 +1108,10 @@ const context = (userId: UserId, plan: "free" | "adventurer"): AuthorizationCont
     retainedFileBytes: 0n,
   },
   now,
-  originatingAuthority: { _tag: "AuthSession", authSessionId: `session-${userId}` },
+  originatingAuthority: {
+    _tag: "AuthSession",
+    authSessionId: AuthSessionId.make(`session-${userId}`),
+  },
   requestVendorUsdMicros: 0n,
   resourceOwnerUserId: userId,
   subscription: { plan, planPolicyVersion: PlanPolicyVersion.make("launch-v1") },

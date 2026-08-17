@@ -1,5 +1,4 @@
 import type { Plan, PlanPolicyVersion, UserId } from "../domain";
-import type { OriginatingAuthority } from "../domain/authority";
 import { AuthorizationContext } from "./authorization";
 
 /** Current facts shared by authenticated HTTP and durable protected-effect entry points. */
@@ -7,7 +6,7 @@ export interface CurrentAuthorizationFacts {
   readonly allowance: AuthorizationContext["allowance"];
   readonly authority: AuthorizationContext["authority"];
   readonly now: Date;
-  readonly originatingAuthority: OriginatingAuthority;
+  readonly originatingAuthority: AuthorizationContext["originatingAuthority"];
   readonly plan: Plan;
   readonly planPolicyVersion: PlanPolicyVersion;
   readonly userId: UserId;

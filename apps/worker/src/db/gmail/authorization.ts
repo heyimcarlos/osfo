@@ -5,10 +5,11 @@ import { channelBindings } from "@osfo/db/schema/onboarding";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { Effect, Predicate, Schema } from "effect";
 
-import { Plan, PlanPolicyVersion, type UserId } from "../../domain";
-import type { OriginatingAuthority } from "../../domain/authority";
+import { ChannelBindingId, Plan, PlanPolicyVersion, type UserId } from "../../domain";
+import { AuthSessionId } from "../../domain/auth-session";
+import type { OriginatingAuthority as InputOriginatingAuthority } from "../../domain/authority";
 import { GmailPersistenceUnavailable } from "../../domain/gmail";
-import type { AuthorizationContext } from "../../services/authorization";
+import { OriginatingAuthority, type AuthorizationContext } from "../../services/authorization";
 import * as Billing from "../billing";
 
 const CurrentSubscription = Schema.Struct({ plan: Plan, planPolicyVersion: PlanPolicyVersion });
@@ -17,7 +18,7 @@ const CurrentSubscription = Schema.Struct({ plan: Plan, planPolicyVersion: PlanP
 export const loadInitial = (
   database: Database,
   userId: UserId,
-  origin: OriginatingAuthority,
+  origin: InputOriginatingAuthority,
   now: Date,
 ) =>
   Effect.gen(function* () {
@@ -35,7 +36,7 @@ export const loadInitial = (
       },
       authority,
       now,
-      originatingAuthority: origin,
+      originatingAuthority: authorizationOrigin(origin),
       plan: admission.plan,
       planPolicyVersion: admission.planPolicyVersion,
       userId,
@@ -46,7 +47,7 @@ export const loadInitial = (
 export const loadResumed = (
   database: Database,
   userId: UserId,
-  origin: OriginatingAuthority,
+  origin: InputOriginatingAuthority,
   now: Date,
 ) =>
   Effect.gen(function* () {
@@ -56,7 +57,7 @@ export const loadResumed = (
       allowance: { _tag: "Unavailable" as const },
       authority,
       now,
-      originatingAuthority: origin,
+      originatingAuthority: authorizationOrigin(origin),
       plan: subscription.plan,
       planPolicyVersion: subscription.planPolicyVersion,
       userId,
@@ -68,7 +69,7 @@ export const reload = (
   database: Database,
   previous: {
     readonly allowance: AuthorizationContext["allowance"];
-    readonly originatingAuthority: OriginatingAuthority;
+    readonly originatingAuthority: AuthorizationContext["originatingAuthority"];
     readonly userId: UserId;
   },
   now: Date,
@@ -77,7 +78,7 @@ export const reload = (
     const authority = yield* loadAuthority(
       database,
       previous.userId,
-      previous.originatingAuthority,
+      inputOrigin(previous.originatingAuthority),
       now,
     );
     const subscription = yield* loadSubscription(database, previous.userId);
@@ -129,7 +130,7 @@ const loadSubscription = (database: Database, userId: UserId) =>
 const loadAuthority = (
   database: Database,
   userId: UserId,
-  origin: OriginatingAuthority,
+  origin: InputOriginatingAuthority,
   now: Date,
 ) => {
   if (Predicate.isTagged(origin, "DurableTrigger")) return Effect.succeed(null);
@@ -153,7 +154,7 @@ const loadAuthority = (
           ? null
           : ({
               _tag: "ChannelBinding",
-              channelBindingId: origin.channelBindingId,
+              channelBindingId: ChannelBindingId.make(origin.channelBindingId),
               userId,
             } as const),
       ),
@@ -178,7 +179,7 @@ const loadAuthority = (
         ? null
         : ({
             _tag: "AuthSession",
-            authSessionId: origin.authSessionId,
+            authSessionId: AuthSessionId.make(origin.authSessionId),
             expiresAt: current.expiresAt,
             userId,
           } as const),
@@ -196,3 +197,25 @@ const query = <A>(execute: () => Promise<ReadonlyArray<A>>) =>
         operation: "recheck",
       }),
   });
+
+const authorizationOrigin = (origin: InputOriginatingAuthority) =>
+  origin._tag === "AuthSession"
+    ? OriginatingAuthority.make({
+        _tag: "AuthSession",
+        authSessionId: AuthSessionId.make(origin.authSessionId),
+      })
+    : origin._tag === "ChannelBinding"
+      ? OriginatingAuthority.make({
+          _tag: "ChannelBinding",
+          channelBindingId: ChannelBindingId.make(origin.channelBindingId),
+        })
+      : OriginatingAuthority.make(origin);
+
+const inputOrigin = (
+  origin: AuthorizationContext["originatingAuthority"],
+): InputOriginatingAuthority =>
+  origin._tag === "AuthSession"
+    ? { _tag: "AuthSession", authSessionId: origin.authSessionId }
+    : origin._tag === "ChannelBinding"
+      ? { _tag: "ChannelBinding", channelBindingId: origin.channelBindingId }
+      : origin;

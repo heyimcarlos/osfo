@@ -18,6 +18,8 @@
       "BETTER_AUTH_TRUSTED_ORIGINS",
       "GOOGLE_CLIENT_ID",
       "GOOGLE_CLIENT_SECRET",
+      "META_APP_SECRET",
+      "META_WEBHOOK_VERIFY_TOKEN",
       "TWILIO_ACCOUNT_SID",
       "TWILIO_AUTH_TOKEN",
       "TWILIO_VERIFY_SERVICE_SID",
@@ -30,9 +32,11 @@
       "localConnectionString": "postgres://osfo:osfo@127.0.0.1:5432/osfo_test",
     },
   ],
+  "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "osfo-test-generated-artifacts" }],
   "ai": { "binding": "AI" },
   "durable_objects": {
     "bindings": [
+      { "name": "DOCUMENT_SANDBOX", "class_name": "Sandbox" },
       { "name": "OSFO_AGENT", "class_name": "OsfoAgent" },
       {
         "name": "REGISTRATION_DIALOGUE",
@@ -44,6 +48,15 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["OsfoAgent", "RegistrationDialogue"],
+    },
+    { "tag": "v2", "new_sqlite_classes": ["Sandbox"] },
+  ],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./document-sandbox/Dockerfile",
+      "instance_type": "lite",
+      "max_instances": 20,
     },
   ],
   "triggers": { "crons": ["0 * * * *"] },

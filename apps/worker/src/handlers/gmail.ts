@@ -11,6 +11,7 @@ import { DateTime, Effect, Layer, Predicate, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { UserId } from "../domain";
+import { AuthSessionId } from "../domain/auth-session";
 import type { GmailConnectionStatus } from "../domain/gmail";
 import { retainedCatalog } from "../domain/plan-policy";
 import * as Db from "../db";
@@ -104,12 +105,15 @@ const connectionAuthorization = (
     },
     authority: {
       _tag: "AuthSession",
-      authSessionId: currentUser.authSessionId,
+      authSessionId: AuthSessionId.make(currentUser.authSessionId),
       expiresAt: currentUser.authSessionExpiresAt,
       userId: UserId.make(currentUser.userId),
     },
     now,
-    originatingAuthority: { _tag: "AuthSession", authSessionId: currentUser.authSessionId },
+    originatingAuthority: {
+      _tag: "AuthSession",
+      authSessionId: AuthSessionId.make(currentUser.authSessionId),
+    },
     plan: admission.plan,
     planPolicyVersion: admission.planPolicyVersion,
     userId: UserId.make(currentUser.userId),

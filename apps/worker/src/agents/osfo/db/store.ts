@@ -1,32 +1,163 @@
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, max, ne, sql } from "drizzle-orm";
 import { DateTime, Effect, Option, Schema } from "effect";
 
 import { DbTimestamp } from "../../../db";
 import {
+  CurrentSessionReplaced,
+  CurrentSessionReplacementConflict,
+} from "../../../services/session-replacement";
+import {
+  SessionRecallCursor,
+  SessionRecallCursorInvalid,
+  type SessionRecallCandidate,
+} from "../../../services/session-recall";
+import {
   AgentId,
   AgentInitializationId,
   AssistantMessageId,
+  type ChannelBindingId,
   ConversationRouteId,
+  type ProviderMessageId,
   SessionId,
   ThinkRequestId,
   type ThinkRequestId as ThinkRequestIdType,
 } from "../../../domain";
+import {
+  AcceptanceReceipt,
+  type AcceptanceReceiptInput,
+} from "../../../services/provider-acceptance-receipt";
+import {
+  SessionCommandReceipt,
+  SessionCommandReceiptConflict,
+  type SessionCommandReceiptInput,
+} from "../../../services/session-command-receipt";
 import type { AgentDb } from "./client";
 import {
   AgentInitializationConflict,
+  AcceptanceReceiptConflict,
   AgentStateNotFound,
   type AgentStoreOperation,
   AgentStoreRecordInvalid,
   AgentStoreUnavailable,
   CommittedTurnConflict,
-  CurrentSessionReplacementConflict,
 } from "./errors";
 import {
+  acceptanceReceipts,
   agentInitialization,
   committedTurns,
   conversationRoutes,
+  sessionRecallCursors,
+  sessionCommandReceipts,
   sessionOwnership,
 } from "./schema";
+
+const sqliteCurrentTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u;
+
+interface ReplaceCurrentSessionRecordInput {
+  readonly expectedCurrentSessionId: SessionId;
+  readonly replacedAt: DbTimestamp;
+  readonly replacementSessionId: SessionId;
+  readonly routeId: ConversationRouteId;
+}
+
+interface ReplaceCurrentSessionWithCommandReceiptRecordInput extends ReplaceCurrentSessionRecordInput {
+  readonly receipt: SessionCommandReceiptInput;
+}
+
+type AgentTransaction = Parameters<Parameters<AgentDb["transaction"]>[0]>[0];
+
+const replaceCurrentSessionTransaction = (
+  transaction: AgentTransaction,
+  input: ReplaceCurrentSessionRecordInput,
+) => {
+  const current = transaction
+    .select({ sessionId: sessionOwnership.sessionId })
+    .from(sessionOwnership)
+    .where(and(eq(sessionOwnership.routeId, input.routeId), isNull(sessionOwnership.replacedAt)))
+    .limit(1)
+    .get();
+  if (current?.sessionId !== input.expectedCurrentSessionId) {
+    return { actualCurrentSessionId: current?.sessionId ?? null, kind: "Stale" as const };
+  }
+  const replacementOwner = transaction
+    .select({ routeId: sessionOwnership.routeId })
+    .from(sessionOwnership)
+    .where(eq(sessionOwnership.sessionId, input.replacementSessionId))
+    .limit(1)
+    .get();
+  if (replacementOwner !== undefined) {
+    return {
+      actualCurrentSessionId: current.sessionId,
+      kind: "Owned" as const,
+      replacementOwnerRouteId: replacementOwner.routeId,
+    };
+  }
+  const maximumOwnershipSequence =
+    transaction
+      .select({ value: max(sessionOwnership.ownershipSequence) })
+      .from(sessionOwnership)
+      .get()?.value ?? 0;
+  const updated = transaction
+    .update(sessionOwnership)
+    .set({ replacedAt: input.replacedAt })
+    .where(
+      and(
+        eq(sessionOwnership.routeId, input.routeId),
+        eq(sessionOwnership.sessionId, input.expectedCurrentSessionId),
+        isNull(sessionOwnership.replacedAt),
+      ),
+    )
+    .returning({ sessionId: sessionOwnership.sessionId })
+    .all();
+  if (updated.length !== 1) {
+    return { actualCurrentSessionId: current.sessionId, kind: "Stale" as const };
+  }
+  transaction
+    .insert(sessionOwnership)
+    .values({
+      becameCurrentAt: input.replacedAt,
+      ownershipSequence: maximumOwnershipSequence + 1,
+      replacedAt: null,
+      routeId: input.routeId,
+      sessionId: input.replacementSessionId,
+    })
+    .run();
+  return { kind: "Replaced" as const };
+};
+
+type ReplaceCurrentSessionOutcome = ReturnType<typeof replaceCurrentSessionTransaction>;
+type ReplacementConflictOutcome = Exclude<
+  ReplaceCurrentSessionOutcome,
+  { readonly kind: "Replaced" }
+>;
+
+const isReplacementConflict = (outcome: {
+  readonly kind: string;
+}): outcome is ReplacementConflictOutcome => outcome.kind === "Stale" || outcome.kind === "Owned";
+
+const replacementConflict = (
+  outcome: ReplacementConflictOutcome,
+  input: ReplaceCurrentSessionRecordInput,
+): CurrentSessionReplacementConflict => {
+  if (outcome.kind === "Stale") {
+    return new CurrentSessionReplacementConflict({
+      actualCurrentSessionId: outcome.actualCurrentSessionId,
+      expectedCurrentSessionId: input.expectedCurrentSessionId,
+      message: "The route's current Session does not match the replacement request",
+      replacementOwnerRouteId: null,
+      replacementSessionId: input.replacementSessionId,
+      routeId: input.routeId,
+    });
+  }
+  return new CurrentSessionReplacementConflict({
+    actualCurrentSessionId: outcome.actualCurrentSessionId,
+    expectedCurrentSessionId: input.expectedCurrentSessionId,
+    message: "The replacement Session is already owned by an Agent route",
+    replacementOwnerRouteId: outcome.replacementOwnerRouteId,
+    replacementSessionId: input.replacementSessionId,
+    routeId: input.routeId,
+  });
+};
 
 /** Stable facts accepted at the Agent initialization RPC boundary. */
 export const AgentInitializationInput = Schema.Struct({
@@ -63,30 +194,6 @@ export const AgentFound = Schema.TaggedStruct("AgentFound", {
 /** Existing stable facts for one named Agent and its primary Session route. */
 export type AgentFound = typeof AgentFound.Type;
 
-/** Stable input for replacing a route's current Session without deleting history. */
-export const ReplaceCurrentSessionInput = Schema.Struct({
-  expectedCurrentSessionId: SessionId,
-  replacedAt: DbTimestamp,
-  replacementSessionId: SessionId,
-  routeId: ConversationRouteId,
-});
-
-/** Parsed input for replacing a route's current Session. */
-export type ReplaceCurrentSessionInput = typeof ReplaceCurrentSessionInput.Type;
-
-/** RPC representation of current Session replacement input. */
-export type ReplaceCurrentSessionEncoded = typeof ReplaceCurrentSessionInput.Encoded;
-
-/** Successful replacement of one route's current Session. */
-export const CurrentSessionReplaced = Schema.TaggedStruct("CurrentSessionReplaced", {
-  currentSessionId: SessionId,
-  historicalSessionId: SessionId,
-  routeId: ConversationRouteId,
-});
-
-/** Successful replacement of one route's current Session. */
-export type CurrentSessionReplaced = typeof CurrentSessionReplaced.Type;
-
 /** Current and historical Think Session identities owned by one route. */
 export const ConversationRouteFound = Schema.TaggedStruct("ConversationRouteFound", {
   currentSessionId: SessionId,
@@ -107,8 +214,6 @@ export const CommittedTurnObservation = Schema.Struct({
 
 /** Stable observation accepted after a committed Think turn. */
 export type CommittedTurnObservation = typeof CommittedTurnObservation.Type;
-
-const sqliteCurrentTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u;
 
 const CommittedTurnObservedAt = Schema.String.check(
   Schema.makeFilter(
@@ -149,10 +254,105 @@ const RouteSessionRecord = Schema.Struct({
 });
 
 const SessionIdRecord = Schema.Struct({ sessionId: SessionId });
-const RouteOwnerRecord = Schema.Struct({ routeId: ConversationRouteId });
-
+const RouteSessionPageRecord = Schema.Struct({
+  ownershipSequence: Schema.Int.check(Schema.isGreaterThan(0)),
+  sessionId: SessionId,
+});
+type RouteSessionPageRecord = typeof RouteSessionPageRecord.Type;
+interface RouteSessionPageDatabaseRecord {
+  readonly ownershipSequence: number | null;
+  readonly sessionId: SessionId;
+}
+const SessionRecallCursorStateRecord = Schema.Struct({
+  afterOwnershipSequence: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
+  snapshotCurrentSessionId: SessionId,
+  snapshotMaxOwnershipSequence: Schema.Int.check(Schema.isGreaterThan(0)),
+});
+type SessionRecallCursorStateRecord = typeof SessionRecallCursorStateRecord.Type;
 /** Construct deep Agent-local persistence operations over a typed Durable SQLite client. */
 export const makeAgentStore = (db: AgentDb) => {
+  const readAcceptanceReceipt = (
+    channelBindingId: ChannelBindingId,
+    providerMessageId: ProviderMessageId,
+  ) =>
+    execute("readAcceptanceReceipt", () =>
+      db
+        .select(acceptanceReceiptFields)
+        .from(acceptanceReceipts)
+        .where(
+          and(
+            eq(acceptanceReceipts.channelBindingId, channelBindingId),
+            eq(acceptanceReceipts.providerMessageId, providerMessageId),
+          ),
+        )
+        .limit(1)
+        .get(),
+    ).pipe(
+      Effect.flatMap((row) =>
+        row === undefined
+          ? Effect.succeed(null)
+          : decodeAcceptanceReceipt("readAcceptanceReceipt", row),
+      ),
+    );
+
+  const recordAcceptanceReceipt = (input: AcceptanceReceiptInput) =>
+    Effect.gen(function* () {
+      const existing = yield* readAcceptanceReceipt(
+        input.channelBindingId,
+        input.providerMessageId,
+      );
+      if (existing !== null) {
+        if (
+          existing.allowancePeriodId === input.allowancePeriodId &&
+          existing.receiptId === input.receiptId &&
+          existing.sessionId === input.sessionId &&
+          existing.thinkSubmissionId === input.thinkSubmissionId &&
+          existing.userMessageId === input.userMessageId
+        ) {
+          return existing;
+        }
+        return yield* new AcceptanceReceiptConflict({
+          channelBindingId: input.channelBindingId,
+          existingReceiptId: existing.receiptId,
+          existingThinkSubmissionId: existing.thinkSubmissionId,
+          existingUserMessageId: existing.userMessageId,
+          message: "The Channel Message Key already has different acceptance facts",
+          providerMessageId: input.providerMessageId,
+          receiptId: input.receiptId,
+          thinkSubmissionId: input.thinkSubmissionId,
+          userMessageId: input.userMessageId,
+        });
+      }
+      const inserted = yield* execute("recordAcceptanceReceipt", () =>
+        db.insert(acceptanceReceipts).values(input).returning(acceptanceReceiptFields).get(),
+      );
+      return yield* decodeAcceptanceReceipt("recordAcceptanceReceipt", inserted);
+    });
+
+  const readSessionCommandReceipt = (
+    channelBindingId: ChannelBindingId,
+    providerMessageId: ProviderMessageId,
+  ) =>
+    execute("readSessionCommandReceipt", () =>
+      db
+        .select(sessionCommandReceiptFields)
+        .from(sessionCommandReceipts)
+        .where(
+          and(
+            eq(sessionCommandReceipts.channelBindingId, channelBindingId),
+            eq(sessionCommandReceipts.providerMessageId, providerMessageId),
+          ),
+        )
+        .limit(1)
+        .get(),
+    ).pipe(
+      Effect.flatMap((row) =>
+        row === undefined
+          ? Effect.succeed(null)
+          : decodeSessionCommandReceipt("readSessionCommandReceipt", row),
+      ),
+    );
+
   const initialize = (namedAgentId: AgentId, input: AgentInitializationInput) =>
     Effect.gen(function* () {
       if (input.agentId !== namedAgentId) {
@@ -220,6 +420,7 @@ export const makeAgentStore = (db: AgentDb) => {
             .insert(sessionOwnership)
             .values({
               becameCurrentAt: input.initializedAt,
+              ownershipSequence: 1,
               replacedAt: null,
               routeId: input.routeId,
               sessionId: input.sessionId,
@@ -277,84 +478,291 @@ export const makeAgentStore = (db: AgentDb) => {
     });
   });
 
-  const replaceCurrentSession = Effect.fn("AgentStore.replaceCurrentSession")(function* (
-    input: ReplaceCurrentSessionInput,
+  const readRouteSessionPage = Effect.fn("AgentStore.readRouteSessionPage")(function* (
+    routeId: ConversationRouteId,
+    cursor: SessionRecallCursor | null,
+    limit: number,
   ) {
-    const sessions = yield* readRouteSessions(input.routeId, "replaceCurrentSession");
-    const current = sessions.find(({ replacedAt }) => replacedAt === null);
-    const historical = sessions.find(
-      ({ sessionId }) => sessionId === input.expectedCurrentSessionId,
-    );
-    if (
-      current?.sessionId === input.replacementSessionId &&
-      historical?.replacedAt === input.replacedAt
-    ) {
-      return CurrentSessionReplaced.make({
-        currentSessionId: input.replacementSessionId,
-        historicalSessionId: input.expectedCurrentSessionId,
-        routeId: input.routeId,
-      });
-    }
-    if (current?.sessionId !== input.expectedCurrentSessionId) {
-      return yield* new CurrentSessionReplacementConflict({
-        actualCurrentSessionId: current?.sessionId ?? null,
-        expectedCurrentSessionId: input.expectedCurrentSessionId,
-        message: "The route's current Session does not match the replacement request",
-        replacementOwnerRouteId: null,
-        replacementSessionId: input.replacementSessionId,
-        routeId: input.routeId,
-      });
-    }
-    const replacementOwner = yield* execute("replaceCurrentSession", () =>
-      db
-        .select({ routeId: sessionOwnership.routeId })
-        .from(sessionOwnership)
-        .where(eq(sessionOwnership.sessionId, input.replacementSessionId))
-        .limit(1)
-        .get(),
-    );
-    if (replacementOwner !== undefined) {
-      const owner = yield* decodeRouteOwner("replaceCurrentSession", replacementOwner);
-      return yield* new CurrentSessionReplacementConflict({
-        actualCurrentSessionId: current.sessionId,
-        expectedCurrentSessionId: input.expectedCurrentSessionId,
-        message: "The replacement Session is already owned by an Agent route",
-        replacementOwnerRouteId: owner.routeId,
-        replacementSessionId: input.replacementSessionId,
-        routeId: input.routeId,
-      });
-    }
-
-    yield* execute("replaceCurrentSession", () =>
-      // The Durable SQLite driver implements this Drizzle transaction with transactionSync.
+    const rawPage = yield* execute("readRouteSessionPage", () =>
       db.transaction((transaction) => {
-        transaction
-          .update(sessionOwnership)
-          .set({ replacedAt: input.replacedAt })
+        const expiredCursors = transaction
+          .select({
+            cursor: sessionRecallCursors.cursor,
+            expired: sql<number>`${sessionRecallCursors.expiresAt} <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+          })
+          .from(sessionRecallCursors)
+          .orderBy(asc(sessionRecallCursors.expiresAt))
+          .limit(40)
+          .all()
+          .filter(({ expired }) => expired === 1);
+        if (expiredCursors.length > 0) {
+          transaction
+            .delete(sessionRecallCursors)
+            .where(
+              inArray(
+                sessionRecallCursors.cursor,
+                expiredCursors.map(({ cursor: expiredCursor }) => expiredCursor),
+              ),
+            )
+            .run();
+        }
+        const rawState =
+          cursor === null
+            ? (() => {
+                const current = transaction
+                  .select({
+                    ownershipSequence: sessionOwnership.ownershipSequence,
+                    sessionId: sessionOwnership.sessionId,
+                  })
+                  .from(sessionOwnership)
+                  .where(
+                    and(eq(sessionOwnership.routeId, routeId), isNull(sessionOwnership.replacedAt)),
+                  )
+                  .limit(1)
+                  .get();
+                const maximum = transaction
+                  .select({
+                    snapshotMaxOwnershipSequence: max(sessionOwnership.ownershipSequence),
+                  })
+                  .from(sessionOwnership)
+                  .where(eq(sessionOwnership.routeId, routeId))
+                  .get();
+                return current === undefined || maximum?.snapshotMaxOwnershipSequence == null
+                  ? undefined
+                  : {
+                      afterOwnershipSequence: null,
+                      snapshotCurrentSessionId: current.sessionId,
+                      snapshotMaxOwnershipSequence: maximum.snapshotMaxOwnershipSequence,
+                    };
+              })()
+            : transaction
+                .select({
+                  afterOwnershipSequence: sessionRecallCursors.afterOwnershipSequence,
+                  snapshotCurrentSessionId: sessionRecallCursors.snapshotCurrentSessionId,
+                  snapshotMaxOwnershipSequence: sessionRecallCursors.snapshotMaxOwnershipSequence,
+                })
+                .from(sessionRecallCursors)
+                .where(
+                  and(
+                    eq(sessionRecallCursors.cursor, cursor),
+                    eq(sessionRecallCursors.routeId, routeId),
+                    gt(sessionRecallCursors.expiresAt, sql`strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`),
+                  ),
+                )
+                .limit(1)
+                .get();
+        if (rawState === undefined) return undefined;
+
+        const historicalLimit = cursor === null ? Math.max(0, limit - 1) : limit;
+        const historicalRows = transaction
+          .select({
+            ownershipSequence: sessionOwnership.ownershipSequence,
+            sessionId: sessionOwnership.sessionId,
+          })
+          .from(sessionOwnership)
+          .where(
+            and(
+              eq(sessionOwnership.routeId, routeId),
+              isNotNull(sessionOwnership.replacedAt),
+              ne(sessionOwnership.sessionId, rawState.snapshotCurrentSessionId),
+              lte(
+                sessionOwnership.ownershipSequence,
+                rawState.afterOwnershipSequence === null
+                  ? (rawState.snapshotMaxOwnershipSequence ?? 0)
+                  : rawState.afterOwnershipSequence - 1,
+              ),
+            ),
+          )
+          .orderBy(desc(sessionOwnership.ownershipSequence))
+          .limit(historicalLimit + 1)
+          .all();
+        return { historicalLimit, historicalRows, rawState };
+      }),
+    );
+    if (rawPage === undefined) {
+      if (cursor !== null) return yield* invalidSessionRecallCursor(cursor);
+      return yield* new AgentStateNotFound({
+        message: "The conversation route does not have a current Session",
+        subject: "route",
+      });
+    }
+    const state = yield* decodeSessionRecallCursorState(rawPage.rawState);
+    const historicalSessionRecords = yield* Effect.forEach(
+      rawPage.historicalRows.slice(0, rawPage.historicalLimit),
+      (row) => decodeRouteSessionPageRecord("readRouteSessionPage", row),
+    );
+    const candidateStates = [
+      ...(cursor === null
+        ? [{ afterOwnershipSequence: null, sessionId: state.snapshotCurrentSessionId }]
+        : []),
+      ...historicalSessionRecords.map((record) => ({
+        afterOwnershipSequence: record.ownershipSequence,
+        sessionId: record.sessionId,
+      })),
+    ];
+    const candidates = yield* Effect.forEach(
+      candidateStates,
+      ({ afterOwnershipSequence, sessionId }) =>
+        Schema.decodeEffect(SessionRecallCursor)(
+          // A continuation is a bearer credential and needs cryptographic entropy.
+          // oxlint-disable-next-line effecttsgo/crypto-random-uuid
+          crypto.randomUUID(),
+        ).pipe(
+          Effect.mapError(() => invalidStoreRecord("readRouteSessionPage")),
+          Effect.map(
+            (
+              candidateCursor,
+            ): SessionRecallCandidate & { readonly afterOwnershipSequence: number | null } => ({
+              afterOwnershipSequence,
+              cursor: candidateCursor,
+              sessionId,
+            }),
+          ),
+        ),
+    );
+    yield* execute("readRouteSessionPage", () => {
+      if (candidates.length === 0) return undefined;
+      return db
+        .insert(sessionRecallCursors)
+        .values(
+          candidates.map((candidate) => ({
+            afterOwnershipSequence: candidate.afterOwnershipSequence,
+            cursor: candidate.cursor,
+            routeId,
+            snapshotCurrentSessionId: state.snapshotCurrentSessionId,
+            snapshotMaxOwnershipSequence: state.snapshotMaxOwnershipSequence,
+          })),
+        )
+        .run();
+    });
+    return {
+      candidates: candidates.map(({ cursor: candidateCursor, sessionId }) => ({
+        cursor: candidateCursor,
+        sessionId,
+      })),
+      currentSessionId: state.snapshotCurrentSessionId,
+      hasMore: rawPage.historicalRows.length > rawPage.historicalLimit,
+      routeId,
+    } as const;
+  });
+
+  const replaceCurrentSession = Effect.fn("AgentStore.replaceCurrentSession")(function* (
+    input: ReplaceCurrentSessionRecordInput,
+  ) {
+    const outcome = yield* execute("replaceCurrentSession", () =>
+      // The Durable SQLite driver implements this exact compare-and-replace with transactionSync.
+      db.transaction((transaction) => {
+        const current = transaction
+          .select({ sessionId: sessionOwnership.sessionId })
+          .from(sessionOwnership)
+          .where(
+            and(eq(sessionOwnership.routeId, input.routeId), isNull(sessionOwnership.replacedAt)),
+          )
+          .limit(1)
+          .get();
+        const historical = transaction
+          .select({ replacedAt: sessionOwnership.replacedAt })
+          .from(sessionOwnership)
           .where(
             and(
               eq(sessionOwnership.routeId, input.routeId),
               eq(sessionOwnership.sessionId, input.expectedCurrentSessionId),
-              isNull(sessionOwnership.replacedAt),
+              isNotNull(sessionOwnership.replacedAt),
             ),
           )
-          .run();
-        transaction
-          .insert(sessionOwnership)
-          .values({
-            becameCurrentAt: input.replacedAt,
-            replacedAt: null,
-            routeId: input.routeId,
-            sessionId: input.replacementSessionId,
-          })
-          .run();
+          .limit(1)
+          .get();
+        if (
+          current?.sessionId === input.replacementSessionId &&
+          historical?.replacedAt === input.replacedAt
+        ) {
+          return { kind: "Replaced" } as const;
+        }
+        return replaceCurrentSessionTransaction(transaction, input);
       }),
     );
+    if (isReplacementConflict(outcome)) return yield* replacementConflict(outcome, input);
     return CurrentSessionReplaced.make({
       currentSessionId: input.replacementSessionId,
       historicalSessionId: input.expectedCurrentSessionId,
       routeId: input.routeId,
     });
+  });
+
+  const replaceCurrentSessionWithCommandReceipt = Effect.fn(
+    "AgentStore.replaceCurrentSessionWithCommandReceipt",
+  )(function* (input: ReplaceCurrentSessionWithCommandReceiptRecordInput) {
+    const outcome = yield* execute("replaceCurrentSessionWithCommandReceipt", () =>
+      db.transaction((transaction) => {
+        const existing = transaction
+          .select(sessionCommandReceiptFields)
+          .from(sessionCommandReceipts)
+          .where(
+            and(
+              eq(sessionCommandReceipts.channelBindingId, input.receipt.channelBindingId),
+              eq(sessionCommandReceipts.providerMessageId, input.receipt.providerMessageId),
+            ),
+          )
+          .limit(1)
+          .get();
+        if (existing !== undefined) {
+          const matches =
+            existing.allowancePeriodId === input.receipt.allowancePeriodId &&
+            existing.channelBindingId === input.receipt.channelBindingId &&
+            existing.command === input.receipt.command &&
+            existing.currentSessionId === input.replacementSessionId &&
+            existing.providerMessageId === input.receipt.providerMessageId &&
+            existing.receiptId === input.receipt.receiptId &&
+            existing.routeId === input.routeId &&
+            existing.userMessageId === input.receipt.userMessageId;
+          return { existing, kind: matches ? ("Existing" as const) : ("ReceiptConflict" as const) };
+        }
+        const replacement = replaceCurrentSessionTransaction(transaction, input);
+        if (replacement.kind !== "Replaced") return replacement;
+        const receipt = transaction
+          .insert(sessionCommandReceipts)
+          .values({
+            ...input.receipt,
+            currentSessionId: input.replacementSessionId,
+            historicalSessionId: input.expectedCurrentSessionId,
+            routeId: input.routeId,
+          })
+          .returning(sessionCommandReceiptFields)
+          .get();
+        if (receipt === undefined)
+          throw new Error("Session command receipt insert returned no row");
+        return { kind: "Replaced" as const, receipt };
+      }),
+    );
+    if (outcome.kind === "ReceiptConflict") {
+      return yield* new SessionCommandReceiptConflict({
+        existingReceiptId: outcome.existing.receiptId,
+        existingReplacementSessionId: outcome.existing.currentSessionId,
+        existingUserMessageId: outcome.existing.userMessageId,
+        message: "The Channel Message Key already has different Session command facts",
+        providerMessageId: input.receipt.providerMessageId,
+        receiptId: input.receipt.receiptId,
+        requestedReplacementSessionId: input.replacementSessionId,
+        userMessageId: input.receipt.userMessageId,
+      });
+    }
+    if (isReplacementConflict(outcome)) return yield* replacementConflict(outcome, input);
+    if (outcome.kind === "Existing") {
+      return yield* decodeSessionCommandReceipt(
+        "replaceCurrentSessionWithCommandReceipt",
+        outcome.existing,
+      );
+    }
+    if (outcome.receipt === undefined) {
+      return yield* new AgentStoreRecordInvalid({
+        message: "Session command receipt insert returned no row",
+        operation: "replaceCurrentSessionWithCommandReceipt",
+      });
+    }
+    return yield* decodeSessionCommandReceipt(
+      "replaceCurrentSessionWithCommandReceipt",
+      outcome.receipt,
+    );
   });
 
   const ownsSession = (sessionId: SessionId) =>
@@ -547,7 +955,7 @@ export const makeAgentStore = (db: AgentDb) => {
           })
           .from(sessionOwnership)
           .where(eq(sessionOwnership.routeId, routeId))
-          .orderBy(asc(sessionOwnership.becameCurrentAt), asc(sessionOwnership.sessionId))
+          .orderBy(asc(sessionOwnership.ownershipSequence))
           .all(),
       );
       if (rows.length === 0) {
@@ -560,17 +968,66 @@ export const makeAgentStore = (db: AgentDb) => {
     });
 
   return {
+    readAcceptanceReceipt,
+    readSessionCommandReceipt,
+    recordAcceptanceReceipt,
     initialize,
     inspect,
     ownsSession,
     readCommittedTurns,
     readPrimarySessionId,
     readRoute,
+    readRouteSessionPage,
     readSessionIds,
     recordCommittedTurn,
     replaceCurrentSession,
+    replaceCurrentSessionWithCommandReceipt,
   };
 };
+
+const sessionCommandReceiptFields = {
+  acceptedAt: sessionCommandReceipts.acceptedAt,
+  allowancePeriodId: sessionCommandReceipts.allowancePeriodId,
+  channelBindingId: sessionCommandReceipts.channelBindingId,
+  command: sessionCommandReceipts.command,
+  currentSessionId: sessionCommandReceipts.currentSessionId,
+  historicalSessionId: sessionCommandReceipts.historicalSessionId,
+  providerMessageId: sessionCommandReceipts.providerMessageId,
+  receiptId: sessionCommandReceipts.receiptId,
+  routeId: sessionCommandReceipts.routeId,
+  userMessageId: sessionCommandReceipts.userMessageId,
+};
+
+const decodeSessionCommandReceipt = (
+  operation: AgentStoreOperation,
+  row: typeof sessionCommandReceipts.$inferSelect,
+) =>
+  Schema.decodeEffect(SessionCommandReceipt)({
+    ...row,
+    _tag: "SessionCommandReceipt",
+    acceptedAt: `${row.acceptedAt.replace(" ", "T")}Z`,
+  }).pipe(Effect.mapError(() => invalidStoreRecord(operation)));
+
+const acceptanceReceiptFields = {
+  acceptedAt: acceptanceReceipts.acceptedAt,
+  allowancePeriodId: acceptanceReceipts.allowancePeriodId,
+  channelBindingId: acceptanceReceipts.channelBindingId,
+  providerMessageId: acceptanceReceipts.providerMessageId,
+  receiptId: acceptanceReceipts.receiptId,
+  sessionId: acceptanceReceipts.sessionId,
+  thinkSubmissionId: acceptanceReceipts.thinkSubmissionId,
+  userMessageId: acceptanceReceipts.userMessageId,
+};
+
+const decodeAcceptanceReceipt = (
+  operation: AgentStoreOperation,
+  row: typeof acceptanceReceipts.$inferSelect,
+) =>
+  Schema.decodeEffect(AcceptanceReceipt)({
+    ...row,
+    _tag: "AcceptanceReceipt",
+    acceptedAt: `${row.acceptedAt.replace(" ", "T")}Z`,
+  }).pipe(Effect.mapError(() => invalidStoreRecord(operation)));
 
 const committedTurnReceiptFields = {
   assistantMessageId: committedTurns.assistantMessageId,
@@ -646,13 +1103,26 @@ const decodeSessionId = (
     Effect.mapError(() => invalidStoreRecord(operation)),
   );
 
-const decodeRouteOwner = (
+const decodeRouteSessionPageRecord = (
   operation: AgentStoreOperation,
-  row: typeof RouteOwnerRecord.Encoded,
-): Effect.Effect<typeof RouteOwnerRecord.Type, AgentStoreRecordInvalid> =>
-  Schema.decodeEffect(RouteOwnerRecord)(row).pipe(
+  row: RouteSessionPageDatabaseRecord,
+): Effect.Effect<RouteSessionPageRecord, AgentStoreRecordInvalid> =>
+  Schema.decodeUnknownEffect(RouteSessionPageRecord)(row).pipe(
     Effect.mapError(() => invalidStoreRecord(operation)),
   );
+
+const decodeSessionRecallCursorState = (
+  row: typeof SessionRecallCursorStateRecord.Encoded,
+): Effect.Effect<SessionRecallCursorStateRecord, AgentStoreRecordInvalid> =>
+  Schema.decodeEffect(SessionRecallCursorStateRecord)(row).pipe(
+    Effect.mapError(() => invalidStoreRecord("readRouteSessionPage")),
+  );
+
+const invalidSessionRecallCursor = (cursor: SessionRecallCursor) =>
+  new SessionRecallCursorInvalid({
+    cursor,
+    message: "The Session Recall cursor is invalid",
+  });
 
 const invalidStoreRecord = (operation: AgentStoreOperation) =>
   new AgentStoreRecordInvalid({

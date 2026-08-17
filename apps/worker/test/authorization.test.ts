@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { DateTime, Schema } from "effect";
 
 import { UserId } from "../src/domain";
+import { AuthSessionId } from "../src/domain/auth-session";
 import type { AuthorizationOperationName } from "../src/domain/authorization-operation";
 import { AuthorizationContext, make } from "../src/services/authorization";
 import { retainedCatalog } from "../src/domain/plan-policy";
@@ -71,7 +72,7 @@ describe("Authorization", () => {
           ...free,
           authority: {
             _tag: "RevokedAuthSession" as const,
-            authSessionId: "auth-session-001",
+            authSessionId: AuthSessionId.make("auth-session-001"),
             userId: free.user.userId,
           },
         },
@@ -297,7 +298,7 @@ describe("Authorization", () => {
           ...exhausted,
           authority: {
             _tag: "RevokedAuthSession",
-            authSessionId: "auth-session-001",
+            authSessionId: AuthSessionId.make("auth-session-001"),
             userId: exhausted.user.userId,
           },
         },
@@ -310,7 +311,7 @@ describe("Authorization", () => {
           ...exhausted,
           authority: {
             _tag: "AuthSession",
-            authSessionId: "auth-session-different",
+            authSessionId: AuthSessionId.make("auth-session-different"),
             expiresAt: date("2026-08-20T00:00:00.000Z"),
             userId: exhausted.user.userId,
           },
@@ -454,6 +455,55 @@ describe("Authorization", () => {
     }
   });
 
+  it("keeps downgraded data manageable while paid protected effects stay stopped", () => {
+    const authorization = make(retainedCatalog);
+    const cases = [
+      { expected: "Admitted", operation: operation("file.read") },
+      { expected: "Admitted", operation: operation("file.delete") },
+      {
+        expected: "Denied",
+        operation: { ...operation("file.upload"), bytes: 1n },
+      },
+      { expected: "Admitted", operation: operation("workflow.inspect") },
+      { expected: "Admitted", operation: operation("workflow.cancel") },
+      {
+        expected: "Denied",
+        operation: { ...operation("workflow.manage"), change: "start" as const },
+      },
+      {
+        expected: "Admitted",
+        operation: { ...operation("reminder.manage"), change: "cancel" as const },
+      },
+      {
+        expected: "Denied",
+        operation: { ...operation("reminder.manage"), change: "recurringCreate" as const },
+      },
+      {
+        expected: "Admitted",
+        operation: { ...operation("gmail.connection.manage"), change: "revoke" as const },
+      },
+      { expected: "Denied", operation: operation("gmail.search") },
+    ] as const;
+
+    for (const testCase of cases) {
+      const context = baseContext("free", testCase.operation);
+      expect(
+        authorization.admit(
+          {
+            ...context,
+            liveFacts: {
+              ...context.liveFacts,
+              activeReminders: 25n,
+              concurrentWorkflows: 3n,
+              retainedFileBytes: 100_000_000n,
+            },
+          },
+          testCase.operation,
+        ),
+      ).toMatchObject({ _tag: testCase.expected });
+    }
+  });
+
   it("allows a recurring reminder material change at the active reminder limit", () => {
     const authorization = make(retainedCatalog);
     const operationAtLimit = {
@@ -532,7 +582,7 @@ const operationCases: ReadonlyArray<OperationCase> = [
   both(operation("conversation.accept")),
   both({ ...operation("conversation.run"), modelSteps: 1n }),
   both(operation("session.recall")),
-  both(operation("session.replace"), true),
+  both(operation("session.replace")),
   both(operation("session.delete"), true),
   both(operation("memory.inspect")),
   both(operation("memory.correct")),
