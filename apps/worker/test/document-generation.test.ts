@@ -7,6 +7,7 @@ import { AllowancePeriodId, PlanPolicyVersion, UserId } from "../src/domain";
 import { ActionId } from "../src/domain/action-execution";
 import { AuthSessionId } from "../src/domain/auth-session";
 import { retainedCatalog } from "../src/domain/plan-policy";
+import * as ArtifactValidation from "../src/integrations/cloudflare/document-artifact-validation";
 import * as DocumentGeneration from "../src/services/document-generation";
 import { make as makeAuthorization } from "../src/services/authorization";
 
@@ -34,7 +35,11 @@ describe("Document Generation", () => {
       const artifact = yield* fixture.documents.generate(generationRequest("pdf"));
 
       expect(artifact).toMatchObject({
-        artifactRole: { _tag: "GeneratedDocumentV1", format: "pdf", pageCount: 1 },
+        artifactRole: {
+          _tag: "GeneratedDocumentV1",
+          format: "pdf",
+          pageCount: 1,
+        },
         content: {
           byteLength: pdf.byteLength,
           contentId: "document:toolCall:tool-call-176",
@@ -46,12 +51,27 @@ describe("Document Generation", () => {
       expect(fixture.recorded).toEqual([
         {
           allowancePeriodId: AllowancePeriodId.make("allowance-period-176"),
-          items: [{ allowanceKind: "vendorUsdMicros", basis: "observed", quantity: 12_345n }],
-          source: { sourceId: "provider-pdf-1", sourceType: "documentProviderOperation" },
+          items: [
+            {
+              allowanceKind: "vendorUsdMicros",
+              basis: "observed",
+              quantity: 12_345n,
+            },
+          ],
+          source: {
+            sourceId: "provider-pdf-1",
+            sourceType: "documentProviderOperation",
+          },
         },
         {
           allowancePeriodId: AllowancePeriodId.make("allowance-period-176"),
-          items: [{ allowanceKind: "generatedDocuments", basis: "observed", quantity: 1n }],
+          items: [
+            {
+              allowanceKind: "generatedDocuments",
+              basis: "observed",
+              quantity: 1n,
+            },
+          ],
           source: { sourceId: "tool-call-176", sourceType: "toolCall" },
         },
       ]);
@@ -108,8 +128,14 @@ describe("Document Generation", () => {
         .generate(generationRequest("pdf"))
         .pipe(Effect.flip);
 
-      expect(pageError).toMatchObject({ _tag: "InvalidGeneratedArtifact", reason: "pageLimit" });
-      expect(byteError).toMatchObject({ _tag: "InvalidGeneratedArtifact", reason: "byteLimit" });
+      expect(pageError).toMatchObject({
+        _tag: "InvalidGeneratedArtifact",
+        reason: "pageLimit",
+      });
+      expect(byteError).toMatchObject({
+        _tag: "InvalidGeneratedArtifact",
+        reason: "byteLimit",
+      });
       expect(pageFixture.stored).toHaveLength(0);
       expect(byteFixture.stored).toHaveLength(0);
     }),
@@ -117,7 +143,9 @@ describe("Document Generation", () => {
 
   it.effect("rejects invalid output and records no completed document", () =>
     Effect.gen(function* () {
-      const fixture = makeFixture({ computeResult: completed(strToU8("not a pdf")) });
+      const fixture = makeFixture({
+        computeResult: completed(strToU8("not a pdf")),
+      });
 
       const error = yield* fixture.documents.generate(generationRequest("pdf")).pipe(Effect.flip);
 
@@ -152,7 +180,13 @@ describe("Document Generation", () => {
       expect(fixture.recorded).toEqual([
         {
           allowancePeriodId,
-          items: [{ allowanceKind: "vendorUsdMicros", basis: "conservative", quantity: 50_000n }],
+          items: [
+            {
+              allowanceKind: "vendorUsdMicros",
+              basis: "conservative",
+              quantity: 50_000n,
+            },
+          ],
           source: {
             sourceId: "provider-interrupted-1",
             sourceType: "documentProviderOperation",
@@ -253,7 +287,10 @@ describe("Document Generation", () => {
 
       const error = yield* fixture.documents.generate(generationRequest("pdf")).pipe(Effect.flip);
 
-      expect(error).toMatchObject({ _tag: "Denied", reason: "missingEntitlement" });
+      expect(error).toMatchObject({
+        _tag: "Denied",
+        reason: "missingEntitlement",
+      });
       expect(fixture.computeCalls()).toBe(0);
     }),
   );
@@ -275,7 +312,10 @@ describe("Document Generation", () => {
   it.effect("does not report generation success when Sandbox cleanup is unconfirmed", () =>
     Effect.gen(function* () {
       const pdf = yield* Effect.promise(() => makePdf(1));
-      const fixture = makeFixture({ cleanupFails: true, computeResult: completed(pdf) });
+      const fixture = makeFixture({
+        cleanupFails: true,
+        computeResult: completed(pdf),
+      });
 
       const error = yield* fixture.documents.generate(generationRequest("pdf")).pipe(Effect.flip);
 
@@ -286,11 +326,17 @@ describe("Document Generation", () => {
   it.effect("cleans up when retained artifact storage fails", () =>
     Effect.gen(function* () {
       const pdf = yield* Effect.promise(() => makePdf(1));
-      const fixture = makeFixture({ computeResult: completed(pdf), putFails: true });
+      const fixture = makeFixture({
+        computeResult: completed(pdf),
+        putFails: true,
+      });
 
       const error = yield* fixture.documents.generate(generationRequest("pdf")).pipe(Effect.flip);
 
-      expect(error).toMatchObject({ _tag: "ArtifactStoreUnavailable", operation: "put" });
+      expect(error).toMatchObject({
+        _tag: "ArtifactStoreUnavailable",
+        operation: "put",
+      });
       expect(fixture.cleanupCalls()).toBe(1);
     }),
   );
@@ -299,7 +345,11 @@ describe("Document Generation", () => {
     Effect.gen(function* () {
       const fixture = makeFixture({
         computeDefects: true,
-        computeResult: { _tag: "AttemptUnavailable", cost: { _tag: "ProvenNoUse" }, evidence: "" },
+        computeResult: {
+          _tag: "AttemptUnavailable",
+          cost: { _tag: "ProvenNoUse" },
+          evidence: "",
+        },
       });
 
       yield* fixture.documents.generate(generationRequest("pdf")).pipe(Effect.exit);
@@ -421,7 +471,9 @@ describe("Document Generation", () => {
         },
       });
 
-      expect(artifact.artifactRole).toMatchObject({ _tag: "GeneratedDocumentV1" });
+      expect(artifact.artifactRole).toMatchObject({
+        _tag: "GeneratedDocumentV1",
+      });
       expect(fixture.recorded[0]?.allowancePeriodId).toBe(originalPeriodId);
     }),
   );
@@ -464,7 +516,10 @@ describe("Document Generation", () => {
       });
 
       expect(exported).toEqual({ artifact, bytes: pdf });
-      expect(denied).toMatchObject({ _tag: "Denied", reason: "ownershipRequired" });
+      expect(denied).toMatchObject({
+        _tag: "Denied",
+        reason: "ownershipRequired",
+      });
       expect(fixture.readCalls()).toBe(1);
     }),
   );
@@ -491,7 +546,9 @@ describe("Document Generation", () => {
 
   it.effect("rejects a DOCX package without OOXML relationships", () =>
     Effect.gen(function* () {
-      const fixture = makeFixture({ computeResult: completed(makeDocx(1, 0, false)) });
+      const fixture = makeFixture({
+        computeResult: completed(makeDocx(1, 0, false)),
+      });
 
       const error = yield* fixture.documents.generate(generationRequest("docx")).pipe(Effect.flip);
 
@@ -519,12 +576,18 @@ describe("Document Generation", () => {
               startsAt: date("2026-08-01T00:00:00.000Z"),
               usage: [],
             },
-            subscription: { ...request.authorization.subscription, plan: "free" },
+            subscription: {
+              ...request.authorization.subscription,
+              plan: "free",
+            },
           },
         })
         .pipe(Effect.flip);
 
-      expect(error).toMatchObject({ _tag: "Denied", reason: "missingEntitlement" });
+      expect(error).toMatchObject({
+        _tag: "Denied",
+        reason: "missingEntitlement",
+      });
       expect(fixture.computeCalls()).toBe(0);
     }),
   );
@@ -658,6 +721,7 @@ const makeFixture = (options: {
     readonly source: DocumentGeneration.AllowanceSource;
   }> = [];
   const documents = DocumentGeneration.make({
+    artifactValidator: ArtifactValidation,
     allowances: {
       record: (period, source, items) =>
         Effect.sync(() => {
@@ -666,6 +730,7 @@ const makeFixture = (options: {
         }),
     },
     artifacts: {
+      account: () => Effect.void,
       delete: (contentId) =>
         Effect.sync(() => {
           const index = stored.findIndex(

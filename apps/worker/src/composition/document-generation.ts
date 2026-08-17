@@ -4,6 +4,7 @@ import type { Database } from "../db";
 import * as Billing from "../db/billing";
 import { retainedCatalog } from "../domain/plan-policy";
 import * as ArtifactR2 from "../integrations/cloudflare/document-artifacts";
+import * as ArtifactValidation from "../integrations/cloudflare/document-artifact-validation";
 import * as DocumentCompute from "../integrations/cloudflare/document-compute";
 import * as Allowances from "../services/allowances";
 import { make as makeAuthorization } from "../services/authorization";
@@ -34,6 +35,7 @@ export const make = (
       now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
     }),
     artifacts: ArtifactR2.make(bindings.ARTIFACTS),
+    artifactValidator: ArtifactValidation,
     authorization: makeAuthorization(retainedCatalog),
     compute: DocumentCompute.make(
       bindings.DOCUMENT_SANDBOX,
@@ -57,8 +59,17 @@ export const reconcileCosts = (bindings: Pick<Bindings, "ARTIFACTS">, database: 
         (cost) =>
           allowances.record(
             cost.allowancePeriodId,
-            { sourceId: cost.providerOperationId, sourceType: "documentProviderOperation" },
-            [{ allowanceKind: "vendorUsdMicros", basis: cost.basis, quantity: cost.usdMicros }],
+            {
+              sourceId: cost.providerOperationId,
+              sourceType: "documentProviderOperation",
+            },
+            [
+              {
+                allowanceKind: "vendorUsdMicros",
+                basis: cost.basis,
+                quantity: cost.usdMicros,
+              },
+            ],
           ),
         { concurrency: 5, discard: true },
       ).pipe(

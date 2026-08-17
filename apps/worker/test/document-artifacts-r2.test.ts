@@ -5,7 +5,7 @@ import { Effect } from "effect";
 
 import { AllowancePeriodId, UserId } from "../src/domain";
 import { ContentId } from "../src/domain/client-content";
-import * as DocumentArtifact from "../src/domain/document-artifact";
+import * as DocumentArtifactValidation from "../src/integrations/cloudflare/document-artifact-validation";
 import * as ArtifactR2 from "../src/integrations/cloudflare/document-artifacts";
 import { attemptKeyFor } from "../src/integrations/cloudflare/document-storage-keys";
 import { DocumentIntentDigest } from "../src/services/document-generation";
@@ -15,7 +15,7 @@ describe("generated document R2 artifacts", () => {
     Effect.gen(function* () {
       const bytes = yield* Effect.promise(makePdf);
       const contentId = ContentId.make("document:toolCall:r2-artifact-176");
-      const artifact = yield* DocumentArtifact.parse(contentId, "pdf", bytes, 1);
+      const artifact = yield* DocumentArtifactValidation.validate(contentId, "pdf", bytes, 1);
       const store = ArtifactR2.make(env.ARTIFACTS);
       const retained = {
         allowancePeriodId: AllowancePeriodId.make("allowance-period-r2-176"),
@@ -25,6 +25,7 @@ describe("generated document R2 artifacts", () => {
         format: "pdf" as const,
         intentDigest: DocumentIntentDigest.make("2".repeat(64)),
         owner: { _tag: "ToolCall" as const, toolCallId: "r2-artifact-176" },
+        retention: "accounted" as const,
         userId: UserId.make("user-r2-176"),
       };
 
@@ -47,7 +48,7 @@ describe("generated document R2 artifacts", () => {
     Effect.gen(function* () {
       const bytes = yield* Effect.promise(makePdf);
       const contentId = ContentId.make("document:toolCall:r2-digest-176");
-      const artifact = yield* DocumentArtifact.parse(contentId, "pdf", bytes, 1);
+      const artifact = yield* DocumentArtifactValidation.validate(contentId, "pdf", bytes, 1);
       const store = ArtifactR2.make(env.ARTIFACTS);
       yield* store.put({
         allowancePeriodId: AllowancePeriodId.make("allowance-period-r2-digest-176"),
@@ -57,10 +58,14 @@ describe("generated document R2 artifacts", () => {
         format: "pdf",
         intentDigest: DocumentIntentDigest.make("3".repeat(64)),
         owner: { _tag: "ToolCall", toolCallId: "r2-digest-176" },
+        retention: "accounted" as const,
         userId: UserId.make("user-r2-digest-176"),
       });
       const listed = yield* Effect.promise(() =>
-        env.ARTIFACTS.list({ include: ["customMetadata"], prefix: "client-content/" }),
+        env.ARTIFACTS.list({
+          include: ["customMetadata"],
+          prefix: "client-content/",
+        }),
       );
       const object = listed.objects.find((candidate) =>
         candidate.customMetadata?.osfo?.includes(contentId),

@@ -1,14 +1,13 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "@effect/vitest";
 import { PDFDocument } from "pdf-lib";
-import { Effect, Schema } from "effect";
-import { TestClock } from "effect/testing";
+import { Effect } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 
 import { AllowancePeriodId, UserId } from "../src/domain";
 import { ContentId } from "../src/domain/client-content";
-import * as DocumentArtifact from "../src/domain/document-artifact";
 import * as DocumentArtifacts from "../src/integrations/cloudflare/document-artifacts";
+import * as DocumentArtifactValidation from "../src/integrations/cloudflare/document-artifact-validation";
 import * as DocumentDownload from "../src/integrations/cloudflare/document-download";
 import { DocumentIntentDigest } from "../src/services/document-generation";
 
@@ -23,10 +22,8 @@ describe("Generated document download", () => {
         document.addPage();
         return document.save({ useObjectStreams: false });
       });
-      const artifact = yield* DocumentArtifact.parse(contentId, "pdf", pdf, 1);
+      const artifact = yield* DocumentArtifactValidation.validate(contentId, "pdf", pdf, 1);
       const artifacts = DocumentArtifacts.make(env.ARTIFACTS);
-      const issuedAt = 1_786_968_000_000;
-      yield* TestClock.setTime(issuedAt);
       yield* artifacts.delete(contentId);
       yield* artifacts.put({
         allowancePeriodId: AllowancePeriodId.make("period-download-176"),
@@ -36,45 +33,37 @@ describe("Generated document download", () => {
         format: "pdf",
         intentDigest: DocumentIntentDigest.make("7".repeat(64)),
         owner: { _tag: "ToolCall", toolCallId: "download-176" },
+        retention: "accounted",
         userId,
       });
-      const downloadUrl = yield* DocumentDownload.makeUrl({
-        baseUrl: env.BETTER_AUTH_BASE_URL,
-        contentId,
-        secret: env.BETTER_AUTH_SECRET,
-        userId,
-      });
-
-      const response = yield* DocumentDownload.serve(env.ARTIFACTS, env.BETTER_AUTH_SECRET).pipe(
+      const response = yield* DocumentDownload.serve(
+        env.ARTIFACTS,
+        Effect.succeed({ authSessionId: "active-session", userId }),
+      ).pipe(
         Effect.provideService(
           HttpServerRequest.HttpServerRequest,
-          HttpServerRequest.fromWeb(new Request(downloadUrl)),
+          HttpServerRequest.fromWeb(
+            new Request(`${env.BETTER_AUTH_BASE_URL}/documents/export?contentId=${contentId}`),
+          ),
         ),
       );
-      const token = new URL(downloadUrl).searchParams.get("token") ?? "";
-      const encodedClaim = token.split(".")[0] ?? "";
-      const claim = yield* Schema.decodeEffect(
-        Schema.fromJsonString(Schema.Struct({ expiresAt: Schema.Int, issuedAt: Schema.Int })),
-      )(atob(encodedClaim.replaceAll("-", "+").replaceAll("_", "/")));
-      yield* TestClock.setTime(4_102_444_800_000);
-      const futureUrl = yield* DocumentDownload.makeUrl({
-        baseUrl: env.BETTER_AUTH_BASE_URL,
-        contentId,
-        secret: env.BETTER_AUTH_SECRET,
-        userId,
-      });
-      yield* TestClock.setTime(issuedAt);
-      const future = yield* DocumentDownload.serve(env.ARTIFACTS, env.BETTER_AUTH_SECRET).pipe(
+      const leaked = yield* DocumentDownload.serve(
+        env.ARTIFACTS,
+        Effect.succeed({
+          authSessionId: "other-session",
+          userId: UserId.make("other-user"),
+        }),
+      ).pipe(
         Effect.provideService(
           HttpServerRequest.HttpServerRequest,
-          HttpServerRequest.fromWeb(new Request(futureUrl)),
+          HttpServerRequest.fromWeb(
+            new Request(`${env.BETTER_AUTH_BASE_URL}/documents/export?contentId=${contentId}`),
+          ),
         ),
       );
 
       expect(response.status).toBe(200);
-      expect(claim.issuedAt).toBe(issuedAt);
-      expect(claim.expiresAt - claim.issuedAt).toBe(DocumentDownload.downloadValidityMs);
-      expect(future.status).toBe(404);
+      expect(leaked.status).toBe(404);
       expect(response.headers["content-type"]).toBe("application/pdf");
       expect(response.body).toMatchObject({ _tag: "Uint8Array", body: pdf });
       yield* artifacts.delete(contentId);

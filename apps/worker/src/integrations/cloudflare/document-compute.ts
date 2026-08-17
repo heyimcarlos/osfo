@@ -8,6 +8,7 @@ import {
   DocumentSource,
   DocumentCleanupUnavailable,
   DocumentComputeInterrupted,
+  DocumentIntentDigest,
   DocumentIntentConflict,
   type CostEvidence,
   type ComputeResult,
@@ -18,7 +19,8 @@ import { attemptKeyFor } from "./document-storage-keys";
 export interface AttemptEvidence {
   readonly cost: Extract<CostEvidence, { _tag: "Incurred" }>;
   readonly executionLeaseExpiresAt: number;
-  readonly intentDigest: string;
+  /** Digest of the immutable document intent that owns this attempt. */
+  readonly intentDigest: DocumentIntentDigest;
   readonly renderedPageCount: number | null;
   readonly status: "claimed" | "started" | "completed";
 }
@@ -33,7 +35,7 @@ export class DocumentAttemptEvidenceUnavailable extends Schema.TaggedError<Docum
 export interface AttemptEvidenceStore {
   readonly claim: (
     contentId: ContentId,
-    intentDigest: string,
+    intentDigest: DocumentIntentDigest,
     cost: AttemptEvidence["cost"],
     executionLeaseExpiresAt: number,
   ) => Promise<
@@ -66,11 +68,16 @@ export interface SandboxClient {
   readonly exec: (
     command: string,
     options: { readonly timeout: number },
-  ) => Promise<{ readonly exitCode: number; readonly stdout: string; readonly success: boolean }>;
+  ) => Promise<{
+    readonly exitCode: number;
+    readonly stdout: string;
+    readonly success: boolean;
+  }>;
   readonly exists: (path: string) => Promise<{ readonly exists: boolean }>;
-  readonly readStream: (
-    path: string,
-  ) => Promise<{ readonly content: ReadableStream<Uint8Array>; readonly size: number }>;
+  readonly readStream: (path: string) => Promise<{
+    readonly content: ReadableStream<Uint8Array>;
+    readonly size: number;
+  }>;
   readonly readText: (path: string) => Promise<string>;
   readonly writeFile: (path: string, content: string) => Promise<void>;
 }
@@ -173,7 +180,7 @@ const render = async (
     readonly allowancePeriodId: AllowancePeriodId;
     readonly contentId: ContentId;
     readonly format: DocumentArtifact.DocumentFormat;
-    readonly intentDigest: string;
+    readonly intentDigest: DocumentIntentDigest;
     readonly source: DocumentSource;
   },
   attemptOperationId: string,
@@ -216,6 +223,13 @@ const render = async (
     }
 
     if (claimed.evidence.status === "claimed") {
+      if (!claimed.created) {
+        return {
+          _tag: "AttemptPending",
+          cost,
+          evidence: "Another caller owns the durable Sandbox execution transition",
+        };
+      }
       const started = await attempts.start(
         input.contentId,
         { ...claimed.evidence, status: "started" },
@@ -324,7 +338,7 @@ const AttemptEvidenceMetadata = Schema.fromJsonString(
       usdMicros: Schema.BigIntFromString,
     }),
     executionLeaseExpiresAt: Schema.Int,
-    intentDigest: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
+    intentDigest: DocumentIntentDigest,
     renderedPageCount: Schema.NullOr(
       Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(20)),
     ),
@@ -388,14 +402,19 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
       executionLeaseExpiresAt,
       intentDigest,
       renderedPageCount: null,
-      status: "started" as const,
+      status: "claimed" as const,
     };
     const created = await bucket.put(key, new Uint8Array(), {
       customMetadata: { osfo: encodeAttemptEvidence(proposed) },
       onlyIf: { etagDoesNotMatch: "*" },
     });
     if (created !== null) {
-      return { _tag: "Claimed", created: true, evidence: proposed, revision: created.etag };
+      return {
+        _tag: "Claimed",
+        created: true,
+        evidence: proposed,
+        revision: created.etag,
+      };
     }
     const existing = await bucket.head(key);
     const encoded = existing?.customMetadata?.osfo;
@@ -406,7 +425,12 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
     if (evidence.intentDigest !== intentDigest) {
       return { _tag: "IntentConflict" };
     }
-    return { _tag: "Claimed", created: false, evidence, revision: existing.etag };
+    return {
+      _tag: "Claimed",
+      created: false,
+      evidence,
+      revision: existing.etag,
+    };
   },
   // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
   complete: async (contentId, evidence) => {
@@ -443,7 +467,11 @@ export const readReconciliationBatch = (bucket: R2Bucket) =>
       const startAfter = checkpoint === null ? undefined : await checkpoint.text();
       const listed = await bucket.list(
         startAfter === undefined
-          ? { include: ["customMetadata"], limit: 100, prefix: "document-attempts/" }
+          ? {
+              include: ["customMetadata"],
+              limit: 100,
+              prefix: "document-attempts/",
+            }
           : {
               include: ["customMetadata"],
               limit: 100,

@@ -1,5 +1,5 @@
 import { Api } from "@osfo/api";
-import { Effect, Layer, Redacted, type ManagedRuntime } from "effect";
+import { Effect, Layer, type ManagedRuntime } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
@@ -69,17 +69,21 @@ export const layer = (options: Options) => {
   const invitationAuth = InvitationAuth.layer({
     config: options.config.auth,
   }).pipe(HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)));
-  const whatsapp = WhatsApp.layer({ config: options.config, env: options.env }).pipe(
-    HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)),
-  );
+  const whatsapp = WhatsApp.layer({
+    config: options.config,
+    env: options.env,
+  }).pipe(HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)));
   const documentDownload =
     options.env.ARTIFACTS === undefined
       ? Layer.empty
       : HttpRouter.add(
           "GET",
           "/documents/export",
-          DocumentDownload.serve(options.env.ARTIFACTS, Redacted.value(options.config.auth.secret)),
-        );
+          DocumentDownload.serve(
+            options.env.ARTIFACTS,
+            AuthMiddleware.currentDownloadUser(options.config.auth),
+          ),
+        ).pipe(HttpRouter.provideRequest(options.authDependencies));
   const telegramAdmission = TelegramAdmission.layerWithoutDependencies.pipe(
     Layer.provide(TelegramAdmissionPostgres.layerWithoutDependencies),
     Layer.provide(TelegramAdmissionCloudflare.layer(options.env)),

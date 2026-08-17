@@ -14,9 +14,10 @@ RUN printf '%s\n' \
     && echo "${LIBREOFFICE_DEB_SHA256}  libreoffice-writer-nogui_1%3a7.3.7-0ubuntu0.22.04.12_amd64.deb" | sha256sum --check \
     && apt-get install --no-install-recommends --yes ./libreoffice-writer-nogui_1%3a7.3.7-0ubuntu0.22.04.12_amd64.deb \
     && rm /tmp/libreoffice-writer-nogui_1%3a7.3.7-0ubuntu0.22.04.12_amd64.deb \
-    && rm -rf /var/lib/apt/lists/* \
-    && python3 -m pip install --no-cache-dir charset-normalizer==3.5.1 lxml==6.1.1 pypdf==6.1.1 python-docx==1.2.0 reportlab==4.4.3
+    && rm -rf /var/lib/apt/lists/*
 
+COPY requirements.txt /tmp/osfo-requirements.txt
+RUN python3 -m pip install --no-cache-dir --require-hashes -r /tmp/osfo-requirements.txt
 COPY render_document.py /opt/osfo/render_document.py
 COPY test_render_document.py /tmp/test_render_document.py
 RUN python3 /tmp/test_render_document.py -v && rm /tmp/test_render_document.py

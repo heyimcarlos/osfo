@@ -21,7 +21,7 @@ describe("Cloudflare document compute", () => {
       const first = yield* Effect.promise(() =>
         store.claim(
           contentId,
-          "4".repeat(64),
+          DocumentIntentDigest.make("4".repeat(64)),
           incurred("period-first", "first", 12_000n),
           4_102_444_800_000,
         ),
@@ -29,7 +29,7 @@ describe("Cloudflare document compute", () => {
       const retry = yield* Effect.promise(() =>
         store.claim(
           contentId,
-          "4".repeat(64),
+          DocumentIntentDigest.make("4".repeat(64)),
           incurred("period-second", "second", 99_000n),
           4_102_444_800_000,
         ),
@@ -37,7 +37,7 @@ describe("Cloudflare document compute", () => {
       const conflict = yield* Effect.promise(() =>
         store.claim(
           contentId,
-          "5".repeat(64),
+          DocumentIntentDigest.make("5".repeat(64)),
           incurred("period-third", "third", 12_000n),
           4_102_444_800_000,
         ),
@@ -56,6 +56,11 @@ describe("Cloudflare document compute", () => {
         },
       });
       expect(conflict).toEqual({ _tag: "IntentConflict" });
+      if (first._tag === "Claimed") {
+        yield* Effect.promise(() =>
+          store.start(contentId, { ...first.evidence, status: "started" }, first.revision),
+        );
+      }
       const pending = yield* DocumentCompute.readReconciliationBatch(env.ARTIFACTS);
       expect(pending.costs).toContainEqual(incurred("period-first", "first", 12_000n));
       yield* Effect.promise(() => env.ARTIFACTS.delete(attemptKeyFor(contentId)));
@@ -316,7 +321,7 @@ describe("Cloudflare document compute", () => {
           Effect.promise(async () => {
             const claimed = await store.claim(
               contentId,
-              "8".repeat(64),
+              DocumentIntentDigest.make("8".repeat(64)),
               incurred("period-reconciliation", `operation-${index}`, 12_000n),
               4_102_444_800_000,
             );

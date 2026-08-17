@@ -36,7 +36,6 @@ import * as DocumentGenerationComposition from "../../composition/document-gener
 import { database as workerDatabase } from "../../db";
 import * as Billing from "../../db/billing";
 import { decodeOsfoStage } from "../../env";
-import * as DocumentDownload from "../../integrations/cloudflare/document-download";
 import * as ProviderAuthorizationPostgres from "../../integrations/postgres/provider-authorization";
 import {
   CancelManagedConversationInput,
@@ -229,7 +228,9 @@ const WhatsAppThinkSubmissionInspection = Schema.Struct({
   submissionId: ThinkSubmissionId,
 });
 
-const WhatsAppThinkSubmissionAccepted = Schema.Struct({ submissionId: ThinkSubmissionId });
+const WhatsAppThinkSubmissionAccepted = Schema.Struct({
+  submissionId: ThinkSubmissionId,
+});
 
 const TelegramThinkSubmissionInspection = Schema.Struct({
   idempotencyKey: Schema.String,
@@ -237,7 +238,9 @@ const TelegramThinkSubmissionInspection = Schema.Struct({
   submissionId: ThinkSubmissionId,
 });
 
-const TelegramThinkSubmissionAccepted = Schema.Struct({ submissionId: ThinkSubmissionId });
+const TelegramThinkSubmissionAccepted = Schema.Struct({
+  submissionId: ThinkSubmissionId,
+});
 
 /** Durable result for the deterministic first personal response. */
 export interface PersonalWelcomeCommitted {
@@ -308,7 +311,9 @@ export class OsfoAgent extends Think<Env> {
     Effect.runPromise(applyAgentMigrations(this.ctx.storage)),
   );
   readonly #runtime = Option.map(decodeOsfoStage(this.env.OSFO_STAGE), (stage) =>
-    makeOsfoAgentRuntime(this.ctx.id.name ?? this.ctx.id.toString(), stage, { db: this.env.DB }),
+    makeOsfoAgentRuntime(this.ctx.id.name ?? this.ctx.id.toString(), stage, {
+      db: this.env.DB,
+    }),
   );
 
   /** Resolve a safe model before trusted per-turn metadata selects the exact managed route. */
@@ -990,7 +995,11 @@ export class OsfoAgent extends Think<Env> {
           } as const;
         }
         const messages = yield* readThinkHistory(session, parsed);
-        return { _tag: "SessionHistoryFound", messages, sessionId: parsed } as const;
+        return {
+          _tag: "SessionHistoryFound",
+          messages,
+          sessionId: parsed,
+        } as const;
       }),
     );
   }
@@ -1032,12 +1041,12 @@ export class OsfoAgent extends Think<Env> {
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) throw invalidOsfoEnvironment;
     const env = this.env;
-    const exported = await runtime.runPromise(
+    const artifact = await runtime.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const authorization = yield* currentAuthorization();
           const database = yield* workerDatabase;
-          const artifact = yield* DocumentGenerationComposition.make(
+          return yield* DocumentGenerationComposition.make(
             env,
             database,
             currentAuthorization,
@@ -1046,26 +1055,22 @@ export class OsfoAgent extends Think<Env> {
             authorization,
             contentId: input.contentId,
           });
-          return { artifact, userId: authorization.user.userId };
         }),
       ),
     );
-    const downloadUrl = await Effect.runPromise(
-      DocumentDownload.makeUrl({
-        baseUrl: this.env.BETTER_AUTH_BASE_URL,
-        contentId: exported.artifact.content.contentId,
-        secret: this.env.BETTER_AUTH_SECRET,
-        userId: exported.userId,
-      }),
-    );
-    return { artifact: exported.artifact, downloadUrl };
+    // The model receives only the immutable reference. An authenticated HTTP boundary
+    // delivers the bytes after it checks the current User and session again.
+    return { artifact, delivery: "authenticated-retained-content" } as const;
   }
 
   async #deleteDocument(input: typeof RetainedDocumentInput.Type, toolCallId: string) {
     await this.#migrationsReady;
     const actionId = ActionId.make(toolCallId);
     const currentAuthorization = () =>
-      this.#currentDocumentAuthorization(0n, { actionId, operation: "file.delete" });
+      this.#currentDocumentAuthorization(0n, {
+        actionId,
+        operation: "file.delete",
+      });
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) throw invalidOsfoEnvironment;
     const env = this.env;
@@ -1087,7 +1092,10 @@ export class OsfoAgent extends Think<Env> {
 
   #currentDocumentAuthorization(
     requestVendorUsdMicros: bigint,
-    approval?: { readonly actionId: ActionId; readonly operation: "file.delete" },
+    approval?: {
+      readonly actionId: ActionId;
+      readonly operation: "file.delete";
+    },
   ) {
     // oxlint-disable-next-line effecttsgo/prefer-typed-schema-decoder -- Agent metadata is optional and supplied by the external Think boundary.
     return Schema.decodeUnknownEffect(
@@ -1500,7 +1508,10 @@ export class OsfoAgent extends Think<Env> {
 }
 
 const invalidRequest = (operation: AgentRequestOperation): AgentRequestInvalid =>
-  new AgentRequestInvalid({ message: "The Agent RPC input is invalid", operation });
+  new AgentRequestInvalid({
+    message: "The Agent RPC input is invalid",
+    operation,
+  });
 
 const personalWelcome = (profile: typeof PersonalWelcomeInput.Type): string => {
   const preferredName = profile.preferredName?.trim();

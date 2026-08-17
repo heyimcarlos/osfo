@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
 import { AllowancePeriodId, UserId } from "../../domain";
 import type { ContentId } from "../../domain/client-content";
 import * as DocumentArtifact from "../../domain/document-artifact";
+import * as DocumentArtifactValidation from "./document-artifact-validation";
 import {
   ArtifactIntegrityFailure,
   ArtifactStoreUnavailable,
@@ -33,12 +34,60 @@ const Metadata = Schema.fromJsonString(
     format: DocumentArtifact.DocumentFormat,
     intentDigest: DocumentIntentDigest,
     owner: DocumentArtifact.DocumentOwner,
+    retention: Schema.Literals(["accounted", "pending"]),
     userId: UserId,
   }),
 );
 
 /** Construct immutable generated-document storage over one R2 bucket binding. */
 export const make = (bucket: R2Bucket): ArtifactStore => ({
+  account: (contentId) =>
+    Effect.gen(function* () {
+      const object = yield* attempt("inspect", () => bucket.head(contentKeyFor(contentId)));
+      if (object === null) {
+        return yield* integrityFailure(contentId, "Pending retained Client Content is missing");
+      }
+      const metadata = yield* decodeMetadata(object, contentId);
+      if (metadata.retention === "accounted") return undefined;
+      const body = yield* attempt("readBytes", () => bucket.get(contentKeyFor(contentId)));
+      if (body === null || body.size !== metadata.artifact.content.byteLength) {
+        return yield* integrityFailure(
+          contentId,
+          "Pending retained Client Content is missing or changed",
+        );
+      }
+      const bytes = new Uint8Array(yield* attempt("readBytes", () => body.arrayBuffer()));
+      const accounted = yield* attempt("account", () =>
+        bucket.put(contentKeyFor(contentId), bytes, {
+          customMetadata: {
+            osfo: encodeMetadata({
+              ...metadata,
+              bytes,
+              retention: "accounted",
+            }),
+          },
+          httpMetadata: { contentType: metadata.artifact.content.mediaType },
+          onlyIf: { etagMatches: object.etag },
+        }),
+      );
+      if (accounted === null) {
+        const current = yield* attempt("inspect", () => bucket.head(contentKeyFor(contentId)));
+        if (current === null) {
+          return yield* integrityFailure(contentId, "Pending retained Client Content is missing");
+        }
+        const currentMetadata = yield* decodeMetadata(current, contentId);
+        if (
+          currentMetadata.retention !== "accounted" ||
+          !sameStoredArtifact(currentMetadata, metadata)
+        ) {
+          return yield* integrityFailure(
+            contentId,
+            "Retained Client Content accounting did not complete",
+          );
+        }
+      }
+      return undefined;
+    }),
   delete: (contentId) =>
     attempt("delete", () =>
       bucket.delete([contentKeyFor(contentId), attemptKeyFor(contentId)]),
@@ -106,6 +155,12 @@ const decodeMetadata = (object: R2Object, contentId: ContentId) =>
 
 const readBytes = (bucket: R2Bucket, metadata: StoredArtifactMetadata) =>
   Effect.gen(function* () {
+    if (metadata.retention !== "accounted") {
+      return yield* integrityFailure(
+        metadata.artifact.content.contentId,
+        "Retained Client Content allowance evidence is not complete",
+      );
+    }
     const content = metadata.artifact.content;
     const object = yield* attempt("readBytes", () => bucket.get(contentKeyFor(content.contentId)));
     if (object === null) {
@@ -118,7 +173,7 @@ const readBytes = (bucket: R2Bucket, metadata: StoredArtifactMetadata) =>
       );
     }
     const bytes = new Uint8Array(yield* attempt("readBytes", () => object.arrayBuffer()));
-    const parsed = yield* DocumentArtifact.parse(
+    const parsed = yield* DocumentArtifactValidation.validate(
       content.contentId,
       metadata.format,
       bytes,
@@ -154,11 +209,12 @@ const encodeMetadata = (stored: StoredArtifact) =>
     format: stored.format,
     intentDigest: stored.intentDigest,
     owner: stored.owner,
+    retention: stored.retention,
     userId: stored.userId,
   });
 
 const attempt = <A>(
-  operation: "delete" | "inspect" | "put" | "readBytes",
+  operation: "account" | "delete" | "inspect" | "put" | "readBytes",
   effect: () => Promise<A>,
 ): Effect.Effect<A, ArtifactStoreUnavailable> =>
   Effect.tryPromise({
