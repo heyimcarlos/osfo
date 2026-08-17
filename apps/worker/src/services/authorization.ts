@@ -300,7 +300,7 @@ const authorityPermits = (
   return (
     operation.kind.startsWith("workflow.") ||
     operation.kind.startsWith("gmail.") ||
-    operation.kind.startsWith("document.") ||
+    operation.kind === "document.generate" ||
     operation.kind === "support.gmSummon"
   );
 };
@@ -334,7 +334,7 @@ const requiresOwnership = (operation: AuthorizationOperationType) =>
   operation.kind.startsWith("session.") ||
   operation.kind.startsWith("memory.") ||
   operation.kind.startsWith("file.") ||
-  operation.kind.startsWith("document.") ||
+  operation.kind === "document.generate" ||
   operation.kind.startsWith("reminder.") ||
   operation.kind.startsWith("workflow.") ||
   operation.kind.startsWith("gmail.") ||
@@ -499,8 +499,6 @@ const entitlementFor = (operation: AuthorizationOperationType): Capability | nul
       return "files";
     case "document.generate":
       return operation.artifactKind === "document" ? "documents" : "researchReports";
-    case "document.read":
-      return "documents";
     case "reminder.manage":
       if (operation.change === "cancel") return null;
       return operation.change === "oneTimeCreate" ? "oneTimeReminders" : "recurringReminders";

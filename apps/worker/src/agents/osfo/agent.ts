@@ -1,4 +1,5 @@
 import {
+  action,
   defaultContextOverflowClassifier,
   Session,
   Think,
@@ -12,6 +13,7 @@ import {
   type TurnConfig,
   type TurnContext,
 } from "@cloudflare/think";
+import { tool, type ToolSet } from "ai";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import { DateTime, Effect, Option, Predicate, Result, Schema } from "effect";
 import { HelpArea, OnboardingLocale } from "@osfo/api";
@@ -27,10 +29,15 @@ import {
   ThinkSubmissionId,
   ThinkRequestId,
 } from "../../domain";
+import { ActionId } from "../../domain/action-execution";
+import { ContentId } from "../../domain/client-content";
+import * as DocumentArtifact from "../../domain/document-artifact";
+import * as DocumentGenerationComposition from "../../composition/document-generation";
 import { database as workerDatabase } from "../../db";
 import * as Billing from "../../db/billing";
 import { decodeOsfoStage } from "../../env";
 import * as WhatsAppPostgres from "../../integrations/postgres/whatsapp-admission";
+import * as DocumentDownload from "../../integrations/cloudflare/document-download";
 import {
   CancelManagedConversationInput,
   ManagedTurnMetadata,
@@ -66,6 +73,8 @@ import {
 import { makeAgentDb } from "./db/client";
 import * as Allowances from "../../services/allowances";
 import { makeActionApprovals } from "../../services/action-approvals";
+import { AuthorizationContext } from "../../services/authorization";
+import * as DocumentGeneration from "../../services/document-generation";
 import { makeDurableModelCallUsage } from "../../services/model-call-usage";
 import {
   type AgentInitializationConflict,
@@ -98,9 +107,11 @@ import {
   type ReplaceCurrentSessionEncoded,
 } from "./db/store";
 import {
+  ActionPresentation,
   type ActionPresentationFound,
+  ActionPresentationId,
   type ActionPresentationNotFound,
-  type ActionPresentationUnavailable,
+  ActionPresentationUnavailable,
   ActionApprovalRequestInvalid,
   ApprovalActorAuthorizationUnavailable,
   type ApprovalActorUnauthorized,
@@ -148,6 +159,13 @@ const GatewayCostSettlement = Schema.Struct({
   lookupAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 type GatewayCostSettlement = typeof GatewayCostSettlement.Type;
+
+const GenerateDocumentInput = Schema.Struct({
+  format: DocumentArtifact.DocumentFormat,
+  source: DocumentGeneration.DocumentSource,
+});
+const RetainedDocumentInput = Schema.Struct({ contentId: ContentId });
+const documentDeleteActionName = "deleteDocument";
 
 /** RPC representation of one managed conversation submission. */
 export type SubmitManagedConversationRequest = typeof SubmitManagedConversationInput.Encoded;
@@ -263,7 +281,7 @@ export class OsfoAgent extends Think<Env> {
       },
     }),
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-    present: presentTestProtectedAction,
+    present: presentProtectedAction,
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
   readonly #modelCallUsage = makeDurableModelCallUsage({
@@ -286,12 +304,45 @@ export class OsfoAgent extends Think<Env> {
 
   /** Register a typed protected Action only in the Worker test stage. */
   override getActions() {
+    const documentActions = {
+      [documentDeleteActionName]: action({
+        approval: true,
+        approvalRisk: "high",
+        approvalSummary: "Delete the retained generated document",
+        description: "Delete one retained generated PDF or DOCX owned by the current User.",
+        execute: (input, context) => this.#deleteDocument(input, context.toolCallId),
+        idempotencyKey: ({ ctx }) => `document-delete:${ctx.toolCallId}`,
+        inputSchema: Schema.toStandardSchemaV1(RetainedDocumentInput),
+        kind: "durable-pause",
+        permissions: ["files:delete"],
+      }),
+      generateDocument: action({
+        description: "Generate one bounded PDF or DOCX with at most 20 pages and 5 MB.",
+        execute: (input, context) => this.#generateDocument(input, context.toolCallId),
+        idempotencyKey: ({ ctx }) => `document-generate:${ctx.toolCallId}`,
+        inputSchema: Schema.toStandardSchemaV1(GenerateDocumentInput),
+        permissions: ["documents:generate"],
+        timeoutMs: 90_000,
+      }),
+    };
     const stage = decodeOsfoStage(this.env.OSFO_STAGE);
-    if (Option.isNone(stage) || stage.value !== "test") return {};
+    if (Option.isNone(stage) || stage.value !== "test") return documentActions;
     return {
+      ...documentActions,
       [testProtectedActionName]: makeTestProtectedAction({
         readState: () =>
           this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
+      }),
+    };
+  }
+
+  /** Register retained document export as a read-only ToolCall. */
+  override getTools(): ToolSet {
+    return {
+      exportDocument: tool({
+        description: "Export one retained generated PDF or DOCX owned by the current User.",
+        execute: (input, context) => this.#exportDocument(input, context.toolCallId),
+        inputSchema: Schema.toStandardSchemaV1(RetainedDocumentInput),
       }),
     };
   }
@@ -306,9 +357,15 @@ export class OsfoAgent extends Think<Env> {
               input: sanitizeTestProtectedActionInput(approval.descriptor.input),
             }),
           })
-        : Object.assign({}, approval, {
-            descriptor: Object.assign({}, approval.descriptor, { input: {} }),
-          }),
+        : approval.source === "action" && approval.descriptor.action === documentDeleteActionName
+          ? Object.assign({}, approval, {
+              descriptor: Object.assign({}, approval.descriptor, {
+                input: sanitizeDocumentDeleteInput(approval.descriptor.input),
+              }),
+            })
+          : Object.assign({}, approval, {
+              descriptor: Object.assign({}, approval.descriptor, { input: {} }),
+            }),
     );
   }
 
@@ -871,6 +928,140 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
+  async #generateDocument(input: typeof GenerateDocumentInput.Type, toolCallId: string) {
+    await this.#migrationsReady;
+    const actionId = ActionId.make(toolCallId);
+    const currentAuthorization = () =>
+      this.#currentDocumentAuthorization(
+        DocumentGenerationComposition.conservativeDocumentSandboxUsdMicros,
+      );
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) throw invalidOsfoEnvironment;
+    const env = this.env;
+    return runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const authorization = yield* currentAuthorization();
+          const database = yield* workerDatabase;
+          return yield* DocumentGenerationComposition.make(
+            env,
+            database,
+            currentAuthorization,
+          ).generate({
+            actionId,
+            authorization,
+            format: input.format,
+            owner: { _tag: "ToolCall", toolCallId },
+            source: input.source,
+          });
+        }),
+      ),
+    );
+  }
+
+  async #exportDocument(input: typeof RetainedDocumentInput.Type, toolCallId: string) {
+    await this.#migrationsReady;
+    const currentAuthorization = () => this.#currentDocumentAuthorization(0n);
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) throw invalidOsfoEnvironment;
+    const env = this.env;
+    const exported = await runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const authorization = yield* currentAuthorization();
+          const database = yield* workerDatabase;
+          const artifact = yield* DocumentGenerationComposition.make(
+            env,
+            database,
+            currentAuthorization,
+          ).reference({
+            actionId: ActionId.make(toolCallId),
+            authorization,
+            contentId: input.contentId,
+          });
+          return { artifact, userId: authorization.user.userId };
+        }),
+      ),
+    );
+    const downloadUrl = await Effect.runPromise(
+      DocumentDownload.makeUrl({
+        baseUrl: this.env.BETTER_AUTH_BASE_URL,
+        contentId: exported.artifact.content.contentId,
+        secret: this.env.BETTER_AUTH_SECRET,
+        userId: exported.userId,
+      }),
+    );
+    return { artifact: exported.artifact, downloadUrl };
+  }
+
+  async #deleteDocument(input: typeof RetainedDocumentInput.Type, toolCallId: string) {
+    await this.#migrationsReady;
+    const actionId = ActionId.make(toolCallId);
+    const currentAuthorization = () =>
+      this.#currentDocumentAuthorization(0n, { actionId, operation: "file.delete" });
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) throw invalidOsfoEnvironment;
+    const env = this.env;
+    await runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const authorization = yield* currentAuthorization();
+          const database = yield* workerDatabase;
+          return yield* DocumentGenerationComposition.make(
+            env,
+            database,
+            currentAuthorization,
+          ).delete({ actionId, authorization, contentId: input.contentId });
+        }),
+      ),
+    );
+    return { contentId: input.contentId, deleted: true } as const;
+  }
+
+  #currentDocumentAuthorization(
+    requestVendorUsdMicros: bigint,
+    approval?: { readonly actionId: ActionId; readonly operation: "file.delete" },
+  ) {
+    return Schema.decodeUnknownEffect(WhatsAppAgentAdmission.WhatsAppSubmissionMetadata)(
+      this.activeTurnMetadata,
+    ).pipe(
+      Effect.mapError(
+        (cause) =>
+          new DocumentGeneration.DocumentAuthorizationUnavailable({
+            cause,
+            message: "The active ToolCall has no trusted WhatsApp authority identity",
+          }),
+      ),
+      Effect.flatMap((metadata) =>
+        this.#inspectCurrentWhatsAppAuthorization(
+          metadata.whatsappAcceptance.channelBindingId,
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new DocumentGeneration.DocumentAuthorizationUnavailable({
+                cause,
+                message: "Current document authorization facts could not be loaded",
+              }),
+          ),
+        ),
+      ),
+      Effect.map((authorization) =>
+        AuthorizationContext.make({
+          ...authorization,
+          approval:
+            approval === undefined
+              ? null
+              : {
+                  actionId: approval.actionId,
+                  operation: approval.operation,
+                  userId: authorization.user.userId,
+                },
+          requestVendorUsdMicros,
+        }),
+      ),
+    );
+  }
+
   /** Record one correlation reference after Think commits a completed response. */
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
     if (result.status !== "completed") return;
@@ -1383,3 +1574,33 @@ const runRpc = <A, E>(effect: Effect.Effect<A, E>): Promise<A | E> =>
       }),
     ),
   );
+
+const presentProtectedAction = (pending: Parameters<typeof presentTestProtectedAction>[0]) =>
+  pending.descriptor.action === documentDeleteActionName
+    ? Schema.decodeUnknownEffect(RetainedDocumentInput)(pending.descriptor.input).pipe(
+        Effect.mapError(
+          () =>
+            new ActionPresentationUnavailable({
+              action: pending.descriptor.action,
+              message: "The document deletion input cannot be projected safely",
+            }),
+        ),
+        Effect.map((input) =>
+          ActionPresentation.make({
+            actionDefinitionVersion: "osfo-delete-generated-document-v1",
+            actionId: ActionId.make(pending.descriptor.toolCallId),
+            consequences: ["Permanently delete the retained generated document."],
+            description: "Delete the exact retained document shown here.",
+            fields: [{ label: "Content", name: "contentId", value: input.contentId }],
+            operation: "file.delete",
+            presentationId: ActionPresentationId.make(pending.executionId),
+            title: "Delete generated document",
+          }),
+        ),
+      )
+    : presentTestProtectedAction(pending);
+
+/* oxlint-disable osfo/no-unknown-parameters -- This is the parser at Think's descriptor boundary. */
+const sanitizeDocumentDeleteInput = (input: unknown) =>
+  Option.getOrElse(Schema.decodeUnknownOption(RetainedDocumentInput)(input), () => ({}));
+/* oxlint-enable osfo/no-unknown-parameters */

@@ -4,16 +4,18 @@ import { PDFDocument } from "pdf-lib";
 import { Effect } from "effect";
 
 import { AllowancePeriodId, UserId } from "../src/domain";
+import { ContentId } from "../src/domain/client-content";
 import * as DocumentArtifact from "../src/domain/document-artifact";
 import * as ArtifactR2 from "../src/integrations/cloudflare/document-artifacts";
+import { attemptKeyFor } from "../src/integrations/cloudflare/document-storage-keys";
 import { DocumentIntentDigest } from "../src/services/document-generation";
 
 describe("generated document R2 artifacts", () => {
   it.effect("retains, verifies, and deletes one immutable artifact", () =>
     Effect.gen(function* () {
       const bytes = yield* Effect.promise(makePdf);
-      const artifactId = DocumentArtifact.ArtifactId.make("toolCall:r2-artifact-176");
-      const artifact = yield* DocumentArtifact.parse(artifactId, "pdf", bytes, 1);
+      const contentId = ContentId.make("document:toolCall:r2-artifact-176");
+      const artifact = yield* DocumentArtifact.parse(contentId, "pdf", bytes, 1);
       const store = ArtifactR2.make(env.ARTIFACTS);
       const retained = {
         allowancePeriodId: AllowancePeriodId.make("allowance-period-r2-176"),
@@ -27,22 +29,25 @@ describe("generated document R2 artifacts", () => {
       };
 
       yield* store.put(retained);
-      const read = yield* store.get(artifactId);
+      yield* Effect.promise(() => env.ARTIFACTS.put(attemptKeyFor(contentId), new Uint8Array()));
+      const read = yield* store.inspect(contentId);
 
       expect(read).not.toBeNull();
       expect(read?.artifact).toEqual(artifact);
-      expect(read?.bytes).toEqual(bytes);
+      if (read === null) return;
+      expect(yield* store.readBytes(read)).toEqual(bytes);
 
-      yield* store.delete(artifactId);
-      expect(yield* store.get(artifactId)).toBeNull();
+      yield* store.delete(contentId);
+      expect(yield* store.inspect(contentId)).toBeNull();
+      expect(yield* Effect.promise(() => env.ARTIFACTS.head(attemptKeyFor(contentId)))).toBeNull();
     }),
   );
 
   it.effect("fails closed when retained bytes do not match their digest", () =>
     Effect.gen(function* () {
       const bytes = yield* Effect.promise(makePdf);
-      const artifactId = DocumentArtifact.ArtifactId.make("toolCall:r2-digest-176");
-      const artifact = yield* DocumentArtifact.parse(artifactId, "pdf", bytes, 1);
+      const contentId = ContentId.make("document:toolCall:r2-digest-176");
+      const artifact = yield* DocumentArtifact.parse(contentId, "pdf", bytes, 1);
       const store = ArtifactR2.make(env.ARTIFACTS);
       yield* store.put({
         allowancePeriodId: AllowancePeriodId.make("allowance-period-r2-digest-176"),
@@ -55,24 +60,26 @@ describe("generated document R2 artifacts", () => {
         userId: UserId.make("user-r2-digest-176"),
       });
       const listed = yield* Effect.promise(() =>
-        env.ARTIFACTS.list({ include: ["customMetadata"], prefix: "generated-documents/" }),
+        env.ARTIFACTS.list({ include: ["customMetadata"], prefix: "client-content/" }),
       );
       const object = listed.objects.find((candidate) =>
-        candidate.customMetadata?.osfo?.includes(artifactId),
+        candidate.customMetadata?.osfo?.includes(contentId),
       );
       expect(object).toBeDefined();
       const customMetadata = object?.customMetadata;
       if (object === undefined || customMetadata === undefined) return;
       yield* Effect.promise(() =>
-        env.ARTIFACTS.put(object.key, new Uint8Array([1, 2, 3]), {
+        env.ARTIFACTS.put(object.key, new Uint8Array(bytes.byteLength), {
           customMetadata,
         }),
       );
 
-      const error = yield* store.get(artifactId).pipe(Effect.flip);
+      const metadata = yield* store.inspect(contentId);
+      if (metadata === null) return;
+      const error = yield* store.readBytes(metadata).pipe(Effect.flip);
 
       expect(error).toMatchObject({ _tag: "ArtifactIntegrityFailure" });
-      yield* store.delete(artifactId);
+      yield* store.delete(contentId);
     }),
   );
 });

@@ -2,6 +2,8 @@ import { PDFDocument } from "pdf-lib";
 import { Effect, Schema } from "effect";
 import { strFromU8, unzipSync } from "fflate";
 
+import { ClientContentRefV1, ContentId } from "./client-content";
+
 /* oxlint-disable eslint/no-underscore-dangle -- Domain owners use the _tag discriminator. */
 
 /** Maximum byte length of one generated document. */
@@ -9,14 +11,6 @@ export const maximumDocumentBytes = 5_000_000;
 
 /** Maximum page count of one generated document. */
 export const maximumDocumentPages = 20;
-
-/** Stable identity derived from the ToolCall or Workflow that owns an artifact. */
-export const ArtifactId = Schema.String.check(Schema.isMinLength(1)).pipe(
-  Schema.brand("ArtifactId"),
-);
-
-/** Stable identity derived from the ToolCall or Workflow that owns an artifact. */
-export type ArtifactId = typeof ArtifactId.Type;
 
 const ownerIdentity = Schema.String.check(
   Schema.isMinLength(1),
@@ -48,26 +42,26 @@ export const DocumentFormat = Schema.Literals(["pdf", "docx"]);
 /** Supported generated document formats. */
 export type DocumentFormat = typeof DocumentFormat.Type;
 
-/** Trusted metadata for one validated immutable artifact. */
-export const Artifact = Schema.Struct({
-  artifactId: ArtifactId,
-  byteLength: Schema.Int.check(Schema.isGreaterThan(0)),
-  mediaType: Schema.Literals([
-    "application/pdf",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ]),
-  pageCount: Schema.Int.check(Schema.isGreaterThan(0)),
-  sha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
+/** Immutable generated-document interpretation of one Client Content reference. */
+export const ArtifactRef = Schema.Struct({
+  artifactRole: Schema.TaggedStruct("GeneratedDocumentV1", {
+    format: DocumentFormat,
+    pageCount: Schema.Int.check(
+      Schema.isGreaterThan(0),
+      Schema.isLessThanOrEqualTo(maximumDocumentPages),
+    ),
+  }),
+  content: ClientContentRefV1,
 });
 
-/** Trusted metadata for one validated immutable artifact. */
-export type Artifact = typeof Artifact.Type;
+/** Immutable generated-document interpretation of one Client Content reference. */
+export type ArtifactRef = typeof ArtifactRef.Type;
 
 /** Expected failure when disposable compute returns an unsafe or invalid artifact. */
 export class InvalidGeneratedArtifact extends Schema.TaggedError<InvalidGeneratedArtifact>()(
   "InvalidGeneratedArtifact",
   {
-    artifactId: ArtifactId,
+    contentId: ContentId,
     message: Schema.String,
     reason: Schema.Literals(["byteLimit", "invalidDocument", "pageLimit"]),
   },
@@ -75,24 +69,24 @@ export class InvalidGeneratedArtifact extends Schema.TaggedError<InvalidGenerate
 
 /** Parse and describe one bounded generated artifact before it can be retained. */
 export const parse = (
-  artifactId: ArtifactId,
+  contentId: ContentId,
   format: DocumentFormat,
   bytes: Uint8Array,
   expectedPageCount: number,
-): Effect.Effect<Artifact, InvalidGeneratedArtifact> =>
+): Effect.Effect<ArtifactRef, InvalidGeneratedArtifact> =>
   Effect.gen(function* () {
     if (bytes.byteLength === 0 || bytes.byteLength > maximumDocumentBytes) {
-      return yield* invalid(artifactId, "byteLimit", "The generated document exceeds 5 MB");
+      return yield* invalid(contentId, "byteLimit", "The generated document exceeds 5 MB");
     }
     const pageCount = yield* format === "pdf"
-      ? parsePdfPageCount(artifactId, bytes)
-      : parseDocxPageCount(artifactId, bytes);
+      ? parsePdfPageCount(contentId, bytes)
+      : parseDocxPageCount(contentId, bytes);
     if (pageCount === 0 || pageCount > maximumDocumentPages) {
-      return yield* invalid(artifactId, "pageLimit", "The generated document exceeds 20 pages");
+      return yield* invalid(contentId, "pageLimit", "The generated document exceeds 20 pages");
     }
     if (pageCount !== expectedPageCount) {
       return yield* invalid(
-        artifactId,
+        contentId,
         "invalidDocument",
         "The generated document page count does not match its bounded source",
       );
@@ -100,40 +94,48 @@ export const parse = (
     const hash = yield* Effect.promise(() =>
       crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer),
     );
-    return Artifact.make({
-      artifactId,
-      byteLength: bytes.byteLength,
-      mediaType:
-        format === "pdf"
-          ? "application/pdf"
-          : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      pageCount,
-      sha256: bytesToHex(new Uint8Array(hash)),
+    return ArtifactRef.make({
+      artifactRole: { _tag: "GeneratedDocumentV1", format, pageCount },
+      content: {
+        byteLength: bytes.byteLength,
+        contentId,
+        mediaType:
+          format === "pdf"
+            ? "application/pdf"
+            : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        sha256: bytesToHex(new Uint8Array(hash)),
+      },
     });
   });
 
 const invalid = (
-  artifactId: ArtifactId,
+  contentId: ContentId,
   reason: "byteLimit" | "invalidDocument" | "pageLimit",
   message: string,
-) => Effect.fail(new InvalidGeneratedArtifact({ artifactId, message, reason }));
+) => Effect.fail(new InvalidGeneratedArtifact({ contentId, message, reason }));
 
-const parsePdfPageCount = (artifactId: ArtifactId, bytes: Uint8Array) =>
+const parsePdfPageCount = (contentId: ContentId, bytes: Uint8Array) =>
   Effect.tryPromise({
     // oxlint-disable-next-line effecttsgo/async-function -- pdf-lib exposes a Promise boundary.
     try: async () => (await PDFDocument.load(bytes)).getPageCount(),
     catch: () =>
       new InvalidGeneratedArtifact({
-        artifactId,
+        contentId,
         message: "Disposable compute returned an invalid PDF",
         reason: "invalidDocument",
       }),
   });
 
-const parseDocxPageCount = (artifactId: ArtifactId, bytes: Uint8Array) =>
+const parseDocxPageCount = (contentId: ContentId, bytes: Uint8Array) =>
   Effect.gen(function* () {
     let selectedBytes = 0;
-    const required = new Set(["[Content_Types].xml", "docProps/app.xml", "word/document.xml"]);
+    const required = new Set([
+      "[Content_Types].xml",
+      "_rels/.rels",
+      "docProps/app.xml",
+      "word/_rels/document.xml.rels",
+      "word/document.xml",
+    ]);
     const entries = yield* Effect.try({
       try: () =>
         unzipSync(bytes, {
@@ -145,17 +147,25 @@ const parseDocxPageCount = (artifactId: ArtifactId, bytes: Uint8Array) =>
         }),
       catch: () =>
         new InvalidGeneratedArtifact({
-          artifactId,
+          contentId,
           message: "Disposable compute returned an invalid DOCX package",
           reason: "invalidDocument",
         }),
     });
     const contentTypes = entries["[Content_Types].xml"];
+    const packageRelationships = entries["_rels/.rels"];
     const properties = entries["docProps/app.xml"];
+    const documentRelationships = entries["word/_rels/document.xml.rels"];
     const document = entries["word/document.xml"];
-    if (contentTypes === undefined || properties === undefined || document === undefined) {
+    if (
+      contentTypes === undefined ||
+      packageRelationships === undefined ||
+      properties === undefined ||
+      documentRelationships === undefined ||
+      document === undefined
+    ) {
       return yield* invalid(
-        artifactId,
+        contentId,
         "invalidDocument",
         "DOCX is missing a required package part",
       );
@@ -164,10 +174,15 @@ const parseDocxPageCount = (artifactId: ArtifactId, bytes: Uint8Array) =>
       !strFromU8(contentTypes).includes(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
       ) ||
+      !strFromU8(packageRelationships).includes(
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument",
+      ) ||
+      !strFromU8(packageRelationships).includes("word/document.xml") ||
+      !strFromU8(documentRelationships).includes("<Relationships") ||
       !strFromU8(document).includes("<w:document")
     ) {
       return yield* invalid(
-        artifactId,
+        contentId,
         "invalidDocument",
         "DOCX package does not contain a Word document",
       );
@@ -177,7 +192,7 @@ const parseDocxPageCount = (artifactId: ArtifactId, bytes: Uint8Array) =>
     const pageCount = match?.[1] === undefined ? Number.NaN : Number(match[1]);
     if (!Number.isSafeInteger(pageCount)) {
       return yield* invalid(
-        artifactId,
+        contentId,
         "invalidDocument",
         "DOCX does not contain a trusted page count",
       );
@@ -186,7 +201,7 @@ const parseDocxPageCount = (artifactId: ArtifactId, bytes: Uint8Array) =>
       1 + (documentXml.match(/<w:br\b[^>]*w:type=["']page["'][^>]*\/?\s*>/gu)?.length ?? 0);
     if (explicitPageCount !== pageCount) {
       return yield* invalid(
-        artifactId,
+        contentId,
         "invalidDocument",
         "DOCX page metadata does not match its explicit page breaks",
       );

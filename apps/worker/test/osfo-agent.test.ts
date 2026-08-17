@@ -39,6 +39,24 @@ import { admitManagedConversation } from "../src/services/managed-conversation";
 /* oxlint-disable effecttsgo/async-function, effecttsgo/prefer-typed-schema-decoder, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Worker integration tests cross Promise, RPC, Effect, and raw SQLite test boundaries. */
 
 describe("Osfo Agent and Think Session foundation", () => {
+  it.effect("exposes bounded document generation through the Agent ToolCall boundary", () =>
+    Effect.gen(function* () {
+      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-document-tools"));
+      const registered = yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance) =>
+          Promise.resolve({
+            actions: Object.keys(instance.getActions()),
+            tools: Object.keys(instance.getTools()),
+          }),
+        ),
+      );
+
+      expect(registered.actions).toContain("generateDocument");
+      expect(registered.actions).toContain("deleteDocument");
+      expect(registered.tools).toContain("exportDocument");
+    }),
+  );
+
   it.effect("identifies malformed WhatsApp recovery RPC input", () =>
     Effect.gen(function* () {
       const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-invalid-whatsapp-recovery"));

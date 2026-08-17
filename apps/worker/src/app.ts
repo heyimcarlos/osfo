@@ -16,6 +16,7 @@ import * as Registration from "./services/registration";
 
 /** Cloudflare bindings used by the Worker HTTP application. */
 export interface Bindings {
+  readonly ARTIFACTS?: R2Bucket;
   readonly DB: Pick<Hyperdrive, "connectionString">;
   readonly OSFO_AGENT: Routes.Bindings["OSFO_AGENT"];
   readonly REGISTRATION_DIALOGUE: Routes.Bindings["REGISTRATION_DIALOGUE"];

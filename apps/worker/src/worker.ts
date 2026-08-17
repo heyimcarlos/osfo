@@ -4,6 +4,7 @@ import { getAgentByName } from "agents";
 import * as App from "./app";
 import { decodeRuntimeConfig } from "./env";
 import { RuntimeProbeResult } from "./layers";
+import * as DocumentCostReconciliation from "./document-cost-reconciliation";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Cloudflare RPC tags and adapter boundaries require these forms. */
 
@@ -33,7 +34,12 @@ const worker = {
     Result.match(config, {
       onFailure: () => undefined,
       onSuccess: (parsedConfig) =>
-        context.waitUntil(App.expireRegistrationInvitations(adaptBindings(env), parsedConfig)),
+        context.waitUntil(
+          Promise.all([
+            App.expireRegistrationInvitations(adaptBindings(env), parsedConfig),
+            DocumentCostReconciliation.run(env),
+          ]).then(() => undefined),
+        ),
     });
   },
 } satisfies ExportedHandler<Env>;
@@ -42,6 +48,7 @@ const worker = {
 export default worker;
 
 const adaptBindings = (env: Env): App.Bindings => ({
+  ARTIFACTS: env.ARTIFACTS,
   DB: env.DB,
   OSFO_AGENT: {
     getByName: (identity) => {

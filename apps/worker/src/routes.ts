@@ -1,5 +1,5 @@
 import { Api } from "@osfo/api";
-import { Layer, type ManagedRuntime } from "effect";
+import { Layer, Redacted, type ManagedRuntime } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
@@ -17,9 +17,12 @@ import * as OnboardingPostgres from "./integrations/postgres/onboarding";
 import * as OnboardingLinks from "./integrations/public/onboarding-links";
 import * as Onboarding from "./services/onboarding";
 import * as Registration from "./services/registration";
+import * as DocumentDownload from "./integrations/cloudflare/document-download";
 
 /** Cloudflare bindings used by the Worker route tree. */
-export type Bindings = RuntimeProbes.Bindings & OnboardingCloudflare.Bindings & WhatsApp.Bindings;
+export type Bindings = RuntimeProbes.Bindings &
+  OnboardingCloudflare.Bindings &
+  WhatsApp.Bindings & { readonly ARTIFACTS?: R2Bucket };
 
 /** Options used to assemble the Worker route tree. */
 export interface Options {
@@ -59,11 +62,20 @@ export const layer = (options: Options) => {
   const whatsapp = WhatsApp.layer({ config: options.config, env: options.env }).pipe(
     HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)),
   );
+  const documentDownload =
+    options.env.ARTIFACTS === undefined
+      ? Layer.empty
+      : HttpRouter.add(
+          "GET",
+          "/documents/export",
+          DocumentDownload.serve(options.env.ARTIFACTS, Redacted.value(options.config.auth.secret)),
+        );
 
   return Layer.mergeAll(
     api,
     invitationAuth,
     whatsapp,
+    documentDownload,
     Auth.layer({
       config: options.config.auth,
       dependencies: options.authDependencies,

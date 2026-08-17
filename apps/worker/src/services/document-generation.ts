@@ -2,6 +2,7 @@ import { Effect, Predicate, Schema } from "effect";
 
 import type { AllowancePeriodId, UserId } from "../domain";
 import type { ActionId } from "../domain/action-execution";
+import { ContentId } from "../domain/client-content";
 import type {
   AllowanceItem,
   AllowancePeriodNotFound,
@@ -48,6 +49,7 @@ export type CostEvidence =
   | { readonly _tag: "ProvenNoUse" }
   | {
       readonly _tag: "Incurred";
+      readonly allowancePeriodId: AllowancePeriodId;
       readonly basis: "conservative" | "observed";
       readonly providerOperationId: string;
       readonly usdMicros: bigint;
@@ -55,13 +57,23 @@ export type CostEvidence =
 
 /** Closed result from one safely repeatable disposable compute attempt. */
 export type ComputeResult =
+  | { readonly _tag: "AttemptPending"; readonly cost: CostEvidence; readonly evidence: string }
+  | { readonly _tag: "AttemptUnavailable"; readonly cost: CostEvidence; readonly evidence: string }
   | {
       readonly _tag: "Completed";
       readonly bytes: Uint8Array;
       readonly cost: CostEvidence;
       readonly renderedPageCount: number;
     }
-  | { readonly _tag: "Interrupted"; readonly cost: CostEvidence; readonly evidence: string };
+  | { readonly _tag: "Interrupted"; readonly cost: CostEvidence; readonly evidence: string }
+  | { readonly _tag: "IntentConflict"; readonly cost: CostEvidence }
+  | { readonly _tag: "RejectedOversize"; readonly cost: CostEvidence; readonly size: number };
+
+/** Durable evidence that an earlier admission owns this document attempt. */
+export interface ComputeRecovery {
+  readonly cost: Extract<CostEvidence, { readonly _tag: "Incurred" }>;
+  readonly intentDigest: DocumentIntentDigest;
+}
 
 /** Input for one exact generated document intent. */
 export interface GenerateRequest {
@@ -75,20 +87,24 @@ export interface GenerateRequest {
 /** One authorized request to export or delete a retained document. */
 export interface ArtifactRequest {
   readonly actionId: ActionId;
-  readonly artifactId: DocumentArtifact.ArtifactId;
   readonly authorization: AuthorizationContext;
+  readonly contentId: ContentId;
 }
 
-/** Retained artifact bytes and recovery evidence hidden behind the Artifact Store seam. */
-export interface StoredArtifact {
+/** Trusted retained metadata available without retrieving private Client Content bytes. */
+export interface StoredArtifactMetadata {
   readonly allowancePeriodId: AllowancePeriodId;
-  readonly artifact: DocumentArtifact.Artifact;
-  readonly bytes: Uint8Array;
+  readonly artifact: DocumentArtifact.ArtifactRef;
   readonly cost: CostEvidence;
   readonly format: DocumentArtifact.DocumentFormat;
   readonly intentDigest: DocumentIntentDigest;
   readonly owner: DocumentArtifact.DocumentOwner;
   readonly userId: UserId;
+}
+
+/** Retained artifact bytes and recovery evidence hidden behind the Artifact Store seam. */
+export interface StoredArtifact extends StoredArtifactMetadata {
+  readonly bytes: Uint8Array;
 }
 
 /** Expected failure when the Artifact Store cannot complete an immutable operation. */
@@ -97,7 +113,7 @@ export class ArtifactStoreUnavailable extends Schema.TaggedError<ArtifactStoreUn
   {
     cause: Schema.Defect(),
     message: Schema.String,
-    operation: Schema.Literals(["delete", "get", "put"]),
+    operation: Schema.Literals(["delete", "inspect", "put", "readBytes"]),
   },
 ) {}
 
@@ -105,7 +121,7 @@ export class ArtifactStoreUnavailable extends Schema.TaggedError<ArtifactStoreUn
 export class ArtifactIntegrityFailure extends Schema.TaggedError<ArtifactIntegrityFailure>()(
   "ArtifactIntegrityFailure",
   {
-    artifactId: DocumentArtifact.ArtifactId,
+    contentId: ContentId,
     message: Schema.String,
   },
 ) {}
@@ -114,7 +130,7 @@ export class ArtifactIntegrityFailure extends Schema.TaggedError<ArtifactIntegri
 export class DocumentIntentConflict extends Schema.TaggedError<DocumentIntentConflict>()(
   "DocumentIntentConflict",
   {
-    artifactId: DocumentArtifact.ArtifactId,
+    contentId: ContentId,
     message: Schema.String,
   },
 ) {}
@@ -123,7 +139,7 @@ export class DocumentIntentConflict extends Schema.TaggedError<DocumentIntentCon
 export class DocumentComputeInterrupted extends Schema.TaggedError<DocumentComputeInterrupted>()(
   "DocumentComputeInterrupted",
   {
-    artifactId: DocumentArtifact.ArtifactId,
+    contentId: ContentId,
     evidence: Schema.String,
     message: Schema.String,
   },
@@ -134,7 +150,7 @@ export class DocumentCostLimitExceeded extends Schema.TaggedError<DocumentCostLi
   "DocumentCostLimitExceeded",
   {
     admittedUsdMicros: Schema.BigInt,
-    artifactId: DocumentArtifact.ArtifactId,
+    contentId: ContentId,
     incurredUsdMicros: Schema.BigInt,
     message: Schema.String,
   },
@@ -143,34 +159,55 @@ export class DocumentCostLimitExceeded extends Schema.TaggedError<DocumentCostLi
 /** Expected failure when a requested retained document does not exist. */
 export class DocumentArtifactNotFound extends Schema.TaggedError<DocumentArtifactNotFound>()(
   "DocumentArtifactNotFound",
-  { artifactId: DocumentArtifact.ArtifactId, message: Schema.String },
+  { contentId: ContentId, message: Schema.String },
+) {}
+
+/** Expected failure when disposable Sandbox cleanup cannot be confirmed. */
+export class DocumentCleanupUnavailable extends Schema.TaggedError<DocumentCleanupUnavailable>()(
+  "DocumentCleanupUnavailable",
+  { cause: Schema.Defect(), contentId: ContentId, message: Schema.String },
+) {}
+
+/** Expected failure when current protected-effect authorization facts cannot be loaded. */
+export class DocumentAuthorizationUnavailable extends Schema.TaggedError<DocumentAuthorizationUnavailable>()(
+  "DocumentAuthorizationUnavailable",
+  { cause: Schema.Defect(), message: Schema.String },
 ) {}
 
 /** Narrow immutable artifact persistence port implemented by R2. */
 export interface ArtifactStore {
-  readonly delete: (
-    artifactId: DocumentArtifact.ArtifactId,
-  ) => Effect.Effect<void, ArtifactStoreUnavailable>;
-  readonly get: (
-    artifactId: DocumentArtifact.ArtifactId,
-  ) => Effect.Effect<StoredArtifact | null, ArtifactIntegrityFailure | ArtifactStoreUnavailable>;
+  readonly delete: (contentId: ContentId) => Effect.Effect<void, ArtifactStoreUnavailable>;
+  readonly inspect: (
+    contentId: ContentId,
+  ) => Effect.Effect<
+    StoredArtifactMetadata | null,
+    ArtifactIntegrityFailure | ArtifactStoreUnavailable
+  >;
   readonly put: (
     artifact: StoredArtifact,
   ) => Effect.Effect<
     void,
     ArtifactIntegrityFailure | ArtifactStoreUnavailable | DocumentIntentConflict
   >;
+  readonly readBytes: (
+    metadata: StoredArtifactMetadata,
+  ) => Effect.Effect<Uint8Array, ArtifactIntegrityFailure | ArtifactStoreUnavailable>;
 }
 
-/** Narrow disposable document compute port. Calls are idempotent for one ArtifactId. */
+/** Narrow disposable document compute port. Calls are idempotent for one ContentId. */
 export interface DisposableCompute {
-  readonly dispose: (artifactId: DocumentArtifact.ArtifactId) => Effect.Effect<void>;
+  readonly dispose: (contentId: ContentId) => Effect.Effect<void, DocumentCleanupUnavailable>;
   readonly generate: (input: {
-    readonly artifactId: DocumentArtifact.ArtifactId;
+    readonly allowancePeriodId: AllowancePeriodId;
+    readonly contentId: ContentId;
     readonly format: DocumentArtifact.DocumentFormat;
     readonly intentDigest: DocumentIntentDigest;
     readonly source: DocumentSource;
   }) => Effect.Effect<ComputeResult>;
+  readonly inspect: (
+    contentId: ContentId,
+    intentDigest: DocumentIntentDigest,
+  ) => Effect.Effect<ComputeRecovery | null, DocumentComputeInterrupted | DocumentIntentConflict>;
 }
 
 type AllowanceFailure =
@@ -195,6 +232,9 @@ export interface MakeOptions {
   readonly artifacts: ArtifactStore;
   readonly authorization: Authorization;
   readonly compute: DisposableCompute;
+  readonly currentAuthorization: (
+    admitted: AuthorizationContext,
+  ) => Effect.Effect<AuthorizationContext, DocumentAuthorizationUnavailable>;
 }
 
 /** Bounded document generation and retained artifact lifecycle. */
@@ -203,24 +243,45 @@ export interface Interface {
     request: ArtifactRequest,
   ) => Effect.Effect<
     void,
-    ArtifactIntegrityFailure | ArtifactStoreUnavailable | Denied | DocumentArtifactNotFound
+    | ArtifactIntegrityFailure
+    | ArtifactStoreUnavailable
+    | Denied
+    | DocumentArtifactNotFound
+    | DocumentAuthorizationUnavailable
+    | DocumentCleanupUnavailable
   >;
   readonly export: (
     request: ArtifactRequest,
   ) => Effect.Effect<
-    { readonly artifact: DocumentArtifact.Artifact; readonly bytes: Uint8Array },
-    ArtifactIntegrityFailure | ArtifactStoreUnavailable | Denied | DocumentArtifactNotFound
+    { readonly artifact: DocumentArtifact.ArtifactRef; readonly bytes: Uint8Array },
+    | ArtifactIntegrityFailure
+    | ArtifactStoreUnavailable
+    | Denied
+    | DocumentArtifactNotFound
+    | DocumentAuthorizationUnavailable
+  >;
+  readonly reference: (
+    request: ArtifactRequest,
+  ) => Effect.Effect<
+    DocumentArtifact.ArtifactRef,
+    | ArtifactIntegrityFailure
+    | ArtifactStoreUnavailable
+    | Denied
+    | DocumentArtifactNotFound
+    | DocumentAuthorizationUnavailable
   >;
   readonly generate: (
     request: GenerateRequest,
   ) => Effect.Effect<
-    DocumentArtifact.Artifact,
+    DocumentArtifact.ArtifactRef,
     | AllowanceFailure
     | ArtifactIntegrityFailure
     | ArtifactStoreUnavailable
     | Denied
     | DocumentArtifact.InvalidGeneratedArtifact
     | DocumentComputeInterrupted
+    | DocumentAuthorizationUnavailable
+    | DocumentCleanupUnavailable
     | DocumentCostLimitExceeded
     | DocumentIntentConflict
   >;
@@ -231,16 +292,19 @@ export const make = (options: MakeOptions): Interface => ({
   delete: (request) =>
     Effect.gen(function* () {
       const stored = yield* readAuthorized(options, request, "file.delete");
-      yield* options.artifacts.delete(stored.artifact.artifactId);
+      yield* options.artifacts.delete(stored.artifact.content.contentId);
     }),
   export: (request) =>
-    Effect.map(readAuthorized(options, request, "document.read"), (stored) => ({
-      artifact: stored.artifact,
-      bytes: stored.bytes,
-    })),
+    Effect.gen(function* () {
+      const stored = yield* readAuthorized(options, request, "file.read");
+      const bytes = yield* options.artifacts.readBytes(stored);
+      return { artifact: stored.artifact, bytes };
+    }),
+  reference: (request) =>
+    Effect.map(readAuthorized(options, request, "file.read"), (stored) => stored.artifact),
   generate: (request) =>
     Effect.gen(function* () {
-      const artifactId = artifactIdFor(request.owner);
+      const contentId = contentIdFor(request.owner);
       const userId = request.authorization.user.userId;
       if (!ownerMatchesRequest(request)) {
         return yield* Effect.fail({
@@ -258,7 +322,7 @@ export const make = (options: MakeOptions): Interface => ({
         pages: BigInt(request.source.pages.length),
         researchSearches: 0n,
       };
-      const existing = yield* options.artifacts.get(artifactId);
+      const existing = yield* options.artifacts.inspect(contentId);
       if (existing !== null) {
         if (
           existing.userId !== userId ||
@@ -267,108 +331,148 @@ export const make = (options: MakeOptions): Interface => ({
           !DocumentArtifact.sameOwner(existing.owner, request.owner)
         ) {
           return yield* new DocumentIntentConflict({
-            artifactId,
+            contentId,
             message: "The owning identity already names a different document intent",
           });
         }
-        const permitted = options.authorization.recheck(request.authorization, operation);
+        const currentAuthorization = yield* options.currentAuthorization(request.authorization);
+        const permitted = options.authorization.recheck(currentAuthorization, operation);
         if (Predicate.isTagged(permitted, "Denied")) return yield* Effect.fail(permitted);
         yield* recordEvidence(options.allowances, existing);
-        yield* options.compute.dispose(artifactId);
+        yield* options.compute.dispose(contentId);
         return existing.artifact;
       }
 
-      const admission = options.authorization.admit(request.authorization, operation);
-      if (!Predicate.isTagged(admission, "Admitted")) {
-        return yield* Effect.fail(
-          Predicate.isTagged(admission, "Denied")
-            ? admission
-            : ({ _tag: "Denied", reason: "approvalRequired", resetAt: null } satisfies Denied),
-        );
-      }
-      if (!Predicate.isTagged(admission.allowancePeriod, "Metered")) {
-        return yield* Effect.fail({
-          _tag: "Denied",
-          reason: "allowancePeriodUnavailable",
-          resetAt: null,
-        } satisfies Denied);
-      }
-
-      const computed = yield* options.compute.generate({
-        artifactId,
-        format: request.format,
-        intentDigest,
-        source: request.source,
-      });
-      const recordComputedCost = recordCost(
-        options.allowances,
-        admission.allowancePeriod.allowancePeriodId,
-        computed.cost,
-      );
-      if (
-        computed.cost._tag === "Incurred" &&
-        computed.cost.usdMicros > request.authorization.requestVendorUsdMicros
-      ) {
-        yield* recordComputedCost;
-        yield* options.compute.dispose(artifactId);
-        return yield* new DocumentCostLimitExceeded({
-          admittedUsdMicros: request.authorization.requestVendorUsdMicros,
-          artifactId,
-          incurredUsdMicros: computed.cost.usdMicros,
-          message: "Disposable compute exceeded the admitted vendor-cost maximum",
-        });
-      }
-      if (Predicate.isTagged(computed, "Interrupted")) {
-        yield* recordComputedCost;
-        yield* options.compute.dispose(artifactId);
-        return yield* new DocumentComputeInterrupted({
-          artifactId,
-          evidence: computed.evidence,
-          message: "Disposable document compute was interrupted",
-        });
-      }
-      if (computed.renderedPageCount !== request.source.pages.length) {
-        yield* recordComputedCost;
-        yield* options.compute.dispose(artifactId);
-        return yield* new DocumentArtifact.InvalidGeneratedArtifact({
-          artifactId,
-          message: "Rendered pagination does not match the bounded source",
-          reason: "invalidDocument",
-        });
+      const recovery = yield* options.compute.inspect(contentId, intentDigest);
+      let admittedAllowancePeriodId: AllowancePeriodId;
+      if (recovery === null) {
+        const admission = options.authorization.admit(request.authorization, operation);
+        if (!Predicate.isTagged(admission, "Admitted")) {
+          return yield* Effect.fail(
+            Predicate.isTagged(admission, "Denied")
+              ? admission
+              : ({ _tag: "Denied", reason: "approvalRequired", resetAt: null } satisfies Denied),
+          );
+        }
+        if (!Predicate.isTagged(admission.allowancePeriod, "Metered")) {
+          return yield* Effect.fail({
+            _tag: "Denied",
+            reason: "allowancePeriodUnavailable",
+            resetAt: null,
+          } satisfies Denied);
+        }
+        admittedAllowancePeriodId = admission.allowancePeriod.allowancePeriodId;
+      } else {
+        admittedAllowancePeriodId = recovery.cost.allowancePeriodId;
       }
 
-      const artifact = yield* DocumentArtifact.parse(
-        artifactId,
-        request.format,
-        computed.bytes,
-        computed.renderedPageCount,
-      ).pipe(
-        Effect.tapError(() => recordComputedCost),
-        Effect.tapError(() => options.compute.dispose(artifactId)),
+      const currentAuthorization = yield* options.currentAuthorization(request.authorization);
+      const permitted = options.authorization.recheck(currentAuthorization, operation);
+      if (Predicate.isTagged(permitted, "Denied")) return yield* Effect.fail(permitted);
+      let cleanupRequired = true;
+      return yield* Effect.gen(function* () {
+        const computed = yield* options.compute.generate({
+          allowancePeriodId: admittedAllowancePeriodId,
+          contentId,
+          format: request.format,
+          intentDigest,
+          source: request.source,
+        });
+        const recordComputedCost = recordCost(options.allowances, computed.cost);
+        if (Predicate.isTagged(computed, "AttemptPending")) {
+          cleanupRequired = false;
+          yield* recordComputedCost;
+          return yield* new DocumentComputeInterrupted({
+            contentId,
+            evidence: computed.evidence,
+            message: "Another caller owns disposable document compute",
+          });
+        }
+        if (
+          computed.cost._tag === "Incurred" &&
+          computed.cost.usdMicros > request.authorization.requestVendorUsdMicros
+        ) {
+          yield* recordComputedCost;
+          return yield* new DocumentCostLimitExceeded({
+            admittedUsdMicros: request.authorization.requestVendorUsdMicros,
+            contentId,
+            incurredUsdMicros: computed.cost.usdMicros,
+            message: "Disposable compute exceeded the admitted vendor-cost maximum",
+          });
+        }
+        if (Predicate.isTagged(computed, "AttemptUnavailable")) {
+          yield* recordComputedCost;
+          return yield* new DocumentComputeInterrupted({
+            contentId,
+            evidence: computed.evidence,
+            message: "Durable document attempt evidence is unavailable",
+          });
+        }
+        if (Predicate.isTagged(computed, "IntentConflict")) {
+          return yield* new DocumentIntentConflict({
+            contentId,
+            message: "The owning identity already names a different document attempt",
+          });
+        }
+        if (Predicate.isTagged(computed, "Interrupted")) {
+          yield* recordComputedCost;
+          return yield* new DocumentComputeInterrupted({
+            contentId,
+            evidence: computed.evidence,
+            message: "Disposable document compute was interrupted",
+          });
+        }
+        if (Predicate.isTagged(computed, "RejectedOversize")) {
+          yield* recordComputedCost;
+          return yield* new DocumentArtifact.InvalidGeneratedArtifact({
+            contentId,
+            message: "The generated document exceeds 5 MB",
+            reason: "byteLimit",
+          });
+        }
+        if (computed.renderedPageCount !== request.source.pages.length) {
+          yield* recordComputedCost;
+          return yield* new DocumentArtifact.InvalidGeneratedArtifact({
+            contentId,
+            message: "Rendered pagination does not match the bounded source",
+            reason: "invalidDocument",
+          });
+        }
+
+        const artifact = yield* DocumentArtifact.parse(
+          contentId,
+          request.format,
+          computed.bytes,
+          computed.renderedPageCount,
+        ).pipe(Effect.tapError(() => recordComputedCost));
+        const retained: StoredArtifact = {
+          allowancePeriodId:
+            computed.cost._tag === "Incurred"
+              ? computed.cost.allowancePeriodId
+              : admittedAllowancePeriodId,
+          artifact,
+          bytes: computed.bytes,
+          cost: computed.cost,
+          format: request.format,
+          intentDigest,
+          owner: request.owner,
+          userId,
+        };
+        yield* options.artifacts.put(retained);
+        yield* recordComputedCost;
+        yield* recordDocument(options.allowances, retained);
+        return artifact;
+      }).pipe(
+        Effect.onExit(() => (cleanupRequired ? options.compute.dispose(contentId) : Effect.void)),
       );
-      const retained: StoredArtifact = {
-        allowancePeriodId: admission.allowancePeriod.allowancePeriodId,
-        artifact,
-        bytes: computed.bytes,
-        cost: computed.cost,
-        format: request.format,
-        intentDigest,
-        owner: request.owner,
-        userId,
-      };
-      yield* options.artifacts.put(retained);
-      yield* recordComputedCost;
-      yield* recordDocument(options.allowances, retained);
-      yield* options.compute.dispose(artifactId);
-      return artifact;
     }),
 });
 
-const artifactIdFor = (owner: DocumentArtifact.DocumentOwner): DocumentArtifact.ArtifactId =>
-  DocumentArtifact.ArtifactId.make(
+const contentIdFor = (owner: DocumentArtifact.DocumentOwner): ContentId =>
+  ContentId.make(
     Predicate.isTagged(owner, "ToolCall")
-      ? `toolCall:${owner.toolCallId}`
-      : `workflow:${owner.workflowId}`,
+      ? `document:toolCall:${owner.toolCallId}`
+      : `document:workflow:${owner.workflowId}`,
   );
 
 const digestIntent = (format: DocumentArtifact.DocumentFormat, source: DocumentSource) =>
@@ -388,26 +492,22 @@ const IntentEncoding = Schema.fromJsonString(
   Schema.Struct({ format: DocumentArtifact.DocumentFormat, source: DocumentSource }),
 );
 
-const recordEvidence = (allowances: Allowances, stored: StoredArtifact) =>
+const recordEvidence = (allowances: Allowances, stored: StoredArtifactMetadata) =>
   Effect.gen(function* () {
-    yield* recordCost(allowances, stored.allowancePeriodId, stored.cost);
+    yield* recordCost(allowances, stored.cost);
     yield* recordDocument(allowances, stored);
   });
 
-const recordCost = (
-  allowances: Allowances,
-  allowancePeriodId: AllowancePeriodId,
-  cost: CostEvidence,
-) => {
+const recordCost = (allowances: Allowances, cost: CostEvidence) => {
   if (cost._tag === "ProvenNoUse") return Effect.void;
   return allowances.record(
-    allowancePeriodId,
+    cost.allowancePeriodId,
     { sourceId: cost.providerOperationId, sourceType: "documentProviderOperation" },
     [{ allowanceKind: "vendorUsdMicros", basis: cost.basis, quantity: cost.usdMicros }],
   );
 };
 
-const recordDocument = (allowances: Allowances, stored: StoredArtifact) => {
+const recordDocument = (allowances: Allowances, stored: StoredArtifactMetadata) => {
   const source = Predicate.isTagged(stored.owner, "ToolCall")
     ? { sourceId: stored.owner.toolCallId, sourceType: "toolCall" }
     : { sourceId: stored.owner.workflowId, sourceType: "workflow" };
@@ -426,18 +526,18 @@ const ownerMatchesRequest = (request: GenerateRequest) =>
 const readAuthorized = (
   options: MakeOptions,
   request: ArtifactRequest,
-  kind: "document.read" | "file.delete",
+  kind: "file.delete" | "file.read",
 ) =>
   Effect.gen(function* () {
-    const stored = yield* options.artifacts.get(request.artifactId);
+    const stored = yield* options.artifacts.inspect(request.contentId);
     if (stored === null) {
       return yield* new DocumentArtifactNotFound({
-        artifactId: request.artifactId,
+        contentId: request.contentId,
         message: "The retained document does not exist",
       });
     }
     const authorization = {
-      ...request.authorization,
+      ...(yield* options.currentAuthorization(request.authorization)),
       requestVendorUsdMicros: 0n,
       resourceOwnerUserId: stored.userId,
     };

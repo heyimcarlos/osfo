@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { PDFDocument } from "pdf-lib";
-import { Effect, Schema } from "effect";
+import { Deferred, Effect, Fiber, Schema } from "effect";
 import { strToU8, zipSync } from "fflate";
 
 import { AllowancePeriodId, PlanPolicyVersion, UserId } from "../src/domain";
@@ -22,6 +22,7 @@ describe("Document Generation", () => {
           bytes: pdf,
           cost: {
             _tag: "Incurred",
+            allowancePeriodId,
             basis: "observed",
             providerOperationId: "provider-pdf-1",
             usdMicros: 12_345n,
@@ -33,12 +34,14 @@ describe("Document Generation", () => {
       const artifact = yield* fixture.documents.generate(generationRequest("pdf"));
 
       expect(artifact).toMatchObject({
-        artifactId: "toolCall:tool-call-176",
-        byteLength: pdf.byteLength,
-        mediaType: "application/pdf",
-        pageCount: 1,
+        artifactRole: { _tag: "GeneratedDocumentV1", format: "pdf", pageCount: 1 },
+        content: {
+          byteLength: pdf.byteLength,
+          contentId: "document:toolCall:tool-call-176",
+          mediaType: "application/pdf",
+        },
       });
-      expect(artifact.sha256).toMatch(/^[0-9a-f]{64}$/u);
+      expect(artifact.content.sha256).toMatch(/^[0-9a-f]{64}$/u);
       expect(fixture.stored).toHaveLength(1);
       expect(fixture.recorded).toEqual([
         {
@@ -78,10 +81,12 @@ describe("Document Generation", () => {
       });
 
       expect(artifact).toMatchObject({
-        artifactId: "toolCall:tool-call-176",
-        byteLength: docx.byteLength,
-        mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        pageCount: 2,
+        artifactRole: { format: "docx", pageCount: 2 },
+        content: {
+          byteLength: docx.byteLength,
+          contentId: "document:toolCall:tool-call-176",
+          mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        },
       });
     }),
   );
@@ -132,6 +137,7 @@ describe("Document Generation", () => {
           _tag: "Interrupted",
           cost: {
             _tag: "Incurred",
+            allowancePeriodId,
             basis: "conservative",
             providerOperationId: "provider-interrupted-1",
             usdMicros: 50_000n,
@@ -153,7 +159,102 @@ describe("Document Generation", () => {
           },
         },
       ]);
+      expect(fixture.cleanupCalls()).toBe(1);
       expect(fixture.stored).toHaveLength(0);
+    }),
+  );
+
+  it.effect("does not clean up another caller's live Sandbox execution", () =>
+    Effect.gen(function* () {
+      const pdf = yield* Effect.promise(() => makePdf(1));
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let generateCalls = 0;
+      let cleanupCalls = 0;
+      const compute: DocumentGeneration.DisposableCompute = {
+        dispose: () =>
+          Effect.sync(() => {
+            cleanupCalls += 1;
+          }),
+        generate: () =>
+          Effect.suspend(() => {
+            generateCalls += 1;
+            if (generateCalls > 1) {
+              return Effect.succeed({
+                _tag: "AttemptPending" as const,
+                cost: { _tag: "ProvenNoUse" as const },
+                evidence: "Another caller owns the live Sandbox execution lease",
+              });
+            }
+            return Effect.gen(function* () {
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+              return completed(pdf);
+            });
+          }),
+        inspect: () => Effect.succeed(null),
+      };
+      const fixture = makeFixture({ compute, computeResult: completed(pdf) });
+      const winner = yield* Effect.forkChild(fixture.documents.generate(generationRequest("pdf")));
+      yield* Deferred.await(entered);
+
+      const pending = yield* fixture.documents.generate(generationRequest("pdf")).pipe(Effect.flip);
+
+      expect(pending).toMatchObject({ _tag: "DocumentComputeInterrupted" });
+      expect(cleanupCalls).toBe(0);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(winner);
+      expect(cleanupCalls).toBe(1);
+      expect(generateCalls).toBe(2);
+    }),
+  );
+
+  it.effect("rechecks current authorization immediately before disposable compute", () =>
+    Effect.gen(function* () {
+      const pdf = yield* Effect.promise(() => makePdf(1));
+      const base = makeAuthorization(retainedCatalog);
+      let currentLoads = 0;
+      let rechecked = false;
+      const fixture = makeFixture({
+        authorization: {
+          admit: base.admit,
+          recheck: (context, operation) => {
+            rechecked = true;
+            return base.recheck(context, operation);
+          },
+        },
+        beforeCompute: () => {
+          expect(currentLoads).toBe(1);
+          expect(rechecked).toBe(true);
+        },
+        computeResult: completed(pdf),
+        currentAuthorization: (admitted) =>
+          Effect.sync(() => {
+            currentLoads += 1;
+            return admitted;
+          }),
+      });
+
+      yield* fixture.documents.generate(generationRequest("pdf"));
+    }),
+  );
+
+  it.effect("denies when the current entitlement is lost after admission", () =>
+    Effect.gen(function* () {
+      const pdf = yield* Effect.promise(() => makePdf(1));
+      const fixture = makeFixture({
+        computeResult: completed(pdf),
+        currentAuthorization: (admitted) =>
+          Effect.succeed({
+            ...admitted,
+            subscription: { ...admitted.subscription, plan: "free" },
+          }),
+      });
+
+      const error = yield* fixture.documents.generate(generationRequest("pdf")).pipe(Effect.flip);
+
+      expect(error).toMatchObject({ _tag: "Denied", reason: "missingEntitlement" });
+      expect(fixture.computeCalls()).toBe(0);
     }),
   );
 
@@ -168,6 +269,42 @@ describe("Document Generation", () => {
       expect(retried).toEqual(first);
       expect(fixture.computeCalls()).toBe(1);
       expect(fixture.stored).toHaveLength(1);
+    }),
+  );
+
+  it.effect("does not report generation success when Sandbox cleanup is unconfirmed", () =>
+    Effect.gen(function* () {
+      const pdf = yield* Effect.promise(() => makePdf(1));
+      const fixture = makeFixture({ cleanupFails: true, computeResult: completed(pdf) });
+
+      const error = yield* fixture.documents.generate(generationRequest("pdf")).pipe(Effect.flip);
+
+      expect(error).toMatchObject({ _tag: "DocumentCleanupUnavailable" });
+    }),
+  );
+
+  it.effect("cleans up when retained artifact storage fails", () =>
+    Effect.gen(function* () {
+      const pdf = yield* Effect.promise(() => makePdf(1));
+      const fixture = makeFixture({ computeResult: completed(pdf), putFails: true });
+
+      const error = yield* fixture.documents.generate(generationRequest("pdf")).pipe(Effect.flip);
+
+      expect(error).toMatchObject({ _tag: "ArtifactStoreUnavailable", operation: "put" });
+      expect(fixture.cleanupCalls()).toBe(1);
+    }),
+  );
+
+  it.effect("cleans up when compute exits before returning a result", () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture({
+        computeDefects: true,
+        computeResult: { _tag: "AttemptUnavailable", cost: { _tag: "ProvenNoUse" }, evidence: "" },
+      });
+
+      yield* fixture.documents.generate(generationRequest("pdf")).pipe(Effect.exit);
+
+      expect(fixture.cleanupCalls()).toBe(1);
     }),
   );
 
@@ -203,6 +340,7 @@ describe("Document Generation", () => {
             bytes: pdf,
             cost: {
               _tag: "Incurred",
+              allowancePeriodId,
               basis: "observed",
               providerOperationId: "provider-cost-overrun",
               usdMicros: 50_001n,
@@ -219,6 +357,75 @@ describe("Document Generation", () => {
       }),
   );
 
+  it.effect("records retry cost against the original admitted allowance period", () =>
+    Effect.gen(function* () {
+      const originalPeriodId = AllowancePeriodId.make("allowance-period-original-176");
+      const fixture = makeFixture({
+        computeResult: {
+          _tag: "Interrupted",
+          cost: {
+            _tag: "Incurred",
+            allowancePeriodId: originalPeriodId,
+            basis: "conservative",
+            providerOperationId: "provider-original-period",
+            usdMicros: 50_000n,
+          },
+          evidence: "The original attempt needs reconciliation",
+        },
+      });
+
+      yield* fixture.documents.generate(generationRequest("pdf")).pipe(Effect.flip);
+
+      expect(fixture.recorded[0]?.allowancePeriodId).toBe(originalPeriodId);
+    }),
+  );
+
+  it.effect("finishes an admitted attempt after the generation allowance becomes capped", () =>
+    Effect.gen(function* () {
+      const pdf = yield* Effect.promise(() => makePdf(1));
+      const originalPeriodId = AllowancePeriodId.make("allowance-period-recovery-176");
+      const recovery = {
+        cost: {
+          _tag: "Incurred" as const,
+          allowancePeriodId: originalPeriodId,
+          basis: "conservative" as const,
+          providerOperationId: "provider-recovery",
+          usdMicros: 50_000n,
+        },
+        intentDigest: DocumentGeneration.DocumentIntentDigest.make("6".repeat(64)),
+      };
+      const fixture = makeFixture({
+        computeResult: { ...completed(pdf), cost: recovery.cost },
+        recovery,
+      });
+      const request = generationRequest("pdf");
+
+      const artifact = yield* fixture.documents.generate({
+        ...request,
+        authorization: {
+          ...request.authorization,
+          allowance: {
+            _tag: "Metered",
+            allowancePeriodId,
+            endsAt: date("2026-09-01T00:00:00.000Z"),
+            plan: "adventurer",
+            planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+            startsAt: date("2026-08-01T00:00:00.000Z"),
+            usage: [
+              {
+                allowanceKind: "generatedDocuments",
+                quantity: 10n,
+              },
+            ],
+          },
+        },
+      });
+
+      expect(artifact.artifactRole).toMatchObject({ _tag: "GeneratedDocumentV1" });
+      expect(fixture.recorded[0]?.allowancePeriodId).toBe(originalPeriodId);
+    }),
+  );
+
   it.effect("deletes the retained artifact", () =>
     Effect.gen(function* () {
       const pdf = yield* Effect.promise(() => makePdf(1));
@@ -227,7 +434,7 @@ describe("Document Generation", () => {
 
       yield* fixture.documents.delete({
         actionId: ActionId.make("delete-176"),
-        artifactId: artifact.artifactId,
+        contentId: artifact.content.contentId,
         authorization: artifactAuthorization("delete-176", "file.delete"),
       });
 
@@ -241,21 +448,24 @@ describe("Document Generation", () => {
       const fixture = makeFixture({ computeResult: completed(pdf) });
       const artifact = yield* fixture.documents.generate(generationRequest("pdf"));
 
-      const exported = yield* fixture.documents.export({
-        actionId: ActionId.make("export-176"),
-        artifactId: artifact.artifactId,
-        authorization: artifactAuthorization("export-176", "document.read"),
-      });
       const denied = yield* fixture.documents
         .export({
           actionId: ActionId.make("foreign-export-176"),
-          artifactId: artifact.artifactId,
+          contentId: artifact.content.contentId,
           authorization: foreignAuthorization("foreign-export-176"),
         })
         .pipe(Effect.flip);
+      expect(fixture.readCalls()).toBe(0);
+
+      const exported = yield* fixture.documents.export({
+        actionId: ActionId.make("export-176"),
+        contentId: artifact.content.contentId,
+        authorization: artifactAuthorization("export-176", "file.read"),
+      });
 
       expect(exported).toEqual({ artifact, bytes: pdf });
       expect(denied).toMatchObject({ _tag: "Denied", reason: "ownershipRequired" });
+      expect(fixture.readCalls()).toBe(1);
     }),
   );
 
@@ -274,6 +484,16 @@ describe("Document Generation", () => {
           }),
         })
         .pipe(Effect.flip);
+
+      expect(error).toMatchObject({ _tag: "InvalidGeneratedArtifact" });
+    }),
+  );
+
+  it.effect("rejects a DOCX package without OOXML relationships", () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture({ computeResult: completed(makeDocx(1, 0, false)) });
+
+      const error = yield* fixture.documents.generate(generationRequest("docx")).pipe(Effect.flip);
 
       expect(error).toMatchObject({ _tag: "InvalidGeneratedArtifact" });
     }),
@@ -309,34 +529,32 @@ describe("Document Generation", () => {
     }),
   );
 
-  it.effect("denies retained document export after downgrade to Free", () =>
+  it.effect("exports retained document content after downgrade to Free", () =>
     Effect.gen(function* () {
       const pdf = yield* Effect.promise(() => makePdf(1));
       const fixture = makeFixture({ computeResult: completed(pdf) });
       const artifact = yield* fixture.documents.generate(generationRequest("pdf"));
-      const authorization = artifactAuthorization("free-export-176", "document.read");
+      const authorization = artifactAuthorization("free-export-176", "file.read");
 
-      const error = yield* fixture.documents
-        .export({
-          actionId: ActionId.make("free-export-176"),
-          artifactId: artifact.artifactId,
-          authorization: {
-            ...authorization,
-            allowance: {
-              _tag: "Metered",
-              allowancePeriodId,
-              endsAt: date("2026-09-01T00:00:00.000Z"),
-              plan: "free",
-              planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
-              startsAt: date("2026-08-01T00:00:00.000Z"),
-              usage: [],
-            },
-            subscription: { ...authorization.subscription, plan: "free" },
+      const exported = yield* fixture.documents.export({
+        actionId: ActionId.make("free-export-176"),
+        contentId: artifact.content.contentId,
+        authorization: {
+          ...authorization,
+          allowance: {
+            _tag: "Metered",
+            allowancePeriodId,
+            endsAt: date("2026-09-01T00:00:00.000Z"),
+            plan: "free",
+            planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+            startsAt: date("2026-08-01T00:00:00.000Z"),
+            usage: [],
           },
-        })
-        .pipe(Effect.flip);
+          subscription: { ...authorization.subscription, plan: "free" },
+        },
+      });
 
-      expect(error).toMatchObject({ _tag: "Denied", reason: "missingEntitlement" });
+      expect(exported).toEqual({ artifact, bytes: pdf });
     }),
   );
 });
@@ -392,7 +610,7 @@ const generationRequest = (format: "pdf" | "docx"): DocumentGeneration.GenerateR
   }),
 });
 
-const artifactAuthorization = (actionId: string, operation: "document.read" | "file.delete") => {
+const artifactAuthorization = (actionId: string, operation: "file.delete" | "file.read") => {
   const base = generationRequest("pdf").authorization;
   const authSessionId = AuthSessionId.make("session-176");
   return {
@@ -410,7 +628,7 @@ const artifactAuthorization = (actionId: string, operation: "document.read" | "f
 
 const foreignAuthorization = (actionId: string) => {
   const foreignUserId = UserId.make("another-user");
-  const authorization = artifactAuthorization(actionId, "document.read");
+  const authorization = artifactAuthorization(actionId, "file.read");
   if (authorization.authority._tag !== "AuthSession") return authorization;
   return {
     ...authorization,
@@ -419,8 +637,20 @@ const foreignAuthorization = (actionId: string) => {
   };
 };
 
-const makeFixture = (options: { readonly computeResult: DocumentGeneration.ComputeResult }) => {
+const makeFixture = (options: {
+  readonly authorization?: ReturnType<typeof makeAuthorization>;
+  readonly beforeCompute?: () => void;
+  readonly cleanupFails?: boolean;
+  readonly compute?: DocumentGeneration.DisposableCompute;
+  readonly computeResult: DocumentGeneration.ComputeResult;
+  readonly computeDefects?: boolean;
+  readonly currentAuthorization?: DocumentGeneration.MakeOptions["currentAuthorization"];
+  readonly putFails?: boolean;
+  readonly recovery?: DocumentGeneration.ComputeRecovery;
+}) => {
   let computeCalls = 0;
+  let cleanupCalls = 0;
+  let readCalls = 0;
   const stored: Array<DocumentGeneration.StoredArtifact> = [];
   const recorded: Array<{
     readonly allowancePeriodId: AllowancePeriodId;
@@ -436,33 +666,78 @@ const makeFixture = (options: { readonly computeResult: DocumentGeneration.Compu
         }),
     },
     artifacts: {
-      delete: (artifactId) =>
+      delete: (contentId) =>
         Effect.sync(() => {
           const index = stored.findIndex(
-            (candidate) => candidate.artifact.artifactId === artifactId,
+            (candidate) => candidate.artifact.content.contentId === contentId,
           );
           if (index >= 0) stored.splice(index, 1);
         }),
-      get: (artifactId) =>
+      inspect: (contentId) =>
         Effect.succeed(
-          stored.find((candidate) => candidate.artifact.artifactId === artifactId) ?? null,
+          stored.find((candidate) => candidate.artifact.content.contentId === contentId) ?? null,
         ),
       put: (artifact) =>
+        options.putFails === true
+          ? Effect.fail(
+              new DocumentGeneration.ArtifactStoreUnavailable({
+                cause: new Error("put failed"),
+                message: "R2 put failed",
+                operation: "put",
+              }),
+            )
+          : Effect.sync(() => {
+              stored.push(artifact);
+            }),
+      readBytes: (metadata) =>
         Effect.sync(() => {
-          stored.push(artifact);
+          readCalls += 1;
+          return (
+            stored.find(
+              (candidate) =>
+                candidate.artifact.content.contentId === metadata.artifact.content.contentId,
+            )?.bytes ?? new Uint8Array()
+          );
         }),
     },
-    authorization: makeAuthorization(retainedCatalog),
-    compute: {
-      dispose: () => Effect.void,
-      generate: () =>
+    authorization: options.authorization ?? makeAuthorization(retainedCatalog),
+    currentAuthorization: options.currentAuthorization ?? ((admitted) => Effect.succeed(admitted)),
+    compute: options.compute ?? {
+      dispose: (contentId) =>
         Effect.sync(() => {
-          computeCalls += 1;
-          return options.computeResult;
-        }),
+          cleanupCalls += 1;
+        }).pipe(
+          Effect.andThen(
+            options.cleanupFails === true
+              ? Effect.fail(
+                  new DocumentGeneration.DocumentCleanupUnavailable({
+                    cause: new Error("cleanup failed"),
+                    contentId,
+                    message: "Cleanup could not be confirmed",
+                  }),
+                )
+              : Effect.void,
+          ),
+        ),
+      generate: () =>
+        options.computeDefects === true
+          ? Effect.die("compute defect")
+          : Effect.sync(() => {
+              options.beforeCompute?.();
+              computeCalls += 1;
+              return options.computeResult;
+            }),
+      inspect: () => Effect.succeed(options.recovery ?? null),
     },
   });
-  return { computeCalls: () => computeCalls, documents, recorded, stored };
+  return {
+    cleanupCalls: () => cleanupCalls,
+    computeCalls: () => computeCalls,
+    documents,
+    readCalls: () => readCalls,
+    recorded,
+    stored,
+  };
 };
 
 const completed = (bytes: Uint8Array): DocumentGeneration.ComputeResult => ({
@@ -481,13 +756,21 @@ const makePdf = async (pages: number) => {
 
 const date = Schema.decodeSync(Schema.DateFromString);
 
-const makeDocx = (pages: number, explicitBreaks = pages - 1) =>
+const makeDocx = (pages: number, explicitBreaks = pages - 1, relationships = true) =>
   zipSync({
     "[Content_Types].xml": strToU8(
       '<?xml version="1.0"?><Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
     ),
     "docProps/app.xml": strToU8(
       `<?xml version="1.0"?><Properties><Pages>${pages}</Pages></Properties>`,
+    ),
+    "_rels/.rels": strToU8(
+      relationships
+        ? '<?xml version="1.0"?><Relationships><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'
+        : "",
+    ),
+    "word/_rels/document.xml.rels": strToU8(
+      relationships ? '<?xml version="1.0"?><Relationships></Relationships>' : "",
     ),
     "word/document.xml": strToU8(
       `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/>${'<w:p><w:r><w:br w:type="page"/></w:r></w:p>'.repeat(explicitBreaks)}</w:body></w:document>`,
