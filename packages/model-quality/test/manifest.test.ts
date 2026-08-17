@@ -7,11 +7,15 @@ import {
   createEvaluationManifest,
   digestValue,
   evaluationOutputSigningDigest,
-  parseEvidenceDigest,
   type BehaviorConfiguration,
   verifyEvaluationManifest,
 } from "../src/manifest";
-import { passingHumanReviewAssessment } from "./evidence-fixture";
+import {
+  passingHumanReviewAssessment,
+  testGateVerdictDigest,
+  testPowerDigest,
+  testScoreDigest,
+} from "./evidence-fixture";
 
 const configuration = {
   context: digestValue("context", "context"),
@@ -27,12 +31,7 @@ const configuration = {
 
 const dependencyDigest = digestValue("dependency", "dependencies");
 const graderDigest = digestValue("grader", "graders");
-const parsedGateVerdictDigest = parseEvidenceDigest(
-  "gate-verdict",
-  "sha256:963698e9f52d547da228ca5b5cb58bda44e2abe93df31d4c3534a229801c3db0",
-);
-if (parsedGateVerdictDigest.kind === "error") throw new Error("Static gate digest is invalid.");
-const gateVerdictDigest = parsedGateVerdictDigest.value;
+const gateVerdictDigest = testGateVerdictDigest;
 const rubricDigest = digestValue("rubric", "rubric");
 const humanReview = passingHumanReviewAssessment();
 
@@ -65,7 +64,7 @@ describe("Model Quality evidence manifests", () => {
         costDigest: digestValue("cost", "cost"),
         latencyDigest: digestValue("latency", "latency"),
         rawOutputsDigest: digestValue("raw-outputs", "outputs"),
-        scoreDigest: digestValue("scores", "scores"),
+        scoreDigest: testScoreDigest,
         tokenUseDigest: digestValue("token-use", "tokens"),
         traceDigest: digestValue("traces", "traces"),
         utcWindow: {
@@ -74,14 +73,15 @@ describe("Model Quality evidence manifests", () => {
         },
       },
       outputSignature:
-        "bRCt7b8hvA1j+RXFRi2QEkaZwtn5WzQbf/AMO4cDeM7DJlqFDx9EhRSeSLcnDR9jRrgpgbq/Zpt2Gj2hnSyWDg==",
-      powerCalculationDigest: digestValue("power-calculation", "power-calculation"),
+        "sPzf+M1RMZY4WhL5g0+zOcB2pEdcKRzEedzReahkeu6TPDMZP1A3SA9CuoD3c8f+P95mwS+CRZUHujR+2n2HDg==",
+      powerCalculationDigest: testPowerDigest,
       providerModelId: "pinned-model-2026-08-01",
       rubricDigest,
+      releaseId: "release-1",
       sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
     };
     expect(evaluationOutputSigningDigest(input)).toBe(
-      "sha256:61159686e6c289bc555f41ad87610faa1b9483cb2ea3d92fbe9d7a8ae1edd951",
+      "sha256:142cfb24c20b603352c4c419c98e1f54923aab7a7701f94f3024e5138f0c6d2d",
     );
     const result = createEvaluationManifest(input);
 
@@ -123,6 +123,17 @@ describe("Model Quality evidence manifests", () => {
       verifyEvaluationManifest({
         ...forgedUnsigned,
         contentDigest: digestValue("manifest", forgedUnsigned),
+      }),
+    ).toBe(false);
+
+    const forgedConfigurationDigest = {
+      ...validUnsigned,
+      configurationDigest: digestValue("configuration", "caller-derived-value"),
+    };
+    expect(
+      verifyEvaluationManifest({
+        ...forgedConfigurationDigest,
+        contentDigest: digestValue("manifest", forgedConfigurationDigest),
       }),
     ).toBe(false);
   });
@@ -239,7 +250,7 @@ const makeManifestInput = () => ({
     costDigest: digestValue("cost", "cost"),
     latencyDigest: digestValue("latency", "latency"),
     rawOutputsDigest: digestValue("raw-outputs", "outputs"),
-    scoreDigest: digestValue("scores", "scores"),
+    scoreDigest: testScoreDigest,
     tokenUseDigest: digestValue("token-use", "tokens"),
     traceDigest: digestValue("traces", "traces"),
     utcWindow: {
@@ -248,9 +259,10 @@ const makeManifestInput = () => ({
     },
   },
   outputSignature:
-    "bRCt7b8hvA1j+RXFRi2QEkaZwtn5WzQbf/AMO4cDeM7DJlqFDx9EhRSeSLcnDR9jRrgpgbq/Zpt2Gj2hnSyWDg==",
-  powerCalculationDigest: digestValue("power-calculation", "power-calculation"),
+    "sPzf+M1RMZY4WhL5g0+zOcB2pEdcKRzEedzReahkeu6TPDMZP1A3SA9CuoD3c8f+P95mwS+CRZUHujR+2n2HDg==",
+  powerCalculationDigest: testPowerDigest,
   providerModelId: "pinned-model-2026-08-01",
   rubricDigest,
+  releaseId: "release-1",
   sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
 });

@@ -121,6 +121,45 @@ export type CaseRunScores = {
   readonly runs: ReadonlyArray<number>;
 };
 
+/** Verify exact repeated outputs for every case in one trusted corpus version. */
+export const verifyCompleteCorpusRuns = (
+  runs: ReadonlyArray<CaseRunScores>,
+  corpusManifest: CorpusManifest,
+  corpusPredecessor: CorpusManifest | null = null,
+): boolean => {
+  if (
+    !verifyCorpusManifest(corpusManifest, corpusPredecessor) ||
+    runs.length !== corpusManifest.cases.length
+  )
+    return false;
+  const expected = new Map<
+    string,
+    { readonly fixtureDigest: EvidenceDigest<"fixture">; readonly repetitions: 3 | 5 }
+  >(
+    corpusManifest.cases.map((item) => [
+      item.id,
+      {
+        fixtureDigest:
+          item.split === "sealed-holdout"
+            ? item.fixture.contentDigest
+            : digestValue("fixture", item.fixture),
+        repetitions: item.repetitions,
+      },
+    ]),
+  );
+  const seen = new Set<string>();
+  return runs.every((item) => {
+    const corpusCase = expected.get(item.caseId);
+    if (corpusCase === undefined || seen.has(item.caseId)) return false;
+    seen.add(item.caseId);
+    return (
+      item.fixtureDigest === corpusCase.fixtureDigest &&
+      item.runs.length === corpusCase.repetitions &&
+      item.runs.every((score) => Number.isFinite(score) && score >= 0 && score <= 1)
+    );
+  });
+};
+
 /** Inputs fixed before candidate evaluation for final paired power. */
 export type PairedPowerPlanInput = PairedPowerInput & {
   readonly candidateEvaluationStartedAt: string;
@@ -142,10 +181,11 @@ export type PairedPowerPlan = ParsedPairedPowerInput & {
 export const createPairedPowerPlan = (
   input: PairedPowerPlanInput,
   corpusManifest: CorpusManifest,
+  corpusPredecessor: CorpusManifest | null = null,
 ): StatisticsResult<PairedPowerPlan> => {
   const powerInput = parsePairedPowerInput(input);
   if (powerInput.kind === "error") return powerInput;
-  if (!verifyCorpusManifest(corpusManifest)) {
+  if (!verifyCorpusManifest(corpusManifest, corpusPredecessor)) {
     return invalidStatistics("The corpus manifest content digest does not match.");
   }
   const declaredAt = parseEvidenceInstant(input.declaredAt);
@@ -197,6 +237,7 @@ export type PairedComparisonInput = {
   readonly baselineByCase: ReadonlyArray<CaseRunScores>;
   readonly candidateByCase: ReadonlyArray<CaseRunScores>;
   readonly corpusManifest: CorpusManifest;
+  readonly corpusPredecessor?: CorpusManifest | null;
   readonly powerPlan: PairedPowerPlan;
 };
 
@@ -214,7 +255,7 @@ export type PairedComparison = {
 export const pairedNonInferiority = (
   input: PairedComparisonInput,
 ): PairedComparison | StatisticsFailure => {
-  if (!verifyCorpusManifest(input.corpusManifest)) {
+  if (!verifyCorpusManifest(input.corpusManifest, input.corpusPredecessor ?? null)) {
     return invalidStatistics("The corpus manifest content digest does not match.");
   }
   if (!powerPlanIsValid(input.powerPlan, input.corpusManifest)) {

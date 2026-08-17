@@ -16,6 +16,7 @@ export type CanaryEvidence = {
   readonly eligiblePercent: 5 | 25;
   readonly eligibleUsers: number;
   readonly evaluationCorpus: CorpusManifest;
+  readonly evaluationCorpusPredecessor?: CorpusManifest | null;
   readonly currentEvidence: CurrentReleaseEvidence;
   readonly failureMode:
     | { readonly kind: "none" }
@@ -42,7 +43,10 @@ export type CanaryAssessment = {
 export const assessCanary = (evidence: CanaryEvidence): CanaryAssessment => {
   const releaseId = parseReleaseId(evidence.releaseId);
   if (
-    !verifyCorpusManifest(evidence.evaluationCorpus) ||
+    !verifyCorpusManifest(
+      evidence.evaluationCorpus,
+      evidence.evaluationCorpusPredecessor ?? null,
+    ) ||
     releaseId.kind === "error" ||
     evidence.releasePass === null ||
     evidence.releasePass.releaseId !== releaseId.value ||

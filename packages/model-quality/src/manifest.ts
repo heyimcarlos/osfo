@@ -5,10 +5,12 @@ import {
   parseApprovalId,
   parseEvaluationManifestId,
   parseEvidenceInstant,
+  parseReleaseId,
   parseVersionId,
   type ApprovalId,
   type EvaluationManifestId,
   type EvidenceInstant,
+  type ReleaseId,
   type VersionId,
 } from "./identity";
 
@@ -122,6 +124,7 @@ export type EvaluationManifestInput = {
   readonly powerCalculationDigest: EvidenceDigest<"power-calculation">;
   readonly providerModelId: string;
   readonly rubricDigest: EvidenceDigest<"rubric">;
+  readonly releaseId: string;
   readonly sourceCommit: string;
   readonly manifestId: string;
 };
@@ -135,6 +138,7 @@ export type EvaluationManifest = Omit<
   | "humanLabelSetVersion"
   | "manifestId"
   | "outputEvidence"
+  | "releaseId"
 > & {
   readonly approvedBaseline: Omit<
     EvaluationManifestInput["approvedBaseline"],
@@ -155,6 +159,7 @@ export type EvaluationManifest = Omit<
       readonly startedAt: EvidenceInstant;
     };
   };
+  readonly releaseId: ReleaseId;
 };
 
 /** Less-trusted persisted evaluation-manifest shape accepted at the parsing boundary. */
@@ -212,6 +217,7 @@ export const createEvaluationManifest = (
   const corpusVersion = parseVersionId(input.corpusVersion);
   const humanLabelSetVersion = parseVersionId(input.humanLabelSetVersion);
   const manifestId = parseEvaluationManifestId(input.manifestId);
+  const releaseId = parseReleaseId(input.releaseId);
   const startedAt = parseEvidenceInstant(input.outputEvidence.utcWindow.startedAt);
   const endedAt = parseEvidenceInstant(input.outputEvidence.utcWindow.endedAt);
   if (
@@ -221,6 +227,7 @@ export const createEvaluationManifest = (
     corpusVersion.kind === "error" ||
     humanLabelSetVersion.kind === "error" ||
     manifestId.kind === "error" ||
+    releaseId.kind === "error" ||
     startedAt.kind === "error" ||
     endedAt.kind === "error"
   ) {
@@ -247,6 +254,7 @@ export const createEvaluationManifest = (
     createdAt: createdAt.value,
     humanLabelSetVersion: humanLabelSetVersion.value,
     manifestId: manifestId.value,
+    releaseId: releaseId.value,
     outputEvidence,
     configurationDigest: configurationDigest(configuration),
   });
@@ -303,6 +311,7 @@ const evaluationManifestInputIsValid = (input: EvaluationManifestInput): boolean
     parseVersionId(input.corpusVersion).kind === "success" &&
     parseVersionId(input.humanLabelSetVersion).kind === "success" &&
     parseEvaluationManifestId(input.manifestId).kind === "success" &&
+    parseReleaseId(input.releaseId).kind === "success" &&
     input.providerModelId.length > 0 &&
     input.sourceCommit.length > 0
   );
@@ -335,6 +344,7 @@ export const parseEvaluationManifest = (
   void ignoredConfigurationDigest;
   if (
     contentDigest !== digestValue("manifest", unsigned) ||
+    ignoredConfigurationDigest !== configurationDigest(input.configuration) ||
     !evaluationManifestInputIsValid(input)
   ) {
     return invalidEvaluationManifest();
@@ -354,6 +364,7 @@ const freezeEvaluationManifest = (manifest: PersistedEvaluationManifest): Evalua
   const createdAt = parseEvidenceInstant(manifest.createdAt);
   const humanLabelSetVersion = parseVersionId(manifest.humanLabelSetVersion);
   const manifestId = parseEvaluationManifestId(manifest.manifestId);
+  const releaseId = parseReleaseId(manifest.releaseId);
   const startedAt = parseEvidenceInstant(manifest.outputEvidence.utcWindow.startedAt);
   const endedAt = parseEvidenceInstant(manifest.outputEvidence.utcWindow.endedAt);
   if (
@@ -363,6 +374,7 @@ const freezeEvaluationManifest = (manifest: PersistedEvaluationManifest): Evalua
     createdAt.kind === "error" ||
     humanLabelSetVersion.kind === "error" ||
     manifestId.kind === "error" ||
+    releaseId.kind === "error" ||
     startedAt.kind === "error" ||
     endedAt.kind === "error"
   ) {
@@ -380,6 +392,7 @@ const freezeEvaluationManifest = (manifest: PersistedEvaluationManifest): Evalua
     createdAt: createdAt.value,
     humanLabelSetVersion: humanLabelSetVersion.value,
     manifestId: manifestId.value,
+    releaseId: releaseId.value,
     outputEvidence: Object.freeze({
       ...manifest.outputEvidence,
       utcWindow: Object.freeze({ endedAt: endedAt.value, startedAt: startedAt.value }),

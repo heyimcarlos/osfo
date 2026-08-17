@@ -1,6 +1,6 @@
 import { verify as verifySignature } from "node:crypto";
 
-import type { Journey } from "./corpus";
+import { verifyCorpusManifest, type CorpusManifest, type Journey } from "./corpus";
 import { digestValue, type EvidenceDigest } from "./manifest";
 import type { EvidenceVerdict } from "./statistics";
 import { isEvidenceCount, isEvidenceSubset } from "./evidence-count";
@@ -8,8 +8,10 @@ import { parseApprovalId, parseCaseId, parseEvidenceInstant } from "./identity";
 
 /** Review counts for one non-safety journey. */
 export type JourneyReview = {
+  readonly doubleLabeledCaseIds: ReadonlyArray<string>;
   readonly doubleLabeledCases: number;
   readonly journey: Exclude<Journey, "safety">;
+  readonly reviewedCaseIds: ReadonlyArray<string>;
   readonly reviewedCases: number;
   readonly totalCases: number;
 };
@@ -28,9 +30,11 @@ export type HumanReviewInput = {
   readonly assessmentId: string;
   readonly authoredSafetyCases: ReadonlyArray<SafetyCaseApproval>;
   readonly blinded: boolean;
+  readonly corpusDigest: EvidenceDigest<"corpus">;
   readonly disagreements: number;
   readonly journeyReviews: ReadonlyArray<JourneyReview>;
   readonly reviewedSafetyCases: number;
+  readonly reviewedSafetyCaseIds: ReadonlyArray<string>;
   readonly reviewAuthorityId: string;
   readonly signature: string;
   readonly totalSafetyCases: number;
@@ -47,14 +51,30 @@ export type HumanReviewAssessment = {
 };
 
 /** Assess complete-gate human coverage and independent safety approval. */
-export const assessHumanReview = (input: HumanReviewInput): HumanReviewAssessment => {
+export const assessHumanReview = (
+  input: HumanReviewInput,
+  corpusManifest: CorpusManifest,
+  corpusPredecessor: CorpusManifest | null = null,
+): HumanReviewAssessment => {
   const reasons: Array<string> = [];
+  const corpusJourneyCounts = new Map<Journey, number>();
+  for (const item of corpusManifest.cases) {
+    corpusJourneyCounts.set(item.journey, (corpusJourneyCounts.get(item.journey) ?? 0) + 1);
+  }
+  if (
+    !verifyCorpusManifest(corpusManifest, corpusPredecessor) ||
+    input.corpusDigest !== corpusManifest.contentDigest
+  ) {
+    reasons.push("Human review must identify one verified corpus manifest.");
+  }
   if (
     !isEvidenceSubset(input.reviewedSafetyCases, input.totalSafetyCases) ||
     input.journeyReviews.some(
       (review) =>
         !isEvidenceSubset(review.reviewedCases, review.totalCases) ||
-        !isEvidenceSubset(review.doubleLabeledCases, review.reviewedCases),
+        !isEvidenceSubset(review.doubleLabeledCases, review.reviewedCases) ||
+        review.reviewedCases !== review.reviewedCaseIds.length ||
+        review.doubleLabeledCases !== review.doubleLabeledCaseIds.length,
     ) ||
     !isEvidenceCount(input.disagreements) ||
     !isEvidenceCount(input.adjudicatedDisagreements) ||
@@ -94,6 +114,21 @@ export const assessHumanReview = (input: HumanReviewInput): HumanReviewAssessmen
     }
   }
   for (const review of input.journeyReviews) {
+    const journeyCaseIds = new Set<string>(
+      corpusManifest.cases.filter((item) => item.journey === review.journey).map((item) => item.id),
+    );
+    const reviewedIds = new Set(review.reviewedCaseIds);
+    if (
+      reviewedIds.size !== review.reviewedCaseIds.length ||
+      new Set(review.doubleLabeledCaseIds).size !== review.doubleLabeledCaseIds.length ||
+      review.reviewedCaseIds.some((id) => !journeyCaseIds.has(id)) ||
+      review.doubleLabeledCaseIds.some((id) => !reviewedIds.has(id))
+    ) {
+      reasons.push(`${review.journey} review case evidence is invalid.`);
+    }
+    if (review.totalCases !== corpusJourneyCounts.get(review.journey)) {
+      reasons.push(`${review.journey} review totals must match the corpus.`);
+    }
     const required = Math.max(20, Math.ceil(review.totalCases * 0.2));
     if (review.reviewedCases < required) {
       reasons.push(`${review.journey} requires at least ${required} reviewed cases.`);
@@ -108,6 +143,18 @@ export const assessHumanReview = (input: HumanReviewInput): HumanReviewAssessmen
   if (input.authoredSafetyCases.length !== input.totalSafetyCases) {
     reasons.push("Every safety case requires recorded authorship and final approval.");
   }
+  const corpusSafetyCaseIds = new Set<string>(
+    corpusManifest.cases.filter((item) => item.journey === "safety").map((item) => item.id),
+  );
+  if (
+    input.totalSafetyCases !== corpusSafetyCaseIds.size ||
+    input.authoredSafetyCases.some((item) => !corpusSafetyCaseIds.has(item.caseId)) ||
+    input.reviewedSafetyCases !== input.reviewedSafetyCaseIds.length ||
+    new Set(input.reviewedSafetyCaseIds).size !== input.reviewedSafetyCaseIds.length ||
+    input.reviewedSafetyCaseIds.some((id) => !corpusSafetyCaseIds.has(id))
+  ) {
+    reasons.push("Safety-case review identities and totals must match the corpus.");
+  }
   if (
     new Set(input.authoredSafetyCases.map((item) => item.caseId)).size !== input.totalSafetyCases
   ) {
@@ -120,8 +167,8 @@ export const assessHumanReview = (input: HumanReviewInput): HumanReviewAssessmen
   const affectedCases =
     input.totalSafetyCases + input.journeyReviews.reduce((sum, item) => sum + item.totalCases, 0);
   const reviewedCases =
-    input.reviewedSafetyCases +
-    input.journeyReviews.reduce((sum, item) => sum + item.reviewedCases, 0);
+    input.reviewedSafetyCaseIds.length +
+    input.journeyReviews.reduce((sum, item) => sum + item.reviewedCaseIds.length, 0);
   const unsigned = Object.freeze({
     affectedCases,
     evidence,
@@ -136,8 +183,12 @@ export const assessHumanReview = (input: HumanReviewInput): HumanReviewAssessmen
 };
 
 /** Verify a persisted human assessment by recomputing its evidence and digest. */
-export const verifyHumanReviewAssessment = (assessment: HumanReviewAssessment): boolean => {
-  const recomputed = assessHumanReview(assessment.evidence);
+export const verifyHumanReviewAssessment = (
+  assessment: HumanReviewAssessment,
+  corpusManifest: CorpusManifest,
+  corpusPredecessor: CorpusManifest | null = null,
+): boolean => {
+  const recomputed = assessHumanReview(assessment.evidence, corpusManifest, corpusPredecessor);
   return (
     reviewAuthorityIds.has(assessment.evidence.reviewAuthorityId) &&
     verifyHumanReviewSignature(assessment.evidence) &&
@@ -153,7 +204,7 @@ export const verifyHumanReviewAssessment = (assessment: HumanReviewAssessment): 
 const reviewAuthorityIds = new Set(["human-review-owner-1"]);
 
 const reviewEvidencePublicKey = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAfd2Pwlf37dcAAdg5Z5qXuqXxVh+1kTW4SzDsYm+0eiQ=
+MCowBQYDK2VwAyEABbq+Me0sknTj7rdmH1i0M3brIf1l4JuDuEK+GFFhC+E=
 -----END PUBLIC KEY-----`;
 
 /** Produce the digest signed by the independent human-review authority. */
@@ -179,5 +230,14 @@ const freezeHumanReviewInput = (input: HumanReviewInput): HumanReviewInput =>
     authoredSafetyCases: Object.freeze(
       input.authoredSafetyCases.map((item) => Object.freeze({ ...item })),
     ),
-    journeyReviews: Object.freeze(input.journeyReviews.map((item) => Object.freeze({ ...item }))),
+    journeyReviews: Object.freeze(
+      input.journeyReviews.map((item) =>
+        Object.freeze({
+          ...item,
+          doubleLabeledCaseIds: Object.freeze([...item.doubleLabeledCaseIds]),
+          reviewedCaseIds: Object.freeze([...item.reviewedCaseIds]),
+        }),
+      ),
+    ),
+    reviewedSafetyCaseIds: Object.freeze([...input.reviewedSafetyCaseIds]),
   });

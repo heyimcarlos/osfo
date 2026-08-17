@@ -8,6 +8,7 @@ import {
   type BehaviorConfiguration,
 } from "../src/manifest";
 import { createReleasePass } from "../src/release-verdict";
+import { createPairedPowerPlan, type CaseRunScores } from "../src/statistics";
 
 const reviewedJourneys = [
   "ordinary",
@@ -19,30 +20,45 @@ const reviewedJourneys = [
   "scheduled-email",
 ] as const;
 
-export const passingHumanReviewAssessment = () =>
-  assessHumanReview({
-    adjudicatedDisagreements: 0,
-    assessedAt: "2026-08-16T12:00:00.000Z",
-    assessmentId: "human-assessment-1",
-    authoredSafetyCases: Array.from({ length: 160 }, (_, index) => ({
-      authorId: `author-${index}`,
-      caseId: `safety-${index}`,
-      finalApproverId: `approver-${index}`,
-    })),
-    blinded: true,
-    disagreements: 0,
-    journeyReviews: reviewedJourneys.map((journey) => ({
-      doubleLabeledCases: 20,
-      journey,
-      reviewedCases: 20,
-      totalCases: journey === "ordinary" || journey === "memory" ? 100 : 40,
-    })),
-    reviewedSafetyCases: 160,
-    reviewAuthorityId: "human-review-owner-1",
-    signature:
-      "MxvWc7e7bZT1248qZVBy/6S8FGxA23X/6gqdGr15C4RmmQYlg+RAzsRScWHglqT27dq3VQyjir4KK7e9KkWoDA==",
-    totalSafetyCases: 160,
-  });
+export const passingHumanReviewAssessment = () => {
+  const safetyCases = initialCorpusManifest.cases.filter((item) => item.journey === "safety");
+  return assessHumanReview(
+    {
+      adjudicatedDisagreements: 0,
+      assessedAt: "2026-08-16T12:00:00.000Z",
+      assessmentId: "human-assessment-1",
+      authoredSafetyCases: safetyCases.map((item, index) => ({
+        authorId: `author-${index}`,
+        caseId: item.id,
+        finalApproverId: `approver-${index}`,
+      })),
+      blinded: true,
+      corpusDigest: initialCorpusManifest.contentDigest,
+      disagreements: 0,
+      journeyReviews: reviewedJourneys.map((journey) => {
+        const reviewedCaseIds = initialCorpusManifest.cases
+          .filter((item) => item.journey === journey)
+          .slice(0, 20)
+          .map((item) => item.id);
+        return {
+          doubleLabeledCaseIds: reviewedCaseIds,
+          doubleLabeledCases: reviewedCaseIds.length,
+          journey,
+          reviewedCaseIds,
+          reviewedCases: reviewedCaseIds.length,
+          totalCases: initialCorpusManifest.cases.filter((item) => item.journey === journey).length,
+        };
+      }),
+      reviewedSafetyCases: 160,
+      reviewedSafetyCaseIds: safetyCases.map((item) => item.id),
+      reviewAuthorityId: "human-review-owner-1",
+      signature:
+        "8jsXoFSIchX2JyprJ9cfjy/ptyGYaOnKIdeGmdxRfX8m9sg/nDMGHIpcay9DNM2EtlOje3UQoM5onnODov6cDw==",
+      totalSafetyCases: 160,
+    },
+    initialCorpusManifest,
+  );
+};
 
 export const testConfiguration = {
   context: digestValue("context", "context"),
@@ -58,15 +74,89 @@ export const testConfiguration = {
 
 export const testDependencyDigest = digestValue("dependency", "dependencies");
 export const testGraderDigest = digestValue("grader", "graders");
+
+const caseRuns = (score: number): ReadonlyArray<CaseRunScores> =>
+  initialCorpusManifest.cases.map((item) => ({
+    caseId: item.id,
+    fixtureDigest:
+      item.split === "sealed-holdout"
+        ? item.fixture.contentDigest
+        : digestValue("fixture", item.fixture),
+    runs: Array.from({ length: item.repetitions }, () => score),
+  }));
+
+export const testProductionRuns = caseRuns(0.5);
+export const testCandidateRuns = caseRuns(1);
+const sealedCaseIds = new Set<string>(
+  initialCorpusManifest.cases
+    .filter((item) => item.split === "sealed-holdout")
+    .map((item) => item.id),
+);
+const sealedRuns = (runs: ReadonlyArray<CaseRunScores>) =>
+  runs.filter((item) => sealedCaseIds.has(item.caseId));
+
+const pairedPlan = (caseIds: ReadonlyArray<string>, margin: number) => {
+  const result = createPairedPowerPlan(
+    {
+      anticipatedDifference: 0.8,
+      candidateEvaluationStartedAt: "2026-08-17T00:00:00.000Z",
+      caseIds,
+      declaredAt: "2026-08-16T00:00:00.000Z",
+      discordanceRate: 0.8,
+      margin,
+      pilotIndependentCases: 100,
+    },
+    initialCorpusManifest,
+  );
+  if (result.kind === "error") throw new Error(result.error.message);
+  return result.value;
+};
+
+export const testOverallPairedEvidence = {
+  baselineByCase: sealedRuns(testProductionRuns),
+  candidateByCase: sealedRuns(testCandidateRuns),
+  powerPlan: pairedPlan([...sealedCaseIds], 0.02),
+} as const;
+
+export const testStratumPairedEvidence = reviewedJourneys.flatMap((journey) =>
+  (["free", "adventurer"] as const).map((planRoute) => {
+    const ids = initialCorpusManifest.cases
+      .filter(
+        (item) =>
+          item.split === "sealed-holdout" &&
+          item.journey === journey &&
+          item.planRoute === planRoute,
+      )
+      .map((item) => item.id);
+    const idSet = new Set<string>(ids);
+    return {
+      baselineByCase: testProductionRuns.filter((item) => idSet.has(item.caseId)),
+      candidateByCase: testCandidateRuns.filter((item) => idSet.has(item.caseId)),
+      journey,
+      planRoute,
+      powerPlan: pairedPlan(ids, 0.05),
+    };
+  }),
+);
 const parsedGateVerdictDigest = parseEvidenceDigest(
   "gate-verdict",
-  "sha256:963698e9f52d547da228ca5b5cb58bda44e2abe93df31d4c3534a229801c3db0",
+  "sha256:45c984f731928fc2299ba3dd32fa430d981158da5dd7030a8b2ae7d4f99015f4",
 );
 if (parsedGateVerdictDigest.kind === "error") throw new Error("Static gate digest is invalid.");
 export const testGateVerdictDigest = parsedGateVerdictDigest.value;
 export const testRubricDigest = digestValue("rubric", "rubric");
-export const testPowerDigest = digestValue("power-calculation", "power-calculation");
-export const testScoreDigest = digestValue("scores", "scores");
+export const testPowerDigest = digestValue("power-calculation", {
+  overall: testOverallPairedEvidence.powerPlan.contentDigest,
+  strata: testStratumPairedEvidence.map((item) => ({
+    journey: item.journey,
+    planRoute: item.planRoute,
+    powerPlanDigest: item.powerPlan.contentDigest,
+  })),
+});
+export const testScoreDigest = digestValue("scores", {
+  candidateRuns: testCandidateRuns,
+  productionRuns: testProductionRuns,
+});
 
 export const passingEvaluationManifest = (overrides?: {
   readonly gateVerdictDigest?: typeof testGateVerdictDigest;
@@ -110,10 +200,11 @@ export const passingEvaluationManifest = (overrides?: {
     },
     outputSignature:
       overrides?.outputSignature ??
-      "bRCt7b8hvA1j+RXFRi2QEkaZwtn5WzQbf/AMO4cDeM7DJlqFDx9EhRSeSLcnDR9jRrgpgbq/Zpt2Gj2hnSyWDg==",
+      "sPzf+M1RMZY4WhL5g0+zOcB2pEdcKRzEedzReahkeu6TPDMZP1A3SA9CuoD3c8f+P95mwS+CRZUHujR+2n2HDg==",
     powerCalculationDigest: testPowerDigest,
     providerModelId: "pinned-model-2026-08-01",
     rubricDigest: testRubricDigest,
+    releaseId: "release-1",
     sourceCommit: "45e5d1743701911dc05ed8998702a3fac77a61c3",
   });
   if (result.kind === "error") throw new Error(result.error.message);

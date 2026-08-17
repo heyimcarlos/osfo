@@ -17,11 +17,15 @@ import {
   passingEvaluationManifest,
   passingHumanReviewAssessment,
   testConfigurationDigest,
+  testCandidateRuns,
   testDependencyDigest,
   testGraderDigest,
+  testOverallPairedEvidence,
   testPowerDigest,
   testRubricDigest,
   testScoreDigest,
+  testProductionRuns,
+  testStratumPairedEvidence,
 } from "./evidence-fixture";
 
 const journeys: ReadonlyArray<Exclude<Journey, "safety">> = [
@@ -68,28 +72,33 @@ const passingStratum = (
     : { completeEvidence: true, completeRubricPassed: 9, journey, planRoute, total: 10 };
 
 const passingEvidence = (): GateEvidence => ({
+  candidateRuns: testCandidateRuns,
   candidateManifest: passingEvaluationManifest(),
-  candidateCaseIds: ["case-1"],
+  candidateCaseIds: initialCorpusManifest.cases.map((item) => item.id),
   candidateCorpusDigest: initialCorpusManifest.contentDigest,
   criticalChecks: { passed: 10, total: 10 },
   criticalRiskClasses: riskClasses.map((riskClass) => ({ passed: 1, riskClass, total: 1 })),
+  evaluationCorpus: initialCorpusManifest,
+  evaluationCorpusPredecessor: null,
   humanReview: passingHumanReviewAssessment(),
   nonInferiority: {
-    overall: { margin: 0.02, verdict: "PASS" },
+    overall: { ...testOverallPairedEvidence, margin: 0.02, verdict: "PASS" },
     powerCalculationDigest: testPowerDigest,
     scoreDigest: testScoreDigest,
-    strata: journeys.flatMap((journey) =>
-      planRoutes.map((planRoute) => ({
-        journey,
-        margin: 0.05,
-        planRoute,
-        verdict: "PASS" as const,
-      })),
-    ),
+    strata: testStratumPairedEvidence.map((item) => ({
+      baselineByCase: item.baselineByCase,
+      candidateByCase: item.candidateByCase,
+      journey: item.journey,
+      margin: 0.05,
+      planRoute: item.planRoute,
+      powerPlan: item.powerPlan,
+      verdict: "PASS" as const,
+    })),
   },
-  productionCaseIds: ["case-1"],
+  productionCaseIds: initialCorpusManifest.cases.map((item) => item.id),
   productionCorpusDigest: initialCorpusManifest.contentDigest,
   productionManifest: passingEvaluationManifest(),
+  productionRuns: testProductionRuns,
   releaseId: "release-1",
   strata: journeys.flatMap((journey) =>
     planRoutes.map((planRoute) => passingStratum(journey, planRoute)),
@@ -112,6 +121,54 @@ describe("Model Quality Gate", () => {
       reasons: [],
       verdict: "PASS",
     });
+  });
+
+  it("never passes an incomplete or selected complete-gate run", () => {
+    const evidence = passingEvidence();
+    expect(
+      evaluateModelQualityGate({ ...evidence, candidateRuns: evidence.candidateRuns.slice(1) }),
+    ).toMatchObject({ verdict: "MISSING" });
+  });
+
+  it("recomputes paired power instead of trusting a literal PASS", () => {
+    const evidence = passingEvidence();
+    expect(
+      evaluateModelQualityGate({
+        ...evidence,
+        nonInferiority: {
+          ...evidence.nonInferiority,
+          overall: {
+            ...evidence.nonInferiority.overall,
+            baselineByCase: evidence.nonInferiority.overall.baselineByCase.slice(0, 1),
+            candidateByCase: evidence.nonInferiority.overall.candidateByCase.slice(0, 1),
+          },
+        },
+      }),
+    ).toMatchObject({ verdict: "MISSING" });
+  });
+
+  it("binds each paired stratum to its declared journey and Plan route", () => {
+    const evidence = passingEvidence();
+    const first = evidence.nonInferiority.strata[0];
+    const second = evidence.nonInferiority.strata[1];
+    if (first === undefined || second === undefined) throw new Error("Two strata are required.");
+    expect(
+      evaluateModelQualityGate({
+        ...evidence,
+        nonInferiority: {
+          ...evidence.nonInferiority,
+          strata: [
+            {
+              ...first,
+              baselineByCase: second.baselineByCase,
+              candidateByCase: second.candidateByCase,
+              powerPlan: second.powerPlan,
+            },
+            ...evidence.nonInferiority.strata.slice(1),
+          ],
+        },
+      }),
+    ).toMatchObject({ verdict: "MISSING" });
   });
 
   it("never passes when verified positive human evidence is absent", () => {
@@ -139,6 +196,37 @@ describe("Model Quality Gate", () => {
           contentDigest: digestValue("human-review", unsigned),
         },
       }),
+    ).toMatchObject({ verdict: "MISSING" });
+  });
+
+  it("does not treat the automated output signer as human-review authority", () => {
+    const evidence = passingEvidence();
+    const humanReview = passingHumanReviewAssessment();
+    const forgedEvidence = {
+      ...humanReview.evidence,
+      signature: evidence.candidateManifest.outputSignature,
+    };
+    const unsigned = {
+      affectedCases: humanReview.affectedCases,
+      evidence: forgedEvidence,
+      reasons: humanReview.reasons,
+      reviewedCases: humanReview.reviewedCases,
+      verdict: humanReview.verdict,
+    };
+    expect(
+      evaluateModelQualityGate({
+        ...evidence,
+        humanReview: {
+          ...unsigned,
+          contentDigest: digestValue("human-review", unsigned),
+        },
+      }),
+    ).toMatchObject({ verdict: "MISSING" });
+  });
+
+  it("does not rebind signed verdict evidence to another release identity", () => {
+    expect(
+      evaluateModelQualityGate({ ...passingEvidence(), releaseId: "release-2" }),
     ).toMatchObject({ verdict: "MISSING" });
   });
 
@@ -184,7 +272,7 @@ describe("Model Quality Gate", () => {
         ...evidence,
         nonInferiority: {
           ...evidence.nonInferiority,
-          overall: { margin: 0.02, verdict: "MISSING" },
+          overall: { ...evidence.nonInferiority.overall, verdict: "MISSING" },
         },
         strata: [{ ...stratum, completeEvidence: false }],
       }),
@@ -208,14 +296,14 @@ describe("Model Quality Gate", () => {
     const gateVerdictDigest = gateVerdictEvidenceDigest(changed);
     const expectedDigest = parseEvidenceDigest(
       "gate-verdict",
-      "sha256:a8e392908a76254e362f697bd865416f5ee3af6d4034918e9bfefbafc3a6ade8",
+      "sha256:f31093546586e4a56d50f2dba7b015e26ac49d894b9b74204942cdc5da29e6cf",
     );
     if (expectedDigest.kind === "error") throw new Error("Static human gate digest is invalid.");
     expect(gateVerdictDigest).toBe(expectedDigest.value);
     const manifest = passingEvaluationManifest({
       gateVerdictDigest,
       outputSignature:
-        "bHxqb+u8ZAlIQ1/25M2Uis77a6XlYhDBJb/Jr1vs0dh7VXihFIPYBFUrAmwBD0VkRC7rPreayYtFqW5z/WwHBQ==",
+        "yrf/aEKXxwB+ld2IYPiXK5CqqGKHtx9B9EtqFMqo1u+2oc0gWPH7nf5n+wK8MPwCZ81z8/t1PFQTIqeeFACsAg==",
     });
     expect(
       evaluateModelQualityGate({

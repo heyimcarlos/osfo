@@ -1,6 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { createCorpusVersion, initialCorpusManifest, parseCorpusManifest } from "../src/corpus";
+import {
+  createCorpusVersion,
+  initialCorpusManifest,
+  parseCorpusManifest,
+  verifyCorpusManifest,
+} from "../src/corpus";
 import { digestValue } from "../src/manifest";
 
 describe("Model Quality corpus governance", () => {
@@ -43,6 +48,9 @@ describe("Model Quality corpus governance", () => {
     expect(
       parseCorpusManifest({ ...contents, contentDigest: digestValue("corpus", contents) }, null),
     ).toMatchObject({ error: { _tag: "InvalidCorpusManifest" }, kind: "error" });
+    expect(
+      verifyCorpusManifest({ ...contents, contentDigest: digestValue("corpus", contents) }),
+    ).toBe(false);
   });
 
   it("does not remove a known failing case to make a candidate pass", () => {
@@ -102,6 +110,8 @@ describe("Model Quality corpus governance", () => {
       version: "model-quality-v2",
     });
     if (second.kind === "error") throw new Error(second.error.message);
+    expect(verifyCorpusManifest(second.value)).toBe(false);
+    expect(verifyCorpusManifest(second.value, initialCorpusManifest)).toBe(true);
     const third = createCorpusVersion({
       cases: second.value.cases,
       createdAt: "2026-08-19T00:00:00.000Z",

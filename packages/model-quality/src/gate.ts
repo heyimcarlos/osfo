@@ -1,6 +1,18 @@
-import type { CriticalRiskClass, Journey, PlanRoute } from "./corpus";
+import {
+  verifyCorpusManifest,
+  type CorpusManifest,
+  type CriticalRiskClass,
+  type Journey,
+  type PlanRoute,
+} from "./corpus";
 import { digestValue, type EvaluationManifest, type EvidenceDigest } from "./manifest";
-import type { EvidenceVerdict } from "./statistics";
+import {
+  pairedNonInferiority,
+  verifyCompleteCorpusRuns,
+  type CaseRunScores,
+  type EvidenceVerdict,
+  type PairedPowerPlan,
+} from "./statistics";
 import { isEvidenceSubset } from "./evidence-count";
 import { verifyHumanReviewAssessment, type HumanReviewAssessment } from "./review";
 import {
@@ -32,6 +44,7 @@ export type StratumEvidence = {
 
 /** Complete evidence required to issue a Model Quality verdict. */
 export type GateEvidence = {
+  readonly candidateRuns: ReadonlyArray<CaseRunScores>;
   readonly releaseId: string;
   readonly candidateManifest: EvaluationManifest;
   readonly candidateCaseIds: ReadonlyArray<string>;
@@ -42,6 +55,8 @@ export type GateEvidence = {
     readonly riskClass: CriticalRiskClass;
     readonly total: number;
   }>;
+  readonly evaluationCorpus: CorpusManifest;
+  readonly evaluationCorpusPredecessor: CorpusManifest | null;
   readonly humanReview: HumanReviewAssessment | null;
   readonly subjectiveAuthority:
     | { readonly calibration: EvidenceVerdict; readonly kind: "model-grader" }
@@ -51,19 +66,29 @@ export type GateEvidence = {
         readonly kind: "human";
       };
   readonly nonInferiority: {
-    readonly overall: { readonly margin: number; readonly verdict: EvidenceVerdict };
+    readonly overall: {
+      readonly baselineByCase: ReadonlyArray<CaseRunScores>;
+      readonly candidateByCase: ReadonlyArray<CaseRunScores>;
+      readonly margin: number;
+      readonly powerPlan: PairedPowerPlan;
+      readonly verdict: EvidenceVerdict;
+    };
     readonly powerCalculationDigest: EvidenceDigest<"power-calculation">;
     readonly scoreDigest: EvidenceDigest<"scores">;
     readonly strata: ReadonlyArray<{
       readonly journey: StratumEvidence["journey"];
       readonly margin: number;
       readonly planRoute: PlanRoute;
+      readonly baselineByCase: ReadonlyArray<CaseRunScores>;
+      readonly candidateByCase: ReadonlyArray<CaseRunScores>;
+      readonly powerPlan: PairedPowerPlan;
       readonly verdict: EvidenceVerdict;
     }>;
   };
   readonly productionCaseIds: ReadonlyArray<string>;
   readonly productionCorpusDigest: EvidenceDigest<"corpus">;
   readonly productionManifest: EvaluationManifest;
+  readonly productionRuns: ReadonlyArray<CaseRunScores>;
   readonly currentEvidence: CurrentReleaseEvidence;
   readonly strata: ReadonlyArray<StratumEvidence>;
   readonly zeroToleranceFailures: ReadonlyArray<ZeroToleranceFailure>;
@@ -80,13 +105,18 @@ export type GateAssessment = {
 export const gateVerdictEvidenceDigest = (evidence: GateEvidence): EvidenceDigest<"gate-verdict"> =>
   digestValue("gate-verdict", {
     candidateCaseIds: evidence.candidateCaseIds,
+    candidateRuns: evidence.candidateRuns,
     candidateCorpusDigest: evidence.candidateCorpusDigest,
     criticalChecks: evidence.criticalChecks,
     criticalRiskClasses: evidence.criticalRiskClasses,
     humanReviewDigest: evidence.humanReview?.contentDigest ?? null,
+    evaluationCorpusDigest: evidence.evaluationCorpus.contentDigest,
+    evaluationCorpusPredecessorDigest: evidence.evaluationCorpusPredecessor?.contentDigest ?? null,
     nonInferiority: evidence.nonInferiority,
     productionCaseIds: evidence.productionCaseIds,
     productionCorpusDigest: evidence.productionCorpusDigest,
+    productionRuns: evidence.productionRuns,
+    releaseId: evidence.releaseId,
     strata: evidence.strata,
     subjectiveAuthority: evidence.subjectiveAuthority,
     zeroToleranceFailures: evidence.zeroToleranceFailures,
@@ -126,6 +156,24 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
     return { reasons: [...evidence.zeroToleranceFailures], verdict: "FAIL" };
   }
 
+  const overallComparison = pairedNonInferiority({
+    baselineByCase: evidence.nonInferiority.overall.baselineByCase,
+    candidateByCase: evidence.nonInferiority.overall.candidateByCase,
+    corpusManifest: evidence.evaluationCorpus,
+    corpusPredecessor: evidence.evaluationCorpusPredecessor,
+    powerPlan: evidence.nonInferiority.overall.powerPlan,
+  });
+  const stratumComparisons = evidence.nonInferiority.strata.map((item) => ({
+    declared: item,
+    result: pairedNonInferiority({
+      baselineByCase: item.baselineByCase,
+      candidateByCase: item.candidateByCase,
+      corpusManifest: evidence.evaluationCorpus,
+      corpusPredecessor: evidence.evaluationCorpusPredecessor,
+      powerPlan: item.powerPlan,
+    }),
+  }));
+
   const failures: Array<string> = [];
   if (
     isEvidenceSubset(evidence.criticalChecks.passed, evidence.criticalChecks.total) &&
@@ -157,8 +205,10 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
     }
   }
   if (
-    evidence.nonInferiority.overall.verdict === "FAIL" ||
-    evidence.nonInferiority.strata.some((comparison) => comparison.verdict === "FAIL")
+    (overallComparison.kind === "success" && overallComparison.verdict === "FAIL") ||
+    stratumComparisons.some(
+      (comparison) => comparison.result.kind === "success" && comparison.result.verdict === "FAIL",
+    )
   ) {
     failures.push("Candidate is inferior to the approved production configuration.");
   }
@@ -171,6 +221,24 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
   if (failures.length > 0) return { reasons: failures, verdict: "FAIL" };
 
   const missing: Array<string> = [];
+  const corpusCaseIds = evidence.evaluationCorpus.cases.map((item) => item.id);
+  if (
+    !verifyCorpusManifest(evidence.evaluationCorpus, evidence.evaluationCorpusPredecessor) ||
+    !verifyCompleteCorpusRuns(
+      evidence.candidateRuns,
+      evidence.evaluationCorpus,
+      evidence.evaluationCorpusPredecessor,
+    ) ||
+    !verifyCompleteCorpusRuns(
+      evidence.productionRuns,
+      evidence.evaluationCorpus,
+      evidence.evaluationCorpusPredecessor,
+    ) ||
+    !sameCases(evidence.candidateCaseIds, corpusCaseIds) ||
+    !sameCases(evidence.productionCaseIds, corpusCaseIds)
+  ) {
+    missing.push("The complete gate requires exact repeated evidence for every corpus case.");
+  }
   if (
     !isEvidenceSubset(evidence.criticalChecks.passed, evidence.criticalChecks.total) ||
     evidence.criticalRiskClasses.some((item) => !isEvidenceSubset(item.passed, item.total)) ||
@@ -222,7 +290,11 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
   }
   if (
     evidence.humanReview === null ||
-    !verifyHumanReviewAssessment(evidence.humanReview) ||
+    !verifyHumanReviewAssessment(
+      evidence.humanReview,
+      evidence.evaluationCorpus,
+      evidence.evaluationCorpusPredecessor,
+    ) ||
     evidence.humanReview.verdict !== "PASS" ||
     evidence.humanReview.affectedCases <= 0 ||
     evidence.humanReview.reviewedCases <= 0
@@ -243,14 +315,34 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
   ) {
     missing.push("Subjective grading lacks qualified release authority.");
   }
-  if (evidence.nonInferiority.overall.verdict === "MISSING") {
+  if (
+    overallComparison.kind === "error" ||
+    overallComparison.verdict === "MISSING" ||
+    evidence.nonInferiority.overall.verdict !== overallComparison.verdict
+  ) {
     missing.push("Overall paired result is MISSING.");
   }
-  if (evidence.nonInferiority.strata.some((comparison) => comparison.verdict === "MISSING")) {
+  if (
+    stratumComparisons.some(
+      ({ declared, result }) =>
+        result.kind === "error" ||
+        result.verdict === "MISSING" ||
+        declared.verdict !== result.verdict ||
+        declared.powerPlan.caseIds.some((caseId) => {
+          const corpusCase = evidence.evaluationCorpus.cases.find((item) => item.id === caseId);
+          return (
+            corpusCase === undefined ||
+            corpusCase.journey !== declared.journey ||
+            corpusCase.planRoute !== declared.planRoute
+          );
+        }),
+    )
+  ) {
     missing.push("A paired stratum result is MISSING.");
   }
   if (
     evidence.nonInferiority.overall.margin !== 0.02 ||
+    evidence.nonInferiority.overall.powerPlan.margin !== 0.02 ||
     requiredJourneys.some((journey) =>
       (["free", "adventurer"] as const).some(
         (planRoute) =>
@@ -258,7 +350,8 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
             (comparison) =>
               comparison.journey === journey &&
               comparison.planRoute === planRoute &&
-              comparison.margin === 0.05,
+              comparison.margin === 0.05 &&
+              comparison.powerPlan.margin === 0.05,
           ).length !== 1,
       ),
     )
@@ -272,16 +365,31 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
     evidence.productionManifest,
     evidence.currentEvidence,
   );
+  const calculatedPowerDigest = digestValue("power-calculation", {
+    overall: evidence.nonInferiority.overall.powerPlan.contentDigest,
+    strata: evidence.nonInferiority.strata.map((item) => ({
+      journey: item.journey,
+      planRoute: item.planRoute,
+      powerPlanDigest: item.powerPlan.contentDigest,
+    })),
+  });
+  const calculatedScoreDigest = digestValue("scores", {
+    candidateRuns: evidence.candidateRuns,
+    productionRuns: evidence.productionRuns,
+  });
   const verdictDigest = gateVerdictEvidenceDigest(evidence);
   if (
     releasePass.kind === "error" ||
     evidence.candidateCorpusDigest !== evidence.candidateManifest.corpusDigest ||
     evidence.productionCorpusDigest !== evidence.productionManifest.corpusDigest ||
+    evidence.evaluationCorpus.contentDigest !== evidence.candidateManifest.corpusDigest ||
     evidence.humanReview === null ||
     evidence.candidateManifest.humanReviewDigest !== evidence.humanReview.contentDigest ||
     evidence.candidateManifest.powerCalculationDigest !==
       evidence.nonInferiority.powerCalculationDigest ||
+    evidence.nonInferiority.powerCalculationDigest !== calculatedPowerDigest ||
     evidence.candidateManifest.outputEvidence.scoreDigest !== evidence.nonInferiority.scoreDigest ||
+    evidence.nonInferiority.scoreDigest !== calculatedScoreDigest ||
     evidence.candidateManifest.gateVerdictDigest !== verdictDigest ||
     evidence.productionManifest.gateVerdictDigest !== verdictDigest
   ) {

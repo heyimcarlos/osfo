@@ -59,6 +59,12 @@ export const createReleasePass = (
   ) {
     return invalidReleasePass("Signed release output evidence is invalid or stale.");
   }
+  if (
+    candidateManifest.releaseId !== releaseId.value ||
+    productionManifest.releaseId !== releaseId.value
+  ) {
+    return invalidReleasePass("Signed release output evidence has another release identity.");
+  }
   const passedAt = parseEvidenceInstant(candidateManifest.outputEvidence.utcWindow.endedAt);
   if (passedAt.kind === "error") return invalidReleasePass("Release PASS time is invalid.");
   const unsigned = Object.freeze({
@@ -91,6 +97,8 @@ export const verifyReleasePass = (
     contentDigest === digestValue("release-pass", unsigned) &&
     releasePass.verdict === "PASS" &&
     releasePass.passedAt === releasePass.candidateManifest.outputEvidence.utcWindow.endedAt &&
+    releasePass.candidateManifest.releaseId === releasePass.releaseId &&
+    releasePass.productionManifest.releaseId === releasePass.releaseId &&
     releaseManifestsAreValid(releasePass.candidateManifest, releasePass.productionManifest, current)
   );
 };

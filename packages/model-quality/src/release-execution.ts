@@ -31,8 +31,9 @@ export type ReleaseExecutionResult =
 export const resolveCompleteReleaseCorpus = (
   manifest: CorpusManifest,
   vault: SealedFixtureVault,
+  predecessor: CorpusManifest | null = null,
 ): ReleaseExecutionResult => {
-  if (!verifyCorpusManifest(manifest)) {
+  if (!verifyCorpusManifest(manifest, predecessor)) {
     return {
       error: {
         _tag: "SealedFixtureUnavailable",

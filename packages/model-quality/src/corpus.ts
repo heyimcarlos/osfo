@@ -226,7 +226,10 @@ export const parseCorpusManifest = (
 export const verifyCorpusManifest = (
   manifest: CorpusManifest,
   predecessor?: CorpusManifest | null,
-): boolean => corpusInvariantFailure(manifest, predecessor) === null;
+): boolean =>
+  predecessor === undefined
+    ? manifest.previousVersion === null && corpusInvariantFailure(manifest, null) === null
+    : corpusInvariantFailure(manifest, predecessor) === null;
 
 /** Safety-case authorship approval used for immutable corpus governance. */
 export type CorpusSafetyApproval = {
