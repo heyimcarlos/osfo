@@ -1,49 +1,28 @@
 import { sql } from "drizzle-orm";
-import {
-  check,
-  index,
-  pgTable,
-  primaryKey,
-  text,
-  timestamp,
-  uniqueIndex,
-} from "drizzle-orm/pg-core";
+import { check, index, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 import { users } from "./auth";
 
-/** Durable provider event receipts shared by onboarding and bound-message admission. */
-export const providerEventReceipts = pgTable(
-  "provider_event_receipts",
+/** Lease-fenced Telegram onboarding delivery facts; never conversation authority. */
+export const telegramOnboardingDeliveries = pgTable(
+  "telegram_onboarding_deliveries",
   {
-    provider: text("provider").notNull(),
-    eventId: text("event_id").notNull(),
-    agentId: text("agent_id"),
-    channelBindingId: text("channel_binding_id"),
-    userId: text("user_id"),
-    purpose: text("purpose").notNull(),
-    state: text("state").default("pending").notNull(),
+    eventId: text("event_id").primaryKey(),
+    claimToken: text("claim_token").notNull(),
+    state: text("state").default("not_applied").notNull(),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    completedAt: timestamp("completed_at", { withTimezone: true }),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
   },
   (table) => [
     check(
-      "provider_event_receipts_provider_check",
-      sql`${table.provider} in ('telegram', 'whatsapp')`,
+      "telegram_onboarding_deliveries_state_check",
+      sql`${table.state} in ('not_applied', 'prepared', 'ambiguous', 'applied')`,
     ),
     check(
-      "provider_event_receipts_state_check",
-      sql`${table.state} in ('pending', 'outbound_attempted', 'completed')`,
+      "telegram_onboarding_deliveries_lifecycle_check",
+      sql`(${table.state} in ('not_applied', 'prepared') and ${table.leaseExpiresAt} is not null and ${table.appliedAt} is null) or (${table.state} = 'ambiguous' and ${table.leaseExpiresAt} is null and ${table.appliedAt} is null) or (${table.state} = 'applied' and ${table.leaseExpiresAt} is null and ${table.appliedAt} is not null)`,
     ),
-    check(
-      "provider_event_receipts_purpose_check",
-      sql`${table.purpose} in ('admission', 'onboarding')`,
-    ),
-    check(
-      "provider_event_receipts_lifecycle_check",
-      sql`(${table.state} = 'pending' and ${table.leaseExpiresAt} is not null and ${table.completedAt} is null and ((${table.purpose} = 'admission' and ${table.agentId} is not null and ${table.channelBindingId} is not null and ${table.userId} is not null) or (${table.purpose} = 'onboarding' and ${table.agentId} is null and ${table.channelBindingId} is null and ${table.userId} is null))) or (${table.state} = 'outbound_attempted' and ${table.purpose} = 'onboarding' and ${table.leaseExpiresAt} is null and ${table.completedAt} is null) or (${table.state} = 'completed' and ${table.leaseExpiresAt} is null and ${table.completedAt} is not null)`,
-    ),
-    primaryKey({ columns: [table.provider, table.eventId] }),
   ],
 );
 

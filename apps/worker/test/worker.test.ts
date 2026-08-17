@@ -268,6 +268,8 @@ const completeRuntimeInput = {
   BETTER_AUTH_BASE_URL: "https://osfo.test",
   BETTER_AUTH_SECRET: "test-only-better-auth-secret-32-characters",
   BETTER_AUTH_TRUSTED_ORIGINS: '["https://osfo.test"]',
+  META_APP_SECRET: "test-only-meta-app-secret",
+  META_WEBHOOK_VERIFY_TOKEN: "test-only-meta-webhook-token",
   OSFO_STAGE: "test",
   TWILIO_ACCOUNT_SID: `AC${"1".repeat(32)}`,
   TWILIO_AUTH_TOKEN: "test-only-twilio-token",

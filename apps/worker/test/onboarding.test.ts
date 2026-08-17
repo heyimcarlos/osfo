@@ -2,7 +2,12 @@ import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { users } from "@osfo/db/schema/auth";
-import { channelBindings, registrationInvitations } from "@osfo/db/schema/onboarding";
+import {
+  channelBindings,
+  registrationInvitations,
+  telegramOnboardingDeliveries,
+} from "@osfo/db/schema/onboarding";
+import { eq } from "drizzle-orm";
 import { DateTime, Effect, Exit, Layer, Redacted } from "effect";
 import { TestClock } from "effect/testing";
 
@@ -31,7 +36,7 @@ describe("Onboarding application service", () => {
             const harness = makeHarness(fixture.database, { enrollmentProvider: "telegram" });
             const program = Effect.gen(function* () {
               const onboarding = yield* Onboarding.Service;
-              const issued = yield* onboarding.issueTelegramInvitation({
+              const issued = yield* issueTelegramInvitation(onboarding, {
                 channelIdentity: ChannelIdentity.make("telegram:900100200"),
                 eventId: "telegram-update-301",
                 locale: "es",
@@ -87,15 +92,58 @@ describe("Onboarding application service", () => {
           const submissions: Array<string> = [];
           const eventId = "telegram-update-318";
           const identity = ChannelIdentity.make("telegram:900100214");
+          const admissionLayer = MessagingAdmission.layerWithoutDependencies.pipe(
+            Layer.provideMerge(MessagingAdmissionPostgres.layerWithoutDependencies),
+            Layer.provideMerge(Db.layerFromDatabase(fixture.database)),
+            Layer.provideMerge(
+              Layer.succeed(
+                MessagingAdmission.AgentSubmission,
+                MessagingAdmission.AgentSubmission.of({
+                  accept: (_agentId, input) =>
+                    Effect.sync(() => {
+                      submissions.push(input.submissionId);
+                      throw new Error("unbound onboarding replay reached Agent acceptance");
+                    }),
+                  recover: (_agentId, input) =>
+                    Effect.sync(() => {
+                      submissions.push(input.submissionId);
+                      return null;
+                    }),
+                }),
+              ),
+            ),
+            Layer.provideMerge(
+              Layer.succeed(
+                MessagingAdmission.StableIdentity,
+                MessagingAdmission.StableIdentity.of({
+                  deriveAdmission: () => Effect.succeed("a".repeat(40)),
+                  deriveContent: () => Effect.succeed("b".repeat(40)),
+                }),
+              ),
+            ),
+          );
+          const admit = (message: string) =>
+            MessagingAdmission.Service.pipe(
+              Effect.flatMap((admission) =>
+                admission.accept({ channelIdentity: identity, eventId, message }),
+              ),
+              Effect.provide(admissionLayer),
+            );
+          expect(yield* admit("Help me get started.")).toEqual({ _tag: "Unbound" });
           const program = Effect.gen(function* () {
             const onboarding = yield* Onboarding.Service;
-            expect(yield* onboarding.beginTelegramEvent(eventId)).toBe("Claimed");
-            const issued = yield* onboarding.issueTelegramInvitation({
-              channelIdentity: identity,
-              eventId,
-              locale: "en",
-              message: "Help me get started.",
-            });
+            const claim = yield* onboarding.beginTelegramEvent(eventId);
+            expect(claim._tag).toBe("Claimed");
+            if (claim._tag !== "Claimed") return;
+            const issued = yield* onboarding.issueTelegramInvitation(
+              {
+                channelIdentity: identity,
+                eventId,
+                locale: "en",
+                message: "Help me get started.",
+              },
+              claim.claimToken,
+            );
             yield* onboarding.complete({
               bindingConsent: "accepted",
               existingProfileChoice: null,
@@ -104,7 +152,7 @@ describe("Onboarding application service", () => {
               userId: UserId.make("user-telegram-transition"),
               webEnrollmentToken: null,
             });
-            yield* onboarding.markTelegramEventOutboundAttempted(eventId);
+            yield* onboarding.markTelegramEventAmbiguous(eventId, claim.claimToken);
           });
           yield* program.pipe(Effect.provide(onboardingHarness.layer));
           const invitationRows = yield* Effect.promise(() =>
@@ -129,35 +177,123 @@ describe("Onboarding application service", () => {
             }),
           );
 
-          const admissionLayer = MessagingAdmission.layerWithoutDependencies.pipe(
-            Layer.provideMerge(MessagingAdmissionPostgres.layerWithoutDependencies),
-            Layer.provideMerge(Db.layerFromDatabase(fixture.database)),
-            Layer.provideMerge(
-              Layer.succeed(
-                MessagingAdmission.AgentSubmission,
-                MessagingAdmission.AgentSubmission.of({
-                  submit: (_agentId, input) => {
-                    submissions.push(input.submissionId);
-                    return Effect.succeed({ accepted: true });
-                  },
-                }),
-              ),
-            ),
-          );
-          const result = yield* MessagingAdmission.Service.pipe(
-            Effect.flatMap((admission) =>
-              admission.accept({
-                channelIdentity: identity,
-                eventId,
-                message: "Help me get started.",
-                provider: "telegram",
-              }),
-            ),
-            Effect.provide(admissionLayer),
-          );
+          const result = yield* admit("Help me get started.");
 
-          expect(result).toEqual({ _tag: "Duplicate" });
+          expect(result).toEqual({ _tag: "Unbound" });
           expect(submissions).toEqual([]);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("fences a stale Telegram worker after deterministic lease takeover", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const harness = makeHarness(fixture.database, { enrollmentProvider: "telegram" });
+          yield* Effect.gen(function* () {
+            const onboarding = yield* Onboarding.Service;
+            const first = yield* onboarding.beginTelegramEvent("telegram-update-takeover");
+            expect(first._tag).toBe("Claimed");
+            if (first._tag !== "Claimed") return;
+
+            yield* TestClock.adjust("61 seconds");
+            const second = yield* onboarding.beginTelegramEvent("telegram-update-takeover");
+            expect(second._tag).toBe("Claimed");
+            if (second._tag !== "Claimed") return;
+            expect(second.claimToken).not.toBe(first.claimToken);
+
+            const stalePreparation = yield* Effect.exit(
+              onboarding.issueTelegramInvitation(
+                {
+                  channelIdentity: ChannelIdentity.make("telegram:900100298"),
+                  eventId: "telegram-update-takeover",
+                  locale: "en",
+                  message: "Help me.",
+                },
+                first.claimToken,
+              ),
+            );
+            const staleInvitationRows = yield* Effect.promise(() =>
+              fixture.database
+                .select({ invitationId: registrationInvitations.invitationId })
+                .from(registrationInvitations),
+            );
+            expect(Exit.isFailure(stalePreparation)).toBe(true);
+            expect(staleInvitationRows).toEqual([]);
+
+            const staleTransition = yield* Effect.exit(
+              onboarding.markTelegramEventAmbiguous("telegram-update-takeover", first.claimToken),
+            );
+            expect(Exit.isFailure(staleTransition)).toBe(true);
+
+            yield* onboarding.markTelegramEventAmbiguous(
+              "telegram-update-takeover",
+              second.claimToken,
+            );
+            const staleTerminal = yield* Effect.exit(
+              onboarding.completeTelegramEvent("telegram-update-takeover", first.claimToken),
+            );
+            expect(Exit.isFailure(staleTerminal)).toBe(true);
+            yield* onboarding.completeTelegramEvent("telegram-update-takeover", second.claimToken);
+          }).pipe(Effect.provide(harness.layer));
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("recovers the exact digest-only Telegram invitation after lease takeover", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const harness = makeHarness(fixture.database, { enrollmentProvider: "telegram" });
+          yield* Effect.gen(function* () {
+            const onboarding = yield* Onboarding.Service;
+            const eventId = "telegram-update-prepared-takeover";
+            const input: Onboarding.UnknownTelegramMessage = {
+              channelIdentity: ChannelIdentity.make("telegram:900100299"),
+              eventId,
+              locale: "en",
+              message: "Help me plan.",
+            };
+            const firstClaim = yield* onboarding.beginTelegramEvent(eventId);
+            expect(firstClaim._tag).toBe("Claimed");
+            if (firstClaim._tag !== "Claimed") return;
+            const first = yield* onboarding.issueTelegramInvitation(input, firstClaim.claimToken);
+
+            yield* TestClock.adjust("61 seconds");
+            const secondClaim = yield* onboarding.beginTelegramEvent(eventId);
+            expect(secondClaim._tag).toBe("Claimed");
+            if (secondClaim._tag !== "Claimed") return;
+            const recovered = yield* onboarding.issueTelegramInvitation(
+              input,
+              secondClaim.claimToken,
+            );
+            const rows = yield* Effect.promise(() =>
+              fixture.database
+                .select({
+                  receiptState: telegramOnboardingDeliveries.state,
+                  tokenDigest: registrationInvitations.tokenDigest,
+                })
+                .from(registrationInvitations)
+                .innerJoin(
+                  telegramOnboardingDeliveries,
+                  eq(telegramOnboardingDeliveries.eventId, registrationInvitations.providerEventId),
+                ),
+            );
+            const plaintextToken = first.verifyUrl.pathname.slice("/verify/".length);
+
+            expect(recovered.verifyUrl.href).toBe(first.verifyUrl.href);
+            expect(recovered.response).toBe(first.response);
+            expect(rows).toEqual([
+              { receiptState: "prepared", tokenDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) },
+            ]);
+            expect(rows[0]?.tokenDigest).not.toBe(plaintextToken);
+          }).pipe(Effect.provide(harness.layer));
         }),
       closeTestDatabase,
     ),
@@ -249,7 +385,8 @@ describe("Onboarding application service", () => {
 
             expect(first.invitation.invitationId).toBe(repeated.invitation.invitationId);
             expect(first.invitation.response).toContain("I can help you get started");
-            expect(repeated.invitation.response).toContain("registration link");
+            expect(repeated.invitation.response).toBe(first.invitation.response);
+            expect(repeated.invitation.verifyUrl.href).toBe(first.invitation.verifyUrl.href);
             expect(first.invitation.verifyUrl.origin).toBe("https://osfo.ai");
             expect(inspected).toEqual({
               locale: "en",
@@ -717,7 +854,7 @@ describe("Onboarding application service", () => {
           const harness = makeHarness(fixture.database, { enrollmentProvider: "telegram" });
           const program = Effect.gen(function* () {
             const onboarding = yield* Onboarding.Service;
-            const expiring = yield* onboarding.issueTelegramInvitation({
+            const expiring = yield* issueTelegramInvitation(onboarding, {
               channelIdentity: ChannelIdentity.make("telegram:900100210"),
               eventId: "telegram-update-310",
               locale: "es",
@@ -725,14 +862,14 @@ describe("Onboarding application service", () => {
             });
             yield* TestClock.adjust(24 * 60 * 60 * 1_000 + 1);
             const expired = yield* onboarding.inspectInvitation(tokenFromUrl(expiring.verifyUrl));
-            const replacement = yield* onboarding.issueTelegramInvitation({
+            const replacement = yield* issueTelegramInvitation(onboarding, {
               channelIdentity: ChannelIdentity.make("telegram:900100210"),
               eventId: "telegram-update-311",
               locale: "es",
               message: "Necesito ayuda.",
             });
 
-            const refusedInvitation = yield* onboarding.issueTelegramInvitation({
+            const refusedInvitation = yield* issueTelegramInvitation(onboarding, {
               channelIdentity: ChannelIdentity.make("telegram:900100211"),
               eventId: "telegram-update-312",
               locale: "en",
@@ -839,7 +976,7 @@ describe("Onboarding application service", () => {
           });
           const program = Effect.gen(function* () {
             const onboarding = yield* Onboarding.Service;
-            const issued = yield* onboarding.issueTelegramInvitation({
+            const issued = yield* issueTelegramInvitation(onboarding, {
               channelIdentity: ChannelIdentity.make("telegram:900100213"),
               eventId: "telegram-update-317",
               locale: "en",
@@ -874,6 +1011,21 @@ describe("Onboarding application service", () => {
 const makeLayer = (database: Parameters<typeof Db.layerFromDatabase>[0]) =>
   makeHarness(database).layer;
 
+const issueTelegramInvitation = (
+  onboarding: Onboarding.Interface,
+  input: Onboarding.UnknownTelegramMessage,
+) =>
+  Effect.gen(function* () {
+    const claim = yield* onboarding.beginTelegramEvent(input.eventId);
+    if (claim._tag !== "Claimed") {
+      return yield* new Onboarding.OnboardingPersistenceUnavailable({
+        cause: claim,
+        operation: "claimTelegramTestEvent",
+      });
+    }
+    return yield* onboarding.issueTelegramInvitation(input, claim.claimToken);
+  });
+
 const makeHarness = (
   database: Parameters<typeof Db.layerFromDatabase>[0],
   options?: {
@@ -883,6 +1035,7 @@ const makeHarness = (
 ) => {
   const welcomes: Array<Onboarding.SetupProfile> = [];
   const turns: Array<{ readonly eventId: string; readonly verifyUrl: string }> = [];
+  const durableTurnUrls = new Map<string, string>();
   let shouldFailWelcome = options?.failWelcomeOnce ?? false;
   const layer = Onboarding.layerWithoutDependencies.pipe(
     Layer.provideMerge(OnboardingPostgres.layerWithoutDependencies),
@@ -920,13 +1073,16 @@ const makeHarness = (
       Layer.succeed(
         Onboarding.RegistrationTurn,
         Onboarding.RegistrationTurn.of({
-          begin: ({ eventId, verifyUrl }) => {
-            turns.push({ eventId, verifyUrl });
-            return Effect.succeed(
-              verifyUrl.endsWith("/get-started")
+          begin: ({ eventId, invitationId, verifyUrl }) => {
+            const durableVerifyUrl = durableTurnUrls.get(invitationId) ?? verifyUrl;
+            durableTurnUrls.set(invitationId, durableVerifyUrl);
+            turns.push({ eventId, verifyUrl: durableVerifyUrl });
+            return Effect.succeed({
+              response: durableVerifyUrl.endsWith("/get-started")
                 ? "Use the registration link I sent earlier."
-                : `I can help you get started. Verify at ${verifyUrl}`,
-            );
+                : `I can help you get started. Verify at ${durableVerifyUrl}`,
+              verifyUrl: durableVerifyUrl,
+            });
           },
           delete: () => Effect.void,
         }),

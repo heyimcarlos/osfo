@@ -271,10 +271,18 @@ describe("GetStartedScreen acceptance journeys", () => {
         }),
     });
     render(
-      <GetStartedScreen dependencies={dependencies} isAuthenticated onComplete={() => undefined} />,
+      <GetStartedScreen
+        dependencies={dependencies}
+        enrollmentProvider="telegram"
+        isAuthenticated
+        onComplete={() => undefined}
+      />,
     );
 
     await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(document.body.textContent).toContain("Telegram processes channel messages");
+    expect(document.body.textContent).not.toContain("WhatsApp");
+    expect(document.body.textContent).not.toContain("STOP");
     await user.click(screen.getByRole("button", { name: /Continue to phone verification/u }));
     await user.click(screen.getByRole("button", { name: /Confirm Free/u }));
 

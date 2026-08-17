@@ -1,4 +1,5 @@
 import { Effect, Layer } from "effect";
+import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 
 import type { OsfoStage, RuntimeConfig } from "../env";
@@ -50,4 +51,4 @@ export const layer = (options: Options) =>
         );
       }),
     ),
-  );
+  ).pipe(Layer.provide(BrowserCrypto.layer));

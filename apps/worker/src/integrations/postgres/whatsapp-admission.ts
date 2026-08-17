@@ -1,6 +1,6 @@
 import { agents } from "@osfo/db/schema/agents";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
-import { inboundWhatsAppEvents } from "@osfo/db/schema/messaging";
+import { inboundProviderEvents } from "@osfo/db/schema/messaging";
 import { and, eq } from "drizzle-orm";
 import { DateTime, Effect, Schema } from "effect";
 
@@ -14,7 +14,7 @@ import {
 } from "../../domain";
 import type { InboundRoute, RouteInput } from "../../services/whatsapp-admission";
 import { AuthorizationContext } from "../../services/authorization";
-import { readActiveWhatsAppBinding, readWhatsAppBinding } from "./channel-binding";
+import { readActiveBinding, readBinding } from "./channel-binding";
 import * as DeletionCasePostgres from "./deletion-case";
 import * as UserSuspensionPostgres from "./user-suspension";
 
@@ -37,8 +37,12 @@ export class WhatsAppAdmissionPersistenceUnavailable extends Schema.TaggedError<
 ) {}
 
 /** Construct the PostgreSQL provider-event and first-binding resolution adapter. */
-export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
+export const make = (options?: {
+  readonly now?: Effect.Effect<Date>;
+  readonly provider?: "telegram" | "whatsapp";
+}) =>
   Effect.gen(function* () {
+    const provider = options?.provider ?? "whatsapp";
     const db = yield* database;
     const billing = Billing.make(db);
     const deletionCases = yield* DeletionCasePostgres.make;
@@ -52,22 +56,24 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
             // oxlint-disable-next-line effecttsgo/async-function -- boundary: Drizzle transaction callbacks require Promise control flow.
             db.transaction(async (transaction) => {
               await transaction
-                .insert(inboundWhatsAppEvents)
+                .insert(inboundProviderEvents)
                 .values({
                   channelIdentity: input.channelIdentity,
                   contentDigest: input.contentDigest,
+                  eventScope: input.phoneNumberId,
                   messageKind: input._tag === "TextMessage" ? "text" : "button_reply",
-                  phoneNumberId: input.phoneNumberId,
+                  provider,
                   providerMessageId: input.providerMessageId,
                 })
                 .onConflictDoNothing();
               const [stored] = await transaction
                 .select()
-                .from(inboundWhatsAppEvents)
+                .from(inboundProviderEvents)
                 .where(
                   and(
-                    eq(inboundWhatsAppEvents.phoneNumberId, input.phoneNumberId),
-                    eq(inboundWhatsAppEvents.providerMessageId, input.providerMessageId),
+                    eq(inboundProviderEvents.provider, provider),
+                    eq(inboundProviderEvents.eventScope, input.phoneNumberId),
+                    eq(inboundProviderEvents.providerMessageId, input.providerMessageId),
                   ),
                 )
                 .for("update")
@@ -77,25 +83,28 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
 
               let resolvedChannelBindingId = stored.resolvedChannelBindingId;
               if (stored.bindingResolvedAt === null) {
-                const binding = await readActiveWhatsAppBinding(
+                const binding = await readActiveBinding(
                   transaction,
+                  provider,
                   ChannelIdentity.make(stored.channelIdentity),
                 );
                 resolvedChannelBindingId = binding?.channelBindingId ?? null;
                 await transaction
-                  .update(inboundWhatsAppEvents)
+                  .update(inboundProviderEvents)
                   .set({ bindingResolvedAt: now, resolvedChannelBindingId })
                   .where(
                     and(
-                      eq(inboundWhatsAppEvents.phoneNumberId, input.phoneNumberId),
-                      eq(inboundWhatsAppEvents.providerMessageId, input.providerMessageId),
+                      eq(inboundProviderEvents.provider, provider),
+                      eq(inboundProviderEvents.eventScope, input.phoneNumberId),
+                      eq(inboundProviderEvents.providerMessageId, input.providerMessageId),
                     ),
                   );
               }
               if (resolvedChannelBindingId === null) return { _tag: "Unbound" as const };
 
-              const binding = await readWhatsAppBinding(
+              const binding = await readBinding(
                 transaction,
+                provider,
                 ChannelBindingIdSchema.make(resolvedChannelBindingId),
               );
               if (binding === null) return { _tag: "Incomplete" as const };
@@ -149,7 +158,7 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
         const facts = yield* Effect.tryPromise({
           // oxlint-disable-next-line effecttsgo/async-function -- boundary: this adapter composes related Drizzle reads.
           try: async () => {
-            const binding = await readWhatsAppBinding(db, fixedRoute.channelBindingId);
+            const binding = await readBinding(db, provider, fixedRoute.channelBindingId);
             if (binding === null) return null;
             const [record] = await db
               .select({
@@ -228,7 +237,8 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
     return { admit, route };
   });
 
-const sameEvent = (stored: typeof inboundWhatsAppEvents.$inferSelect, input: RouteInput): boolean =>
+const sameEvent = (stored: typeof inboundProviderEvents.$inferSelect, input: RouteInput): boolean =>
+  stored.eventScope === input.phoneNumberId &&
   stored.channelIdentity === input.channelIdentity &&
   stored.contentDigest === input.contentDigest &&
   stored.messageKind === (input._tag === "TextMessage" ? "text" : "button_reply");

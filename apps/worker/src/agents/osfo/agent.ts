@@ -51,6 +51,11 @@ import {
 } from "../../services/managed-conversation";
 import * as WhatsAppAgentAdmission from "../../services/whatsapp-agent-admission";
 import { AgentAcceptanceInput, AgentRecoveryInput } from "../../services/whatsapp-admission";
+import * as TelegramAgentAdmission from "../../services/telegram-agent-admission";
+import {
+  AgentAcceptanceInput as ProviderAgentAcceptanceInput,
+  AgentRecoveryInput as ProviderAgentRecoveryInput,
+} from "../../services/provider-message-admission";
 import {
   launchModelAccessPolicy,
   type ManagedRouteUnavailable,
@@ -206,6 +211,14 @@ const WhatsAppThinkSubmissionInspection = Schema.Struct({
 });
 
 const WhatsAppThinkSubmissionAccepted = Schema.Struct({ submissionId: ThinkSubmissionId });
+
+const TelegramThinkSubmissionInspection = Schema.Struct({
+  idempotencyKey: Schema.String,
+  metadata: TelegramAgentAdmission.TelegramSubmissionMetadata,
+  submissionId: ThinkSubmissionId,
+});
+
+const TelegramThinkSubmissionAccepted = Schema.Struct({ submissionId: ThinkSubmissionId });
 
 /** Durable result for the deterministic first personal response. */
 export interface PersonalWelcomeCommitted {
@@ -610,6 +623,69 @@ export class OsfoAgent extends Think<Env> {
         | AgentStoreUnavailable
       >({
         dependencies: this.#whatsappRecoveryDependencies(),
+        input: decoded.success,
+      }),
+    );
+  }
+
+  /** Recoverably accept one authorized Telegram UserMessage into the canonical Think Session. */
+  async acceptTelegramMessage(input: typeof ProviderAgentAcceptanceInput.Encoded) {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeResult(ProviderAgentAcceptanceInput)(input);
+    if (Result.isFailure(decoded)) return invalidRequest("acceptTelegramMessage");
+    const recovery = this.#telegramRecoveryDependencies();
+    return runRpc(
+      TelegramAgentAdmission.accept<
+        AcceptanceReceipt,
+        | AcceptanceReceiptConflict
+        | AgentStateNotFound
+        | AgentStoreRecordInvalid
+        | AgentStoreUnavailable
+      >({
+        dependencies: {
+          ...recovery,
+          authorization: {
+            inspect: (channelBindingId) =>
+              this.#inspectCurrentTelegramAuthorization(channelBindingId),
+          },
+          store: { ...recovery.store, inspect: this.#store.inspect() },
+          think: {
+            ...recovery.think,
+            submit: (submission) =>
+              callThinkSubmission("runTurn", () =>
+                this.runTurn({
+                  idempotencyKey: submission.idempotencyKey,
+                  input: {
+                    id: submission.message.userMessageId,
+                    parts: [{ text: submission.message.text, type: "text" }],
+                    role: "user",
+                  },
+                  metadata: submission.metadata,
+                  mode: "submit",
+                  submissionId: submission.submissionId,
+                }),
+              ).pipe(Effect.flatMap(decodeTelegramThinkSubmissionAccepted)),
+          },
+        },
+        input: decoded.success,
+      }),
+    );
+  }
+
+  /** Recover one stable Telegram acceptance before consulting mutable authority. */
+  async recoverTelegramMessage(input: typeof ProviderAgentRecoveryInput.Encoded) {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeResult(ProviderAgentRecoveryInput)(input);
+    if (Result.isFailure(decoded)) return invalidRequest("recoverTelegramMessage");
+    return runRpc(
+      TelegramAgentAdmission.recover<
+        AcceptanceReceipt,
+        | AcceptanceReceiptConflict
+        | AgentStateNotFound
+        | AgentStoreRecordInvalid
+        | AgentStoreUnavailable
+      >({
+        dependencies: this.#telegramRecoveryDependencies(),
         input: decoded.success,
       }),
     );
@@ -1117,6 +1193,58 @@ export class OsfoAgent extends Think<Env> {
     };
   }
 
+  #inspectCurrentTelegramAuthorization(channelBindingId: ChannelBindingId) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new TelegramAgentAdmission.TelegramAuthorizationUnavailable({
+          cause: invalidOsfoEnvironment,
+          message: "Current Telegram authorization could not be checked",
+        }),
+      );
+    }
+    return Effect.tryPromise({
+      try: () =>
+        runtime.runPromise(
+          Effect.scoped(
+            WhatsAppPostgres.make({ provider: "telegram" }).pipe(
+              Effect.flatMap((persistence) =>
+                persistence.admit({
+                  _tag: "Bound",
+                  agentId: AgentId.make(this.name),
+                  channelBindingId,
+                }),
+              ),
+            ),
+          ),
+        ),
+      catch: (cause) =>
+        new TelegramAgentAdmission.TelegramAuthorizationUnavailable({
+          cause,
+          message: "Current Telegram authorization could not be checked",
+        }),
+    });
+  }
+
+  #telegramRecoveryDependencies() {
+    return {
+      store: {
+        readAcceptanceReceipt: this.#store.readAcceptanceReceipt,
+        recordAcceptanceReceipt: this.#store.recordAcceptanceReceipt,
+      },
+      think: {
+        inspect: (submissionId: ThinkSubmissionId) =>
+          callThinkSubmission("inspectSubmission", () => this.inspectSubmission(submissionId)).pipe(
+            Effect.flatMap((inspection) =>
+              inspection === null
+                ? Effect.succeed(null)
+                : decodeTelegramThinkSubmissionInspection(inspection),
+            ),
+          ),
+      },
+    };
+  }
+
   #findThinkMessageOwner(
     assistantMessageId: AssistantMessageIdType,
     thinkRequestId: ThinkRequestId,
@@ -1267,6 +1395,30 @@ const decodeWhatsAppThinkSubmissionAccepted = (submission: SubmitMessagesResult)
         new ThinkSubmissionUnavailable({
           cause,
           message: "Think returned invalid WhatsApp Submission acceptance facts",
+          operation: "runTurn",
+        }),
+    ),
+  );
+
+const decodeTelegramThinkSubmissionInspection = (inspection: ThinkSubmissionInspection) =>
+  Schema.decodeUnknownEffect(TelegramThinkSubmissionInspection)(inspection).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ThinkSubmissionUnavailable({
+          cause,
+          message: "Think returned invalid Telegram Submission inspection facts",
+          operation: "inspectSubmission",
+        }),
+    ),
+  );
+
+const decodeTelegramThinkSubmissionAccepted = (submission: SubmitMessagesResult) =>
+  Schema.decodeEffect(TelegramThinkSubmissionAccepted)(submission).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ThinkSubmissionUnavailable({
+          cause,
+          message: "Think returned invalid Telegram Submission acceptance facts",
           operation: "runTurn",
         }),
     ),

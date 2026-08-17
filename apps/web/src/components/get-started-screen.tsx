@@ -24,6 +24,7 @@ import {
 
 interface GetStartedScreenProps {
   readonly dependencies?: GetStartedDependencies;
+  readonly enrollmentProvider?: "telegram" | "whatsapp";
   readonly invitationToken?: string;
   readonly isAuthenticated?: boolean;
   readonly onComplete: () => void;
@@ -55,6 +56,7 @@ type OnboardingState =
 /** Complete localized phone-first web and invited messaging registration journey. */
 export function GetStartedScreen({
   dependencies = defaultDependencies,
+  enrollmentProvider = "whatsapp",
   invitationToken,
   isAuthenticated = false,
   onComplete,
@@ -71,7 +73,7 @@ export function GetStartedScreen({
   const provider =
     state._tag === "EnrollmentPending"
       ? providerFromEnrollmentUrl(state.enrollmentUrl)
-      : (invitation?.provider ?? "whatsapp");
+      : (invitation?.provider ?? enrollmentProvider);
   const text =
     provider === "telegram" ? { ...copy[locale], ...telegramCopy[locale] } : copy[locale];
 

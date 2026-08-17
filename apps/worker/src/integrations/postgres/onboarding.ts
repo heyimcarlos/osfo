@@ -2,8 +2,8 @@ import { agents } from "@osfo/db/schema/agents";
 import { users } from "@osfo/db/schema/auth";
 import {
   channelBindings,
-  providerEventReceipts,
   registrationInvitations,
+  telegramOnboardingDeliveries,
 } from "@osfo/db/schema/onboarding";
 import { and, eq, isNull, lt, or } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
@@ -170,31 +170,38 @@ export const make = Effect.gen(function* () {
     );
 
   return Onboarding.Persistence.of({
-    beginProviderEvent: (provider, eventId, now) =>
+    beginTelegramDelivery: (eventId, claimToken, now) =>
       Effect.tryPromise({
-        try: () => beginProviderEventTransaction(db, provider, eventId, now),
-        catch: (cause) => unavailable("beginProviderEvent", cause),
+        try: () => beginTelegramDeliveryTransaction(db, eventId, claimToken, now),
+        catch: (cause) => unavailable("beginTelegramDelivery", cause),
       }),
     complete: (input, decide) =>
       Effect.tryPromise({
         try: () => completeTransaction(db, input, decide),
         catch: (cause) => rejected("complete", input.userId, cause),
       }),
-    completeProviderEvent: (provider, eventId, now) =>
+    completeTelegramDelivery: (eventId, claimToken, now) =>
       Effect.tryPromise({
         try: () =>
           db
-            .update(providerEventReceipts)
-            .set({ completedAt: now, leaseExpiresAt: null, state: "completed" })
+            .update(telegramOnboardingDeliveries)
+            .set({ appliedAt: now, leaseExpiresAt: null, state: "applied" })
             .where(
               and(
-                eq(providerEventReceipts.provider, provider),
-                eq(providerEventReceipts.eventId, eventId),
-                eq(providerEventReceipts.purpose, "onboarding"),
+                eq(telegramOnboardingDeliveries.eventId, eventId),
+                eq(telegramOnboardingDeliveries.claimToken, claimToken),
+                eq(telegramOnboardingDeliveries.state, "ambiguous"),
               ),
-            ),
-        catch: (cause) => unavailable("completeProviderEvent", cause),
-      }).pipe(Effect.asVoid),
+            )
+            .returning({ eventId: telegramOnboardingDeliveries.eventId }),
+        catch: (cause) => unavailable("completeTelegramDelivery", cause),
+      }).pipe(
+        Effect.flatMap((changed) =>
+          changed.length === 1
+            ? Effect.void
+            : Effect.fail(unavailable("completeTelegramDelivery", "Telegram event claim was lost")),
+        ),
+      ),
     createWebEnrollment: (input) =>
       Effect.tryPromise({
         try: () => createWebEnrollmentTransaction(db, input),
@@ -225,8 +232,9 @@ export const make = Effect.gen(function* () {
     readCurrentBinding: (query) =>
       Effect.tryPromise({
         try: () =>
-          ChannelBindingPostgres.readCurrentWhatsAppBinding(
+          ChannelBindingPostgres.readCurrentBinding(
             db,
+            query.provider,
             query.userId,
             query.channelBindingId,
           ),
@@ -238,8 +246,53 @@ export const make = Effect.gen(function* () {
             : Onboarding.StoredChannelBinding.make({
                 channelBindingId: binding.channelBindingId,
                 channelIdentity: binding.channelIdentity,
+                provider: binding.provider,
                 userId: binding.userId,
               }),
+        ),
+      ),
+    markTelegramDeliveryAmbiguous: (eventId, claimToken) =>
+      Effect.tryPromise({
+        try: () =>
+          db
+            .update(telegramOnboardingDeliveries)
+            .set({ leaseExpiresAt: null, state: "ambiguous" })
+            .where(
+              and(
+                eq(telegramOnboardingDeliveries.eventId, eventId),
+                or(
+                  eq(telegramOnboardingDeliveries.state, "not_applied"),
+                  eq(telegramOnboardingDeliveries.state, "prepared"),
+                ),
+                eq(telegramOnboardingDeliveries.claimToken, claimToken),
+              ),
+            )
+            .returning({ eventId: telegramOnboardingDeliveries.eventId }),
+        catch: (cause) => unavailable("markTelegramDeliveryAmbiguous", cause),
+      }).pipe(
+        Effect.flatMap((changed) =>
+          changed.length === 1
+            ? Effect.void
+            : Effect.fail(
+                unavailable("markTelegramDeliveryAmbiguous", "Telegram event claim was lost"),
+              ),
+        ),
+      ),
+    prepareTelegramInvitation: (input) =>
+      Effect.tryPromise({
+        try: () => prepareTelegramInvitationTransaction(db, input),
+        catch: (cause) => rejected("prepareTelegramInvitation", input.invitationId, cause),
+      }).pipe(
+        Effect.flatMap((prepared) =>
+          prepared
+            ? Effect.void
+            : Effect.fail(
+                rejected(
+                  "prepareTelegramInvitation",
+                  input.invitationId,
+                  "Telegram event claim was lost or invitation facts conflict",
+                ),
+              ),
         ),
       ),
     readUser,
@@ -270,65 +323,137 @@ const insertChannelTransaction = async (
     return false;
   });
 
-const beginProviderEventTransaction = async (
+const prepareTelegramInvitationTransaction = async (
   db: Database,
-  provider: Onboarding.ChannelProvider,
+  input: Onboarding.PrepareTelegramInvitationInput,
+) =>
+  db.transaction(async (transaction) => {
+    const [receipt] = await transaction
+      .select({ eventId: telegramOnboardingDeliveries.eventId })
+      .from(telegramOnboardingDeliveries)
+      .where(
+        and(
+          eq(telegramOnboardingDeliveries.eventId, input.eventId),
+          eq(telegramOnboardingDeliveries.claimToken, input.claimToken),
+          or(
+            eq(telegramOnboardingDeliveries.state, "not_applied"),
+            eq(telegramOnboardingDeliveries.state, "prepared"),
+          ),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (receipt === undefined) return false;
+    await transaction
+      .insert(registrationInvitations)
+      .values({
+        channelIdentity: input.channelIdentity,
+        createdAt: input.createdAt,
+        expiresAt: input.expiresAt,
+        invitationId: input.invitationId,
+        invitedPhoneNumber: null,
+        kind: "telegram_first",
+        locale: input.locale,
+        provider: "telegram",
+        providerEventId: input.eventId,
+        tokenDigest: input.tokenDigest,
+      })
+      .onConflictDoNothing();
+    const invitation = await transaction
+      .select({
+        invitationId: registrationInvitations.invitationId,
+        tokenDigest: registrationInvitations.tokenDigest,
+      })
+      .from(registrationInvitations)
+      .where(
+        and(
+          eq(registrationInvitations.provider, "telegram"),
+          eq(registrationInvitations.providerEventId, input.eventId),
+        ),
+      )
+      .limit(1);
+    if (
+      invitation[0]?.invitationId !== input.invitationId ||
+      invitation[0]?.tokenDigest !== input.tokenDigest
+    ) {
+      return false;
+    }
+    const changed = await transaction
+      .update(telegramOnboardingDeliveries)
+      .set({ state: "prepared" })
+      .where(
+        and(
+          eq(telegramOnboardingDeliveries.eventId, input.eventId),
+          eq(telegramOnboardingDeliveries.claimToken, input.claimToken),
+          or(
+            eq(telegramOnboardingDeliveries.state, "not_applied"),
+            eq(telegramOnboardingDeliveries.state, "prepared"),
+          ),
+        ),
+      )
+      .returning({ eventId: telegramOnboardingDeliveries.eventId });
+    return changed.length === 1;
+  });
+
+const beginTelegramDeliveryTransaction = async (
+  db: Database,
   eventId: string,
+  claimToken: string,
   now: Date,
 ) =>
   db.transaction(async (transaction) => {
     const read = () =>
       transaction
         .select({
-          leaseExpiresAt: providerEventReceipts.leaseExpiresAt,
-          purpose: providerEventReceipts.purpose,
-          state: providerEventReceipts.state,
+          leaseExpiresAt: telegramOnboardingDeliveries.leaseExpiresAt,
+          claimToken: telegramOnboardingDeliveries.claimToken,
+          state: telegramOnboardingDeliveries.state,
         })
-        .from(providerEventReceipts)
-        .where(
-          and(
-            eq(providerEventReceipts.provider, provider),
-            eq(providerEventReceipts.eventId, eventId),
-          ),
-        )
+        .from(telegramOnboardingDeliveries)
+        .where(eq(telegramOnboardingDeliveries.eventId, eventId))
         .for("update")
         .limit(1)
         .then((rows) => rows[0]);
     const existing = await read();
-    if (existing?.state === "completed") return "Completed" as const;
-    if (existing?.state === "outbound_attempted") return "Ambiguous" as const;
+    if (existing?.state === "applied") return { _tag: "Completed" } as const;
+    if (existing?.state === "ambiguous") return { _tag: "Ambiguous" } as const;
     if (existing !== undefined) {
-      if (
-        existing.purpose !== "onboarding" ||
-        existing.leaseExpiresAt === null ||
-        existing.leaseExpiresAt.getTime() > now.getTime()
-      ) {
-        return "InProgress" as const;
+      if (existing.leaseExpiresAt === null || existing.leaseExpiresAt.getTime() > now.getTime()) {
+        return { _tag: "InProgress" } as const;
       }
-      await transaction
-        .update(providerEventReceipts)
-        .set({ leaseExpiresAt: providerEventLeaseExpiry(now) })
+      const changed = await transaction
+        .update(telegramOnboardingDeliveries)
+        .set({ claimToken, leaseExpiresAt: providerEventLeaseExpiry(now) })
         .where(
           and(
-            eq(providerEventReceipts.provider, provider),
-            eq(providerEventReceipts.eventId, eventId),
+            eq(telegramOnboardingDeliveries.eventId, eventId),
+            eq(telegramOnboardingDeliveries.claimToken, existing.claimToken),
+            eq(telegramOnboardingDeliveries.leaseExpiresAt, existing.leaseExpiresAt),
+            or(
+              eq(telegramOnboardingDeliveries.state, "not_applied"),
+              eq(telegramOnboardingDeliveries.state, "prepared"),
+            ),
           ),
-        );
-      return "Claimed" as const;
+        )
+        .returning({ eventId: telegramOnboardingDeliveries.eventId });
+      if (changed.length !== 1) return { _tag: "InProgress" } as const;
+      return { _tag: "Claimed", claimToken } as const;
     }
     const inserted = await transaction
-      .insert(providerEventReceipts)
+      .insert(telegramOnboardingDeliveries)
       .values({
         eventId,
+        claimToken,
         leaseExpiresAt: providerEventLeaseExpiry(now),
-        provider,
-        purpose: "onboarding",
+        state: "not_applied",
       })
       .onConflictDoNothing()
-      .returning({ eventId: providerEventReceipts.eventId });
-    if (inserted.length > 0) return "Claimed" as const;
+      .returning({ eventId: telegramOnboardingDeliveries.eventId });
+    if (inserted.length > 0) return { _tag: "Claimed", claimToken } as const;
     const raced = await read();
-    return raced?.state === "completed" ? ("Completed" as const) : ("InProgress" as const);
+    return raced?.state === "applied"
+      ? ({ _tag: "Completed" } as const)
+      : ({ _tag: "InProgress" } as const);
   });
 
 const providerEventLeaseExpiry = (now: Date) =>

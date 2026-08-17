@@ -1,156 +1,138 @@
 import { Context, Effect, Layer, Schema } from "effect";
 
-import { ChannelIdentity, ThinkSubmissionId } from "../domain";
-import type { AgentId, AllowancePeriodId, ChannelBindingId, UserId } from "../domain";
-import type { AuthorizationContext } from "./authorization";
-import type { SubmitManagedConversationInput } from "./managed-conversation";
-import { ChannelProvider } from "./onboarding";
+import { ChannelIdentity, ProviderMessageId } from "../domain";
+import type { AgentId } from "../domain";
+import type { ManagedConversationDenied } from "./managed-conversation";
+import type { AcceptanceReceipt } from "./provider-acceptance-receipt";
+import * as ProviderAdmission from "./provider-message-admission";
 
-/** Provider-authenticated message facts accepted by transport-neutral admission. */
-export const MessageAdmissionInput = Schema.Struct({
+/* oxlint-disable eslint/no-underscore-dangle -- Effect schemas use the standard _tag discriminator. */
+
+/** Telegram-authenticated text fixed before routing or Agent admission. */
+export const TelegramMessageAdmissionInput = Schema.Struct({
   channelIdentity: ChannelIdentity,
   eventId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(160)),
   message: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64_000)),
-  provider: ChannelProvider,
 });
+/** Authenticated Telegram message accepted at the application boundary. */
+export type TelegramMessageAdmissionInput = typeof TelegramMessageAdmissionInput.Type;
 
-/** Provider-authenticated message facts accepted by transport-neutral admission. */
-export type MessageAdmissionInput = typeof MessageAdmissionInput.Type;
-
-/** Current bound route and authority facts read before Think admission. */
-export interface BoundChannel {
-  readonly agentId: AgentId;
-  readonly allowance: Extract<AuthorizationContext["allowance"], { readonly _tag: "Metered" }>;
-  readonly channelBindingId: ChannelBindingId;
-  readonly now: Date;
-  readonly userId: UserId;
+/** Immutable provider facts used to resolve one Telegram event's first route. */
+export interface TelegramRouteInput extends TelegramMessageAdmissionInput {
+  readonly contentDigest: string;
+  readonly providerMessageId: ProviderMessageId;
 }
 
-/** Expected failure while admitting or recording one provider message. */
+/** Telegram route fixed to one current Channel Binding and stable Agent. */
+export type BoundChannel = Extract<ProviderAdmission.InboundRoute, { readonly _tag: "Bound" }>;
+
+/** Expected failure while routing, recording, or submitting a Telegram message. */
 export class MessagingAdmissionUnavailable extends Schema.TaggedError<MessagingAdmissionUnavailable>()(
   "MessagingAdmissionUnavailable",
   { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
 ) {}
 
-/** Persistence needed to resolve a binding and record accepted-message use. */
+/** Persistence needed to fix a Telegram route and record accepted-message usage. */
 export interface PersistencePort {
-  readonly begin: (
-    input: MessageAdmissionInput,
-  ) => Effect.Effect<
-    BoundChannel | { readonly _tag: "Duplicate" | "InProgress" | "Unbound" },
-    MessagingAdmissionUnavailable
-  >;
-  readonly complete: (
-    input: MessageAdmissionInput,
-    now: Date,
-  ) => Effect.Effect<void, MessagingAdmissionUnavailable>;
+  readonly admit: (route: BoundChannel) => Effect.Effect<void, MessagingAdmissionUnavailable>;
   readonly recordAccepted: (
-    allowancePeriodId: AllowancePeriodId,
-    submissionId: ThinkSubmissionId,
+    receipt: AcceptanceReceipt,
   ) => Effect.Effect<void, MessagingAdmissionUnavailable>;
+  readonly route: (
+    input: TelegramRouteInput,
+  ) => Effect.Effect<ProviderAdmission.InboundRoute, MessagingAdmissionUnavailable>;
 }
 
-/** Control-plane admission persistence supplied by PostgreSQL. */
+/** Effect service for Telegram event routing and accepted-message usage. */
 export class Persistence extends Context.Service<Persistence, PersistencePort>()(
-  "@osfo/MessagingAdmission/Persistence",
+  "@osfo/TelegramAdmission/Persistence",
 ) {}
 
-/** Stable named-Agent submission boundary. */
-export interface AgentSubmissionPort {
-  readonly submit: (
+/** Stable named-Agent operations used by Telegram admission. */
+export interface AgentAdmissionPort {
+  readonly accept: (
     agentId: AgentId,
-    input: typeof SubmitManagedConversationInput.Type,
-  ) => Effect.Effect<{ readonly accepted: boolean }, MessagingAdmissionUnavailable>;
+    input: ProviderAdmission.AgentAcceptanceInput,
+  ) => Effect.Effect<AcceptanceReceipt | ManagedConversationDenied, MessagingAdmissionUnavailable>;
+  readonly recover: (
+    agentId: AgentId,
+    input: ProviderAdmission.AgentRecoveryInput,
+  ) => Effect.Effect<AcceptanceReceipt | null, MessagingAdmissionUnavailable>;
 }
 
-/** Named-Agent submission supplied by Cloudflare Durable Object RPC. */
-export class AgentSubmission extends Context.Service<AgentSubmission, AgentSubmissionPort>()(
-  "@osfo/MessagingAdmission/AgentSubmission",
+/** Effect service for recoverable Telegram submission to the named Agent. */
+export class AgentSubmission extends Context.Service<AgentSubmission, AgentAdmissionPort>()(
+  "@osfo/TelegramAdmission/Agent",
 ) {}
 
-/** Transport-neutral admission result. */
+/** Stable digest derivation needed for provider-event and Agent idempotency. */
+export interface StableIdentityPort {
+  readonly deriveAdmission: (
+    route: BoundChannel,
+    providerMessageId: ProviderMessageId,
+  ) => Effect.Effect<string, MessagingAdmissionUnavailable>;
+  readonly deriveContent: (
+    input: TelegramMessageAdmissionInput,
+  ) => Effect.Effect<string, MessagingAdmissionUnavailable>;
+}
+
+/** Effect service for Telegram content and admission identity derivation. */
+export class StableIdentity extends Context.Service<StableIdentity, StableIdentityPort>()(
+  "@osfo/TelegramAdmission/Identity",
+) {}
+
+/** Public Telegram admission outcome projected for the webhook handler. */
 export type AdmissionResult =
   | { readonly _tag: "Accepted" }
-  | { readonly _tag: "Duplicate" }
-  | { readonly _tag: "InProgress" }
+  | { readonly _tag: "Denied" }
   | { readonly _tag: "Unbound" };
 
-/** Transport-neutral message-admission interface. */
+/** Application operation that admits one authenticated Telegram message. */
 export interface Interface {
   readonly accept: (
-    input: MessageAdmissionInput,
+    input: TelegramMessageAdmissionInput,
   ) => Effect.Effect<AdmissionResult, MessagingAdmissionUnavailable>;
 }
 
-/** Provider-neutral message admission for a stable Think Session. */
-export class Service extends Context.Service<Service, Interface>()("@osfo/MessagingAdmission") {}
+/** Telegram admission application service. */
+export class Service extends Context.Service<Service, Interface>()("@osfo/TelegramAdmission") {}
 
-/** Construct message admission from current binding facts and named-Agent RPC. */
+/** Build Telegram admission on the same immutable route/Agent receipt seam as WhatsApp. */
 export const make = Effect.gen(function* () {
+  const agent = yield* AgentSubmission;
+  const identity = yield* StableIdentity;
   const persistence = yield* Persistence;
-  const submission = yield* AgentSubmission;
-
-  const accept = Effect.fn("MessagingAdmission.accept")(function* (input: MessageAdmissionInput) {
-    const begun = yield* persistence.begin(input);
-    if ("_tag" in begun) return begun;
-    const bound = begun;
-    const submissionId = yield* Schema.decodeEffect(ThinkSubmissionId)(input.eventId).pipe(
-      Effect.mapError(
-        (cause) =>
-          new MessagingAdmissionUnavailable({
-            cause,
-            message: "The provider event identity cannot identify a Think Submission",
-            operation: "makeSubmissionIdentity",
-          }),
-      ),
-    );
-    const submitted = yield* submission.submit(bound.agentId, {
-      authorization: authorizationForCurrentLaunchFacts(bound),
-      idempotencyKey: input.eventId,
-      message: input.message,
-      submissionId,
-    });
-    yield* persistence.recordAccepted(bound.allowance.allowancePeriodId, submissionId);
-    yield* persistence.complete(input, bound.now);
-    return submitted.accepted ? ({ _tag: "Accepted" } as const) : ({ _tag: "Duplicate" } as const);
+  const admission = ProviderAdmission.make({
+    agent,
+    allowances: { recordAcceptedMessage: persistence.recordAccepted },
+    identity,
+    message: (input: TelegramMessageAdmissionInput) => ({
+      providerMessageId: ProviderMessageId.make(input.eventId),
+      text: input.message,
+    }),
+    onboarding: () => Effect.void,
+    persistence,
+    routeInput: (input: TelegramMessageAdmissionInput, contentDigest: string) => ({
+      ...input,
+      contentDigest,
+      providerMessageId: ProviderMessageId.make(input.eventId),
+    }),
   });
-
-  return Service.of({ accept });
+  return Service.of({
+    accept: (input) =>
+      admission
+        .admit(input)
+        .pipe(
+          Effect.map((outcome): AdmissionResult =>
+            outcome._tag === "MessageAccepted"
+              ? { _tag: "Accepted" }
+              : outcome._tag === "MessageDenied"
+                ? { _tag: "Denied" }
+                : { _tag: "Unbound" },
+          ),
+        ),
+  });
 });
 
-/** Message-admission Layer that preserves concrete persistence and RPC requirements. */
+/** Telegram admission layer awaiting its Agent, identity, and persistence adapters. */
 export const layerWithoutDependencies = Layer.effect(Service, make);
-
-/**
- * Build launch authorization while no suspension, deletion, Gmail, or live-resource stores exist.
- * Their current absence is the product invariant: active, available, disconnected, and zero use.
- */
-const authorizationForCurrentLaunchFacts = (bound: BoundChannel): AuthorizationContext => ({
-  allowance: bound.allowance,
-  approval: null,
-  authority: {
-    _tag: "ChannelBinding",
-    channelBindingId: bound.channelBindingId,
-    userId: bound.userId,
-  },
-  deletionAccess: { _tag: "DeletionAccessAvailable" },
-  gmailConnection: null,
-  liveFacts: {
-    activeGmSummonsInSession: 0n,
-    activeReminders: 0n,
-    concurrentWorkflows: 0n,
-    retainedFileBytes: 0n,
-  },
-  now: bound.now,
-  originatingAuthority: {
-    _tag: "ChannelBinding",
-    channelBindingId: bound.channelBindingId,
-  },
-  requestVendorUsdMicros: 0n,
-  resourceOwnerUserId: bound.userId,
-  subscription: {
-    plan: bound.allowance.plan,
-    planPolicyVersion: bound.allowance.planPolicyVersion,
-  },
-  user: { _tag: "ActiveUser", userId: bound.userId },
-});

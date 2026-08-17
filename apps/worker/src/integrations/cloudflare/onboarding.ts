@@ -10,7 +10,10 @@ const RpcResult = Schema.StructWithRest(Schema.Struct({ _tag: Schema.String }), 
 ]);
 
 const RegistrationResult = Schema.Union([
-  Schema.TaggedStruct("RegistrationTurnCompleted", { response: Schema.String }),
+  Schema.TaggedStruct("RegistrationTurnCompleted", {
+    response: Schema.String,
+    verifyUrl: Schema.String,
+  }),
   Schema.TaggedStruct("RegistrationTurnUnavailable", { message: Schema.String }),
 ]);
 
@@ -45,7 +48,11 @@ interface RegistrationDialogueStub {
 }
 
 type RegistrationTurnRpcResult =
-  | { readonly _tag: "RegistrationTurnCompleted"; readonly response: string }
+  | {
+      readonly _tag: "RegistrationTurnCompleted";
+      readonly response: string;
+      readonly verifyUrl: string;
+    }
   | { readonly _tag: "RegistrationTurnUnavailable"; readonly message: string };
 
 interface DurableNamespace<Stub> {
@@ -121,7 +128,7 @@ export const layer = (env: Bindings) =>
             Effect.mapError((cause) => executionUnavailable("The Registration Turn failed", cause)),
             Effect.flatMap((result) =>
               result._tag === "RegistrationTurnCompleted"
-                ? Effect.succeed(result.response)
+                ? Effect.succeed({ response: result.response, verifyUrl: result.verifyUrl })
                 : unavailable(result.message, result),
             ),
           ),

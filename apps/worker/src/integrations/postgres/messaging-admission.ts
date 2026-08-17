@@ -1,24 +1,19 @@
 import { agents } from "@osfo/db/schema/agents";
-import { channelBindings, providerEventReceipts } from "@osfo/db/schema/onboarding";
-import { and, eq, isNull } from "drizzle-orm";
-import { DateTime, Effect, Layer, Schema } from "effect";
+import { inboundProviderEvents } from "@osfo/db/schema/messaging";
+import { and, eq } from "drizzle-orm";
+import { DateTime, Effect, Layer } from "effect";
 
 import { database, type Database } from "../../db";
 import * as Billing from "../../db/billing";
-import { AgentId, ChannelBindingId, UserId } from "../../domain";
+import { AgentId, ChannelBindingId, ChannelIdentity } from "../../domain";
 import { retainedCatalog } from "../../domain/plan-policy";
 import * as Allowances from "../../services/allowances";
 import * as MessagingAdmission from "../../services/messaging-admission";
+import { readActiveBinding, readBinding } from "./channel-binding";
 
-/* oxlint-disable effecttsgo/async-function -- Drizzle transaction callbacks require Promise control flow. */
+/* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Drizzle transaction callbacks require Promise control flow and results use Effect's _tag discriminator. */
 
-const BoundRouteRecord = Schema.Struct({
-  agentId: AgentId,
-  channelBindingId: ChannelBindingId,
-  userId: UserId,
-});
-
-/** PostgreSQL binding resolution and accepted-message consumption. */
+/** PostgreSQL immutable Telegram route and accepted-message usage adapter. */
 export const make = Effect.gen(function* () {
   const db = yield* database;
   const billing = Billing.make(db);
@@ -28,175 +23,116 @@ export const make = Effect.gen(function* () {
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
   });
 
-  const begin: MessagingAdmission.PersistencePort["begin"] = (input) =>
-    Effect.gen(function* () {
-      const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-      const result = yield* Effect.tryPromise({
-        try: () => beginTransaction(db, input, now),
-        catch: (cause) => unavailable("beginProviderEvent", cause),
-      });
-      if ("_tag" in result) return result;
-      const route = yield* Schema.decodeEffect(BoundRouteRecord)(result).pipe(
-        Effect.mapError((cause) => unavailable("decodeBinding", cause)),
-      );
-      const allowance = yield* billing
-        .admit(route.userId, now)
-        .pipe(Effect.mapError((cause) => unavailable("readAllowance", cause)));
-      return {
-        ...route,
-        allowance: { _tag: "Metered" as const, ...allowance },
-        now,
-      };
-    });
-
   return MessagingAdmission.Persistence.of({
-    begin,
-    complete: (input, now) =>
-      Effect.tryPromise({
-        try: () =>
-          db
-            .update(providerEventReceipts)
-            .set({ completedAt: now, leaseExpiresAt: null, state: "completed" })
-            .where(
-              and(
-                eq(providerEventReceipts.provider, input.provider),
-                eq(providerEventReceipts.eventId, input.eventId),
-              ),
-            ),
-        catch: (cause) => unavailable("completeProviderEvent", cause),
-      }).pipe(Effect.asVoid),
-    recordAccepted: (allowancePeriodId, submissionId) =>
+    admit: () => Effect.void,
+    recordAccepted: (receipt) =>
       allowances
-        .record(allowancePeriodId, { sourceId: submissionId, sourceType: "ThinkSubmission" }, [
-          { allowanceKind: "acceptedMessages", basis: "known_at_start", quantity: 1n },
-        ])
+        .record(
+          receipt.allowancePeriodId,
+          { sourceId: receipt.receiptId, sourceType: "acceptanceReceipt" },
+          [{ allowanceKind: "acceptedMessages", basis: "known_at_start", quantity: 1n }],
+        )
         .pipe(
           Effect.asVoid,
           Effect.mapError((cause) => unavailable("recordAcceptedMessage", cause)),
         ),
+    route: (input) =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+        const result = yield* Effect.tryPromise({
+          try: () => routeTransaction(db, input, now),
+          catch: (cause) => unavailable("routeProviderEvent", cause),
+        });
+        return result._tag === "Conflict"
+          ? yield* unavailable("routeProviderEvent", "Provider facts conflict")
+          : result._tag === "Incomplete"
+            ? yield* unavailable("routeProviderEvent", "Fixed route is incomplete")
+            : result;
+      }),
   });
 });
 
-/** PostgreSQL message-admission Layer with a request-scoped database requirement. */
+/** PostgreSQL Telegram admission layer awaiting its scoped database dependency. */
 export const layerWithoutDependencies = Layer.effect(MessagingAdmission.Persistence, make);
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
-const beginTransaction = async (
+const routeTransaction = async (
   db: Database,
-  input: MessagingAdmission.MessageAdmissionInput,
+  input: MessagingAdmission.TelegramRouteInput,
   now: Date,
 ) =>
   db.transaction(async (transaction) => {
-    const existing = await readReceipt(transaction, input);
-    if (existing !== undefined) return resumeReceipt(transaction, input, existing, now);
-
-    const [route] = await transaction
-      .select({
-        agentId: agents.agentId,
-        channelBindingId: channelBindings.channelBindingId,
-        userId: channelBindings.userId,
-      })
-      .from(channelBindings)
-      .innerJoin(agents, eq(agents.userId, channelBindings.userId))
-      .where(
-        and(
-          eq(channelBindings.provider, input.provider),
-          eq(channelBindings.channelIdentity, input.channelIdentity),
-          isNull(channelBindings.revokedAt),
-        ),
-      )
-      .limit(1);
-    if (route === undefined) return { _tag: "Unbound" } as const;
-    const inserted = await transaction
-      .insert(providerEventReceipts)
+    await transaction
+      .insert(inboundProviderEvents)
       .values({
-        agentId: route.agentId,
-        channelBindingId: route.channelBindingId,
-        eventId: input.eventId,
-        leaseExpiresAt: leaseExpiry(now),
-        provider: input.provider,
-        purpose: "admission",
-        userId: route.userId,
+        channelIdentity: input.channelIdentity,
+        contentDigest: input.contentDigest,
+        eventScope: "telegram",
+        messageKind: "text",
+        provider: "telegram",
+        providerMessageId: input.providerMessageId,
       })
-      .onConflictDoNothing()
-      .returning({ eventId: providerEventReceipts.eventId });
-    if (inserted.length > 0) return route;
-    const raced = await readReceipt(transaction, input);
-    if (raced === undefined) return { _tag: "InProgress" } as const;
-    return resumeReceipt(transaction, input, raced, now);
+      .onConflictDoNothing();
+    const stored = await readEvent(transaction, input);
+    if (stored === undefined) return { _tag: "Incomplete" } as const;
+    if (
+      stored.channelIdentity !== input.channelIdentity ||
+      stored.contentDigest !== input.contentDigest ||
+      stored.messageKind !== "text"
+    ) {
+      return { _tag: "Conflict" } as const;
+    }
+
+    let bindingId = stored.resolvedChannelBindingId;
+    if (stored.bindingResolvedAt === null) {
+      const binding = await readActiveBinding(
+        transaction,
+        "telegram",
+        ChannelIdentity.make(stored.channelIdentity),
+      );
+      bindingId = binding?.channelBindingId ?? null;
+      await transaction
+        .update(inboundProviderEvents)
+        .set({ bindingResolvedAt: now, resolvedChannelBindingId: bindingId })
+        .where(eventKey(input));
+    }
+    if (bindingId === null) return { _tag: "Unbound" } as const;
+    const binding = await readBinding(transaction, "telegram", ChannelBindingId.make(bindingId));
+    if (binding === null) return { _tag: "Incomplete" } as const;
+    const [fixedRoute] = await transaction
+      .select({ agentId: agents.agentId })
+      .from(agents)
+      .where(eq(agents.userId, binding.userId))
+      .limit(1);
+    return fixedRoute === undefined
+      ? ({ _tag: "Incomplete" } as const)
+      : ({
+          _tag: "Bound",
+          agentId: AgentId.make(fixedRoute.agentId),
+          channelBindingId: ChannelBindingId.make(bindingId),
+        } as const);
   });
 
-const readReceipt = (transaction: Transaction, input: MessagingAdmission.MessageAdmissionInput) =>
+const readEvent = (transaction: Transaction, input: MessagingAdmission.TelegramRouteInput) =>
   transaction
-    .select({
-      agentId: providerEventReceipts.agentId,
-      channelBindingId: providerEventReceipts.channelBindingId,
-      completedAt: providerEventReceipts.completedAt,
-      leaseExpiresAt: providerEventReceipts.leaseExpiresAt,
-      purpose: providerEventReceipts.purpose,
-      state: providerEventReceipts.state,
-      userId: providerEventReceipts.userId,
-    })
-    .from(providerEventReceipts)
-    .where(
-      and(
-        eq(providerEventReceipts.provider, input.provider),
-        eq(providerEventReceipts.eventId, input.eventId),
-      ),
-    )
+    .select()
+    .from(inboundProviderEvents)
+    .where(eventKey(input))
     .for("update")
     .limit(1)
     .then((rows) => rows[0]);
 
-type Receipt = NonNullable<Awaited<ReturnType<typeof readReceipt>>>;
-
-const resumeReceipt = async (
-  transaction: Transaction,
-  input: MessagingAdmission.MessageAdmissionInput,
-  receipt: Receipt,
-  now: Date,
-) => {
-  if (receipt.state === "completed") return { _tag: "Duplicate" } as const;
-  if (receipt.state === "outbound_attempted") return { _tag: "Duplicate" } as const;
-  if (receipt.purpose === "onboarding") {
-    return receipt.leaseExpiresAt !== null && receipt.leaseExpiresAt.getTime() > now.getTime()
-      ? ({ _tag: "InProgress" } as const)
-      : ({ _tag: "Unbound" } as const);
-  }
-  if (
-    receipt.leaseExpiresAt === null ||
-    receipt.agentId === null ||
-    receipt.channelBindingId === null ||
-    receipt.userId === null
-  ) {
-    return { _tag: "InProgress" } as const;
-  }
-  if (receipt.leaseExpiresAt.getTime() > now.getTime()) {
-    return { _tag: "InProgress" } as const;
-  }
-  await transaction
-    .update(providerEventReceipts)
-    .set({ leaseExpiresAt: leaseExpiry(now) })
-    .where(
-      and(
-        eq(providerEventReceipts.provider, input.provider),
-        eq(providerEventReceipts.eventId, input.eventId),
-      ),
-    );
-  return {
-    agentId: receipt.agentId,
-    channelBindingId: receipt.channelBindingId,
-    userId: receipt.userId,
-  };
-};
-
-const leaseExpiry = (now: Date) =>
-  DateTime.toDateUtc(DateTime.add(DateTime.makeUnsafe(now), { minutes: 1 }));
+const eventKey = (input: MessagingAdmission.TelegramRouteInput) =>
+  and(
+    eq(inboundProviderEvents.provider, "telegram"),
+    eq(inboundProviderEvents.eventScope, "telegram"),
+    eq(inboundProviderEvents.providerMessageId, input.providerMessageId),
+  );
 
 const unavailable = (operation: string, cause: unknown) =>
   new MessagingAdmission.MessagingAdmissionUnavailable({
     cause,
-    message: "Messaging admission is temporarily unavailable",
+    message: "Telegram admission is temporarily unavailable",
     operation,
   });

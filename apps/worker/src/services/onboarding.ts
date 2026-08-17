@@ -218,7 +218,10 @@ export interface BeginRegistrationTurnInput {
 export interface RegistrationTurnPort {
   readonly begin: (
     input: BeginRegistrationTurnInput,
-  ) => Effect.Effect<string, OnboardingExecutionUnavailable>;
+  ) => Effect.Effect<
+    { readonly response: string; readonly verifyUrl: string },
+    OnboardingExecutionUnavailable
+  >;
   readonly delete: (
     invitationId: RegistrationInvitationId,
   ) => Effect.Effect<void, OnboardingExecutionUnavailable>;
@@ -401,25 +404,43 @@ export interface WebEnrollmentPersistenceInput {
   readonly userId: UserId;
 }
 
+/** Values committed atomically before Telegram can receive one invitation. */
+export interface PrepareTelegramInvitationInput {
+  readonly channelIdentity: ChannelIdentity;
+  readonly claimToken: string;
+  readonly createdAt: Date;
+  readonly eventId: string;
+  readonly expiresAt: Date;
+  readonly invitationId: RegistrationInvitationId;
+  readonly locale: OnboardingLocale;
+  readonly tokenDigest: string;
+}
+
 /** Application-owned control-plane persistence operations for onboarding. */
 export interface PersistencePort {
-  readonly beginProviderEvent: (
-    provider: ChannelProvider,
+  readonly beginTelegramDelivery: (
     eventId: string,
+    claimToken: string,
     now: Date,
   ) => Effect.Effect<
-    "Ambiguous" | "Claimed" | "Completed" | "InProgress",
+    | { readonly _tag: "Ambiguous" }
+    | { readonly _tag: "Completed" }
+    | { readonly _tag: "InProgress" }
+    | { readonly _tag: "Claimed"; readonly claimToken: string },
     OnboardingPersistenceUnavailable
   >;
-  readonly completeProviderEvent: (
-    provider: ChannelProvider,
+  readonly completeTelegramDelivery: (
     eventId: string,
+    claimToken: string,
     now: Date,
   ) => Effect.Effect<void, OnboardingPersistenceUnavailable>;
-  readonly markProviderEventOutboundAttempted: (
-    provider: ChannelProvider,
+  readonly markTelegramDeliveryAmbiguous: (
     eventId: string,
+    claimToken: string,
   ) => Effect.Effect<void, OnboardingPersistenceUnavailable>;
+  readonly prepareTelegramInvitation: (
+    input: PrepareTelegramInvitationInput,
+  ) => Effect.Effect<void, OnboardingPersistenceRejected>;
   readonly complete: (
     input: CompletePersistenceInput,
     decide: (context: CompletePersistenceContext) => CompletePersistenceDecision,
@@ -457,6 +478,7 @@ export interface PersistencePort {
   }) => Effect.Effect<boolean, OnboardingPersistenceRejected>;
   readonly readCurrentBinding: (query: {
     readonly channelBindingId: ChannelBindingId;
+    readonly provider: ChannelProvider;
     readonly userId: UserId;
   }) => Effect.Effect<StoredChannelBinding | null, OnboardingPersistenceUnavailable>;
   readonly readUser: (
@@ -477,14 +499,19 @@ export interface Interface {
   readonly beginTelegramEvent: (
     eventId: string,
   ) => Effect.Effect<
-    "Ambiguous" | "Claimed" | "Completed" | "InProgress",
-    OnboardingPersistenceUnavailable
+    | { readonly _tag: "Ambiguous" }
+    | { readonly _tag: "Completed" }
+    | { readonly _tag: "InProgress" }
+    | { readonly _tag: "Claimed"; readonly claimToken: string },
+    OnboardingIdentityUnavailable | OnboardingPersistenceUnavailable
   >;
   readonly completeTelegramEvent: (
     eventId: string,
+    claimToken: string,
   ) => Effect.Effect<void, OnboardingPersistenceUnavailable>;
-  readonly markTelegramEventOutboundAttempted: (
+  readonly markTelegramEventAmbiguous: (
     eventId: string,
+    claimToken: string,
   ) => Effect.Effect<void, OnboardingPersistenceUnavailable>;
   readonly issueWhatsAppInvitation: (
     input: UnknownWhatsAppMessage,
@@ -497,6 +524,7 @@ export interface Interface {
   >;
   readonly issueTelegramInvitation: (
     input: UnknownTelegramMessage,
+    claimToken: string,
   ) => Effect.Effect<
     RegistrationTurnIssued,
     | OnboardingExecutionUnavailable
@@ -634,7 +662,7 @@ export const make = Effect.gen(function* () {
     const existing = yield* persistence.findLiveChannel(input.provider, input.channelIdentity);
     if (existing !== null) {
       const invitationId = existing;
-      const response = yield* registrationTurn.begin({
+      const turn = yield* registrationTurn.begin({
         eventId: input.eventId,
         invitationId,
         locale: input.locale,
@@ -643,8 +671,8 @@ export const make = Effect.gen(function* () {
       });
       return {
         invitationId,
-        response,
-        verifyUrl: links.registrationHome(),
+        response: turn.response,
+        verifyUrl: new URL(turn.verifyUrl),
       };
     }
 
@@ -673,7 +701,7 @@ export const make = Effect.gen(function* () {
         });
       }
       const concurrentInvitationId = concurrent;
-      const concurrentResponse = yield* registrationTurn.begin({
+      const concurrentTurn = yield* registrationTurn.begin({
         eventId: input.eventId,
         invitationId: concurrentInvitationId,
         locale: input.locale,
@@ -682,19 +710,19 @@ export const make = Effect.gen(function* () {
       });
       return {
         invitationId: concurrentInvitationId,
-        response: concurrentResponse,
-        verifyUrl: links.registrationHome(),
+        response: concurrentTurn.response,
+        verifyUrl: new URL(concurrentTurn.verifyUrl),
       };
     }
     const verifyUrl = links.verification(generated.token);
-    const response = yield* registrationTurn.begin({
+    const turn = yield* registrationTurn.begin({
       eventId: input.eventId,
       invitationId,
       locale: input.locale,
       message: input.message,
       verifyUrl: verifyUrl.href,
     });
-    return { invitationId, response, verifyUrl };
+    return { invitationId, response: turn.response, verifyUrl: new URL(turn.verifyUrl) };
   });
 
   const issueWhatsAppInvitation: Interface["issueWhatsAppInvitation"] = (input) =>
@@ -705,12 +733,34 @@ export const make = Effect.gen(function* () {
       provider: "whatsapp",
     });
 
-  const issueTelegramInvitation: Interface["issueTelegramInvitation"] = (input) =>
-    issueChannelInvitation({
-      ...input,
-      invitedPhoneNumber: null,
-      kind: "telegram_first",
-      provider: "telegram",
+  const issueTelegramInvitation: Interface["issueTelegramInvitation"] = (input, claimToken) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const generated = yield* generateInvitationIdentity(crypto);
+      const invitationId = RegistrationInvitationId.make(
+        `registration-invitation-${input.eventId}`,
+      );
+      const candidateUrl = links.verification(generated.token);
+      const turn = yield* registrationTurn.begin({
+        eventId: input.eventId,
+        invitationId,
+        locale: input.locale,
+        message: input.message,
+        verifyUrl: candidateUrl.href,
+      });
+      const verifyUrl = yield* parseRecoveredVerificationUrl(turn.verifyUrl);
+      const recoveredToken = RegistrationToken.make(verifyUrl.pathname.slice("/verify/".length));
+      yield* persistence.prepareTelegramInvitation({
+        channelIdentity: input.channelIdentity,
+        claimToken,
+        createdAt: DateTime.toDateUtc(now),
+        eventId: input.eventId,
+        expiresAt: DateTime.toDateUtc(DateTime.add(now, { hours: 24 })),
+        invitationId,
+        locale: input.locale,
+        tokenDigest: yield* digestToken(crypto, Redacted.make(recoveredToken)),
+      });
+      return { invitationId, response: turn.response, verifyUrl };
     });
 
   const complete = Effect.fn("Onboarding.complete")(function* (input: CompleteInput) {
@@ -899,6 +949,7 @@ export const make = Effect.gen(function* () {
             }
             const currentBinding = yield* persistence.readCurrentBinding({
               channelBindingId: recovered.channelBindingId,
+              provider: input.provider,
               userId,
             });
             if (currentBinding?.channelIdentity !== input.channelIdentity) {
@@ -957,15 +1008,16 @@ export const make = Effect.gen(function* () {
 
   return Service.of({
     beginTelegramEvent: (eventId) =>
-      DateTime.now.pipe(
-        Effect.map(DateTime.toDateUtc),
-        Effect.flatMap((now) => persistence.beginProviderEvent("telegram", eventId, now)),
+      Effect.all([secureUuid(crypto), DateTime.now.pipe(Effect.map(DateTime.toDateUtc))]).pipe(
+        Effect.flatMap(([claimToken, now]) =>
+          persistence.beginTelegramDelivery(eventId, claimToken, now),
+        ),
       ),
     complete,
-    completeTelegramEvent: (eventId) =>
+    completeTelegramEvent: (eventId, claimToken) =>
       DateTime.now.pipe(
         Effect.map(DateTime.toDateUtc),
-        Effect.flatMap((now) => persistence.completeProviderEvent("telegram", eventId, now)),
+        Effect.flatMap((now) => persistence.completeTelegramDelivery(eventId, claimToken, now)),
       ),
     enrollTelegram,
     enrollWhatsApp,
@@ -973,8 +1025,8 @@ export const make = Effect.gen(function* () {
     inspectInvitation,
     issueTelegramInvitation,
     issueWhatsAppInvitation,
-    markTelegramEventOutboundAttempted: (eventId) =>
-      persistence.markProviderEventOutboundAttempted("telegram", eventId),
+    markTelegramEventAmbiguous: (eventId, claimToken) =>
+      persistence.markTelegramDeliveryAmbiguous(eventId, claimToken),
     phoneVerificationTarget,
   });
 });
@@ -999,6 +1051,25 @@ const maskPhoneNumber = (phoneNumber: string) => {
   const visible = phoneNumber.slice(-4);
   return `${"•".repeat(Math.max(4, phoneNumber.length - visible.length))}${visible}`;
 };
+
+const parseRecoveredVerificationUrl = (value: string) =>
+  Effect.try({
+    try: () => new URL(value),
+    catch: (cause) =>
+      new OnboardingExecutionUnavailable({
+        cause,
+        message: "The Registration Turn returned an invalid verification link",
+      }),
+  }).pipe(
+    Effect.filterOrFail(
+      (url) => /^\/verify\/[0-9a-f]{64}$/u.test(url.pathname),
+      (url) =>
+        new OnboardingExecutionUnavailable({
+          cause: { path: url.pathname },
+          message: "The Registration Turn returned an invalid verification link",
+        }),
+    ),
+  );
 
 const secureUuid = (crypto: Crypto.Crypto) =>
   crypto.randomUUIDv7.pipe(

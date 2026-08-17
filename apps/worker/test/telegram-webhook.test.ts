@@ -8,7 +8,7 @@ import {
 } from "../src/handlers/telegram-webhook";
 import type { TelegramOutbound } from "../src/handlers/telegram-webhook";
 import type * as MessagingAdmission from "../src/services/messaging-admission";
-import type * as Onboarding from "../src/services/onboarding";
+import * as Onboarding from "../src/services/onboarding";
 
 describe("Telegram webhook", () => {
   it.effect("verifies the webhook secret before decoding the update", () =>
@@ -118,7 +118,6 @@ describe("Telegram webhook", () => {
           channelIdentity: ChannelIdentity.make("telegram:900100200"),
           eventId: "telegram-update-43",
           message: "Plan my day",
-          provider: "telegram",
         },
       ]);
       expect(harness.invitations).toEqual([]);
@@ -163,8 +162,38 @@ describe("Telegram webhook", () => {
       const laterReplay = yield* handleTelegramWebhook(inbound(), harness.options);
 
       expect(Exit.isFailure(failed)).toBe(true);
-      expect(replay.status).toBe(200);
-      expect(laterReplay.status).toBe(200);
+      expect(replay.status).toBe(503);
+      expect(laterReplay.status).toBe(503);
+      expect(harness.invitations).toHaveLength(1);
+      expect(harness.posts).toEqual([]);
+    }),
+  );
+
+  it.effect("retries an invitation when Telegram was definitely not contacted", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ admission: "unbound", failFirstInvitation: true });
+      const inbound = () => request(update({ text: "Help", updateId: 49 }));
+      const failed = yield* Effect.exit(handleTelegramWebhook(inbound(), harness.options));
+      harness.expireOnboardingClaims();
+      const recovered = yield* handleTelegramWebhook(inbound(), harness.options);
+
+      expect(Exit.isFailure(failed)).toBe(true);
+      expect(recovered.status).toBe(200);
+      expect(harness.invitations).toHaveLength(1);
+      expect(harness.posts).toEqual([
+        { chatId: "900100200", text: "Regístrate en https://osfo.test/verify/token" },
+      ]);
+    }),
+  );
+
+  it.effect("does not send when another worker takes over the prepared event lease", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ admission: "unbound", takeOverBeforeSend: true });
+      const result = yield* Effect.exit(
+        handleTelegramWebhook(request(update({ text: "Help", updateId: 48 })), harness.options),
+      );
+
+      expect(Exit.isFailure(result)).toBe(true);
       expect(harness.invitations).toHaveLength(1);
       expect(harness.posts).toEqual([]);
     }),
@@ -188,16 +217,20 @@ const makeHarness = (overrides?: {
   readonly admission?: "accepted" | "duplicate" | "in-progress" | "unbound";
   readonly allowedUserIds?: ReadonlyArray<string>;
   readonly failFirstPost?: boolean;
+  readonly failFirstInvitation?: boolean;
   readonly stage?: "development" | "preview" | "production" | "test";
+  readonly takeOverBeforeSend?: boolean;
 }) => {
-  const admissions: Array<MessagingAdmission.MessageAdmissionInput> = [];
+  const admissions: Array<MessagingAdmission.TelegramMessageAdmissionInput> = [];
   const enrollments: Array<Onboarding.TelegramEnrollment> = [];
   const invitations: Array<Onboarding.UnknownTelegramMessage> = [];
   const completedOnboardingEvents = new Set<string>();
-  const ambiguousOnboardingEvents = new Set<string>();
-  const pendingOnboardingEvents = new Set<string>();
+  const ambiguousOnboardingEvents = new Map<string, string>();
+  const pendingOnboardingEvents = new Map<string, string>();
+  let claimSequence = 0;
   const posts: Array<{ readonly chatId: string; readonly text: string }> = [];
   let postAttempt = 0;
+  let invitationAttempt = 0;
   const outbound: TelegramOutbound = {
     post: (chatId, text) => {
       postAttempt += 1;
@@ -214,13 +247,13 @@ const makeHarness = (overrides?: {
     admission: {
       accept: (input) => {
         admissions.push(input);
-        const outcome =
+        const outcome: MessagingAdmission.AdmissionResult["_tag"] =
           overrides?.admission === "unbound"
             ? "Unbound"
             : overrides?.admission === "duplicate"
-              ? "Duplicate"
+              ? "Accepted"
               : overrides?.admission === "in-progress"
-                ? "InProgress"
+                ? "Denied"
                 : "Accepted";
         return Effect.succeed({
           _tag: outcome,
@@ -230,14 +263,23 @@ const makeHarness = (overrides?: {
     allowedUserIds: new Set(overrides?.allowedUserIds ?? ["900100200"]),
     onboarding: {
       beginTelegramEvent: (eventId) => {
-        if (completedOnboardingEvents.has(eventId)) return Effect.succeed("Completed" as const);
-        if (ambiguousOnboardingEvents.has(eventId)) return Effect.succeed("Ambiguous" as const);
-        if (pendingOnboardingEvents.has(eventId)) return Effect.succeed("InProgress" as const);
-        pendingOnboardingEvents.add(eventId);
-        return Effect.succeed("Claimed" as const);
+        if (completedOnboardingEvents.has(eventId)) {
+          return Effect.succeed({ _tag: "Completed" } as const);
+        }
+        if (ambiguousOnboardingEvents.has(eventId)) {
+          return Effect.succeed({ _tag: "Ambiguous" } as const);
+        }
+        if (pendingOnboardingEvents.has(eventId)) {
+          return Effect.succeed({ _tag: "InProgress" } as const);
+        }
+        claimSequence += 1;
+        const claimToken = `claim-${claimSequence}`;
+        pendingOnboardingEvents.set(eventId, claimToken);
+        return Effect.succeed({ _tag: "Claimed", claimToken } as const);
       },
-      completeTelegramEvent: (eventId) =>
+      completeTelegramEvent: (eventId, claimToken) =>
         Effect.sync(() => {
+          if (ambiguousOnboardingEvents.get(eventId) !== claimToken) return;
           ambiguousOnboardingEvents.delete(eventId);
           pendingOnboardingEvents.delete(eventId);
           completedOnboardingEvents.add(eventId);
@@ -250,18 +292,37 @@ const makeHarness = (overrides?: {
         });
       },
       issueTelegramInvitation: (input) => {
+        invitationAttempt += 1;
+        if (overrides?.failFirstInvitation === true && invitationAttempt === 1) {
+          return Effect.fail(
+            new Onboarding.OnboardingExecutionUnavailable({
+              cause: "test failure before provider contact",
+              message: "The invitation could not be prepared",
+            }),
+          );
+        }
         invitations.push(input);
+        if (overrides?.takeOverBeforeSend === true) {
+          pendingOnboardingEvents.set(input.eventId, "takeover-claim");
+        }
         return Effect.succeed({
           invitationId: RegistrationInvitationId.make("invitation-telegram"),
           response: "Regístrate en https://osfo.test/verify/token",
           verifyUrl: new URL("https://osfo.test/verify/token"),
         });
       },
-      markTelegramEventOutboundAttempted: (eventId) =>
-        Effect.sync(() => {
-          pendingOnboardingEvents.delete(eventId);
-          ambiguousOnboardingEvents.add(eventId);
-        }),
+      markTelegramEventAmbiguous: (eventId, claimToken) =>
+        pendingOnboardingEvents.get(eventId) !== claimToken
+          ? Effect.fail(
+              new Onboarding.OnboardingPersistenceUnavailable({
+                cause: "claim lost",
+                operation: "markTelegramDeliveryAmbiguous",
+              }),
+            )
+          : Effect.sync(() => {
+              pendingOnboardingEvents.delete(eventId);
+              ambiguousOnboardingEvents.set(eventId, claimToken);
+            }),
     },
     outbound,
     secretToken: Redacted.make("telegram-webhook-secret"),

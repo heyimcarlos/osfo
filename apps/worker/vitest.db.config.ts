@@ -15,6 +15,7 @@ export default defineConfig({
       "test/messaging-admission.test.ts",
       "test/onboarding.test.ts",
       "test/telegram-webhook.test.ts",
+      "test/telegram-agent-admission.test.ts",
       "test/plan-policy.test.ts",
       "test/phone-account-authority.test.ts",
       "test/registration.test.ts",

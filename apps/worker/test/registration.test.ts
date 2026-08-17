@@ -409,6 +409,12 @@ const testBindings: App.Bindings = {
           reason: "userSuspended",
           resetAt: null,
         }),
+      acceptTelegramMessage: () =>
+        Promise.resolve({
+          _tag: "ManagedConversationDenied",
+          reason: "userSuspended",
+          resetAt: null,
+        }),
       commitWelcome: () =>
         Promise.resolve({ _tag: "PersonalWelcomeCommitted", messageId: "welcome-test" }),
       initialize: () => Promise.resolve({ _tag: "AgentInitialized" }),
@@ -427,11 +433,17 @@ const testBindings: App.Bindings = {
           stage: "test" as const,
         }),
       recoverWhatsAppMessage: () => Promise.resolve(null),
+      recoverTelegramMessage: () => Promise.resolve(null),
     }),
   },
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => ({
-      begin: () => Promise.resolve({ _tag: "RegistrationTurnCompleted", response: "Register" }),
+      begin: () =>
+        Promise.resolve({
+          _tag: "RegistrationTurnCompleted",
+          response: "Register",
+          verifyUrl: "https://osfo.ai/verify/test",
+        }),
       deleteDialogue: () => Promise.resolve(),
       probeRuntime: () =>
         Promise.resolve({

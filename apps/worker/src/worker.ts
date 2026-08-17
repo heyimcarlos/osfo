@@ -9,7 +9,10 @@ import { RuntimeProbeResult } from "./layers";
 
 const AgentRpcTag = Schema.Struct({ _tag: Schema.String });
 const RegistrationRpcResult = Schema.Union([
-  Schema.TaggedStruct("RegistrationTurnCompleted", { response: Schema.String }),
+  Schema.TaggedStruct("RegistrationTurnCompleted", {
+    response: Schema.String,
+    verifyUrl: Schema.String,
+  }),
   Schema.TaggedStruct("RegistrationTurnUnavailable", { message: Schema.String }),
 ]);
 
@@ -47,6 +50,7 @@ const adaptBindings = (env: Env): App.Bindings => ({
       const agent = env.OSFO_AGENT.getByName(identity);
       return {
         acceptWhatsAppMessage: async (input) => agent.acceptWhatsAppMessage(input),
+        acceptTelegramMessage: async (input) => agent.acceptTelegramMessage(input),
         commitWelcome: async (input) =>
           Schema.decodePromise(AgentRpcTag)(await agent.commitWelcome(input)),
         initialize: async (input) =>
@@ -54,7 +58,7 @@ const adaptBindings = (env: Env): App.Bindings => ({
         probeRuntime: async () =>
           Schema.decodePromise(RuntimeProbeResult)(await agent.probeRuntime()),
         recoverWhatsAppMessage: async (input) => agent.recoverWhatsAppMessage(input),
-        submitManagedConversation: (input) => agent.submitManagedConversation(input),
+        recoverTelegramMessage: async (input) => agent.recoverTelegramMessage(input),
       };
     },
   },
