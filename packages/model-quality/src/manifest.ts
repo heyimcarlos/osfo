@@ -136,23 +136,7 @@ export const configurationDigest = (
 export const createEvaluationManifest = (
   input: EvaluationManifestInput,
 ): EvaluationManifestResult => {
-  const approvedAt = Date.parse(input.approvedBaseline.approvedAt);
-  const createdAt = Date.parse(input.createdAt);
-  const startedAt = Date.parse(input.outputEvidence.utcWindow.startedAt);
-  const endedAt = Date.parse(input.outputEvidence.utcWindow.endedAt);
-  if (
-    !baselineApproverIds.has(input.approvedBaseline.approverId) ||
-    input.approvedBaseline.corpusDigest !== input.corpusDigest ||
-    input.approvedBaseline.graderDigest !== input.graderDigest ||
-    input.approvedBaseline.rubricDigest !== input.rubricDigest ||
-    !verifyBaselineApproval(input.approvedBaseline) ||
-    !Number.isFinite(approvedAt) ||
-    !Number.isFinite(createdAt) ||
-    !Number.isFinite(startedAt) ||
-    !Number.isFinite(endedAt) ||
-    startedAt > endedAt ||
-    approvedAt > startedAt
-  ) {
+  if (!evaluationManifestInputIsValid(input)) {
     return {
       error: {
         _tag: "InvalidBaselineApproval",
@@ -202,21 +186,31 @@ const verifyBaselineApproval = (approval: EvaluationManifestInput["approvedBasel
     Buffer.from(approval.signature, "base64"),
   );
 
+const evaluationManifestInputIsValid = (input: EvaluationManifestInput): boolean => {
+  const approvedAt = Date.parse(input.approvedBaseline.approvedAt);
+  const createdAt = Date.parse(input.createdAt);
+  const startedAt = Date.parse(input.outputEvidence.utcWindow.startedAt);
+  const endedAt = Date.parse(input.outputEvidence.utcWindow.endedAt);
+  return (
+    baselineApproverIds.has(input.approvedBaseline.approverId) &&
+    input.approvedBaseline.corpusDigest === input.corpusDigest &&
+    input.approvedBaseline.graderDigest === input.graderDigest &&
+    input.approvedBaseline.rubricDigest === input.rubricDigest &&
+    verifyBaselineApproval(input.approvedBaseline) &&
+    Number.isFinite(approvedAt) &&
+    Number.isFinite(createdAt) &&
+    Number.isFinite(startedAt) &&
+    Number.isFinite(endedAt) &&
+    startedAt <= endedAt &&
+    approvedAt <= startedAt
+  );
+};
+
 /** Verify content integrity and the exact approved corpus, rubric, and grader baseline. */
 export const verifyEvaluationManifest = (manifest: EvaluationManifest): boolean => {
   const { contentDigest, ...unsigned } = manifest;
-  const approvedAt = Date.parse(manifest.approvedBaseline.approvedAt);
-  const startedAt = Date.parse(manifest.outputEvidence.utcWindow.startedAt);
   return (
-    contentDigest === digestValue("manifest", unsigned) &&
-    baselineApproverIds.has(manifest.approvedBaseline.approverId) &&
-    verifyBaselineApproval(manifest.approvedBaseline) &&
-    Number.isFinite(approvedAt) &&
-    Number.isFinite(startedAt) &&
-    approvedAt <= startedAt &&
-    manifest.approvedBaseline.corpusDigest === manifest.corpusDigest &&
-    manifest.approvedBaseline.graderDigest === manifest.graderDigest &&
-    manifest.approvedBaseline.rubricDigest === manifest.rubricDigest
+    contentDigest === digestValue("manifest", unsigned) && evaluationManifestInputIsValid(manifest)
   );
 };
 

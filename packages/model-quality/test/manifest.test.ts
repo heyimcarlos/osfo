@@ -76,6 +76,22 @@ describe("Model Quality evidence manifests", () => {
     expect(Object.isFrozen(manifest)).toBe(true);
     expect(Object.isFrozen(manifest.approvedBaseline)).toBe(true);
     expect(Object.isFrozen(manifest.configuration)).toBe(true);
+
+    const { contentDigest: ignoredDigest, ...validUnsigned } = manifest;
+    expect(ignoredDigest).toBe(manifest.contentDigest);
+    const tamperedUnsigned = {
+      ...validUnsigned,
+      outputEvidence: {
+        ...validUnsigned.outputEvidence,
+        utcWindow: { ...validUnsigned.outputEvidence.utcWindow, endedAt: "invalid" },
+      },
+    };
+    expect(
+      verifyEvaluationManifest({
+        ...tamperedUnsigned,
+        contentDigest: digestValue("manifest", tamperedUnsigned),
+      }),
+    ).toBe(false);
   });
 
   it("rejects a self-attested baseline without product approval authority", () => {
