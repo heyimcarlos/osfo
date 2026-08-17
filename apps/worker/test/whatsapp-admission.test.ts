@@ -13,6 +13,7 @@ import {
   WhatsAppProviderContentDigest,
 } from "../src/services/whatsapp-admission";
 import { AcceptanceReceipt } from "../src/services/provider-acceptance-receipt";
+import { SessionCommandReceipt } from "../src/services/session-command-receipt";
 import type { WhatsAppOnboardingCommand } from "../src/services/whatsapp-onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect and onboarding test values use the standard _tag discriminator. */
@@ -82,6 +83,25 @@ describe("WhatsApp inbound admission", () => {
 
       expect(outcome).toEqual({ _tag: "MessageAccepted", receipt });
       expect(calls).toEqual(["recover", "admit", "accept", "record"]);
+    }),
+  );
+
+  it.effect("returns a transport-neutral command outcome for a durable /new receipt", () =>
+    Effect.gen(function* () {
+      const receipt = sessionCommandReceipt();
+      let recorded = 0;
+      const service = admission({
+        accept: () => Effect.succeed(receipt),
+        record: () => Effect.sync(() => void (recorded += 1)),
+      });
+
+      const outcome = yield* service.admit({
+        ...textMessage(),
+        message: WhatsAppMessageText.make("/new"),
+      });
+
+      expect(outcome).toEqual({ _tag: "CommandAccepted", receipt });
+      expect(recorded).toBe(1);
     }),
   );
 
@@ -237,5 +257,20 @@ const acceptanceReceipt = (): AcceptanceReceipt =>
     receiptId: "receipt-fixed",
     sessionId: "session-1",
     thinkSubmissionId: "submission-fixed",
+    userMessageId: "message-fixed",
+  });
+
+const sessionCommandReceipt = (): SessionCommandReceipt =>
+  Schema.decodeSync(SessionCommandReceipt)({
+    _tag: "SessionCommandReceipt",
+    acceptedAt: "2026-08-16T12:00:00Z",
+    allowancePeriodId: "period-1",
+    channelBindingId: "binding-1",
+    command: "/new",
+    currentSessionId: "session-2",
+    historicalSessionId: "session-1",
+    providerMessageId: "wamid.1",
+    receiptId: "receipt-fixed",
+    routeId: "route-1",
     userMessageId: "message-fixed",
   });

@@ -397,7 +397,6 @@ const exceedsOperationLimit = (
 
 const requiresApproval = (operation: AuthorizationOperationType) => {
   switch (operation.kind) {
-    case "session.replace":
     case "session.delete":
     case "memory.clear":
     case "memory.forgetKnowledge":

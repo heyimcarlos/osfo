@@ -27,9 +27,13 @@ export default defineConfig({
     fileParallelism: false,
     include: [
       "test/action-approval.test.ts",
+      "test/managed-turn-execution.test.ts",
       "test/model-access-policy.test.ts",
       "test/osfo-agent.test.ts",
       "test/registration-dialogue.test.ts",
+      "test/session-execution.test.ts",
+      "test/session-lifecycle.test.ts",
+      "test/session-recall.test.ts",
       "test/worker.test.ts",
     ],
     testTimeout: 30_000,

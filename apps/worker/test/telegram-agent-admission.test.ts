@@ -5,6 +5,7 @@ import {
   AcceptanceReceiptId,
   AllowancePeriodId,
   ChannelBindingId,
+  ConversationRouteId,
   ProviderMessageId,
   SessionId,
   ThinkSubmissionId,
@@ -12,6 +13,7 @@ import {
 } from "../src/domain";
 import { AuthorizationContext } from "../src/services/authorization";
 import { AcceptanceReceipt } from "../src/services/provider-acceptance-receipt";
+import { SessionCommandReceipt } from "../src/services/session-command-receipt";
 import type { AgentAcceptanceInput } from "../src/services/provider-message-admission";
 import {
   accept,
@@ -37,10 +39,18 @@ describe("Telegram Agent admission", () => {
               return authorization();
             }),
         },
+        session: {
+          recover: (receipt) => Effect.succeed(receipt),
+          replace: () => Effect.die("Session replacement was not expected"),
+        },
         store: {
-          inspect: Effect.succeed({ currentSessionId: SessionId.make("session-telegram-primary") }),
+          inspect: Effect.succeed({
+            currentSessionId: SessionId.make("session-telegram-primary"),
+            routeId: ConversationRouteId.make("route-telegram-primary"),
+          }),
           readAcceptanceReceipt: (channelBindingId, providerMessageId) =>
             Effect.succeed(receiptLedger.get(`${channelBindingId}:${providerMessageId}`) ?? null),
+          readSessionCommandReceipt: () => Effect.succeed(null),
           recordAcceptanceReceipt: (candidate) =>
             Effect.sync(() => {
               const receipt = Schema.decodeSync(AcceptanceReceipt)({
@@ -101,6 +111,56 @@ describe("Telegram Agent admission", () => {
       });
       expect(authorizationChecks).toBe(1);
       expect(receiptLedger.size).toBe(1);
+    }),
+  );
+
+  it.effect("replaces the current Session for /new and recovers its terminal receipt", () =>
+    Effect.gen(function* () {
+      const input = { ...acceptanceInput(), message: "/new" };
+      let commandReceipt: SessionCommandReceipt | null = null;
+      let replacements = 0;
+      const dependencies: Interface<AcceptanceReceipt> = {
+        authorization: { inspect: () => Effect.succeed(authorization()) },
+        session: {
+          recover: (receipt) => Effect.succeed(receipt),
+          replace: (_command, receipt) =>
+            Effect.sync(() => {
+              replacements += 1;
+              commandReceipt = Schema.decodeSync(SessionCommandReceipt)({
+                ...receipt,
+                _tag: "SessionCommandReceipt",
+                acceptedAt: "2026-08-17T00:00:00Z",
+                currentSessionId: `session-${input.submissionId}`,
+                historicalSessionId: "session-telegram-primary",
+                routeId: "route-telegram-primary",
+              });
+              return commandReceipt;
+            }),
+        },
+        store: {
+          inspect: Effect.succeed({
+            currentSessionId: SessionId.make("session-telegram-primary"),
+            routeId: ConversationRouteId.make("route-telegram-primary"),
+          }),
+          readAcceptanceReceipt: () => Effect.succeed(null),
+          readSessionCommandReceipt: () => Effect.succeed(commandReceipt),
+          recordAcceptanceReceipt: () => Effect.die("Think receipt was not expected"),
+        },
+        think: {
+          inspect: () => Effect.succeed(null),
+          submit: () => Effect.die("Think submission was not expected"),
+        },
+      };
+
+      const accepted = yield* accept({ dependencies, input });
+      const recovered = yield* accept({ dependencies, input });
+
+      expect(accepted).toMatchObject({
+        _tag: "SessionCommandReceipt",
+        currentSessionId: `session-${input.submissionId}`,
+      });
+      expect(recovered).toEqual(accepted);
+      expect(replacements).toBe(1);
     }),
   );
 });

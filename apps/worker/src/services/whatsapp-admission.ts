@@ -11,6 +11,7 @@ import {
   UserMessageId,
 } from "../domain";
 import type { AcceptanceReceipt } from "./provider-acceptance-receipt";
+import type { SessionCommandReceipt } from "./session-command-receipt";
 import type { AuthorizationDenialReason } from "./authorization";
 import type { ManagedConversationDenied } from "./managed-conversation";
 import type { WhatsAppOnboardingCommand } from "./whatsapp-onboarding";
@@ -115,6 +116,7 @@ export type AgentAcceptanceInput = typeof AgentAcceptanceInput.Type;
 
 /** Observable inbound result used by the HTTP webhook boundary. */
 export type AdmissionOutcome =
+  | { readonly _tag: "CommandAccepted"; readonly receipt: SessionCommandReceipt }
   | { readonly _tag: "MessageAccepted"; readonly receipt: AcceptanceReceipt }
   | { readonly _tag: "MessageDenied"; readonly reason: AuthorizationDenialReason }
   | { readonly _tag: "OnboardingAccepted" };
@@ -125,14 +127,19 @@ export interface Interface<Failure> {
     readonly accept: (
       agentId: AgentId,
       input: AgentAcceptanceInput,
-    ) => Effect.Effect<AcceptanceReceipt | ManagedConversationDenied, Failure>;
+    ) => Effect.Effect<
+      AcceptanceReceipt | ManagedConversationDenied | SessionCommandReceipt,
+      Failure
+    >;
     readonly recover: (
       agentId: AgentId,
       input: AgentRecoveryInput,
-    ) => Effect.Effect<AcceptanceReceipt | null, Failure>;
+    ) => Effect.Effect<AcceptanceReceipt | SessionCommandReceipt | null, Failure>;
   };
   readonly allowances: {
-    readonly recordAcceptedMessage: (receipt: AcceptanceReceipt) => Effect.Effect<void, Failure>;
+    readonly recordAcceptedMessage: (
+      receipt: AcceptanceReceipt | SessionCommandReceipt,
+    ) => Effect.Effect<void, Failure>;
   };
   readonly identity: WhatsAppStableIdentity;
   readonly onboarding: {
@@ -151,13 +158,10 @@ export interface WhatsAppStableIdentity {
   readonly deriveAdmission: (
     route: Extract<InboundRoute, { readonly _tag: "Bound" }>,
     providerMessageId: ProviderMessageId,
-  ) => Effect.Effect<
-    ProviderAdmission.ProviderAdmissionIdentityDigest,
-    WhatsAppIdentityUnavailable
-  >;
+  ) => Effect.Effect<typeof WhatsAppAdmissionIdentityDigest.Type, WhatsAppIdentityUnavailable>;
   readonly deriveContent: (
     message: InboundWhatsAppMessage,
-  ) => Effect.Effect<ProviderAdmission.ProviderContentDigest, WhatsAppIdentityUnavailable>;
+  ) => Effect.Effect<typeof WhatsAppProviderContentDigest.Type, WhatsAppIdentityUnavailable>;
 }
 
 /** Inbound admission operations exposed to an authenticated HTTP adapter. */
@@ -172,11 +176,11 @@ export const make = <Failure>(options: Interface<Failure>): Service<Failure> => 
   admit: ProviderAdmission.make({
     agent: {
       accept: (agentId, input) =>
-        options.agent.accept(
-          agentId,
-          AgentAcceptanceInput.make({ ...input, message: WhatsAppMessageText.make(input.message) }),
-        ),
-      recover: (agentId, input) => options.agent.recover(agentId, AgentRecoveryInput.make(input)),
+        options.agent.accept(agentId, {
+          ...input,
+          message: WhatsAppMessageText.make(input.message),
+        }),
+      recover: options.agent.recover,
     },
     allowances: options.allowances,
     identity: options.identity,
@@ -187,7 +191,7 @@ export const make = <Failure>(options: Interface<Failure>): Service<Failure> => 
     onboarding: (message: InboundWhatsAppMessage) =>
       options.onboarding.handle(onboardingCommand(message)),
     persistence: options.persistence,
-    routeInput: (message: InboundWhatsAppMessage, contentDigest): RouteInput => ({
+    routeInput: (message: InboundWhatsAppMessage, contentDigest) => ({
       ...message,
       contentDigest,
     }),

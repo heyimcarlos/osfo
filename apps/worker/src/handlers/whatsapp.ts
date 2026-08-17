@@ -18,6 +18,7 @@ import * as Allowances from "../services/allowances";
 import * as Onboarding from "../services/onboarding";
 import { ManagedConversationDenied } from "../services/managed-conversation";
 import { AcceptanceReceipt } from "../services/provider-acceptance-receipt";
+import { SessionCommandReceipt } from "../services/session-command-receipt";
 import * as WhatsAppAdmission from "../services/whatsapp-admission";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schemas and RPC values use the standard _tag discriminator. */
@@ -27,6 +28,7 @@ const AgentRpcTag = Schema.Struct({ _tag: Schema.String });
 type AgentAcceptanceRpcResult =
   | AcceptanceReceipt
   | ManagedConversationDenied
+  | SessionCommandReceipt
   | { readonly _tag: string };
 
 interface WhatsAppAgentStub {
@@ -186,8 +188,11 @@ const handleRequest = (
 
 const decodeAgentRecovery = (
   result: AgentAcceptanceRpcResult,
-): Effect.Effect<AcceptanceReceipt, WhatsAppAdmission.WhatsAppAdmissionUnavailable> =>
-  Schema.decodeUnknownEffect(AcceptanceReceipt)(result).pipe(
+): Effect.Effect<
+  AcceptanceReceipt | SessionCommandReceipt,
+  WhatsAppAdmission.WhatsAppAdmissionUnavailable
+> =>
+  Schema.decodeUnknownEffect(Schema.Union([AcceptanceReceipt, SessionCommandReceipt]))(result).pipe(
     Effect.mapError(
       (cause) =>
         new WhatsAppAdmission.WhatsAppAdmissionUnavailable({
@@ -219,7 +224,7 @@ const admitFact = (
 const decodeAgentAcceptance = (
   result: AgentAcceptanceRpcResult,
 ): Effect.Effect<
-  AcceptanceReceipt | ManagedConversationDenied,
+  AcceptanceReceipt | ManagedConversationDenied | SessionCommandReceipt,
   WhatsAppAdmission.WhatsAppAdmissionUnavailable
 > =>
   Schema.decodeEffect(AgentRpcTag)(result).pipe(
@@ -234,9 +239,11 @@ const decodeAgentAcceptance = (
       const schema =
         tag._tag === "AcceptanceReceipt"
           ? AcceptanceReceipt
-          : tag._tag === "ManagedConversationDenied"
-            ? ManagedConversationDenied
-            : null;
+          : tag._tag === "SessionCommandReceipt"
+            ? SessionCommandReceipt
+            : tag._tag === "ManagedConversationDenied"
+              ? ManagedConversationDenied
+              : null;
       return schema === null
         ? Effect.fail(
             new WhatsAppAdmission.WhatsAppAdmissionUnavailable({

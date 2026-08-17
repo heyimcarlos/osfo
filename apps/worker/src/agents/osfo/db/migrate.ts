@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
 import initialMigrationSql from "./migrations/0000_silky_goblin_queen.sql";
 import modelCallUsageMigrationSql from "./migrations/0001_youthful_dreadnoughts.sql";
 import acceptanceReceiptMigrationSql from "./migrations/0002_absurd_unus.sql";
+import sessionRecallMigrationSql from "./migrations/0003_typical_sir_ram.sql";
 import {
   AgentMigrationDefinitionMismatch,
   AgentMigrationDigestMismatch,
@@ -34,6 +35,11 @@ export const agentMigrations: ReadonlyArray<AgentMigration> = [
     digest: "sha256:81d2adf32670669d854f3e48d6a505e1d99477b0499694df1a8c4790e81f56e8",
     sql: acceptanceReceiptMigrationSql,
     version: 3,
+  },
+  {
+    digest: "sha256:836084dbf2a422bdbd031c67a51511cc025651bf2ccf2e4ad860eff5b11f7fe7",
+    sql: sessionRecallMigrationSql,
+    version: 4,
   },
 ];
 

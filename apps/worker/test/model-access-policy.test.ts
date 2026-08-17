@@ -1,7 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import { DateTime, Effect, Predicate, Schema } from "effect";
 
-import { AllowancePeriodId, PlanPolicyVersion, ThinkSubmissionId } from "../src/domain";
+import {
+  AllowancePeriodId,
+  ConversationRouteId,
+  PlanPolicyVersion,
+  SessionId,
+  ThinkSubmissionId,
+} from "../src/domain";
 import type { AllowanceItem, AllowanceSource } from "../src/domain/allowance";
 import { launchModelAccessPolicy, selectManagedRoute } from "../src/domain/model-access-policy";
 import { ActionId, ambiguousActionResult } from "../src/domain/action-execution";
@@ -84,12 +90,17 @@ describe("managed model access policy", () => {
   it.effect("pins the admitted allowance period and route to both Plan submissions", () =>
     Effect.gen(function* () {
       for (const plan of ["free", "adventurer"] as const) {
-        const admitted = yield* admitManagedConversation({
-          authorization: authorizationContext(plan),
-          idempotencyKey: `message-${plan}`,
-          message: "Help me plan the next step.",
-          submissionId: ThinkSubmissionId.make(`submission-${plan}`),
-        });
+        const routeId = ConversationRouteId.make(`route-${plan}`);
+        const admitted = yield* admitManagedConversation(
+          {
+            authorization: authorizationContext(plan),
+            idempotencyKey: `message-${plan}`,
+            message: "Help me plan the next step.",
+            routeId,
+            submissionId: ThinkSubmissionId.make(`submission-${plan}`),
+          },
+          { currentSessionId: SessionId.make(`session-${plan}`), routeId },
+        );
         expect(admitted).toMatchObject({
           _tag: "ManagedConversationAdmitted",
           metadata: {
@@ -100,12 +111,38 @@ describe("managed model access policy", () => {
             maxRetries: 0,
             maxSteps: plan === "free" ? 6 : 12,
             plan,
+            routeId: `route-${plan}`,
             route: `dynamic/osfo-${plan}-v1`,
             targetInputTokens: plan === "free" ? 18_000 : 72_000,
           },
           submissionId: `submission-${plan}`,
         });
       }
+    }),
+  );
+
+  it.effect("rejects a request route that differs from the canonical Session route", () =>
+    Effect.gen(function* () {
+      const canonicalRouteId = ConversationRouteId.make("route-canonical");
+      const denied = yield* admitManagedConversation(
+        {
+          authorization: authorizationContext("free"),
+          idempotencyKey: "message-wrong-route",
+          message: "Do not mislabel this turn",
+          routeId: ConversationRouteId.make("route-requested-elsewhere"),
+          submissionId: ThinkSubmissionId.make("submission-wrong-route"),
+        },
+        {
+          currentSessionId: SessionId.make("session-canonical"),
+          routeId: canonicalRouteId,
+        },
+      );
+
+      expect(denied).toEqual({
+        _tag: "ManagedConversationDenied",
+        reason: "authorityMismatch",
+        resetAt: null,
+      });
     }),
   );
 
@@ -127,18 +164,23 @@ describe("managed model access policy", () => {
       const allowance = Predicate.isTagged(context.allowance, "Metered")
         ? context.allowance
         : yield* Effect.die("The fixture must contain one metered allowance period");
-      const denied = yield* admitManagedConversation({
-        authorization: {
-          ...context,
-          allowance: {
-            ...allowance,
-            usage: [{ allowanceKind: "supermemoryRetrievals", quantity: 100n }],
+      const routeId = ConversationRouteId.make("route-exhausted");
+      const denied = yield* admitManagedConversation(
+        {
+          authorization: {
+            ...context,
+            allowance: {
+              ...allowance,
+              usage: [{ allowanceKind: "supermemoryRetrievals", quantity: 100n }],
+            },
           },
+          idempotencyKey: "message-exhausted",
+          message: "Recall the conversation.",
+          routeId,
+          submissionId: ThinkSubmissionId.make("submission-exhausted"),
         },
-        idempotencyKey: "message-exhausted",
-        message: "Recall the conversation.",
-        submissionId: ThinkSubmissionId.make("submission-exhausted"),
-      });
+        { currentSessionId: SessionId.make("session-exhausted"), routeId },
+      );
       expect(denied).toMatchObject({
         _tag: "ManagedConversationDenied",
         reason: "allowanceExhausted",
@@ -157,12 +199,24 @@ describe("managed model access policy", () => {
         conservativeVendorUsdMicros: 30_000n,
       }),
     ).toEqual({
-      items: [{ allowanceKind: "vendorUsdMicros", basis: "conservative", quantity: 30_000n }],
-      source: { sourceId: "model-call-attempt:submission-free:3", sourceType: "ModelCallAttempt" },
+      items: [
+        {
+          allowanceKind: "vendorUsdMicros",
+          basis: "conservative",
+          quantity: 30_000n,
+        },
+      ],
+      source: {
+        sourceId: "model-call-attempt:submission-free:3",
+        sourceType: "ModelCallAttempt",
+      },
     });
     expect(normalizeModelCallUsage(attemptId, { _tag: "NotContacted" })).toEqual({
       items: [],
-      source: { sourceId: "model-call-attempt:submission-free:3", sourceType: "ModelCallAttempt" },
+      source: {
+        sourceId: "model-call-attempt:submission-free:3",
+        sourceType: "ModelCallAttempt",
+      },
     });
   });
 
@@ -178,7 +232,10 @@ describe("managed model access policy", () => {
             Effect.sync(() => {
               records.push({
                 items: usage.items,
-                source: { sourceId: usage.attemptId, sourceType: "ModelCallAttempt" },
+                source: {
+                  sourceId: usage.attemptId,
+                  sourceType: "ModelCallAttempt",
+                },
               });
             }),
         },
@@ -213,8 +270,16 @@ describe("managed model access policy", () => {
               basis: "observed",
               quantity: 120n,
             },
-            { allowanceKind: "supermemoryRetrievals", basis: "observed", quantity: 1n },
-            { allowanceKind: "vendorUsdMicros", basis: "observed", quantity: 900n },
+            {
+              allowanceKind: "supermemoryRetrievals",
+              basis: "observed",
+              quantity: 1n,
+            },
+            {
+              allowanceKind: "vendorUsdMicros",
+              basis: "observed",
+              quantity: 900n,
+            },
           ],
           source: {
             sourceId: "model-call-attempt:submission-recording:2",
@@ -271,7 +336,9 @@ describe("managed model access policy", () => {
           conservativeVendorUsdMicros: 30_000n,
         })
         .pipe(Effect.flip);
-      expect(first).toMatchObject({ _tag: "ModelCallUsageDispatchUnavailable" });
+      expect(first).toMatchObject({
+        _tag: "ModelCallUsageDispatchUnavailable",
+      });
       expect(pending).not.toBeNull();
 
       dispatchAvailable = true;
@@ -353,7 +420,10 @@ const authorizationContext = (plan: "free" | "adventurer") =>
       retainedFileBytes: 0n,
     },
     now: date("2026-08-16T00:00:00.000Z"),
-    originatingAuthority: { _tag: "AuthSession", authSessionId: "auth-managed" },
+    originatingAuthority: {
+      _tag: "AuthSession",
+      authSessionId: "auth-managed",
+    },
     requestVendorUsdMicros: 0n,
     resourceOwnerUserId: null,
     subscription: { plan, planPolicyVersion: "launch-v1" },

@@ -26,7 +26,8 @@ export const AcceptanceReceiptInput = Schema.Struct({
 /** Stable receipt facts before the persistence adapter adds its acceptance timestamp. */
 export type AcceptanceReceiptInput = typeof AcceptanceReceiptInput.Type;
 
-const AcceptanceTimestamp = Schema.String.check(
+/** UTC timestamp stored on immutable provider acceptance evidence. */
+export const AcceptanceTimestamp = Schema.String.check(
   Schema.makeFilter(
     (value) =>
       (utcTimestamp.test(value) && Option.isSome(DateTime.make(value))) ||

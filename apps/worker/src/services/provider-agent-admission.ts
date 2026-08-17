@@ -1,11 +1,12 @@
 import { Effect, Predicate } from "effect";
 
 import { ThinkSubmissionUnavailable } from "./think-submission";
+import { SessionId } from "../domain";
 import type {
   AllowancePeriodId,
   ChannelBindingId,
+  ConversationRouteId,
   ProviderMessageId,
-  SessionId,
   ThinkSubmissionId,
   UserMessageId,
 } from "../domain";
@@ -13,8 +14,17 @@ import type { ManagedTurnMetadata } from "../domain/managed-conversation";
 import { retainedCatalog } from "../domain/plan-policy";
 import type { AgentAcceptanceInput, AgentRecoveryInput } from "./provider-message-admission";
 import type { AcceptanceReceiptInput } from "./provider-acceptance-receipt";
+import {
+  SessionCommandReceiptConflict,
+  type SessionCommandReceipt,
+  type SessionCommandReceiptInput,
+} from "./session-command-receipt";
 import { type AuthorizationContext, make as makeAuthorization } from "./authorization";
-import { admitManagedConversation, type ManagedConversationDenied } from "./managed-conversation";
+import {
+  admitManagedConversation,
+  type ManagedConversationDenied,
+  type ManagedSessionReplacementAdmitted,
+} from "./managed-conversation";
 
 /** Provider-specific metadata codec kept at the named-Agent transport boundary. */
 export interface MetadataCodec<Metadata extends ManagedTurnMetadata> {
@@ -57,10 +67,19 @@ export interface ReceiptStore<Receipt extends AcceptanceReceiptInput, StoreFailu
   readonly recordAcceptanceReceipt: (
     input: AcceptanceReceiptInput,
   ) => Effect.Effect<Receipt, StoreFailure>;
+  readonly readSessionCommandReceipt: (
+    channelBindingId: ChannelBindingId,
+    providerMessageId: ProviderMessageId,
+  ) => Effect.Effect<SessionCommandReceipt | null, StoreFailure>;
 }
 
 /** Dependencies required to recover accepted Think work without fresh mutable authority. */
 export interface RecoveryInterface<Metadata, Receipt extends AcceptanceReceiptInput, StoreFailure> {
+  readonly session: {
+    readonly recover: (
+      receipt: SessionCommandReceipt,
+    ) => Effect.Effect<SessionCommandReceipt, StoreFailure>;
+  };
   readonly store: ReceiptStore<Receipt, StoreFailure>;
   readonly think: {
     readonly inspect: (
@@ -82,7 +101,16 @@ export interface Interface<
     ) => Effect.Effect<AuthorizationContext, AuthorizationFailure>;
   };
   readonly store: ReceiptStore<Receipt, StoreFailure> & {
-    readonly inspect: Effect.Effect<{ readonly currentSessionId: SessionId }, StoreFailure>;
+    readonly inspect: Effect.Effect<
+      { readonly currentSessionId: SessionId; readonly routeId: ConversationRouteId },
+      StoreFailure
+    >;
+  };
+  readonly session: RecoveryInterface<Metadata, Receipt, StoreFailure>["session"] & {
+    readonly replace: (
+      command: ManagedSessionReplacementAdmitted,
+      receipt: SessionCommandReceiptInput,
+    ) => Effect.Effect<SessionCommandReceipt, StoreFailure>;
   };
   readonly think: RecoveryInterface<Metadata, Receipt, StoreFailure>["think"] & {
     readonly submit: (
@@ -127,15 +155,29 @@ export const accept = <
         resetAt: null,
       } satisfies ManagedConversationDenied;
     }
-    const managed = yield* admitManagedConversation({
-      authorization,
-      idempotencyKey: `${provider}-${input.receiptId}`,
-      message: input.message,
-      submissionId: input.submissionId,
-    });
-    if (!Predicate.isTagged(managed, "ManagedConversationAdmitted")) return managed;
-
     const agent = yield* dependencies.store.inspect;
+    const managed = yield* admitManagedConversation(
+      {
+        authorization,
+        idempotencyKey: `${provider}-${input.receiptId}`,
+        message: input.message,
+        routeId: agent.routeId,
+        submissionId: input.submissionId,
+      },
+      agent,
+    );
+    if (Predicate.isTagged(managed, "ManagedConversationDenied")) return managed;
+    if (Predicate.isTagged(managed, "ManagedSessionReplacementAdmitted")) {
+      return yield* dependencies.session.replace(managed, {
+        allowancePeriodId: acceptance.allowancePeriod.allowancePeriodId,
+        channelBindingId: input.channelBindingId,
+        command: "/new",
+        providerMessageId: input.providerMessageId,
+        receiptId: input.receiptId,
+        userMessageId: input.userMessageId,
+      });
+    }
+
     const metadata = codec.make(managed.metadata, input, agent.currentSessionId);
     const submitted = yield* dependencies.think.submit({
       idempotencyKey: managed.idempotencyKey,
@@ -174,6 +216,30 @@ export const recover = <
 }) =>
   Effect.gen(function* () {
     const { codec, dependencies, input, provider } = options;
+    const commandReceipt = yield* dependencies.store.readSessionCommandReceipt(
+      input.channelBindingId,
+      input.providerMessageId,
+    );
+    if (commandReceipt !== null) {
+      const expectedSessionId = SessionId.make(`session-${input.submissionId}`);
+      if (
+        commandReceipt.receiptId !== input.receiptId ||
+        commandReceipt.userMessageId !== input.userMessageId ||
+        commandReceipt.currentSessionId !== expectedSessionId
+      ) {
+        return yield* new SessionCommandReceiptConflict({
+          existingReceiptId: commandReceipt.receiptId,
+          existingReplacementSessionId: commandReceipt.currentSessionId,
+          existingUserMessageId: commandReceipt.userMessageId,
+          message: "The Channel Message Key already has different Session command facts",
+          providerMessageId: input.providerMessageId,
+          receiptId: input.receiptId,
+          requestedReplacementSessionId: expectedSessionId,
+          userMessageId: input.userMessageId,
+        });
+      }
+      return yield* dependencies.session.recover(commandReceipt);
+    }
     const existing = yield* dependencies.store.readAcceptanceReceipt(
       input.channelBindingId,
       input.providerMessageId,

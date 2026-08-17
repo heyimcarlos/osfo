@@ -89,6 +89,7 @@ export const sessionOwnership = sqliteTable(
   "osfo_session_ownership",
   {
     becameCurrentAt: timestamp("became_current_at").notNull(),
+    ownershipSequence: integer("ownership_sequence").notNull().unique(),
     replacedAt: timestamp("replaced_at"),
     routeId: routeId("route_id")
       .notNull()
@@ -99,8 +100,31 @@ export const sessionOwnership = sqliteTable(
     uniqueIndex("osfo_one_current_session_per_route")
       .on(table.routeId)
       .where(sql`${table.replacedAt} IS NULL`),
-    index("osfo_sessions_by_route").on(table.routeId, table.becameCurrentAt),
+    index("osfo_sessions_by_route").on(table.routeId, table.ownershipSequence),
   ],
+);
+
+/** Short-lived unguessable continuation state for bounded Session Recall pages. */
+export const sessionRecallCursors = sqliteTable(
+  "osfo_session_recall_cursors",
+  {
+    afterOwnershipSequence: integer("after_ownership_sequence"),
+    cursor: text("cursor").primaryKey(),
+    expiresAt: timestamp("expires_at")
+      .notNull()
+      .default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+15 minutes'))`),
+    routeId: routeId("route_id")
+      .notNull()
+      .references(() => conversationRoutes.routeId, { onDelete: "cascade", onUpdate: "restrict" }),
+    snapshotCurrentSessionId: sessionId("snapshot_current_session_id")
+      .notNull()
+      .references(() => sessionOwnership.sessionId, {
+        onDelete: "cascade",
+        onUpdate: "restrict",
+      }),
+    snapshotMaxOwnershipSequence: integer("snapshot_max_ownership_sequence").notNull(),
+  },
+  (table) => [index("osfo_session_recall_cursors_by_expiry").on(table.expiresAt)],
 );
 
 /** Singleton evidence that the named Durable Object completed Agent initialization. */
@@ -168,6 +192,38 @@ export const acceptanceReceipts = sqliteTable(
       table.providerMessageId,
     ),
     index("osfo_acceptance_receipts_by_session").on(table.sessionId, table.acceptedAt),
+  ],
+);
+
+/** Immutable terminal receipts for accepted provider Session commands. */
+export const sessionCommandReceipts = sqliteTable(
+  "osfo_session_command_receipts",
+  {
+    acceptedAt: text("accepted_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    allowancePeriodId: allowancePeriodId("allowance_period_id").notNull(),
+    channelBindingId: channelBindingId("channel_binding_id").notNull(),
+    command: text("command", { enum: ["/new"] }).notNull(),
+    currentSessionId: sessionId("current_session_id")
+      .notNull()
+      .references(() => sessionOwnership.sessionId, { onDelete: "restrict", onUpdate: "restrict" }),
+    historicalSessionId: sessionId("historical_session_id")
+      .notNull()
+      .references(() => sessionOwnership.sessionId, { onDelete: "restrict", onUpdate: "restrict" }),
+    providerMessageId: providerMessageId("provider_message_id").notNull(),
+    receiptId: acceptanceReceiptId("receipt_id").primaryKey(),
+    routeId: routeId("route_id")
+      .notNull()
+      .references(() => conversationRoutes.routeId, { onDelete: "restrict", onUpdate: "restrict" }),
+    userMessageId: userMessageId("user_message_id").notNull().unique(),
+  },
+  (table) => [
+    uniqueIndex("osfo_session_command_receipt_channel_message_unique").on(
+      table.channelBindingId,
+      table.providerMessageId,
+    ),
+    index("osfo_session_command_receipts_by_route").on(table.routeId, table.acceptedAt),
   ],
 );
 
