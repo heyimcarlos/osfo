@@ -46,6 +46,11 @@ export default Cloudflare.Worker(
           className: "OsfoAgent",
         }),
         OSFO_STAGE: stage === "development" || stage === "production" ? stage : "preview",
+        STRIPE_ADVENTURER_PRICE_ID: Config.string("STRIPE_ADVENTURER_PRICE_ID"),
+        STRIPE_ADVENTURER_PRODUCT_ID: Config.string("STRIPE_ADVENTURER_PRODUCT_ID"),
+        STRIPE_PORTAL_CONFIGURATION_ID: Config.string("STRIPE_PORTAL_CONFIGURATION_ID"),
+        STRIPE_SECRET_KEY: Config.redacted("STRIPE_SECRET_KEY"),
+        STRIPE_WEBHOOK_SECRET: Config.redacted("STRIPE_WEBHOOK_SECRET"),
         REGISTRATION_DIALOGUE: Cloudflare.DurableObject("RegistrationDialogue", {
           className: "RegistrationDialogue",
         }),

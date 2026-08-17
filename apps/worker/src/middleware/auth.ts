@@ -51,7 +51,11 @@ export const layer = (config: WorkerAuth.AuthRouteConfig) =>
           return yield* Effect.provideService(
             effect,
             CurrentUser,
-            CurrentUser.of({ authSessionId: session.session.id, userId: session.user.id }),
+            CurrentUser.of({
+              authSessionExpiresAt: session.session.expiresAt,
+              authSessionId: session.session.id,
+              userId: session.user.id,
+            }),
           );
         }).pipe(Effect.provideService(Db.Db, db), Effect.provideService(TwilioVerify, twilio)),
       );
