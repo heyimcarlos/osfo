@@ -105,6 +105,7 @@ const RawTelegramConfig = Schema.Struct({
 export interface RuntimeConfig {
   readonly auth: {
     readonly baseURL: string;
+    readonly credentialAuthentication: "disabled" | "enabled";
     readonly dashboard:
       | { readonly kind: "disabled" }
       | { readonly apiKey: Redacted.Redacted; readonly kind: "enabled" };
@@ -197,6 +198,8 @@ export const decodeRuntimeConfig = (input: RuntimeConfigInput) =>
     return Result.map(telegram, (telegramConfig): RuntimeConfig => ({
       auth: {
         baseURL: raw.BETTER_AUTH_BASE_URL.href,
+        credentialAuthentication:
+          raw.OSFO_STAGE === "development" || raw.OSFO_STAGE === "test" ? "enabled" : "disabled",
         dashboard: {
           apiKey: Redacted.make(raw.BETTER_AUTH_API_KEY),
           kind: "enabled",

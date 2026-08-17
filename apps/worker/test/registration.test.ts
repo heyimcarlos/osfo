@@ -389,6 +389,7 @@ const onboardingResponseJson = (response: Response) =>
 const runtimeConfig: RuntimeConfig = {
   auth: {
     baseURL: "https://osfo.test/",
+    credentialAuthentication: "enabled",
     dashboard: { kind: "disabled" },
     secret: Redacted.make("test-only-better-auth-secret-32-characters"),
     trustedOrigins: ["https://osfo.test"],

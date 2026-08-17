@@ -14,6 +14,7 @@ import * as TwilioVerify from "../src/integrations/twilio/verify";
 
 const authConfig = {
   baseURL: "https://osfo.test/",
+  credentialAuthentication: "disabled" as const,
   dashboard: { kind: "disabled" as const },
   secret: Redacted.make("test-only-better-auth-secret-32-characters"),
   trustedOrigins: ["https://osfo.test"],
@@ -40,6 +41,40 @@ describe("launch authentication policy", () => {
 
           expect(response.status).toBe(400);
           expect(storedUsers).toEqual([]);
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("exposes email-and-password authentication in development", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const app = makeAuthApp(
+            Db.layerFromDatabase(fixture.database),
+            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
+            { ...authConfig, credentialAuthentication: "enabled" },
+          );
+
+          const response = yield* request(app.handler, "/auth/sign-up/email", {
+            email: "tester@osfo.test",
+            name: "Osfo Tester",
+            password: "test-password",
+          });
+          const signIn = yield* request(app.handler, "/auth/sign-in/email", {
+            email: "tester@osfo.test",
+            password: "test-password",
+          });
+          const storedUsers = yield* Effect.promise(() => fixture.database.select().from(users));
+
+          expect(response.status).toBe(200);
+          expect(signIn.status).toBe(200);
+          expect(signIn.headers.get("set-cookie")).toContain("better-auth.session_token");
+          expect(storedUsers).toHaveLength(1);
 
           yield* Effect.promise(app.dispose);
         }),
@@ -442,10 +477,11 @@ describe("authentication dependency scope", () => {
 const makeAuthApp = (
   dbLayer: ReturnType<typeof Db.layerFromDatabase>,
   twilioLayer: Layer.Layer<TwilioVerify.TwilioVerify>,
+  config: AuthRoutes.AuthRouteConfig = authConfig,
 ) =>
   HttpRouter.toWebHandler(
     AuthRoutes.layer({
-      config: authConfig,
+      config,
       dependencies: Layer.merge(dbLayer, twilioLayer),
     }),
     { disableLogger: true },

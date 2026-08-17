@@ -6,6 +6,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 
 import { AuthScreen } from "./components/auth-screen";
 import { BillingScreen } from "./components/billing-screen";
+import { HomeScreen } from "./components/home-screen";
 import { PlanDetails, PrivacyNotice } from "./components/public-information";
 import { authClient } from "./lib/auth-client";
 import {
@@ -69,10 +70,15 @@ export function App() {
       );
     }
 
+    if (pathname === "/") {
+      return <HomeScreen />;
+    }
+
     return (
       <AuthScreen
+        enableCredentials={import.meta.env.DEV}
         onAuthenticated={() => {
-          void session.refetch();
+          globalThis.location.assign("/");
         }}
       />
     );
@@ -232,7 +238,11 @@ function ChatPreview({ userLabel = "Test user" }: { readonly userLabel?: string 
               type="button"
               variant="ghost"
               onClick={() => {
-                void authClient.signOut();
+                void authClient.signOut({
+                  fetchOptions: {
+                    onSuccess: () => globalThis.location.assign("/"),
+                  },
+                });
               }}
             >
               Sign out

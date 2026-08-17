@@ -260,6 +260,7 @@ const testOnboarding = Onboarding.Service.of({
 const config: RuntimeConfig = {
   auth: {
     baseURL: "https://osfo.test/",
+    credentialAuthentication: "enabled",
     dashboard: { kind: "disabled" },
     secret: Redacted.make("test-only-better-auth-secret-32-characters"),
     trustedOrigins: ["https://osfo.test"],

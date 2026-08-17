@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { AuthScreen } from "./components/auth-screen";
 import { GetStartedScreen } from "./components/get-started-screen";
+import { HomeScreen } from "./components/home-screen";
 import { PlanDetails, PrivacyNotice } from "./components/public-information";
 
 describe("App", () => {
@@ -13,6 +14,26 @@ describe("App", () => {
     expect(html).toContain('autoComplete="tel-national"');
     expect(html).not.toContain("Email and password");
     expect(html).not.toContain('type="password"');
+  });
+
+  it("renders development credentials without replacing SMS authentication", () => {
+    const html = renderToStaticMarkup(
+      <AuthScreen enableCredentials onAuthenticated={() => undefined} />,
+    );
+
+    expect(html).toContain("Development access");
+    expect(html).toContain("Email and password");
+    expect(html).toContain("SMS code");
+    expect(html).toContain('type="password"');
+  });
+
+  it("renders a public home page with authentication entry points", () => {
+    const html = renderToStaticMarkup(<HomeScreen />);
+
+    expect(html).toContain("Get the busy work out of your way.");
+    expect(html).toContain('href="/login"');
+    expect(html).toContain("Get started");
+    expect(html).toContain("Sign in");
   });
 
   it("renders the public phone-first registration entry", () => {

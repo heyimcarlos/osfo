@@ -21,6 +21,7 @@ export {
 export interface AuthOptions {
   readonly baseURL: string;
   readonly canCreateSession: (userId: string) => Promise<boolean>;
+  readonly credentialAuthentication: "disabled" | "enabled";
   readonly database: Database;
   readonly dashboard: DashboardOptions;
   readonly secret: string;
@@ -77,7 +78,10 @@ const makeOptions = (options: AuthOptions): BetterAuthOptions => ({
       },
     },
   },
-  emailAndPassword: { enabled: false },
+  emailAndPassword: {
+    autoSignIn: false,
+    enabled: options.credentialAuthentication === "enabled",
+  },
   rateLimit: {
     customRules: {
       "/phone-number/send-otp": { max: 5, window: 60 * 60 },

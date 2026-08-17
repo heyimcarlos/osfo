@@ -245,8 +245,11 @@ describe("Osfo Cloudflare host", () => {
       WHATSAPP_PHONE_NUMBER: "14165550100",
     };
     const decoded = decodeRuntimeConfig(input);
+    const production = decodeRuntimeConfig({ ...input, OSFO_STAGE: "production" });
 
     expect(Result.isSuccess(decoded)).toBe(true);
+    expect(Result.getOrThrow(decoded).auth.credentialAuthentication).toBe("enabled");
+    expect(Result.getOrThrow(production).auth.credentialAuthentication).toBe("disabled");
     expect(
       Result.isFailure(
         decodeRuntimeConfig({ ...input, STRIPE_PORTAL_CONFIGURATION_ID: "unapproved" }),

@@ -11,6 +11,7 @@ import { TwilioVerify } from "./integrations/twilio/verify";
 /** Trusted Better Auth configuration parsed from Worker bindings. */
 export interface AuthRouteConfig {
   readonly baseURL: string;
+  readonly credentialAuthentication: "disabled" | "enabled";
   readonly dashboard:
     | { readonly kind: "disabled" }
     | { readonly apiKey: Redacted.Redacted; readonly kind: "enabled" };
@@ -52,6 +53,7 @@ export const make = (config: AuthRouteConfig, canAccess: AccountAccess.Check) =>
     return createAuth({
       baseURL: config.baseURL,
       canCreateSession: (userId) => runPromise(canAccess(UserId.make(userId))),
+      credentialAuthentication: config.credentialAuthentication,
       database,
       dashboard:
         config.dashboard.kind === "enabled"
