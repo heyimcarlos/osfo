@@ -33,7 +33,11 @@ interface StoredRegistrationTurn {
 
 /** Observable result from the invitation-scoped restricted turn. */
 export type RegistrationTurnResult =
-  | { readonly _tag: "RegistrationTurnCompleted"; readonly response: string }
+  | {
+      readonly _tag: "RegistrationTurnCompleted";
+      readonly response: string;
+      readonly verifyUrl: string;
+    }
   | { readonly _tag: "RegistrationTurnUnavailable"; readonly message: string };
 
 const stateKey = "registration-turn";
@@ -90,10 +94,15 @@ export class RegistrationDialogue extends Think<Env> {
       return {
         _tag: "RegistrationTurnCompleted",
         response: deterministicPrompt(existing.locale, existing.verifyUrl),
+        verifyUrl: existing.verifyUrl,
       };
     }
     if (existing?.response !== null && existing?.response !== undefined) {
-      return { _tag: "RegistrationTurnCompleted", response: existing.response };
+      return {
+        _tag: "RegistrationTurnCompleted",
+        response: existing.response,
+        verifyUrl: existing.verifyUrl,
+      };
     }
 
     const expiresAt = existing?.expiresAt ?? Date.now() + registrationLifetimeMs;
@@ -174,7 +183,7 @@ export class RegistrationDialogue extends Think<Env> {
         response,
         verifyUrl: input.verifyUrl,
       });
-      return { _tag: "RegistrationTurnCompleted", response };
+      return { _tag: "RegistrationTurnCompleted", response, verifyUrl: input.verifyUrl };
     } catch {
       return {
         _tag: "RegistrationTurnUnavailable",

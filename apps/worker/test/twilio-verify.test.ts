@@ -49,7 +49,7 @@ describe("Twilio Verify adapter", () => {
         Effect.provideService(HttpClient.HttpClient, client),
       );
 
-      const approved = yield* service.verifyCode("+14165550102", "123456");
+      const approved = yield* service.verifyCode("+14165550102", Redacted.make("123456"));
 
       expect(approved).toBe(true);
       expect(requests[0]?.url).toBe(
@@ -69,7 +69,7 @@ describe("Twilio Verify adapter", () => {
         Effect.provideService(HttpClient.HttpClient, client),
       );
 
-      expect(yield* service.verifyCode("+14165550103", "000000")).toBe(false);
+      expect(yield* service.verifyCode("+14165550103", Redacted.make("000000"))).toBe(false);
     }),
   );
 

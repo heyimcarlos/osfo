@@ -3,8 +3,10 @@ import { Effect, type Layer, Redacted } from "effect";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 
 import { handleAuthRequest } from "./cors";
+import * as AccountAccess from "./composition/account-access";
 import * as Db from "./db";
 import { TwilioVerify } from "./integrations/twilio/verify";
+import { UserId } from "./domain";
 
 /** Trusted Better Auth configuration parsed from Worker bindings. */
 export interface AuthRouteConfig {
@@ -28,7 +30,8 @@ export interface Options {
 /** Better Auth routes backed by request-scoped Postgres and Twilio Verify. */
 export const layer = (options: Options) => {
   const handler = Effect.gen(function* () {
-    const auth = yield* make(options.config);
+    const canAccess = yield* AccountAccess.make;
+    const auth = yield* make(options.config, canAccess);
 
     return yield* HttpEffect.fromWebHandler((request) =>
       handleAuthRequest(request, auth.handler, options.config.trustedOrigins),
@@ -40,7 +43,7 @@ export const layer = (options: Options) => {
 };
 
 /** Build Better Auth from the current request-scoped Worker dependencies. */
-export const make = (config: AuthRouteConfig) =>
+export const make = (config: AuthRouteConfig, canAccess: AccountAccess.Check) =>
   Effect.gen(function* () {
     const database = yield* Db.database;
     const twilio = yield* TwilioVerify;
@@ -49,6 +52,7 @@ export const make = (config: AuthRouteConfig) =>
 
     return createAuth({
       baseURL: config.baseURL,
+      canCreateSession: (userId) => runPromise(canAccess(UserId.make(userId))),
       database,
       dashboard:
         config.dashboard.kind === "enabled"
@@ -60,6 +64,7 @@ export const make = (config: AuthRouteConfig) =>
       secret: Redacted.value(config.secret),
       sendOTP: ({ phoneNumber }) => runPromise(twilio.sendCode(phoneNumber)),
       trustedOrigins: config.trustedOrigins,
-      verifyOTP: ({ code, phoneNumber }) => runPromise(twilio.verifyCode(phoneNumber, code)),
+      verifyOTP: ({ code, phoneNumber }) =>
+        runPromise(twilio.verifyCode(phoneNumber, Redacted.make(code))),
     });
   });

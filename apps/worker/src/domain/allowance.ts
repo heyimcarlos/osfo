@@ -117,6 +117,8 @@ export const BillingDatabaseOperation = Schema.Literals([
   "admitAllowance",
   "inspectAllowances",
   "recordUsage",
+  "loadBillingSubscription",
+  "applyStripeSnapshot",
 ]);
 
 /** PostgreSQL allowance transaction operations that can fail without driver details. */

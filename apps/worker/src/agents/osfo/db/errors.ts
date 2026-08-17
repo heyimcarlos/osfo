@@ -4,10 +4,15 @@ import { DbTimestamp } from "../../../db";
 import {
   AgentId,
   AgentInitializationId,
+  AcceptanceReceiptId,
   AssistantMessageId,
   ConversationRouteId,
+  ChannelBindingId,
+  ProviderMessageId,
   SessionId,
   ThinkRequestId,
+  ThinkSubmissionId,
+  UserMessageId,
 } from "../../../domain";
 
 /** Agent SQLite operations exposed by the typed store seam. */
@@ -15,11 +20,32 @@ export const AgentStoreOperation = Schema.Literals([
   "initialize",
   "inspect",
   "readRoute",
+  "readRouteSessionPage",
   "readSessionOwnership",
   "replaceCurrentSession",
   "recordCommittedTurn",
+  "readAcceptanceReceipt",
+  "recordAcceptanceReceipt",
+  "readSessionCommandReceipt",
+  "replaceCurrentSessionWithCommandReceipt",
   "readCommittedTurns",
 ]);
+
+/** Expected failure when one Channel Message Key is retried with changed acceptance facts. */
+export class AcceptanceReceiptConflict extends Schema.TaggedError<AcceptanceReceiptConflict>()(
+  "AcceptanceReceiptConflict",
+  {
+    channelBindingId: ChannelBindingId,
+    existingReceiptId: AcceptanceReceiptId,
+    existingThinkSubmissionId: ThinkSubmissionId,
+    existingUserMessageId: UserMessageId,
+    message: Schema.String,
+    providerMessageId: ProviderMessageId,
+    receiptId: AcceptanceReceiptId,
+    thinkSubmissionId: ThinkSubmissionId,
+    userMessageId: UserMessageId,
+  },
+) {}
 
 /** Agent SQLite operations exposed by the typed store seam. */
 export type AgentStoreOperation = typeof AgentStoreOperation.Type;
@@ -100,19 +126,6 @@ export class AgentStateNotFound extends Schema.TaggedError<AgentStateNotFound>()
   },
 ) {}
 
-/** Expected failure when a Session replacement does not match current state. */
-export class CurrentSessionReplacementConflict extends Schema.TaggedError<CurrentSessionReplacementConflict>()(
-  "CurrentSessionReplacementConflict",
-  {
-    actualCurrentSessionId: Schema.NullOr(SessionId),
-    expectedCurrentSessionId: SessionId,
-    message: Schema.String,
-    replacementOwnerRouteId: Schema.NullOr(ConversationRouteId),
-    replacementSessionId: SessionId,
-    routeId: ConversationRouteId,
-  },
-) {}
-
 /** Expected failure when one committed-turn key names conflicting observation facts. */
 export class CommittedTurnConflict extends Schema.TaggedError<CommittedTurnConflict>()(
   "CommittedTurnConflict",
@@ -177,15 +190,19 @@ export class AgentStoreRecordInvalid extends Schema.TaggedError<AgentStoreRecord
 
 /** Agent RPC operations with externally supplied values. */
 export const AgentRequestOperation = Schema.Literals([
+  "acceptWhatsAppMessage",
+  "acceptTelegramMessage",
   "commitWelcome",
   "cancelManagedConversation",
   "boundCoreMemory",
   "correctCoreMemory",
   "inspectCoreMemory",
   "initialize",
+  "readSessionAuthorizationFacts",
   "readRoute",
   "readSession",
-  "replaceCurrentSession",
+  "recoverWhatsAppMessage",
+  "recoverTelegramMessage",
   "submitManagedConversation",
 ]);
 

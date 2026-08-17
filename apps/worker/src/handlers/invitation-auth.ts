@@ -2,6 +2,7 @@ import { Effect, Redacted, Schema } from "effect";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 
 import * as Auth from "../auth";
+import * as AccountAccess from "../composition/account-access";
 import { handleAuthRequest } from "../cors";
 import * as Onboarding from "../services/onboarding";
 
@@ -23,7 +24,8 @@ export interface Options {
 /** Keep the invited phone number server-side while reusing Better Auth SMS policy. */
 export const layer = (options: Options) => {
   const handler = Effect.gen(function* () {
-    const auth = yield* Auth.make(options.config);
+    const canAccess = yield* AccountAccess.make;
+    const auth = yield* Auth.make(options.config, canAccess);
     const onboarding = yield* Onboarding.Service;
 
     return yield* HttpEffect.fromWebHandler((request) =>

@@ -60,6 +60,104 @@ export const BillingSubscriptionId = Schema.String.pipe(Schema.brand("BillingSub
 /** Stable identity for one billing Subscription. */
 export type BillingSubscriptionId = typeof BillingSubscriptionId.Type;
 
+/** Stable local identity for one Stripe billing Customer association. */
+export const BillingCustomerId = Schema.String.pipe(Schema.brand("BillingCustomerId"));
+
+/** Stable local identity for one Stripe billing Customer association. */
+export type BillingCustomerId = typeof BillingCustomerId.Type;
+
+/** Stable local identity for one Stripe Checkout attempt. */
+export const BillingCheckoutSessionId = Schema.String.pipe(
+  Schema.brand("BillingCheckoutSessionId"),
+);
+
+/** Stable local identity for one Stripe Checkout attempt. */
+export type BillingCheckoutSessionId = typeof BillingCheckoutSessionId.Type;
+
+/** Verified Stripe Customer identity. */
+export const StripeCustomerId = Schema.String.check(
+  Schema.makeFilter((value) => /^cus_[A-Za-z0-9]+$/u.test(value) || "must be a Stripe Customer ID"),
+).pipe(Schema.brand("StripeCustomerId"));
+
+/** Verified Stripe Customer identity. */
+export type StripeCustomerId = typeof StripeCustomerId.Type;
+
+/** Verified Stripe Subscription identity. */
+export const StripeSubscriptionId = Schema.String.check(
+  Schema.makeFilter(
+    (value) => /^sub_[A-Za-z0-9]+$/u.test(value) || "must be a Stripe Subscription ID",
+  ),
+).pipe(Schema.brand("StripeSubscriptionId"));
+
+/** Verified Stripe Subscription identity. */
+export type StripeSubscriptionId = typeof StripeSubscriptionId.Type;
+
+/** Verified Stripe Product identity. */
+export const StripeProductId = Schema.String.check(
+  Schema.makeFilter((value) => /^prod_[A-Za-z0-9]+$/u.test(value) || "must be a Stripe Product ID"),
+).pipe(Schema.brand("StripeProductId"));
+
+/** Verified Stripe Product identity. */
+export type StripeProductId = typeof StripeProductId.Type;
+
+/** Verified Stripe Price identity. */
+export const StripePriceId = Schema.String.check(
+  Schema.makeFilter((value) => /^price_[A-Za-z0-9]+$/u.test(value) || "must be a Stripe Price ID"),
+).pipe(Schema.brand("StripePriceId"));
+
+/** Verified Stripe Price identity. */
+export type StripePriceId = typeof StripePriceId.Type;
+
+/** Verified Stripe Invoice identity. */
+export const StripeInvoiceId = Schema.String.check(
+  Schema.makeFilter((value) => /^in_[A-Za-z0-9]+$/u.test(value) || "must be a Stripe Invoice ID"),
+).pipe(Schema.brand("StripeInvoiceId"));
+
+/** Verified Stripe Invoice identity. */
+export type StripeInvoiceId = typeof StripeInvoiceId.Type;
+
+/** Verified Stripe Checkout Session identity. */
+export const StripeCheckoutSessionId = Schema.String.check(
+  Schema.makeFilter(
+    (value) => /^cs_(?:test_|live_)?[A-Za-z0-9]+$/u.test(value) || "must be a Stripe Checkout ID",
+  ),
+).pipe(Schema.brand("StripeCheckoutSessionId"));
+
+/** Verified Stripe Checkout Session identity. */
+export type StripeCheckoutSessionId = typeof StripeCheckoutSessionId.Type;
+
+/** Stripe-assigned identity for one signature-verified webhook Event. */
+export const StripeWebhookEventId = Schema.String.check(
+  Schema.makeFilter((value) => /^evt_[A-Za-z0-9]+$/u.test(value) || "must be a Stripe Event ID"),
+).pipe(Schema.brand("StripeWebhookEventId"));
+
+/** Stripe-assigned identity for one signature-verified webhook Event. */
+export type StripeWebhookEventId = typeof StripeWebhookEventId.Type;
+
+/** Stripe-owned object identity carried by one signature-verified webhook Event. */
+export const StripeWebhookObjectId = Schema.String.check(
+  Schema.makeFilter((value) => value.length > 0 || "must not be empty"),
+).pipe(Schema.brand("StripeWebhookObjectId"));
+
+/** Stripe-owned object identity carried by one signature-verified webhook Event. */
+export type StripeWebhookObjectId = typeof StripeWebhookObjectId.Type;
+
+/** Osfo-local durable identity for one retained Stripe webhook record. */
+export const StripeWebhookRecordId = Schema.String.pipe(Schema.brand("StripeWebhookRecordId"));
+
+/** Osfo-local durable identity for one retained Stripe webhook record. */
+export type StripeWebhookRecordId = typeof StripeWebhookRecordId.Type;
+
+/** Verified Stripe Customer Portal configuration identity. */
+export const StripePortalConfigurationId = Schema.String.check(
+  Schema.makeFilter(
+    (value) => /^bpc_[A-Za-z0-9]+$/u.test(value) || "must be a Stripe Portal Configuration ID",
+  ),
+).pipe(Schema.brand("StripePortalConfigurationId"));
+
+/** Verified Stripe Customer Portal configuration identity. */
+export type StripePortalConfigurationId = typeof StripePortalConfigurationId.Type;
+
 /** Stable identity for one Usage Allowance period. */
 export const AllowancePeriodId = Schema.String.pipe(Schema.brand("AllowancePeriodId"));
 
@@ -79,6 +177,33 @@ export const ChannelBindingId = Schema.String.pipe(Schema.brand("ChannelBindingI
 
 /** Stable identity for one revocable Channel Binding. */
 export type ChannelBindingId = typeof ChannelBindingId.Type;
+
+/** Stable provider identity for one inbound WhatsApp message. */
+export const ProviderMessageId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(500),
+).pipe(Schema.brand("ProviderMessageId"));
+
+/** Stable provider identity for one inbound WhatsApp message. */
+export type ProviderMessageId = typeof ProviderMessageId.Type;
+
+/** Osfo-owned identity for one accepted UserMessage. */
+export const UserMessageId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(160),
+).pipe(Schema.brand("UserMessageId"));
+
+/** Osfo-owned identity for one accepted UserMessage. */
+export type UserMessageId = typeof UserMessageId.Type;
+
+/** Stable identity for immutable inbound acceptance evidence. */
+export const AcceptanceReceiptId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(160),
+).pipe(Schema.brand("AcceptanceReceiptId"));
+
+/** Stable identity for immutable inbound acceptance evidence. */
+export type AcceptanceReceiptId = typeof AcceptanceReceiptId.Type;
 
 /** One authenticated provider identity, separate from a User or Phone Account. */
 export const ChannelIdentity = Schema.String.check(

@@ -1,10 +1,19 @@
 import { Chat, type ChatMessage } from "@osfo/ui/components/chat";
-import { Button } from "@osfo/ui/components/button";
-import { lazy, Suspense, useState } from "react";
+import { Button, buttonVariants } from "@osfo/ui/components/button";
+import type { BillingSummary } from "@osfo/api";
+import { Effect } from "effect";
+import { lazy, Suspense, useEffect, useState } from "react";
 
 import { AuthScreen } from "./components/auth-screen";
+import { BillingScreen } from "./components/billing-screen";
 import { PlanDetails, PrivacyNotice } from "./components/public-information";
 import { authClient } from "./lib/auth-client";
+import {
+  inspectBilling,
+  openBillingPortal,
+  reconcileBilling,
+  startBillingCheckout,
+} from "./lib/api-client";
 
 const GetStartedScreen = lazy(() =>
   import("./components/get-started-screen").then((module) => ({
@@ -51,6 +60,7 @@ export function App() {
         <Suspense fallback={<LoadingScreen />}>
           <GetStartedScreen
             {...(invitationToken === undefined ? {} : { invitationToken })}
+            enrollmentProvider={configuredEnrollmentProvider}
             onComplete={() => {
               globalThis.location.assign("/");
             }}
@@ -73,6 +83,7 @@ export function App() {
       <Suspense fallback={<LoadingScreen />}>
         <GetStartedScreen
           {...(invitationToken === undefined ? {} : { invitationToken })}
+          enrollmentProvider={configuredEnrollmentProvider}
           isAuthenticated
           onComplete={() => {
             globalThis.location.assign("/");
@@ -82,8 +93,97 @@ export function App() {
     );
   }
 
-  return <ChatPreview userLabel={session.data.user.name} />;
+  if (pathname === "/billing" || pathname === "/billing/return") {
+    return <BillingRoute />;
+  }
+
+  return <ChatPreview userLabel={presentUserLabel(session.data.user)} />;
 }
+
+const BillingRoute = () => {
+  const [summary, setSummary] = useState<BillingSummary | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const search = new URLSearchParams(globalThis.location.search);
+    const source = search.get("source");
+    const stripeCheckoutSessionId = search.get("session_id");
+    if (
+      globalThis.location.pathname === "/billing/return" &&
+      source === "checkout" &&
+      stripeCheckoutSessionId === null
+    ) {
+      setError("Billing is temporarily unavailable. Please try again.");
+      return;
+    }
+    const load =
+      globalThis.location.pathname === "/billing/return" && source === "portal"
+        ? reconcileBilling({ reason: "portalReturn" }).pipe(Effect.andThen(inspectBilling))
+        : globalThis.location.pathname === "/billing/return" &&
+            source === "checkout" &&
+            stripeCheckoutSessionId !== null
+          ? reconcileBilling({ reason: "checkoutReturn", stripeCheckoutSessionId }).pipe(
+              Effect.andThen(inspectBilling),
+            )
+          : inspectBilling;
+    void Effect.runPromise(load).then(setSummary, () => {
+      setError("Billing is temporarily unavailable. Please try again.");
+    });
+  }, []);
+
+  const redirect = (effect: typeof startBillingCheckout) => {
+    setBusy(true);
+    setError(null);
+    void Effect.runPromise(effect).then(
+      ({ url }) => {
+        globalThis.location.assign(url.href);
+      },
+      () => {
+        setBusy(false);
+        setError("Billing is temporarily unavailable. Please try again.");
+      },
+    );
+  };
+
+  if (summary === null) {
+    return (
+      <main className="grid min-h-dvh place-items-center bg-background p-6 text-center">
+        {error ?? "Loading billing..."}
+      </main>
+    );
+  }
+  return (
+    <>
+      {error === null ? null : <p role="alert">{error}</p>}
+      <BillingScreen
+        busy={busy}
+        onCheckout={() => {
+          redirect(startBillingCheckout);
+        }}
+        onPortal={() => {
+          redirect(openBillingPortal);
+        }}
+        summary={summary}
+      />
+    </>
+  );
+};
+
+/** Present a User without exposing Better Auth's internal placeholder email. */
+const presentUserLabel = (user: {
+  readonly name: string;
+  readonly phoneNumber?: string | null | undefined;
+}) => {
+  const name = user.name.trim();
+  if (name.length > 0 && name !== "Osfo User" && !name.endsWith(".invalid")) return name;
+  if (user.phoneNumber === undefined || user.phoneNumber === null) return "Osfo User";
+  const visible = user.phoneNumber.slice(-4);
+  return `${"•".repeat(Math.max(4, user.phoneNumber.length - visible.length))}${visible}`;
+};
+
+const configuredEnrollmentProvider =
+  import.meta.env.VITE_ENROLLMENT_PROVIDER === "telegram" ? "telegram" : "whatsapp";
 
 const LoadingScreen = () => (
   <main className="grid min-h-dvh place-items-center bg-background text-sm text-muted-foreground">
@@ -92,7 +192,7 @@ const LoadingScreen = () => (
 );
 
 /** Presentation-only chat shown after authentication succeeds. */
-export function ChatPreview({ userLabel = "Test user" }: { readonly userLabel?: string }) {
+function ChatPreview({ userLabel = "Test user" }: { readonly userLabel?: string }) {
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState(initialMessages);
 
@@ -124,6 +224,9 @@ export function ChatPreview({ userLabel = "Test user" }: { readonly userLabel?: 
         status={
           <span className="flex items-center gap-2">
             <span className="hidden sm:inline">{userLabel}</span>
+            <a className={buttonVariants({ size: "xs", variant: "ghost" })} href="/billing">
+              Billing
+            </a>
             <Button
               size="xs"
               type="button"

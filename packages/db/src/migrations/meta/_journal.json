@@ -15,6 +15,34 @@
       "when": 1786922135174,
       "tag": "0001_opposite_miek",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786930535411,
+      "tag": "0002_solid_johnny_blaze",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786935694183,
+      "tag": "0003_warm_mach_iv",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786947174359,
+      "tag": "0004_open_odin",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786970465528,
+      "tag": "0005_classy_juggernaut",
+      "breakpoints": true
     }
   ]
 }

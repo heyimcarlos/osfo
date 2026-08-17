@@ -1,4 +1,5 @@
 import {
+  action,
   defaultContextOverflowClassifier,
   Session,
   Think,
@@ -14,8 +15,9 @@ import {
   type TurnConfig,
   type TurnContext,
 } from "@cloudflare/think";
+import { tool, type ToolSet } from "ai";
 import { createCompactFunction } from "agents/experimental/memory/utils";
-import { DateTime, Effect, Option, Predicate, Result, Schema } from "effect";
+import { DateTime, Effect, Exit, Option, Predicate, Result, Schema } from "effect";
 import { HelpArea, OnboardingLocale } from "@osfo/api";
 
 import type { AssistantMessageId as AssistantMessageIdType, SessionId, UserId } from "../../domain";
@@ -26,14 +28,22 @@ import {
   ChannelBindingId,
   ConversationRouteId as ConversationRouteIdSchema,
   SessionId as SessionIdSchema,
+  ThinkSubmissionId,
   ThinkRequestId,
 } from "../../domain";
+import { ActionId } from "../../domain/action-execution";
+import { ContentId } from "../../domain/client-content";
+import * as DocumentArtifact from "../../domain/document-artifact";
+import * as DocumentGenerationComposition from "../../composition/document-generation";
 import { database as workerDatabase } from "../../db";
 import * as Billing from "../../db/billing";
 import { decodeOsfoStage } from "../../env";
+import * as ProviderAuthorizationPostgres from "../../integrations/postgres/provider-authorization";
+import * as SessionRecallAuthorizationPostgres from "../../integrations/postgres/session-recall-authorization";
 import {
   CancelManagedConversationInput,
   ManagedTurnMetadata,
+  type ManagedTurnAuthorityIdentity,
 } from "../../domain/managed-conversation";
 import {
   ModelCallUsageDispatchUnavailable,
@@ -47,8 +57,18 @@ import {
 import {
   admitManagedConversation,
   type ManagedConversationDenied,
+  type ManagedConversationAdmitted,
+  type ManagedSessionReplacementAdmitted,
   SubmitManagedConversationInput,
 } from "../../services/managed-conversation";
+import * as WhatsAppAgentAdmission from "../../services/whatsapp-agent-admission";
+import { AgentAcceptanceInput, AgentRecoveryInput } from "../../services/whatsapp-admission";
+import * as TelegramAgentAdmission from "../../services/telegram-agent-admission";
+import type * as ProviderAgentAdmission from "../../services/provider-agent-admission";
+import {
+  AgentAcceptanceInput as ProviderAgentAcceptanceInput,
+  AgentRecoveryInput as ProviderAgentRecoveryInput,
+} from "../../services/provider-message-admission";
 import {
   launchModelAccessPolicy,
   type ManagedRouteUnavailable,
@@ -90,22 +110,49 @@ import {
   type AuthorizationContext,
   type Denied,
 } from "../../services/authorization";
+import * as DocumentGeneration from "../../services/document-generation";
 import { makeDurableModelCallUsage } from "../../services/model-call-usage";
 import {
+  makeSessionLifecycle,
+  type SessionAuthorizationFactsFound,
+  SessionLifecycleNotFound,
+  SessionLifecycleUnavailable,
+} from "../../services/session-lifecycle";
+import {
+  makeSessionRecall,
+  SessionRecallAuthorizationUnavailable,
+  SessionRecallStoreUnavailable,
+} from "../../services/session-recall";
+import { makeSessionRecallAuthorization } from "../../services/session-recall-authorization";
+import {
+  CurrentSessionActivationUnavailable,
+  type CurrentSessionReplaced,
+  type CurrentSessionReplacementConflict,
+} from "../../services/session-replacement";
+import {
   type AgentInitializationConflict,
+  type AcceptanceReceiptConflict,
   AgentRequestInvalid,
   type AgentRequestOperation,
   AgentStateNotFound,
   type AgentStoreRecordInvalid,
   type AgentStoreUnavailable,
   CommittedTurnConflict,
-  type CurrentSessionReplacementConflict,
   ThinkSessionReadUnavailable,
   ThinkSessionRecordInvalid,
   ThinkSessionWriteUnavailable,
 } from "./db/errors";
 import { applyAgentMigrations } from "./db/migrate";
 import { makeModelCallUsageStore } from "./db/model-call-usage";
+import { makeSessionExecution } from "./session-execution";
+import { makeAgentSessionCommand } from "./session-command";
+import { ThinkSubmissionUnavailable } from "../../services/think-submission";
+import type { AcceptanceReceipt } from "../../services/provider-acceptance-receipt";
+import type {
+  SessionCommandReceipt,
+  SessionCommandReceiptConflict,
+  SessionCommandReceiptInput,
+} from "../../services/session-command-receipt";
 import {
   AgentInitializationInput,
   type AgentInitializationEncoded,
@@ -113,15 +160,14 @@ import {
   type AgentFound,
   type CommittedTurnReceipt,
   type ConversationRouteFound,
-  type CurrentSessionReplaced,
   makeAgentStore,
-  ReplaceCurrentSessionInput,
-  type ReplaceCurrentSessionEncoded,
 } from "./db/store";
 import {
+  ActionPresentation,
   type ActionPresentationFound,
+  ActionPresentationId,
   type ActionPresentationNotFound,
-  type ActionPresentationUnavailable,
+  ActionPresentationUnavailable,
   ActionApprovalRequestInvalid,
   ApprovalActorAuthorizationUnavailable,
   type ApprovalActor,
@@ -146,7 +192,8 @@ import {
   type TestProtectedActionState,
 } from "./test-protected-action";
 import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-authorization";
-import type { ActionId } from "../../domain/action-execution";
+import { makeAgentSessionLifecycle } from "./session-lifecycle";
+import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries. */
 
@@ -156,6 +203,7 @@ const modelCallUsageRetryDelaySeconds = 60;
 const gatewayCostMaximumLookups = 3;
 const defaultTestProtectedActionState: TestProtectedActionState = {
   authority: "active",
+  currentFact: "current",
   providerOutcome: "applied",
 };
 const authorization = makeAuthorization(retainedCatalog);
@@ -167,7 +215,6 @@ const GatewayProviderMetadata = Schema.Struct({
     }),
   ),
 });
-
 const GatewayCostSettlement = Schema.Struct({
   allowancePeriodId: AllowancePeriodId,
   attemptId: ModelCallAttemptId,
@@ -177,17 +224,18 @@ const GatewayCostSettlement = Schema.Struct({
 });
 type GatewayCostSettlement = typeof GatewayCostSettlement.Type;
 
+const GenerateDocumentInput = Schema.Struct({
+  format: DocumentArtifact.DocumentFormat,
+  source: DocumentGeneration.DocumentSource,
+});
+const RetainedDocumentInput = Schema.Struct({ contentId: ContentId });
+const documentDeleteActionName = "deleteDocument";
+
 /** RPC representation of one managed conversation submission. */
 export type SubmitManagedConversationRequest = typeof SubmitManagedConversationInput.Encoded;
 
 /** RPC representation of one managed conversation cancellation. */
 export type CancelManagedConversationRequest = typeof CancelManagedConversationInput.Encoded;
-
-/** Classified failure from a Think Submission method. */
-export class ThinkSubmissionUnavailable extends Schema.TaggedError<ThinkSubmissionUnavailable>()(
-  "ThinkSubmissionUnavailable",
-  { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
-) {}
 
 const SessionHistoryMessagePart = Schema.StructWithRest(Schema.Struct({ type: Schema.String }), [
   Schema.Record(Schema.String, Schema.Unknown),
@@ -230,6 +278,28 @@ const PersonalWelcomeInput = Schema.Struct({
   preferredName: Schema.NullOr(Schema.String),
 });
 type PersonalWelcomeEncoded = typeof PersonalWelcomeInput.Encoded;
+
+type AcceptWhatsAppMessageEncoded = typeof AgentAcceptanceInput.Encoded;
+
+const WhatsAppThinkSubmissionInspection = Schema.Struct({
+  idempotencyKey: Schema.String,
+  metadata: WhatsAppAgentAdmission.WhatsAppSubmissionMetadata,
+  submissionId: ThinkSubmissionId,
+});
+
+const WhatsAppThinkSubmissionAccepted = Schema.Struct({
+  submissionId: ThinkSubmissionId,
+});
+
+const TelegramThinkSubmissionInspection = Schema.Struct({
+  idempotencyKey: Schema.String,
+  metadata: TelegramAgentAdmission.TelegramSubmissionMetadata,
+  submissionId: ThinkSubmissionId,
+});
+
+const TelegramThinkSubmissionAccepted = Schema.Struct({
+  submissionId: ThinkSubmissionId,
+});
 
 /** Durable result for the deterministic first personal response. */
 export interface PersonalWelcomeCommitted {
@@ -288,7 +358,7 @@ export class OsfoAgent extends Think<Env> {
       },
     }),
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-    present: presentOsfoAction,
+    present: presentProtectedAction,
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
   readonly #modelCallUsage = makeDurableModelCallUsage({
@@ -297,42 +367,160 @@ export class OsfoAgent extends Think<Env> {
     persistence: this.#modelCallUsagePersistence,
   });
   readonly #store = makeAgentStore(this.#db);
+  readonly #sessionExecution = makeSessionExecution({
+    hasPendingOrRunning: callThinkSubmission("listSubmissions", () =>
+      this.listSubmissions({ limit: 1, status: ["pending", "running"] }),
+    ).pipe(Effect.map((submissions) => submissions.length > 0)),
+  });
   readonly #migrationsReady = this.ctx.blockConcurrencyWhile(() =>
     Effect.runPromise(applyAgentMigrations(this.ctx.storage)),
   );
   readonly #runtime = Option.map(decodeOsfoStage(this.env.OSFO_STAGE), (stage) =>
-    makeOsfoAgentRuntime(this.ctx.id.name ?? this.ctx.id.toString(), stage, { db: this.env.DB }),
+    makeOsfoAgentRuntime(this.ctx.id.name ?? this.ctx.id.toString(), stage, {
+      db: this.env.DB,
+    }),
   );
+  readonly #sessionRecallSearch = makeThinkSessionRecallSearch((sessionId, query, limit) =>
+    Session.create(this).forSession(sessionId).search(query, { limit }),
+  );
+  readonly #sessionLifecycle = makeSessionLifecycle({
+    inspect: this.#store.inspect().pipe(
+      Effect.mapError((failure) => sessionLifecycleStoreFailure("inspect", failure)),
+      Effect.map(({ agentId }) => ({ agentId })),
+    ),
+    readRoute: (requestedRouteId) =>
+      this.#store.readRoute(requestedRouteId).pipe(
+        Effect.mapError((failure) => sessionLifecycleStoreFailure("readRoute", failure)),
+        Effect.map(({ currentSessionId, routeId }) => ({ currentSessionId, routeId })),
+      ),
+  });
+  readonly #sessionRecall = makeSessionRecall({
+    search: this.#sessionRecallSearch,
+    store: {
+      readRecallPage: (recallRouteId, cursor, limit) =>
+        this.#store.readRouteSessionPage(recallRouteId, cursor, limit).pipe(
+          Effect.mapError((failure) =>
+            Predicate.isTagged(failure, "SessionRecallCursorInvalid")
+              ? failure
+              : sessionRecallStoreFailure(failure),
+          ),
+          Effect.map((page) => ({
+            candidates: page.candidates,
+            currentSessionId: page.currentSessionId,
+            hasMore: page.hasMore,
+            routeId: page.routeId,
+          })),
+        ),
+    },
+  });
+  readonly #sessionRecallAuthorization = makeSessionRecallAuthorization({
+    inspectAuthorization: (identity) => this.#inspectSessionRecallAuthorization(identity),
+    readCurrentSession: (routeId) =>
+      this.#sessionLifecycle.readAuthorizationFacts(routeId).pipe(
+        Effect.map(({ currentSessionId }) => currentSessionId),
+        Effect.mapError(
+          (cause) =>
+            new SessionRecallAuthorizationUnavailable({
+              cause,
+              message: "Current Session Recall route facts are unavailable",
+            }),
+        ),
+      ),
+  });
+  readonly #agentSessionLifecycle = makeAgentSessionLifecycle({
+    activateCurrentSession: () => this.#activateCurrentSession(),
+    store: this.#store,
+  });
+  readonly #sessionCommand = makeAgentSessionCommand({
+    activateCurrentSession: () => this.#activateCurrentSession(),
+    store: this.#store,
+  });
+  readonly #sessionRecallTools = makeSessionRecallTools({
+    authorize: (metadata) => this.#sessionRecallAuthorization.authorize(metadata),
+    readActiveTurn: () =>
+      Option.getOrUndefined(
+        Schema.decodeUnknownOption(ManagedTurnMetadata)(this.activeTurnMetadata),
+      ),
+    recall: (request) =>
+      Effect.promise(() => this.#migrationsReady).pipe(
+        Effect.andThen(this.#sessionRecall.recall(request)),
+      ),
+  });
 
   /** Resolve a safe model before trusted per-turn metadata selects the exact managed route. */
   override getModel() {
     return launchModelAccessPolicy.plans.free.route;
   }
 
-  /** Register Core Memory clearing and the test-stage protected Action. */
   override getActions() {
+    const documentActions = {
+      [documentDeleteActionName]: action({
+        approval: true,
+        approvalRisk: "high",
+        approvalSummary: "Delete the retained generated document",
+        description: "Delete one retained generated PDF or DOCX owned by the current User.",
+        execute: (input, context) => this.#deleteDocument(input, context.toolCallId),
+        idempotencyKey: ({ ctx }) => `document-delete:${ctx.toolCallId}`,
+        inputSchema: Schema.toStandardSchemaV1(RetainedDocumentInput),
+        kind: "durable-pause",
+        permissions: ["files:delete"],
+      }),
+      generateDocument: action({
+        description: "Generate one bounded PDF or DOCX with at most 20 pages and 5 MB.",
+        execute: (input, context) => this.#generateDocument(input, context.toolCallId),
+        idempotencyKey: ({ ctx }) => `document-generate:${ctx.toolCallId}`,
+        inputSchema: Schema.toStandardSchemaV1(GenerateDocumentInput),
+        permissions: ["documents:generate"],
+        timeoutMs: 90_000,
+      }),
+    };
     const stage = decodeOsfoStage(this.env.OSFO_STAGE);
     const executeClear = (input: Parameters<typeof clearCoreMemory>[1], actionId: ActionId) =>
       this.#clearCoreMemory(input, actionId);
-    return Option.isSome(stage) && stage.value === "test"
-      ? makeOsfoActions({
-          clearCoreMemory: executeClear,
-          testProtectedActionState: () =>
-            this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
-        })
-      : makeOsfoActions({ clearCoreMemory: executeClear });
+    const osfoActions =
+      Option.isSome(stage) && stage.value === "test"
+        ? makeOsfoActions({
+            clearCoreMemory: executeClear,
+            testProtectedActionState: () =>
+              this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
+          })
+        : makeOsfoActions({ clearCoreMemory: executeClear });
+    return {
+      ...documentActions,
+      ...osfoActions,
+    };
+  }
+
+  /** Register retained document export as a read-only ToolCall. */
+  override getTools(): ToolSet {
+    return {
+      ...this.#sessionRecallTools,
+      exportDocument: tool({
+        description: "Export one retained generated PDF or DOCX owned by the current User.",
+        execute: (input, context) => this.#exportDocument(input, context.toolCallId),
+        inputSchema: Schema.toStandardSchemaV1(RetainedDocumentInput),
+      }),
+    };
   }
 
   /** Keep inherited pending-Approval RPC output client-safe for every registered Action. */
   override async pendingApprovals(executionId?: string): Promise<Array<PendingApproval>> {
     const pending = await super.pendingApprovals(executionId);
-    return pending.map(sanitizePendingApproval);
+    return pending.map((approval) =>
+      approval.source === "action" && approval.descriptor.action === documentDeleteActionName
+          ? Object.assign({}, approval, {
+              descriptor: Object.assign({}, approval.descriptor, {
+                input: sanitizeDocumentDeleteInput(approval.descriptor.input),
+              }),
+            })
+          : sanitizePendingApproval(approval),
+    );
   }
 
   /** Apply only the route and limits pinned to the current durable Think Submission. */
   override async beforeTurn(_context: TurnContext): Promise<TurnConfig> {
     const system = await this.session.refreshSystemPrompt();
-    const tools = coreMemoryTools(this.session);
+    const tools = { ...this.getTools(), ...coreMemoryTools(this.session) };
     return Effect.runPromise(
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata).pipe(
         Effect.map((metadata) => {
@@ -376,6 +564,41 @@ export class OsfoAgent extends Think<Env> {
     return Predicate.isTagged(admission, "Denied")
       ? { allowed: false, reason: admission.reason }
       : { allowed: true, grantedPermissions: ["memory:clear"] };
+  }
+
+  /** Pin the canonical Session for the full durable Think Submission lifecycle. */
+  override async onSubmissionStatus(submission: ThinkSubmissionInspection): Promise<void> {
+    const owner = Schema.decodeResult(ThinkSubmissionId)(submission.submissionId);
+    if (Result.isFailure(owner)) {
+      try {
+        if (submission.status === "running") {
+          await this.cancelSubmission(
+            submission.submissionId,
+            "Invalid managed submission identity",
+          );
+        }
+      } finally {
+        await Effect.runPromise(this.#sessionExecution.submissionChanged);
+      }
+      return;
+    }
+    try {
+      if (submission.status !== "running") return;
+
+      const metadata = Schema.decodeUnknownResult(ManagedTurnMetadata)(submission.metadata);
+      if (Result.isFailure(metadata) || metadata.success.submissionId !== owner.success) {
+        await this.cancelSubmission(submission.submissionId, "Invalid managed turn authority");
+        return;
+      }
+      const activated = await Effect.runPromiseExit(
+        Effect.promise(() => this.#activateSession(metadata.success.sessionId)),
+      );
+      if (Exit.isFailure(activated)) {
+        await this.cancelSubmission(submission.submissionId, "Managed Session activation failed");
+      }
+    } finally {
+      await Effect.runPromise(this.#sessionExecution.submissionChanged);
+    }
   }
 
   /** Reuse Think's zero-based step index as the stable model-call attempt position. */
@@ -459,13 +682,19 @@ export class OsfoAgent extends Think<Env> {
   override async configureSession(session: Session): Promise<Session> {
     await this.#migrationsReady;
     const current = await Effect.runPromise(this.#readOptionalPrimarySessionId());
-    const configured = session
-      .forSession(Option.getOrElse(current, () => pendingSessionId))
-      .withContext("Operating Contract", {
-        provider: { get: async () => this.getSystemPrompt() },
-      });
+    return await this.#configureSession(
+      session,
+      Option.getOrElse(current, () => pendingSessionId),
+    );
+  }
+
+  async #configureSession(session: Session, sessionId: string): Promise<Session> {
+    const configured = session.forSession(sessionId).withContext("Operating Contract", {
+      provider: { get: async () => this.getSystemPrompt() },
+    });
     const coreMemory = await configureCoreMemory(configured, this);
     return coreMemory
+      .forSession(sessionId)
       .onCompaction(
         createCompactFunction({
           summarize: summarizeManagedSession,
@@ -686,27 +915,225 @@ export class OsfoAgent extends Think<Env> {
     input: SubmitManagedConversationRequest,
   ): Promise<
     | AgentRequestInvalid
+    | AgentStateNotFound
+    | AgentStoreRecordInvalid
+    | AgentStoreUnavailable
+    | CurrentSessionActivationUnavailable
+    | CurrentSessionReplaced
+    | CurrentSessionReplacementConflict
     | ManagedConversationDenied
     | ManagedRouteUnavailable
     | PlanPolicyNotFound
+    | SessionLifecycleNotFound
+    | SessionLifecycleUnavailable
     | SubmitMessagesResult
     | ThinkSubmissionUnavailable
   > {
     await this.#migrationsReady;
     const decoded = Schema.decodeResult(SubmitManagedConversationInput)(input);
     if (Result.isFailure(decoded)) return invalidRequest("submitManagedConversation");
-    const admission = await runRpc(admitManagedConversation(decoded.success));
-    if (!Predicate.isTagged(admission, "ManagedConversationAdmitted")) return admission;
+    const lifecycle = this.#agentSessionLifecycle;
+    const sessionLifecycle = this.#sessionLifecycle;
+    const submitTurn = (admission: ManagedConversationAdmitted) =>
+      this.runTurn({
+        idempotencyKey: admission.idempotencyKey,
+        input: {
+          id: admission.submissionId,
+          metadata: { turnMetadata: admission.metadata },
+          parts: [{ text: admission.message, type: "text" }],
+          role: "user",
+        },
+        metadata: admission.metadata,
+        mode: "submit",
+        submissionId: admission.submissionId,
+      });
+    const operation = Effect.gen(function* () {
+      const session = yield* sessionLifecycle.readAuthorizationFacts(decoded.success.routeId);
+      const admission = yield* admitManagedConversation(decoded.success, session);
+      if (Predicate.isTagged(admission, "ManagedSessionReplacementAdmitted")) {
+        return yield* lifecycle.replaceCurrent(admission);
+      }
+      if (!Predicate.isTagged(admission, "ManagedConversationAdmitted")) return admission;
+      return yield* callThinkSubmission("runTurn", () => submitTurn(admission));
+    });
     return runRpc(
-      callThinkSubmission("runTurn", () =>
-        this.runTurn({
-          idempotencyKey: admission.idempotencyKey,
-          input: admission.message,
-          metadata: admission.metadata,
-          mode: "submit",
-          submissionId: admission.submissionId,
+      decoded.success.message.trim() === "/new"
+        ? this.#sessionExecution.runWhenIdle(operation)
+        : this.#sessionExecution.run(operation),
+    );
+  }
+
+  /** Recoverably accept one authorized WhatsApp UserMessage into Think. */
+  async acceptWhatsAppMessage(
+    input: AcceptWhatsAppMessageEncoded,
+  ): Promise<
+    | AcceptanceReceipt
+    | AcceptanceReceiptConflict
+    | AgentRequestInvalid
+    | AgentStateNotFound
+    | AgentStoreRecordInvalid
+    | AgentStoreUnavailable
+    | CurrentSessionActivationUnavailable
+    | CurrentSessionReplacementConflict
+    | ManagedConversationDenied
+    | ManagedRouteUnavailable
+    | PlanPolicyNotFound
+    | SessionLifecycleNotFound
+    | SessionLifecycleUnavailable
+    | SessionCommandReceipt
+    | SessionCommandReceiptConflict
+    | ThinkSubmissionUnavailable
+    | WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable
+  > {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeResult(AgentAcceptanceInput)(input);
+    if (Result.isFailure(decoded)) return invalidRequest("acceptWhatsAppMessage");
+    const parsed = decoded.success;
+    const bridge = this.#providerAgentBridge(
+      decodeWhatsAppThinkSubmissionInspection,
+      decodeWhatsAppThinkSubmissionAccepted,
+    );
+    const operation = WhatsAppAgentAdmission.accept<
+      AcceptanceReceipt,
+      | AcceptanceReceiptConflict
+      | AgentStateNotFound
+      | AgentStoreRecordInvalid
+      | AgentStoreUnavailable
+      | CurrentSessionActivationUnavailable
+      | CurrentSessionReplacementConflict
+      | SessionLifecycleNotFound
+      | SessionLifecycleUnavailable
+      | SessionCommandReceiptConflict
+    >({
+      dependencies: {
+        ...bridge.acceptance({
+          inspect: (channelBindingId) =>
+            this.#inspectCurrentProviderAuthorization("whatsapp", channelBindingId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable({
+                    cause,
+                    message: "Current WhatsApp authorization could not be checked",
+                  }),
+              ),
+            ),
+        }),
+      },
+      input: parsed,
+    });
+    return runRpc(
+      parsed.message.trim() === "/new"
+        ? this.#sessionExecution.runWhenIdle(operation)
+        : this.#sessionExecution.run(operation),
+    );
+  }
+
+  /** Recover one stable WhatsApp acceptance before callers request fresh admission facts. */
+  async recoverWhatsAppMessage(
+    input: typeof AgentRecoveryInput.Encoded,
+  ): Promise<
+    | AcceptanceReceipt
+    | AcceptanceReceiptConflict
+    | AgentRequestInvalid
+    | AgentStateNotFound
+    | AgentStoreRecordInvalid
+    | AgentStoreUnavailable
+    | CurrentSessionActivationUnavailable
+    | ThinkSubmissionUnavailable
+    | SessionCommandReceipt
+    | SessionCommandReceiptConflict
+    | null
+  > {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeResult(AgentRecoveryInput)(input);
+    if (Result.isFailure(decoded)) return invalidRequest("recoverWhatsAppMessage");
+    return runRpc(
+      this.#sessionExecution.run(
+        WhatsAppAgentAdmission.recover<
+          AcceptanceReceipt,
+          | AcceptanceReceiptConflict
+          | AgentStateNotFound
+          | AgentStoreRecordInvalid
+          | AgentStoreUnavailable
+          | CurrentSessionActivationUnavailable
+          | SessionCommandReceiptConflict
+        >({
+          dependencies: this.#providerAgentBridge(
+            decodeWhatsAppThinkSubmissionInspection,
+            decodeWhatsAppThinkSubmissionAccepted,
+          ).recovery,
+          input: decoded.success,
         }),
       ),
+    );
+  }
+
+  /** Recoverably accept one authorized Telegram UserMessage into the canonical Think Session. */
+  async acceptTelegramMessage(input: typeof ProviderAgentAcceptanceInput.Encoded) {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeResult(ProviderAgentAcceptanceInput)(input);
+    if (Result.isFailure(decoded)) return invalidRequest("acceptTelegramMessage");
+    const bridge = this.#providerAgentBridge(
+      decodeTelegramThinkSubmissionInspection,
+      decodeTelegramThinkSubmissionAccepted,
+    );
+    const parsed = decoded.success;
+    const operation = TelegramAgentAdmission.accept<
+      AcceptanceReceipt,
+      | AcceptanceReceiptConflict
+      | AgentStateNotFound
+      | AgentStoreRecordInvalid
+      | AgentStoreUnavailable
+      | CurrentSessionActivationUnavailable
+      | CurrentSessionReplacementConflict
+      | SessionLifecycleNotFound
+      | SessionLifecycleUnavailable
+      | SessionCommandReceiptConflict
+    >({
+      dependencies: {
+        ...bridge.acceptance({
+          inspect: (channelBindingId) =>
+            this.#inspectCurrentProviderAuthorization("telegram", channelBindingId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new TelegramAgentAdmission.TelegramAuthorizationUnavailable({
+                    cause,
+                    message: "Current Telegram authorization could not be checked",
+                  }),
+              ),
+            ),
+        }),
+      },
+      input: parsed,
+    });
+    return runRpc(
+      parsed.message.trim() === "/new"
+        ? this.#sessionExecution.runWhenIdle(operation)
+        : this.#sessionExecution.run(operation),
+    );
+  }
+
+  /** Recover one stable Telegram acceptance before consulting mutable authority. */
+  async recoverTelegramMessage(input: typeof ProviderAgentRecoveryInput.Encoded) {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeResult(ProviderAgentRecoveryInput)(input);
+    if (Result.isFailure(decoded)) return invalidRequest("recoverTelegramMessage");
+    return runRpc(
+      TelegramAgentAdmission.recover<
+        AcceptanceReceipt,
+        | AcceptanceReceiptConflict
+        | AgentStateNotFound
+        | AgentStoreRecordInvalid
+        | AgentStoreUnavailable
+        | CurrentSessionActivationUnavailable
+        | SessionCommandReceiptConflict
+      >({
+        dependencies: this.#providerAgentBridge(
+          decodeTelegramThinkSubmissionInspection,
+          decodeTelegramThinkSubmissionAccepted,
+        ).recovery,
+        input: decoded.success,
+      }),
     );
   }
 
@@ -920,28 +1347,6 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
-  /** Replace one route's current Session while retaining canonical history. */
-  async replaceCurrentSession(
-    input: ReplaceCurrentSessionEncoded,
-  ): Promise<
-    | AgentRequestInvalid
-    | AgentStateNotFound
-    | AgentStoreRecordInvalid
-    | AgentStoreUnavailable
-    | CurrentSessionReplaced
-    | CurrentSessionReplacementConflict
-  > {
-    await this.#migrationsReady;
-    const outcome = await runRpc(
-      Schema.decodeEffect(ReplaceCurrentSessionInput)(input).pipe(
-        Effect.mapError(() => invalidRequest("replaceCurrentSession")),
-        Effect.flatMap((parsed) => this.#store.replaceCurrentSession(parsed)),
-      ),
-    );
-    if ("currentSessionId" in outcome) await this.#activateCurrentSession();
-    return outcome;
-  }
-
   /** Read the current and historical Session identities for one route. */
   async readRoute(
     routeId: string,
@@ -957,6 +1362,24 @@ export class OsfoAgent extends Think<Env> {
       Schema.decodeEffect(ConversationRouteIdSchema)(routeId).pipe(
         Effect.mapError(() => invalidRequest("readRoute")),
         Effect.flatMap((parsed) => this.#store.readRoute(parsed)),
+      ),
+    );
+  }
+
+  /** Read Agent ownership and current Session facts for Authorization. */
+  async readSessionAuthorizationFacts(
+    routeId: string,
+  ): Promise<
+    | AgentRequestInvalid
+    | SessionAuthorizationFactsFound
+    | SessionLifecycleNotFound
+    | SessionLifecycleUnavailable
+  > {
+    await this.#migrationsReady;
+    return runRpc(
+      Schema.decodeEffect(ConversationRouteIdSchema)(routeId).pipe(
+        Effect.mapError(() => invalidRequest("readSessionAuthorizationFacts")),
+        Effect.flatMap((parsed) => this.#sessionLifecycle.readAuthorizationFacts(parsed)),
       ),
     );
   }
@@ -988,8 +1411,152 @@ export class OsfoAgent extends Think<Env> {
           } as const;
         }
         const messages = yield* readThinkHistory(session, parsed);
-        return { _tag: "SessionHistoryFound", messages, sessionId: parsed } as const;
+        return {
+          _tag: "SessionHistoryFound",
+          messages,
+          sessionId: parsed,
+        } as const;
       }),
+    );
+  }
+
+  async #generateDocument(input: typeof GenerateDocumentInput.Type, toolCallId: string) {
+    await this.#migrationsReady;
+    const actionId = ActionId.make(toolCallId);
+    const currentAuthorization = () =>
+      this.#currentDocumentAuthorization(
+        DocumentGenerationComposition.conservativeDocumentSandboxUsdMicros,
+      );
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) throw invalidOsfoEnvironment;
+    const env = this.env;
+    return runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const authorization = yield* currentAuthorization();
+          const database = yield* workerDatabase;
+          return yield* DocumentGenerationComposition.make(
+            env,
+            database,
+            currentAuthorization,
+          ).generate({
+            actionId,
+            authorization,
+            format: input.format,
+            owner: { _tag: "ToolCall", toolCallId },
+            source: input.source,
+          });
+        }),
+      ),
+    );
+  }
+
+  async #exportDocument(input: typeof RetainedDocumentInput.Type, toolCallId: string) {
+    await this.#migrationsReady;
+    const currentAuthorization = () => this.#currentDocumentAuthorization(0n);
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) throw invalidOsfoEnvironment;
+    const env = this.env;
+    const artifact = await runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const authorization = yield* currentAuthorization();
+          const database = yield* workerDatabase;
+          return yield* DocumentGenerationComposition.make(
+            env,
+            database,
+            currentAuthorization,
+          ).reference({
+            actionId: ActionId.make(toolCallId),
+            authorization,
+            contentId: input.contentId,
+          });
+        }),
+      ),
+    );
+    // The model receives only the immutable reference. An authenticated HTTP boundary
+    // delivers the bytes after it checks the current User and session again.
+    return { artifact, delivery: "authenticated-retained-content" } as const;
+  }
+
+  async #deleteDocument(input: typeof RetainedDocumentInput.Type, toolCallId: string) {
+    await this.#migrationsReady;
+    const actionId = ActionId.make(toolCallId);
+    const currentAuthorization = () =>
+      this.#currentDocumentAuthorization(0n, {
+        actionId,
+        operation: "file.delete",
+      });
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) throw invalidOsfoEnvironment;
+    const env = this.env;
+    await runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const authorization = yield* currentAuthorization();
+          const database = yield* workerDatabase;
+          return yield* DocumentGenerationComposition.make(
+            env,
+            database,
+            currentAuthorization,
+          ).delete({ actionId, authorization, contentId: input.contentId });
+        }),
+      ),
+    );
+    return { contentId: input.contentId, deleted: true } as const;
+  }
+
+  #currentDocumentAuthorization(
+    requestVendorUsdMicros: bigint,
+    approval?: {
+      readonly actionId: ActionId;
+      readonly operation: "file.delete";
+    },
+  ) {
+    // oxlint-disable-next-line effecttsgo/prefer-typed-schema-decoder -- Agent metadata is optional and supplied by the external Think boundary.
+    return Schema.decodeUnknownEffect(
+      Schema.Union([
+        WhatsAppAgentAdmission.WhatsAppSubmissionMetadata,
+        TelegramAgentAdmission.TelegramSubmissionMetadata,
+      ]),
+    )(this.activeTurnMetadata).pipe(
+      Effect.mapError(
+        (cause) =>
+          new DocumentGeneration.DocumentAuthorizationUnavailable({
+            cause,
+            message: "The active ToolCall has no trusted provider authority identity",
+          }),
+      ),
+      Effect.flatMap((metadata) =>
+        this.#inspectCurrentProviderAuthorization(
+          "whatsappAcceptance" in metadata ? "whatsapp" : "telegram",
+          "whatsappAcceptance" in metadata
+            ? metadata.whatsappAcceptance.channelBindingId
+            : metadata.telegramAcceptance.channelBindingId,
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new DocumentGeneration.DocumentAuthorizationUnavailable({
+                cause,
+                message: "Current document authorization facts could not be loaded",
+              }),
+          ),
+        ),
+      ),
+      Effect.map((authorization) =>
+        AuthorizationContext.make({
+          ...authorization,
+          approval:
+            approval === undefined
+              ? null
+              : {
+                  actionId: approval.actionId,
+                  operation: approval.operation,
+                  userId: authorization.user.userId,
+                },
+          requestVendorUsdMicros,
+        }),
+      ),
     );
   }
 
@@ -1037,7 +1604,22 @@ export class OsfoAgent extends Think<Env> {
   }
 
   async #activateCurrentSession(): Promise<void> {
-    this.session = await this.configureSession(Session.create(this));
+    await this.#migrationsReady;
+    const current = await Effect.runPromise(this.#readOptionalPrimarySessionId());
+    this.session = await this.#configureSession(
+      Session.create(this),
+      Option.getOrElse(current, () => pendingSessionId),
+    );
+    await this.#finishSessionActivation();
+  }
+
+  async #activateSession(sessionId: SessionId): Promise<void> {
+    await this.#migrationsReady;
+    this.session = await this.#configureSession(Session.create(this), sessionId);
+    await this.#finishSessionActivation();
+  }
+
+  async #finishSessionActivation(): Promise<void> {
     this.session.internal_onMessagesChanged(async () => {
       await this.syncMessagesFromStorage();
     });
@@ -1191,6 +1773,146 @@ export class OsfoAgent extends Think<Env> {
     });
   }
 
+  #inspectCurrentProviderAuthorization(
+    provider: "telegram" | "whatsapp",
+    channelBindingId: ChannelBindingId,
+  ) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new ProviderAuthorizationPostgres.ProviderAuthorizationPersistenceUnavailable({
+          cause: invalidOsfoEnvironment,
+          message: "Current provider authorization could not be checked",
+          provider,
+        }),
+      );
+    }
+    return Effect.tryPromise({
+      try: () =>
+        runtime.runPromise(
+          Effect.scoped(
+            ProviderAuthorizationPostgres.make({ provider }).pipe(
+              Effect.flatMap((authorization) =>
+                authorization.admit({
+                  _tag: "Bound",
+                  agentId: AgentId.make(this.name),
+                  channelBindingId,
+                }),
+              ),
+            ),
+          ),
+        ),
+      catch: (cause) =>
+        new ProviderAuthorizationPostgres.ProviderAuthorizationPersistenceUnavailable({
+          cause,
+          message: "Current provider authorization could not be checked",
+          provider,
+        }),
+    });
+  }
+
+  #providerAgentBridge<Metadata extends ManagedTurnMetadata>(
+    decodeInspection: (
+      inspection: ThinkSubmissionInspection,
+    ) => Effect.Effect<
+      ProviderAgentAdmission.SubmissionInspection<Metadata>,
+      ThinkSubmissionUnavailable
+    >,
+    decodeAccepted: (
+      submission: SubmitMessagesResult,
+    ) => Effect.Effect<{ readonly submissionId: ThinkSubmissionId }, ThinkSubmissionUnavailable>,
+  ) {
+    const recovery = {
+      store: {
+        readAcceptanceReceipt: this.#store.readAcceptanceReceipt,
+        readSessionCommandReceipt: this.#store.readSessionCommandReceipt,
+        recordAcceptanceReceipt: this.#store.recordAcceptanceReceipt,
+      },
+      session: {
+        recover: (receipt: SessionCommandReceipt) =>
+          Effect.tryPromise({
+            try: () => this.#activateCurrentSession(),
+            catch: (cause) =>
+              new CurrentSessionActivationUnavailable({
+                cause,
+                message: "Think could not activate the recovered Session command",
+              }),
+          }).pipe(Effect.as(receipt)),
+      },
+      think: {
+        inspect: (submissionId: ThinkSubmissionId) =>
+          callThinkSubmission("inspectSubmission", () => this.inspectSubmission(submissionId)).pipe(
+            Effect.flatMap((inspection) =>
+              inspection === null ? Effect.succeed(null) : decodeInspection(inspection),
+            ),
+          ),
+      },
+    };
+    return {
+      acceptance: <AuthorizationFailure>(authorization: {
+        readonly inspect: (
+          channelBindingId: ChannelBindingId,
+        ) => Effect.Effect<AuthorizationContext, AuthorizationFailure>;
+      }) => ({
+        ...recovery,
+        authorization,
+        session: {
+          ...recovery.session,
+          replace: (
+            command: ManagedSessionReplacementAdmitted,
+            receipt: SessionCommandReceiptInput,
+          ) => this.#sessionCommand.replace(command, receipt),
+        },
+        store: { ...recovery.store, inspect: this.#store.inspect() },
+        think: {
+          ...recovery.think,
+          submit: (submission: ProviderAgentAdmission.SubmissionIntent<Metadata>) =>
+            callThinkSubmission("runTurn", () =>
+              this.runTurn({
+                idempotencyKey: submission.idempotencyKey,
+                input: {
+                  id: submission.message.userMessageId,
+                  metadata: { turnMetadata: submission.metadata },
+                  parts: [{ text: submission.message.text, type: "text" }],
+                  role: "user",
+                },
+                metadata: submission.metadata,
+                mode: "submit",
+                submissionId: submission.submissionId,
+              }),
+            ).pipe(Effect.flatMap(decodeAccepted)),
+        },
+      }),
+      recovery,
+    };
+  }
+
+  #inspectSessionRecallAuthorization(identity: ManagedTurnAuthorityIdentity) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new SessionRecallAuthorizationUnavailable({
+          cause: invalidOsfoEnvironment,
+          message: "Current Session Recall authorization facts are unavailable",
+        }),
+      );
+    }
+    return Effect.tryPromise({
+      try: (signal) =>
+        runtime.runPromise(
+          Effect.scoped(
+            SessionRecallAuthorizationPostgres.inspect(AgentId.make(this.name), identity),
+          ),
+          { signal },
+        ),
+      catch: (cause) =>
+        new SessionRecallAuthorizationUnavailable({
+          cause,
+          message: "Current Session Recall authorization facts are unavailable",
+        }),
+    });
+  }
+
   #findThinkMessageOwner(
     assistantMessageId: AssistantMessageIdType,
     thinkRequestId: ThinkRequestId,
@@ -1266,8 +1988,44 @@ export class OsfoAgent extends Think<Env> {
   }
 }
 
+type SessionLifecycleStoreSourceFailure =
+  | AgentStateNotFound
+  | AgentStoreRecordInvalid
+  | AgentStoreUnavailable;
+
+const sessionLifecycleStoreFailure = (
+  operation: "inspect" | "readRoute",
+  failure: SessionLifecycleStoreSourceFailure,
+): SessionLifecycleNotFound | SessionLifecycleUnavailable =>
+  Predicate.isTagged(failure, "AgentStateNotFound")
+    ? new SessionLifecycleNotFound({
+        message: failure.message,
+        subject: failure.subject === "agent" ? "agent" : "route",
+      })
+    : new SessionLifecycleUnavailable({
+        cause: failure,
+        message: "Agent-owned Session lifecycle storage is unavailable",
+        operation,
+      });
+
+const sessionRecallStoreFailure = (
+  failure: SessionLifecycleStoreSourceFailure,
+): SessionLifecycleNotFound | SessionRecallStoreUnavailable =>
+  Predicate.isTagged(failure, "AgentStateNotFound")
+    ? new SessionLifecycleNotFound({
+        message: failure.message,
+        subject: failure.subject === "agent" ? "agent" : "route",
+      })
+    : new SessionRecallStoreUnavailable({
+        cause: failure,
+        message: "Agent-owned Session Recall storage is unavailable",
+      });
+
 const invalidRequest = (operation: AgentRequestOperation): AgentRequestInvalid =>
-  new AgentRequestInvalid({ message: "The Agent RPC input is invalid", operation });
+  new AgentRequestInvalid({
+    message: "The Agent RPC input is invalid",
+    operation,
+  });
 
 const personalWelcome = (profile: typeof PersonalWelcomeInput.Type): string => {
   const preferredName = profile.preferredName?.trim();
@@ -1321,6 +2079,54 @@ const callThinkSubmission = <A>(operation: string, run: () => Promise<A>) =>
         operation,
       }),
   });
+
+const decodeWhatsAppThinkSubmissionInspection = (inspection: ThinkSubmissionInspection) =>
+  Schema.decodeUnknownEffect(WhatsAppThinkSubmissionInspection)(inspection).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ThinkSubmissionUnavailable({
+          cause,
+          message: "Think returned invalid WhatsApp Submission inspection facts",
+          operation: "inspectSubmission",
+        }),
+    ),
+  );
+
+const decodeWhatsAppThinkSubmissionAccepted = (submission: SubmitMessagesResult) =>
+  Schema.decodeEffect(WhatsAppThinkSubmissionAccepted)(submission).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ThinkSubmissionUnavailable({
+          cause,
+          message: "Think returned invalid WhatsApp Submission acceptance facts",
+          operation: "runTurn",
+        }),
+    ),
+  );
+
+const decodeTelegramThinkSubmissionInspection = (inspection: ThinkSubmissionInspection) =>
+  Schema.decodeUnknownEffect(TelegramThinkSubmissionInspection)(inspection).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ThinkSubmissionUnavailable({
+          cause,
+          message: "Think returned invalid Telegram Submission inspection facts",
+          operation: "inspectSubmission",
+        }),
+    ),
+  );
+
+const decodeTelegramThinkSubmissionAccepted = (submission: SubmitMessagesResult) =>
+  Schema.decodeEffect(TelegramThinkSubmissionAccepted)(submission).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ThinkSubmissionUnavailable({
+          cause,
+          message: "Think returned invalid Telegram Submission acceptance facts",
+          operation: "runTurn",
+        }),
+    ),
+  );
 
 const approvalActorAuthorizationUnavailable = (userId: UserId, cause: unknown) =>
   new ApprovalActorAuthorizationUnavailable({
@@ -1453,3 +2259,33 @@ const runRpc = <A, E>(effect: Effect.Effect<A, E>): Promise<A | E> =>
       }),
     ),
   );
+
+const presentProtectedAction = (pending: Parameters<typeof presentOsfoAction>[0]) =>
+  pending.descriptor.action === documentDeleteActionName
+    ? Schema.decodeUnknownEffect(RetainedDocumentInput)(pending.descriptor.input).pipe(
+        Effect.mapError(
+          () =>
+            new ActionPresentationUnavailable({
+              action: pending.descriptor.action,
+              message: "The document deletion input cannot be projected safely",
+            }),
+        ),
+        Effect.map((input) =>
+          ActionPresentation.make({
+            actionDefinitionVersion: "osfo-delete-generated-document-v1",
+            actionId: ActionId.make(pending.descriptor.toolCallId),
+            consequences: ["Permanently delete the retained generated document."],
+            description: "Delete the exact retained document shown here.",
+            fields: [{ label: "Content", name: "contentId", value: input.contentId }],
+            operation: "file.delete",
+            presentationId: ActionPresentationId.make(pending.executionId),
+            title: "Delete generated document",
+          }),
+        ),
+      )
+    : presentOsfoAction(pending);
+
+/* oxlint-disable osfo/no-unknown-parameters -- This is the parser at Think's descriptor boundary. */
+const sanitizeDocumentDeleteInput = (input: unknown) =>
+  Option.getOrElse(Schema.decodeUnknownOption(RetainedDocumentInput)(input), () => ({}));
+/* oxlint-enable osfo/no-unknown-parameters */

@@ -1,10 +1,34 @@
 import { Schema } from "effect";
 
-import { AllowancePeriodId, Plan, PlanPolicyVersion, ThinkSubmissionId } from "../domain";
+import {
+  AllowancePeriodId,
+  ChannelBindingId,
+  ConversationRouteId,
+  Plan,
+  PlanPolicyVersion,
+  SessionId,
+  ThinkSubmissionId,
+  UserId,
+} from "../domain";
+import { AuthSessionId } from "./auth-session";
 import { ManagedModelRoute } from "./model-access-policy";
 import { CoreMemoryAuthorizationSnapshotEncoded } from "./core-memory-authorization";
 
 const positiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0));
+
+/** Stable authority identity retained for current protected-effect rechecks. */
+export const ManagedTurnAuthorityIdentity = Schema.Union([
+  Schema.TaggedStruct("AuthSession", { authSessionId: AuthSessionId, userId: UserId }),
+  Schema.TaggedStruct("ChannelBinding", { channelBindingId: ChannelBindingId, userId: UserId }),
+  Schema.TaggedStruct("DurableTrigger", {
+    triggerId: Schema.String,
+    triggerType: Schema.Literals(["scheduledTask", "workflow"]),
+    userId: UserId,
+  }),
+]);
+
+/** Stable authority identity retained for current protected-effect rechecks. */
+export type ManagedTurnAuthorityIdentity = typeof ManagedTurnAuthorityIdentity.Type;
 
 /** Trusted cancellation of one Think-owned managed conversation Submission. */
 export const CancelManagedConversationInput = Schema.Struct({
@@ -15,6 +39,7 @@ export const CancelManagedConversationInput = Schema.Struct({
 /** JSON-safe policy facts pinned to an existing Think Submission. */
 export const ManagedTurnMetadata = Schema.TaggedStruct("OsfoManagedTurn", {
   allowancePeriodId: AllowancePeriodId,
+  authorityIdentity: ManagedTurnAuthorityIdentity,
   conservativeVendorUsdMicros: positiveInteger,
   coreMemoryAuthorization: CoreMemoryAuthorizationSnapshotEncoded,
   maxInputTokens: positiveInteger,
@@ -23,7 +48,9 @@ export const ManagedTurnMetadata = Schema.TaggedStruct("OsfoManagedTurn", {
   maxSteps: positiveInteger,
   plan: Plan,
   planPolicyVersion: PlanPolicyVersion,
+  routeId: ConversationRouteId,
   route: ManagedModelRoute,
+  sessionId: SessionId,
   submissionId: ThinkSubmissionId,
   targetInputTokens: positiveInteger,
 });

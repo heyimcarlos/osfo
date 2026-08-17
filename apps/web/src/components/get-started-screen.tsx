@@ -24,6 +24,7 @@ import {
 
 interface GetStartedScreenProps {
   readonly dependencies?: GetStartedDependencies;
+  readonly enrollmentProvider?: "telegram" | "whatsapp";
   readonly invitationToken?: string;
   readonly isAuthenticated?: boolean;
   readonly onComplete: () => void;
@@ -52,9 +53,10 @@ type OnboardingState =
   | { readonly _tag: "RegistrationComplete" }
   | { readonly _tag: "Submitting"; readonly returnTo: SubmissionReturn };
 
-/** Complete localized phone-first web and invited WhatsApp registration journey. */
+/** Complete localized phone-first web and invited messaging registration journey. */
 export function GetStartedScreen({
   dependencies = defaultDependencies,
+  enrollmentProvider = "whatsapp",
   invitationToken,
   isAuthenticated = false,
   onComplete,
@@ -68,7 +70,12 @@ export function GetStartedScreen({
   const [invitation, setInvitation] = useState<InvitationResponse>();
   const [bindingConsent, setBindingConsent] = useState<"accepted" | "refused" | null>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
-  const text = copy[locale];
+  const provider =
+    state._tag === "EnrollmentPending"
+      ? providerFromEnrollmentUrl(state.enrollmentUrl)
+      : (invitation?.provider ?? enrollmentProvider);
+  const text =
+    provider === "telegram" ? { ...copy[locale], ...telegramCopy[locale] } : copy[locale];
 
   useEffect(() => {
     if (invitationToken === undefined) return;
@@ -94,7 +101,6 @@ export function GetStartedScreen({
       return;
     }
     setState({ _tag: "Submitting", returnTo });
-    const webEnrollmentToken = invitationToken === undefined ? getWebEnrollmentToken() : null;
     void Effect.runPromiseExit(
       dependencies.complete({
         bindingConsent:
@@ -104,7 +110,6 @@ export function GetStartedScreen({
         invitationToken: invitationToken ?? null,
         locale,
         preferredName: preferredName.trim() === "" ? null : preferredName.trim(),
-        webEnrollmentToken,
       }),
     ).then((exit) => {
       if (Exit.isFailure(exit)) {
@@ -223,7 +228,7 @@ export function GetStartedScreen({
             <ul className="list-disc space-y-2 pl-5 text-sm leading-relaxed">
               <li>{text.aiNotice}</li>
               <li>{text.storageNotice}</li>
-              <li>{text.whatsAppNotice}</li>
+              <li>{text.providerNotice}</li>
               <li>{text.stopNotice}</li>
             </ul>
             <p className="text-sm">
@@ -246,9 +251,11 @@ export function GetStartedScreen({
       {state._tag === "Phone" ? (
         <PhoneAuthForm
           dependencies={dependencies.phoneAuth}
-          {...(invitationToken === undefined ? {} : { invitationToken })}
+          {...(invitationToken === undefined || invitation?.maskedPhoneNumber == null
+            ? {}
+            : { invitationToken })}
           locale={locale}
-          lockedPhoneNumber={invitation !== undefined}
+          lockedPhoneNumber={invitation?.maskedPhoneNumber != null}
           {...(invitation?.maskedPhoneNumber === null || invitation?.maskedPhoneNumber === undefined
             ? {}
             : { maskedPhoneNumber: invitation.maskedPhoneNumber })}
@@ -347,7 +354,7 @@ export function GetStartedScreen({
               className="inline-flex min-h-11 w-full items-center justify-between rounded-lg bg-primary px-4 font-black uppercase text-primary-foreground outline-none hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50"
               href={state.enrollmentUrl.href}
             >
-              {text.continueWhatsApp}
+              {text.continueProvider}
               <ExternalLink data-icon="inline-end" />
             </a>
           </CardContent>
@@ -510,18 +517,8 @@ const browserLocale = (): OnboardingLocale =>
     ? "es"
     : "en";
 
-const getWebEnrollmentToken = (): string => {
-  const key = "osfo-web-enrollment-token";
-  const stored = globalThis.sessionStorage?.getItem(key);
-  if (stored !== null && stored !== undefined && /^[0-9a-f]{64}$/u.test(stored)) {
-    return stored;
-  }
-  const bytes = new Uint8Array(32);
-  globalThis.crypto.getRandomValues(bytes);
-  const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  globalThis.sessionStorage?.setItem(key, token);
-  return token;
-};
+const providerFromEnrollmentUrl = (url: URL): "telegram" | "whatsapp" =>
+  url.hostname.toLowerCase() === "t.me" ? "telegram" : "whatsapp";
 
 const copy = {
   en: {
@@ -540,7 +537,7 @@ const copy = {
     confirmFree: "Confirm Free and finish",
     continue: "Continue",
     continueSms: "Continue to phone verification",
-    continueWhatsApp: "Continue in WhatsApp",
+    continueProvider: "Continue in WhatsApp",
     enrollmentNotice:
       "Continue in WhatsApp will send one enrollment message. Only that provider-authenticated message can connect your WhatsApp identity.",
     existingBody:
@@ -565,7 +562,7 @@ const copy = {
     helpLegend: "What would you like help with?",
     keepProfile: "Keep my existing profile",
     linkUnavailable: "This link is unavailable",
-    linkUnavailableBody: "Request a fresh registration link in WhatsApp, then try again.",
+    linkUnavailableBody: "Request a fresh registration link in your messaging app, then try again.",
     loading: "Checking your link",
     loadingBody: "Osfo is checking this registration invitation.",
     nameLabel: "Preferred name",
@@ -588,7 +585,7 @@ const copy = {
       "Before proactive WhatsApp messages begin, Osfo explains how to stop them. You can reply STOP at any time.",
     storageNotice:
       "Osfo stores messages and the optional profile facts that you accept. Temporary registration dialogue is deleted.",
-    whatsAppNotice:
+    providerNotice:
       "WhatsApp processes channel messages. A Channel Binding is required so Osfo can route an authenticated sender to the correct user.",
     working: "Working...",
   },
@@ -608,7 +605,7 @@ const copy = {
     confirmFree: "Confirmar Free y terminar",
     continue: "Continuar",
     continueSms: "Continuar con la verificación",
-    continueWhatsApp: "Continuar en WhatsApp",
+    continueProvider: "Continuar en WhatsApp",
     enrollmentNotice:
       "Continuar en WhatsApp enviará un mensaje de inscripción. Solo ese mensaje autenticado por el proveedor puede conectar tu identidad.",
     existingBody:
@@ -632,7 +629,8 @@ const copy = {
     helpLegend: "¿Con qué quieres ayuda?",
     keepProfile: "Conservar mi perfil actual",
     linkUnavailable: "Este enlace no está disponible",
-    linkUnavailableBody: "Pide un nuevo enlace de registro en WhatsApp e inténtalo de nuevo.",
+    linkUnavailableBody:
+      "Pide un nuevo enlace de registro en tu aplicación de mensajería e inténtalo de nuevo.",
     loading: "Comprobando tu enlace",
     loadingBody: "Osfo está comprobando esta invitación de registro.",
     nameLabel: "Nombre preferido",
@@ -656,8 +654,53 @@ const copy = {
       "Antes de iniciar mensajes proactivos, Osfo explica cómo detenerlos. Puedes responder STOP en cualquier momento.",
     storageNotice:
       "Osfo guarda los mensajes y los datos opcionales que aceptes. El diálogo temporal de registro se elimina.",
-    whatsAppNotice:
+    providerNotice:
       "WhatsApp procesa los mensajes del canal. Una conexión permite que Osfo dirija un remitente autenticado al usuario correcto.",
     working: "Procesando...",
+  },
+} as const;
+
+const telegramCopy = {
+  en: {
+    bindAccept: "Connect this invited Telegram identity to my Osfo account.",
+    bindRefuse: "Do not connect this Telegram identity.",
+    bindingBody:
+      "SMS verification and Telegram identity are separate evidence. This choice is not preselected.",
+    bindingTitle: "Telegram binding consent",
+    chooseConsent: "Choose whether to connect the invited Telegram identity.",
+    continueProvider: "Continue in Telegram",
+    enrollmentNotice:
+      "Continue in Telegram opens one single-use enrollment link. Only that provider-authenticated message can connect your Telegram identity.",
+    linkUnavailableBody: "Request a fresh registration link in Telegram, then try again.",
+    pendingBody:
+      "Registration is complete, but your Telegram connection is pending. Use the enrollment link to connect your Telegram identity.",
+    pendingTitle: "Telegram connection pending",
+    registrationCompleteBody:
+      "Your registration is complete. You chose not to connect the invited Telegram identity.",
+    stopNotice:
+      "Osfo requires your consent before it connects Telegram or sends proactive messages.",
+    providerNotice:
+      "Telegram processes channel messages. A Channel Binding is required so Osfo can route an authenticated sender to the correct user.",
+  },
+  es: {
+    bindAccept: "Conectar esta identidad de Telegram invitada con mi cuenta de Osfo.",
+    bindRefuse: "No conectar esta identidad de Telegram.",
+    bindingBody:
+      "La verificación por SMS y la identidad de Telegram son pruebas separadas. Esta opción no está preseleccionada.",
+    bindingTitle: "Consentimiento de conexión de Telegram",
+    chooseConsent: "Elige si quieres conectar la identidad de Telegram invitada.",
+    continueProvider: "Continuar en Telegram",
+    enrollmentNotice:
+      "Continuar en Telegram abre un enlace de inscripción de un solo uso. Solo ese mensaje autenticado por el proveedor puede conectar tu identidad.",
+    linkUnavailableBody: "Pide un nuevo enlace de registro en Telegram e inténtalo de nuevo.",
+    pendingBody:
+      "El registro está completo, pero la conexión de Telegram está pendiente. Usa el enlace de inscripción para conectar tu identidad.",
+    pendingTitle: "Conexión de Telegram pendiente",
+    registrationCompleteBody:
+      "Tu registro está completo. Elegiste no conectar la identidad de Telegram invitada.",
+    stopNotice:
+      "Osfo requiere tu consentimiento antes de conectar Telegram o enviar mensajes proactivos.",
+    providerNotice:
+      "Telegram procesa los mensajes del canal. Una conexión permite que Osfo dirija un remitente autenticado al usuario correcto.",
   },
 } as const;
