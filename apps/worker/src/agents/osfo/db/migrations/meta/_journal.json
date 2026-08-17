@@ -15,6 +15,13 @@
       "when": 1786911817492,
       "tag": "0001_youthful_dreadnoughts",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786926359599,
+      "tag": "0002_file_capability",
+      "breakpoints": true
     }
   ]
 }

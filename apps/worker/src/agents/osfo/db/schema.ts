@@ -17,8 +17,18 @@ import type {
   ConversationRouteId,
   SessionId,
   ThinkRequestId,
+  UserId,
 } from "../../../domain";
 import type { ModelCallAttemptId } from "../../../domain/model-call-attempt";
+import type { FileDigest, FileMediaType } from "../../../domain/file-content";
+import type {
+  FileAnalysisId,
+  FileAnalysisState,
+  FileId,
+  FileName,
+  FileState,
+  FileUploadId,
+} from "../../../domain/file";
 import type { DbTimestamp } from "../../../db";
 
 const agentId = customType<{ data: AgentId; driverData: string }>({
@@ -46,6 +56,23 @@ const allowancePeriodId = customType<{ data: AllowancePeriodId; driverData: stri
   dataType: () => "text",
 });
 const modelCallAttemptId = customType<{ data: ModelCallAttemptId; driverData: string }>({
+  dataType: () => "text",
+});
+const fileId = customType<{ data: FileId; driverData: string }>({ dataType: () => "text" });
+const fileUploadId = customType<{ data: FileUploadId; driverData: string }>({
+  dataType: () => "text",
+});
+const userId = customType<{ data: UserId; driverData: string }>({ dataType: () => "text" });
+const fileDigest = customType<{ data: FileDigest; driverData: string }>({ dataType: () => "text" });
+const fileMediaType = customType<{ data: FileMediaType; driverData: string }>({
+  dataType: () => "text",
+});
+const fileName = customType<{ data: FileName; driverData: string }>({ dataType: () => "text" });
+const fileState = customType<{ data: FileState; driverData: string }>({ dataType: () => "text" });
+const fileAnalysisId = customType<{ data: FileAnalysisId; driverData: string }>({
+  dataType: () => "text",
+});
+const fileAnalysisState = customType<{ data: FileAnalysisState; driverData: string }>({
   dataType: () => "text",
 });
 
@@ -141,3 +168,81 @@ export const modelCallUsageEvidence = sqliteTable(
       .where(sql`${table.dispatchedAt} IS NULL`),
   ],
 );
+
+/** User-owned file metadata and source-byte recovery state. */
+export const files = sqliteTable(
+  "osfo_files",
+  {
+    acceptedAt: timestamp("accepted_at").notNull(),
+    allowancePeriodId: allowancePeriodId("allowance_period_id").notNull(),
+    byteLength: integer("byte_length").notNull(),
+    deletedAt: timestamp("deleted_at"),
+    fileId: fileId("file_id").primaryKey(),
+    fileName: fileName("file_name").notNull(),
+    mediaType: fileMediaType("media_type").notNull(),
+    normalizationClaimedAt: timestamp("normalization_claimed_at"),
+    normalizationError: text("normalization_error"),
+    normalizedText: text("normalized_text"),
+    objectKey: text("object_key").notNull().unique(),
+    provenanceJson: text("provenance_json"),
+    sha256: fileDigest("sha256").notNull(),
+    state: fileState("state").notNull(),
+    uploadId: fileUploadId("upload_id").notNull().unique(),
+    userId: userId("user_id").notNull(),
+  },
+  (table) => [
+    check("osfo_file_byte_length_positive", sql`${table.byteLength} > 0`),
+    check(
+      "osfo_file_state",
+      sql`${table.state} IN ('pending_storage', 'stored', 'normalizing', 'ready', 'normalization_failed', 'deleting', 'deleted')`,
+    ),
+    check(
+      "osfo_file_normalizing_state",
+      sql`(${table.state} = 'normalizing' AND ${table.normalizationClaimedAt} IS NOT NULL) OR (${table.state} != 'normalizing' AND ${table.normalizationClaimedAt} IS NULL)`,
+    ),
+    check(
+      "osfo_file_deleted_state",
+      sql`(${table.state} = 'deleted' AND ${table.deletedAt} IS NOT NULL) OR (${table.state} != 'deleted' AND ${table.deletedAt} IS NULL)`,
+    ),
+    index("osfo_files_by_owner_state").on(table.userId, table.state),
+  ],
+);
+
+/** Idempotent file analysis operations and recovery outcomes. */
+export const fileAnalyses = sqliteTable(
+  "osfo_file_analyses",
+  {
+    allowancePeriodId: allowancePeriodId("allowance_period_id").notNull(),
+    analysisId: fileAnalysisId("analysis_id").primaryKey(),
+    createdAt: timestamp("created_at").notNull(),
+    failure: text("failure"),
+    fileId: fileId("file_id")
+      .notNull()
+      .references(() => files.fileId, { onDelete: "restrict", onUpdate: "restrict" }),
+    prompt: text("prompt").notNull(),
+    resultText: text("result_text"),
+    state: fileAnalysisState("state").notNull(),
+    updatedAt: timestamp("updated_at").notNull(),
+    vendorUsdMicros: integer("vendor_usd_micros"),
+  },
+  (table) => [
+    check(
+      "osfo_file_analysis_state",
+      sql`${table.state} IN ('pending', 'ambiguous', 'completed_cleanup_pending', 'failed_cleanup_pending', 'completed', 'failed', 'deleted')`,
+    ),
+    index("osfo_file_analyses_by_file").on(table.fileId, table.createdAt),
+  ],
+);
+
+/** Source and derived-content deletion lineage for one file. */
+export const fileDeletions = sqliteTable("osfo_file_deletions", {
+  actionId: text("action_id").notNull(),
+  analysisCount: integer("analysis_count").notNull(),
+  deletedAt: timestamp("deleted_at").notNull(),
+  fileId: fileId("file_id")
+    .primaryKey()
+    .references(() => files.fileId, { onDelete: "restrict", onUpdate: "restrict" }),
+  sourceObjectKey: text("source_object_key").notNull(),
+  sourceSha256: fileDigest("source_sha256").notNull(),
+  userId: userId("user_id").notNull(),
+});

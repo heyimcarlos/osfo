@@ -1,0 +1,6 @@
+FROM docker.io/cloudflare/sandbox:0.12.7-python
+
+RUN python3 -m pip install --no-cache-dir \
+    pillow==12.3.0 \
+    pypdf==5.9.0 \
+    python-docx==1.2.0

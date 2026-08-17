@@ -2,10 +2,11 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "osfo-test",
   "main": "src/worker.ts",
-  "rules": [{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }],
+  "rules": [{ "type": "Text", "globs": ["**/*.sql", "**/*.py"], "fallthrough": true }],
   "compatibility_date": "2026-08-12",
   "compatibility_flags": ["nodejs_compat"],
   "vars": { "OSFO_STAGE": "test" },
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "osfo-test-files" }],
   "hyperdrive": [
     {
       "binding": "DB",
@@ -16,6 +17,7 @@
   "durable_objects": {
     "bindings": [
       { "name": "OSFO_AGENT", "class_name": "OsfoAgent" },
+      { "name": "FILE_COMPUTE", "class_name": "Sandbox" },
       { "name": "REGISTRATION_DIALOGUE", "class_name": "RegistrationDialogue" },
     ],
   },
@@ -24,6 +26,7 @@
       "tag": "v1",
       "new_sqlite_classes": ["OsfoAgent", "RegistrationDialogue"],
     },
+    { "tag": "v2", "new_sqlite_classes": ["Sandbox"] },
   ],
   "workflows": [
     {

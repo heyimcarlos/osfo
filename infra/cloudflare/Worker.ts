@@ -4,6 +4,7 @@ import * as Config from "effect/Config";
 
 import { Hyperdrive } from "./Db";
 import { ExecutionUnitWorkflow } from "./ExecutionUnitWorkflow";
+import { Files } from "./Files";
 
 /** Cloudflare Worker and execution-unit bindings for one Osfo runtime stage. */
 export default Cloudflare.Worker(
@@ -22,6 +23,14 @@ export default Cloudflare.Worker(
         BETTER_AUTH_TRUSTED_ORIGINS: Config.string("BETTER_AUTH_TRUSTED_ORIGINS"),
         DB: Hyperdrive,
         EXECUTION_UNIT_WORKFLOW: ExecutionUnitWorkflow,
+        FILE_COMPUTE: Cloudflare.Container("FileCompute", {
+          className: "Sandbox",
+          context: "./apps/worker",
+          dockerfile: "Dockerfile.files",
+          instanceType: "lite",
+          maxInstances: 1,
+        }),
+        FILES: Files,
         OSFO_AGENT: Cloudflare.DurableObject("OsfoAgent", {
           className: "OsfoAgent",
         }),

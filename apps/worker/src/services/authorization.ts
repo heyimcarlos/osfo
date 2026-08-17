@@ -239,7 +239,9 @@ const authorize = (
     }
   }
   if (exceedsLiveLimit(operation, context, rules)) return denied("liveResourceLimitReached");
-  if (exceedsOperationLimit(operation, context, rules)) return denied("operationLimitExceeded");
+  if (mode === "admission" && exceedsOperationLimit(operation, context, rules)) {
+    return denied("operationLimitExceeded");
+  }
   if (requiresApproval(operation) && !hasExactApproval(context, operation)) {
     if (mode === "recheck") return denied("approvalRequired");
     return {

@@ -1,0 +1,11 @@
+{
+  "operation": "normalize",
+  "mediaType": "text/plain",
+  "limits": {
+    "maximumCsvRows": 100000,
+    "maximumImagePixels": 40000000,
+    "maximumNormalizedTextBytes": 2000000,
+    "maximumOfficeEntries": 10000,
+    "maximumPdfPages": 500
+  }
+}

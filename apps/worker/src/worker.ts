@@ -14,6 +14,7 @@ const RegistrationRpcResult = Schema.Union([
 ]);
 
 export { OsfoAgent } from "./agents/osfo/agent";
+export { Sandbox } from "@cloudflare/sandbox";
 export { RegistrationDialogue } from "./agents/registration/registration";
 export { ExecutionUnitWorkflow } from "./workflows/runtime";
 
