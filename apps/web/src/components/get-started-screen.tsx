@@ -101,7 +101,6 @@ export function GetStartedScreen({
       return;
     }
     setState({ _tag: "Submitting", returnTo });
-    const webEnrollmentToken = invitationToken === undefined ? getWebEnrollmentToken() : null;
     void Effect.runPromiseExit(
       dependencies.complete({
         bindingConsent:
@@ -111,7 +110,6 @@ export function GetStartedScreen({
         invitationToken: invitationToken ?? null,
         locale,
         preferredName: preferredName.trim() === "" ? null : preferredName.trim(),
-        webEnrollmentToken,
       }),
     ).then((exit) => {
       if (Exit.isFailure(exit)) {
@@ -518,19 +516,6 @@ const browserLocale = (): OnboardingLocale =>
   globalThis.navigator?.language.toLowerCase().startsWith("es")
     ? "es"
     : "en";
-
-const getWebEnrollmentToken = (): string => {
-  const key = "osfo-web-enrollment-token";
-  const stored = globalThis.sessionStorage?.getItem(key);
-  if (stored !== null && stored !== undefined && /^[0-9a-f]{64}$/u.test(stored)) {
-    return stored;
-  }
-  const bytes = new Uint8Array(32);
-  globalThis.crypto.getRandomValues(bytes);
-  const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  globalThis.sessionStorage?.setItem(key, token);
-  return token;
-};
 
 const providerFromEnrollmentUrl = (url: URL): "telegram" | "whatsapp" =>
   url.hostname.toLowerCase() === "t.me" ? "telegram" : "whatsapp";

@@ -41,14 +41,6 @@ export const layer = Layer.unwrap(
                       payload.invitationToken,
                     ),
                   );
-            const webEnrollmentToken =
-              payload.webEnrollmentToken === null
-                ? null
-                : Redacted.make(
-                    yield* Schema.decodeEffect(Onboarding.RegistrationToken)(
-                      payload.webEnrollmentToken,
-                    ),
-                  );
             return yield* onboarding.complete({
               bindingConsent: payload.bindingConsent,
               existingProfileChoice: payload.existingProfileChoice,
@@ -59,7 +51,6 @@ export const layer = Layer.unwrap(
                 preferredName: payload.preferredName,
               },
               userId: UserId.make(currentUser.userId),
-              webEnrollmentToken,
             });
           }).pipe(Effect.mapError(toPublicError)),
         ),

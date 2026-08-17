@@ -30,7 +30,7 @@ import {
 import { database as workerDatabase } from "../../db";
 import * as Billing from "../../db/billing";
 import { decodeOsfoStage } from "../../env";
-import * as WhatsAppPostgres from "../../integrations/postgres/whatsapp-admission";
+import * as ProviderAuthorizationPostgres from "../../integrations/postgres/provider-authorization";
 import {
   CancelManagedConversationInput,
   ManagedTurnMetadata,
@@ -1155,9 +1155,9 @@ export class OsfoAgent extends Think<Env> {
       try: () =>
         runtime.runPromise(
           Effect.scoped(
-            WhatsAppPostgres.make().pipe(
-              Effect.flatMap((persistence) =>
-                persistence.admit({
+            ProviderAuthorizationPostgres.make({ provider: "whatsapp" }).pipe(
+              Effect.flatMap((authorization) =>
+                authorization.admit({
                   _tag: "Bound",
                   agentId: AgentId.make(this.name),
                   channelBindingId,
@@ -1207,9 +1207,9 @@ export class OsfoAgent extends Think<Env> {
       try: () =>
         runtime.runPromise(
           Effect.scoped(
-            WhatsAppPostgres.make({ provider: "telegram" }).pipe(
-              Effect.flatMap((persistence) =>
-                persistence.admit({
+            ProviderAuthorizationPostgres.make({ provider: "telegram" }).pipe(
+              Effect.flatMap((authorization) =>
+                authorization.admit({
                   _tag: "Bound",
                   agentId: AgentId.make(this.name),
                   channelBindingId,

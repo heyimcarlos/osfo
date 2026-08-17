@@ -116,7 +116,15 @@ describe("Registration HTTP API", () => {
           expect(unverified.status).toBe(403);
           expect(first.status).toBe(200);
           expect(firstBody.channel._tag).toBe("EnrollmentPending");
-          expect(retriedBody).toEqual(firstBody);
+          expect(firstBody.channel).toMatchObject({ _tag: "EnrollmentPending" });
+          expect(retriedBody.channel).toMatchObject({ _tag: "EnrollmentPending" });
+          if (
+            firstBody.channel._tag === "EnrollmentPending" &&
+            retriedBody.channel._tag === "EnrollmentPending"
+          ) {
+            expect(firstBody.channel.enrollmentUrl.href).not.toContain("e".repeat(64));
+            expect(retriedBody.channel.enrollmentUrl).not.toEqual(firstBody.channel.enrollmentUrl);
+          }
 
           yield* Effect.promise(app.dispose);
         }),

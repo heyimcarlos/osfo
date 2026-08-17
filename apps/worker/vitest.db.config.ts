@@ -18,6 +18,7 @@ export default defineConfig({
       "test/telegram-agent-admission.test.ts",
       "test/plan-policy.test.ts",
       "test/phone-account-authority.test.ts",
+      "test/provider-admission-postgres.test.ts",
       "test/registration.test.ts",
       "test/twilio-verify.test.ts",
       "test/user-suspension-authority.test.ts",

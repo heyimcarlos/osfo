@@ -115,7 +115,6 @@ const CompletePayload = Schema.Struct({
       ),
     ),
   ),
-  webEnrollmentToken: Schema.NullOr(RegistrationToken),
 });
 
 /** Public invitation inspection and authenticated onboarding completion. */

@@ -254,7 +254,6 @@ export interface CompleteInput {
   readonly invitationToken: Redacted.Redacted<RegistrationToken> | null;
   readonly profile: SetupProfile;
   readonly userId: UserId;
-  readonly webEnrollmentToken: Redacted.Redacted<RegistrationToken> | null;
 }
 
 /** Parsed Registration Invitation stored by the control-plane persistence adapter. */
@@ -895,7 +894,6 @@ export const make = Effect.gen(function* () {
             input.userId,
             acceptedProfile.locale,
             now,
-            input.webEnrollmentToken,
             links,
           )
         : channel;
@@ -1257,24 +1255,15 @@ const createWebEnrollment = Effect.fn("Onboarding.createWebEnrollment")(function
   userId: UserId,
   locale: OnboardingLocale,
   now: DateTime.Utc,
-  suppliedToken: Redacted.Redacted<RegistrationToken> | null,
   links: OnboardingLinksPort,
 ) {
-  if (suppliedToken === null) {
-    return yield* new OnboardingIdentityUnavailable({
-      cause: "missing-web-enrollment-token",
-      message: "Web enrollment requires a client-held high-entropy token",
-    });
-  }
+  const identity = yield* generateInvitationIdentity(crypto);
   const nowDate = DateTime.toDateUtc(now);
   yield* persistence.expireLive(nowDate);
-  const suppliedDigest = yield* digestToken(crypto, suppliedToken);
-  const enrollment = links.enrollment(suppliedToken);
-  const invitationId = RegistrationInvitationId.make(
-    `registration-invitation-${yield* secureUuid(crypto)}`,
-  );
+  const enrollment = links.enrollment(identity.token);
+  const invitationId = RegistrationInvitationId.make(`registration-invitation-${identity.id}`);
   yield* persistence.createWebEnrollment({
-    digest: suppliedDigest,
+    digest: identity.digest,
     expiresAt: DateTime.toDateUtc(DateTime.add(now, { hours: 24 })),
     invitationId,
     locale,
