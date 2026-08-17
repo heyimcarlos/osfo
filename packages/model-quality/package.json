@@ -1,0 +1,28 @@
+{
+  "name": "@osfo/model-quality",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./corpus": "./src/corpus.ts",
+    "./deterministic": "./src/deterministic.ts",
+    "./execution": "./src/execution.ts",
+    "./feedback": "./src/feedback.ts",
+    "./gate": "./src/gate.ts",
+    "./grading": "./src/grading.ts",
+    "./manifest": "./src/manifest.ts",
+    "./promotion": "./src/promotion.ts",
+    "./review": "./src/review.ts",
+    "./statistics": "./src/statistics.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

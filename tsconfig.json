@@ -41,6 +41,7 @@
   "references": [
     { "path": "./tools/oxlint" },
     { "path": "./packages/api" },
+    { "path": "./packages/model-quality" },
     { "path": "./packages/auth" },
     { "path": "./packages/db" },
     { "path": "./packages/ui" },
