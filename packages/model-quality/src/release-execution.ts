@@ -1,5 +1,10 @@
 import { freezeCaseFixture, type CaseFixture } from "./case-fixture";
-import { verifyCorpusManifest, type CorpusCase, type CorpusManifest } from "./corpus";
+import {
+  verifyCorpusManifest,
+  type CorpusCase,
+  type CorpusLineage,
+  type CorpusManifest,
+} from "./corpus";
 import { digestValue, type EvidenceDigest } from "./manifest";
 
 /** Complete release case after an authorized vault resolves sealed fixture content. */
@@ -31,9 +36,9 @@ export type ReleaseExecutionResult =
 export const resolveCompleteReleaseCorpus = (
   manifest: CorpusManifest,
   vault: SealedFixtureVault,
-  predecessor: CorpusManifest | null = null,
+  lineage: CorpusLineage = [],
 ): ReleaseExecutionResult => {
-  if (!verifyCorpusManifest(manifest, predecessor)) {
+  if (!verifyCorpusManifest(manifest, lineage)) {
     return {
       error: {
         _tag: "SealedFixtureUnavailable",

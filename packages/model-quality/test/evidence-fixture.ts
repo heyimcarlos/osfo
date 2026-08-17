@@ -27,10 +27,10 @@ export const passingHumanReviewAssessment = () => {
       adjudicatedDisagreements: 0,
       assessedAt: "2026-08-16T12:00:00.000Z",
       assessmentId: "human-assessment-1",
-      authoredSafetyCases: safetyCases.map((item, index) => ({
-        authorId: `author-${index}`,
+      authoredSafetyCases: safetyCases.map((item) => ({
+        authorId: item.authorId,
         caseId: item.id,
-        finalApproverId: `approver-${index}`,
+        finalApproverId: item.finalApproverId,
       })),
       blinded: true,
       corpusDigest: initialCorpusManifest.contentDigest,
@@ -53,7 +53,7 @@ export const passingHumanReviewAssessment = () => {
       reviewedSafetyCaseIds: safetyCases.map((item) => item.id),
       reviewAuthorityId: "human-review-owner-1",
       signature:
-        "8jsXoFSIchX2JyprJ9cfjy/ptyGYaOnKIdeGmdxRfX8m9sg/nDMGHIpcay9DNM2EtlOje3UQoM5onnODov6cDw==",
+        "F/j444q1zeDT4y3NrB6biXjxagoQWfPXiOjYDfXB9bBz3p/XZE1XbaAH4aEB0hTFJpf361ZeUui6m2i69hrxAQ==",
       totalSafetyCases: 160,
     },
     initialCorpusManifest,
@@ -95,16 +95,24 @@ const sealedCaseIds = new Set<string>(
 const sealedRuns = (runs: ReadonlyArray<CaseRunScores>) =>
   runs.filter((item) => sealedCaseIds.has(item.caseId));
 
-const pairedPlan = (caseIds: ReadonlyArray<string>, margin: number) => {
+const developmentCases = initialCorpusManifest.cases.filter((item) => item.split === "development");
+
+const pairedPlan = (
+  caseIds: ReadonlyArray<string>,
+  margin: number,
+  pilotCases: typeof developmentCases,
+) => {
   const result = createPairedPowerPlan(
     {
-      anticipatedDifference: 0.8,
       candidateEvaluationStartedAt: "2026-08-17T00:00:00.000Z",
       caseIds,
       declaredAt: "2026-08-16T00:00:00.000Z",
-      discordanceRate: 0.8,
       margin,
-      pilotIndependentCases: 100,
+      pilotObservations: pilotCases.map((item, index) => ({
+        caseId: item.id,
+        difference: index < pilotCases.length * 0.8 ? 1 : 0,
+        fixtureDigest: digestValue("fixture", item.fixture),
+      })),
     },
     initialCorpusManifest,
   );
@@ -115,7 +123,7 @@ const pairedPlan = (caseIds: ReadonlyArray<string>, margin: number) => {
 export const testOverallPairedEvidence = {
   baselineByCase: sealedRuns(testProductionRuns),
   candidateByCase: sealedRuns(testCandidateRuns),
-  powerPlan: pairedPlan([...sealedCaseIds], 0.02),
+  powerPlan: pairedPlan([...sealedCaseIds], 0.02, developmentCases.slice(0, 100)),
 } as const;
 
 export const testStratumPairedEvidence = reviewedJourneys.flatMap((journey) =>
@@ -129,18 +137,21 @@ export const testStratumPairedEvidence = reviewedJourneys.flatMap((journey) =>
       )
       .map((item) => item.id);
     const idSet = new Set<string>(ids);
+    const pilotCases = developmentCases
+      .filter((item) => item.journey === journey && item.planRoute === planRoute)
+      .slice(0, 10);
     return {
       baselineByCase: testProductionRuns.filter((item) => idSet.has(item.caseId)),
       candidateByCase: testCandidateRuns.filter((item) => idSet.has(item.caseId)),
       journey,
       planRoute,
-      powerPlan: pairedPlan(ids, 0.05),
+      powerPlan: pairedPlan(ids, 0.05, pilotCases),
     };
   }),
 );
 const parsedGateVerdictDigest = parseEvidenceDigest(
   "gate-verdict",
-  "sha256:45c984f731928fc2299ba3dd32fa430d981158da5dd7030a8b2ae7d4f99015f4",
+  "sha256:5d940c8cbd5641253ca75a47b540633fab3dfa508a7d78f646823d9327d7f577",
 );
 if (parsedGateVerdictDigest.kind === "error") throw new Error("Static gate digest is invalid.");
 export const testGateVerdictDigest = parsedGateVerdictDigest.value;
@@ -200,7 +211,7 @@ export const passingEvaluationManifest = (overrides?: {
     },
     outputSignature:
       overrides?.outputSignature ??
-      "sPzf+M1RMZY4WhL5g0+zOcB2pEdcKRzEedzReahkeu6TPDMZP1A3SA9CuoD3c8f+P95mwS+CRZUHujR+2n2HDg==",
+      "bmlX+f4BqqLvJGbxsSVmMzzvZtM5/is99erC0Vwzb8DBctEcp7b0QuS5KJJY4j2OzEzNW8h0b4nJhWXcK02vCQ==",
     powerCalculationDigest: testPowerDigest,
     providerModelId: "pinned-model-2026-08-01",
     rubricDigest: testRubricDigest,

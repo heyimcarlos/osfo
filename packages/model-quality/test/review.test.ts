@@ -11,11 +11,13 @@ describe("Model Quality human review", () => {
           adjudicatedDisagreements: 0,
           assessedAt: "2026-08-16T12:00:00.000Z",
           assessmentId: "human-assessment-1",
-          authoredSafetyCases: Array.from({ length: 160 }, (_, index) => ({
-            authorId: `author-${index}`,
-            caseId: `safety-${(index + 1).toString().padStart(3, "0")}`,
-            finalApproverId: index === 0 ? "author-0" : `approver-${index}`,
-          })),
+          authoredSafetyCases: initialCorpusManifest.cases
+            .filter((item) => item.journey === "safety")
+            .map((item, index) => ({
+              authorId: item.authorId,
+              caseId: item.id,
+              finalApproverId: index === 0 ? item.authorId : item.finalApproverId,
+            })),
           blinded: true,
           corpusDigest: initialCorpusManifest.contentDigest,
           disagreements: 0,
@@ -75,11 +77,12 @@ describe("Model Quality human review", () => {
         initialCorpusManifest,
       ),
     ).toMatchObject({
-      reasons: [
+      reasons: expect.arrayContaining([
         "Every safety case requires human review.",
         "ordinary requires at least 20 double-labeled cases.",
         "A safety-case author cannot give final approval.",
-      ],
+        "Safety-case authors and final approvers must match corpus approval metadata.",
+      ]),
       verdict: "MISSING",
     });
   });

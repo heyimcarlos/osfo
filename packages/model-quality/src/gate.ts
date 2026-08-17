@@ -1,5 +1,6 @@
 import {
   verifyCorpusManifest,
+  type CorpusLineage,
   type CorpusManifest,
   type CriticalRiskClass,
   type Journey,
@@ -56,7 +57,7 @@ export type GateEvidence = {
     readonly total: number;
   }>;
   readonly evaluationCorpus: CorpusManifest;
-  readonly evaluationCorpusPredecessor: CorpusManifest | null;
+  readonly evaluationCorpusLineage: CorpusLineage;
   readonly humanReview: HumanReviewAssessment | null;
   readonly subjectiveAuthority:
     | { readonly calibration: EvidenceVerdict; readonly kind: "model-grader" }
@@ -111,7 +112,9 @@ export const gateVerdictEvidenceDigest = (evidence: GateEvidence): EvidenceDiges
     criticalRiskClasses: evidence.criticalRiskClasses,
     humanReviewDigest: evidence.humanReview?.contentDigest ?? null,
     evaluationCorpusDigest: evidence.evaluationCorpus.contentDigest,
-    evaluationCorpusPredecessorDigest: evidence.evaluationCorpusPredecessor?.contentDigest ?? null,
+    evaluationCorpusLineageDigests: evidence.evaluationCorpusLineage.map(
+      (manifest) => manifest.contentDigest,
+    ),
     nonInferiority: evidence.nonInferiority,
     productionCaseIds: evidence.productionCaseIds,
     productionCorpusDigest: evidence.productionCorpusDigest,
@@ -160,7 +163,7 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
     baselineByCase: evidence.nonInferiority.overall.baselineByCase,
     candidateByCase: evidence.nonInferiority.overall.candidateByCase,
     corpusManifest: evidence.evaluationCorpus,
-    corpusPredecessor: evidence.evaluationCorpusPredecessor,
+    corpusLineage: evidence.evaluationCorpusLineage,
     powerPlan: evidence.nonInferiority.overall.powerPlan,
   });
   const stratumComparisons = evidence.nonInferiority.strata.map((item) => ({
@@ -169,7 +172,7 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
       baselineByCase: item.baselineByCase,
       candidateByCase: item.candidateByCase,
       corpusManifest: evidence.evaluationCorpus,
-      corpusPredecessor: evidence.evaluationCorpusPredecessor,
+      corpusLineage: evidence.evaluationCorpusLineage,
       powerPlan: item.powerPlan,
     }),
   }));
@@ -223,21 +226,31 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
   const missing: Array<string> = [];
   const corpusCaseIds = evidence.evaluationCorpus.cases.map((item) => item.id);
   if (
-    !verifyCorpusManifest(evidence.evaluationCorpus, evidence.evaluationCorpusPredecessor) ||
+    !verifyCorpusManifest(evidence.evaluationCorpus, evidence.evaluationCorpusLineage) ||
     !verifyCompleteCorpusRuns(
       evidence.candidateRuns,
       evidence.evaluationCorpus,
-      evidence.evaluationCorpusPredecessor,
+      evidence.evaluationCorpusLineage,
     ) ||
     !verifyCompleteCorpusRuns(
       evidence.productionRuns,
       evidence.evaluationCorpus,
-      evidence.evaluationCorpusPredecessor,
+      evidence.evaluationCorpusLineage,
     ) ||
     !sameCases(evidence.candidateCaseIds, corpusCaseIds) ||
     !sameCases(evidence.productionCaseIds, corpusCaseIds)
   ) {
     missing.push("The complete gate requires exact repeated evidence for every corpus case.");
+  }
+  const pairedInputs = [evidence.nonInferiority.overall, ...evidence.nonInferiority.strata];
+  if (
+    pairedInputs.some(
+      (input) =>
+        !runsAreExactProjection(input.baselineByCase, evidence.productionRuns) ||
+        !runsAreExactProjection(input.candidateByCase, evidence.candidateRuns),
+    )
+  ) {
+    missing.push("Paired analyses must project the signed complete-run evidence exactly.");
   }
   if (
     !isEvidenceSubset(evidence.criticalChecks.passed, evidence.criticalChecks.total) ||
@@ -293,7 +306,7 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
     !verifyHumanReviewAssessment(
       evidence.humanReview,
       evidence.evaluationCorpus,
-      evidence.evaluationCorpusPredecessor,
+      evidence.evaluationCorpusLineage,
     ) ||
     evidence.humanReview.verdict !== "PASS" ||
     evidence.humanReview.affectedCases <= 0 ||
@@ -332,6 +345,17 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
           const corpusCase = evidence.evaluationCorpus.cases.find((item) => item.id === caseId);
           return (
             corpusCase === undefined ||
+            corpusCase.journey !== declared.journey ||
+            corpusCase.planRoute !== declared.planRoute
+          );
+        }) ||
+        declared.powerPlan.pilotObservations.some((observation) => {
+          const corpusCase = evidence.evaluationCorpus.cases.find(
+            (item) => item.id === observation.caseId,
+          );
+          return (
+            corpusCase === undefined ||
+            corpusCase.split !== "development" ||
             corpusCase.journey !== declared.journey ||
             corpusCase.planRoute !== declared.planRoute
           );
@@ -378,6 +402,10 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
     productionRuns: evidence.productionRuns,
   });
   const verdictDigest = gateVerdictEvidenceDigest(evidence);
+  const powerPlans = [
+    evidence.nonInferiority.overall.powerPlan,
+    ...evidence.nonInferiority.strata.map((item) => item.powerPlan),
+  ];
   if (
     releasePass.kind === "error" ||
     evidence.candidateCorpusDigest !== evidence.candidateManifest.corpusDigest ||
@@ -390,6 +418,11 @@ export const evaluateModelQualityGate = (evidence: GateEvidence): GateAssessment
     evidence.nonInferiority.powerCalculationDigest !== calculatedPowerDigest ||
     evidence.candidateManifest.outputEvidence.scoreDigest !== evidence.nonInferiority.scoreDigest ||
     evidence.nonInferiority.scoreDigest !== calculatedScoreDigest ||
+    powerPlans.some(
+      (plan) =>
+        plan.candidateEvaluationStartedAt !==
+        evidence.candidateManifest.outputEvidence.utcWindow.startedAt,
+    ) ||
     evidence.candidateManifest.gateVerdictDigest !== verdictDigest ||
     evidence.productionManifest.gateVerdictDigest !== verdictDigest
   ) {
@@ -414,3 +447,17 @@ const sameCases = (left: ReadonlyArray<string>, right: ReadonlyArray<string>) =>
     sortedLeft.every((item, index) => item === sortedRight[index])
   );
 };
+
+const runsAreExactProjection = (
+  projection: ReadonlyArray<CaseRunScores>,
+  complete: ReadonlyArray<CaseRunScores>,
+): boolean =>
+  projection.every((item) => {
+    const source = complete.find((candidate) => candidate.caseId === item.caseId);
+    return (
+      source !== undefined &&
+      source.fixtureDigest === item.fixtureDigest &&
+      source.runs.length === item.runs.length &&
+      source.runs.every((score, index) => score === item.runs[index])
+    );
+  });

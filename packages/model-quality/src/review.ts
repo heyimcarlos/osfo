@@ -1,6 +1,11 @@
 import { verify as verifySignature } from "node:crypto";
 
-import { verifyCorpusManifest, type CorpusManifest, type Journey } from "./corpus";
+import {
+  verifyCorpusManifest,
+  type CorpusLineage,
+  type CorpusManifest,
+  type Journey,
+} from "./corpus";
 import { digestValue, type EvidenceDigest } from "./manifest";
 import type { EvidenceVerdict } from "./statistics";
 import { isEvidenceCount, isEvidenceSubset } from "./evidence-count";
@@ -54,7 +59,7 @@ export type HumanReviewAssessment = {
 export const assessHumanReview = (
   input: HumanReviewInput,
   corpusManifest: CorpusManifest,
-  corpusPredecessor: CorpusManifest | null = null,
+  corpusLineage: CorpusLineage = [],
 ): HumanReviewAssessment => {
   const reasons: Array<string> = [];
   const corpusJourneyCounts = new Map<Journey, number>();
@@ -62,7 +67,7 @@ export const assessHumanReview = (
     corpusJourneyCounts.set(item.journey, (corpusJourneyCounts.get(item.journey) ?? 0) + 1);
   }
   if (
-    !verifyCorpusManifest(corpusManifest, corpusPredecessor) ||
+    !verifyCorpusManifest(corpusManifest, corpusLineage) ||
     input.corpusDigest !== corpusManifest.contentDigest
   ) {
     reasons.push("Human review must identify one verified corpus manifest.");
@@ -146,6 +151,9 @@ export const assessHumanReview = (
   const corpusSafetyCaseIds = new Set<string>(
     corpusManifest.cases.filter((item) => item.journey === "safety").map((item) => item.id),
   );
+  const corpusSafetyCases = new Map<string, CorpusManifest["cases"][number]>(
+    corpusManifest.cases.filter((item) => item.journey === "safety").map((item) => [item.id, item]),
+  );
   if (
     input.totalSafetyCases !== corpusSafetyCaseIds.size ||
     input.authoredSafetyCases.some((item) => !corpusSafetyCaseIds.has(item.caseId)) ||
@@ -154,6 +162,18 @@ export const assessHumanReview = (
     input.reviewedSafetyCaseIds.some((id) => !corpusSafetyCaseIds.has(id))
   ) {
     reasons.push("Safety-case review identities and totals must match the corpus.");
+  }
+  if (
+    input.authoredSafetyCases.some((item) => {
+      const corpusCase = corpusSafetyCases.get(item.caseId);
+      return (
+        corpusCase === undefined ||
+        item.authorId !== corpusCase.authorId ||
+        item.finalApproverId !== corpusCase.finalApproverId
+      );
+    })
+  ) {
+    reasons.push("Safety-case authors and final approvers must match corpus approval metadata.");
   }
   if (
     new Set(input.authoredSafetyCases.map((item) => item.caseId)).size !== input.totalSafetyCases
@@ -186,9 +206,9 @@ export const assessHumanReview = (
 export const verifyHumanReviewAssessment = (
   assessment: HumanReviewAssessment,
   corpusManifest: CorpusManifest,
-  corpusPredecessor: CorpusManifest | null = null,
+  corpusLineage: CorpusLineage = [],
 ): boolean => {
-  const recomputed = assessHumanReview(assessment.evidence, corpusManifest, corpusPredecessor);
+  const recomputed = assessHumanReview(assessment.evidence, corpusManifest, corpusLineage);
   return (
     reviewAuthorityIds.has(assessment.evidence.reviewAuthorityId) &&
     verifyHumanReviewSignature(assessment.evidence) &&

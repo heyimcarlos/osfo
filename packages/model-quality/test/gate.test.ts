@@ -79,7 +79,7 @@ const passingEvidence = (): GateEvidence => ({
   criticalChecks: { passed: 10, total: 10 },
   criticalRiskClasses: riskClasses.map((riskClass) => ({ passed: 1, riskClass, total: 1 })),
   evaluationCorpus: initialCorpusManifest,
-  evaluationCorpusPredecessor: null,
+  evaluationCorpusLineage: [],
   humanReview: passingHumanReviewAssessment(),
   nonInferiority: {
     overall: { ...testOverallPairedEvidence, margin: 0.02, verdict: "PASS" },
@@ -141,6 +141,27 @@ describe("Model Quality Gate", () => {
             ...evidence.nonInferiority.overall,
             baselineByCase: evidence.nonInferiority.overall.baselineByCase.slice(0, 1),
             candidateByCase: evidence.nonInferiority.overall.candidateByCase.slice(0, 1),
+          },
+        },
+      }),
+    ).toMatchObject({ verdict: "MISSING" });
+  });
+
+  it("rejects paired scores that differ from the signed complete run", () => {
+    const evidence = passingEvidence();
+    const first = evidence.nonInferiority.overall.candidateByCase[0];
+    if (first === undefined) throw new Error("One paired case is required.");
+    expect(
+      evaluateModelQualityGate({
+        ...evidence,
+        nonInferiority: {
+          ...evidence.nonInferiority,
+          overall: {
+            ...evidence.nonInferiority.overall,
+            candidateByCase: [
+              { ...first, runs: first.runs.map(() => 0) },
+              ...evidence.nonInferiority.overall.candidateByCase.slice(1),
+            ],
           },
         },
       }),
@@ -296,14 +317,14 @@ describe("Model Quality Gate", () => {
     const gateVerdictDigest = gateVerdictEvidenceDigest(changed);
     const expectedDigest = parseEvidenceDigest(
       "gate-verdict",
-      "sha256:f31093546586e4a56d50f2dba7b015e26ac49d894b9b74204942cdc5da29e6cf",
+      "sha256:fcf68b3725c079d83608d75baa793969b999d1b6b004362fcf00c6fe8544b18f",
     );
     if (expectedDigest.kind === "error") throw new Error("Static human gate digest is invalid.");
     expect(gateVerdictDigest).toBe(expectedDigest.value);
     const manifest = passingEvaluationManifest({
       gateVerdictDigest,
       outputSignature:
-        "yrf/aEKXxwB+ld2IYPiXK5CqqGKHtx9B9EtqFMqo1u+2oc0gWPH7nf5n+wK8MPwCZ81z8/t1PFQTIqeeFACsAg==",
+        "BBVSEVY3+3ikywvsAo/1xYN5tYAQ/CJSSNnd3XO5E7uBAtGXpnMomIhvZ3U8E9FkmbaMNJJ0s3OmhLK/R+l7Dw==",
     });
     expect(
       evaluateModelQualityGate({

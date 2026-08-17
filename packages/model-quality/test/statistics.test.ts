@@ -142,13 +142,11 @@ describe("Model Quality statistics", () => {
         ],
         corpusManifest: initialCorpusManifest,
         powerPlan: unwrapPowerPlan({
-          anticipatedDifference: 0,
           candidateEvaluationStartedAt: "2026-08-17T00:00:00.000Z",
           caseIds: [safetyCase.id],
           declaredAt: "2026-08-16T00:00:00.000Z",
-          discordanceRate: 0,
           margin: 0.05,
-          pilotIndependentCases: 100,
+          pilotObservations: pilotObservations(0),
         }),
       }),
     ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
@@ -162,13 +160,35 @@ describe("Model Quality statistics", () => {
     expect(
       createPairedPowerPlan(
         {
-          anticipatedDifference: 0,
           candidateEvaluationStartedAt: "2026-08-17T00:00:00.000Z",
           caseIds: [developmentCase.id],
           declaredAt: "2026-08-16T00:00:00.000Z",
-          discordanceRate: 0,
           margin: 0.05,
-          pilotIndependentCases: 100,
+          pilotObservations: pilotObservations(0),
+        },
+        initialCorpusManifest,
+      ),
+    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+  });
+
+  it("derives final power only from product-owned pilot observations", () => {
+    const firstSealed = sealedCases[0];
+    const observations = pilotObservations(0.1);
+    const firstPilot = observations[0];
+    if (firstSealed === undefined || firstPilot === undefined) {
+      throw new Error("Pilot and sealed cases are required.");
+    }
+    expect(
+      createPairedPowerPlan(
+        {
+          candidateEvaluationStartedAt: "2026-08-17T00:00:00.000Z",
+          caseIds: [firstSealed.id],
+          declaredAt: "2026-08-16T00:00:00.000Z",
+          margin: 0.05,
+          pilotObservations: [
+            { ...firstPilot, fixtureDigest: digestValue("fixture", "caller-pilot") },
+            ...observations.slice(1),
+          ],
         },
         initialCorpusManifest,
       ),
@@ -253,14 +273,29 @@ const powerPlan = (
   overrides: { readonly discordanceRate: number; readonly margin: number },
 ) =>
   unwrapPowerPlan({
-    anticipatedDifference: 0,
     candidateEvaluationStartedAt: "2026-08-17T00:00:00.000Z",
     caseIds: sealedCases.slice(0, count).map((item) => item.id),
     declaredAt: "2026-08-16T00:00:00.000Z",
-    discordanceRate: overrides.discordanceRate,
     margin: overrides.margin,
-    pilotIndependentCases: 100,
+    pilotObservations: pilotObservations(overrides.discordanceRate),
   });
+
+const pilotObservations = (discordanceRate: number) => {
+  const cases = initialCorpusManifest.cases
+    .filter((item) => item.split === "development")
+    .slice(0, 100);
+  const discordantCases = discordanceRate * cases.length;
+  return cases.map((item, index) => ({
+    caseId: item.id,
+    difference: index < discordantCases / 2 ? 1 : index < discordantCases ? -1 : 0,
+    fixtureDigest:
+      item.split === "development" ? digestValue("fixture", item.fixture) : neverCase(),
+  }));
+};
+
+const neverCase = (): never => {
+  throw new Error("Pilot fixtures must be development cases.");
+};
 
 const unwrapPowerPlan = (input: Parameters<typeof createPairedPowerPlan>[0]) => {
   const result = createPairedPowerPlan(input, initialCorpusManifest);

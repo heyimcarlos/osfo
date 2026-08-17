@@ -1,4 +1,4 @@
-import { verifyCorpusManifest, type CorpusManifest } from "./corpus";
+import { verifyCorpusManifest, type CorpusLineage, type CorpusManifest } from "./corpus";
 import { parseCaseId, parseEvidenceInstant, type CaseId, type EvidenceInstant } from "./identity";
 import { digestValue, type EvidenceDigest } from "./manifest";
 
@@ -125,10 +125,10 @@ export type CaseRunScores = {
 export const verifyCompleteCorpusRuns = (
   runs: ReadonlyArray<CaseRunScores>,
   corpusManifest: CorpusManifest,
-  corpusPredecessor: CorpusManifest | null = null,
+  corpusLineage: CorpusLineage = [],
 ): boolean => {
   if (
-    !verifyCorpusManifest(corpusManifest, corpusPredecessor) ||
+    !verifyCorpusManifest(corpusManifest, corpusLineage) ||
     runs.length !== corpusManifest.cases.length
   )
     return false;
@@ -160,11 +160,26 @@ export const verifyCompleteCorpusRuns = (
   });
 };
 
+/** One product-owned initial-run observation used to estimate paired power. */
+export type PilotObservationInput = {
+  readonly caseId: string;
+  readonly difference: number;
+  readonly fixtureDigest: EvidenceDigest<"fixture">;
+};
+
+/** Parsed initial-run observation bound to one development fixture. */
+export type PilotObservation = Omit<PilotObservationInput, "caseId" | "difference"> & {
+  readonly caseId: CaseId;
+  readonly difference: -1 | 0 | 1;
+};
+
 /** Inputs fixed before candidate evaluation for final paired power. */
-export type PairedPowerPlanInput = PairedPowerInput & {
+export type PairedPowerPlanInput = {
   readonly candidateEvaluationStartedAt: string;
   readonly caseIds: ReadonlyArray<string>;
   readonly declaredAt: string;
+  readonly margin: number;
+  readonly pilotObservations: ReadonlyArray<PilotObservationInput>;
 };
 
 /** Immutable final-power plan bound to sealed corpus cases. */
@@ -174,6 +189,7 @@ export type PairedPowerPlan = ParsedPairedPowerInput & {
   readonly contentDigest: EvidenceDigest<"power-calculation">;
   readonly corpusDigest: EvidenceDigest<"corpus">;
   readonly declaredAt: EvidenceInstant;
+  readonly pilotObservations: ReadonlyArray<PilotObservation>;
   readonly requiredCases: number;
 };
 
@@ -181,11 +197,11 @@ export type PairedPowerPlan = ParsedPairedPowerInput & {
 export const createPairedPowerPlan = (
   input: PairedPowerPlanInput,
   corpusManifest: CorpusManifest,
-  corpusPredecessor: CorpusManifest | null = null,
+  corpusLineage: CorpusLineage = [],
 ): StatisticsResult<PairedPowerPlan> => {
-  const powerInput = parsePairedPowerInput(input);
+  const powerInput = parsePilotPowerInput(input.pilotObservations, input.margin, corpusManifest);
   if (powerInput.kind === "error") return powerInput;
-  if (!verifyCorpusManifest(corpusManifest, corpusPredecessor)) {
+  if (!verifyCorpusManifest(corpusManifest, corpusLineage)) {
     return invalidStatistics("The corpus manifest content digest does not match.");
   }
   const declaredAt = parseEvidenceInstant(input.declaredAt);
@@ -215,12 +231,29 @@ export const createPairedPowerPlan = (
   const caseIds = parsedCaseIds.flatMap((result) =>
     result.kind === "success" ? [result.value] : [],
   );
+  const pilotObservations = input.pilotObservations.flatMap((observation) => {
+    const caseId = parseCaseId(observation.caseId);
+    const difference = observation.difference;
+    return caseId.kind === "success" && (difference === -1 || difference === 0 || difference === 1)
+      ? [
+          Object.freeze({
+            caseId: caseId.value,
+            difference,
+            fixtureDigest: observation.fixtureDigest,
+          }),
+        ]
+      : [];
+  });
+  if (pilotObservations.length !== input.pilotObservations.length) {
+    return invalidStatistics("Parsed pilot observations are incomplete.");
+  }
   const unsigned = Object.freeze({
     ...powerInput.value,
     candidateEvaluationStartedAt: candidateStartedAt.value,
     caseIds: Object.freeze(caseIds),
     corpusDigest: corpusManifest.contentDigest,
     declaredAt: declaredAt.value,
+    pilotObservations: Object.freeze(pilotObservations),
     requiredCases: requiredCases.value,
   });
   return {
@@ -237,7 +270,7 @@ export type PairedComparisonInput = {
   readonly baselineByCase: ReadonlyArray<CaseRunScores>;
   readonly candidateByCase: ReadonlyArray<CaseRunScores>;
   readonly corpusManifest: CorpusManifest;
-  readonly corpusPredecessor?: CorpusManifest | null;
+  readonly corpusLineage?: CorpusLineage;
   readonly powerPlan: PairedPowerPlan;
 };
 
@@ -255,7 +288,7 @@ export type PairedComparison = {
 export const pairedNonInferiority = (
   input: PairedComparisonInput,
 ): PairedComparison | StatisticsFailure => {
-  if (!verifyCorpusManifest(input.corpusManifest, input.corpusPredecessor ?? null)) {
+  if (!verifyCorpusManifest(input.corpusManifest, input.corpusLineage ?? [])) {
     return invalidStatistics("The corpus manifest content digest does not match.");
   }
   if (!powerPlanIsValid(input.powerPlan, input.corpusManifest)) {
@@ -343,6 +376,7 @@ const parseCaseScores = (
 const powerPlanIsValid = (plan: PairedPowerPlan, corpusManifest: CorpusManifest): boolean => {
   const { contentDigest, ...unsigned } = plan;
   const parsed = parsePairedPowerInput(plan);
+  const pilotInput = parsePilotPowerInput(plan.pilotObservations, plan.margin, corpusManifest);
   const declaredAt = parseEvidenceInstant(plan.declaredAt);
   const candidateStartedAt = parseEvidenceInstant(plan.candidateEvaluationStartedAt);
   const parsedCaseIds = plan.caseIds.map(parseCaseId);
@@ -352,6 +386,10 @@ const powerPlanIsValid = (plan: PairedPowerPlan, corpusManifest: CorpusManifest)
   const requiredCases = requiredPairedCaseCount(plan);
   return (
     parsed.kind === "success" &&
+    pilotInput.kind === "success" &&
+    pilotInput.value.anticipatedDifference === plan.anticipatedDifference &&
+    pilotInput.value.discordanceRate === plan.discordanceRate &&
+    pilotInput.value.pilotIndependentCases === plan.pilotIndependentCases &&
     declaredAt.kind === "success" &&
     candidateStartedAt.kind === "success" &&
     requiredCases.kind === "success" &&
@@ -364,6 +402,37 @@ const powerPlanIsValid = (plan: PairedPowerPlan, corpusManifest: CorpusManifest)
     plan.corpusDigest === corpusManifest.contentDigest &&
     contentDigest === digestValue("power-calculation", unsigned)
   );
+};
+
+const parsePilotPowerInput = (
+  observations: ReadonlyArray<PilotObservationInput>,
+  margin: number,
+  corpusManifest: CorpusManifest,
+): StatisticsResult<ParsedPairedPowerInput> => {
+  const developmentCases = new Map<string, EvidenceDigest<"fixture">>(
+    corpusManifest.cases.flatMap((item) =>
+      item.split === "development" ? [[item.id, digestValue("fixture", item.fixture)]] : [],
+    ),
+  );
+  if (
+    observations.length === 0 ||
+    new Set(observations.map((item) => item.caseId)).size !== observations.length ||
+    observations.some(
+      (item) =>
+        parseCaseId(item.caseId).kind === "error" ||
+        (item.difference !== -1 && item.difference !== 0 && item.difference !== 1) ||
+        developmentCases.get(item.caseId) !== item.fixtureDigest,
+    )
+  ) {
+    return invalidStatistics("Paired power requires unique product-owned pilot observations.");
+  }
+  return parsePairedPowerInput({
+    anticipatedDifference: mean(observations.map((item) => item.difference)),
+    discordanceRate:
+      observations.filter((item) => item.difference !== 0).length / observations.length,
+    margin,
+    pilotIndependentCases: observations.length,
+  });
 };
 
 const sameCaseIdentities = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean => {

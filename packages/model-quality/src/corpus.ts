@@ -81,6 +81,9 @@ export type CorpusManifest = {
   readonly version: VersionId;
 };
 
+/** Ordered trusted corpus manifests from the product root to the direct predecessor. */
+export type CorpusLineage = ReadonlyArray<CorpusManifest>;
+
 const parsedIdentity = <T>(result: IdentityResult<T>): T => {
   if (result.kind === "error") throw new Error(`Invalid static ${result.error.identity} identity.`);
   return result.value;
@@ -213,9 +216,11 @@ export type ParseCorpusManifestResult =
 /** Parse one immutable corpus version and its direct predecessor linkage. */
 export const parseCorpusManifest = (
   persisted: PersistedCorpusManifest,
-  predecessor: CorpusManifest | null,
+  lineage: CorpusLineage,
 ): ParseCorpusManifestResult => {
-  const message = corpusInvariantFailure(persisted, predecessor);
+  const predecessor = verifyCorpusLineage(lineage);
+  if (predecessor.kind === "error") return predecessor;
+  const message = corpusInvariantFailure(persisted, predecessor.value);
   if (message !== null) {
     return { error: { _tag: "InvalidCorpusManifest", message }, kind: "error" };
   }
@@ -225,11 +230,8 @@ export const parseCorpusManifest = (
 /** Verify one corpus manifest with the same parser used at creation. */
 export const verifyCorpusManifest = (
   manifest: CorpusManifest,
-  predecessor?: CorpusManifest | null,
-): boolean =>
-  predecessor === undefined
-    ? manifest.previousVersion === null && corpusInvariantFailure(manifest, null) === null
-    : corpusInvariantFailure(manifest, predecessor) === null;
+  lineage: CorpusLineage = [],
+): boolean => parseCorpusManifest(manifest, lineage).kind === "success";
 
 /** Safety-case authorship approval used for immutable corpus governance. */
 export type CorpusSafetyApproval = {
@@ -244,6 +246,7 @@ export type CreateCorpusVersionInput = {
   readonly createdAt: string;
   readonly newlyFailingCaseIds: ReadonlyArray<string>;
   readonly previous: CorpusManifest;
+  readonly previousLineage: CorpusLineage;
   readonly safetyApprovals: ReadonlyArray<CorpusSafetyApproval>;
   readonly version: string;
 };
@@ -261,7 +264,7 @@ export type CreateCorpusVersionResult =
 
 /** Create a linked immutable corpus version without deleting known regression evidence. */
 export const createCorpusVersion = (input: CreateCorpusVersionInput): CreateCorpusVersionResult => {
-  if (!corpusManifestHasValidIntegrity(input.previous)) {
+  if (!verifyCorpusManifest(input.previous, input.previousLineage)) {
     return invalidCorpusChange("The predecessor corpus manifest is invalid.");
   }
   const parsedNewlyFailingCaseIds = input.newlyFailingCaseIds.map(parseCaseId);
@@ -325,7 +328,7 @@ export const createCorpusVersion = (input: CreateCorpusVersionInput): CreateCorp
     version: input.version,
   });
   const candidate = Object.freeze({ ...contents, contentDigest: digestValue("corpus", contents) });
-  const parsed = parseCorpusManifest(candidate, input.previous);
+  const parsed = parseCorpusManifest(candidate, [...input.previousLineage, input.previous]);
   return parsed.kind === "error"
     ? invalidCorpusChange(parsed.error.message)
     : { kind: "success", value: parsed.value };
@@ -333,7 +336,7 @@ export const createCorpusVersion = (input: CreateCorpusVersionInput): CreateCorp
 
 const corpusInvariantFailure = (
   manifest: PersistedCorpusManifest,
-  predecessor: CorpusManifest | null | undefined,
+  predecessor: CorpusManifest | null,
 ): string | null => {
   const { contentDigest, ...contents } = manifest;
   if (contentDigest !== digestValue("corpus", contents)) return "Corpus content digest mismatch.";
@@ -392,7 +395,6 @@ const corpusInvariantFailure = (
   ) {
     return "Known failing case identities must be unique members of the corpus.";
   }
-  if (predecessor === undefined) return null;
   if (predecessor === null) {
     return manifest.previousVersion === null &&
       manifest.previousContentDigest === null &&
@@ -401,7 +403,6 @@ const corpusInvariantFailure = (
       ? null
       : "The initial corpus must match the product-owned root manifest.";
   }
-  if (!corpusManifestHasValidIntegrity(predecessor)) return "Corpus predecessor is invalid.";
   if (
     manifest.previousVersion !== predecessor.version ||
     manifest.previousContentDigest !== predecessor.contentDigest ||
@@ -413,8 +414,20 @@ const corpusInvariantFailure = (
   return null;
 };
 
-const corpusManifestHasValidIntegrity = (manifest: CorpusManifest): boolean => {
-  return corpusInvariantFailure(manifest, undefined) === null;
+const verifyCorpusLineage = (
+  lineage: CorpusLineage,
+):
+  | { readonly kind: "success"; readonly value: CorpusManifest | null }
+  | { readonly error: InvalidCorpusManifest; readonly kind: "error" } => {
+  let predecessor: CorpusManifest | null = null;
+  for (const manifest of lineage) {
+    const message = corpusInvariantFailure(manifest, predecessor);
+    if (message !== null) {
+      return { error: { _tag: "InvalidCorpusManifest", message }, kind: "error" };
+    }
+    predecessor = manifest;
+  }
+  return { kind: "success", value: predecessor };
 };
 
 const freezeCorpusManifest = (manifest: PersistedCorpusManifest): CorpusManifest =>

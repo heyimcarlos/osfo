@@ -1,6 +1,6 @@
 import type { EvidenceVerdict } from "./statistics";
 import { isEvidenceCount } from "./evidence-count";
-import { verifyCorpusManifest, type CorpusManifest } from "./corpus";
+import { verifyCorpusManifest, type CorpusLineage, type CorpusManifest } from "./corpus";
 import { parseReleaseId } from "./identity";
 import {
   verifyReleasePass,
@@ -16,7 +16,7 @@ export type CanaryEvidence = {
   readonly eligiblePercent: 5 | 25;
   readonly eligibleUsers: number;
   readonly evaluationCorpus: CorpusManifest;
-  readonly evaluationCorpusPredecessor?: CorpusManifest | null;
+  readonly evaluationCorpusLineage?: CorpusLineage;
   readonly currentEvidence: CurrentReleaseEvidence;
   readonly failureMode:
     | { readonly kind: "none" }
@@ -43,10 +43,7 @@ export type CanaryAssessment = {
 export const assessCanary = (evidence: CanaryEvidence): CanaryAssessment => {
   const releaseId = parseReleaseId(evidence.releaseId);
   if (
-    !verifyCorpusManifest(
-      evidence.evaluationCorpus,
-      evidence.evaluationCorpusPredecessor ?? null,
-    ) ||
+    !verifyCorpusManifest(evidence.evaluationCorpus, evidence.evaluationCorpusLineage ?? []) ||
     releaseId.kind === "error" ||
     evidence.releasePass === null ||
     evidence.releasePass.releaseId !== releaseId.value ||

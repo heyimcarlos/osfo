@@ -27,7 +27,7 @@ describe("Model Quality corpus governance", () => {
     const { contentDigest: ignoredDigest, ...unsigned } = relabelledContents;
     expect(ignoredDigest).toBe(initialCorpusManifest.contentDigest);
     const relabelled = { ...unsigned, contentDigest: digestValue("corpus", unsigned) };
-    expect(parseCorpusManifest(relabelled, null)).toMatchObject({
+    expect(parseCorpusManifest(relabelled, [])).toMatchObject({
       error: { _tag: "InvalidCorpusManifest" },
       kind: "error",
     });
@@ -46,7 +46,7 @@ describe("Model Quality corpus governance", () => {
     const { contentDigest: ignoredDigest, ...contents } = unsigned;
     expect(ignoredDigest).toBe(initialCorpusManifest.contentDigest);
     expect(
-      parseCorpusManifest({ ...contents, contentDigest: digestValue("corpus", contents) }, null),
+      parseCorpusManifest({ ...contents, contentDigest: digestValue("corpus", contents) }, []),
     ).toMatchObject({ error: { _tag: "InvalidCorpusManifest" }, kind: "error" });
     expect(
       verifyCorpusManifest({ ...contents, contentDigest: digestValue("corpus", contents) }),
@@ -59,6 +59,7 @@ describe("Model Quality corpus governance", () => {
       createdAt: "2026-08-18T00:00:00.000Z",
       newlyFailingCaseIds: ["ordinary-001"],
       previous: initialCorpusManifest,
+      previousLineage: [],
       safetyApprovals: [],
       version: "model-quality-v2",
     });
@@ -85,6 +86,7 @@ describe("Model Quality corpus governance", () => {
       createdAt: "2026-08-18T00:00:00.000Z",
       newlyFailingCaseIds: [],
       previous: initialCorpusManifest,
+      previousLineage: [],
       safetyApprovals: [],
       version: "model-quality-v2",
     });
@@ -106,21 +108,26 @@ describe("Model Quality corpus governance", () => {
       createdAt: "2026-08-18T00:00:00.000Z",
       newlyFailingCaseIds: [],
       previous: initialCorpusManifest,
+      previousLineage: [],
       safetyApprovals: [],
       version: "model-quality-v2",
     });
     if (second.kind === "error") throw new Error(second.error.message);
     expect(verifyCorpusManifest(second.value)).toBe(false);
-    expect(verifyCorpusManifest(second.value, initialCorpusManifest)).toBe(true);
+    expect(verifyCorpusManifest(second.value, [initialCorpusManifest])).toBe(true);
     const third = createCorpusVersion({
       cases: second.value.cases,
       createdAt: "2026-08-19T00:00:00.000Z",
       newlyFailingCaseIds: [],
       previous: second.value,
+      previousLineage: [initialCorpusManifest],
       safetyApprovals: [],
       version: "model-quality-v3",
     });
     expect(third.kind).toBe("success");
+    if (third.kind === "error") return;
+    expect(verifyCorpusManifest(third.value, [initialCorpusManifest, second.value])).toBe(true);
+    expect(verifyCorpusManifest(third.value, [second.value])).toBe(false);
   });
 
   it("rejects a changed safety case without recorded independent approval", () => {
@@ -140,6 +147,7 @@ describe("Model Quality corpus governance", () => {
       createdAt: "2026-08-18T00:00:00.000Z",
       newlyFailingCaseIds: [],
       previous: initialCorpusManifest,
+      previousLineage: [],
       safetyApprovals: [],
       version: "model-quality-v2",
     });
@@ -170,6 +178,7 @@ describe("Model Quality corpus governance", () => {
         createdAt: "2026-08-18T00:00:00.000Z",
         newlyFailingCaseIds: [],
         previous: initialCorpusManifest,
+        previousLineage: [],
         safetyApprovals: [
           {
             authorId: "different-author",
@@ -188,6 +197,7 @@ describe("Model Quality corpus governance", () => {
       createdAt: "2026-08-18T00:00:00.000Z",
       newlyFailingCaseIds: ["ordinary-001"],
       previous: initialCorpusManifest,
+      previousLineage: [],
       safetyApprovals: [],
       version: "model-quality-v2",
     });
@@ -197,6 +207,7 @@ describe("Model Quality corpus governance", () => {
       createdAt: "2026-08-19T00:00:00.000Z",
       newlyFailingCaseIds: [],
       previous: marked.value,
+      previousLineage: [initialCorpusManifest],
       safetyApprovals: [],
       version: "model-quality-v3",
     });
