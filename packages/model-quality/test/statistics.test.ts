@@ -35,6 +35,7 @@ describe("Model Quality statistics", () => {
         discordanceRate: 0.1,
         margin: 0.02,
         pilotIndependentCases: 100,
+        secondMoment: 0.1,
       }),
     ).toEqual({ kind: "success", value: 2163 });
 
@@ -48,7 +49,7 @@ describe("Model Quality statistics", () => {
     ).toMatchObject({
       independentCases: 4,
       kind: "success",
-      requiredCases: 2163,
+      requiredCases: 541,
       verdict: "MISSING",
     });
   });
@@ -110,6 +111,7 @@ describe("Model Quality statistics", () => {
         discordanceRate: 0.1,
         margin: 0.02,
         pilotIndependentCases: 100,
+        secondMoment: 0.1,
       }),
     ).toMatchObject({
       error: { _tag: "InvalidStatisticsInput" },
@@ -124,6 +126,7 @@ describe("Model Quality statistics", () => {
         discordanceRate: 0.1,
         margin: 0.02,
         pilotIndependentCases: 100,
+        secondMoment: 0.1,
       }),
     ).toMatchObject({
       error: { _tag: "InvalidStatisticsInput" },
@@ -135,6 +138,7 @@ describe("Model Quality statistics", () => {
         discordanceRate: 1,
         margin: 0.02,
         pilotIndependentCases: 100,
+        secondMoment: 1,
       }),
     ).toMatchObject({
       error: { _tag: "InvalidStatisticsInput" },
@@ -149,6 +153,7 @@ describe("Model Quality statistics", () => {
         discordanceRate: 1,
         margin: 0.02,
         pilotIndependentCases: 100,
+        secondMoment: 1,
       }),
     ).toEqual({ kind: "success", value: 2 });
   });
@@ -173,7 +178,7 @@ describe("Model Quality statistics", () => {
     expect(result).toMatchObject({ kind: "success" });
     if (result.kind === "error") return;
     expect(result.value.anticipatedDifference).toBeCloseTo(tinyImprovement, 12);
-    expect(result.value.requiredCases).toBeGreaterThan(2);
+    expect(result.value.requiredCases).toBe(2);
   });
 
   it("rejects selected runs that omit required ordinary or safety repetitions", () => {

@@ -71,6 +71,7 @@ export type PairedPowerInput = {
   readonly discordanceRate: number;
   readonly margin: number;
   readonly pilotIndependentCases: number;
+  readonly secondMoment: number;
 };
 
 declare const statisticalInput: unique symbol;
@@ -89,12 +90,15 @@ export const parsePairedPowerInput = (
     !Number.isFinite(input.anticipatedDifference) ||
     !Number.isFinite(input.discordanceRate) ||
     !Number.isFinite(input.margin) ||
+    !Number.isFinite(input.secondMoment) ||
     !Number.isInteger(input.pilotIndependentCases) ||
     input.pilotIndependentCases <= 0 ||
     input.anticipatedDifference < -1 ||
     input.anticipatedDifference > 1 ||
     input.discordanceRate < 0 ||
     input.discordanceRate > 1 ||
+    input.secondMoment < input.anticipatedDifference ** 2 ||
+    input.secondMoment > input.discordanceRate ||
     Math.abs(input.anticipatedDifference) > input.discordanceRate ||
     input.margin <= 0 ||
     input.margin > 1 ||
@@ -113,13 +117,11 @@ export const requiredPairedCaseCount = (input: PairedPowerInput): StatisticsResu
   if (parsed.kind === "error") return parsed;
   const value = parsed.value;
   const distanceFromMargin = value.margin + value.anticipatedDifference;
-  const estimatedDiscordance =
-    value.discordanceRate === 0
-      ? 1 - 0.05 ** (1 / value.pilotIndependentCases)
-      : value.discordanceRate;
-  const observedVariance = Math.max(0, estimatedDiscordance - value.anticipatedDifference ** 2);
+  const estimatedSecondMoment =
+    value.secondMoment === 0 ? 1 - 0.05 ** (1 / value.pilotIndependentCases) : value.secondMoment;
+  const observedVariance = Math.max(0, estimatedSecondMoment - value.anticipatedDifference ** 2);
   const variance =
-    value.discordanceRate > 0 && value.pilotIndependentCases > 1
+    value.secondMoment > 0 && value.pilotIndependentCases > 1
       ? (observedVariance * value.pilotIndependentCases) / (value.pilotIndependentCases - 1)
       : observedVariance;
   const zAlpha = 1.6448536269514722;
@@ -517,6 +519,7 @@ const parsePilotPowerInput = (
       observations.filter((item) => item.difference !== 0).length / observations.length,
     margin,
     pilotIndependentCases: observations.length,
+    secondMoment: mean(observations.map((item) => item.difference ** 2)),
   });
 };
 

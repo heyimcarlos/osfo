@@ -169,7 +169,7 @@ export const testStratumPairedEvidence = reviewedJourneys.flatMap((journey) =>
 );
 const parsedGateVerdictDigest = parseEvidenceDigest(
   "gate-verdict",
-  "sha256:89a599407f7e9dcfd2fe3d4930a917c0c16af694531b347af095afab4480a6b8",
+  "sha256:8fcc1f39622018208b824b115189beb28554403457307747ae2bff3ff5792422",
 );
 if (parsedGateVerdictDigest.kind === "error") throw new Error("Static gate digest is invalid.");
 export const testGateVerdictDigest = parsedGateVerdictDigest.value;
@@ -229,7 +229,7 @@ export const passingEvaluationManifest = (overrides?: {
     },
     outputSignature:
       overrides?.outputSignature ??
-      "Jcte4rlE2Ra2bQXGEsfAGmCGClIJDGCZ3Qh351wndvBiysKX8SpLIFuu6LYsey9JqYeByQO6YAFd0RIE/NrFCw==",
+      "M2yhQ4Vuue9FpBfPdLzpKRogjzVSHl9IWDEqaTl1tcbv4bR5bg1VgvwA/VZbzXUW4r59UDZaIdRbYNbGTauwDg==",
     powerCalculationDigest: testPowerDigest,
     providerModelId: "pinned-model-2026-08-01",
     rubricDigest: testRubricDigest,
