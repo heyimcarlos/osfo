@@ -464,6 +464,7 @@ const powerPlanIsValid = (plan: PairedPowerPlan, corpusManifest: CorpusManifest)
     pilotInput.value.anticipatedDifference === plan.anticipatedDifference &&
     pilotInput.value.discordanceRate === plan.discordanceRate &&
     pilotInput.value.pilotIndependentCases === plan.pilotIndependentCases &&
+    pilotInput.value.secondMoment === plan.secondMoment &&
     declaredAt.kind === "success" &&
     candidateStartedAt.kind === "success" &&
     requiredCases.kind === "success" &&

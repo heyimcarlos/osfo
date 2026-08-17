@@ -338,6 +338,27 @@ describe("Model Quality statistics", () => {
     });
   });
 
+  it("rejects a caller-rehashed second moment and matching case count", () => {
+    const plan = powerPlan(4, { discordanceRate: 0.1, margin: 0.02 });
+    const secondMoment = 0.001;
+    const recalculated = requiredPairedCaseCount({ ...plan, secondMoment });
+    if (recalculated.kind === "error") throw new Error(recalculated.error.message);
+    const { contentDigest: ignoredDigest, ...unsigned } = plan;
+    expect(ignoredDigest).toBe(plan.contentDigest);
+    const forgedUnsigned = { ...unsigned, requiredCases: recalculated.value, secondMoment };
+    expect(
+      pairedNonInferiority({
+        baselineByCase: caseScores([1, 1, 1, 1]),
+        candidateByCase: caseScores([1, 1, 1, 1]),
+        corpusManifest: initialCorpusManifest,
+        powerPlan: {
+          ...forgedUnsigned,
+          contentDigest: digestValue("power-calculation", forgedUnsigned),
+        },
+      }),
+    ).toMatchObject({ error: { _tag: "InvalidStatisticsInput" }, kind: "error" });
+  });
+
   it("rejects different fixture digests between paired arms", () => {
     const baseline = caseScores([1]);
     const first = baseline[0];
