@@ -19,7 +19,7 @@ export type TelegramMessageAdmissionInput = typeof TelegramMessageAdmissionInput
 
 /** Immutable provider facts used to resolve one Telegram event's first route. */
 export interface TelegramRouteInput extends TelegramMessageAdmissionInput {
-  readonly contentDigest: string;
+  readonly contentDigest: ProviderAdmission.ProviderContentDigest;
   readonly providerMessageId: ProviderMessageId;
 }
 
@@ -27,20 +27,20 @@ export interface TelegramRouteInput extends TelegramMessageAdmissionInput {
 export type BoundChannel = Extract<ProviderAdmission.InboundRoute, { readonly _tag: "Bound" }>;
 
 /** Expected failure while routing, recording, or submitting a Telegram message. */
-export class MessagingAdmissionUnavailable extends Schema.TaggedError<MessagingAdmissionUnavailable>()(
-  "MessagingAdmissionUnavailable",
+export class TelegramAdmissionUnavailable extends Schema.TaggedError<TelegramAdmissionUnavailable>()(
+  "TelegramAdmissionUnavailable",
   { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
 ) {}
 
 /** Persistence needed to fix a Telegram route and record accepted-message usage. */
 export interface PersistencePort {
-  readonly admit: (route: BoundChannel) => Effect.Effect<void, MessagingAdmissionUnavailable>;
+  readonly admit: (route: BoundChannel) => Effect.Effect<void, TelegramAdmissionUnavailable>;
   readonly recordAccepted: (
     receipt: AcceptanceReceipt,
-  ) => Effect.Effect<void, MessagingAdmissionUnavailable>;
+  ) => Effect.Effect<void, TelegramAdmissionUnavailable>;
   readonly route: (
     input: TelegramRouteInput,
-  ) => Effect.Effect<ProviderAdmission.InboundRoute, MessagingAdmissionUnavailable>;
+  ) => Effect.Effect<ProviderAdmission.InboundRoute, TelegramAdmissionUnavailable>;
 }
 
 /** Effect service for Telegram event routing and accepted-message usage. */
@@ -53,11 +53,11 @@ export interface AgentAdmissionPort {
   readonly accept: (
     agentId: AgentId,
     input: ProviderAdmission.AgentAcceptanceInput,
-  ) => Effect.Effect<AcceptanceReceipt | ManagedConversationDenied, MessagingAdmissionUnavailable>;
+  ) => Effect.Effect<AcceptanceReceipt | ManagedConversationDenied, TelegramAdmissionUnavailable>;
   readonly recover: (
     agentId: AgentId,
     input: ProviderAdmission.AgentRecoveryInput,
-  ) => Effect.Effect<AcceptanceReceipt | null, MessagingAdmissionUnavailable>;
+  ) => Effect.Effect<AcceptanceReceipt | null, TelegramAdmissionUnavailable>;
 }
 
 /** Effect service for recoverable Telegram submission to the named Agent. */
@@ -70,10 +70,13 @@ export interface StableIdentityPort {
   readonly deriveAdmission: (
     route: BoundChannel,
     providerMessageId: ProviderMessageId,
-  ) => Effect.Effect<string, MessagingAdmissionUnavailable>;
+  ) => Effect.Effect<
+    ProviderAdmission.ProviderAdmissionIdentityDigest,
+    TelegramAdmissionUnavailable
+  >;
   readonly deriveContent: (
     input: TelegramMessageAdmissionInput,
-  ) => Effect.Effect<string, MessagingAdmissionUnavailable>;
+  ) => Effect.Effect<ProviderAdmission.ProviderContentDigest, TelegramAdmissionUnavailable>;
 }
 
 /** Effect service for Telegram content and admission identity derivation. */
@@ -91,7 +94,7 @@ export type AdmissionResult =
 export interface Interface {
   readonly accept: (
     input: TelegramMessageAdmissionInput,
-  ) => Effect.Effect<AdmissionResult, MessagingAdmissionUnavailable>;
+  ) => Effect.Effect<AdmissionResult, TelegramAdmissionUnavailable>;
 }
 
 /** Telegram admission application service. */
@@ -112,7 +115,7 @@ export const make = Effect.gen(function* () {
     }),
     onboarding: () => Effect.void,
     persistence,
-    routeInput: (input: TelegramMessageAdmissionInput, contentDigest: string) => ({
+    routeInput: (input: TelegramMessageAdmissionInput, contentDigest) => ({
       ...input,
       contentDigest,
       providerMessageId: ProviderMessageId.make(input.eventId),

@@ -344,6 +344,30 @@ const prepareTelegramInvitationTransaction = async (
       .for("update")
       .limit(1);
     if (receipt === undefined) return false;
+    const [liveInvitation] = await transaction
+      .select({
+        invitationId: registrationInvitations.invitationId,
+        tokenDigest: registrationInvitations.tokenDigest,
+      })
+      .from(registrationInvitations)
+      .where(
+        and(
+          eq(registrationInvitations.provider, "telegram"),
+          eq(registrationInvitations.channelIdentity, input.channelIdentity),
+          eq(registrationInvitations.state, "live"),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (liveInvitation !== undefined) {
+      if (
+        liveInvitation.invitationId !== input.invitationId ||
+        liveInvitation.tokenDigest !== input.tokenDigest
+      ) {
+        return false;
+      }
+      return await markTelegramInvitationPrepared(transaction, input);
+    }
     await transaction
       .insert(registrationInvitations)
       .values({
@@ -378,22 +402,29 @@ const prepareTelegramInvitationTransaction = async (
     ) {
       return false;
     }
-    const changed = await transaction
-      .update(telegramOnboardingDeliveries)
-      .set({ state: "prepared" })
-      .where(
-        and(
-          eq(telegramOnboardingDeliveries.eventId, input.eventId),
-          eq(telegramOnboardingDeliveries.claimToken, input.claimToken),
-          or(
-            eq(telegramOnboardingDeliveries.state, "not_applied"),
-            eq(telegramOnboardingDeliveries.state, "prepared"),
-          ),
-        ),
-      )
-      .returning({ eventId: telegramOnboardingDeliveries.eventId });
-    return changed.length === 1;
+    return await markTelegramInvitationPrepared(transaction, input);
   });
+
+const markTelegramInvitationPrepared = async (
+  transaction: Transaction,
+  input: Onboarding.PrepareTelegramInvitationInput,
+) => {
+  const changed = await transaction
+    .update(telegramOnboardingDeliveries)
+    .set({ state: "prepared" })
+    .where(
+      and(
+        eq(telegramOnboardingDeliveries.eventId, input.eventId),
+        eq(telegramOnboardingDeliveries.claimToken, input.claimToken),
+        or(
+          eq(telegramOnboardingDeliveries.state, "not_applied"),
+          eq(telegramOnboardingDeliveries.state, "prepared"),
+        ),
+      ),
+    )
+    .returning({ eventId: telegramOnboardingDeliveries.eventId });
+  return changed.length === 1;
+};
 
 const beginTelegramDeliveryTransaction = async (
   db: Database,

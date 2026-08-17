@@ -14,6 +14,26 @@ import type { AcceptanceReceipt } from "./provider-acceptance-receipt";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schemas use the standard _tag discriminator. */
 
+/** Truncated SHA-256 digest of authenticated provider message content. */
+export const ProviderContentDigest = Schema.String.check(
+  Schema.isMinLength(40),
+  Schema.isMaxLength(40),
+  Schema.isPattern(/^[0-9a-f]+$/u),
+).pipe(Schema.brand("ProviderContentDigest"));
+
+/** Truncated SHA-256 digest of authenticated provider message content. */
+export type ProviderContentDigest = typeof ProviderContentDigest.Type;
+
+/** Truncated SHA-256 digest of one stable provider admission identity chain. */
+export const ProviderAdmissionIdentityDigest = Schema.String.check(
+  Schema.isMinLength(40),
+  Schema.isMaxLength(40),
+  Schema.isPattern(/^[0-9a-f]+$/u),
+).pipe(Schema.brand("ProviderAdmissionIdentityDigest"));
+
+/** Truncated SHA-256 digest of one stable provider admission identity chain. */
+export type ProviderAdmissionIdentityDigest = typeof ProviderAdmissionIdentityDigest.Type;
+
 /** First Channel Binding resolution fixed for one authenticated provider event. */
 export type InboundRoute =
   | {
@@ -67,8 +87,10 @@ export interface Interface<Message, RouteInput, IdentityFailure, Failure> {
     readonly deriveAdmission: (
       route: Extract<InboundRoute, { readonly _tag: "Bound" }>,
       providerMessageId: ProviderMessageId,
-    ) => Effect.Effect<string, IdentityFailure>;
-    readonly deriveContent: (message: Message) => Effect.Effect<string, IdentityFailure>;
+    ) => Effect.Effect<ProviderAdmissionIdentityDigest, IdentityFailure>;
+    readonly deriveContent: (
+      message: Message,
+    ) => Effect.Effect<ProviderContentDigest, IdentityFailure>;
   };
   readonly message: (message: Message) => {
     readonly providerMessageId: ProviderMessageId;
@@ -81,7 +103,7 @@ export interface Interface<Message, RouteInput, IdentityFailure, Failure> {
     ) => Effect.Effect<void, Failure>;
     readonly route: (input: RouteInput) => Effect.Effect<InboundRoute, Failure>;
   };
-  readonly routeInput: (message: Message, contentDigest: string) => RouteInput;
+  readonly routeInput: (message: Message, contentDigest: ProviderContentDigest) => RouteInput;
 }
 
 /** Admit one authenticated provider message into the canonical named Agent. */

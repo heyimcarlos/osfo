@@ -79,7 +79,7 @@ export const layer = (env: Bindings) =>
                 agentId,
                 initializationId: AgentInitializationId.make(`registration-${agentId}`),
                 initializedAt: input.completedAt.toISOString(),
-                routeId: ConversationRouteId.make(`whatsapp-route-${agentId}`),
+                routeId: ConversationRouteId.make(`primary-route-${agentId}`),
                 sessionId: SessionId.make(`primary-session-${agentId}`),
               }),
             "The personal Agent could not be initialized",

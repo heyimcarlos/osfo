@@ -3,7 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 
 import { ChannelIdentity } from "../domain";
 import type { OsfoStage } from "../env";
-import type * as MessagingAdmission from "../services/messaging-admission";
+import type * as TelegramAdmission from "../services/telegram-message-admission";
 import * as Onboarding from "../services/onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect result unions use the standard _tag discriminator. */
@@ -49,7 +49,7 @@ export interface TelegramOutbound {
 
 /** Dependencies and stage policy for one Telegram webhook invocation. */
 export interface TelegramWebhookOptions {
-  readonly admission: Pick<MessagingAdmission.Interface, "accept">;
+  readonly admission: Pick<TelegramAdmission.Interface, "accept">;
   readonly allowedUserIds: ReadonlySet<string>;
   readonly onboarding: Pick<
     Onboarding.Interface,

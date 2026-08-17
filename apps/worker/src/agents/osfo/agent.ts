@@ -52,6 +52,7 @@ import {
 import * as WhatsAppAgentAdmission from "../../services/whatsapp-agent-admission";
 import { AgentAcceptanceInput, AgentRecoveryInput } from "../../services/whatsapp-admission";
 import * as TelegramAgentAdmission from "../../services/telegram-agent-admission";
+import type * as ProviderAgentAdmission from "../../services/provider-agent-admission";
 import {
   AgentAcceptanceInput as ProviderAgentAcceptanceInput,
   AgentRecoveryInput as ProviderAgentRecoveryInput,
@@ -62,6 +63,7 @@ import {
 } from "../../domain/model-access-policy";
 import { currentPolicy, retainedCatalog, type PlanPolicyNotFound } from "../../domain/plan-policy";
 import * as AgentDirectory from "../../services/agent-directory";
+import type { AuthorizationContext } from "../../services/authorization";
 import {
   invalidOsfoEnvironment,
   makeOsfoAgentRuntime,
@@ -89,7 +91,7 @@ import {
 import { applyAgentMigrations } from "./db/migrate";
 import { makeModelCallUsageStore } from "./db/model-call-usage";
 import { ThinkSubmissionUnavailable } from "../../services/think-submission";
-import type { AcceptanceReceipt } from "../../services/whatsapp-acceptance-receipt";
+import type { AcceptanceReceipt } from "../../services/provider-acceptance-receipt";
 import {
   AgentInitializationInput,
   type AgentInitializationEncoded,
@@ -559,7 +561,10 @@ export class OsfoAgent extends Think<Env> {
     const decoded = Schema.decodeResult(AgentAcceptanceInput)(input);
     if (Result.isFailure(decoded)) return invalidRequest("acceptWhatsAppMessage");
     const parsed = decoded.success;
-    const recovery = this.#whatsappRecoveryDependencies();
+    const bridge = this.#providerAgentBridge(
+      decodeWhatsAppThinkSubmissionInspection,
+      decodeWhatsAppThinkSubmissionAccepted,
+    );
     return runRpc(
       WhatsAppAgentAdmission.accept<
         AcceptanceReceipt,
@@ -569,29 +574,18 @@ export class OsfoAgent extends Think<Env> {
         | AgentStoreUnavailable
       >({
         dependencies: {
-          ...recovery,
-          authorization: {
+          ...bridge.acceptance({
             inspect: (channelBindingId) =>
-              this.#inspectCurrentWhatsAppAuthorization(channelBindingId),
-          },
-          store: { ...recovery.store, inspect: this.#store.inspect() },
-          think: {
-            ...recovery.think,
-            submit: (submission) =>
-              callThinkSubmission("runTurn", () =>
-                this.runTurn({
-                  idempotencyKey: submission.idempotencyKey,
-                  input: {
-                    id: submission.message.userMessageId,
-                    parts: [{ text: submission.message.text, type: "text" }],
-                    role: "user",
-                  },
-                  metadata: submission.metadata,
-                  mode: "submit",
-                  submissionId: submission.submissionId,
-                }),
-              ).pipe(Effect.flatMap(decodeWhatsAppThinkSubmissionAccepted)),
-          },
+              this.#inspectCurrentProviderAuthorization("whatsapp", channelBindingId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable({
+                      cause,
+                      message: "Current WhatsApp authorization could not be checked",
+                    }),
+                ),
+              ),
+          }),
         },
         input: parsed,
       }),
@@ -622,7 +616,10 @@ export class OsfoAgent extends Think<Env> {
         | AgentStoreRecordInvalid
         | AgentStoreUnavailable
       >({
-        dependencies: this.#whatsappRecoveryDependencies(),
+        dependencies: this.#providerAgentBridge(
+          decodeWhatsAppThinkSubmissionInspection,
+          decodeWhatsAppThinkSubmissionAccepted,
+        ).recovery,
         input: decoded.success,
       }),
     );
@@ -633,7 +630,10 @@ export class OsfoAgent extends Think<Env> {
     await this.#migrationsReady;
     const decoded = Schema.decodeResult(ProviderAgentAcceptanceInput)(input);
     if (Result.isFailure(decoded)) return invalidRequest("acceptTelegramMessage");
-    const recovery = this.#telegramRecoveryDependencies();
+    const bridge = this.#providerAgentBridge(
+      decodeTelegramThinkSubmissionInspection,
+      decodeTelegramThinkSubmissionAccepted,
+    );
     return runRpc(
       TelegramAgentAdmission.accept<
         AcceptanceReceipt,
@@ -643,29 +643,18 @@ export class OsfoAgent extends Think<Env> {
         | AgentStoreUnavailable
       >({
         dependencies: {
-          ...recovery,
-          authorization: {
+          ...bridge.acceptance({
             inspect: (channelBindingId) =>
-              this.#inspectCurrentTelegramAuthorization(channelBindingId),
-          },
-          store: { ...recovery.store, inspect: this.#store.inspect() },
-          think: {
-            ...recovery.think,
-            submit: (submission) =>
-              callThinkSubmission("runTurn", () =>
-                this.runTurn({
-                  idempotencyKey: submission.idempotencyKey,
-                  input: {
-                    id: submission.message.userMessageId,
-                    parts: [{ text: submission.message.text, type: "text" }],
-                    role: "user",
-                  },
-                  metadata: submission.metadata,
-                  mode: "submit",
-                  submissionId: submission.submissionId,
-                }),
-              ).pipe(Effect.flatMap(decodeTelegramThinkSubmissionAccepted)),
-          },
+              this.#inspectCurrentProviderAuthorization("telegram", channelBindingId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new TelegramAgentAdmission.TelegramAuthorizationUnavailable({
+                      cause,
+                      message: "Current Telegram authorization could not be checked",
+                    }),
+                ),
+              ),
+          }),
         },
         input: decoded.success,
       }),
@@ -685,7 +674,10 @@ export class OsfoAgent extends Think<Env> {
         | AgentStoreRecordInvalid
         | AgentStoreUnavailable
       >({
-        dependencies: this.#telegramRecoveryDependencies(),
+        dependencies: this.#providerAgentBridge(
+          decodeTelegramThinkSubmissionInspection,
+          decodeTelegramThinkSubmissionAccepted,
+        ).recovery,
         input: decoded.success,
       }),
     );
@@ -1141,13 +1133,17 @@ export class OsfoAgent extends Think<Env> {
     });
   }
 
-  #inspectCurrentWhatsAppAuthorization(channelBindingId: ChannelBindingId) {
+  #inspectCurrentProviderAuthorization(
+    provider: "telegram" | "whatsapp",
+    channelBindingId: ChannelBindingId,
+  ) {
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) {
       return Effect.fail(
-        new WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable({
+        new ProviderAuthorizationPostgres.ProviderAuthorizationPersistenceUnavailable({
           cause: invalidOsfoEnvironment,
-          message: "Current WhatsApp authorization could not be checked",
+          message: "Current provider authorization could not be checked",
+          provider,
         }),
       );
     }
@@ -1155,7 +1151,7 @@ export class OsfoAgent extends Think<Env> {
       try: () =>
         runtime.runPromise(
           Effect.scoped(
-            ProviderAuthorizationPostgres.make({ provider: "whatsapp" }).pipe(
+            ProviderAuthorizationPostgres.make({ provider }).pipe(
               Effect.flatMap((authorization) =>
                 authorization.admit({
                   _tag: "Bound",
@@ -1167,15 +1163,26 @@ export class OsfoAgent extends Think<Env> {
           ),
         ),
       catch: (cause) =>
-        new WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable({
+        new ProviderAuthorizationPostgres.ProviderAuthorizationPersistenceUnavailable({
           cause,
-          message: "Current WhatsApp authorization could not be checked",
+          message: "Current provider authorization could not be checked",
+          provider,
         }),
     });
   }
 
-  #whatsappRecoveryDependencies() {
-    return {
+  #providerAgentBridge<Metadata extends ManagedTurnMetadata>(
+    decodeInspection: (
+      inspection: ThinkSubmissionInspection,
+    ) => Effect.Effect<
+      ProviderAgentAdmission.SubmissionInspection<Metadata>,
+      ThinkSubmissionUnavailable
+    >,
+    decodeAccepted: (
+      submission: SubmitMessagesResult,
+    ) => Effect.Effect<{ readonly submissionId: ThinkSubmissionId }, ThinkSubmissionUnavailable>,
+  ) {
+    const recovery = {
       store: {
         readAcceptanceReceipt: this.#store.readAcceptanceReceipt,
         recordAcceptanceReceipt: this.#store.recordAcceptanceReceipt,
@@ -1184,64 +1191,39 @@ export class OsfoAgent extends Think<Env> {
         inspect: (submissionId: ThinkSubmissionId) =>
           callThinkSubmission("inspectSubmission", () => this.inspectSubmission(submissionId)).pipe(
             Effect.flatMap((inspection) =>
-              inspection === null
-                ? Effect.succeed(null)
-                : decodeWhatsAppThinkSubmissionInspection(inspection),
+              inspection === null ? Effect.succeed(null) : decodeInspection(inspection),
             ),
           ),
       },
     };
-  }
-
-  #inspectCurrentTelegramAuthorization(channelBindingId: ChannelBindingId) {
-    const runtime = Option.getOrUndefined(this.#runtime);
-    if (runtime === undefined) {
-      return Effect.fail(
-        new TelegramAgentAdmission.TelegramAuthorizationUnavailable({
-          cause: invalidOsfoEnvironment,
-          message: "Current Telegram authorization could not be checked",
-        }),
-      );
-    }
-    return Effect.tryPromise({
-      try: () =>
-        runtime.runPromise(
-          Effect.scoped(
-            ProviderAuthorizationPostgres.make({ provider: "telegram" }).pipe(
-              Effect.flatMap((authorization) =>
-                authorization.admit({
-                  _tag: "Bound",
-                  agentId: AgentId.make(this.name),
-                  channelBindingId,
-                }),
-              ),
-            ),
-          ),
-        ),
-      catch: (cause) =>
-        new TelegramAgentAdmission.TelegramAuthorizationUnavailable({
-          cause,
-          message: "Current Telegram authorization could not be checked",
-        }),
-    });
-  }
-
-  #telegramRecoveryDependencies() {
     return {
-      store: {
-        readAcceptanceReceipt: this.#store.readAcceptanceReceipt,
-        recordAcceptanceReceipt: this.#store.recordAcceptanceReceipt,
-      },
-      think: {
-        inspect: (submissionId: ThinkSubmissionId) =>
-          callThinkSubmission("inspectSubmission", () => this.inspectSubmission(submissionId)).pipe(
-            Effect.flatMap((inspection) =>
-              inspection === null
-                ? Effect.succeed(null)
-                : decodeTelegramThinkSubmissionInspection(inspection),
-            ),
-          ),
-      },
+      acceptance: <AuthorizationFailure>(authorization: {
+        readonly inspect: (
+          channelBindingId: ChannelBindingId,
+        ) => Effect.Effect<AuthorizationContext, AuthorizationFailure>;
+      }) => ({
+        ...recovery,
+        authorization,
+        store: { ...recovery.store, inspect: this.#store.inspect() },
+        think: {
+          ...recovery.think,
+          submit: (submission: ProviderAgentAdmission.SubmissionIntent<Metadata>) =>
+            callThinkSubmission("runTurn", () =>
+              this.runTurn({
+                idempotencyKey: submission.idempotencyKey,
+                input: {
+                  id: submission.message.userMessageId,
+                  parts: [{ text: submission.message.text, type: "text" }],
+                  role: "user",
+                },
+                metadata: submission.metadata,
+                mode: "submit",
+                submissionId: submission.submissionId,
+              }),
+            ).pipe(Effect.flatMap(decodeAccepted)),
+        },
+      }),
+      recovery,
     };
   }
 

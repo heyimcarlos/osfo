@@ -4,7 +4,7 @@ import { database } from "../../db";
 import * as Billing from "../../db/billing";
 import { retainedCatalog } from "../../domain/plan-policy";
 import * as Allowances from "../../services/allowances";
-import * as MessagingAdmission from "../../services/messaging-admission";
+import * as TelegramAdmission from "../../services/telegram-message-admission";
 import * as ProviderEventRouting from "./provider-event-routing";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Drizzle transaction callbacks require Promise control flow and results use Effect's _tag discriminator. */
@@ -19,7 +19,7 @@ export const make = Effect.gen(function* () {
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
   });
 
-  return MessagingAdmission.Persistence.of({
+  return TelegramAdmission.Persistence.of({
     admit: () => Effect.void,
     recordAccepted: (receipt) =>
       allowances
@@ -57,10 +57,10 @@ export const make = Effect.gen(function* () {
 });
 
 /** PostgreSQL Telegram admission layer awaiting its scoped database dependency. */
-export const layerWithoutDependencies = Layer.effect(MessagingAdmission.Persistence, make);
+export const layerWithoutDependencies = Layer.effect(TelegramAdmission.Persistence, make);
 
 const unavailable = (operation: string, cause: unknown) =>
-  new MessagingAdmission.MessagingAdmissionUnavailable({
+  new TelegramAdmission.TelegramAdmissionUnavailable({
     cause,
     message: "Telegram admission is temporarily unavailable",
     operation,

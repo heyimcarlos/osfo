@@ -1,9 +1,9 @@
 import { Crypto, Effect, Layer, Schema } from "effect";
 
 import { ManagedConversationDenied } from "../../services/managed-conversation";
-import * as MessagingAdmission from "../../services/messaging-admission";
+import * as TelegramAdmission from "../../services/telegram-message-admission";
 import { AcceptanceReceipt } from "../../services/provider-acceptance-receipt";
-import type * as ProviderAdmission from "../../services/provider-message-admission";
+import * as ProviderAdmission from "../../services/provider-message-admission";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schemas use the standard _tag discriminator. */
 
@@ -30,8 +30,8 @@ export const layer = (env: Bindings) =>
       const crypto = yield* Crypto.Crypto;
       return Layer.merge(
         Layer.succeed(
-          MessagingAdmission.AgentSubmission,
-          MessagingAdmission.AgentSubmission.of({
+          TelegramAdmission.AgentSubmission,
+          TelegramAdmission.AgentSubmission.of({
             accept: (agentId, input) =>
               Effect.tryPromise({
                 try: () => env.OSFO_AGENT.getByName(agentId).acceptTelegramMessage(input),
@@ -49,12 +49,18 @@ export const layer = (env: Bindings) =>
           }),
         ),
         Layer.succeed(
-          MessagingAdmission.StableIdentity,
-          MessagingAdmission.StableIdentity.of({
+          TelegramAdmission.StableIdentity,
+          TelegramAdmission.StableIdentity.of({
             deriveAdmission: (route, providerMessageId) =>
-              digest(crypto, [route.channelBindingId, providerMessageId]),
+              digest(crypto, [route.channelBindingId, providerMessageId]).pipe(
+                Effect.map((value) =>
+                  ProviderAdmission.ProviderAdmissionIdentityDigest.make(value),
+                ),
+              ),
             deriveContent: (input) =>
-              digest(crypto, [input.channelIdentity, input.eventId, input.message]),
+              digest(crypto, [input.channelIdentity, input.eventId, input.message]).pipe(
+                Effect.map((value) => ProviderAdmission.ProviderContentDigest.make(value)),
+              ),
           }),
         ),
       );
@@ -65,7 +71,7 @@ const decodeAcceptance = (
   result: AgentResult,
 ): Effect.Effect<
   AcceptanceReceipt | ManagedConversationDenied,
-  MessagingAdmission.MessagingAdmissionUnavailable
+  TelegramAdmission.TelegramAdmissionUnavailable
 > =>
   result._tag === "AcceptanceReceipt"
     ? decodeReceipt(result)
@@ -91,7 +97,7 @@ const digest = (crypto: Crypto.Crypto, values: ReadonlyArray<string>) =>
   );
 
 const unavailable = (operation: string, cause: unknown) =>
-  new MessagingAdmission.MessagingAdmissionUnavailable({
+  new TelegramAdmission.TelegramAdmissionUnavailable({
     cause,
     message: "The stable Osfo Agent could not accept the Telegram message",
     operation,

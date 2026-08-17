@@ -7,7 +7,10 @@ import type { Database } from "../../db";
 import { AgentId, ChannelBindingId, ChannelIdentity } from "../../domain";
 import type { ProviderMessageId } from "../../domain";
 import type { ChannelProvider } from "../../services/onboarding";
-import type { InboundRoute } from "../../services/provider-message-admission";
+import type {
+  InboundRoute,
+  ProviderContentDigest,
+} from "../../services/provider-message-admission";
 import { readActiveBinding, readBinding } from "./channel-binding";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Drizzle transactions use Promise control flow and return tagged application outcomes. */
@@ -15,7 +18,7 @@ import { readActiveBinding, readBinding } from "./channel-binding";
 /** Normalized immutable facts used by both provider-event routing adapters. */
 export interface Input {
   readonly channelIdentity: ChannelIdentity;
-  readonly contentDigest: string;
+  readonly contentDigest: ProviderContentDigest;
   readonly eventScope: string;
   readonly messageKind: "button_reply" | "text";
   readonly provider: ChannelProvider;

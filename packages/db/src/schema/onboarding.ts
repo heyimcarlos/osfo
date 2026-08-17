@@ -26,7 +26,7 @@ export const telegramOnboardingDeliveries = pgTable(
   ],
 );
 
-/** Finite-lived web or WhatsApp invitations used only during onboarding. */
+/** Finite-lived web or messaging-provider invitations used only during onboarding. */
 export const registrationInvitations = pgTable(
   "registration_invitations",
   {

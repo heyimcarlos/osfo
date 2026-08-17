@@ -14,8 +14,9 @@ import type {
   ThinkSubmissionId,
   UserMessageId,
 } from "../src/domain";
-import * as MessagingAdmission from "../src/services/messaging-admission";
+import * as TelegramAdmission from "../src/services/telegram-message-admission";
 import { AcceptanceReceipt } from "../src/services/provider-acceptance-receipt";
+import * as ProviderAdmission from "../src/services/provider-message-admission";
 
 /* oxlint-disable effecttsgo/strict-effect-provide -- Each test is the application entry point for its isolated service Layer. */
 
@@ -23,7 +24,7 @@ describe("Telegram admission", () => {
   it.effect("keeps an unbound immutable provider route outside the Agent", () => {
     const harness = makeHarness({ _tag: "Unbound" });
     return Effect.gen(function* () {
-      const admission = yield* MessagingAdmission.Service;
+      const admission = yield* TelegramAdmission.Service;
       expect(yield* admission.accept(message)).toEqual({ _tag: "Unbound" });
       expect(harness.accepted).toEqual([]);
     }).pipe(Effect.provide(harness.layer));
@@ -32,7 +33,7 @@ describe("Telegram admission", () => {
   it.effect("recovers a duplicate provider event without a second Agent acceptance", () => {
     const harness = makeHarness(boundRoute);
     return Effect.gen(function* () {
-      const admission = yield* MessagingAdmission.Service;
+      const admission = yield* TelegramAdmission.Service;
       expect(yield* admission.accept(message)).toEqual({ _tag: "Accepted" });
       expect(yield* admission.accept(message)).toEqual({ _tag: "Accepted" });
       expect(harness.accepted).toHaveLength(1);
@@ -42,28 +43,28 @@ describe("Telegram admission", () => {
   });
 });
 
-const message: MessagingAdmission.TelegramMessageAdmissionInput = {
+const message: TelegramAdmission.TelegramMessageAdmissionInput = {
   channelIdentity: ChannelIdentity.make("telegram:900100200"),
   eventId: "telegram-update-9001",
   message: "Plan my day",
 };
 
-const boundRoute: MessagingAdmission.BoundChannel = {
+const boundRoute: TelegramAdmission.BoundChannel = {
   _tag: "Bound",
   agentId: AgentId.make("agent-telegram"),
   channelBindingId: ChannelBindingId.make("binding-telegram"),
 };
 
-const makeHarness = (route: MessagingAdmission.BoundChannel | { readonly _tag: "Unbound" }) => {
+const makeHarness = (route: TelegramAdmission.BoundChannel | { readonly _tag: "Unbound" }) => {
   const accepted: Array<string> = [];
   const recoveries: Array<string> = [];
   const recorded: Array<string> = [];
   let receipt: AcceptanceReceipt | null = null;
-  const layer = MessagingAdmission.layerWithoutDependencies.pipe(
+  const layer = TelegramAdmission.layerWithoutDependencies.pipe(
     Layer.provideMerge(
       Layer.succeed(
-        MessagingAdmission.Persistence,
-        MessagingAdmission.Persistence.of({
+        TelegramAdmission.Persistence,
+        TelegramAdmission.Persistence.of({
           admit: () => Effect.void,
           recordAccepted: (value) =>
             Effect.sync(() => {
@@ -75,17 +76,19 @@ const makeHarness = (route: MessagingAdmission.BoundChannel | { readonly _tag: "
     ),
     Layer.provideMerge(
       Layer.succeed(
-        MessagingAdmission.StableIdentity,
-        MessagingAdmission.StableIdentity.of({
-          deriveAdmission: () => Effect.succeed("a".repeat(40)),
-          deriveContent: () => Effect.succeed("b".repeat(40)),
+        TelegramAdmission.StableIdentity,
+        TelegramAdmission.StableIdentity.of({
+          deriveAdmission: () =>
+            Effect.succeed(ProviderAdmission.ProviderAdmissionIdentityDigest.make("a".repeat(40))),
+          deriveContent: () =>
+            Effect.succeed(ProviderAdmission.ProviderContentDigest.make("b".repeat(40))),
         }),
       ),
     ),
     Layer.provideMerge(
       Layer.succeed(
-        MessagingAdmission.AgentSubmission,
-        MessagingAdmission.AgentSubmission.of({
+        TelegramAdmission.AgentSubmission,
+        TelegramAdmission.AgentSubmission.of({
           accept: (_agentId, input) =>
             Effect.sync(() => {
               accepted.push(input.submissionId);

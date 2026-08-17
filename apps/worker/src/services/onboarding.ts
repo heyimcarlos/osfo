@@ -381,7 +381,7 @@ export interface CompletePersistenceInput {
   readonly userId: UserId;
 }
 
-/** Values needed to consume a provider-authenticated WhatsApp enrollment atomically. */
+/** Values needed to consume a provider-authenticated channel enrollment atomically. */
 export interface EnrollPersistenceInput {
   readonly bindingId: ChannelBindingId;
   readonly channelIdentity: ChannelIdentity;
@@ -735,11 +735,19 @@ export const make = Effect.gen(function* () {
   const issueTelegramInvitation: Interface["issueTelegramInvitation"] = (input, claimToken) =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const generated = yield* generateInvitationIdentity(crypto);
-      const invitationId = RegistrationInvitationId.make(
-        `registration-invitation-${input.eventId}`,
+      const nowDate = DateTime.toDateUtc(now);
+      yield* persistence.expireLive(nowDate);
+      const liveInvitationId = yield* persistence.findLiveChannel(
+        "telegram",
+        input.channelIdentity,
       );
-      const candidateUrl = links.verification(generated.token);
+      const generated =
+        liveInvitationId === null ? yield* generateInvitationIdentity(crypto) : null;
+      const invitationId =
+        liveInvitationId ??
+        RegistrationInvitationId.make(`registration-invitation-${input.eventId}`);
+      const candidateUrl =
+        generated === null ? links.registrationHome() : links.verification(generated.token);
       const turn = yield* registrationTurn.begin({
         eventId: input.eventId,
         invitationId,
@@ -752,7 +760,7 @@ export const make = Effect.gen(function* () {
       yield* persistence.prepareTelegramInvitation({
         channelIdentity: input.channelIdentity,
         claimToken,
-        createdAt: DateTime.toDateUtc(now),
+        createdAt: nowDate,
         eventId: input.eventId,
         expiresAt: DateTime.toDateUtc(DateTime.add(now, { hours: 24 })),
         invitationId,
@@ -876,7 +884,7 @@ export const make = Effect.gen(function* () {
     }
     if (channel === "binding-conflict") {
       return yield* new ChannelBindingConflict({
-        message: "The WhatsApp identity is already bound to another User",
+        message: "The channel identity is already bound to another User",
       });
     }
 
@@ -976,7 +984,7 @@ export const make = Effect.gen(function* () {
     }
     if (result === "binding-conflict") {
       return yield* new ChannelBindingConflict({
-        message: "The WhatsApp identity conflicts with an active Channel Binding",
+        message: "The channel identity conflicts with an active Channel Binding",
       });
     }
     const route = yield* persistence.readWelcomeRoute(userId);

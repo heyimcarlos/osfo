@@ -66,7 +66,7 @@ const toPublicError = (error: { readonly _tag: string }) => {
   }
   if (error._tag === "ChannelBindingConflict") {
     return new ChannelBindingNeedsSupport({
-      message: "This WhatsApp identity needs manual support before it can be connected.",
+      message: "This channel identity needs manual support before it can be connected.",
     });
   }
   if (error._tag === "OnboardingPhoneVerificationRequired") {

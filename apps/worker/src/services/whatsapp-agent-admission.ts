@@ -6,7 +6,7 @@ import { ChannelBindingId, ProviderMessageId, SessionId, UserMessageId } from ".
 import type { ThinkSubmissionId } from "../domain";
 import { ManagedTurnMetadata } from "../domain/managed-conversation";
 import type { AgentAcceptanceInput, AgentRecoveryInput } from "./whatsapp-admission";
-import type { AcceptanceReceiptInput } from "./whatsapp-acceptance-receipt";
+import type { AcceptanceReceiptInput } from "./provider-acceptance-receipt";
 import type { AuthorizationContext } from "./authorization";
 import * as ProviderAgentAdmission from "./provider-agent-admission";
 

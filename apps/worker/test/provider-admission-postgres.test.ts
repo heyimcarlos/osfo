@@ -6,6 +6,7 @@ import * as Db from "../src/db";
 import { AgentId, ChannelBindingId, ChannelIdentity, ProviderMessageId } from "../src/domain";
 import * as ProviderAuthorization from "../src/integrations/postgres/provider-authorization";
 import * as ProviderEventRouting from "../src/integrations/postgres/provider-event-routing";
+import * as ProviderAdmission from "../src/services/provider-message-admission";
 
 /* oxlint-disable effecttsgo/global-date-in-effect, effecttsgo/strict-effect-provide -- These PostgreSQL test entry points own deterministic Date and Layer boundaries. */
 
@@ -61,7 +62,7 @@ describe("shared provider admission PostgreSQL", () => {
             yield* applyMigrations(fixture.client);
             const input: ProviderEventRouting.Input = {
               channelIdentity: ChannelIdentity.make(`${provider}:shared-route`),
-              contentDigest: "a".repeat(64),
+              contentDigest: ProviderAdmission.ProviderContentDigest.make("a".repeat(40)),
               eventScope: provider === "telegram" ? "telegram" : "14165550000",
               messageKind: "text",
               provider,
@@ -75,7 +76,10 @@ describe("shared provider admission PostgreSQL", () => {
             );
             const conflict = yield* ProviderEventRouting.route(
               fixture.database,
-              { ...input, contentDigest: "b".repeat(64) },
+              {
+                ...input,
+                contentDigest: ProviderAdmission.ProviderContentDigest.make("b".repeat(40)),
+              },
               new Date("2026-08-17T00:00:01.000Z"),
             );
 

@@ -7,7 +7,7 @@ import {
   TelegramOutboundUnavailable,
 } from "../src/handlers/telegram-webhook";
 import type { TelegramOutbound } from "../src/handlers/telegram-webhook";
-import type * as MessagingAdmission from "../src/services/messaging-admission";
+import type * as TelegramAdmission from "../src/services/telegram-message-admission";
 import * as Onboarding from "../src/services/onboarding";
 
 describe("Telegram webhook", () => {
@@ -221,7 +221,7 @@ const makeHarness = (overrides?: {
   readonly stage?: "development" | "preview" | "production" | "test";
   readonly takeOverBeforeSend?: boolean;
 }) => {
-  const admissions: Array<MessagingAdmission.TelegramMessageAdmissionInput> = [];
+  const admissions: Array<TelegramAdmission.TelegramMessageAdmissionInput> = [];
   const enrollments: Array<Onboarding.TelegramEnrollment> = [];
   const invitations: Array<Onboarding.UnknownTelegramMessage> = [];
   const completedOnboardingEvents = new Set<string>();
@@ -247,7 +247,7 @@ const makeHarness = (overrides?: {
     admission: {
       accept: (input) => {
         admissions.push(input);
-        const outcome: MessagingAdmission.AdmissionResult["_tag"] =
+        const outcome: TelegramAdmission.AdmissionResult["_tag"] =
           overrides?.admission === "unbound"
             ? "Unbound"
             : overrides?.admission === "duplicate"

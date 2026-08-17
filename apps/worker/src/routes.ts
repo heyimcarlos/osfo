@@ -14,18 +14,18 @@ import * as TelegramRoutes from "./handlers/telegram";
 import type { ExecutionUnit } from "./layers";
 import * as AuthMiddleware from "./middleware/auth";
 import * as OnboardingCloudflare from "./integrations/cloudflare/onboarding";
-import * as MessagingAdmissionCloudflare from "./integrations/cloudflare/messaging-admission";
-import * as MessagingAdmissionPostgres from "./integrations/postgres/messaging-admission";
+import * as TelegramAdmissionCloudflare from "./integrations/cloudflare/telegram-admission";
+import * as TelegramAdmissionPostgres from "./integrations/postgres/telegram-admission";
 import * as OnboardingPostgres from "./integrations/postgres/onboarding";
 import * as OnboardingLinks from "./integrations/public/onboarding-links";
 import * as Onboarding from "./services/onboarding";
-import * as MessagingAdmission from "./services/messaging-admission";
+import * as TelegramAdmission from "./services/telegram-message-admission";
 import * as Registration from "./services/registration";
 
 /** Cloudflare bindings used by the Worker route tree. */
 export type Bindings = RuntimeProbes.Bindings &
   OnboardingCloudflare.Bindings &
-  MessagingAdmissionCloudflare.Bindings &
+  TelegramAdmissionCloudflare.Bindings &
   WhatsApp.Bindings;
 
 /** Options used to assemble the Worker route tree. */
@@ -69,9 +69,9 @@ export const layer = (options: Options) => {
   const whatsapp = WhatsApp.layer({ config: options.config, env: options.env }).pipe(
     HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)),
   );
-  const messagingAdmission = MessagingAdmission.layerWithoutDependencies.pipe(
-    Layer.provide(MessagingAdmissionPostgres.layerWithoutDependencies),
-    Layer.provide(MessagingAdmissionCloudflare.layer(options.env)),
+  const telegramAdmission = TelegramAdmission.layerWithoutDependencies.pipe(
+    Layer.provide(TelegramAdmissionPostgres.layerWithoutDependencies),
+    Layer.provide(TelegramAdmissionCloudflare.layer(options.env)),
     Layer.provide(options.authDependencies),
   );
   const telegram =
@@ -79,7 +79,7 @@ export const layer = (options: Options) => {
       ? TelegramRoutes.layer({
           stage: options.config.stage,
           telegram: options.config.telegram,
-        }).pipe(Layer.provide(onboardingRequest), Layer.provide(messagingAdmission))
+        }).pipe(Layer.provide(onboardingRequest), Layer.provide(telegramAdmission))
       : Layer.empty;
 
   return Layer.mergeAll(

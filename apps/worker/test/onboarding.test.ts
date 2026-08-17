@@ -14,11 +14,12 @@ import { TestClock } from "effect/testing";
 import * as Db from "../src/db";
 import { ChannelIdentity, UserId } from "../src/domain";
 import * as OnboardingPostgres from "../src/integrations/postgres/onboarding";
-import * as MessagingAdmissionPostgres from "../src/integrations/postgres/messaging-admission";
+import * as TelegramAdmissionPostgres from "../src/integrations/postgres/telegram-admission";
 import * as OnboardingLinks from "../src/integrations/public/onboarding-links";
 import { handleWhatsAppOnboardingCommand } from "../src/handlers/whatsapp-onboarding";
 import * as Onboarding from "../src/services/onboarding";
-import * as MessagingAdmission from "../src/services/messaging-admission";
+import * as TelegramAdmission from "../src/services/telegram-message-admission";
+import * as ProviderAdmission from "../src/services/provider-message-admission";
 import * as Registration from "../src/services/registration";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/strict-effect-provide -- These tests are Effect application entry points and assert tagged public results. */
@@ -117,13 +118,13 @@ describe("Onboarding application service", () => {
           const submissions: Array<string> = [];
           const eventId = "telegram-update-318";
           const identity = ChannelIdentity.make("telegram:900100214");
-          const admissionLayer = MessagingAdmission.layerWithoutDependencies.pipe(
-            Layer.provideMerge(MessagingAdmissionPostgres.layerWithoutDependencies),
+          const admissionLayer = TelegramAdmission.layerWithoutDependencies.pipe(
+            Layer.provideMerge(TelegramAdmissionPostgres.layerWithoutDependencies),
             Layer.provideMerge(Db.layerFromDatabase(fixture.database)),
             Layer.provideMerge(
               Layer.succeed(
-                MessagingAdmission.AgentSubmission,
-                MessagingAdmission.AgentSubmission.of({
+                TelegramAdmission.AgentSubmission,
+                TelegramAdmission.AgentSubmission.of({
                   accept: (_agentId, input) =>
                     Effect.sync(() => {
                       submissions.push(input.submissionId);
@@ -139,16 +140,20 @@ describe("Onboarding application service", () => {
             ),
             Layer.provideMerge(
               Layer.succeed(
-                MessagingAdmission.StableIdentity,
-                MessagingAdmission.StableIdentity.of({
-                  deriveAdmission: () => Effect.succeed("a".repeat(40)),
-                  deriveContent: () => Effect.succeed("b".repeat(40)),
+                TelegramAdmission.StableIdentity,
+                TelegramAdmission.StableIdentity.of({
+                  deriveAdmission: () =>
+                    Effect.succeed(
+                      ProviderAdmission.ProviderAdmissionIdentityDigest.make("a".repeat(40)),
+                    ),
+                  deriveContent: () =>
+                    Effect.succeed(ProviderAdmission.ProviderContentDigest.make("b".repeat(40))),
                 }),
               ),
             ),
           );
           const admit = (message: string) =>
-            MessagingAdmission.Service.pipe(
+            TelegramAdmission.Service.pipe(
               Effect.flatMap((admission) =>
                 admission.accept({ channelIdentity: identity, eventId, message }),
               ),
@@ -321,6 +326,48 @@ describe("Onboarding application service", () => {
         }),
       closeTestDatabase,
     ),
+  );
+
+  it.effect(
+    "reuses one live Telegram invitation and Registration Dialogue for a later provider event",
+    () =>
+      Effect.acquireUseRelease(
+        makeTestDatabase,
+        (fixture) =>
+          Effect.gen(function* () {
+            yield* applyMigrations(fixture.client);
+            const harness = makeHarness(fixture.database, { enrollmentProvider: "telegram" });
+            yield* Effect.gen(function* () {
+              const onboarding = yield* Onboarding.Service;
+              const channelIdentity = ChannelIdentity.make("telegram:9001002991");
+              const first = yield* issueTelegramInvitation(onboarding, {
+                channelIdentity,
+                eventId: "telegram-update-live-first",
+                locale: "en",
+                message: "Help me plan.",
+              });
+              const later = yield* issueTelegramInvitation(onboarding, {
+                channelIdentity,
+                eventId: "telegram-update-live-later",
+                locale: "en",
+                message: "I am following up.",
+              });
+              const invitations = yield* Effect.promise(() =>
+                fixture.database
+                  .select({ invitationId: registrationInvitations.invitationId })
+                  .from(registrationInvitations),
+              );
+
+              expect(later).toEqual(first);
+              expect(invitations).toEqual([{ invitationId: first.invitationId }]);
+              expect(harness.turns.map(({ invitationId }) => invitationId)).toEqual([
+                first.invitationId,
+                first.invitationId,
+              ]);
+            }).pipe(Effect.provide(harness.layer));
+          }),
+        closeTestDatabase,
+      ),
   );
 
   it.effect("uses one digest-only Telegram enrollment token once for web-first setup", () =>
@@ -954,7 +1001,7 @@ describe("Onboarding application service", () => {
                 userId: UserId.make("user-telegram-other"),
               }),
             );
-            const conflict = yield* Effect.exit(
+            const conflict = yield* Effect.flip(
               onboarding.enrollTelegram({
                 channelIdentity: sharedIdentity,
                 eventId: "telegram-update-316",
@@ -972,7 +1019,10 @@ describe("Onboarding application service", () => {
                 "channelBindingId" in ownerBinding &&
                 matching.channelBindingId === ownerBinding.channelBindingId,
             ).toBe(true);
-            expect(Exit.isFailure(conflict)).toBe(true);
+            expect(conflict._tag).toBe("ChannelBindingConflict");
+            expect(conflict.message).toBe(
+              "The channel identity conflicts with an active Channel Binding",
+            );
           });
 
           yield* program.pipe(Effect.provide(harness.layer));
@@ -1202,7 +1252,11 @@ const makeHarness = (
 ) => {
   const welcomes: Array<Onboarding.SetupProfile> = [];
   const deletedInvitations: Array<string> = [];
-  const turns: Array<{ readonly eventId: string; readonly verifyUrl: string }> = [];
+  const turns: Array<{
+    readonly eventId: string;
+    readonly invitationId: string;
+    readonly verifyUrl: string;
+  }> = [];
   const durableTurnUrls = new Map<string, string>();
   let shouldFailWelcome = options?.failWelcomeOnce ?? false;
   const layer = Onboarding.layerWithoutDependencies.pipe(
@@ -1244,7 +1298,7 @@ const makeHarness = (
           begin: ({ eventId, invitationId, verifyUrl }) => {
             const durableVerifyUrl = durableTurnUrls.get(invitationId) ?? verifyUrl;
             durableTurnUrls.set(invitationId, durableVerifyUrl);
-            turns.push({ eventId, verifyUrl: durableVerifyUrl });
+            turns.push({ eventId, invitationId, verifyUrl: durableVerifyUrl });
             return Effect.succeed({
               response: durableVerifyUrl.endsWith("/get-started")
                 ? "Use the registration link I sent earlier."

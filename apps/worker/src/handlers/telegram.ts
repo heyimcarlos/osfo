@@ -3,7 +3,7 @@ import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 
 import type { OsfoStage, RuntimeConfig } from "../env";
-import * as MessagingAdmission from "../services/messaging-admission";
+import * as TelegramAdmission from "../services/telegram-message-admission";
 import * as Onboarding from "../services/onboarding";
 import { handleTelegramWebhook } from "./telegram-webhook";
 
@@ -18,7 +18,7 @@ export const layer = (options: Options) =>
   Layer.unwrap(
     Effect.all([
       Onboarding.Service,
-      MessagingAdmission.Service,
+      TelegramAdmission.Service,
       Effect.promise(() => import("../integrations/telegram/outbound")),
     ]).pipe(
       Effect.map(([onboarding, admission, TelegramOutbound]) => {
