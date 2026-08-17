@@ -1,7 +1,7 @@
 import type { Database } from "@osfo/db";
 import { accounts } from "@osfo/db/schema/auth";
 import { gmailConnections, gmailSendAttempts } from "@osfo/db/schema/gmail";
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lte } from "drizzle-orm";
 import { DateTime, Effect, Predicate, Redacted, Schema } from "effect";
 
 import { UserId } from "../../domain";
@@ -234,59 +234,69 @@ const hasRequiredGmailScopes = (scope: string | null) => {
 };
 
 const makeAttempts = (database: Database): SendAttemptPersistence => ({
-  begin: (actionId, connectionId, now) =>
+  recover: (actionId, connectionId, now) =>
+    readAttempt(database, actionId).pipe(
+      Effect.flatMap((row) =>
+        row === undefined
+          ? Effect.succeed(null)
+          : recoverAttempt(database, actionId, connectionId, now, row),
+      ),
+    ),
+  prepare: (actionId, connectionId, now) =>
     Effect.gen(function* () {
-      const inserted = yield* attemptQuery(actionId, "begin", () =>
+      const inserted = yield* attemptQuery(actionId, "prepare", () =>
         database
           .insert(gmailSendAttempts)
-          .values({ actionId, connectionId, outcome: "pending", startedAt: now })
+          .values({ actionId, connectionId, contactedAt: null, outcome: "pending", startedAt: now })
           .onConflictDoNothing({ target: gmailSendAttempts.actionId })
           .returning()
           .execute(),
       );
-      const row = inserted[0] ?? (yield* readAttempt(database, actionId));
-      const attempt = yield* decodeAttempt(actionId, row);
-      if (attempt.connectionId !== connectionId) {
+      const insertedRow = inserted[0];
+      if (insertedRow !== undefined) {
+        return { _tag: "AttemptPrepared", attempt: yield* decodeAttempt(actionId, insertedRow) };
+      }
+      const existing = yield* readAttempt(database, actionId);
+      if (existing === undefined) {
         return yield* new GmailSendRecoveryUnavailable({
           actionId,
-          cause: attempt,
-          message: "The Gmail Action identity has conflicting provider recovery facts",
-          operation: "begin",
+          cause: actionId,
+          message: "The concurrent Gmail recovery evidence could not be read",
+          operation: "prepare",
         });
       }
-      if (inserted[0] !== undefined) return { _tag: "AttemptStarted", attempt } as const;
-      if (attempt.outcome !== "pending") return { _tag: "ExistingAttempt", attempt } as const;
-      const recoveryCutoff = DateTime.toDateUtc(
-        DateTime.subtract(DateTime.fromDateUnsafe(now), { minutes: sendRecoveryLeaseMinutes }),
-      );
-      const claimed = yield* attemptQuery(actionId, "begin", () =>
+      return yield* recoverAttempt(database, actionId, connectionId, now, existing);
+    }),
+  markContacted: (actionId, contactedAt) =>
+    Effect.gen(function* () {
+      const updated = yield* attemptQuery(actionId, "contact", () =>
         database
           .update(gmailSendAttempts)
-          .set({ startedAt: now })
+          .set({ contactedAt })
           .where(
             and(
               eq(gmailSendAttempts.actionId, actionId),
-              eq(gmailSendAttempts.connectionId, connectionId),
               eq(gmailSendAttempts.outcome, "pending"),
-              lte(gmailSendAttempts.startedAt, recoveryCutoff),
+              isNull(gmailSendAttempts.contactedAt),
             ),
           )
           .returning()
           .execute(),
       );
-      const claimedAttempt = claimed[0];
-      return claimedAttempt === undefined
-        ? { _tag: "ActiveAttempt", attempt }
-        : {
-            _tag: "RecoveryStarted",
-            attempt: yield* decodeAttempt(actionId, claimedAttempt),
-          };
+      if (updated[0] !== undefined) return undefined;
+      const current = yield* decodeAttempt(actionId, yield* readAttempt(database, actionId));
+      return yield* new GmailSendRecoveryUnavailable({
+        actionId,
+        cause: current,
+        message: "Gmail provider contact could not be marked exactly once",
+        operation: "contact",
+      });
     }),
   complete: (actionId, outcome) =>
     Effect.gen(function* () {
       const current = yield* decodeAttempt(actionId, yield* readAttempt(database, actionId));
       if (current.outcome === outcome) return undefined;
-      if (current.outcome !== "pending" || outcome === "pending") {
+      if (current.outcome !== "pending" || current.contactedAt === null || outcome === "pending") {
         return yield* new GmailSendRecoveryUnavailable({
           actionId,
           cause: current,
@@ -299,7 +309,11 @@ const makeAttempts = (database: Database): SendAttemptPersistence => ({
           .update(gmailSendAttempts)
           .set({ outcome })
           .where(
-            and(eq(gmailSendAttempts.actionId, actionId), eq(gmailSendAttempts.outcome, "pending")),
+            and(
+              eq(gmailSendAttempts.actionId, actionId),
+              eq(gmailSendAttempts.outcome, "pending"),
+              isNotNull(gmailSendAttempts.contactedAt),
+            ),
           )
           .returning()
           .execute(),
@@ -315,6 +329,54 @@ const makeAttempts = (database: Database): SendAttemptPersistence => ({
       });
     }),
 });
+
+const recoverAttempt = (
+  database: Database,
+  actionId: ActionId,
+  connectionId: GmailConnectionId,
+  now: Date,
+  row: GmailSendAttemptRow,
+) =>
+  Effect.gen(function* () {
+    const attempt = yield* decodeAttempt(actionId, row);
+    if (attempt.connectionId !== connectionId) {
+      return yield* new GmailSendRecoveryUnavailable({
+        actionId,
+        cause: attempt,
+        message: "The Gmail Action identity has conflicting provider recovery facts",
+        operation: "prepare",
+      });
+    }
+    if (attempt.outcome !== "pending") return { _tag: "ExistingAttempt", attempt } as const;
+    const recoveryCutoff = DateTime.toDateUtc(
+      DateTime.subtract(DateTime.fromDateUnsafe(now), { minutes: sendRecoveryLeaseMinutes }),
+    );
+    const claimed = yield* attemptQuery(actionId, "prepare", () =>
+      database
+        .update(gmailSendAttempts)
+        .set({ startedAt: now })
+        .where(
+          and(
+            eq(gmailSendAttempts.actionId, actionId),
+            eq(gmailSendAttempts.connectionId, connectionId),
+            eq(gmailSendAttempts.outcome, "pending"),
+            lte(gmailSendAttempts.startedAt, recoveryCutoff),
+          ),
+        )
+        .returning()
+        .execute(),
+    );
+    const claimedAttempt = claimed[0];
+    return claimedAttempt === undefined
+      ? ({ _tag: "ActiveAttempt", attempt } as const)
+      : ({
+          _tag:
+            claimedAttempt.contactedAt === null
+              ? "PreparationRecoveryStarted"
+              : "ContactRecoveryStarted",
+          attempt: yield* decodeAttempt(actionId, claimedAttempt),
+        } as const);
+  });
 
 const sendRecoveryLeaseMinutes = 5;
 
@@ -388,7 +450,7 @@ const decodeConnection = (row: GmailConnectionRow | undefined) => {
 };
 
 const readAttempt = (database: Database, actionId: ActionId) =>
-  attemptQuery(actionId, "begin", () =>
+  attemptQuery(actionId, "prepare", () =>
     database
       .select()
       .from(gmailSendAttempts)
@@ -405,7 +467,7 @@ const decodeAttempt = (actionId: ActionId, row: GmailSendAttemptRow | undefined)
           actionId,
           cause,
           message: "PostgreSQL returned invalid Gmail send recovery evidence",
-          operation: "begin",
+          operation: "prepare",
         }),
     ),
   );

@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import { UserId } from "../domain";
+import { ToolCallId, UserId } from "../domain";
 import { ActionId } from "./action-execution";
 
 const boundedIdentity = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500));
@@ -45,7 +45,6 @@ export const GmailMessageId = boundedIdentity.pipe(Schema.brand("GmailMessageId"
 /** Stable Gmail message resource selected by search or read. */
 export type GmailMessageId = typeof GmailMessageId.Type;
 
-const ToolCallId = boundedIdentity;
 const EmailAddress = Schema.String.check(
   Schema.isMinLength(3),
   Schema.isMaxLength(320),
@@ -148,6 +147,7 @@ export type GmailSendEvidence =
 export const GmailSendAttempt = Schema.Struct({
   actionId: ActionId,
   connectionId: GmailConnectionId,
+  contactedAt: Schema.NullOr(Schema.Date),
   outcome: Schema.Literals(["pending", "applied", "notApplied", "ambiguous"]),
   startedAt: Schema.Date,
 });
@@ -162,7 +162,7 @@ export class GmailSendRecoveryUnavailable extends Schema.TaggedError<GmailSendRe
     actionId: ActionId,
     cause: Schema.Defect(),
     message: Schema.String,
-    operation: Schema.Literals(["begin", "complete"]),
+    operation: Schema.Literals(["contact", "complete", "prepare"]),
   },
 ) {}
 
@@ -183,7 +183,7 @@ export class GmailPersistenceUnavailable extends Schema.TaggedError<GmailPersist
   {
     cause: Schema.Defect(),
     message: Schema.String,
-    operation: Schema.Literals(["connect", "findById", "findByUser", "revoke"]),
+    operation: Schema.Literals(["connect", "findById", "findByUser", "recheck", "revoke"]),
   },
 ) {}
 

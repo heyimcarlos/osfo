@@ -1,6 +1,6 @@
 import { Effect, Predicate } from "effect";
 
-import type { AllowancePeriodId, UserId } from "../domain";
+import type { AllowancePeriodId, ToolCallId, UserId } from "../domain";
 import type { AllowanceItem } from "../domain/allowance";
 import {
   type GmailSendAttempt,
@@ -60,6 +60,9 @@ export interface MakeOptions {
   readonly authorization: Authorization;
   readonly connections: ConnectionPersistence;
   readonly provider: Provider;
+  readonly reloadAuthorization: (
+    previous: AuthorizationContext,
+  ) => Effect.Effect<AuthorizationContext, GmailPersistenceUnavailable>;
 }
 
 /** Focused dependencies for Gmail connection control. */
@@ -70,6 +73,10 @@ export interface ConnectionControlOptions {
 
 /** Gmail API operations required by the application service. */
 export interface Provider {
+  readonly prepareSend: (
+    connection: ConnectedConnection,
+    input: GmailSendInput,
+  ) => Effect.Effect<PreparedGmailSend, GmailProviderUnavailable>;
   readonly read: (
     connection: ConnectedConnection,
     input: GmailReadInput,
@@ -82,25 +89,43 @@ export interface Provider {
     connection: ConnectedConnection,
     input: GmailSendInput,
   ) => Effect.Effect<GmailSendEvidence, GmailProviderUnavailable>;
-  readonly send: (
-    connection: ConnectedConnection,
-    input: GmailSendInput,
-  ) => Effect.Effect<GmailSendEvidence, GmailProviderUnavailable>;
+}
+
+/** A fully prepared Gmail request whose only remaining operation is provider contact. */
+export interface PreparedGmailSend {
+  readonly contact: Effect.Effect<GmailSendEvidence>;
 }
 
 /** Gmail-specific provider recovery persistence, never Action or Approval authority. */
 export interface SendAttemptPersistence {
-  readonly begin: (
+  readonly recover: (
     actionId: ActionId,
     connectionId: GmailConnectionId,
     now: Date,
   ) => Effect.Effect<
-    | { readonly _tag: "AttemptStarted"; readonly attempt: GmailSendAttempt }
     | { readonly _tag: "ActiveAttempt"; readonly attempt: GmailSendAttempt }
-    | { readonly _tag: "RecoveryStarted"; readonly attempt: GmailSendAttempt }
+    | { readonly _tag: "ContactRecoveryStarted"; readonly attempt: GmailSendAttempt }
+    | { readonly _tag: "PreparationRecoveryStarted"; readonly attempt: GmailSendAttempt }
+    | { readonly _tag: "ExistingAttempt"; readonly attempt: GmailSendAttempt }
+    | null,
+    GmailSendRecoveryUnavailable
+  >;
+  readonly prepare: (
+    actionId: ActionId,
+    connectionId: GmailConnectionId,
+    now: Date,
+  ) => Effect.Effect<
+    | { readonly _tag: "AttemptPrepared"; readonly attempt: GmailSendAttempt }
+    | { readonly _tag: "ActiveAttempt"; readonly attempt: GmailSendAttempt }
+    | { readonly _tag: "ContactRecoveryStarted"; readonly attempt: GmailSendAttempt }
+    | { readonly _tag: "PreparationRecoveryStarted"; readonly attempt: GmailSendAttempt }
     | { readonly _tag: "ExistingAttempt"; readonly attempt: GmailSendAttempt },
     GmailSendRecoveryUnavailable
   >;
+  readonly markContacted: (
+    actionId: ActionId,
+    contactedAt: Date,
+  ) => Effect.Effect<void, GmailSendRecoveryUnavailable>;
   readonly complete: (
     actionId: ActionId,
     outcome: GmailSendAttempt["outcome"],
@@ -109,13 +134,10 @@ export interface SendAttemptPersistence {
 
 /** Construct Gmail connection control without mail-execution dependencies. */
 export const makeConnectionControl = (options: ConnectionControlOptions) => ({
+  authorizeConnect: (context: AuthorizationContext) => authorizeConnect(options, context),
   completeOAuth: (context: AuthorizationContext) =>
     Effect.gen(function* () {
-      const connectionId = GmailConnectionId.make(`gmail:${context.user.userId}`);
-      const admission = options.authorization.admit(
-        { ...context, resourceOwnerUserId: context.user.userId },
-        connectionOperation(connectionId, "connect"),
-      );
+      const admission = authorizeConnect(options, context);
       if (!Predicate.isTagged(admission, "Admitted")) return admission;
       return yield* options.connections.completeOAuth(context.user.userId, context.now);
     }),
@@ -142,6 +164,12 @@ export const makeConnectionControl = (options: ConnectionControlOptions) => ({
       .findByUser(context.user.userId)
       .pipe(Effect.flatMap((connection) => revokeConnection(options, context, connection))),
 });
+
+const authorizeConnect = (options: ConnectionControlOptions, context: AuthorizationContext) =>
+  options.authorization.admit(
+    { ...context, resourceOwnerUserId: context.user.userId },
+    connectionOperation(GmailConnectionId.make(`gmail:${context.user.userId}`), "connect"),
+  );
 
 /** Construct Gmail mail behavior and connection control. */
 export const make = (options: MakeOptions) => ({
@@ -218,28 +246,18 @@ export const make = (options: MakeOptions) => ({
   ) =>
     Effect.gen(function* () {
       const connection = yield* options.connections.findByUser(context.user.userId);
-      const currentContext: AuthorizationContext = {
-        ...context,
-        gmailConnection: projectConnectionAuthority(connection),
-        resourceOwnerUserId: connection?.userId ?? null,
-      };
-      return yield* executeThinkApprovedAction(
-        options.authorization,
-        currentContext,
-        ThinkApprovedActionExecution.make({
-          _tag: "ThinkApprovedActionExecution",
-          actionId: input.actionId,
-          operation: "gmail.send",
-        }),
-        (actionId) =>
-          connection === null || !Predicate.isTagged(connection, "Connected")
-            ? Effect.succeed(
-                ambiguousActionResult(
-                  actionId,
-                  "The Gmail connection was unavailable after authorization",
-                ),
-              )
-            : sendWithRecovery(options, connection, input, admittedAllowancePeriodId, context.now),
+      if (connection === null || !Predicate.isTagged(connection, "Connected")) {
+        return yield* executeApprovedSendRecheck(options, context, input, connection, () =>
+          Effect.succeed(
+            ambiguousActionResult(
+              input.actionId,
+              "The Gmail connection was unavailable after authorization",
+            ),
+          ),
+        );
+      }
+      return yield* executeApprovedSendRecheck(options, context, input, connection, () =>
+        sendWithRecovery(options, connection, input, admittedAllowancePeriodId, context),
       );
     }),
 });
@@ -249,37 +267,140 @@ const sendWithRecovery = (
   connection: ConnectedConnection,
   input: GmailSendInput,
   allowancePeriodId: AllowancePeriodId,
-  startedAt: Date,
+  previousContext: AuthorizationContext,
 ) =>
   Effect.gen(function* () {
-    const started = yield* options.attempts.begin(
+    const recovery = yield* options.attempts.recover(
       input.actionId,
       connection.connectionId,
-      startedAt,
+      previousContext.now,
     );
+    if (recovery !== null && Predicate.isTagged(recovery, "ActiveAttempt")) {
+      return ambiguousActionResult(
+        input.actionId,
+        "The Gmail provider contact is still active and cannot be duplicated",
+      );
+    }
+    if (recovery !== null && Predicate.isTagged(recovery, "ExistingAttempt")) {
+      return ambiguousActionResult(
+        input.actionId,
+        "Gmail provider recovery evidence already blocks another send",
+      );
+    }
+    if (recovery !== null && Predicate.isTagged(recovery, "ContactRecoveryStarted")) {
+      return yield* executeApprovedSendRecheck(options, previousContext, input, connection, () =>
+        Effect.gen(function* () {
+          const evidence = yield* options.provider.reconcileSend(connection, input);
+          yield* recordSendUsage(options.allowances, allowancePeriodId, input, evidence);
+          yield* options.attempts.complete(input.actionId, attemptOutcome(evidence));
+          return actionResult(input.actionId, evidence);
+        }),
+      );
+    }
+    const preparation = yield* Effect.result(options.provider.prepareSend(connection, input));
+    if (Predicate.isTagged(preparation, "Failure")) {
+      return actionResult(input.actionId, {
+        _tag: "NotApplied",
+        evidence: "Gmail was not contacted because send preparation failed",
+        vendorUsdMicros: 0n,
+      });
+    }
+    const started =
+      recovery ??
+      (yield* options.attempts.prepare(
+        input.actionId,
+        connection.connectionId,
+        previousContext.now,
+      ));
     if (Predicate.isTagged(started, "ActiveAttempt")) {
       return ambiguousActionResult(
         input.actionId,
         "The Gmail provider contact is still active and cannot be duplicated",
       );
     }
-    if (Predicate.isTagged(started, "ExistingAttempt") && started.attempt.outcome !== "pending") {
+    if (Predicate.isTagged(started, "ExistingAttempt")) {
       return ambiguousActionResult(
         input.actionId,
         "Gmail provider recovery evidence already blocks another send",
       );
     }
-    const contacted = Predicate.isTagged(started, "RecoveryStarted")
-      ? yield* options.provider.reconcileSend(connection, input)
-      : yield* options.provider.send(connection, input);
-    const evidence =
-      Predicate.isTagged(contacted, "Ambiguous") && Predicate.isTagged(started, "AttemptStarted")
-        ? yield* options.provider.reconcileSend(connection, input)
-        : contacted;
-    yield* recordSendUsage(options.allowances, allowancePeriodId, input, evidence);
-    yield* options.attempts.complete(input.actionId, attemptOutcome(evidence));
-    return actionResult(input.actionId, evidence);
+    if (Predicate.isTagged(started, "ContactRecoveryStarted")) {
+      return yield* executeApprovedSendRecheck(options, previousContext, input, connection, () =>
+        Effect.gen(function* () {
+          const evidence = yield* options.provider.reconcileSend(connection, input);
+          yield* recordSendUsage(options.allowances, allowancePeriodId, input, evidence);
+          yield* options.attempts.complete(input.actionId, attemptOutcome(evidence));
+          return actionResult(input.actionId, evidence);
+        }),
+      );
+    }
+    const result = yield* executeApprovedSendRecheck(
+      options,
+      previousContext,
+      input,
+      connection,
+      (current) =>
+        Effect.gen(function* () {
+          yield* options.attempts.markContacted(input.actionId, current.now);
+          const contacted = yield* preparation.success.contact;
+          const evidence = Predicate.isTagged(contacted, "Ambiguous")
+            ? yield* options.provider.reconcileSend(connection, input)
+            : contacted;
+          yield* recordSendUsage(options.allowances, allowancePeriodId, input, evidence);
+          yield* options.attempts.complete(input.actionId, attemptOutcome(evidence));
+          return actionResult(input.actionId, evidence);
+        }),
+    );
+    return result;
   });
+
+const executeApprovedSendRecheck = <E>(
+  options: MakeOptions,
+  previousContext: AuthorizationContext,
+  input: GmailSendInput,
+  connection: GmailConnection | null,
+  contactProvider: (
+    current: AuthorizationContext,
+  ) => Effect.Effect<ActionExecutionResult | Denied, E>,
+) =>
+  options.reloadAuthorization(previousContext).pipe(
+    Effect.flatMap((current) =>
+      options.connections.findByUser(current.user.userId).pipe(
+        Effect.flatMap((reloaded) => {
+          const currentConnection =
+            connection !== null && Predicate.isTagged(connection, "Connected")
+              ? sameConnectedConnection(connection, reloaded)
+                ? reloaded
+                : null
+              : reloaded;
+          return executeThinkApprovedAction(
+            options.authorization,
+            {
+              ...current,
+              gmailConnection: projectConnectionAuthority(currentConnection),
+              resourceOwnerUserId: currentConnection?.userId ?? null,
+            },
+            ThinkApprovedActionExecution.make({
+              _tag: "ThinkApprovedActionExecution",
+              actionId: input.actionId,
+              operation: "gmail.send",
+            }),
+            () => contactProvider(current),
+          );
+        }),
+      ),
+    ),
+  );
+
+const sameConnectedConnection = (
+  prepared: ConnectedConnection,
+  current: GmailConnection | null,
+): current is ConnectedConnection =>
+  current !== null &&
+  Predicate.isTagged(current, "Connected") &&
+  current.connectionId === prepared.connectionId &&
+  current.credentialReference === prepared.credentialReference &&
+  current.providerAccountId === prepared.providerAccountId;
 
 const recordSendUsage = (
   allowances: Pick<Allowances, "record">,
@@ -407,7 +528,7 @@ const revokeConnection = (
 const recordObservedUsage = (
   allowances: Pick<Allowances, "record">,
   allowancePeriodId: AllowancePeriodId,
-  source: { readonly sourceId: string; readonly sourceType: string },
+  source: { readonly sourceId: ToolCallId; readonly sourceType: "gmailRead" | "gmailSearch" },
   items: ReadonlyArray<AllowanceItem>,
 ) => allowances.record(allowancePeriodId, source, items);
 

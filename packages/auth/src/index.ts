@@ -2,7 +2,7 @@ import type { Database } from "@osfo/db";
 import * as authSchema from "@osfo/db/schema/auth";
 import { dash } from "@better-auth/infra";
 import { APIError, betterAuth, type BetterAuthOptions } from "better-auth";
-import { createAuthMiddleware } from "better-auth/api";
+import { createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { phoneNumber, type PhoneNumberOptions } from "better-auth/plugins/phone-number";
 
@@ -11,11 +11,33 @@ export interface AuthOptions {
   readonly baseURL: string;
   readonly database: Database;
   readonly dashboard: DashboardOptions;
-  readonly google: { readonly clientId: string; readonly clientSecret: string };
+  readonly google:
+    | {
+        readonly clientId: string;
+        readonly clientSecret: string;
+        readonly kind: "disabled";
+      }
+    | {
+        readonly authorizeAccountLink: (
+          identity: GoogleLinkIdentity,
+        ) => Promise<"allowed" | "connectionDenied">;
+        readonly clientId: string;
+        readonly clientSecret: string;
+        readonly kind: "gmailLinking";
+        readonly onAccountLinked: (
+          identity: GoogleLinkIdentity,
+        ) => Promise<"connected" | "connectionConflict" | "connectionDenied">;
+      };
   readonly secret: string;
   readonly sendOTP: PhoneNumberOptions["sendOTP"];
   readonly trustedOrigins: ReadonlyArray<string>;
   readonly verifyOTP: NonNullable<PhoneNumberOptions["verifyOTP"]>;
+}
+
+interface GoogleLinkIdentity {
+  readonly authSessionExpiresAt: Date;
+  readonly authSessionId: string;
+  readonly userId: string;
 }
 
 /** Better Auth Dashboard policy for one auth instance. */
@@ -37,7 +59,7 @@ const makeOptions = (options: AuthOptions): BetterAuthOptions => ({
   account: {
     accountLinking: {
       allowDifferentEmails: true,
-      enabled: true,
+      enabled: options.google.kind === "gmailLinking",
       trustedProviders: ["google"],
     },
     modelName: "accounts",
@@ -61,10 +83,78 @@ const makeOptions = (options: AuthOptions): BetterAuthOptions => ({
   emailAndPassword: { enabled: true },
   hooks: {
     // oxlint-disable-next-line effecttsgo/async-function -- Better Auth middleware requires a Promise-returning callback.
+    after: createAuthMiddleware(async (context) => {
+      if (
+        context.path !== "/callback/:id" ||
+        context.params?.id !== "google" ||
+        options.google.kind !== "gmailLinking"
+      ) {
+        return;
+      }
+      if (
+        context.context.returned instanceof APIError &&
+        context.context.returned.status !== "FOUND"
+      ) {
+        return;
+      }
+      const session = await getSessionFromCtx(context);
+      if (session === null) {
+        throw new APIError("UNAUTHORIZED", {
+          message: "An authenticated User is required to complete Gmail OAuth",
+        });
+      }
+      const outcome = await options.google.onAccountLinked({
+        authSessionExpiresAt: session.session.expiresAt,
+        authSessionId: session.session.id,
+        userId: session.user.id,
+      });
+      if (outcome === "connectionDenied") {
+        throw new APIError("FORBIDDEN", {
+          message: "The current User cannot create a Gmail Integration Connection",
+        });
+      }
+      if (outcome === "connectionConflict") {
+        throw new APIError("CONFLICT", {
+          message: "The linked Google account conflicts with Gmail connection authority",
+        });
+      }
+    }),
+    // oxlint-disable-next-line effecttsgo/async-function -- Better Auth middleware requires a Promise-returning callback.
     before: createAuthMiddleware(async (context) => {
       if (context.path === "/sign-in/social" && context.body?.provider === "google") {
         throw new APIError("BAD_REQUEST", {
           message: "Google is available only for authenticated Gmail account linking",
+        });
+      }
+      if (
+        context.path === "/link-social" &&
+        context.body?.provider === "google" &&
+        options.google.kind === "gmailLinking"
+      ) {
+        const session = await getSessionFromCtx(context);
+        if (session === null) {
+          throw new APIError("UNAUTHORIZED", {
+            message: "An authenticated User is required to link a Gmail account",
+          });
+        }
+        const outcome = await options.google.authorizeAccountLink({
+          authSessionExpiresAt: session.session.expiresAt,
+          authSessionId: session.session.id,
+          userId: session.user.id,
+        });
+        if (outcome === "connectionDenied") {
+          throw new APIError("FORBIDDEN", {
+            message: "The current User cannot create a Gmail Integration Connection",
+          });
+        }
+      }
+      if (
+        context.path === "/link-social" &&
+        context.body?.provider === "google" &&
+        options.google.kind === "disabled"
+      ) {
+        throw new APIError("BAD_REQUEST", {
+          message: "Google account linking is disabled for this auth instance",
         });
       }
     }),

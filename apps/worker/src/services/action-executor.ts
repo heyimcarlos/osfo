@@ -19,7 +19,7 @@ export const executeThinkApprovedAction = <E>(
   authorization: Authorization,
   context: AuthorizationContext,
   approvedExecution: ThinkApprovedActionExecution,
-  contactProvider: (actionId: ActionId) => Effect.Effect<ActionExecutionResult, E>,
+  contactProvider: (actionId: ActionId) => Effect.Effect<ActionExecutionResult | Denied, E>,
 ): Effect.Effect<ActionExecutionResult | Denied, E> => {
   const operation = AuthorizationOperation.make({
     actionId: approvedExecution.actionId,

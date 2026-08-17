@@ -3,6 +3,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 
 import {
   GmailMessageId,
+  type GmailSendInput,
   type GmailReadEvidence,
   type GmailSendEvidence,
   GmailProviderUnavailable,
@@ -125,7 +126,7 @@ export const make = (options: Options): Effect.Effect<Provider, never, HttpClien
           : applied(found.id, "Gmail reconciliation found the sent message");
       });
 
-    const send: Provider["send"] = (connection, input) =>
+    const prepareSend: Provider["prepareSend"] = (connection, input) =>
       Effect.gen(function* () {
         const threadId =
           input.selectedResourceId === null
@@ -145,25 +146,29 @@ export const make = (options: Options): Effect.Effect<Provider, never, HttpClien
             threadId,
           }),
         );
-        const response = yield* Effect.result(client.execute(request));
-        if (Result.isFailure(response)) {
-          return ambiguous("The Gmail response was unavailable after provider contact");
-        }
-        if (response.success.status >= 400 && response.success.status < 500) {
-          return notApplied("Gmail rejected the message before applying it");
-        }
-        if (response.success.status < 200 || response.success.status >= 300) {
-          return ambiguous("Gmail returned an uncertain send response");
-        }
-        const decoded = yield* HttpClientResponse.schemaBodyJson(GmailMessageReference)(
-          response.success,
-        ).pipe(Effect.result);
-        return Result.isFailure(decoded)
-          ? ambiguous("Gmail returned invalid send evidence")
-          : applied(decoded.success.id, "Gmail accepted the message");
+        return {
+          contact: Effect.gen(function* () {
+            const response = yield* Effect.result(client.execute(request));
+            if (Result.isFailure(response)) {
+              return ambiguous("The Gmail response was unavailable after provider contact");
+            }
+            if (response.success.status >= 400 && response.success.status < 500) {
+              return notApplied("Gmail rejected the message before applying it");
+            }
+            if (response.success.status < 200 || response.success.status >= 300) {
+              return ambiguous("Gmail returned an uncertain send response");
+            }
+            const decoded = yield* HttpClientResponse.schemaBodyJson(GmailMessageReference)(
+              response.success,
+            ).pipe(Effect.result);
+            return Result.isFailure(decoded)
+              ? ambiguous("Gmail returned invalid send evidence")
+              : applied(decoded.success.id, "Gmail accepted the message");
+          }),
+        };
       });
 
-    return { read, reconcileSend, search, send };
+    return { prepareSend, read, reconcileSend, search };
   });
 
 const getMessage = (
@@ -221,7 +226,7 @@ const mailboxAddress = (value: string) => {
   return (bracketed ?? value).trim();
 };
 
-const mimeMessage = (input: Parameters<Provider["send"]>[1]) =>
+const mimeMessage = (input: GmailSendInput) =>
   [
     `To: ${input.recipient}`,
     `Subject: ${input.subject}`,

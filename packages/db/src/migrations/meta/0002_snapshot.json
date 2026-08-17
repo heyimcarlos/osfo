@@ -1,5 +1,5 @@
 {
-  "id": "6b734600-0398-41d3-b2bc-fe7923eb2c7a",
+  "id": "3c767591-90f0-4a4d-bbba-bb308f1a8e7e",
   "prevId": "eeb3d5d1-e03a-41ad-bd14-14075a0f525f",
   "version": "7",
   "dialect": "postgresql",
@@ -407,7 +407,13 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "accounts_id_user_account_unique": {
+          "name": "accounts_id_user_account_unique",
+          "nullsNotDistinct": false,
+          "columns": ["id", "user_id", "account_id"]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -898,6 +904,15 @@
           "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "gmail_connections_owned_account_fk": {
+          "name": "gmail_connections_owned_account_fk",
+          "tableFrom": "gmail_connections",
+          "tableTo": "accounts",
+          "columnsFrom": ["credential_reference", "user_id", "provider_account_id"],
+          "columnsTo": ["id", "user_id", "account_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -926,6 +941,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "contacted_at": {
+          "name": "contacted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "outcome": {
           "name": "outcome",
@@ -957,17 +978,7 @@
           "with": {}
         }
       },
-      "foreignKeys": {
-        "gmail_send_attempts_connection_id_gmail_connections_connection_id_fk": {
-          "name": "gmail_send_attempts_connection_id_gmail_connections_connection_id_fk",
-          "tableFrom": "gmail_send_attempts",
-          "tableTo": "gmail_connections",
-          "columnsFrom": ["connection_id"],
-          "columnsTo": ["connection_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -975,6 +986,10 @@
         "gmail_send_attempts_outcome_check": {
           "name": "gmail_send_attempts_outcome_check",
           "value": "\"gmail_send_attempts\".\"outcome\" in ('pending', 'applied', 'notApplied', 'ambiguous')"
+        },
+        "gmail_send_attempts_terminal_contact_check": {
+          "name": "gmail_send_attempts_terminal_contact_check",
+          "value": "\"gmail_send_attempts\".\"outcome\" = 'pending' or \"gmail_send_attempts\".\"contacted_at\" is not null"
         }
       },
       "isRLSEnabled": false

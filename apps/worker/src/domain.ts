@@ -42,6 +42,14 @@ export const ThinkRequestId = Schema.String.pipe(Schema.brand("ThinkRequestId"))
 /** Stable identity for one Think response request. */
 export type ThinkRequestId = typeof ThinkRequestId.Type;
 
+/** Stable identity for one AI SDK ToolCall owned by a Think Action or tool. */
+export const ToolCallId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)).pipe(
+  Schema.brand("ToolCallId"),
+);
+
+/** Stable identity for one AI SDK ToolCall owned by a Think Action or tool. */
+export type ToolCallId = typeof ToolCallId.Type;
+
 /** Stable identity of one Think-owned bounded Submission. */
 export const ThinkSubmissionId = Schema.String.check(
   Schema.makeFilter(

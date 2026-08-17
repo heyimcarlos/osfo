@@ -1,7 +1,15 @@
-import { check, index, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import {
+  check,
+  foreignKey,
+  index,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
-import { users } from "./auth";
+import { accounts, users } from "./auth";
 
 /** One revocable User-owned Gmail Integration Connection. */
 export const gmailConnections = pgTable(
@@ -17,6 +25,11 @@ export const gmailConnections = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
   },
   (table) => [
+    foreignKey({
+      columns: [table.credentialReference, table.userId, table.providerAccountId],
+      foreignColumns: [accounts.id, accounts.userId, accounts.accountId],
+      name: "gmail_connections_owned_account_fk",
+    }).onDelete("cascade"),
     uniqueIndex("gmail_connections_user_unique").on(table.userId),
     uniqueIndex("gmail_connections_provider_account_unique").on(table.providerAccountId),
     index("gmail_connections_user_revoked_index").on(table.userId, table.revokedAt),
@@ -32,9 +45,8 @@ export const gmailSendAttempts = pgTable(
   "gmail_send_attempts",
   {
     actionId: text("action_id").notNull().primaryKey(),
-    connectionId: text("connection_id")
-      .notNull()
-      .references(() => gmailConnections.connectionId, { onDelete: "cascade" }),
+    connectionId: text("connection_id").notNull(),
+    contactedAt: timestamp("contacted_at", { withTimezone: true }),
     outcome: text("outcome").notNull(),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
   },
@@ -43,6 +55,10 @@ export const gmailSendAttempts = pgTable(
     check(
       "gmail_send_attempts_outcome_check",
       sql`${table.outcome} in ('pending', 'applied', 'notApplied', 'ambiguous')`,
+    ),
+    check(
+      "gmail_send_attempts_terminal_contact_check",
+      sql`${table.outcome} = 'pending' or ${table.contactedAt} is not null`,
     ),
   ],
 );

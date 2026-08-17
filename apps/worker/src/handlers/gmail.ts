@@ -1,6 +1,7 @@
 import {
   Api,
   CurrentUser,
+  GmailConnectionConflict as GmailConnectionConflictResponse,
   GmailConnectionDenied,
   type GmailConnectionResponse,
   GmailConnectionUnavailable,
@@ -9,18 +10,19 @@ import {
 import { DateTime, Effect, Layer, Predicate, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { PlanPolicyVersion, UserId } from "../domain";
+import { UserId } from "../domain";
 import type { GmailConnectionStatus } from "../domain/gmail";
 import { retainedCatalog } from "../domain/plan-policy";
 import * as Db from "../db";
 import * as Billing from "../db/billing";
 import * as GmailDb from "../db/gmail";
 import {
+  type AuthorizationContext,
   make as makeAuthorization,
-  AuthorizationContext,
   type ApprovalRequired,
   type Denied,
 } from "../services/authorization";
+import * as AuthorizationContextProjection from "../services/authorization-context";
 import { makeConnectionControl } from "../services/gmail";
 
 /** Implement the authenticated Gmail connection control-plane contract. */
@@ -77,9 +79,11 @@ const runConnection = <E>(
     Effect.mapError((failure) =>
       Schema.is(GmailConnectionDenied)(failure)
         ? failure
-        : new GmailConnectionUnavailable({
-            message: "The Gmail connection is temporarily unavailable",
-          }),
+        : Predicate.isTagged(failure, "GmailConnectionConflict")
+          ? new GmailConnectionConflictResponse({ reason: "connectionConflict" })
+          : new GmailConnectionUnavailable({
+              message: "The Gmail connection is temporarily unavailable",
+            }),
     ),
   );
 
@@ -88,7 +92,7 @@ const connectionAuthorization = (
   admission: Effect.Success<ReturnType<Billing.Interface["admit"]>>,
   now: Date,
 ) =>
-  AuthorizationContext.make({
+  AuthorizationContextProjection.project({
     allowance: {
       _tag: "Metered",
       allowancePeriodId: admission.allowancePeriodId,
@@ -98,30 +102,17 @@ const connectionAuthorization = (
       startsAt: admission.startsAt,
       usage: admission.usage,
     },
-    approval: null,
     authority: {
       _tag: "AuthSession",
       authSessionId: currentUser.authSessionId,
       expiresAt: currentUser.authSessionExpiresAt,
       userId: UserId.make(currentUser.userId),
     },
-    deletionAccess: { _tag: "DeletionAccessAvailable" },
-    gmailConnection: null,
-    liveFacts: {
-      activeGmSummonsInSession: 0n,
-      activeReminders: 0n,
-      concurrentWorkflows: 0n,
-      retainedFileBytes: 0n,
-    },
     now,
     originatingAuthority: { _tag: "AuthSession", authSessionId: currentUser.authSessionId },
-    requestVendorUsdMicros: 0n,
-    resourceOwnerUserId: UserId.make(currentUser.userId),
-    subscription: {
-      plan: admission.plan,
-      planPolicyVersion: PlanPolicyVersion.make(admission.planPolicyVersion),
-    },
-    user: { _tag: "ActiveUser", userId: UserId.make(currentUser.userId) },
+    plan: admission.plan,
+    planPolicyVersion: admission.planPolicyVersion,
+    userId: UserId.make(currentUser.userId),
   });
 
 const toResponse = (status: GmailConnectionStatus): GmailConnectionResponse => {

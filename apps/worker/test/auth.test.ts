@@ -1,8 +1,12 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, vi } from "@effect/vitest";
+import { createAuth } from "@osfo/auth";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
-import { sessions, users, verifications } from "@osfo/db/schema/auth";
+import { allowancePeriods } from "@osfo/db/schema/allowances";
+import { accounts, sessions, users, verifications } from "@osfo/db/schema/auth";
+import { billingSubscriptions } from "@osfo/db/schema/billing";
+import { gmailConnections } from "@osfo/db/schema/gmail";
 import { count, eq } from "drizzle-orm";
-import { Effect, Layer, Redacted, Schema } from "effect";
+import { DateTime, Effect, Layer, Redacted, Schema } from "effect";
 import { HttpRouter } from "effect/unstable/http";
 
 import * as App from "../src/app";
@@ -38,6 +42,54 @@ describe("temporary credential authentication", () => {
 
           expect(response.status).toBe(400);
           yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("rejects Google linking from a disabled Better Auth instance", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const auth = createAuth({
+            baseURL: "https://osfo.test",
+            database: fixture.database,
+            dashboard: { kind: "disabled" },
+            google: {
+              clientId: "test-google-client",
+              clientSecret: "test-google-secret",
+              kind: "disabled",
+            },
+            secret: "test-only-better-auth-secret-32-characters",
+            sendOTP: () => Promise.resolve(),
+            trustedOrigins: ["https://osfo.test"],
+            verifyOTP: () => Promise.resolve(false),
+          });
+          const signedUp = yield* request(auth.handler, "/auth/sign-up/email", {
+            email: "disabled-google-link@osfo.test",
+            name: "Disabled Google link",
+            password: "test-password",
+          });
+          const response = yield* Effect.promise(() =>
+            auth.handler(
+              new Request("https://osfo.test/auth/link-social", {
+                body: encodeJsonText({
+                  callbackURL: "https://osfo.test/settings/integrations",
+                  provider: "google",
+                }),
+                headers: {
+                  "content-type": "application/json",
+                  cookie: cookiePair(signedUp.headers.get("set-cookie")),
+                  origin: "https://osfo.test",
+                },
+                method: "POST",
+              }),
+            ),
+          );
+
+          expect(response.status).toBe(400);
         }),
       closeTestDatabase,
     ),
@@ -79,6 +131,297 @@ describe("temporary credential authentication", () => {
           });
           expect(storedSessions).toHaveLength(2);
 
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("projects Gmail connection authority after a successful Google callback redirect", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const app = makeAuthApp(
+            Db.layerFromDatabase(fixture.database),
+            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
+          );
+          const signedUp = yield* request(app.handler, "/auth/sign-up/email", {
+            email: "gmail-callback-owner@osfo.test",
+            name: "Gmail callback owner",
+            password: "test-password",
+          });
+          const userId = (yield* responseJson(signedUp)).user.id;
+          const periodStartsAt = DateTime.toDateUtc(
+            DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"),
+          );
+          const periodEndsAt = DateTime.toDateUtc(DateTime.makeUnsafe("2027-01-01T00:00:00.000Z"));
+          yield* Effect.promise(() =>
+            fixture.database.insert(billingSubscriptions).values({
+              billingSubscriptionId: "gmail-callback-subscription",
+              createdAt: periodStartsAt,
+              plan: "adventurer",
+              planPolicyVersion: "launch-v1",
+              updatedAt: periodStartsAt,
+              userId,
+            }),
+          );
+          yield* Effect.promise(() =>
+            fixture.database.insert(allowancePeriods).values({
+              allowancePeriodId: "gmail-callback-period",
+              billingSubscriptionId: "gmail-callback-subscription",
+              createdAt: periodStartsAt,
+              endsAt: periodEndsAt,
+              plan: "adventurer",
+              planPolicyVersion: "launch-v1",
+              startsAt: periodStartsAt,
+              userId,
+            }),
+          );
+          const completed = yield* completeGoogleCallback(app.handler, signedUp, {
+            email: "real-google-owner@example.test",
+            sub: "gmail-callback-provider-account",
+          });
+          const storedConnections = yield* Effect.promise(() =>
+            fixture.database.select().from(gmailConnections),
+          );
+
+          expect(completed.link.redirect).toBe(true);
+          expect(completed.callback.status).toBe(302);
+          expect(storedConnections).toMatchObject([
+            {
+              providerAccountId: "gmail-callback-provider-account",
+              revokedAt: null,
+            },
+          ]);
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("denies Google account linking without Adventurer entitlement", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const app = makeAuthApp(
+            Db.layerFromDatabase(fixture.database),
+            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
+          );
+          const signedUp = yield* request(app.handler, "/auth/sign-up/email", {
+            email: "gmail-callback-free@osfo.test",
+            name: "Gmail callback free User",
+            password: "test-password",
+          });
+          const userId = (yield* responseJson(signedUp)).user.id;
+          const periodStartsAt = DateTime.toDateUtc(
+            DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"),
+          );
+          yield* Effect.promise(() =>
+            fixture.database.insert(billingSubscriptions).values({
+              billingSubscriptionId: "gmail-callback-free-subscription",
+              createdAt: periodStartsAt,
+              plan: "free",
+              planPolicyVersion: "launch-v1",
+              updatedAt: periodStartsAt,
+              userId,
+            }),
+          );
+          yield* Effect.promise(() =>
+            fixture.database.insert(allowancePeriods).values({
+              allowancePeriodId: "gmail-callback-free-period",
+              billingSubscriptionId: "gmail-callback-free-subscription",
+              createdAt: periodStartsAt,
+              endsAt: DateTime.toDateUtc(DateTime.makeUnsafe("2027-01-01T00:00:00.000Z")),
+              plan: "free",
+              planPolicyVersion: "launch-v1",
+              startsAt: periodStartsAt,
+              userId,
+            }),
+          );
+
+          const denied = yield* Effect.promise(() =>
+            app.handler(
+              new Request("https://osfo.test/auth/link-social", {
+                body: encodeJsonText({
+                  callbackURL: "https://osfo.test/settings/integrations",
+                  provider: "google",
+                }),
+                headers: {
+                  "content-type": "application/json",
+                  cookie: cookiePair(signedUp.headers.get("set-cookie")),
+                  origin: "https://osfo.test",
+                },
+                method: "POST",
+              }),
+            ),
+          );
+          const storedConnections = yield* Effect.promise(() =>
+            fixture.database.select().from(gmailConnections),
+          );
+
+          expect(storedConnections).toEqual([]);
+          expect(denied.status).toBe(403);
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("rechecks Adventurer authority at the Google callback before connection creation", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const app = makeAuthApp(
+            Db.layerFromDatabase(fixture.database),
+            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
+          );
+          const signedUp = yield* request(app.handler, "/auth/sign-up/email", {
+            email: "gmail-callback-recheck@osfo.test",
+            name: "Gmail callback recheck User",
+            password: "test-password",
+          });
+          const userId = (yield* responseJson(signedUp)).user.id;
+          const periodStartsAt = DateTime.toDateUtc(
+            DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"),
+          );
+          yield* Effect.promise(() =>
+            fixture.database.insert(billingSubscriptions).values({
+              billingSubscriptionId: "gmail-callback-recheck-subscription",
+              createdAt: periodStartsAt,
+              plan: "adventurer",
+              planPolicyVersion: "launch-v1",
+              updatedAt: periodStartsAt,
+              userId,
+            }),
+          );
+          yield* Effect.promise(() =>
+            fixture.database.insert(allowancePeriods).values({
+              allowancePeriodId: "gmail-callback-recheck-period",
+              billingSubscriptionId: "gmail-callback-recheck-subscription",
+              createdAt: periodStartsAt,
+              endsAt: DateTime.toDateUtc(DateTime.makeUnsafe("2027-01-01T00:00:00.000Z")),
+              plan: "adventurer",
+              planPolicyVersion: "launch-v1",
+              startsAt: periodStartsAt,
+              userId,
+            }),
+          );
+
+          const completed = yield* completeGoogleCallback(
+            app.handler,
+            signedUp,
+            {
+              email: "real-google-recheck@example.test",
+              sub: "gmail-callback-recheck-provider-account",
+            },
+            () =>
+              fixture.database
+                .update(allowancePeriods)
+                .set({ plan: "free" })
+                .where(eq(allowancePeriods.userId, userId))
+                .then(() => undefined),
+          );
+          const storedConnections = yield* Effect.promise(() =>
+            fixture.database.select().from(gmailConnections),
+          );
+
+          expect(completed.callback.status).toBe(302);
+          expect(storedConnections).toEqual([]);
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("maps a Gmail connection conflict to stable HTTP 409", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const dependencies = Layer.merge(
+            Db.layerFromDatabase(fixture.database),
+            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
+          );
+          const app = App.make(testBindings, runtimeConfig, { authDependencies: dependencies });
+          const signedUp = yield* request(app.handler, "/auth/sign-up/email", {
+            email: "gmail-conflict@osfo.test",
+            name: "Gmail conflict",
+            password: "test-password",
+          });
+          const user = yield* responseJson(signedUp);
+          const userId = user.user.id;
+          const createdAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-01T00:00:00.000Z"));
+          yield* Effect.promise(() =>
+            fixture.database.insert(billingSubscriptions).values({
+              billingSubscriptionId: "gmail-conflict-subscription",
+              createdAt,
+              plan: "adventurer",
+              planPolicyVersion: "launch-v1",
+              updatedAt: createdAt,
+              userId,
+            }),
+          );
+          yield* Effect.promise(() =>
+            fixture.database.insert(allowancePeriods).values({
+              allowancePeriodId: "gmail-conflict-period",
+              billingSubscriptionId: "gmail-conflict-subscription",
+              createdAt,
+              endsAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-09-01T00:00:00.000Z")),
+              plan: "adventurer",
+              planPolicyVersion: "launch-v1",
+              startsAt: createdAt,
+              userId,
+            }),
+          );
+          yield* Effect.promise(() =>
+            fixture.database.insert(accounts).values([
+              {
+                accountId: "gmail-conflict-one",
+                id: "gmail-conflict-account-one",
+                providerId: "google",
+                scope:
+                  "https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/gmail.send",
+                userId,
+              },
+              {
+                accountId: "gmail-conflict-two",
+                id: "gmail-conflict-account-two",
+                providerId: "google",
+                scope:
+                  "https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/gmail.send",
+                userId,
+              },
+            ]),
+          );
+          const cookie = signedUp.headers.get("set-cookie")?.split(";")[0];
+          const response = yield* Effect.promise(() =>
+            app.handler(
+              new Request("https://osfo.test/v1/gmail/connection", {
+                body: "{}",
+                headers: {
+                  "content-type": "application/json",
+                  cookie: cookie ?? "",
+                  origin: "https://osfo.test",
+                },
+                method: "PUT",
+              }),
+            ),
+          );
+
+          expect(response.status).toBe(409);
+          expect(yield* Effect.promise(() => response.json())).toMatchObject({
+            reason: "connectionConflict",
+          });
           yield* Effect.promise(app.dispose);
         }),
       closeTestDatabase,
@@ -554,6 +897,86 @@ const responseJson = (response: Response) =>
   Effect.promise(() => response.json()).pipe(
     Effect.flatMap((body) => Schema.decodeUnknownEffect(AuthResponse)(body)),
   );
+
+const cookiePair = (setCookie: string | null) => setCookie?.split(";", 1)[0] ?? "";
+
+const completeGoogleCallback = (
+  handler: (request: Request) => Promise<Response>,
+  signedUp: Response,
+  profile: { readonly email: string; readonly sub: string },
+  beforeCallback?: () => Promise<void>,
+) =>
+  Effect.gen(function* () {
+    const sessionCookie = cookiePair(signedUp.headers.get("set-cookie"));
+    const linked = yield* Effect.promise(() =>
+      handler(
+        new Request("https://osfo.test/auth/link-social", {
+          body: encodeJsonText({
+            callbackURL: "https://osfo.test/settings/integrations",
+            provider: "google",
+          }),
+          headers: {
+            "content-type": "application/json",
+            cookie: sessionCookie,
+            origin: "https://osfo.test",
+          },
+          method: "POST",
+        }),
+      ),
+    );
+    const link = yield* Effect.promise(() => linked.json()).pipe(
+      Effect.flatMap((body) =>
+        Schema.decodeUnknownEffect(Schema.Struct({ redirect: Schema.Boolean, url: Schema.String }))(
+          body,
+        ),
+      ),
+    );
+    const state = new URL(link.url).searchParams.get("state") ?? "";
+    const stateCookie = cookiePair(linked.headers.get("set-cookie"));
+    if (beforeCallback !== undefined) yield* Effect.promise(beforeCallback);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(
+        Response.json({
+          access_token: "gmail-callback-access-token",
+          expires_in: 3600,
+          id_token: googleIdToken(profile),
+          refresh_token: "gmail-callback-refresh-token",
+          scope:
+            "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send",
+          token_type: "Bearer",
+        }),
+      ),
+    );
+    const callback = yield* Effect.promise(() =>
+      handler(
+        new Request(
+          `https://osfo.test/auth/callback/google?code=test-code&state=${encodeURIComponent(state)}`,
+          {
+            headers: {
+              cookie: `${sessionCookie}; ${stateCookie}`,
+              origin: "https://osfo.test",
+            },
+          },
+        ),
+      ),
+    ).pipe(Effect.ensuring(Effect.sync(() => fetchMock.mockRestore())));
+    return { callback, link };
+  });
+
+const googleIdToken = (profile: { readonly email: string; readonly sub: string }) => {
+  return `${encodeJwtPart({ alg: "none", typ: "JWT" })}.${encodeJwtPart({
+    aud: "test-google-client",
+    email: profile.email,
+    email_verified: true,
+    exp: 1_800_000_000,
+    iss: "https://accounts.google.com",
+    name: "Gmail callback owner",
+    sub: profile.sub,
+  })}.test-signature`;
+};
+
+const encodeJwtPart = (value: Readonly<Record<string, boolean | number | string>>) =>
+  btoa(JSON.stringify(value)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 
 const runtimeConfig: RuntimeConfig = {
   auth: authConfig,

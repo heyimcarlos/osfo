@@ -7,7 +7,7 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http";
 
-import { UserId } from "../src/domain";
+import { ToolCallId, UserId } from "../src/domain";
 import { ActionId } from "../src/domain/action-execution";
 import {
   GmailConnectionId,
@@ -39,7 +39,7 @@ describe("Gmail API adapter", () => {
         GmailSearchInput.make({
           maximumMessages: 2,
           query: "from:sender@example.com",
-          toolCallId: "gmail-search-tool",
+          toolCallId: ToolCallId.make("gmail-search-tool"),
         }),
       );
 
@@ -74,7 +74,7 @@ describe("Gmail API adapter", () => {
         connection,
         GmailReadInput.make({
           messageId: GmailMessageId.make("message-read"),
-          toolCallId: "gmail-read-tool",
+          toolCallId: ToolCallId.make("gmail-read-tool"),
         }),
       );
 
@@ -108,7 +108,8 @@ describe("Gmail API adapter", () => {
         subject: "Exact approved subject",
       });
 
-      const uncertain = yield* provider.send(connection, input);
+      const prepared = yield* provider.prepareSend(connection, input);
+      const uncertain = yield* prepared.contact;
       const reconciled = yield* provider.reconcileSend(connection, input);
       const sent = yield* decodeJsonBody(requests.find((request) => request.method === "POST"));
       const raw = decodeBase64Url(sent.raw);

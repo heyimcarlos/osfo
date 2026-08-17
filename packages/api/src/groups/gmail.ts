@@ -27,8 +27,15 @@ export class GmailConnectionUnavailable extends Schema.TaggedError<GmailConnecti
   { httpApiStatus: 503 },
 ) {}
 
+/** Stable safe response when linked Google facts conflict with connection authority. */
+export class GmailConnectionConflict extends Schema.TaggedError<GmailConnectionConflict>()(
+  "GmailConnectionConflict",
+  { reason: Schema.Literal("connectionConflict") },
+  { httpApiStatus: 409 },
+) {}
+
 const endpoint = {
-  error: [GmailConnectionDenied, GmailConnectionUnavailable] as const,
+  error: [GmailConnectionConflict, GmailConnectionDenied, GmailConnectionUnavailable] as const,
   success: GmailConnectionResponse,
 };
 

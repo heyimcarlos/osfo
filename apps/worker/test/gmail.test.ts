@@ -1,15 +1,19 @@
 import { describe, expect, it } from "@effect/vitest";
-import { accounts, users } from "@osfo/db/schema/auth";
+import { accounts, sessions, users } from "@osfo/db/schema/auth";
+import { billingSubscriptions } from "@osfo/db/schema/billing";
+import { gmailConnections, gmailSendAttempts } from "@osfo/db/schema/gmail";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
-import { DateTime, Deferred, Effect, Fiber, Redacted, Schema } from "effect";
+import { eq } from "drizzle-orm";
+import { DateTime, Deferred, Effect, Exit, Fiber, Redacted, Schema } from "effect";
 
-import { AllowancePeriodId, PlanPolicyVersion, UserId } from "../src/domain";
+import { AllowancePeriodId, PlanPolicyVersion, ToolCallId, UserId } from "../src/domain";
 import { ActionId } from "../src/domain/action-execution";
 import {
   GmailConnectionId,
   GmailConnectionGrant,
   GmailDraftInput,
   GmailMessageId,
+  GmailProviderUnavailable,
   GmailReadInput,
   GmailSendInput,
   GmailSearchInput,
@@ -27,6 +31,7 @@ import {
   type PendingThinkAction,
 } from "../src/agents/osfo/think-action-approvals";
 import * as GmailDb from "../src/db/gmail";
+import * as CurrentGmailAuthorization from "../src/db/gmail/authorization";
 
 describe("Gmail Integration Connection", () => {
   it.effect(
@@ -43,8 +48,9 @@ describe("Gmail Integration Connection", () => {
             read: () => Effect.die("read is not used in this assertion"),
             reconcileSend: () => Effect.die("reconcile is not used in this assertion"),
             search: () => Effect.die("search is not used in this assertion"),
-            send: () => Effect.die("send is not used in this assertion"),
+            prepareSend: () => Effect.die("send is not used in this assertion"),
           },
+          reloadAuthorization: Effect.succeed,
         });
         const owner = UserId.make("gmail-owner");
         const otherUser = UserId.make("gmail-other-user");
@@ -108,13 +114,14 @@ describe("Gmail Integration Connection", () => {
               vendorUsdMicros: 7n,
             });
           },
-          send: () => Effect.die("send is not used in this assertion"),
+          prepareSend: () => Effect.die("send is not used in this assertion"),
         },
+        reloadAuthorization: Effect.succeed,
       });
       const search = GmailSearchInput.make({
         maximumMessages: 10,
         query: "from:example.com",
-        toolCallId: "tool-search-1",
+        toolCallId: ToolCallId.make("tool-search-1"),
       });
 
       const exhaustedSearch = yield* gmail.search(
@@ -183,14 +190,15 @@ describe("Gmail Integration Connection", () => {
           },
           reconcileSend: () => Effect.die("reconcile is not used in this assertion"),
           search: () => Effect.die("search is not used in this assertion"),
-          send: () => Effect.die("send is not used in this assertion"),
+          prepareSend: () => Effect.die("send is not used in this assertion"),
         },
+        reloadAuthorization: Effect.succeed,
       });
       const messageId = GmailMessageId.make("message-read");
 
       const read = yield* gmail.read(
         context(owner, "adventurer"),
-        GmailReadInput.make({ messageId, toolCallId: "tool-read-1" }),
+        GmailReadInput.make({ messageId, toolCallId: ToolCallId.make("tool-read-1") }),
       );
       expect(read).toMatchObject({ _tag: "MessageRead", body: "Message body", messageId });
 
@@ -201,7 +209,7 @@ describe("Gmail Integration Connection", () => {
           recipient: "sender@example.com",
           selectedResourceId: messageId,
           subject: "Re: Read me",
-          toolCallId: "tool-draft-1",
+          toolCallId: ToolCallId.make("tool-draft-1"),
         }),
       );
       expect(draft).toMatchObject({ _tag: "DraftCreatedLocally", body: "Local reply" });
@@ -254,15 +262,19 @@ describe("Gmail Integration Connection", () => {
               });
             },
             search: () => Effect.die("search is not used in this assertion"),
-            send: (_connection, input) => {
-              providerCalls.push(`send:${input.recipient}`);
-              return Effect.succeed({
-                _tag: "Ambiguous" as const,
-                evidence: "The Gmail response was lost after request bytes left",
-                vendorUsdMicros: 11n,
-              });
-            },
+            prepareSend: (_connection, input) =>
+              Effect.succeed({
+                contact: Effect.sync(() => {
+                  providerCalls.push(`send:${input.recipient}`);
+                  return {
+                    _tag: "Ambiguous" as const,
+                    evidence: "The Gmail response was lost after request bytes left",
+                    vendorUsdMicros: 11n,
+                  };
+                }),
+              }),
           },
+          reloadAuthorization: Effect.succeed,
         });
         const input = GmailSendInput.make({
           actionId: ActionId.make("gmail-action-ambiguous"),
@@ -291,12 +303,14 @@ describe("Gmail Integration Connection", () => {
         expect(attempts.read("gmail-action-ambiguous")).toEqual({
           actionId: "gmail-action-ambiguous",
           connectionId,
+          contactedAt: now,
           outcome: "ambiguous",
           startedAt: now,
         });
         expect(Object.keys(attempts.read("gmail-action-ambiguous") ?? {})).toEqual([
           "actionId",
           "connectionId",
+          "contactedAt",
           "outcome",
           "startedAt",
         ]);
@@ -345,11 +359,12 @@ describe("Gmail Integration Connection", () => {
           read: () => Effect.die("read is not used in this assertion"),
           reconcileSend: () => Effect.die("reconcile is not used in this assertion"),
           search: () => Effect.die("search is not used in this assertion"),
-          send: () => {
+          prepareSend: () => {
             providerCalls.push("send");
             return Effect.die("send must not run after revocation");
           },
         },
+        reloadAuthorization: Effect.succeed,
       });
       const denied = yield* gmail.sendApproved(
         context(owner, "adventurer"),
@@ -367,6 +382,200 @@ describe("Gmail Integration Connection", () => {
       expect(denied).toMatchObject({ _tag: "Denied", reason: "integrationConnectionRequired" });
       expect(providerCalls).toEqual([]);
       expect(attempts.read("gmail-action-revoked")).toBeUndefined();
+    }),
+  );
+
+  it.effect("keeps a proven preparation failure not-applied without send consumption", () =>
+    Effect.gen(function* () {
+      const connections = makeConnections();
+      const usage = makeUsage();
+      const attempts = makeSendAttempts();
+      const owner = UserId.make("gmail-precontact-owner");
+      yield* connections.connect(
+        owner,
+        GmailConnectionGrant.make({
+          connectionId: GmailConnectionId.make("gmail-connection-precontact"),
+          credentialReference: "gmail-credential-precontact",
+          grantedAt: now,
+          providerAccountId: "precontact@gmail.example",
+        }),
+      );
+      let contacts = 0;
+      const gmail = makeGmail({
+        allowances: usage,
+        attempts,
+        authorization: makeAuthorization(retainedCatalog),
+        connections,
+        provider: {
+          prepareSend: () =>
+            Effect.fail(
+              new GmailProviderUnavailable({
+                cause: "selected-resource-read-failed",
+                message: "The selected Gmail resource could not be prepared",
+                operation: "send",
+              }),
+            ),
+          read: () => Effect.die("read is not used in this assertion"),
+          reconcileSend: () => Effect.die("reconcile is not used in this assertion"),
+          search: () => Effect.die("search is not used in this assertion"),
+        },
+        reloadAuthorization: Effect.succeed,
+      });
+      const input = GmailSendInput.make({
+        actionId: ActionId.make("gmail-action-precontact"),
+        body: "Body",
+        recipient: "recipient@example.com",
+        scheduledFor: null,
+        selectedResourceId: GmailMessageId.make("missing-selected-resource"),
+        subject: "Subject",
+      });
+
+      const result = yield* gmail.sendApproved(
+        context(owner, "adventurer"),
+        input,
+        gmailAllowancePeriod,
+      );
+
+      expect(result).toMatchObject({ _tag: "NotApplied", actionId: input.actionId });
+      expect(contacts).toBe(0);
+      expect(attempts.read(input.actionId)).toBeUndefined();
+      expect(usage.records).toEqual([]);
+    }),
+  );
+
+  it.effect("reloads revocation after preparation and before Gmail contact", () =>
+    Effect.gen(function* () {
+      const connections = makeConnections();
+      const attempts = makeSendAttempts();
+      const owner = UserId.make("gmail-preparation-revocation-owner");
+      const connection = yield* connections.connect(
+        owner,
+        GmailConnectionGrant.make({
+          connectionId: GmailConnectionId.make("gmail-connection-preparation-revocation"),
+          credentialReference: "gmail-credential-preparation-revocation",
+          grantedAt: now,
+          providerAccountId: "preparation-revocation@gmail.example",
+        }),
+      );
+      let contacts = 0;
+      const gmail = makeGmail({
+        allowances: makeUsage(),
+        attempts,
+        authorization: makeAuthorization(retainedCatalog),
+        connections,
+        provider: {
+          prepareSend: () =>
+            connections.revoke(connection, now).pipe(
+              Effect.as({
+                contact: Effect.sync(() => {
+                  contacts += 1;
+                  return {
+                    _tag: "Applied" as const,
+                    evidence: "must not contact",
+                    providerMessageId: GmailMessageId.make("must-not-contact"),
+                    vendorUsdMicros: 0n,
+                  };
+                }),
+              }),
+            ),
+          read: () => Effect.die("read is not used in this assertion"),
+          reconcileSend: () => Effect.die("reconcile is not used in this assertion"),
+          search: () => Effect.die("search is not used in this assertion"),
+        },
+        reloadAuthorization: Effect.succeed,
+      });
+      const input = GmailSendInput.make({
+        actionId: ActionId.make("gmail-action-preparation-revocation"),
+        body: "Body",
+        recipient: "recipient@example.com",
+        scheduledFor: null,
+        selectedResourceId: null,
+        subject: "Subject",
+      });
+
+      const result = yield* gmail.sendApproved(
+        context(owner, "adventurer"),
+        input,
+        gmailAllowancePeriod,
+      );
+
+      expect(result).toMatchObject({ _tag: "Denied", reason: "ownershipRequired" });
+      expect(contacts).toBe(0);
+      expect(attempts.read(input.actionId)).toMatchObject({
+        contactedAt: null,
+        outcome: "pending",
+      });
+    }),
+  );
+
+  it.effect("reloads revocation after attempt preparation and before Gmail contact", () =>
+    Effect.gen(function* () {
+      const connections = makeConnections();
+      const storedAttempts = makeSendAttempts();
+      const owner = UserId.make("gmail-attempt-revocation-owner");
+      const connection = yield* connections.connect(
+        owner,
+        GmailConnectionGrant.make({
+          connectionId: GmailConnectionId.make("gmail-connection-attempt-revocation"),
+          credentialReference: "gmail-credential-attempt-revocation",
+          grantedAt: now,
+          providerAccountId: "attempt-revocation@gmail.example",
+        }),
+      );
+      let contacts = 0;
+      const gmail = makeGmail({
+        allowances: makeUsage(),
+        attempts: {
+          ...storedAttempts,
+          prepare: (actionId, connectionId, preparedAt) =>
+            Effect.gen(function* () {
+              const prepared = yield* storedAttempts.prepare(actionId, connectionId, preparedAt);
+              yield* connections.revoke(connection, now);
+              return prepared;
+            }),
+        },
+        authorization: makeAuthorization(retainedCatalog),
+        connections,
+        provider: {
+          prepareSend: () =>
+            Effect.succeed({
+              contact: Effect.sync(() => {
+                contacts += 1;
+                return {
+                  _tag: "Applied" as const,
+                  evidence: "must not contact",
+                  providerMessageId: GmailMessageId.make("must-not-contact-after-attempt"),
+                  vendorUsdMicros: 0n,
+                };
+              }),
+            }),
+          read: () => Effect.die("read is not used in this assertion"),
+          reconcileSend: () => Effect.die("reconcile is not used in this assertion"),
+          search: () => Effect.die("search is not used in this assertion"),
+        },
+        reloadAuthorization: Effect.succeed,
+      });
+      const input = GmailSendInput.make({
+        actionId: ActionId.make("gmail-action-attempt-revocation"),
+        body: "Body",
+        recipient: "recipient@example.com",
+        scheduledFor: null,
+        selectedResourceId: null,
+        subject: "Subject",
+      });
+
+      const result = yield* gmail.sendApproved(
+        context(owner, "adventurer"),
+        input,
+        gmailAllowancePeriod,
+      );
+
+      expect(result).toMatchObject({ _tag: "Denied" });
+      expect(contacts).toBe(0);
+      expect(storedAttempts.read(input.actionId)).toMatchObject({
+        contactedAt: null,
+        outcome: "pending",
+      });
     }),
   );
 
@@ -395,19 +604,22 @@ describe("Gmail Integration Connection", () => {
           read: () => Effect.die("read is not used in this assertion"),
           reconcileSend: () => Effect.die("reconcile must not run while send is active"),
           search: () => Effect.die("search is not used in this assertion"),
-          send: () =>
-            Effect.gen(function* () {
-              providerContacts += 1;
-              yield* Deferred.succeed(entered, undefined);
-              yield* Deferred.await(release);
-              return {
-                _tag: "Applied" as const,
-                evidence: "Gmail accepted the message",
-                providerMessageId: GmailMessageId.make("gmail-provider-message-concurrent"),
-                vendorUsdMicros: 0n,
-              };
+          prepareSend: () =>
+            Effect.succeed({
+              contact: Effect.gen(function* () {
+                providerContacts += 1;
+                yield* Deferred.succeed(entered, undefined);
+                yield* Deferred.await(release);
+                return {
+                  _tag: "Applied" as const,
+                  evidence: "Gmail accepted the message",
+                  providerMessageId: GmailMessageId.make("gmail-provider-message-concurrent"),
+                  vendorUsdMicros: 0n,
+                };
+              }),
             }),
         },
+        reloadAuthorization: Effect.succeed,
       });
       const input = GmailSendInput.make({
         actionId: ActionId.make("gmail-action-concurrent"),
@@ -433,6 +645,173 @@ describe("Gmail Integration Connection", () => {
       expect(duplicate).toMatchObject({ _tag: "Ambiguous", actionId: input.actionId });
       expect(applied).toMatchObject({ _tag: "Applied", actionId: input.actionId });
       expect(providerContacts).toBe(1);
+    }),
+  );
+
+  it.effect("resumes approved send without a new period and records the original admission", () =>
+    Effect.gen(function* () {
+      const connections = makeConnections();
+      const usage = makeUsage();
+      const owner = UserId.make("gmail-expired-period-owner");
+      yield* connections.connect(
+        owner,
+        GmailConnectionGrant.make({
+          connectionId: GmailConnectionId.make("gmail-connection-expired-period"),
+          credentialReference: "gmail-credential-expired-period",
+          grantedAt: now,
+          providerAccountId: "expired-period@gmail.example",
+        }),
+      );
+      const originalPeriod = AllowancePeriodId.make("gmail-original-admitted-period");
+      const resumedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-10-17T12:00:00.000Z"));
+      const current = {
+        ...context(owner, "adventurer"),
+        allowance: { _tag: "Unavailable" as const },
+        authority: {
+          _tag: "AuthSession" as const,
+          authSessionId: `session-${owner}`,
+          expiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-10-17T12:01:00.000Z")),
+          userId: owner,
+        },
+        now: resumedAt,
+      };
+      const gmail = makeGmail({
+        allowances: usage,
+        attempts: makeSendAttempts(),
+        authorization: makeAuthorization(retainedCatalog),
+        connections,
+        provider: {
+          prepareSend: () =>
+            Effect.succeed({
+              contact: Effect.succeed({
+                _tag: "Applied" as const,
+                evidence: "Gmail accepted resumed approved work",
+                providerMessageId: GmailMessageId.make("gmail-resumed-message"),
+                vendorUsdMicros: 0n,
+              }),
+            }),
+          read: () => Effect.die("read is not used in this assertion"),
+          reconcileSend: () => Effect.die("reconcile is not used in this assertion"),
+          search: () => Effect.die("search is not used in this assertion"),
+        },
+        reloadAuthorization: () => Effect.succeed(current),
+      });
+      const input = GmailSendInput.make({
+        actionId: ActionId.make("gmail-action-expired-period"),
+        body: "Body",
+        recipient: "recipient@example.com",
+        scheduledFor: null,
+        selectedResourceId: null,
+        subject: "Subject",
+      });
+
+      const result = yield* gmail.sendApproved(current, input, originalPeriod);
+
+      expect(result).toMatchObject({ _tag: "Applied" });
+      expect(usage.records).toMatchObject([{ allowancePeriodId: originalPeriod }]);
+    }),
+  );
+
+  it.effect("recovers provider evidence according to the persisted contact boundary", () =>
+    Effect.gen(function* () {
+      const connections = makeConnections();
+      const attempts = makeSendAttempts();
+      const usage = makeUsage();
+      const owner = UserId.make("gmail-contact-recovery-owner");
+      const connection = yield* connections.connect(
+        owner,
+        GmailConnectionGrant.make({
+          connectionId: GmailConnectionId.make("gmail-connection-contact-recovery"),
+          credentialReference: "gmail-credential-contact-recovery",
+          grantedAt: now,
+          providerAccountId: "contact-recovery@gmail.example",
+        }),
+      );
+      const staleAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-17T11:55:00.000Z"));
+      const notContactedId = ActionId.make("gmail-action-definitely-not-contacted");
+      const appliedRecoveryId = ActionId.make("gmail-action-contacted-applied");
+      const ambiguousRecoveryId = ActionId.make("gmail-action-contacted-ambiguous");
+      yield* attempts.prepare(notContactedId, connection.connectionId, staleAt);
+      yield* attempts.prepare(appliedRecoveryId, connection.connectionId, staleAt);
+      yield* attempts.markContacted(appliedRecoveryId, staleAt);
+      yield* attempts.prepare(ambiguousRecoveryId, connection.connectionId, staleAt);
+      yield* attempts.markContacted(ambiguousRecoveryId, staleAt);
+      let contacts = 0;
+      let reconciliations = 0;
+      const gmail = makeGmail({
+        allowances: usage,
+        attempts,
+        authorization: makeAuthorization(retainedCatalog),
+        connections,
+        provider: {
+          prepareSend: (_connection, input) =>
+            input.actionId === appliedRecoveryId
+              ? Effect.fail(
+                  new GmailProviderUnavailable({
+                    cause: "token-refresh-unavailable",
+                    message: "Preparation must not hide contacted recovery evidence",
+                    operation: "send",
+                  }),
+                )
+              : Effect.succeed({
+                  contact: Effect.sync(() => {
+                    contacts += 1;
+                    return {
+                      _tag: "Applied" as const,
+                      evidence: "Gmail accepted a definitely-not-contacted recovery",
+                      providerMessageId: GmailMessageId.make(`provider-${input.actionId}`),
+                      vendorUsdMicros: 0n,
+                    };
+                  }),
+                }),
+          read: () => Effect.die("read is not used in this assertion"),
+          reconcileSend: (_connection, input) => {
+            reconciliations += 1;
+            return Effect.succeed(
+              input.actionId === appliedRecoveryId
+                ? {
+                    _tag: "Applied" as const,
+                    evidence: "Gmail confirmed the contacted send",
+                    providerMessageId: GmailMessageId.make("provider-contacted-applied"),
+                    vendorUsdMicros: 0n,
+                  }
+                : {
+                    _tag: "Ambiguous" as const,
+                    evidence: "Gmail could not confirm the contacted send",
+                    vendorUsdMicros: 0n,
+                  },
+            );
+          },
+          search: () => Effect.die("search is not used in this assertion"),
+        },
+        reloadAuthorization: Effect.succeed,
+      });
+      const send = (actionId: ActionId) =>
+        gmail.sendApproved(
+          context(owner, "adventurer"),
+          GmailSendInput.make({
+            actionId,
+            body: "Body",
+            recipient: "recipient@example.com",
+            scheduledFor: null,
+            selectedResourceId: null,
+            subject: "Subject",
+          }),
+          gmailAllowancePeriod,
+        );
+
+      const definitelyNotContacted = yield* send(notContactedId);
+      const recoveredApplied = yield* send(appliedRecoveryId);
+      const recoveredAmbiguous = yield* send(ambiguousRecoveryId);
+
+      expect(definitelyNotContacted).toMatchObject({ _tag: "Applied" });
+      expect(recoveredApplied).toMatchObject({ _tag: "Applied" });
+      expect(recoveredAmbiguous).toMatchObject({ _tag: "Ambiguous" });
+      expect(contacts).toBe(1);
+      expect(reconciliations).toBe(2);
+      expect(usage.records.at(-1)).toMatchObject({
+        items: [{ allowanceKind: "gmailSends", basis: "conservative", quantity: 1n }],
+      });
     }),
   );
 
@@ -536,6 +915,18 @@ describe("Gmail Integration Connection", () => {
                 userId: otherUserId,
               }),
             );
+            const crossUserConnection = yield* Effect.exit(
+              Effect.promise(() =>
+                fixture.database.insert(gmailConnections).values({
+                  connectionId: "gmail:cross-user-relational-invalid",
+                  credentialReference: "other-gmail-credential-persistence",
+                  grantedAt: now,
+                  providerAccountId: "other@gmail.example",
+                  userId,
+                }),
+              ),
+            );
+            expect(Exit.isFailure(crossUserConnection)).toBe(true);
             let tokenRefreshes = 0;
             const gmailDb = GmailDb.make(fixture.database, () => {
               tokenRefreshes += 1;
@@ -545,17 +936,29 @@ describe("Gmail Integration Connection", () => {
             const connected = yield* gmailDb.connections.completeOAuth(userId, now);
             const repeatedConnection = yield* gmailDb.connections.completeOAuth(userId, now);
             const actionId = ActionId.make("gmail-persistence-action");
-            const firstAttempt = yield* gmailDb.attempts.begin(actionId, connectionId, now);
-            const repeatedAttempt = yield* gmailDb.attempts.begin(actionId, connectionId, now);
+            const firstAttempt = yield* gmailDb.attempts.prepare(actionId, connectionId, now);
+            const repeatedAttempt = yield* gmailDb.attempts.prepare(actionId, connectionId, now);
             const recoveryAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-17T12:05:00.000Z"));
             const recoveryClaims = yield* Effect.all(
               [
-                gmailDb.attempts.begin(actionId, connectionId, recoveryAt),
-                gmailDb.attempts.begin(actionId, connectionId, recoveryAt),
+                gmailDb.attempts.prepare(actionId, connectionId, recoveryAt),
+                gmailDb.attempts.prepare(actionId, connectionId, recoveryAt),
               ],
               { concurrency: "unbounded" },
             );
+            yield* gmailDb.attempts.markContacted(actionId, recoveryAt);
             yield* gmailDb.attempts.complete(actionId, "ambiguous");
+            const invalidTerminalAttempt = yield* Effect.exit(
+              Effect.promise(() =>
+                fixture.database.insert(gmailSendAttempts).values({
+                  actionId: "gmail-terminal-without-contact-invalid",
+                  connectionId,
+                  contactedAt: null,
+                  outcome: "applied",
+                  startedAt: now,
+                }),
+              ),
+            );
             const storedConnection = yield* gmailDb.connections.findByUser(userId);
             const accessToken = yield* gmailDb.credentials.resolveAccessToken(connected, "read");
             const mismatchedToken = yield* Effect.flip(
@@ -578,12 +981,69 @@ describe("Gmail Integration Connection", () => {
             expect(storedConnection).toEqual(connected);
             expect(Redacted.value(accessToken)).toBe("refreshed-gmail-access-token");
             expect(tokenRefreshes).toBe(1);
-            expect(firstAttempt).toMatchObject({ _tag: "AttemptStarted" });
+            expect(firstAttempt).toMatchObject({ _tag: "AttemptPrepared" });
             expect(repeatedAttempt).toMatchObject({ _tag: "ActiveAttempt" });
             expect(new Set(recoveryClaims.map(({ _tag }) => _tag))).toEqual(
-              new Set(["ActiveAttempt", "RecoveryStarted"]),
+              new Set(["ActiveAttempt", "PreparationRecoveryStarted"]),
             );
-            expect(columns).toEqual(["action_id", "connection_id", "outcome", "started_at"]);
+            expect(Exit.isFailure(invalidTerminalAttempt)).toBe(true);
+            expect(columns).toEqual([
+              "action_id",
+              "connection_id",
+              "contacted_at",
+              "outcome",
+              "started_at",
+            ]);
+
+            yield* Effect.promise(() =>
+              fixture.database.insert(billingSubscriptions).values({
+                billingSubscriptionId: "gmail-resume-subscription",
+                createdAt: now,
+                plan: "adventurer",
+                planPolicyVersion: "launch-v1",
+                updatedAt: now,
+                userId,
+              }),
+            );
+            const sessionExpiry = DateTime.toDateUtc(
+              DateTime.makeUnsafe("2026-08-17T12:10:00.000Z"),
+            );
+            yield* Effect.promise(() =>
+              fixture.database.insert(sessions).values({
+                createdAt: now,
+                expiresAt: sessionExpiry,
+                id: "gmail-resume-session",
+                token: "gmail-resume-session-token",
+                updatedAt: now,
+                userId,
+              }),
+            );
+            const reloaded = yield* CurrentGmailAuthorization.loadResumed(
+              fixture.database,
+              userId,
+              {
+                _tag: "AuthSession",
+                authSessionId: "gmail-resume-session",
+              },
+              now,
+            );
+            expect(reloaded).toMatchObject({
+              allowance: { _tag: "Unavailable" },
+              plan: "adventurer",
+            });
+
+            yield* Effect.promise(() =>
+              fixture.database
+                .delete(accounts)
+                .where(eq(accounts.id, connected.credentialReference)),
+            );
+            expect(yield* gmailDb.connections.findByUser(userId)).toBeNull();
+            expect(
+              yield* gmailDb.attempts.prepare(actionId, connectionId, recoveryAt),
+            ).toMatchObject({
+              _tag: "ExistingAttempt",
+              attempt: { contactedAt: recoveryAt, outcome: "ambiguous" },
+            });
           }),
         closeTestDatabase,
       ),
@@ -726,27 +1186,61 @@ const makeSendAttempts = () => {
   type Attempt = {
     readonly actionId: ActionId;
     readonly connectionId: GmailConnectionId;
+    readonly contactedAt: Date | null;
     readonly outcome: "pending" | "applied" | "notApplied" | "ambiguous";
     readonly startedAt: Date;
   };
   const attempts = new Map<string, Attempt>();
+  const recoverStored = (
+    actionId: ActionId,
+    connectionId: GmailConnectionId,
+    nowAt: Date,
+    existing: Attempt,
+  ) => {
+    if (existing.connectionId !== connectionId) return Effect.die("conflicting connection");
+    if (existing.outcome !== "pending") {
+      return Effect.succeed({ _tag: "ExistingAttempt" as const, attempt: existing });
+    }
+    if (nowAt.getTime() - existing.startedAt.getTime() < 5 * 60 * 1_000) {
+      return Effect.succeed({ _tag: "ActiveAttempt" as const, attempt: existing });
+    }
+    const claimed = { ...existing, startedAt: nowAt };
+    attempts.set(actionId, claimed);
+    return Effect.succeed({
+      _tag:
+        claimed.contactedAt === null
+          ? ("PreparationRecoveryStarted" as const)
+          : ("ContactRecoveryStarted" as const),
+      attempt: claimed,
+    });
+  };
   return {
-    begin: (actionId: ActionId, connectionId: GmailConnectionId, nowAt: Date) => {
+    recover: (actionId: ActionId, connectionId: GmailConnectionId, nowAt: Date) => {
       const existing = attempts.get(actionId);
-      if (existing !== undefined) {
-        if (existing.outcome !== "pending") {
-          return Effect.succeed({ _tag: "ExistingAttempt" as const, attempt: existing });
-        }
-        if (nowAt.getTime() - existing.startedAt.getTime() < 5 * 60 * 1_000) {
-          return Effect.succeed({ _tag: "ActiveAttempt" as const, attempt: existing });
-        }
-        const claimed = { ...existing, startedAt: nowAt };
-        attempts.set(actionId, claimed);
-        return Effect.succeed({ _tag: "RecoveryStarted" as const, attempt: claimed });
-      }
-      const attempt: Attempt = { actionId, connectionId, outcome: "pending", startedAt: nowAt };
+      return existing === undefined
+        ? Effect.succeed(null)
+        : recoverStored(actionId, connectionId, nowAt, existing);
+    },
+    prepare: (actionId: ActionId, connectionId: GmailConnectionId, nowAt: Date) => {
+      const existing = attempts.get(actionId);
+      if (existing !== undefined) return recoverStored(actionId, connectionId, nowAt, existing);
+      const attempt: Attempt = {
+        actionId,
+        connectionId,
+        contactedAt: null,
+        outcome: "pending",
+        startedAt: nowAt,
+      };
       attempts.set(actionId, attempt);
-      return Effect.succeed({ _tag: "AttemptStarted" as const, attempt });
+      return Effect.succeed({ _tag: "AttemptPrepared" as const, attempt });
+    },
+    markContacted: (actionId: ActionId, contactedAt: Date) => {
+      const existing = attempts.get(actionId);
+      if (existing === undefined || existing.contactedAt !== null) {
+        return Effect.die("attempt must be prepared exactly once before contact");
+      }
+      attempts.set(actionId, { ...existing, contactedAt });
+      return Effect.void;
     },
     complete: (actionId: ActionId, outcome: Attempt["outcome"]) => {
       const existing = attempts.get(actionId);
