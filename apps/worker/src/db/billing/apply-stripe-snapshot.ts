@@ -241,7 +241,13 @@ export const applyStripeSnapshot = (
         await transaction
           .update(webhookEvents)
           .set({ processedAt: now, status: "processed", updatedAt: now })
-          .where(eq(webhookEvents.webhookEventId, input.source.webhookEventId));
+          .where(
+            and(
+              eq(webhookEvents.webhookEventId, input.source.webhookEventId),
+              eq(webhookEvents.attempts, input.source.attempt),
+              eq(webhookEvents.status, "pending"),
+            ),
+          );
       }
       return result;
     }),

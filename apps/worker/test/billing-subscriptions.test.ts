@@ -175,7 +175,10 @@ describe("BillingSubscriptions", () => {
           );
           const billing = Billing.make(fixture.database);
           let currentTime = confirmedAt;
-          const service = makeService(billing, Effect.sync(() => currentTime));
+          const service = makeService(
+            billing,
+            Effect.sync(() => currentTime),
+          );
 
           const result = yield* applyCurrent(
             service,

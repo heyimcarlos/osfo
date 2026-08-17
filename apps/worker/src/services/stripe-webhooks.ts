@@ -1,12 +1,9 @@
-import { Effect, Schema } from "effect";
+import { Effect, Predicate, Schema } from "effect";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schemas use the standard _tag discriminator. */
 
 import type { BillingTransactionRetryExhausted, DatabaseUnavailable } from "../domain/allowance";
-import {
-  type BillingCheckoutSessionId,
-  StripeCheckoutSessionId,
-} from "../domain";
+import { type BillingCheckoutSessionId, StripeCheckoutSessionId } from "../domain";
 import { InvalidStripeSnapshot } from "./billing-subscriptions";
 import type {
   ApplyStripeSnapshotResult,
@@ -86,10 +83,26 @@ export type ReplayResult =
 
 /** Provider-neutral persistence operations required by webhook processing. */
 export interface Persistence {
-  readonly fail: (webhookEventId: string, errorCode: string, checkoutEvidence: StripeCheckoutEvidence | null) => Effect.Effect<void, PermanentStripeWebhookFailure | WebhookPersistenceUnavailable>;
-  readonly failClaimed?: (webhookEventId: string, attempt: number, errorCode: string, checkoutEvidence: StripeCheckoutEvidence | null) => Effect.Effect<void, PermanentStripeWebhookFailure | WebhookPersistenceUnavailable>;
-  readonly markProcessed: (webhookEventId: string, checkoutEvidence: StripeCheckoutEvidence | null) => Effect.Effect<void, PermanentStripeWebhookFailure | WebhookPersistenceUnavailable>;
-  readonly markProcessedClaimed?: (webhookEventId: string, attempt: number, checkoutEvidence: StripeCheckoutEvidence | null) => Effect.Effect<void, PermanentStripeWebhookFailure | WebhookPersistenceUnavailable>;
+  readonly fail: (
+    webhookEventId: string,
+    errorCode: string,
+    checkoutEvidence: StripeCheckoutEvidence | null,
+  ) => Effect.Effect<void, PermanentStripeWebhookFailure | WebhookPersistenceUnavailable>;
+  readonly failClaimed?: (
+    webhookEventId: string,
+    attempt: number,
+    errorCode: string,
+    checkoutEvidence: StripeCheckoutEvidence | null,
+  ) => Effect.Effect<void, PermanentStripeWebhookFailure | WebhookPersistenceUnavailable>;
+  readonly markProcessed: (
+    webhookEventId: string,
+    checkoutEvidence: StripeCheckoutEvidence | null,
+  ) => Effect.Effect<void, PermanentStripeWebhookFailure | WebhookPersistenceUnavailable>;
+  readonly markProcessedClaimed?: (
+    webhookEventId: string,
+    attempt: number,
+    checkoutEvidence: StripeCheckoutEvidence | null,
+  ) => Effect.Effect<void, PermanentStripeWebhookFailure | WebhookPersistenceUnavailable>;
   readonly receive: (
     event: VerifiedStripeEvent,
   ) => Effect.Effect<ReceiveResult, WebhookPersistenceUnavailable>;
@@ -108,7 +121,10 @@ export interface StripeGateway {
     PermanentStripeWebhookFailure | StripeRequestFailed
   >;
   /** Compatibility-only adapter hook; HTTP uses StripeWebhookTransport directly. */
-  readonly verify: (rawBody: string, signature: string) => Effect.Effect<VerifiedStripeEvent, InvalidStripeSignature>;
+  readonly verify: (
+    rawBody: string,
+    signature: string,
+  ) => Effect.Effect<VerifiedStripeEvent, InvalidStripeSignature>;
 }
 
 /** Signature verification and closed decoding at the Stripe HTTP transport boundary. */
@@ -125,7 +141,7 @@ export interface BillingProjection {
     userId: StripeSubscriptionSnapshot["userId"],
   ) => Effect.Effect<Date, BillingTransactionRetryExhausted | DatabaseUnavailable>;
   readonly applyStripeSnapshot: (
-    source: { readonly _tag: "Webhook"; readonly webhookEventId: string },
+    source: { readonly _tag: "Webhook"; readonly attempt: number; readonly webhookEventId: string },
     expectedUpdatedAt: Date,
     snapshot: StripeSubscriptionSnapshot,
     checkoutEvidence: StripeCheckoutEvidence | null,
@@ -155,9 +171,7 @@ export interface Interface {
     eventOrBody: VerifiedStripeEvent | string,
     signature?: string,
   ) => Effect.Effect<HandleResult, InvalidStripeSignature | ProjectionError>;
-  readonly replay: (
-    webhookEventId: string,
-  ) => Effect.Effect<HandleResult, ProjectionError>;
+  readonly replay: (webhookEventId: string) => Effect.Effect<HandleResult, ProjectionError>;
 }
 
 /** Construct durable Stripe webhook ingestion from explicit provider and persistence ports. */
@@ -176,23 +190,19 @@ export const make = (options: {
     Effect.gen(function* () {
       const located = yield* options.stripe.fetchCurrentSnapshot(event);
       if (located._tag === "NoOp") {
-        yield* (options.persistence.markProcessedClaimed ??
-          ((id, _attempt, evidence) => options.persistence.markProcessed(id, evidence)))(
-          webhookEventId,
-          webhookAttempt,
-          checkoutEvidence,
-        );
+        yield* (
+          options.persistence.markProcessedClaimed ??
+          ((id, _attempt, evidence) => options.persistence.markProcessed(id, evidence))
+        )(webhookEventId, webhookAttempt, checkoutEvidence);
         return { _tag: "Processed" } as const;
       }
       const expectedUpdatedAt = yield* options.billing.loadRevision(located.snapshot.userId);
       const current = yield* options.stripe.fetchCurrentSnapshot(event);
       if (current._tag === "NoOp") {
-        yield* (options.persistence.markProcessedClaimed ??
-          ((id, _attempt, evidence) => options.persistence.markProcessed(id, evidence)))(
-          webhookEventId,
-          webhookAttempt,
-          checkoutEvidence,
-        );
+        yield* (
+          options.persistence.markProcessedClaimed ??
+          ((id, _attempt, evidence) => options.persistence.markProcessed(id, evidence))
+        )(webhookEventId, webhookAttempt, checkoutEvidence);
         return { _tag: "Processed" } as const;
       }
       if (current.snapshot.userId !== located.snapshot.userId) {
@@ -201,7 +211,7 @@ export const make = (options: {
         });
       }
       const result = yield* options.billing.applyStripeSnapshot(
-        { _tag: "Webhook", webhookEventId },
+        { _tag: "Webhook", attempt: webhookAttempt, webhookEventId },
         expectedUpdatedAt,
         current.snapshot,
         checkoutEvidence,
@@ -272,21 +282,15 @@ export const make = (options: {
     errorCode: string,
     checkoutEvidence: StripeCheckoutEvidence | null,
   ): Effect.Effect<void, WebhookPersistenceUnavailable> =>
-    (options.persistence.failClaimed ??
-      ((id, _attempt, code, evidence) => options.persistence.fail(id, code, evidence)))(
-      webhookEventId,
-      webhookAttempt,
-      errorCode,
-      checkoutEvidence,
-    ).pipe(
+    (
+      options.persistence.failClaimed ??
+      ((id, _attempt, code, evidence) => options.persistence.fail(id, code, evidence))
+    )(webhookEventId, webhookAttempt, errorCode, checkoutEvidence).pipe(
       Effect.catchTag("PermanentStripeWebhookFailure", (identityFailure) =>
-        (options.persistence.failClaimed ??
-          ((id, _attempt, code, evidence) => options.persistence.fail(id, code, evidence)))(
-          webhookEventId,
-          webhookAttempt,
-          identityFailure.errorCode,
-          null,
-        ).pipe(
+        (
+          options.persistence.failClaimed ??
+          ((id, _attempt, code, evidence) => options.persistence.fail(id, code, evidence))
+        )(webhookEventId, webhookAttempt, identityFailure.errorCode, null).pipe(
           Effect.catchTag(
             "PermanentStripeWebhookFailure",
             () =>
@@ -307,7 +311,12 @@ export const make = (options: {
     checkoutEvidence: StripeCheckoutEvidence | null,
   ) => {
     const processing = !supportedEventTypes.has(event.type)
-        ? persistFailure(webhookEventId, webhookAttempt, "unsupported_stripe_event", checkoutEvidence).pipe(
+      ? persistFailure(
+          webhookEventId,
+          webhookAttempt,
+          "unsupported_stripe_event",
+          checkoutEvidence,
+        ).pipe(
           Effect.andThen(
             Effect.logError("Unsupported signed Stripe event").pipe(
               Effect.annotateLogs({
@@ -352,7 +361,12 @@ export const make = (options: {
         StripeRequestFailed: (failure) =>
           Effect.gen(function* () {
             if (failure.kind === "transient") return yield* failure;
-            yield* persistFailure(webhookEventId, webhookAttempt, failure.operation, checkoutEvidence);
+            yield* persistFailure(
+              webhookEventId,
+              webhookAttempt,
+              failure.operation,
+              checkoutEvidence,
+            );
             yield* Effect.logError("Permanent Stripe request failure").pipe(
               Effect.annotateLogs({
                 eventType: event.type,
@@ -367,11 +381,7 @@ export const make = (options: {
     );
   };
 
-  const process = (
-    event: VerifiedStripeEvent,
-    webhookEventId: string,
-    webhookAttempt: number,
-  ) =>
+  const process = (event: VerifiedStripeEvent, webhookEventId: string, webhookAttempt: number) =>
     checkoutEvidenceFor(event).pipe(
       Effect.flatMap((checkoutEvidence) =>
         processWithEvidence(event, webhookEventId, webhookAttempt, checkoutEvidence),
@@ -396,17 +406,24 @@ export const make = (options: {
   return {
     handle: (eventOrBody: VerifiedStripeEvent | string, signature?: string) =>
       Effect.gen(function* () {
-        const event =
-          typeof eventOrBody === "string"
-            ? yield* options.stripe.verify(eventOrBody, signature ?? "")
-            : eventOrBody;
+        const event = Predicate.isString(eventOrBody)
+          ? yield* options.stripe.verify(eventOrBody, signature ?? "")
+          : eventOrBody;
         const receipt = yield* options.persistence.receive(event);
         if (receipt._tag === "ProcessedDuplicate") return receipt;
         const webhookAttempt = receipt.attempt ?? 1;
         if (event.decodeErrorCode === "invalid_stripe_event") {
-          yield* persistFailure(receipt.webhookEventId, webhookAttempt, event.decodeErrorCode, null);
+          yield* persistFailure(
+            receipt.webhookEventId,
+            webhookAttempt,
+            event.decodeErrorCode,
+            null,
+          );
           yield* Effect.logError("Signed Stripe webhook failed closed decoding").pipe(
-            Effect.annotateLogs({ externalEventId: event.externalEventId, webhookEventId: receipt.webhookEventId }),
+            Effect.annotateLogs({
+              externalEventId: event.externalEventId,
+              webhookEventId: receipt.webhookEventId,
+            }),
           );
           return { _tag: "FailedAcknowledged" } as const;
         }

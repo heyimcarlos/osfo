@@ -49,27 +49,34 @@ export const markProcessed = (
   attempt: number,
   checkoutEvidence: StripeCheckoutEvidence | null,
 ): Effect.Effect<void, PermanentStripeWebhookFailure | WebhookPersistenceUnavailable> =>
-  execute("markProcessed", database, webhookEventId, attempt, checkoutEvidence, async (transaction) => {
-    const [updated] = await transaction
-      .update(webhookEvents)
-      .set({
-        errorCode: null,
-        processedAt: sql`clock_timestamp()`,
-        status: "processed",
-        updatedAt: sql`clock_timestamp()`,
-      })
-      .where(
-        attempt === 0
-          ? eq(webhookEvents.webhookEventId, webhookEventId)
-          : and(
-              eq(webhookEvents.webhookEventId, webhookEventId),
-              eq(webhookEvents.attempts, attempt),
-              eq(webhookEvents.status, "pending"),
-            ),
-      )
-      .returning({ webhookEventId: webhookEvents.webhookEventId });
-    return updated !== undefined;
-  });
+  execute(
+    "markProcessed",
+    database,
+    webhookEventId,
+    attempt,
+    checkoutEvidence,
+    async (transaction) => {
+      const [updated] = await transaction
+        .update(webhookEvents)
+        .set({
+          errorCode: null,
+          processedAt: sql`clock_timestamp()`,
+          status: "processed",
+          updatedAt: sql`clock_timestamp()`,
+        })
+        .where(
+          attempt === 0
+            ? eq(webhookEvents.webhookEventId, webhookEventId)
+            : and(
+                eq(webhookEvents.webhookEventId, webhookEventId),
+                eq(webhookEvents.attempts, attempt),
+                eq(webhookEvents.status, "pending"),
+              ),
+        )
+        .returning({ webhookEventId: webhookEvents.webhookEventId });
+      return updated !== undefined;
+    },
+  );
 
 const execute = (
   operation: "fail" | "markProcessed",

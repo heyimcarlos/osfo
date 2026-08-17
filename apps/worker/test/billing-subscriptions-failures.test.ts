@@ -181,7 +181,7 @@ describe("BillingSubscriptions projection failures", () => {
           const revision = yield* service.loadRevision(rollbackUserId);
           const exit = yield* service
             .applyStripeSnapshot(
-              { _tag: "Webhook", webhookEventId: "webhook-rollback" },
+              { _tag: "Webhook", attempt: 1, webhookEventId: "webhook-rollback" },
               revision,
               snapshot,
               {

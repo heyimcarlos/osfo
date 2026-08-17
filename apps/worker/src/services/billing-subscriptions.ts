@@ -60,7 +60,7 @@ export type StripeSubscriptionSnapshot = typeof StripeSubscriptionSnapshot.Type;
 
 /** Authority source for one Stripe projection transition. */
 export const StripeSnapshotSource = Schema.Union([
-  Schema.TaggedStruct("Webhook", { webhookEventId: Schema.String }),
+  Schema.TaggedStruct("Webhook", { attempt: Schema.Int, webhookEventId: Schema.String }),
   Schema.TaggedStruct("Reconciliation", {
     reason: Schema.Literals(["checkoutReturn", "internal", "portalReturn"]),
   }),

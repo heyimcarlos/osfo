@@ -390,27 +390,31 @@ export const make = (
       }).pipe(
         Effect.flatMap((rawEvent) =>
           Schema.decodeUnknownEffect(VerifiedEventEnvelope)(rawEvent).pipe(
-            Effect.mapError(() => new InvalidStripeSignature({ message: "Invalid Stripe signature" })),
+            Effect.mapError(
+              () => new InvalidStripeSignature({ message: "Invalid Stripe signature" }),
+            ),
           ),
         ),
         Effect.flatMap((event): Effect.Effect<VerifiedStripeEvent> =>
-          event.type.startsWith("checkout.session.") && event.data.object.client_reference_id !== null && event.data.object.client_reference_id !== undefined
-            ? Schema.decodeEffect(BillingCheckoutSessionId)(event.data.object.client_reference_id).pipe(
+          event.type.startsWith("checkout.session.") &&
+          event.data.object.client_reference_id !== null &&
+          event.data.object.client_reference_id !== undefined
+            ? Schema.decodeEffect(BillingCheckoutSessionId)(
+                event.data.object.client_reference_id,
+              ).pipe(
                 Effect.map((billingCheckoutSessionId) => ({
                   billingCheckoutSessionId,
                   externalEventId: event.id,
                   externalObjectId: event.data.object.id,
                   type: event.type,
                 })),
-                Effect.catch(() =>
-                  Effect.succeed({
-                    billingCheckoutSessionId: null,
-                    decodeErrorCode: "invalid_stripe_event" as const,
-                    externalEventId: event.id,
-                    externalObjectId: event.data.object.id,
-                    type: event.type,
-                  }),
-                ),
+                Effect.orElseSucceed(() => ({
+                  billingCheckoutSessionId: null,
+                  decodeErrorCode: "invalid_stripe_event" as const,
+                  externalEventId: event.id,
+                  externalObjectId: event.data.object.id,
+                  type: event.type,
+                })),
               )
             : Effect.succeed({
                 billingCheckoutSessionId: null,
@@ -433,7 +437,9 @@ export const make = (
       }).pipe(
         Effect.flatMap((rawEvent) =>
           Schema.decodeUnknownEffect(VerifiedEventEnvelope)(rawEvent).pipe(
-            Effect.mapError(() => new InvalidStripeSignature({ message: "Invalid Stripe signature" })),
+            Effect.mapError(
+              () => new InvalidStripeSignature({ message: "Invalid Stripe signature" }),
+            ),
           ),
         ),
         Effect.map((event) => ({

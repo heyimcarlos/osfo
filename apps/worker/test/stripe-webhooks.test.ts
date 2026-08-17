@@ -294,45 +294,48 @@ describe("StripeWebhooks", () => {
     }),
   );
 
-  it.effect("acknowledges a signed unsupported event after retaining permanent failure evidence", () =>
-    Effect.gen(function* () {
-      let failedCode: string | null = null;
-      let processed = 0;
-      const service = StripeWebhooks.make({
-        billing: {
-          applyStripeSnapshot: () => Effect.die("must not project an unsupported dispute"),
-          loadRevision: () => Effect.die("must not load an unsupported dispute"),
-        },
-        persistence: {
-          fail: (_webhookEventId, errorCode) => {
-            failedCode = errorCode;
-            return Effect.void;
+  it.effect(
+    "acknowledges a signed unsupported event after retaining permanent failure evidence",
+    () =>
+      Effect.gen(function* () {
+        let failedCode: string | null = null;
+        let processed = 0;
+        const service = StripeWebhooks.make({
+          billing: {
+            applyStripeSnapshot: () => Effect.die("must not project an unsupported dispute"),
+            loadRevision: () => Effect.die("must not load an unsupported dispute"),
           },
-          markProcessed: () => {
-            processed += 1;
-            return Effect.void;
+          persistence: {
+            fail: (_webhookEventId, errorCode) => {
+              failedCode = errorCode;
+              return Effect.void;
+            },
+            markProcessed: () => {
+              processed += 1;
+              return Effect.void;
+            },
+            receive: () =>
+              Effect.succeed({ _tag: "Pending", webhookEventId: "webhook-unsupported" }),
+            replay: () => Effect.die("unused"),
           },
-          receive: () => Effect.succeed({ _tag: "Pending", webhookEventId: "webhook-unsupported" }),
-          replay: () => Effect.die("unused"),
-        },
-        stripe: {
-          fetchCurrentSnapshot: () => Effect.die("must not fetch an unsupported dispute"),
-          verify: () =>
-            Effect.succeed({
-              billingCheckoutSessionId: null,
-              externalEventId: "evt_unsupported_dispute",
-              externalObjectId: "dp_unsupported",
-              type: "charge.dispute.updated",
-            }),
-        },
-      });
+          stripe: {
+            fetchCurrentSnapshot: () => Effect.die("must not fetch an unsupported dispute"),
+            verify: () =>
+              Effect.succeed({
+                billingCheckoutSessionId: null,
+                externalEventId: "evt_unsupported_dispute",
+                externalObjectId: "dp_unsupported",
+                type: "charge.dispute.updated",
+              }),
+          },
+        });
 
-      expect(yield* service.handle("body", "signature")).toEqual({
-        _tag: "FailedAcknowledged",
-      });
-      expect(failedCode).toBe("unsupported_stripe_event");
-      expect(processed).toBe(0);
-    }),
+        expect(yield* service.handle("body", "signature")).toEqual({
+          _tag: "FailedAcknowledged",
+        });
+        expect(failedCode).toBe("unsupported_stripe_event");
+        expect(processed).toBe(0);
+      }),
   );
 
   for (const testCase of [

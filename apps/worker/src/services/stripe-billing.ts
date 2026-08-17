@@ -220,7 +220,10 @@ export interface Interface {
 
 /** Construct explicit Stripe billing operations from application-owned ports. */
 export const make = (options: MakeOptions): Interface => {
-  const ensureCustomer = (userId: UserId, authorize: Effect.Effect<void, BillingPersistenceUnavailable>) =>
+  const ensureCustomer = (
+    userId: UserId,
+    authorize: Effect.Effect<void, BillingPersistenceUnavailable>,
+  ) =>
     Effect.gen(function* () {
       const candidateId = yield* options.ids.customer;
       const local = yield* options.persistence.prepareCustomer(userId, candidateId);
@@ -288,7 +291,8 @@ export const make = (options: MakeOptions): Interface => {
             state: existing.state,
             stripeSubscriptionId: existing.stripeSubscriptionId,
           });
-          if (existing.state === "expired") return yield* createCheckout(userId, customer, authorize);
+          if (existing.state === "expired")
+            return yield* createCheckout(userId, customer, authorize);
           return yield* new StripeRequestFailed({
             kind: "permanent",
             message: "The existing Stripe Checkout Session is already complete",

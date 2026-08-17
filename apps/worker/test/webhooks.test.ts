@@ -61,7 +61,11 @@ describe("Webhook persistence", () => {
           );
 
           expect(first).toEqual({ _tag: "Pending", attempt: 1, webhookEventId: "webhook-local-1" });
-          expect(redelivery).toEqual({ _tag: "Pending", attempt: 2, webhookEventId: "webhook-local-1" });
+          expect(redelivery).toEqual({
+            _tag: "Pending",
+            attempt: 2,
+            webhookEventId: "webhook-local-1",
+          });
           expect(replayed).toEqual({
             _tag: "Pending",
             attempt: 3,

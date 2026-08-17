@@ -16,7 +16,9 @@ export const layer = (config: RuntimeConfig) => {
       const signature = request.headers.get("stripe-signature");
       if (signature === null) return jsonResponse("Invalid Stripe signature", 400);
       const rawBody = await request.text();
-      const verified = await Effect.runPromiseExit(services.stripe.verifyWebhook(rawBody, signature));
+      const verified = await Effect.runPromiseExit(
+        services.stripe.verifyWebhook(rawBody, signature),
+      );
       if (verified._tag === "Failure") {
         return jsonResponse("Invalid Stripe signature", 400);
       }

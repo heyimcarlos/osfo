@@ -11,7 +11,7 @@ import * as AuthSessionAdapter from "../integrations/auth/auth-session";
 import * as AuthSession from "../services/auth-session";
 import { admit, type BillingOperation } from "../services/billing-authorization";
 
-/* oxlint-disable effecttsgo/strict-effect-provide -- This composition boundary owns the concrete request-scoped PostgreSQL adapters. */
+/* oxlint-disable effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- This composition boundary owns concrete PostgreSQL adapters and branches on Effect tags. */
 
 /** Build the live billing authorization check from the current authority owners. */
 export const make = (
