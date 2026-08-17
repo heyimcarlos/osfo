@@ -9,8 +9,6 @@ preview, and the accepted product and architecture decisions.
 - [CONTEXT.md](CONTEXT.md) defines the domain language.
 - [The Osfo v1 specification](docs/specs/osfo-v1.md) defines the launch product and
   target architecture.
-- [Current ADRs](docs/adr/) record accepted Cloudflare, Think, and storage
-  decisions.
 - [The implementation map](https://github.com/heyimcarlos/osfo/issues/167)
   owns active work.
 
