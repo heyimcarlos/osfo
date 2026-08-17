@@ -110,6 +110,7 @@ describe("managed model access policy", () => {
             maxInputTokens: plan === "free" ? 32_000 : 128_000,
             maxRetries: 0,
             maxSteps: plan === "free" ? 6 : 12,
+            originatingAuthority: { _tag: "AuthSession", authSessionId: "auth-managed" },
             plan,
             routeId: `route-${plan}`,
             route: `dynamic/osfo-${plan}-v1`,

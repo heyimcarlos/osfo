@@ -7,6 +7,8 @@ const workerBindings = {
   BETTER_AUTH_BASE_URL: "https://osfo.test",
   BETTER_AUTH_SECRET: "test-only-better-auth-secret-32-characters",
   BETTER_AUTH_TRUSTED_ORIGINS: '["https://osfo.test"]',
+  GOOGLE_CLIENT_ID: "test-google-client",
+  GOOGLE_CLIENT_SECRET: "test-google-secret",
   META_APP_SECRET: "test-only-meta-app-secret",
   META_WEBHOOK_VERIFY_TOKEN: "test-only-meta-webhook-token",
   TWILIO_ACCOUNT_SID: "AC11111111111111111111111111111111",

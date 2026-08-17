@@ -1,7 +1,8 @@
 import { Layer, type ManagedRuntime } from "effect";
 
-import * as Health from "./handlers/health";
 import * as Billing from "./handlers/billing";
+import * as Health from "./handlers/health";
+import * as Gmail from "./handlers/gmail";
 import * as Onboarding from "./handlers/onboarding";
 import * as Registration from "./handlers/registration";
 import type { ExecutionUnit } from "./layers";
@@ -14,6 +15,7 @@ export const layer = (
 ) =>
   Layer.mergeAll(
     Billing.layer(config),
+    Gmail.layer,
     Health.layer(runtime),
     Onboarding.layer,
     Registration.layer,

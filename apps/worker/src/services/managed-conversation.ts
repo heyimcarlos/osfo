@@ -141,6 +141,7 @@ export const admitManagedConversation = (
         maxOutputTokens: profile.context.maxOutputTokens,
         maxRetries: profile.maxRetries,
         maxSteps,
+        originatingAuthority: input.authorization.originatingAuthority,
         plan,
         planPolicyVersion,
         routeId: session.routeId,

@@ -2,6 +2,7 @@ export * from "./agents";
 export * from "./allowances";
 export * from "./auth";
 export * from "./billing";
+export * from "./gmail";
 export * from "./messaging";
 export * from "./onboarding";
 export * from "./telegram-onboarding-delivery";

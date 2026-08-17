@@ -43,6 +43,13 @@
       "when": 1786970465528,
       "tag": "0005_classy_juggernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786976310661,
+      "tag": "0006_tricky_whirlwind",
+      "breakpoints": true
     }
   ]
 }

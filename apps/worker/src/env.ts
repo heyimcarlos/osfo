@@ -73,6 +73,8 @@ const RawRuntimeConfig = Schema.Struct({
   BETTER_AUTH_TRUSTED_ORIGINS: TrustedOrigins,
   META_APP_SECRET: MetaSecret,
   META_WEBHOOK_VERIFY_TOKEN: MetaSecret,
+  GOOGLE_CLIENT_ID: Schema.String.check(Schema.isMinLength(1)),
+  GOOGLE_CLIENT_SECRET: Schema.String.check(Schema.isMinLength(1)),
   OSFO_STAGE: OsfoStage,
   TELEGRAM_ALLOWED_USER_IDS: Schema.optional(Schema.String),
   TELEGRAM_BOT_TOKEN: Schema.optional(Schema.String),
@@ -109,6 +111,10 @@ export interface RuntimeConfig {
       | { readonly kind: "disabled" }
       | { readonly apiKey: Redacted.Redacted; readonly kind: "enabled" };
     readonly secret: Redacted.Redacted;
+    readonly google: {
+      readonly clientId: string;
+      readonly clientSecret: Redacted.Redacted;
+    };
     readonly trustedOrigins: ReadonlyArray<string>;
   };
   readonly stage: OsfoStage;
@@ -150,6 +156,8 @@ export interface RuntimeConfigInput {
   readonly BETTER_AUTH_TRUSTED_ORIGINS?: string;
   readonly META_APP_SECRET?: string;
   readonly META_WEBHOOK_VERIFY_TOKEN?: string;
+  readonly GOOGLE_CLIENT_ID?: string;
+  readonly GOOGLE_CLIENT_SECRET?: string;
   readonly OSFO_STAGE?: string;
   readonly TELEGRAM_ALLOWED_USER_IDS?: string;
   readonly TELEGRAM_BOT_TOKEN?: string;
@@ -200,6 +208,10 @@ export const decodeRuntimeConfig = (input: RuntimeConfigInput) =>
         dashboard: {
           apiKey: Redacted.make(raw.BETTER_AUTH_API_KEY),
           kind: "enabled",
+        },
+        google: {
+          clientId: raw.GOOGLE_CLIENT_ID,
+          clientSecret: Redacted.make(raw.GOOGLE_CLIENT_SECRET),
         },
         secret: Redacted.make(raw.BETTER_AUTH_SECRET),
         trustedOrigins: raw.BETTER_AUTH_TRUSTED_ORIGINS.map((origin) => origin.origin),

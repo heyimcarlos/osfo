@@ -38,7 +38,11 @@ describe("Generated document download", () => {
       });
       const response = yield* DocumentDownload.serve(
         env.ARTIFACTS,
-        Effect.succeed({ authSessionId: "active-session", userId }),
+        Effect.succeed({
+          authSessionExpiresAt: new Date("2026-12-31T00:00:00.000Z"),
+          authSessionId: "active-session",
+          userId,
+        }),
       ).pipe(
         Effect.provideService(
           HttpServerRequest.HttpServerRequest,
@@ -50,6 +54,7 @@ describe("Generated document download", () => {
       const leaked = yield* DocumentDownload.serve(
         env.ARTIFACTS,
         Effect.succeed({
+          authSessionExpiresAt: new Date("2026-12-31T00:00:00.000Z"),
           authSessionId: "other-session",
           userId: UserId.make("other-user"),
         }),

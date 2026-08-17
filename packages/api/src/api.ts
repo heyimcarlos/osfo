@@ -2,12 +2,14 @@ import { HttpApi, OpenApi } from "effect/unstable/httpapi";
 
 import { HealthGroup } from "./groups/health";
 import { BillingGroup } from "./groups/billing";
+import { GmailGroup } from "./groups/gmail";
 import { OnboardingGroup } from "./groups/onboarding";
 import { RegistrationGroup } from "./groups/registration";
 
 /** Shared HTTP contract implemented by the Worker and consumed by clients. */
 export const Api = HttpApi.make("osfo")
   .add(BillingGroup)
+  .add(GmailGroup)
   .add(HealthGroup)
   .add(OnboardingGroup)
   .add(RegistrationGroup)
@@ -29,6 +31,13 @@ export {
   BillingSummary,
   BillingUnavailable,
 } from "./groups/billing";
+export {
+  GmailConnectionConflict,
+  GmailConnectionDenied,
+  GmailConnectionResponse,
+  GmailConnectionUnavailable,
+  GmailGroup,
+} from "./groups/gmail";
 export {
   ChannelBindingId,
   ChannelBindingNeedsSupport,

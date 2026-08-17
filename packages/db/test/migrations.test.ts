@@ -42,6 +42,8 @@ describe("Postgres migrations", () => {
             "billing_subscriptions",
             "channel_bindings",
             "deletion_cases",
+            "gmail_connections",
+            "gmail_send_attempts",
             "inbound_whatsapp_events",
             "migrations",
             "rate_limits",

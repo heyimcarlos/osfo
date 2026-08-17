@@ -11,8 +11,9 @@ import {
   UserId,
 } from "../domain";
 import { AuthSessionId } from "./auth-session";
-import { ManagedModelRoute } from "./model-access-policy";
+import { OriginatingAuthority } from "./authority";
 import { CoreMemoryAuthorizationSnapshotEncoded } from "./core-memory-authorization";
+import { ManagedModelRoute } from "./model-access-policy";
 
 const positiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0));
 
@@ -46,6 +47,7 @@ export const ManagedTurnMetadata = Schema.TaggedStruct("OsfoManagedTurn", {
   maxOutputTokens: positiveInteger,
   maxRetries: Schema.Literal(0),
   maxSteps: positiveInteger,
+  originatingAuthority: OriginatingAuthority,
   plan: Plan,
   planPolicyVersion: PlanPolicyVersion,
   routeId: ConversationRouteId,

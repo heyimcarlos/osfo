@@ -37,7 +37,7 @@ import * as DocumentArtifact from "../../domain/document-artifact";
 import * as DocumentGenerationComposition from "../../composition/document-generation";
 import { database as workerDatabase } from "../../db";
 import * as Billing from "../../db/billing";
-import { decodeOsfoStage } from "../../env";
+import { decodeOsfoStage, decodeRuntimeConfig } from "../../env";
 import * as ProviderAuthorizationPostgres from "../../integrations/postgres/provider-authorization";
 import * as SessionRecallAuthorizationPostgres from "../../integrations/postgres/session-recall-authorization";
 import {
@@ -129,6 +129,12 @@ import {
   type CurrentSessionReplaced,
   type CurrentSessionReplacementConflict,
 } from "../../services/session-replacement";
+import {
+  gmailSendActionName,
+  presentGmailSendAction,
+  sanitizeGmailSendActionInput,
+} from "./gmail-send-action";
+import * as GmailRuntime from "./gmail-runtime";
 import {
   type AgentInitializationConflict,
   type AcceptanceReceiptConflict,
@@ -358,7 +364,10 @@ export class OsfoAgent extends Think<Env> {
       },
     }),
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-    present: presentProtectedAction,
+    present: (pending) =>
+      pending.descriptor.action === gmailSendActionName
+        ? presentGmailSendAction(pending)
+        : presentProtectedAction(pending),
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
   readonly #modelCallUsage = makeDurableModelCallUsage({
@@ -446,13 +455,25 @@ export class OsfoAgent extends Think<Env> {
         Effect.andThen(this.#sessionRecall.recall(request)),
       ),
   });
+  readonly #gmailRuntime = Option.flatMap(this.#runtime, (runtime) =>
+    Option.map(Result.getSuccess(decodeRuntimeConfig(this.env)), (config) =>
+      GmailRuntime.make({
+        activeTurnMetadata: () =>
+          Schema.decodeUnknownOption(ManagedTurnMetadata)(this.activeTurnMetadata),
+        agentId: AgentId.make(this.name),
+        auth: config.auth,
+        runtime,
+      }),
+    ),
+  );
 
   /** Resolve a safe model before trusted per-turn metadata selects the exact managed route. */
   override getModel() {
     return launchModelAccessPolicy.plans.free.route;
   }
 
-  override getActions() {
+  /** Register document, Gmail, and test actions in their owning stages. */
+  override getActions(): Record<string, ReturnType<typeof action>> {
     const documentActions = {
       [documentDeleteActionName]: action({
         approval: true,
@@ -485,14 +506,24 @@ export class OsfoAgent extends Think<Env> {
               this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
           })
         : makeOsfoActions({ clearCoreMemory: executeClear });
+    const gmail = Option.isNone(stage) ? undefined : Option.getOrUndefined(this.#gmailRuntime);
     return {
       ...documentActions,
       ...osfoActions,
+      ...(gmail === undefined ? {} : { [gmailSendActionName]: gmail.action }),
     };
   }
 
-  /** Register retained document export as a read-only ToolCall. */
+  /** Register Session Recall, document export, and production Gmail tools. */
   override getTools(): ToolSet {
+    const stage = decodeOsfoStage(this.env.OSFO_STAGE);
+    const gmailTools =
+      Option.isNone(stage) || stage.value === "test"
+        ? {}
+        : Option.match(this.#gmailRuntime, {
+            onNone: () => ({}),
+            onSome: ({ tools }) => tools,
+          });
     return {
       ...this.#sessionRecallTools,
       exportDocument: tool({
@@ -500,6 +531,7 @@ export class OsfoAgent extends Think<Env> {
         execute: (input, context) => this.#exportDocument(input, context.toolCallId),
         inputSchema: Schema.toStandardSchemaV1(RetainedDocumentInput),
       }),
+      ...gmailTools,
     };
   }
 
@@ -513,6 +545,12 @@ export class OsfoAgent extends Think<Env> {
                 input: sanitizeDocumentDeleteInput(approval.descriptor.input),
               }),
             })
+          : approval.source === "action" && approval.descriptor.action === gmailSendActionName
+            ? Object.assign({}, approval, {
+                descriptor: Object.assign({}, approval.descriptor, {
+                  input: sanitizeGmailSendActionInput(approval.descriptor.input),
+                }),
+              })
           : sanitizePendingApproval(approval),
     );
   }

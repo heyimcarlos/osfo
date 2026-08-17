@@ -24,6 +24,10 @@ const metadata = Schema.decodeSync(ManagedTurnMetadata)({
   maxOutputTokens: 4_000,
   maxRetries: 0,
   maxSteps: 6,
+  originatingAuthority: {
+    _tag: "AuthSession",
+    authSessionId: "auth-session-recall-authorization",
+  },
   plan: "free",
   planPolicyVersion: "launch-v1",
   route: "dynamic/osfo-free-v1",

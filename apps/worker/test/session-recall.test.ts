@@ -42,6 +42,10 @@ const managedTurnMetadata = (routeId: ConversationRouteId, sessionId: SessionId)
     maxOutputTokens: 4_000,
     maxRetries: 0 as const,
     maxSteps: 6,
+    originatingAuthority: {
+      _tag: "AuthSession" as const,
+      authSessionId: "auth-session-session-recall",
+    },
     plan: "free" as const,
     planPolicyVersion: "launch-v1",
     route: "dynamic/osfo-free-v1",
