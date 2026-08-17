@@ -215,9 +215,13 @@ _Avoid_: Allowance reservation, billing charge, generic usage event
 
 **Integration Connection**:
 Revocable authority for Osfo to read or act through a third-party product such as
-Gmail or Google Calendar. It remains separate from an Account even when one
-OAuth consent flow explicitly establishes both.
-_Avoid_: Account, implicit OAuth scope, Approval
+Gmail. It is an Osfo authorization fact, separate from an Account and Approval.
+In v1, current provider connection evidence comes from Composio Cloud. Composio
+owns the connected-account record and all integration credentials. An Integration
+Connection does not imply an Osfo connection table or a Better Auth provider
+Account.
+_Avoid_: Account, Better Auth provider Account, local connected-account record,
+implicit provider scope, Approval
 
 **Model Access Policy**:
 The Osfo-owned rule that chooses a managed model route for a request and applies

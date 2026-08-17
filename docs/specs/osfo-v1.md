@@ -40,6 +40,7 @@ Osfo v1 uses:
 - Drizzle for schema declarations, typed queries, and migration generation;
 - Alchemy for Cloudflare infrastructure composition;
 - Supermemory as the v1 adapter behind MemoryProvider;
+- Composio Cloud as the v1 integration provider for Gmail;
 - the official Meta WhatsApp Cloud API as the only launch messaging transport.
 
 Osfo v1 does not include Apple Messages, a universal agent builder, harness
@@ -47,6 +48,10 @@ portability, one permanent VM for each User, recursive child-agent orchestration
 a general sandbox product, arbitrary connectors, or a second GCP production
 runtime. Production implementation starts through the issue map linked from this
 specification.
+
+Composio Cloud is the selected v1 integration architecture. The Composio runtime
+adapter is not implemented yet. This specification does not claim that Gmail is
+available in the current code.
 
 ## System shape
 
@@ -60,7 +65,8 @@ Meta webhook or Osfo web request
         -> Native Memory, managed model, scheduling, and Delivery
      -> R2 content
      -> Cloudflare Workflow when independent durable work is required
-     -> external adapters: Meta, SMS, Supermemory, Gmail, search, model, task compute
+     -> external adapters: Meta, SMS, Supermemory, Composio Cloud, search, model,
+        task compute
 ```
 
 The Worker entry point routes work and does not decide product policy. Focused
@@ -100,6 +106,10 @@ for one User. These facts remain separate. Better Auth owns authentication. Its
 Better Auth also owns `sessions`, `accounts`, `verifications`, and
 `rate_limits`. The phone-number plugin and Twilio Verify provide the selected
 SMS path.
+
+Google sign-in is not supported in v1. Better Auth has no Google social provider,
+and a Google or Gmail authorization cannot create or link an Account. The Phone
+Account is the supported launch Account path.
 
 Development temporarily enables Better Auth email-and-password sign-up and
 sign-in so the web and control-plane integration can be exercised without an
@@ -351,7 +361,8 @@ must implement the same Interface without changing product authority.
 
 Osfo has two launch Plans. Free has no charge. Adventurer costs CA$25 each month,
 plus tax. V1 has no annual billing, trial, overage, usage add-on, or user-selected
-model. Managed models serve all launch work. Provider Connections are deferred.
+model. Managed models serve all launch work. User-selected model Provider
+Connections are deferred.
 
 Free includes managed conversation, bounded Supermemory use, supported file
 analysis, and unambiguous one-time reminders. Adventurer adds a stronger managed
@@ -416,8 +427,10 @@ new Approval.
 
 On downgrade or expiry, excess retained data stays readable, exportable, and
 deletable. New writes stop while use exceeds Free limits. Paid reminders and
-Workflows pause or cancel before another protected effect. Gmail authority stays
-stored, dormant, and revocable. Existing User data is not silently deleted.
+Workflows pause or cancel before another protected effect. The Osfo Gmail
+Integration Connection authorization fact stays dormant and revocable. Composio
+continues to own its connected-account record and credentials. Existing User data
+is not silently deleted.
 
 ## Launch capabilities
 
@@ -557,7 +570,28 @@ search and cost limits. It does not bypass authentication or paywalls.
 One Gmail Integration Connection permits on-demand search and read, local
 summaries and drafts, and approved sends. V1 does not perform mailbox-wide sync,
 continuous monitoring, delete, archive, label changes, or automatic replies.
-OAuth consent creates the Integration Connection. It does not approve a send.
+Composio supplies current provider connection evidence for the Osfo Integration
+Connection. Provider consent does not approve a send.
+
+Composio owns integration OAuth and consent mechanics, OAuth credentials and
+refresh tokens, connected-account records, provider token refresh, Gmail tool
+discovery and execution, and provider API transport. Osfo does not persist Gmail
+credentials or connected-account records and does not call Google OAuth or Gmail
+APIs directly.
+
+Osfo owns User identity and AuthSession authority, Plan Entitlements and Usage
+Allowances, authorization decisions, human Approval for protected effects,
+stable Action identity and idempotency, product-level outcome and recovery
+policy, and safe audit evidence without credentials. An approved Gmail send must
+still pass the current Osfo authorization checks before execution through
+Composio.
+
+If provider connection evidence is absent or no longer current, the operation
+does not run. Composio owns reconnection and returns its authorization path. Osfo
+records a provider-neutral outcome, keeps the stable Action identity, and resumes
+or retries only under Osfo recovery and idempotency policy after current evidence
+exists. Osfo never refreshes a provider token or treats a Composio connected
+account as product authority.
 
 ### Reminders and Workflows
 
@@ -633,6 +667,7 @@ apps/worker/
   src/workflows/
   src/adapters/
   src/integrations/
+    composio/
     think/
     supermemory/
   src/identity/
@@ -682,6 +717,13 @@ internal to `apps/worker`. A workspace package or public seam is allowed only
 when it hides substantial behavior, protects a real authority, or has a second
 consumer or demonstrated variation. Module Interfaces and observable outcomes
 are the test surface.
+
+The future Composio adapter belongs in
+`apps/worker/src/integrations/composio/`. It stays behind one small typed Effect
+Interface for the required v1 Gmail operations. It translates Composio connection
+evidence and tool outcomes into Osfo terms. It does not create a broad integration
+framework, own product authorization, or persist provider credentials or
+connected accounts in PostgreSQL.
 
 `packages/auth` is the private authentication module. It owns the Better Auth
 policy, Dashboard plugin, phone plugin configuration, request-scoped factory,
@@ -858,10 +900,11 @@ recovery, backlog slope is negative within five minutes and recoverable work is
 terminal or durably waiting within 20 minutes.
 
 Every accepted root has one unsampled semantic trace. Required signals cover all
-platform stores, Think, providers, Workflows, model access, memory, Gmail,
-WhatsApp, and task compute. Missing material semantic, usage, or cost evidence
-makes the affected gate MISSING. At target, measured use stays at least 30%
-below every hard limit.
+platform stores, Think, providers, Workflows, model access, memory,
+Composio-backed Gmail operations, WhatsApp, and task compute. Safe evidence
+contains no OAuth credential or provider token. Missing material semantic, usage,
+or cost evidence makes the affected gate MISSING. At target, measured use stays
+at least 30% below every hard limit.
 
 The economics gate requires at least 50% Adventurer contribution margin and at
 most US$0.50 all-in cost for an active Free period. It includes platform, model,
@@ -984,7 +1027,7 @@ Implementation evidence must include at least:
 - PostgreSQL and Agent SQLite migration chains, interruption, old Agent activation,
   Think-table isolation, and Worker-to-Agent recovery;
 - provider conformance and focused live qualification for Meta, SMS, managed
-  models, Supermemory, Gmail, search, and temporary compute;
+  models, Supermemory, Composio-backed Gmail, search, and temporary compute;
 - the complete production and Model Quality gates in this document.
 
 The linked implementation map owns the exact ticket order and live status. No

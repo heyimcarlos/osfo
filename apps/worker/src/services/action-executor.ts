@@ -5,10 +5,7 @@ import type { DbUnavailable } from "../db";
 import { ActionId } from "../domain/action-execution";
 import type { ActionExecutionResult } from "../domain/action-execution";
 import type { AuthSessionId } from "../domain/auth-session";
-import {
-  AuthorizationOperation,
-  type AuthorizationOperation as AuthorizationOperationType,
-} from "../domain/authorization-operation";
+import type { AuthorizationOperation as AuthorizationOperationType } from "../domain/authorization-operation";
 import type * as AuthSession from "./auth-session";
 import type * as ChannelBinding from "./channel-binding";
 import type * as DeletionCase from "./deletion-case";
@@ -153,43 +150,6 @@ export const make = (authorization: Authorization, owners: AuthorityOwners): Int
     });
   },
 });
-
-/** Exact Action execution that Think released from one durable Approval. */
-export const ThinkApprovedActionExecution = Schema.TaggedStruct("ThinkApprovedActionExecution", {
-  actionId: ActionId,
-  operation: Schema.Literal("gmail.send"),
-});
-
-/** Exact Action execution that Think released from one durable Approval. */
-export type ThinkApprovedActionExecution = typeof ThinkApprovedActionExecution.Type;
-
-/** Execute a Think-approved Action only after its current authority passes Osfo recheck. */
-export const executeThinkApprovedAction = <E>(
-  authorization: Authorization,
-  context: AuthorizationContext,
-  approvedExecution: ThinkApprovedActionExecution,
-  contactProvider: (actionId: ActionId) => Effect.Effect<ActionExecutionResult | Denied, E>,
-): Effect.Effect<ActionExecutionResult | Denied, E> => {
-  const operation = AuthorizationOperation.make({
-    actionId: approvedExecution.actionId,
-    kind: approvedExecution.operation,
-  });
-  return Effect.gen(function* () {
-    const recheck = authorization.recheck(
-      {
-        ...context,
-        approval: {
-          actionId: approvedExecution.actionId,
-          operation: approvedExecution.operation,
-          userId: context.user.userId,
-        },
-      },
-      operation,
-    );
-    if (Predicate.isTagged(recheck, "Denied")) return recheck;
-    return yield* contactProvider(approvedExecution.actionId);
-  });
-};
 
 const inspectAuthority = (owners: AuthorityOwners, identities: ProtectedEffectIdentities) =>
   identities._tag === "AuthSession"
