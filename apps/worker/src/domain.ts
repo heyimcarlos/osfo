@@ -42,17 +42,51 @@ export const ThinkRequestId = Schema.String.pipe(Schema.brand("ThinkRequestId"))
 /** Stable identity for one Think response request. */
 export type ThinkRequestId = typeof ThinkRequestId.Type;
 
-/** Stable identity for one Subscription. */
-export const SubscriptionId = Schema.String.pipe(Schema.brand("SubscriptionId"));
+/** Stable identity of one Think-owned bounded Submission. */
+export const ThinkSubmissionId = Schema.String.check(
+  Schema.makeFilter(
+    (value) =>
+      (value.length > 0 && value.length <= 160 && !value.includes(":")) ||
+      "must be a bounded Think Submission identity without a colon",
+  ),
+).pipe(Schema.brand("ThinkSubmissionId"));
 
-/** Stable identity for one Subscription. */
-export type SubscriptionId = typeof SubscriptionId.Type;
+/** Stable identity of one Think-owned bounded Submission. */
+export type ThinkSubmissionId = typeof ThinkSubmissionId.Type;
+
+/** Stable identity for one billing Subscription. */
+export const BillingSubscriptionId = Schema.String.pipe(Schema.brand("BillingSubscriptionId"));
+
+/** Stable identity for one billing Subscription. */
+export type BillingSubscriptionId = typeof BillingSubscriptionId.Type;
 
 /** Stable identity for one Usage Allowance period. */
 export const AllowancePeriodId = Schema.String.pipe(Schema.brand("AllowancePeriodId"));
 
 /** Stable identity for one Usage Allowance period. */
 export type AllowancePeriodId = typeof AllowancePeriodId.Type;
+
+/** Stable identity for one finite-lived Registration Invitation. */
+export const RegistrationInvitationId = Schema.String.pipe(
+  Schema.brand("RegistrationInvitationId"),
+);
+
+/** Stable identity for one finite-lived Registration Invitation. */
+export type RegistrationInvitationId = typeof RegistrationInvitationId.Type;
+
+/** Stable identity for one revocable Channel Binding. */
+export const ChannelBindingId = Schema.String.pipe(Schema.brand("ChannelBindingId"));
+
+/** Stable identity for one revocable Channel Binding. */
+export type ChannelBindingId = typeof ChannelBindingId.Type;
+
+/** One authenticated provider identity, separate from a User or Phone Account. */
+export const ChannelIdentity = Schema.String.check(
+  Schema.makeFilter((value) => value.length > 0 || "must not be empty"),
+).pipe(Schema.brand("ChannelIdentity"));
+
+/** One authenticated provider identity, separate from a User or Phone Account. */
+export type ChannelIdentity = typeof ChannelIdentity.Type;
 
 /** Version identity for one launch Plan policy. */
 export const PlanPolicyVersion = Schema.String.pipe(Schema.brand("PlanPolicyVersion"));

@@ -5,8 +5,10 @@
   "rules": [{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }],
   "compatibility_date": "2026-08-12",
   "compatibility_flags": ["nodejs_compat"],
+  "ai": { "binding": "AI" },
   "vars": {
     "OSFO_STAGE": "test",
+    "WHATSAPP_PHONE_NUMBER": "14165550100",
   },
   "secrets": {
     "required": [
@@ -26,6 +28,7 @@
       "localConnectionString": "postgres://osfo:osfo@127.0.0.1:5432/osfo_test",
     },
   ],
+  "ai": { "binding": "AI" },
   "durable_objects": {
     "bindings": [
       { "name": "OSFO_AGENT", "class_name": "OsfoAgent" },
@@ -41,6 +44,7 @@
       "new_sqlite_classes": ["OsfoAgent", "RegistrationDialogue"],
     },
   ],
+  "triggers": { "crons": ["0 * * * *"] },
   "workflows": [
     {
       "binding": "EXECUTION_UNIT_WORKFLOW",

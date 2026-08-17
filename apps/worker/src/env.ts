@@ -26,6 +26,11 @@ const TwilioVerifyServiceSid = Schema.String.check(
     (value) => /^VA[0-9a-fA-F]{32}$/.test(value) || "must be a Twilio Verify Service SID",
   ),
 );
+const WhatsAppPhoneNumber = Schema.String.check(
+  Schema.makeFilter(
+    (value) => /^[1-9]\d{7,14}$/u.test(value) || "must be an E.164 number without the plus sign",
+  ),
+);
 const TrustedOrigins = Schema.fromJsonString(
   Schema.Array(Schema.URLFromString).check(
     Schema.makeFilter((origins) => origins.length > 0 || "must contain at least one origin"),
@@ -40,6 +45,7 @@ const RawRuntimeConfig = Schema.Struct({
   TWILIO_ACCOUNT_SID: TwilioAccountSid,
   TWILIO_AUTH_TOKEN: TwilioAuthToken,
   TWILIO_VERIFY_SERVICE_SID: TwilioVerifyServiceSid,
+  WHATSAPP_PHONE_NUMBER: WhatsAppPhoneNumber,
 });
 
 /** Parsed runtime configuration for one Worker invocation. */
@@ -53,6 +59,9 @@ export interface RuntimeConfig {
     readonly trustedOrigins: ReadonlyArray<string>;
   };
   readonly stage: OsfoStage;
+  readonly whatsApp: {
+    readonly phoneNumber: string;
+  };
   readonly twilioVerify: {
     readonly accountSid: Redacted.Redacted;
     readonly authToken: Redacted.Redacted;
@@ -70,6 +79,7 @@ export interface RuntimeConfigInput {
   readonly TWILIO_ACCOUNT_SID?: string;
   readonly TWILIO_AUTH_TOKEN?: string;
   readonly TWILIO_VERIFY_SERVICE_SID?: string;
+  readonly WHATSAPP_PHONE_NUMBER?: string;
 }
 
 /** Decode and redact all Worker authentication configuration before use. */
@@ -85,6 +95,7 @@ export const decodeRuntimeConfig = (input: RuntimeConfigInput) =>
       trustedOrigins: raw.BETTER_AUTH_TRUSTED_ORIGINS.map((origin) => origin.origin),
     },
     stage: raw.OSFO_STAGE,
+    whatsApp: { phoneNumber: raw.WHATSAPP_PHONE_NUMBER },
     twilioVerify: {
       accountSid: Redacted.make(raw.TWILIO_ACCOUNT_SID),
       authToken: Redacted.make(raw.TWILIO_AUTH_TOKEN),

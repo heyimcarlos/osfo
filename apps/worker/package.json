@@ -12,6 +12,7 @@
     "build": "wrangler deploy --dry-run --outdir dist",
     "dev": "bun --cwd ../..  alchemy dev --stage development --env-file apps/worker/.env",
     "test": "vitest run --config vitest.config.ts && vitest run --config vitest.db.config.ts",
+    "test:postgres": "vitest run --config vitest.real-db.config.ts",
     "typecheck": "wrangler types --check && tsc --noEmit"
   },
   "dependencies": {
@@ -24,8 +25,7 @@
     "ai": "7.0.66",
     "drizzle-orm": "0.45.2",
     "effect": "catalog:",
-    "postgres": "3.4.9",
-    "zod": "4.4.3"
+    "postgres": "3.4.9"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",

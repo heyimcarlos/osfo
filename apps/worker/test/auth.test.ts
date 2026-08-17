@@ -533,6 +533,7 @@ const responseJson = (response: Response) =>
 const runtimeConfig: RuntimeConfig = {
   auth: authConfig,
   stage: "test",
+  whatsApp: { phoneNumber: "14165550100" },
   twilioVerify: {
     accountSid: Redacted.make(`AC${"1".repeat(32)}`),
     authToken: Redacted.make("test-only-token"),
@@ -544,6 +545,9 @@ const testBindings: App.Bindings = {
   DB: { connectionString: "postgres://unused.invalid/osfo" },
   OSFO_AGENT: {
     getByName: (identity) => ({
+      commitWelcome: () =>
+        Promise.resolve({ _tag: "PersonalWelcomeCommitted", messageId: "welcome-test" }),
+      initialize: () => Promise.resolve({ _tag: "AgentInitialized" }),
       probeRuntime: () =>
         Promise.resolve({
           activationId: "test-agent-activation",
@@ -556,6 +560,8 @@ const testBindings: App.Bindings = {
   },
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => ({
+      begin: () => Promise.resolve({ _tag: "RegistrationTurnCompleted", response: "Register" }),
+      deleteDialogue: () => Promise.resolve(),
       probeRuntime: () =>
         Promise.resolve({
           activationId: "test-registration-activation",

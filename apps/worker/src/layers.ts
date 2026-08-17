@@ -1,5 +1,6 @@
 import { Context, Effect, Layer, ManagedRuntime, Random, Schema } from "effect";
 
+import * as Db from "./db";
 import { OsfoStage, type OsfoStage as OsfoStageType } from "./env";
 
 /** Schema for a Cloudflare execution unit that owns an Effect runtime. */
@@ -65,8 +66,14 @@ export const probeExecutionUnit: Effect.Effect<RuntimeProbe, never, ExecutionUni
 export const makeWorkerRuntime = (stage: OsfoStageType) => makeRuntime("worker", "request", stage);
 
 /** Create an activation-scoped Osfo Agent runtime. */
-export const makeOsfoAgentRuntime = (identity: string, stage: OsfoStageType) =>
-  makeRuntime("osfo-agent", identity, stage);
+export const makeOsfoAgentRuntime = (
+  identity: string,
+  stage: OsfoStageType,
+  database: Db.Options,
+) =>
+  ManagedRuntime.make(
+    Layer.merge(makeExecutionUnitLayer("osfo-agent", identity, stage), Db.layer(database)),
+  );
 
 /** Create an activation-scoped registration runtime. */
 export const makeRegistrationDialogueRuntime = (identity: string, stage: OsfoStageType) =>
@@ -77,21 +84,26 @@ export const makeWorkflowRuntime = (identity: string, stage: OsfoStageType) =>
   makeRuntime("workflow", identity, stage);
 
 const makeRuntime = (executionUnit: ExecutionUnitKind, identity: string, stage: OsfoStageType) =>
-  ManagedRuntime.make(
-    Layer.effect(
-      ExecutionUnit,
-      Random.next.pipe(
-        Effect.map((random) => {
-          const probe: RuntimeProbe = {
-            kind: "RuntimeProbe",
-            activationId: random.toString(16),
-            executionUnit,
-            identity,
-            stage,
-          };
+  ManagedRuntime.make(makeExecutionUnitLayer(executionUnit, identity, stage));
 
-          return { probe: Effect.succeed(probe) };
-        }),
-      ),
+const makeExecutionUnitLayer = (
+  executionUnit: ExecutionUnitKind,
+  identity: string,
+  stage: OsfoStageType,
+) =>
+  Layer.effect(
+    ExecutionUnit,
+    Random.next.pipe(
+      Effect.map((random) => {
+        const probe: RuntimeProbe = {
+          kind: "RuntimeProbe",
+          activationId: random.toString(16),
+          executionUnit,
+          identity,
+          stage,
+        };
+
+        return { probe: Effect.succeed(probe) };
+      }),
     ),
   );

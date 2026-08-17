@@ -1,7 +1,8 @@
 import { agents } from "@osfo/db/schema/agents";
+import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
-import { allowancePeriods, subscriptions } from "@osfo/db/schema/billing";
-import { eq } from "drizzle-orm";
+import { billingSubscriptions } from "@osfo/db/schema/billing";
+import { and, eq, gt, lt } from "drizzle-orm";
 import { Context, Crypto, DateTime, Effect, Layer, Schema } from "effect";
 
 import {
@@ -14,7 +15,14 @@ import {
   dbWriteRejected,
   decodeOptionalRow,
 } from "../db";
-import { AgentId, AllowancePeriodId, PlanPolicyVersion, SubscriptionId, UserId } from "../domain";
+import {
+  AgentId,
+  AllowancePeriodId,
+  BillingSubscriptionId,
+  Plan,
+  PlanPolicyVersion,
+  UserId,
+} from "../domain";
 
 /** Completed registration returned to an authenticated User. */
 export const RegistrationCompleted = Schema.Struct({
@@ -85,6 +93,16 @@ export const layerWithoutDependencies = Layer.effect(Service, make);
 const StoredRegistration = Schema.Struct({
   agentCreatedAt: Schema.NullOr(DbTimestamp),
   agentId: Schema.NullOr(AgentId),
+  allowanceEndsAt: Schema.NullOr(Schema.Date),
+  allowancePeriodId: Schema.NullOr(AllowancePeriodId),
+  allowancePlan: Schema.NullOr(Plan),
+  allowancePlanPolicyVersion: Schema.NullOr(PlanPolicyVersion),
+  allowanceStartsAt: Schema.NullOr(Schema.Date),
+  billingCreatedAt: Schema.NullOr(Schema.Date),
+  billingPlan: Schema.NullOr(Plan),
+  billingPlanPolicyVersion: Schema.NullOr(PlanPolicyVersion),
+  billingSubscriptionId: Schema.NullOr(BillingSubscriptionId),
+  billingUpdatedAt: Schema.NullOr(Schema.Date),
   registrationCompletedAt: Schema.NullOr(Schema.Date),
   userId: UserId,
 });
@@ -102,11 +120,30 @@ const readCompletedRegistration = Effect.fn("Registration.readCompleted")(functi
         .select({
           agentCreatedAt: agents.createdAt,
           agentId: agents.agentId,
+          allowanceEndsAt: allowancePeriods.endsAt,
+          allowancePeriodId: allowancePeriods.allowancePeriodId,
+          allowancePlan: allowancePeriods.plan,
+          allowancePlanPolicyVersion: allowancePeriods.planPolicyVersion,
+          allowanceStartsAt: allowancePeriods.startsAt,
+          billingCreatedAt: billingSubscriptions.createdAt,
+          billingPlan: billingSubscriptions.plan,
+          billingPlanPolicyVersion: billingSubscriptions.planPolicyVersion,
+          billingSubscriptionId: billingSubscriptions.billingSubscriptionId,
+          billingUpdatedAt: billingSubscriptions.updatedAt,
           registrationCompletedAt: users.registrationCompletedAt,
           userId: users.id,
         })
         .from(users)
         .leftJoin(agents, eq(agents.userId, users.id))
+        .leftJoin(billingSubscriptions, eq(billingSubscriptions.userId, users.id))
+        .leftJoin(
+          allowancePeriods,
+          and(
+            eq(allowancePeriods.userId, users.id),
+            eq(allowancePeriods.billingSubscriptionId, billingSubscriptions.billingSubscriptionId),
+            eq(allowancePeriods.startsAt, billingSubscriptions.createdAt),
+          ),
+        )
         .where(eq(users.id, userId))
         .limit(1)
         .execute(),
@@ -122,7 +159,22 @@ const readCompletedRegistration = Effect.fn("Registration.readCompleted")(functi
   if (
     stored.registrationCompletedAt === null ||
     stored.agentId === null ||
-    stored.agentCreatedAt !== stored.registrationCompletedAt.toISOString()
+    stored.agentCreatedAt !== stored.registrationCompletedAt.toISOString() ||
+    stored.billingSubscriptionId === null ||
+    stored.billingCreatedAt === null ||
+    stored.billingUpdatedAt === null ||
+    stored.billingPlan !== "free" ||
+    stored.billingPlanPolicyVersion !== "launch-v1" ||
+    stored.allowancePeriodId === null ||
+    stored.allowanceStartsAt === null ||
+    stored.allowanceEndsAt === null ||
+    stored.allowancePlan !== "free" ||
+    stored.allowancePlanPolicyVersion !== "launch-v1" ||
+    stored.billingCreatedAt.getTime() !== stored.registrationCompletedAt.getTime() ||
+    stored.billingUpdatedAt.getTime() !== stored.registrationCompletedAt.getTime() ||
+    stored.allowanceStartsAt.getTime() !== stored.registrationCompletedAt.getTime() ||
+    stored.allowanceEndsAt.getTime() !==
+      stored.registrationCompletedAt.getTime() + 30 * 24 * 60 * 60 * 1_000
   ) {
     return yield* dbUnavailable("completeRegistration", stored);
   }
@@ -142,7 +194,7 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
   const generatedIds = yield* Effect.all({
     agent: crypto.randomUUIDv7,
     allowancePeriod: crypto.randomUUIDv7,
-    subscription: crypto.randomUUIDv7,
+    billingSubscription: crypto.randomUUIDv7,
   }).pipe(
     Effect.mapError(
       (cause) =>
@@ -153,9 +205,7 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
     ),
   );
   const occurredAtTimestamp = DbTimestamp.make(DateTime.formatIso(occurredAt));
-  const allowancePeriodEndsAt = DbTimestamp.make(
-    DateTime.formatIso(DateTime.add(occurredAt, { days: 30 })),
-  );
+  const allowancePeriodEndsAt = DateTime.toDateUtc(DateTime.add(occurredAt, { days: 30 }));
   const completedAt = DateTime.toDateUtc(occurredAt);
 
   const result = yield* Effect.tryPromise({
@@ -176,21 +226,45 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
           createdAt: occurredAtTimestamp,
           userId,
         });
-        await transaction.insert(subscriptions).values({
-          createdAt: occurredAtTimestamp,
+        const billingSubscriptionId = BillingSubscriptionId.make(
+          `billing-subscription-${generatedIds.billingSubscription}`,
+        );
+        await transaction.insert(billingSubscriptions).values({
+          billingSubscriptionId,
+          createdAt: completedAt,
           plan: "free",
           planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
-          subscriptionId: SubscriptionId.make(`subscription-${generatedIds.subscription}`),
+          updatedAt: completedAt,
           userId,
         });
+        await transaction
+          .select({ billingSubscriptionId: billingSubscriptions.billingSubscriptionId })
+          .from(billingSubscriptions)
+          .where(eq(billingSubscriptions.billingSubscriptionId, billingSubscriptionId))
+          .for("update")
+          .limit(1);
+        const overlap = await transaction
+          .select({ allowancePeriodId: allowancePeriods.allowancePeriodId })
+          .from(allowancePeriods)
+          .where(
+            and(
+              eq(allowancePeriods.userId, userId),
+              lt(allowancePeriods.startsAt, allowancePeriodEndsAt),
+              gt(allowancePeriods.endsAt, completedAt),
+            ),
+          )
+          .limit(1);
+        if (overlap[0] !== undefined) return "period-overlap" as const;
         await transaction.insert(allowancePeriods).values({
           allowancePeriodId: AllowancePeriodId.make(
             `allowance-period-${generatedIds.allowancePeriod}`,
           ),
+          billingSubscriptionId,
+          createdAt: completedAt,
           endsAt: allowancePeriodEndsAt,
           plan: "free",
           planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
-          startsAt: occurredAtTimestamp,
+          startsAt: completedAt,
           userId,
         });
         await transaction
@@ -208,6 +282,9 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
       message: "Better Auth has not created the registration User",
       userId,
     });
+  }
+  if (result === "period-overlap") {
+    return yield* dbWriteRejected("completeRegistration", userId, result);
   }
   return yield* Effect.void;
 });
