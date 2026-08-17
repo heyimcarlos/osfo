@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 
 import { type AllowancePeriodId, SessionId } from "../src/domain";
-import { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
+import { AcceptanceReceipt } from "../src/services/provider-acceptance-receipt";
 import type { ManagedConversationDenied } from "../src/services/managed-conversation";
 import {
   type AgentAcceptanceInput,

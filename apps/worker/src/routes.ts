@@ -1,5 +1,5 @@
 import { Api } from "@osfo/api";
-import { Layer, type ManagedRuntime } from "effect";
+import { Effect, Layer, type ManagedRuntime } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
@@ -76,9 +76,21 @@ export const layer = (options: Options) => {
     Layer.provide(TelegramAdmissionCloudflare.layer(options.env)),
     Layer.provide(options.authDependencies),
   );
+  const telegramInvitationPersistence = Layer.effect(
+    TelegramDelivery.InvitationPersistence,
+    Onboarding.Persistence.pipe(
+      Effect.map((persistence) =>
+        TelegramDelivery.InvitationPersistence.of({
+          expireLive: persistence.expireLive,
+          findLiveChannel: (channelIdentity) =>
+            persistence.findLiveChannel("telegram", channelIdentity),
+        }),
+      ),
+    ),
+  ).pipe(Layer.provide(OnboardingPostgres.layerWithoutDependencies));
   const telegramDelivery = TelegramDelivery.layerWithoutDependencies.pipe(
     Layer.provide(TelegramDeliveryPostgres.layerWithoutDependencies),
-    Layer.provide(OnboardingPostgres.layerWithoutDependencies),
+    Layer.provide(telegramInvitationPersistence),
     Layer.provide(OnboardingCloudflare.layer(options.env)),
     Layer.provide(onboardingLinks),
     Layer.provide(options.authDependencies),

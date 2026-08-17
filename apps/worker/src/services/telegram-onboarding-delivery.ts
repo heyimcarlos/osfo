@@ -48,6 +48,22 @@ export class Persistence extends Context.Service<Persistence, PersistencePort>()
   "@osfo/TelegramOnboardingDelivery/Persistence",
 ) {}
 
+/** Shared invitation persistence projected to the operations required by Telegram delivery. */
+export interface InvitationPersistencePort {
+  readonly expireLive: (
+    now: Date,
+  ) => Effect.Effect<number, Onboarding.OnboardingPersistenceUnavailable>;
+  readonly findLiveChannel: (
+    channelIdentity: ChannelIdentity,
+  ) => Effect.Effect<RegistrationInvitationId | null, Onboarding.OnboardingPersistenceUnavailable>;
+}
+
+/** Narrow invitation persistence capability required by Telegram delivery. */
+export class InvitationPersistence extends Context.Service<
+  InvitationPersistence,
+  InvitationPersistencePort
+>()("@osfo/TelegramOnboardingDelivery/InvitationPersistence") {}
+
 /** Telegram-owned onboarding delivery operations used by the webhook adapter. */
 export interface Interface {
   readonly beginEvent: (
@@ -87,8 +103,8 @@ export class Service extends Context.Service<Service, Interface>()(
 /** Construct Telegram delivery from shared invitation capabilities and Telegram persistence. */
 export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
+  const invitationPersistence = yield* InvitationPersistence;
   const links = yield* Onboarding.OnboardingLinks;
-  const onboardingPersistence = yield* Onboarding.Persistence;
   const persistence = yield* Persistence;
   const registrationTurn = yield* Onboarding.RegistrationTurn;
 
@@ -96,11 +112,8 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const now = yield* DateTime.now;
       const nowDate = DateTime.toDateUtc(now);
-      yield* onboardingPersistence.expireLive(nowDate);
-      const liveInvitationId = yield* onboardingPersistence.findLiveChannel(
-        "telegram",
-        input.channelIdentity,
-      );
+      yield* invitationPersistence.expireLive(nowDate);
+      const liveInvitationId = yield* invitationPersistence.findLiveChannel(input.channelIdentity);
       const generated =
         liveInvitationId === null
           ? yield* Onboarding.generateRegistrationInvitationIdentity(crypto)

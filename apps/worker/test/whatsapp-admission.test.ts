@@ -12,7 +12,7 @@ import {
   WhatsAppMessageText,
   WhatsAppProviderContentDigest,
 } from "../src/services/whatsapp-admission";
-import { AcceptanceReceipt } from "../src/services/whatsapp-acceptance-receipt";
+import { AcceptanceReceipt } from "../src/services/provider-acceptance-receipt";
 import type { WhatsAppOnboardingCommand } from "../src/services/whatsapp-onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect and onboarding test values use the standard _tag discriminator. */

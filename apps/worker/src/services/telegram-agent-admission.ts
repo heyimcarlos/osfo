@@ -38,11 +38,6 @@ export interface TelegramSubmissionInspection {
   readonly submissionId: ThinkSubmissionId;
 }
 
-/** Intent for one idempotent Telegram Think submission. */
-export interface TelegramSubmissionIntent extends ProviderAgent.SubmissionIntent<
-  typeof TelegramSubmissionMetadata.Type
-> {}
-
 /** Dependencies required to recover a Telegram acceptance. */
 export interface RecoveryInterface<
   Receipt extends AcceptanceReceiptInput = AcceptanceReceiptInput,

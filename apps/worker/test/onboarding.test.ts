@@ -1250,12 +1250,25 @@ const makeHarness = (
   }> = [];
   const durableTurnUrls = new Map<string, string>();
   let shouldFailWelcome = options?.failWelcomeOnce ?? false;
+  const telegramInvitationPersistence = Layer.effect(
+    TelegramDelivery.InvitationPersistence,
+    Onboarding.Persistence.pipe(
+      Effect.map((persistence) =>
+        TelegramDelivery.InvitationPersistence.of({
+          expireLive: persistence.expireLive,
+          findLiveChannel: (channelIdentity) =>
+            persistence.findLiveChannel("telegram", channelIdentity),
+        }),
+      ),
+    ),
+  ).pipe(Layer.provide(OnboardingPostgres.layerWithoutDependencies));
   const layer = Layer.merge(
     Onboarding.layerWithoutDependencies,
     TelegramDelivery.layerWithoutDependencies,
   ).pipe(
     Layer.provideMerge(OnboardingPostgres.layerWithoutDependencies),
     Layer.provideMerge(TelegramDeliveryPostgres.layerWithoutDependencies),
+    Layer.provideMerge(telegramInvitationPersistence),
     Layer.provideMerge(Registration.layerWithoutDependencies),
     Layer.provideMerge(Db.layerFromDatabase(database)),
     Layer.provideMerge(BrowserCrypto.layer),
