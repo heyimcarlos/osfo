@@ -1,6 +1,7 @@
 import { Effect, Predicate, Schema } from "effect";
 
 import type { AllowancePeriodId, UserId } from "../domain";
+import type { ActionId } from "../domain/action-execution";
 import type {
   AllowanceItem,
   AllowancePeriodNotFound,
@@ -16,15 +17,6 @@ import type { PlanPolicyNotFound } from "../domain/plan-policy";
 import type { AuthorizationContext, Denied, Interface as Authorization } from "./authorization";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Domain outcomes use the _tag discriminator. */
-
-/** Existing product identity that owns one generated artifact and its allowance use. */
-export const DocumentOwner = Schema.Union([
-  Schema.TaggedStruct("ToolCall", { toolCallId: Schema.String.check(Schema.isMinLength(1)) }),
-  Schema.TaggedStruct("Workflow", { workflowId: Schema.String.check(Schema.isMinLength(1)) }),
-]);
-
-/** Existing product identity that owns one generated artifact and its allowance use. */
-export type DocumentOwner = typeof DocumentOwner.Type;
 
 /** SHA-256 digest of the exact document intent owned by one Action. */
 export const DocumentIntentDigest = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)).pipe(
@@ -68,12 +60,18 @@ export type ComputeResult =
 
 /** Input for one exact generated document intent. */
 export interface GenerateRequest {
-  readonly actionId: string;
+  readonly actionId: ActionId;
   readonly authorization: AuthorizationContext;
   readonly format: DocumentArtifact.DocumentFormat;
-  readonly owner: DocumentOwner;
+  readonly owner: DocumentArtifact.DocumentOwner;
   readonly source: DocumentSource;
-  readonly userId: UserId;
+}
+
+/** One authorized request to export or delete a retained document. */
+export interface ArtifactRequest {
+  readonly actionId: ActionId;
+  readonly artifactId: DocumentArtifact.ArtifactId;
+  readonly authorization: AuthorizationContext;
 }
 
 /** Retained artifact bytes and recovery evidence hidden behind the Artifact Store seam. */
@@ -84,7 +82,7 @@ export interface StoredArtifact {
   readonly cost: CostEvidence;
   readonly format: DocumentArtifact.DocumentFormat;
   readonly intentDigest: DocumentIntentDigest;
-  readonly owner: DocumentOwner;
+  readonly owner: DocumentArtifact.DocumentOwner;
   readonly userId: UserId;
 }
 
@@ -135,6 +133,12 @@ export class DocumentCostLimitExceeded extends Schema.TaggedError<DocumentCostLi
     incurredUsdMicros: Schema.BigInt,
     message: Schema.String,
   },
+) {}
+
+/** Expected failure when a requested retained document does not exist. */
+export class DocumentArtifactNotFound extends Schema.TaggedError<DocumentArtifactNotFound>()(
+  "DocumentArtifactNotFound",
+  { artifactId: DocumentArtifact.ArtifactId, message: Schema.String },
 ) {}
 
 /** Narrow immutable artifact persistence port implemented by R2. */
@@ -191,8 +195,17 @@ export interface MakeOptions {
 /** Bounded document generation and retained artifact lifecycle. */
 export interface Interface {
   readonly delete: (
-    artifactId: DocumentArtifact.ArtifactId,
-  ) => Effect.Effect<void, ArtifactStoreUnavailable>;
+    request: ArtifactRequest,
+  ) => Effect.Effect<
+    void,
+    ArtifactIntegrityFailure | ArtifactStoreUnavailable | Denied | DocumentArtifactNotFound
+  >;
+  readonly export: (
+    request: ArtifactRequest,
+  ) => Effect.Effect<
+    { readonly artifact: DocumentArtifact.Artifact; readonly bytes: Uint8Array },
+    ArtifactIntegrityFailure | ArtifactStoreUnavailable | Denied | DocumentArtifactNotFound
+  >;
   readonly generate: (
     request: GenerateRequest,
   ) => Effect.Effect<
@@ -210,10 +223,27 @@ export interface Interface {
 
 /** Construct bounded document generation from Authorization, allowance, compute, and storage ports. */
 export const make = (options: MakeOptions): Interface => ({
-  delete: (artifactId) => options.artifacts.delete(artifactId),
+  delete: (request) =>
+    Effect.gen(function* () {
+      const stored = yield* readAuthorized(options, request, "file.delete");
+      yield* options.artifacts.delete(stored.artifact.artifactId);
+    }),
+  export: (request) =>
+    Effect.map(readAuthorized(options, request, "file.read"), (stored) => ({
+      artifact: stored.artifact,
+      bytes: stored.bytes,
+    })),
   generate: (request) =>
     Effect.gen(function* () {
       const artifactId = artifactIdFor(request.owner);
+      const userId = request.authorization.user.userId;
+      if (!ownerMatchesRequest(request)) {
+        return yield* Effect.fail({
+          _tag: "Denied",
+          reason: "ownershipRequired",
+          resetAt: null,
+        } satisfies Denied);
+      }
       const intentDigest = yield* digestIntent(request.format, request.source);
       const operation = {
         actionId: request.actionId,
@@ -226,10 +256,10 @@ export const make = (options: MakeOptions): Interface => ({
       const existing = yield* options.artifacts.get(artifactId);
       if (existing !== null) {
         if (
-          existing.userId !== request.userId ||
+          existing.userId !== userId ||
           existing.intentDigest !== intentDigest ||
           existing.format !== request.format ||
-          !sameOwner(existing.owner, request.owner)
+          !DocumentArtifact.sameOwner(existing.owner, request.owner)
         ) {
           return yield* new DocumentIntentConflict({
             artifactId,
@@ -265,7 +295,7 @@ export const make = (options: MakeOptions): Interface => ({
         intentDigest,
         source: request.source,
       });
-      yield* recordCost(
+      const recordComputedCost = recordCost(
         options.allowances,
         admission.allowancePeriod.allowancePeriodId,
         computed.cost,
@@ -274,6 +304,7 @@ export const make = (options: MakeOptions): Interface => ({
         computed.cost._tag === "Incurred" &&
         computed.cost.usdMicros > request.authorization.requestVendorUsdMicros
       ) {
+        yield* recordComputedCost;
         yield* options.compute.dispose(artifactId);
         return yield* new DocumentCostLimitExceeded({
           admittedUsdMicros: request.authorization.requestVendorUsdMicros,
@@ -283,6 +314,7 @@ export const make = (options: MakeOptions): Interface => ({
         });
       }
       if (Predicate.isTagged(computed, "Interrupted")) {
+        yield* recordComputedCost;
         yield* options.compute.dispose(artifactId);
         return yield* new DocumentComputeInterrupted({
           artifactId,
@@ -295,7 +327,11 @@ export const make = (options: MakeOptions): Interface => ({
         artifactId,
         request.format,
         computed.bytes,
-      ).pipe(Effect.tapError(() => options.compute.dispose(artifactId)));
+        request.source.pages.length,
+      ).pipe(
+        Effect.tapError(() => recordComputedCost),
+        Effect.tapError(() => options.compute.dispose(artifactId)),
+      );
       const retained: StoredArtifact = {
         allowancePeriodId: admission.allowancePeriod.allowancePeriodId,
         artifact,
@@ -304,16 +340,17 @@ export const make = (options: MakeOptions): Interface => ({
         format: request.format,
         intentDigest,
         owner: request.owner,
-        userId: request.userId,
+        userId,
       };
       yield* options.artifacts.put(retained);
+      yield* recordComputedCost;
       yield* recordDocument(options.allowances, retained);
       yield* options.compute.dispose(artifactId);
       return artifact;
     }),
 });
 
-const artifactIdFor = (owner: DocumentOwner): DocumentArtifact.ArtifactId =>
+const artifactIdFor = (owner: DocumentArtifact.DocumentOwner): DocumentArtifact.ArtifactId =>
   DocumentArtifact.ArtifactId.make(
     Predicate.isTagged(owner, "ToolCall")
       ? `toolCall:${owner.toolCallId}`
@@ -365,13 +402,35 @@ const recordDocument = (allowances: Allowances, stored: StoredArtifact) => {
   ]);
 };
 
-const sameOwner = (left: DocumentOwner, right: DocumentOwner) => {
-  if (left._tag !== right._tag) return false;
-  return Predicate.isTagged(left, "ToolCall") && Predicate.isTagged(right, "ToolCall")
-    ? left.toolCallId === right.toolCallId
-    : Predicate.isTagged(left, "Workflow") &&
-        Predicate.isTagged(right, "Workflow") &&
-        left.workflowId === right.workflowId;
-};
+const ownerMatchesRequest = (request: GenerateRequest) =>
+  Predicate.isTagged(request.owner, "ToolCall")
+    ? request.owner.toolCallId === request.actionId
+    : Predicate.isTagged(request.authorization.authority, "DurableTrigger") &&
+      request.authorization.authority.triggerType === "workflow" &&
+      request.owner.workflowId === request.authorization.authority.triggerId;
+
+const readAuthorized = (
+  options: MakeOptions,
+  request: ArtifactRequest,
+  kind: "file.delete" | "file.read",
+) =>
+  Effect.gen(function* () {
+    const stored = yield* options.artifacts.get(request.artifactId);
+    if (stored === null) {
+      return yield* new DocumentArtifactNotFound({
+        artifactId: request.artifactId,
+        message: "The retained document does not exist",
+      });
+    }
+    const permitted = options.authorization.recheck(
+      { ...request.authorization, resourceOwnerUserId: stored.userId },
+      { actionId: request.actionId, kind },
+    );
+    if (Predicate.isTagged(permitted, "Denied")) return yield* Effect.fail(permitted);
+    return stored;
+  });
+
+export const DocumentOwner = DocumentArtifact.DocumentOwner;
+export type DocumentOwner = DocumentArtifact.DocumentOwner;
 
 export type { AllowanceItem, AllowanceSource } from "../domain/allowance";

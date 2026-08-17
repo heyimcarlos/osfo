@@ -13,7 +13,7 @@ describe("generated document R2 artifacts", () => {
     Effect.gen(function* () {
       const bytes = yield* Effect.promise(makePdf);
       const artifactId = DocumentArtifact.ArtifactId.make("toolCall:r2-artifact-176");
-      const artifact = yield* DocumentArtifact.parse(artifactId, "pdf", bytes);
+      const artifact = yield* DocumentArtifact.parse(artifactId, "pdf", bytes, 1);
       const store = ArtifactR2.make(env.ARTIFACTS);
       const retained = {
         allowancePeriodId: AllowancePeriodId.make("allowance-period-r2-176"),
@@ -42,7 +42,7 @@ describe("generated document R2 artifacts", () => {
     Effect.gen(function* () {
       const bytes = yield* Effect.promise(makePdf);
       const artifactId = DocumentArtifact.ArtifactId.make("toolCall:r2-digest-176");
-      const artifact = yield* DocumentArtifact.parse(artifactId, "pdf", bytes);
+      const artifact = yield* DocumentArtifact.parse(artifactId, "pdf", bytes, 1);
       const store = ArtifactR2.make(env.ARTIFACTS);
       yield* store.put({
         allowancePeriodId: AllowancePeriodId.make("allowance-period-r2-digest-176"),

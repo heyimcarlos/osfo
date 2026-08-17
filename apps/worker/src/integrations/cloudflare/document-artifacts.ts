@@ -7,7 +7,6 @@ import {
   ArtifactStoreUnavailable,
   DocumentIntentDigest,
   DocumentIntentConflict,
-  DocumentOwner,
   type ArtifactStore,
   type CostEvidence,
   type StoredArtifact,
@@ -29,7 +28,7 @@ const Metadata = Schema.fromJsonString(
     ]),
     format: DocumentArtifact.DocumentFormat,
     intentDigest: DocumentIntentDigest,
-    owner: DocumentOwner,
+    owner: DocumentArtifact.DocumentOwner,
     userId: UserId,
   }),
 );
@@ -85,7 +84,12 @@ const read = (bucket: R2Bucket, artifactId: DocumentArtifact.ArtifactId) =>
       return yield* integrityFailure(artifactId, "The retained artifact identity does not match");
     }
     const bytes = new Uint8Array(yield* attempt("get", () => object.arrayBuffer()));
-    const parsed = yield* DocumentArtifact.parse(artifactId, metadata.format, bytes).pipe(
+    const parsed = yield* DocumentArtifact.parse(
+      artifactId,
+      metadata.format,
+      bytes,
+      metadata.artifact.pageCount,
+    ).pipe(
       Effect.mapError(
         () =>
           new ArtifactIntegrityFailure({
@@ -151,16 +155,8 @@ const sameStoredArtifact = (left: StoredArtifact, right: StoredArtifact) =>
   left.artifact.sha256 === right.artifact.sha256 &&
   left.intentDigest === right.intentDigest &&
   left.userId === right.userId &&
-  sameOwner(left.owner, right.owner) &&
+  DocumentArtifact.sameOwner(left.owner, right.owner) &&
   sameCost(left.cost, right.cost);
-
-const sameOwner = (left: StoredArtifact["owner"], right: StoredArtifact["owner"]) =>
-  left._tag === right._tag &&
-  (left._tag === "ToolCall" && right._tag === "ToolCall"
-    ? left.toolCallId === right.toolCallId
-    : left._tag === "Workflow" &&
-      right._tag === "Workflow" &&
-      left.workflowId === right.workflowId);
 
 const sameCost = (left: CostEvidence, right: CostEvidence) =>
   left._tag === right._tag &&

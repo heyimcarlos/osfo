@@ -2,6 +2,8 @@ import { PDFDocument } from "pdf-lib";
 import { Effect, Schema } from "effect";
 import { strFromU8, unzipSync } from "fflate";
 
+/* oxlint-disable eslint/no-underscore-dangle -- Domain owners use the _tag discriminator. */
+
 /** Maximum byte length of one generated document. */
 export const maximumDocumentBytes = 5_000_000;
 
@@ -15,6 +17,30 @@ export const ArtifactId = Schema.String.check(Schema.isMinLength(1)).pipe(
 
 /** Stable identity derived from the ToolCall or Workflow that owns an artifact. */
 export type ArtifactId = typeof ArtifactId.Type;
+
+const ownerIdentity = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(200),
+  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u),
+);
+
+/** Existing product identity that owns one generated artifact and its allowance use. */
+export const DocumentOwner = Schema.Union([
+  Schema.TaggedStruct("ToolCall", { toolCallId: ownerIdentity }),
+  Schema.TaggedStruct("Workflow", { workflowId: ownerIdentity }),
+]);
+
+/** Existing product identity that owns one generated artifact and its allowance use. */
+export type DocumentOwner = typeof DocumentOwner.Type;
+
+/** Test whether two document owners name the same existing product identity. */
+export const sameOwner = (left: DocumentOwner, right: DocumentOwner) =>
+  left._tag === right._tag &&
+  (left._tag === "ToolCall" && right._tag === "ToolCall"
+    ? left.toolCallId === right.toolCallId
+    : left._tag === "Workflow" &&
+      right._tag === "Workflow" &&
+      left.workflowId === right.workflowId);
 
 /** Supported generated document formats. */
 export const DocumentFormat = Schema.Literals(["pdf", "docx"]);
@@ -52,6 +78,7 @@ export const parse = (
   artifactId: ArtifactId,
   format: DocumentFormat,
   bytes: Uint8Array,
+  expectedPageCount: number,
 ): Effect.Effect<Artifact, InvalidGeneratedArtifact> =>
   Effect.gen(function* () {
     if (bytes.byteLength === 0 || bytes.byteLength > maximumDocumentBytes) {
@@ -62,6 +89,13 @@ export const parse = (
       : parseDocxPageCount(artifactId, bytes);
     if (pageCount === 0 || pageCount > maximumDocumentPages) {
       return yield* invalid(artifactId, "pageLimit", "The generated document exceeds 20 pages");
+    }
+    if (pageCount !== expectedPageCount) {
+      return yield* invalid(
+        artifactId,
+        "invalidDocument",
+        "The generated document page count does not match its bounded source",
+      );
     }
     const hash = yield* Effect.promise(() =>
       crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer),
@@ -138,6 +172,7 @@ const parseDocxPageCount = (artifactId: ArtifactId, bytes: Uint8Array) =>
         "DOCX package does not contain a Word document",
       );
     }
+    const documentXml = strFromU8(document);
     const match = /<Pages>\s*([1-9]\d*)\s*<\/Pages>/u.exec(strFromU8(properties));
     const pageCount = match?.[1] === undefined ? Number.NaN : Number(match[1]);
     if (!Number.isSafeInteger(pageCount)) {
@@ -145,6 +180,15 @@ const parseDocxPageCount = (artifactId: ArtifactId, bytes: Uint8Array) =>
         artifactId,
         "invalidDocument",
         "DOCX does not contain a trusted page count",
+      );
+    }
+    const explicitPageCount =
+      1 + (documentXml.match(/<w:br\b[^>]*w:type=["']page["'][^>]*\/?\s*>/gu)?.length ?? 0);
+    if (explicitPageCount !== pageCount) {
+      return yield* invalid(
+        artifactId,
+        "invalidDocument",
+        "DOCX page metadata does not match its explicit page breaks",
       );
     }
     return pageCount;

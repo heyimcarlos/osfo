@@ -4,9 +4,13 @@ import { Effect, Schema } from "effect";
 import { strToU8, zipSync } from "fflate";
 
 import { AllowancePeriodId, PlanPolicyVersion, UserId } from "../src/domain";
+import { ActionId } from "../src/domain/action-execution";
+import { AuthSessionId } from "../src/domain/auth-session";
 import { retainedCatalog } from "../src/domain/plan-policy";
 import * as DocumentGeneration from "../src/services/document-generation";
 import { make as makeAuthorization } from "../src/services/authorization";
+
+/* oxlint-disable eslint/no-underscore-dangle -- Test fixtures use domain discriminators. */
 
 describe("Document Generation", () => {
   it.effect("returns one validated PDF artifact with stable export metadata", () =>
@@ -61,7 +65,15 @@ describe("Document Generation", () => {
         },
       });
 
-      const artifact = yield* fixture.documents.generate(generationRequest("docx"));
+      const artifact = yield* fixture.documents.generate({
+        ...generationRequest("docx"),
+        source: DocumentGeneration.DocumentSource.make({
+          pages: [
+            { lines: ["First page"], title: "Issue 176" },
+            { lines: ["Second page"], title: "Issue 176" },
+          ],
+        }),
+      });
 
       expect(artifact).toMatchObject({
         artifactId: "toolCall:tool-call-176",
@@ -210,9 +222,57 @@ describe("Document Generation", () => {
       const fixture = makeFixture({ computeResult: completed(pdf) });
       const artifact = yield* fixture.documents.generate(generationRequest("pdf"));
 
-      yield* fixture.documents.delete(artifact.artifactId);
+      yield* fixture.documents.delete({
+        actionId: ActionId.make("delete-176"),
+        artifactId: artifact.artifactId,
+        authorization: artifactAuthorization("delete-176", "file.delete"),
+      });
 
       expect(fixture.stored).toHaveLength(0);
+    }),
+  );
+
+  it.effect("exports verified bytes only to the owning User", () =>
+    Effect.gen(function* () {
+      const pdf = yield* Effect.promise(() => makePdf(1));
+      const fixture = makeFixture({ computeResult: completed(pdf) });
+      const artifact = yield* fixture.documents.generate(generationRequest("pdf"));
+
+      const exported = yield* fixture.documents.export({
+        actionId: ActionId.make("export-176"),
+        artifactId: artifact.artifactId,
+        authorization: artifactAuthorization("export-176", "file.read"),
+      });
+      const denied = yield* fixture.documents
+        .export({
+          actionId: ActionId.make("foreign-export-176"),
+          artifactId: artifact.artifactId,
+          authorization: foreignAuthorization("foreign-export-176"),
+        })
+        .pipe(Effect.flip);
+
+      expect(exported).toEqual({ artifact, bytes: pdf });
+      expect(denied).toMatchObject({ _tag: "Denied", reason: "ownershipRequired" });
+    }),
+  );
+
+  it.effect("rejects forged DOCX page metadata", () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture({ computeResult: completed(makeDocx(2, 0)) });
+
+      const error = yield* fixture.documents
+        .generate({
+          ...generationRequest("docx"),
+          source: DocumentGeneration.DocumentSource.make({
+            pages: [
+              { lines: [], title: "One" },
+              { lines: [], title: "Two" },
+            ],
+          }),
+        })
+        .pipe(Effect.flip);
+
+      expect(error).toMatchObject({ _tag: "InvalidGeneratedArtifact" });
     }),
   );
 
@@ -251,7 +311,7 @@ const userId = UserId.make("user-176");
 const allowancePeriodId = AllowancePeriodId.make("allowance-period-176");
 
 const generationRequest = (format: "pdf" | "docx"): DocumentGeneration.GenerateRequest => ({
-  actionId: "action-176",
+  actionId: ActionId.make("tool-call-176"),
   authorization: {
     allowance: {
       _tag: "Metered",
@@ -296,8 +356,34 @@ const generationRequest = (format: "pdf" | "docx"): DocumentGeneration.GenerateR
   source: DocumentGeneration.DocumentSource.make({
     pages: [{ lines: ["Bounded document content"], title: "Issue 176" }],
   }),
-  userId,
 });
+
+const artifactAuthorization = (actionId: string, operation: "file.delete" | "file.read") => {
+  const base = generationRequest("pdf").authorization;
+  const authSessionId = AuthSessionId.make("session-176");
+  return {
+    ...base,
+    approval: operation === "file.delete" ? { actionId, operation, userId } : null,
+    authority: {
+      _tag: "AuthSession" as const,
+      authSessionId,
+      expiresAt: date("2026-09-01T00:00:00.000Z"),
+      userId,
+    },
+    originatingAuthority: { _tag: "AuthSession" as const, authSessionId },
+  };
+};
+
+const foreignAuthorization = (actionId: string) => {
+  const foreignUserId = UserId.make("another-user");
+  const authorization = artifactAuthorization(actionId, "file.read");
+  if (authorization.authority._tag !== "AuthSession") return authorization;
+  return {
+    ...authorization,
+    authority: { ...authorization.authority, userId: foreignUserId },
+    user: { _tag: "ActiveUser" as const, userId: foreignUserId },
+  };
+};
 
 const makeFixture = (options: { readonly computeResult: DocumentGeneration.ComputeResult }) => {
   let computeCalls = 0;
@@ -360,7 +446,7 @@ const makePdf = async (pages: number) => {
 
 const date = Schema.decodeSync(Schema.DateFromString);
 
-const makeDocx = (pages: number) =>
+const makeDocx = (pages: number, explicitBreaks = pages - 1) =>
   zipSync({
     "[Content_Types].xml": strToU8(
       '<?xml version="1.0"?><Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
@@ -369,6 +455,6 @@ const makeDocx = (pages: number) =>
       `<?xml version="1.0"?><Properties><Pages>${pages}</Pages></Properties>`,
     ),
     "word/document.xml": strToU8(
-      '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/></w:body></w:document>',
+      `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/>${'<w:p><w:r><w:br w:type="page"/></w:r></w:p>'.repeat(explicitBreaks)}</w:body></w:document>`,
     ),
   });
