@@ -218,8 +218,8 @@ describe("StripeWebhooks", () => {
 
       const result = yield* service.handle("body", "signature");
 
-      expect(result).toEqual({ _tag: "FailedAcknowledged" });
-      expect(processed).toBe(0);
+      expect(result).toEqual({ _tag: "Processed" });
+      expect(processed).toBe(1);
       expect(evidence).toBeNull();
     }),
   );
@@ -331,10 +331,10 @@ describe("StripeWebhooks", () => {
         });
 
         expect(yield* service.handle("body", "signature")).toEqual({
-          _tag: "FailedAcknowledged",
+          _tag: "Processed",
         });
-        expect(failedCode).toBe("unsupported_stripe_event");
-        expect(processed).toBe(0);
+        expect(failedCode).toBeNull();
+        expect(processed).toBe(1);
       }),
   );
 

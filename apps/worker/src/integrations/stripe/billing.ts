@@ -321,7 +321,6 @@ export const make = (
         const session = yield* tryStripe("createCheckout", () =>
           options.client.checkout.sessions.create(
             {
-              billing_address_collection: "required",
               cancel_url: input.cancelUrl.href,
               client_reference_id: input.idempotencyKey,
               customer: input.customerId,
@@ -331,7 +330,6 @@ export const make = (
               payment_method_types: ["card"],
               subscription_data: { metadata: input.metadata },
               success_url: input.successUrl.href,
-              tax_id_collection: { enabled: true },
             },
             { idempotencyKey: input.idempotencyKey },
           ),
@@ -442,12 +440,34 @@ export const make = (
             ),
           ),
         ),
-        Effect.map((event) => ({
-          billingCheckoutSessionId: null,
-          externalEventId: event.id,
-          externalObjectId: event.data.object.id,
-          type: event.type,
-        })),
+        Effect.flatMap((event): Effect.Effect<VerifiedStripeEvent> =>
+          event.type.startsWith("checkout.session.") &&
+          event.data.object.client_reference_id !== null &&
+          event.data.object.client_reference_id !== undefined
+            ? Schema.decodeEffect(BillingCheckoutSessionId)(
+                event.data.object.client_reference_id,
+              ).pipe(
+                Effect.map((billingCheckoutSessionId) => ({
+                  billingCheckoutSessionId,
+                  externalEventId: event.id,
+                  externalObjectId: event.data.object.id,
+                  type: event.type,
+                })),
+                Effect.orElseSucceed(() => ({
+                  billingCheckoutSessionId: null,
+                  decodeErrorCode: "invalid_stripe_event" as const,
+                  externalEventId: event.id,
+                  externalObjectId: event.data.object.id,
+                  type: event.type,
+                })),
+              )
+            : Effect.succeed({
+                billingCheckoutSessionId: null,
+                externalEventId: event.id,
+                externalObjectId: event.data.object.id,
+                type: event.type,
+              }),
+        ),
         Effect.mapError(() => new InvalidStripeSignature({ message: "Invalid Stripe signature" })),
       ),
   };

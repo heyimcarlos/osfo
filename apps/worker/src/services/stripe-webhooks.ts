@@ -311,22 +311,11 @@ export const make = (options: {
     checkoutEvidence: StripeCheckoutEvidence | null,
   ) => {
     const processing = !supportedEventTypes.has(event.type)
-      ? persistFailure(
-          webhookEventId,
-          webhookAttempt,
-          "unsupported_stripe_event",
-          checkoutEvidence,
-        ).pipe(
-          Effect.andThen(
-            Effect.logError("Unsupported signed Stripe event").pipe(
-              Effect.annotateLogs({
-                eventType: event.type,
-                externalEventId: event.externalEventId,
-                webhookEventId,
-              }),
-            ),
-          ),
-          Effect.as({ _tag: "FailedAcknowledged" } as const),
+      ? (
+          options.persistence.markProcessedClaimed ??
+          ((id, _attempt, evidence) => options.persistence.markProcessed(id, evidence))
+        )(webhookEventId, webhookAttempt, checkoutEvidence).pipe(
+          Effect.as({ _tag: "Processed" } as const),
         )
       : project(event, webhookEventId, checkoutEvidence, 1, webhookAttempt);
     return processing.pipe(
