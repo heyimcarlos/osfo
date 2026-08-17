@@ -309,6 +309,39 @@ describe("Document Generation", () => {
     }),
   );
 
+  it.effect("recovers pending retention before denying a downgraded generation retry", () =>
+    Effect.gen(function* () {
+      const pdf = yield* Effect.promise(() => makePdf(1));
+      let downgraded = false;
+      const fixture = makeFixture({
+        computeResult: completed(pdf),
+        currentAuthorization: (admitted) =>
+          Effect.succeed(
+            downgraded
+              ? { ...admitted, subscription: { ...admitted.subscription, plan: "free" } }
+              : admitted,
+          ),
+      });
+      const artifact = yield* fixture.documents.generate(generationRequest("pdf"));
+      const retained = fixture.stored[0];
+      if (retained === undefined) return;
+      fixture.stored.splice(0, 1, { ...retained, retention: "pending" });
+      downgraded = true;
+
+      const denied = yield* fixture.documents.generate(generationRequest("pdf")).pipe(Effect.flip);
+      const exported = yield* fixture.documents.export({
+        actionId: ActionId.make("free-export-after-recovery-176"),
+        authorization: artifactAuthorization("free-export-after-recovery-176", "file.read"),
+        contentId: artifact.content.contentId,
+      });
+
+      expect(denied).toMatchObject({ _tag: "Denied", reason: "missingEntitlement" });
+      expect(fixture.accountCalls()).toBe(2);
+      expect(exported.bytes).toEqual(pdf);
+      expect(fixture.recorded).toHaveLength(2);
+    }),
+  );
+
   it.effect("does not report generation success when Sandbox cleanup is unconfirmed", () =>
     Effect.gen(function* () {
       const pdf = yield* Effect.promise(() => makePdf(1));
@@ -713,6 +746,7 @@ const makeFixture = (options: {
 }) => {
   let computeCalls = 0;
   let cleanupCalls = 0;
+  let accountCalls = 0;
   let readCalls = 0;
   const stored: Array<DocumentGeneration.StoredArtifact> = [];
   const recorded: Array<{
@@ -730,7 +764,17 @@ const makeFixture = (options: {
         }),
     },
     artifacts: {
-      account: () => Effect.void,
+      account: (contentId) =>
+        Effect.sync(() => {
+          accountCalls += 1;
+          const index = stored.findIndex(
+            (candidate) => candidate.artifact.content.contentId === contentId,
+          );
+          const retained = stored[index];
+          if (retained !== undefined) {
+            stored.splice(index, 1, { ...retained, retention: "accounted" });
+          }
+        }),
       delete: (contentId) =>
         Effect.sync(() => {
           const index = stored.findIndex(
@@ -796,6 +840,7 @@ const makeFixture = (options: {
     },
   });
   return {
+    accountCalls: () => accountCalls,
     cleanupCalls: () => cleanupCalls,
     computeCalls: () => computeCalls,
     documents,
