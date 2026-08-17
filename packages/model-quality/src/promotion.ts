@@ -1,6 +1,6 @@
 import type { EvidenceVerdict } from "./statistics";
 import { isEvidenceCount } from "./evidence-count";
-import type { CorpusManifest } from "./corpus";
+import { verifyCorpusManifest, type CorpusManifest } from "./corpus";
 
 /** Evidence collected for one stable eligible-User canary cohort. */
 export type CanaryEvidence = {
@@ -32,6 +32,9 @@ export type CanaryAssessment = {
 
 /** Assess canary duration, cohort, message, stop, and rollback controls. */
 export const assessCanary = (evidence: CanaryEvidence): CanaryAssessment => {
+  if (!verifyCorpusManifest(evidence.evaluationCorpus)) {
+    return { action: "PAUSE", verdict: "MISSING" };
+  }
   if (
     !isEvidenceCount(evidence.confirmedCriticalFailures) ||
     !isEvidenceCount(evidence.eligibleMessages) ||

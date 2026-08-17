@@ -183,7 +183,7 @@ export const createEvaluationManifest = (
 const baselineApproverIds = new Set(["quality-owner-1"]);
 
 const baselineApprovalPublicKey = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAUuYid1UPAjLYBSZk94tul2nBuau+yWodeYdHuyG/tmA=
+MCowBQYDK2VwAyEA6dh33JcphwgRxlTk88OXpQ4Hkt3hrTWfsRTeDEp3gTE=
 -----END PUBLIC KEY-----`;
 
 const verifyBaselineApproval = (approval: EvaluationManifestInput["approvedBaseline"]): boolean =>
@@ -205,8 +205,15 @@ const verifyBaselineApproval = (approval: EvaluationManifestInput["approvedBasel
 /** Verify content integrity and the exact approved corpus, rubric, and grader baseline. */
 export const verifyEvaluationManifest = (manifest: EvaluationManifest): boolean => {
   const { contentDigest, ...unsigned } = manifest;
+  const approvedAt = Date.parse(manifest.approvedBaseline.approvedAt);
+  const startedAt = Date.parse(manifest.outputEvidence.utcWindow.startedAt);
   return (
     contentDigest === digestValue("manifest", unsigned) &&
+    baselineApproverIds.has(manifest.approvedBaseline.approverId) &&
+    verifyBaselineApproval(manifest.approvedBaseline) &&
+    Number.isFinite(approvedAt) &&
+    Number.isFinite(startedAt) &&
+    approvedAt <= startedAt &&
     manifest.approvedBaseline.corpusDigest === manifest.corpusDigest &&
     manifest.approvedBaseline.graderDigest === manifest.graderDigest &&
     manifest.approvedBaseline.rubricDigest === manifest.rubricDigest

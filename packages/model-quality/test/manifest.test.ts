@@ -36,7 +36,7 @@ describe("Model Quality evidence manifests", () => {
         graderDigest,
         rubricDigest,
         signature:
-          "T2szmTxFus/Nzl57fISxEfrcoMKlPuAQZWaGC8CVsXB9sUcAskhD9eYyIoUk7K0rR6uoAwhrW9/CVJgY21SRCw==",
+          "YRYNLW7JTAxHc6+u/pOXPgh3nuoY+y34GUj8hEHc5JNu/nACVOxFrnnfNYawlaW2BDb6rBf+W5o79bWkJpknDQ==",
       },
       configuration,
       corpusDigest: initialCorpusManifest.contentDigest,
@@ -171,7 +171,7 @@ const makeManifestInput = () => ({
     graderDigest,
     rubricDigest,
     signature:
-      "T2szmTxFus/Nzl57fISxEfrcoMKlPuAQZWaGC8CVsXB9sUcAskhD9eYyIoUk7K0rR6uoAwhrW9/CVJgY21SRCw==",
+      "YRYNLW7JTAxHc6+u/pOXPgh3nuoY+y34GUj8hEHc5JNu/nACVOxFrnnfNYawlaW2BDb6rBf+W5o79bWkJpknDQ==",
   },
   configuration,
   corpusDigest: initialCorpusManifest.contentDigest,

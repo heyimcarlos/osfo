@@ -1,5 +1,5 @@
 import { freezeCaseFixture, type CaseFixture } from "./case-fixture";
-import type { CorpusCase, CorpusManifest } from "./corpus";
+import { verifyCorpusManifest, type CorpusCase, type CorpusManifest } from "./corpus";
 import { digestValue, type EvidenceDigest } from "./manifest";
 
 /** Complete release case after an authorized vault resolves sealed fixture content. */
@@ -32,6 +32,16 @@ export const resolveCompleteReleaseCorpus = (
   manifest: CorpusManifest,
   vault: SealedFixtureVault,
 ): ReleaseExecutionResult => {
+  if (!verifyCorpusManifest(manifest)) {
+    return {
+      error: {
+        _tag: "SealedFixtureUnavailable",
+        message: "The corpus manifest content digest does not match.",
+      },
+      kind: "error",
+      verdict: "MISSING",
+    };
+  }
   const resolved: Array<ReleaseExecutionCase> = [];
   for (const item of manifest.cases) {
     if (item.split === "development") {
@@ -41,7 +51,10 @@ export const resolveCompleteReleaseCorpus = (
     const fixture = vault.resolve(item.fixture.reference, item.fixture.contentDigest);
     if (fixture.kind === "error") return fixture;
     const frozenFixture = freezeCaseFixture(fixture.value);
-    if (digestValue("fixture", frozenFixture) !== item.fixture.contentDigest) {
+    if (
+      frozenFixture.fixtureSource !== "sealed-vault-v1" ||
+      digestValue("fixture", frozenFixture) !== item.fixture.contentDigest
+    ) {
       return {
         error: {
           _tag: "SealedFixtureUnavailable",

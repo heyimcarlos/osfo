@@ -1,5 +1,5 @@
 import { digestValue, type EvidenceDigest } from "./manifest";
-import { freezeCaseFixture, makeCaseFixture, type CaseFixture } from "./case-fixture";
+import { freezeCaseFixture, makeDevelopmentFixture, type CaseFixture } from "./case-fixture";
 import { isSealedCaseId, sealedContentDigest } from "./sealed-content-digests";
 
 export type { CaseFixture } from "./case-fixture";
@@ -124,7 +124,7 @@ const makeCases = (journey: Journey, size: number): ReadonlyArray<CorpusCase> =>
         })
       : Object.freeze({
           ...common,
-          fixture: makeCaseFixture(id, journey, planRoute, riskClass, offset),
+          fixture: makeDevelopmentFixture(id, journey, planRoute, riskClass, offset),
           split: "development" as const,
         });
   });

@@ -49,6 +49,7 @@ describe("Model Quality execution levels", () => {
       (item) => item.split === "development",
     );
     if (developmentCase?.split !== "development") throw new Error("Fixture is required.");
+    expect(developmentCase.fixture.fixtureSource).toBe("development-corpus-v1");
     expect(
       resolveCompleteReleaseCorpus(initialCorpusManifest, {
         resolve: () => ({ kind: "success", value: developmentCase.fixture }),

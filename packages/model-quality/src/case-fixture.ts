@@ -17,6 +17,7 @@ export type CaseFixture = {
     readonly mimeType: string;
     readonly name: string;
   }>;
+  readonly fixtureSource: "development-corpus-v1" | "sealed-vault-v1";
   readonly knowledgeSources: ReadonlyArray<{ readonly content: string; readonly sourceId: string }>;
   readonly memoryClaims: ReadonlyArray<{
     readonly claimId: string;
@@ -71,7 +72,7 @@ const freezeRecords = <T extends object>(items: ReadonlyArray<T>): ReadonlyArray
   Object.freeze(items.map((item) => Object.freeze({ ...item })));
 
 /** Build one exact development fixture for its journey, Plan route, and risk stratum. */
-export const makeCaseFixture = (
+export const makeDevelopmentFixture = (
   id: string,
   journey: Journey,
   planRoute: PlanRoute,
@@ -145,6 +146,7 @@ export const makeCaseFixture = (
           ]
         : [],
     ),
+    fixtureSource: "development-corpus-v1",
     knowledgeSources: freezeRecords(hasSupportingSource ? [{ content: sourceFact, sourceId }] : []),
     memoryClaims: freezeRecords(
       journey === "memory"
@@ -214,6 +216,7 @@ export const freezeCaseFixture = (fixture: CaseFixture): CaseFixture =>
     coreProfile: Object.freeze({ ...fixture.coreProfile }),
     expectedOutcomes: freezeRecords(fixture.expectedOutcomes),
     files: freezeRecords(fixture.files),
+    fixtureSource: fixture.fixtureSource,
     knowledgeSources: freezeRecords(fixture.knowledgeSources),
     memoryClaims: freezeRecords(fixture.memoryClaims),
     providerFixtures: Object.freeze(
