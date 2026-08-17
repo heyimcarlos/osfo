@@ -15,6 +15,7 @@ const simpleOperations = [
   "file.read",
   "file.analyze",
   "file.delete",
+  "document.read",
   "workflow.inspect",
   "workflow.cancel",
   "gmail.search",

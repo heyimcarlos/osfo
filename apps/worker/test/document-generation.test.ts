@@ -244,7 +244,7 @@ describe("Document Generation", () => {
       const exported = yield* fixture.documents.export({
         actionId: ActionId.make("export-176"),
         artifactId: artifact.artifactId,
-        authorization: artifactAuthorization("export-176", "file.read"),
+        authorization: artifactAuthorization("export-176", "document.read"),
       });
       const denied = yield* fixture.documents
         .export({
@@ -314,7 +314,7 @@ describe("Document Generation", () => {
       const pdf = yield* Effect.promise(() => makePdf(1));
       const fixture = makeFixture({ computeResult: completed(pdf) });
       const artifact = yield* fixture.documents.generate(generationRequest("pdf"));
-      const authorization = artifactAuthorization("free-export-176", "file.read");
+      const authorization = artifactAuthorization("free-export-176", "document.read");
 
       const error = yield* fixture.documents
         .export({
@@ -392,7 +392,7 @@ const generationRequest = (format: "pdf" | "docx"): DocumentGeneration.GenerateR
   }),
 });
 
-const artifactAuthorization = (actionId: string, operation: "file.delete" | "file.read") => {
+const artifactAuthorization = (actionId: string, operation: "document.read" | "file.delete") => {
   const base = generationRequest("pdf").authorization;
   const authSessionId = AuthSessionId.make("session-176");
   return {
@@ -410,7 +410,7 @@ const artifactAuthorization = (actionId: string, operation: "file.delete" | "fil
 
 const foreignAuthorization = (actionId: string) => {
   const foreignUserId = UserId.make("another-user");
-  const authorization = artifactAuthorization(actionId, "file.read");
+  const authorization = artifactAuthorization(actionId, "document.read");
   if (authorization.authority._tag !== "AuthSession") return authorization;
   return {
     ...authorization,

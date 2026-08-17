@@ -234,7 +234,7 @@ export const make = (options: MakeOptions): Interface => ({
       yield* options.artifacts.delete(stored.artifact.artifactId);
     }),
   export: (request) =>
-    Effect.map(readAuthorized(options, request, "file.read"), (stored) => ({
+    Effect.map(readAuthorized(options, request, "document.read"), (stored) => ({
       artifact: stored.artifact,
       bytes: stored.bytes,
     })),
@@ -426,7 +426,7 @@ const ownerMatchesRequest = (request: GenerateRequest) =>
 const readAuthorized = (
   options: MakeOptions,
   request: ArtifactRequest,
-  kind: "file.delete" | "file.read",
+  kind: "document.read" | "file.delete",
 ) =>
   Effect.gen(function* () {
     const stored = yield* options.artifacts.get(request.artifactId);
@@ -446,19 +446,6 @@ const readAuthorized = (
       kind,
     });
     if (Predicate.isTagged(permitted, "Denied")) return yield* Effect.fail(permitted);
-    if (kind === "file.read") {
-      const documentPermitted = options.authorization.recheck(authorization, {
-        actionId: request.actionId,
-        artifactKind: "document",
-        bytes: BigInt(stored.artifact.byteLength),
-        kind: "document.generate",
-        pages: BigInt(stored.artifact.pageCount),
-        researchSearches: 0n,
-      });
-      if (Predicate.isTagged(documentPermitted, "Denied")) {
-        return yield* Effect.fail(documentPermitted);
-      }
-    }
     return stored;
   });
 
