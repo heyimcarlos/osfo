@@ -25,6 +25,8 @@ import {
 } from "../src/services/whatsapp-admission";
 import { withRealPostgresFixture } from "./real-postgres-fixture";
 
+/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide -- Native PostgreSQL test entry points own Drizzle Promise and Layer boundaries. */
+
 describe("WhatsApp admission with native PostgreSQL", () => {
   it.effect("records one receipt use for concurrent replay", () =>
     withRealPostgresFixture(({ database }) =>

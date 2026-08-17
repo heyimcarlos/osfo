@@ -6,6 +6,8 @@ import * as Db from "../../db";
 import { ChannelBindingId, ChannelIdentity, UserId } from "../../domain";
 import type * as ChannelBinding from "../../services/channel-binding";
 
+/* oxlint-disable effecttsgo/async-function -- Drizzle query helpers preserve caller-owned transaction scope. */
+
 const StoredWhatsAppBinding = Schema.Struct({
   channelBindingId: ChannelBindingId,
   channelIdentity: ChannelIdentity,
@@ -93,5 +95,7 @@ export const readCurrentWhatsAppBinding = async (
   return binding?.userId === userId && binding.revokedAt === null ? binding : null;
 };
 
-const decodeStoredBinding = (row: unknown): StoredWhatsAppBinding | null =>
-  row === undefined ? null : Schema.decodeUnknownSync(StoredWhatsAppBinding)(row);
+const decodeStoredBinding = (
+  row: typeof StoredWhatsAppBinding.Encoded | undefined,
+): StoredWhatsAppBinding | null =>
+  row === undefined ? null : Schema.decodeSync(StoredWhatsAppBinding)(row);
