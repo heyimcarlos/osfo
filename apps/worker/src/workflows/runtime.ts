@@ -2,7 +2,7 @@ import { WorkflowEntrypoint, type WorkflowEvent } from "cloudflare:workers";
 import { Option } from "effect";
 
 import { runInvocationEffect } from "../adapters/host";
-import { decodeOsfoStage } from "../env";
+import { decodeOsfoStage } from "../config";
 import {
   invalidOsfoEnvironment,
   makeWorkflowRuntime,

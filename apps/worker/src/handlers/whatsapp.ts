@@ -5,7 +5,7 @@ import { HttpEffect, HttpRouter } from "effect/unstable/http";
 import { database } from "../db";
 import * as Billing from "../db/billing";
 import { retainedCatalog } from "../domain/plan-policy";
-import type { RuntimeConfig } from "../env";
+import type { CloudflareConfig } from "../config";
 import { handleWhatsAppOnboardingCommand } from "./whatsapp-onboarding";
 import * as WhatsAppIdentity from "../integrations/cloudflare/whatsapp-identity";
 import {
@@ -48,7 +48,7 @@ export interface Bindings {
 }
 
 /** Install authenticated Meta verification and inbound event routes. */
-export const layer = (options: { readonly config: RuntimeConfig; readonly env: Bindings }) => {
+export const layer = (options: { readonly config: CloudflareConfig; readonly env: Bindings }) => {
   const handler = Effect.gen(function* () {
     const db = yield* database;
     const onboarding = yield* Onboarding.Service;
@@ -156,7 +156,7 @@ export const layer = (options: { readonly config: RuntimeConfig; readonly env: B
 
 const handleRequest = (
   request: Request,
-  config: RuntimeConfig,
+  config: CloudflareConfig,
   admission: WhatsAppAdmission.Service<WhatsAppAdmission.WhatsAppAdmissionUnavailable>,
 ): Effect.Effect<Response> => {
   if (request.method === "GET") {

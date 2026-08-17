@@ -38,7 +38,7 @@ import * as DocumentArtifact from "../../domain/document-artifact";
 import * as DocumentGenerationComposition from "../../composition/document-generation";
 import { database as workerDatabase, DbTimestamp } from "../../db";
 import * as Billing from "../../db/billing";
-import { decodeOsfoStage } from "../../env";
+import { decodeOsfoStage } from "../../config";
 import * as ProviderAuthorizationPostgres from "../../integrations/postgres/provider-authorization";
 import * as SessionRecallAuthorizationPostgres from "../../integrations/postgres/session-recall-authorization";
 import {

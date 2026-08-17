@@ -198,19 +198,6 @@ describe("Telegram webhook", () => {
       expect(harness.posts).toEqual([]);
     }),
   );
-
-  it.effect("rejects the Telegram adapter in production", () =>
-    Effect.gen(function* () {
-      const harness = makeHarness({ stage: "production" });
-      const response = yield* handleTelegramWebhook(
-        request(update({ text: "hello", updateId: 44 })),
-        harness.options,
-      );
-
-      expect(response.status).toBe(404);
-      expect(harness.admissions).toEqual([]);
-    }),
-  );
 });
 
 const makeHarness = (overrides?: {
@@ -218,7 +205,6 @@ const makeHarness = (overrides?: {
   readonly allowedUserIds?: ReadonlyArray<string>;
   readonly failFirstPost?: boolean;
   readonly failFirstInvitation?: boolean;
-  readonly stage?: "development" | "preview" | "production" | "test";
   readonly takeOverBeforeSend?: boolean;
 }) => {
   const admissions: Array<TelegramAdmission.TelegramMessageAdmissionInput> = [];
@@ -328,7 +314,6 @@ const makeHarness = (overrides?: {
     },
     outbound,
     secretToken: Redacted.make("telegram-webhook-secret"),
-    stage: overrides?.stage ?? "test",
   };
   return {
     admissions,

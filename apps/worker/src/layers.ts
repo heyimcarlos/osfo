@@ -2,7 +2,7 @@ import { Context, Effect, Layer, ManagedRuntime, Random, Schema } from "effect";
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 
 import * as Db from "./db";
-import { OsfoStage, type OsfoStage as OsfoStageType } from "./env";
+import { OsfoStage, type OsfoStage as OsfoStageType } from "./config";
 
 /** Schema for a Cloudflare execution unit that owns an Effect runtime. */
 export const ExecutionUnitKind = Schema.Literals([

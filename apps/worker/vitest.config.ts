@@ -15,6 +15,10 @@ const workerBindings = {
   STRIPE_PORTAL_CONFIGURATION_ID: "bpc_approved",
   STRIPE_SECRET_KEY: "sk_test_osfo",
   STRIPE_WEBHOOK_SECRET: "whsec_test_osfo",
+  TELEGRAM_ALLOWED_USER_IDS: "12345,67890",
+  TELEGRAM_BOT_TOKEN: "telegram-test-bot-token",
+  TELEGRAM_BOT_USERNAME: "osfo_test_bot",
+  TELEGRAM_WEBHOOK_SECRET_TOKEN: "telegram-test-webhook-secret",
   TWILIO_AUTH_TOKEN: "test-only-twilio-token",
   TWILIO_VERIFY_SERVICE_SID: "VA22222222222222222222222222222222",
   WHATSAPP_PHONE_NUMBER: "14165550100",
@@ -32,6 +36,7 @@ export default defineConfig({
     fileParallelism: false,
     include: [
       "test/action-approval.test.ts",
+      "test/config.test.ts",
       "test/file-ingestion.test.ts",
       "test/document-artifacts-r2.test.ts",
       "test/document-compute.test.ts",

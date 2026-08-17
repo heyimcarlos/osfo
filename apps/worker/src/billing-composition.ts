@@ -14,7 +14,7 @@ import {
   StripePortalConfigurationId,
   StripeProductId,
 } from "./domain";
-import type { RuntimeConfig } from "./env";
+import type { CloudflareConfig } from "./config";
 import * as StripeAdapter from "./integrations/stripe/billing";
 import * as BillingPresentation from "./services/billing-presentation";
 import * as BillingSubscriptions from "./services/billing-subscriptions";
@@ -24,7 +24,7 @@ import * as StripeWebhooks from "./services/stripe-webhooks";
 /* oxlint-disable effecttsgo/crypto-random-uuid-in-effect -- The composition root supplies secure identity effects to application services. */
 
 /** Construct request-scoped Stripe billing services from concrete runtime dependencies. */
-export const makeBillingServices = (database: Database, config: RuntimeConfig) => {
+export const makeBillingServices = (database: Database, config: CloudflareConfig) => {
   const webBaseUrl = new URL(config.auth.trustedOrigins[0] ?? config.auth.baseURL);
   const offer = {
     priceId: StripePriceId.make(config.stripe.adventurerPriceId),

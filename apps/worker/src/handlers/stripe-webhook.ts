@@ -5,10 +5,10 @@ import { HttpEffect, HttpRouter } from "effect/unstable/http";
 
 import { makeBillingServices } from "../billing-composition";
 import * as Db from "../db";
-import type { RuntimeConfig } from "../env";
+import type { CloudflareConfig } from "../config";
 
 /** Handle the public raw-body Stripe webhook boundary. */
-export const layer = (config: RuntimeConfig) => {
+export const layer = (config: CloudflareConfig) => {
   const handler = Effect.gen(function* () {
     const database = yield* Db.database;
     const services = makeBillingServices(database, config);

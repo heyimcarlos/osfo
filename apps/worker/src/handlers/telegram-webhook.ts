@@ -2,7 +2,6 @@ import { Effect, Redacted, Schema } from "effect";
 import { timingSafeEqual } from "node:crypto";
 
 import { ChannelIdentity } from "../domain";
-import type { OsfoStage } from "../env";
 import type * as TelegramAdmission from "../services/telegram-message-admission";
 import * as Onboarding from "../services/onboarding";
 import type * as TelegramDelivery from "../services/telegram-onboarding-delivery";
@@ -48,7 +47,7 @@ export interface TelegramOutbound {
   readonly post: (chatId: string, text: string) => Effect.Effect<void, TelegramOutboundUnavailable>;
 }
 
-/** Dependencies and stage policy for one Telegram webhook invocation. */
+/** Dependencies for one Telegram webhook invocation. */
 export interface TelegramWebhookOptions {
   readonly admission: Pick<TelegramAdmission.Interface, "accept">;
   readonly allowedUserIds: ReadonlySet<string>;
@@ -56,7 +55,6 @@ export interface TelegramWebhookOptions {
   readonly onboarding: Pick<Onboarding.Interface, "enrollTelegram">;
   readonly outbound: TelegramOutbound;
   readonly secretToken: Redacted.Redacted;
-  readonly stage: OsfoStage;
 }
 
 /** Verify and route one closed Telegram update without creating Chat SDK authority. */
@@ -64,7 +62,6 @@ export const handleTelegramWebhook = Effect.fn("TelegramWebhook.handle")(functio
   request: Request,
   options: TelegramWebhookOptions,
 ) {
-  if (options.stage === "production") return response(404, "Not found");
   if (request.method !== "POST") return response(405, "Method not allowed");
   if (!secretMatches(request, options.secretToken)) return response(401, "Unauthorized");
 

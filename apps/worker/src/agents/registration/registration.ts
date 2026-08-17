@@ -1,7 +1,7 @@
 import { Think } from "@cloudflare/think";
 import { Option, Schema } from "effect";
 
-import { decodeOsfoStage } from "../../env";
+import { decodeOsfoStage } from "../../config";
 import {
   invalidOsfoEnvironment,
   makeRegistrationDialogueRuntime,

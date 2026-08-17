@@ -20,7 +20,7 @@ import {
   StripeSubscriptionId,
   UserId,
 } from "../domain";
-import type { RuntimeConfig } from "../env";
+import type { CloudflareConfig } from "../config";
 import type { BillingOperation } from "../services/billing-authorization";
 import { reconcileBillingReturn } from "../services/billing-return";
 import { StripeStateUnavailable } from "../services/billing-subscriptions";
@@ -29,7 +29,7 @@ import { BillingPersistenceUnavailable } from "../services/stripe-billing";
 /* oxlint-disable effecttsgo/crypto-random-uuid-in-effect -- The HTTP composition boundary supplies secure persisted identities. */
 
 /** Implement authenticated Stripe billing and reconciliation routes. */
-export const layer = (config: RuntimeConfig) =>
+export const layer = (config: CloudflareConfig) =>
   Layer.unwrap(
     Effect.gen(function* () {
       const database = yield* Db.database;

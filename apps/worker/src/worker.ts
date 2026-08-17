@@ -1,21 +1,10 @@
-import { Effect, Option, Result, Schema } from "effect";
-import { getAgentByName } from "agents";
+import { Schema } from "effect";
 
 import * as App from "./app";
-import { decodeOsfoStage, decodeRuntimeConfig } from "./env";
-import { RuntimeProbeResult } from "./layers";
+import { loadConfig, WorkerConfigurationError, type CloudflareEnv } from "./config";
 import * as DocumentCostReconciliation from "./document-cost-reconciliation";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Cloudflare RPC tags and adapter boundaries require these forms. */
-
-const AgentRpcTag = Schema.Struct({ _tag: Schema.String });
-const RegistrationRpcResult = Schema.Union([
-  Schema.TaggedStruct("RegistrationTurnCompleted", {
-    response: Schema.String,
-    verifyUrl: Schema.String,
-  }),
-  Schema.TaggedStruct("RegistrationTurnUnavailable", { message: Schema.String }),
-]);
 
 export { OsfoAgent } from "./agents/osfo/agent";
 export { RegistrationDialogue } from "./agents/registration/registration";
@@ -24,80 +13,42 @@ export { Sandbox } from "@cloudflare/sandbox";
 
 /** Osfo Cloudflare Worker host. */
 const worker = {
-  fetch(request: Request, env: Env): Promise<Response> {
-    const config = decodeRuntimeConfig(env);
-
-    return Result.match(config, {
-      onFailure: () =>
-        isHealthRequest(request)
-          ? Option.match(decodeOsfoStage(env.OSFO_STAGE), {
-              onNone: () => Promise.resolve(App.environmentErrorResponse()),
-              onSome: (stage) => Effect.runPromise(App.healthResponse(stage)),
-            })
-          : Promise.resolve(App.environmentErrorResponse()),
-      onSuccess: (parsedConfig) => fetchApp(request, App.make(adaptBindings(env), parsedConfig)),
-    });
+  async fetch(request: Request, env: CloudflareEnv): Promise<Response> {
+    let app: Awaited<ReturnType<typeof App.makeCloudflareApp>>;
+    try {
+      app = await App.makeCloudflareApp(env);
+    } catch (error) {
+      if (Schema.is(WorkerConfigurationError)(error)) {
+        logConfigurationError(error);
+        return environmentErrorResponse();
+      }
+      throw error;
+    }
+    return fetchApp(request, app);
   },
-  scheduled(_controller: ScheduledController, env: Env, context: ExecutionContext): void {
-    const config = decodeRuntimeConfig(env);
-    Result.match(config, {
-      onFailure: () => undefined,
-      onSuccess: (parsedConfig) =>
-        context.waitUntil(
-          Promise.all([
-            App.expireRegistrationInvitations(adaptBindings(env), parsedConfig),
-            DocumentCostReconciliation.run(env),
-          ]).then(() => undefined),
-        ),
-    });
+  scheduled(_controller: ScheduledController, env: CloudflareEnv, context: ExecutionContext): void {
+    try {
+      const config = loadConfig(env);
+      context.waitUntil(
+        Promise.all([
+          App.expireRegistrationInvitations(env, config),
+          DocumentCostReconciliation.run(env),
+        ]).then(() => undefined),
+      );
+    } catch (error) {
+      if (Schema.is(WorkerConfigurationError)(error)) logConfigurationError(error);
+      throw error;
+    }
   },
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<CloudflareEnv>;
 
 /** Default Cloudflare Worker entry point. */
 export default worker;
 
-const adaptBindings = (env: Env): App.Bindings => ({
-  ARTIFACTS: env.ARTIFACTS,
-  DB: env.DB,
-  OSFO_AGENT: {
-    getByName: (identity) => {
-      const agent = env.OSFO_AGENT.getByName(identity);
-      return {
-        acceptWhatsAppMessage: async (input) => agent.acceptWhatsAppMessage(input),
-        acceptTelegramMessage: async (input) => agent.acceptTelegramMessage(input),
-        commitWelcome: async (input) =>
-          Schema.decodePromise(AgentRpcTag)(await agent.commitWelcome(input)),
-        initialize: async (input) =>
-          Schema.decodePromise(AgentRpcTag)(await agent.initialize(input)),
-        probeRuntime: async () =>
-          Schema.decodePromise(RuntimeProbeResult)(await agent.probeRuntime()),
-        recoverWhatsAppMessage: async (input) => agent.recoverWhatsAppMessage(input),
-        recoverTelegramMessage: async (input) => agent.recoverTelegramMessage(input),
-      };
-    },
-  },
-  REGISTRATION_DIALOGUE: {
-    getByName: (identity) => {
-      const dialogue = () => getAgentByName(env.REGISTRATION_DIALOGUE, identity);
-      return {
-        begin: async (input) => {
-          const agent = await dialogue();
-          return Schema.decodePromise(RegistrationRpcResult)(await agent.begin(input));
-        },
-        deleteDialogue: async () => {
-          const agent = await dialogue();
-          await agent.deleteDialogue();
-        },
-        probeRuntime: async () => {
-          const agent = await dialogue();
-          return Schema.decodePromise(RuntimeProbeResult)(await agent.probeRuntime());
-        },
-      };
-    },
-  },
-});
-
-const fetchApp = async (request: Request, app: ReturnType<typeof App.make>): Promise<Response> => {
+const fetchApp = async (
+  request: Request,
+  app: Awaited<ReturnType<typeof App.makeCloudflareApp>>,
+): Promise<Response> => {
   try {
     return await app.handler(request);
   } finally {
@@ -105,5 +56,10 @@ const fetchApp = async (request: Request, app: ReturnType<typeof App.make>): Pro
   }
 };
 
-const isHealthRequest = (request: Request): boolean =>
-  request.method === "GET" && new URL(request.url).pathname === "/health";
+const logConfigurationError = (error: WorkerConfigurationError): void => {
+  // oxlint-disable-next-line eslint/no-console, effecttsgo/global-console -- boundary: Cloudflare must record safe deployment failures.
+  console.error(JSON.stringify({ message: error.message }));
+};
+
+const environmentErrorResponse = (): Response =>
+  Response.json({ error: "The Worker runtime configuration is invalid" }, { status: 500 });

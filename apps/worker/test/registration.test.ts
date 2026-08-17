@@ -11,7 +11,7 @@ import { DateTime, Effect, Layer, Redacted, Schema } from "effect";
 
 import * as App from "../src/app";
 import * as Db from "../src/db";
-import type { RuntimeConfig } from "../src/env";
+import type { CloudflareConfig } from "../src/config";
 import * as TwilioVerify from "../src/integrations/twilio/verify";
 
 /* oxlint-disable eslint/no-underscore-dangle -- HTTP tests assert typed tagged API results. */
@@ -386,7 +386,7 @@ const onboardingResponseJson = (response: Response) =>
     Effect.flatMap((body) => Schema.decodeUnknownEffect(OnboardingResponse)(body)),
   );
 
-const runtimeConfig: RuntimeConfig = {
+const runtimeConfig: CloudflareConfig = {
   auth: {
     baseURL: "https://osfo.test/",
     credentialAuthentication: "enabled",
@@ -399,7 +399,12 @@ const runtimeConfig: RuntimeConfig = {
     webhookVerifyToken: Redacted.make("test-only-meta-webhook-token"),
   },
   stage: "test",
-  telegram: { kind: "disabled" },
+  telegram: {
+    allowedUserIds: ["12345"],
+    botToken: Redacted.make("telegram-test-bot-token"),
+    botUsername: "osfo_test_bot",
+    webhookSecret: Redacted.make("telegram-test-webhook-secret"),
+  },
   stripe: {
     adventurerPriceId: "price_adventurer",
     adventurerProductId: "prod_adventurer",

@@ -9,7 +9,7 @@ import { HttpRouter } from "effect/unstable/http";
 import * as App from "../src/app";
 import * as AuthRoutes from "../src/auth";
 import * as Db from "../src/db";
-import type { RuntimeConfig } from "../src/env";
+import type { CloudflareConfig } from "../src/config";
 import * as TwilioVerify from "../src/integrations/twilio/verify";
 
 const authConfig = {
@@ -597,14 +597,19 @@ const responseJson = (response: Response) =>
     Effect.flatMap((body) => Schema.decodeUnknownEffect(AuthResponse)(body)),
   );
 
-const runtimeConfig: RuntimeConfig = {
+const runtimeConfig: CloudflareConfig = {
   auth: authConfig,
   meta: {
     appSecret: Redacted.make("test-only-meta-app-secret"),
     webhookVerifyToken: Redacted.make("test-only-meta-webhook-token"),
   },
   stage: "test",
-  telegram: { kind: "disabled" },
+  telegram: {
+    allowedUserIds: ["12345"],
+    botToken: Redacted.make("telegram-test-bot-token"),
+    botUsername: "osfo_test_bot",
+    webhookSecret: Redacted.make("telegram-test-webhook-secret"),
+  },
   stripe: {
     adventurerPriceId: "price_adventurer",
     adventurerProductId: "prod_adventurer",
