@@ -384,6 +384,10 @@ const runtimeConfig: RuntimeConfig = {
     secret: Redacted.make("test-only-better-auth-secret-32-characters"),
     trustedOrigins: ["https://osfo.test"],
   },
+  meta: {
+    appSecret: Redacted.make("test-only-meta-app-secret"),
+    webhookVerifyToken: Redacted.make("test-only-meta-webhook-token"),
+  },
   stage: "test",
   whatsApp: { phoneNumber: "14165550100" },
   twilioVerify: {
@@ -397,6 +401,8 @@ const testBindings: App.Bindings = {
   DB: { connectionString: "postgres://unused.invalid/osfo" },
   OSFO_AGENT: {
     getByName: (identity) => ({
+      acceptWhatsAppMessage: () =>
+        Promise.resolve({ _tag: "ManagedConversationDenied", reason: "test" }),
       commitWelcome: () =>
         Promise.resolve({ _tag: "PersonalWelcomeCommitted", messageId: "welcome-test" }),
       initialize: () => Promise.resolve({ _tag: "AgentInitialized" }),

@@ -9,6 +9,7 @@ import type { RuntimeConfig } from "./env";
 import * as Handlers from "./handlers";
 import * as RuntimeProbes from "./handlers/runtime-probes";
 import * as InvitationAuth from "./handlers/invitation-auth";
+import * as WhatsApp from "./handlers/whatsapp";
 import type { ExecutionUnit } from "./layers";
 import * as AuthMiddleware from "./middleware/auth";
 import * as OnboardingCloudflare from "./integrations/cloudflare/onboarding";
@@ -18,7 +19,7 @@ import * as Onboarding from "./services/onboarding";
 import * as Registration from "./services/registration";
 
 /** Cloudflare bindings used by the Worker route tree. */
-export type Bindings = RuntimeProbes.Bindings & OnboardingCloudflare.Bindings;
+export type Bindings = RuntimeProbes.Bindings & OnboardingCloudflare.Bindings & WhatsApp.Bindings;
 
 /** Options used to assemble the Worker route tree. */
 export interface Options {
@@ -55,10 +56,14 @@ export const layer = (options: Options) => {
   const invitationAuth = InvitationAuth.layer({
     config: options.config.auth,
   }).pipe(HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)));
+  const whatsapp = WhatsApp.layer({ config: options.config, env: options.env }).pipe(
+    HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)),
+  );
 
   return Layer.mergeAll(
     api,
     invitationAuth,
+    whatsapp,
     Auth.layer({
       config: options.config.auth,
       dependencies: options.authDependencies,

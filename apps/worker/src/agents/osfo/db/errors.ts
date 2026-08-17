@@ -4,10 +4,15 @@ import { DbTimestamp } from "../../../db";
 import {
   AgentId,
   AgentInitializationId,
+  AcceptanceReceiptId,
   AssistantMessageId,
   ConversationRouteId,
+  ChannelBindingId,
+  ProviderMessageId,
   SessionId,
   ThinkRequestId,
+  ThinkSubmissionId,
+  UserMessageId,
 } from "../../../domain";
 
 /** Agent SQLite operations exposed by the typed store seam. */
@@ -18,8 +23,26 @@ export const AgentStoreOperation = Schema.Literals([
   "readSessionOwnership",
   "replaceCurrentSession",
   "recordCommittedTurn",
+  "readAcceptanceReceipt",
+  "recordAcceptanceReceipt",
   "readCommittedTurns",
 ]);
+
+/** Expected failure when one Channel Message Key is retried with changed acceptance facts. */
+export class AcceptanceReceiptConflict extends Schema.TaggedError<AcceptanceReceiptConflict>()(
+  "AcceptanceReceiptConflict",
+  {
+    channelBindingId: ChannelBindingId,
+    existingReceiptId: AcceptanceReceiptId,
+    existingThinkSubmissionId: ThinkSubmissionId,
+    existingUserMessageId: UserMessageId,
+    message: Schema.String,
+    providerMessageId: ProviderMessageId,
+    receiptId: AcceptanceReceiptId,
+    thinkSubmissionId: ThinkSubmissionId,
+    userMessageId: UserMessageId,
+  },
+) {}
 
 /** Agent SQLite operations exposed by the typed store seam. */
 export type AgentStoreOperation = typeof AgentStoreOperation.Type;
@@ -177,6 +200,7 @@ export class AgentStoreRecordInvalid extends Schema.TaggedError<AgentStoreRecord
 
 /** Agent RPC operations with externally supplied values. */
 export const AgentRequestOperation = Schema.Literals([
+  "acceptWhatsAppMessage",
   "commitWelcome",
   "cancelManagedConversation",
   "initialize",

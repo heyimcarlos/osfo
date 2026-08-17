@@ -30,6 +30,7 @@ export const DbOperation = Schema.Literals([
   "suspendUser",
   "restoreUser",
   "requestDeletion",
+  "recheckChannelBinding",
 ]);
 
 /** Database operations used in safe failures and telemetry. */

@@ -2,13 +2,14 @@ import { env } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "@effect/vitest";
 import { and, eq, isNull } from "drizzle-orm";
-import { Effect, Schema } from "effect";
+import { DateTime, Effect, Schema } from "effect";
 
 import {
   AgentId,
   AgentInitializationId,
   AllowancePeriodId,
   AssistantMessageId,
+  ChannelBindingId,
   ConversationRouteId,
   SessionId,
   ThinkRequestId,
@@ -32,6 +33,74 @@ import {
 /* oxlint-disable effecttsgo/async-function, effecttsgo/prefer-typed-schema-decoder, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Worker integration tests cross Promise, RPC, Effect, and raw SQLite test boundaries. */
 
 describe("Osfo Agent and Think Session foundation", () => {
+  it.effect("returns the exact Acceptance Receipt when one WhatsApp message is replayed", () =>
+    Effect.gen(function* () {
+      const agentId = Schema.decodeUnknownSync(AgentId)("agent-whatsapp-acceptance");
+      const initializationId = Schema.decodeUnknownSync(AgentInitializationId)(
+        "init-whatsapp-acceptance",
+      );
+      const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-whatsapp-acceptance");
+      const sessionId = Schema.decodeUnknownSync(SessionId)("session-whatsapp-acceptance");
+      const channelBindingId = Schema.decodeUnknownSync(ChannelBindingId)(
+        "binding-whatsapp-acceptance",
+      );
+      const agent = env.OSFO_AGENT.getByName(agentId);
+      yield* Effect.promise(
+        async () =>
+          await agent.initialize({
+            agentId,
+            initializationId,
+            initializedAt: "2026-08-16T12:00:00.000Z",
+            routeId,
+            sessionId,
+          }),
+      );
+
+      const input = {
+        authorization: whatsappAuthorization(channelBindingId),
+        channelBindingId,
+        message: "Please help with my schedule",
+        providerMessageId: "wamid.whatsapp-acceptance",
+        receiptId: "receipt-whatsapp-acceptance",
+        submissionId: "submission-whatsapp-acceptance",
+        userMessageId: "message-whatsapp-acceptance",
+      } as const;
+      const results = yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance, state) => {
+          state.storage.sql.exec(
+            `INSERT INTO osfo_acceptance_receipts
+              (allowance_period_id, channel_binding_id, provider_message_id, receipt_id,
+               session_id, think_submission_id, user_message_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            "period-whatsapp-acceptance",
+            channelBindingId,
+            input.providerMessageId,
+            input.receiptId,
+            sessionId,
+            input.submissionId,
+            input.userMessageId,
+          );
+          const first = await instance.acceptWhatsAppMessage(input);
+          const repeated = await instance.acceptWhatsAppMessage(input);
+          return { first, repeated };
+        }),
+      );
+
+      expect(results.repeated).toEqual(results.first);
+      expect(results.first).toEqual({
+        _tag: "AcceptanceReceipt",
+        acceptedAt: expect.any(String),
+        allowancePeriodId: "period-whatsapp-acceptance",
+        channelBindingId,
+        providerMessageId: "wamid.whatsapp-acceptance",
+        receiptId: "receipt-whatsapp-acceptance",
+        sessionId,
+        thinkSubmissionId: "submission-whatsapp-acceptance",
+        userMessageId: "message-whatsapp-acceptance",
+      });
+    }),
+  );
+
   it.effect("commits one localized welcome from accepted setup facts only", () =>
     Effect.gen(function* () {
       const agentId = Schema.decodeUnknownSync(AgentId)("agent-personal-welcome");
@@ -1194,7 +1263,40 @@ describe("Osfo Agent and Think Session foundation", () => {
   );
 });
 
+const whatsappAuthorization = (channelBindingId: string) => ({
+  allowance: {
+    _tag: "Metered" as const,
+    allowancePeriodId: "period-whatsapp-acceptance",
+    endsAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-09-01T00:00:00.000Z")),
+    plan: "free" as const,
+    planPolicyVersion: "launch-v1",
+    startsAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-01T00:00:00.000Z")),
+    usage: [],
+  },
+  approval: null,
+  authority: {
+    _tag: "ChannelBinding" as const,
+    channelBindingId,
+    userId: "user-whatsapp-acceptance",
+  },
+  deletionAccess: { _tag: "DeletionAccessAvailable" as const },
+  gmailConnection: null,
+  liveFacts: {
+    activeGmSummonsInSession: 0n,
+    activeReminders: 0n,
+    concurrentWorkflows: 0n,
+    retainedFileBytes: 0n,
+  },
+  now: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z")),
+  originatingAuthority: { _tag: "ChannelBinding" as const, channelBindingId },
+  requestVendorUsdMicros: 0n,
+  resourceOwnerUserId: "user-whatsapp-acceptance",
+  subscription: { plan: "free" as const, planPolicyVersion: "launch-v1" },
+  user: { _tag: "ActiveUser" as const, userId: "user-whatsapp-acceptance" },
+});
+
 const resetOsfoTables = (storage: DurableObjectStorage): void => {
+  storage.sql.exec("DROP TABLE IF EXISTS osfo_acceptance_receipts");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_model_call_usage_evidence");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_committed_turns");
   storage.sql.exec("DROP TABLE IF EXISTS osfo_session_ownership");

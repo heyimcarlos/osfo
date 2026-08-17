@@ -12,11 +12,16 @@ import {
 import type {
   AgentId,
   AgentInitializationId,
+  AcceptanceReceiptId,
   AllowancePeriodId,
   AssistantMessageId,
   ConversationRouteId,
+  ChannelBindingId,
+  ProviderMessageId,
   SessionId,
   ThinkRequestId,
+  ThinkSubmissionId,
+  UserMessageId,
 } from "../../../domain";
 import type { ModelCallAttemptId } from "../../../domain/model-call-attempt";
 import type { DbTimestamp } from "../../../db";
@@ -46,6 +51,21 @@ const allowancePeriodId = customType<{ data: AllowancePeriodId; driverData: stri
   dataType: () => "text",
 });
 const modelCallAttemptId = customType<{ data: ModelCallAttemptId; driverData: string }>({
+  dataType: () => "text",
+});
+const acceptanceReceiptId = customType<{ data: AcceptanceReceiptId; driverData: string }>({
+  dataType: () => "text",
+});
+const channelBindingId = customType<{ data: ChannelBindingId; driverData: string }>({
+  dataType: () => "text",
+});
+const providerMessageId = customType<{ data: ProviderMessageId; driverData: string }>({
+  dataType: () => "text",
+});
+const thinkSubmissionId = customType<{ data: ThinkSubmissionId; driverData: string }>({
+  dataType: () => "text",
+});
+const userMessageId = customType<{ data: UserMessageId; driverData: string }>({
   dataType: () => "text",
 });
 
@@ -122,6 +142,32 @@ export const committedTurns = sqliteTable(
     uniqueIndex("osfo_committed_turn_think_request_unique")
       .on(table.thinkRequestId)
       .where(sql`${table.thinkRequestId} IS NOT NULL`),
+  ],
+);
+
+/** Immutable mapping from one Channel Message Key to its Think acceptance. */
+export const acceptanceReceipts = sqliteTable(
+  "osfo_acceptance_receipts",
+  {
+    acceptedAt: text("accepted_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    allowancePeriodId: allowancePeriodId("allowance_period_id").notNull(),
+    channelBindingId: channelBindingId("channel_binding_id").notNull(),
+    providerMessageId: providerMessageId("provider_message_id").notNull(),
+    receiptId: acceptanceReceiptId("receipt_id").primaryKey(),
+    sessionId: sessionId("session_id")
+      .notNull()
+      .references(() => sessionOwnership.sessionId, { onDelete: "restrict", onUpdate: "restrict" }),
+    thinkSubmissionId: thinkSubmissionId("think_submission_id").notNull().unique(),
+    userMessageId: userMessageId("user_message_id").notNull().unique(),
+  },
+  (table) => [
+    uniqueIndex("osfo_acceptance_receipt_channel_message_unique").on(
+      table.channelBindingId,
+      table.providerMessageId,
+    ),
+    index("osfo_acceptance_receipts_by_session").on(table.sessionId, table.acceptedAt),
   ],
 );
 

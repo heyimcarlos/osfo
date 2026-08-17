@@ -80,6 +80,33 @@ export const ChannelBindingId = Schema.String.pipe(Schema.brand("ChannelBindingI
 /** Stable identity for one revocable Channel Binding. */
 export type ChannelBindingId = typeof ChannelBindingId.Type;
 
+/** Stable provider identity for one inbound WhatsApp message. */
+export const ProviderMessageId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(500),
+).pipe(Schema.brand("ProviderMessageId"));
+
+/** Stable provider identity for one inbound WhatsApp message. */
+export type ProviderMessageId = typeof ProviderMessageId.Type;
+
+/** Osfo-owned identity for one accepted UserMessage. */
+export const UserMessageId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(160),
+).pipe(Schema.brand("UserMessageId"));
+
+/** Osfo-owned identity for one accepted UserMessage. */
+export type UserMessageId = typeof UserMessageId.Type;
+
+/** Stable identity for immutable inbound acceptance evidence. */
+export const AcceptanceReceiptId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(160),
+).pipe(Schema.brand("AcceptanceReceiptId"));
+
+/** Stable identity for immutable inbound acceptance evidence. */
+export type AcceptanceReceiptId = typeof AcceptanceReceiptId.Type;
+
 /** One authenticated provider identity, separate from a User or Phone Account. */
 export const ChannelIdentity = Schema.String.check(
   Schema.makeFilter((value) => value.length > 0 || "must not be empty"),

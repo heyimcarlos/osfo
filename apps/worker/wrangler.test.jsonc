@@ -5,7 +5,11 @@
   "rules": [{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }],
   "compatibility_date": "2026-08-12",
   "compatibility_flags": ["nodejs_compat"],
-  "vars": { "OSFO_STAGE": "test" },
+  "vars": {
+    "META_APP_SECRET": "test-only-meta-app-secret",
+    "META_WEBHOOK_VERIFY_TOKEN": "test-only-meta-webhook-token",
+    "OSFO_STAGE": "test",
+  },
   "hyperdrive": [
     {
       "binding": "DB",

@@ -18,17 +18,22 @@ import { HelpArea, OnboardingLocale } from "@osfo/api";
 
 import type { AssistantMessageId as AssistantMessageIdType, SessionId, UserId } from "../../domain";
 import {
+  AcceptanceReceiptId,
   AgentId,
   AllowancePeriodId,
   AssistantMessageId,
   ChannelBindingId,
   ConversationRouteId as ConversationRouteIdSchema,
+  ProviderMessageId,
   SessionId as SessionIdSchema,
   ThinkRequestId,
+  ThinkSubmissionId,
+  UserMessageId,
 } from "../../domain";
 import { database as workerDatabase } from "../../db";
 import * as Billing from "../../db/billing";
 import { decodeOsfoStage } from "../../env";
+import * as WhatsAppPostgres from "../../integrations/postgres/whatsapp-admission";
 import {
   CancelManagedConversationInput,
   ManagedTurnMetadata,
@@ -47,6 +52,8 @@ import {
   type ManagedConversationDenied,
   SubmitManagedConversationInput,
 } from "../../services/managed-conversation";
+import { AuthorizationContext } from "../../services/authorization";
+import * as WhatsAppAgentAdmission from "../../services/whatsapp-agent-admission";
 import {
   launchModelAccessPolicy,
   type ManagedRouteUnavailable,
@@ -65,6 +72,7 @@ import { makeActionApprovals } from "../../services/action-approvals";
 import { makeDurableModelCallUsage } from "../../services/model-call-usage";
 import {
   type AgentInitializationConflict,
+  type AcceptanceReceiptConflict,
   AgentRequestInvalid,
   type AgentRequestOperation,
   AgentStateNotFound,
@@ -78,6 +86,8 @@ import {
 } from "./db/errors";
 import { applyAgentMigrations } from "./db/migrate";
 import { makeModelCallUsageStore } from "./db/model-call-usage";
+import { ThinkSubmissionUnavailable } from "../../services/think-submission";
+import type { AcceptanceReceipt } from "../../services/whatsapp-acceptance-receipt";
 import {
   AgentInitializationInput,
   type AgentInitializationEncoded,
@@ -148,12 +158,6 @@ export type SubmitManagedConversationRequest = typeof SubmitManagedConversationI
 /** RPC representation of one managed conversation cancellation. */
 export type CancelManagedConversationRequest = typeof CancelManagedConversationInput.Encoded;
 
-/** Classified failure from a Think Submission method. */
-export class ThinkSubmissionUnavailable extends Schema.TaggedError<ThinkSubmissionUnavailable>()(
-  "ThinkSubmissionUnavailable",
-  { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
-) {}
-
 const SessionHistoryMessagePart = Schema.StructWithRest(Schema.Struct({ type: Schema.String }), [
   Schema.Record(Schema.String, Schema.Unknown),
 ]);
@@ -195,6 +199,17 @@ const PersonalWelcomeInput = Schema.Struct({
   preferredName: Schema.NullOr(Schema.String),
 });
 type PersonalWelcomeEncoded = typeof PersonalWelcomeInput.Encoded;
+
+const AcceptWhatsAppMessageInput = Schema.Struct({
+  authorization: AuthorizationContext,
+  channelBindingId: ChannelBindingId,
+  message: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64_000)),
+  providerMessageId: ProviderMessageId,
+  receiptId: AcceptanceReceiptId,
+  submissionId: ThinkSubmissionId,
+  userMessageId: UserMessageId,
+});
+type AcceptWhatsAppMessageEncoded = typeof AcceptWhatsAppMessageInput.Encoded;
 
 /** Durable result for the deterministic first personal response. */
 export interface PersonalWelcomeCommitted {
@@ -512,6 +527,51 @@ export class OsfoAgent extends Think<Env> {
           submissionId: admission.submissionId,
         }),
       ),
+    );
+  }
+
+  /** Recoverably accept one authorized WhatsApp UserMessage into Think. */
+  async acceptWhatsAppMessage(
+    input: AcceptWhatsAppMessageEncoded,
+  ): Promise<
+    | AcceptanceReceipt
+    | AcceptanceReceiptConflict
+    | AgentRequestInvalid
+    | AgentStateNotFound
+    | AgentStoreRecordInvalid
+    | AgentStoreUnavailable
+    | ManagedConversationDenied
+    | ManagedRouteUnavailable
+    | PlanPolicyNotFound
+    | ThinkSubmissionUnavailable
+    | WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable
+  > {
+    await this.#migrationsReady;
+    const decoded = Schema.decodeResult(AcceptWhatsAppMessageInput)(input);
+    if (Result.isFailure(decoded)) return invalidRequest("acceptWhatsAppMessage");
+    const parsed = decoded.success;
+    return runRpc(
+      WhatsAppAgentAdmission.accept<
+        AcceptanceReceipt,
+        | AcceptanceReceiptConflict
+        | AgentStateNotFound
+        | AgentStoreRecordInvalid
+        | AgentStoreUnavailable
+      >({
+        dependencies: {
+          authority: {
+            isCurrent: (channelBindingId, userId) =>
+              this.#isCurrentWhatsAppBinding(channelBindingId, userId),
+          },
+          store: this.#store,
+          think: {
+            inspect: (submissionId) =>
+              callThinkSubmission("inspectSubmission", () => this.inspectSubmission(submissionId)),
+            submit: (submission) => callThinkSubmission("runTurn", () => this.runTurn(submission)),
+          },
+        },
+        input: parsed,
+      }),
     );
   }
 
@@ -962,6 +1022,29 @@ export class OsfoAgent extends Think<Env> {
           ),
         ),
       catch: (cause) => approvalActorAuthorizationUnavailable(userId, cause),
+    });
+  }
+
+  #isCurrentWhatsAppBinding(channelBindingId: ChannelBindingId, userId: UserId) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({
+          cause: invalidOsfoEnvironment,
+          message: "Current WhatsApp authority could not be checked",
+        }),
+      );
+    }
+    return Effect.tryPromise({
+      try: () =>
+        runtime.runPromise(
+          Effect.scoped(WhatsAppPostgres.isCurrentBinding(channelBindingId, userId)),
+        ),
+      catch: (cause) =>
+        new WhatsAppAgentAdmission.WhatsAppAuthorityUnavailable({
+          cause,
+          message: "Current WhatsApp authority could not be checked",
+        }),
     });
   }
 

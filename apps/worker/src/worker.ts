@@ -46,6 +46,7 @@ const adaptBindings = (env: Env): App.Bindings => ({
     getByName: (identity) => {
       const agent = env.OSFO_AGENT.getByName(identity);
       return {
+        acceptWhatsAppMessage: async (input) => agent.acceptWhatsAppMessage(input),
         commitWelcome: async (input) =>
           Schema.decodePromise(AgentRpcTag)(await agent.commitWelcome(input)),
         initialize: async (input) =>
