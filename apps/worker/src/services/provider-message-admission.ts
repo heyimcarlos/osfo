@@ -65,9 +65,15 @@ export type AgentAcceptanceInput = typeof AgentAcceptanceInput.Type;
 
 /** Observable result shared by authenticated WhatsApp and Telegram adapters. */
 export type AdmissionOutcome =
-  | { readonly _tag: "CommandAccepted"; readonly receipt: SessionCommandReceipt }
+  | {
+      readonly _tag: "CommandAccepted";
+      readonly receipt: SessionCommandReceipt;
+    }
   | { readonly _tag: "MessageAccepted"; readonly receipt: AcceptanceReceipt }
-  | { readonly _tag: "MessageDenied"; readonly reason: AuthorizationDenialReason }
+  | {
+      readonly _tag: "MessageDenied";
+      readonly reason: AuthorizationDenialReason;
+    }
   | { readonly _tag: "OnboardingAccepted" };
 
 /** Concrete two-provider seam: immutable routing, Agent recovery, and usage recording. */
@@ -95,9 +101,6 @@ export interface Interface<Message, RouteInput, IdentityFailure, Failure> {
       route: Extract<InboundRoute, { readonly _tag: "Bound" }>,
       providerMessageId: ProviderMessageId,
     ) => Effect.Effect<ProviderAdmissionIdentityDigest, IdentityFailure>;
-    readonly deriveContent: (
-      message: Message,
-    ) => Effect.Effect<ProviderContentDigest, IdentityFailure>;
   };
   readonly message: (message: Message) => {
     readonly providerMessageId: ProviderMessageId;
@@ -110,7 +113,7 @@ export interface Interface<Message, RouteInput, IdentityFailure, Failure> {
     ) => Effect.Effect<void, Failure>;
     readonly route: (input: RouteInput) => Effect.Effect<InboundRoute, Failure>;
   };
-  readonly routeInput: (message: Message, contentDigest: ProviderContentDigest) => RouteInput;
+  readonly routeInput: (message: Message) => RouteInput;
 }
 
 /** Admit one authenticated provider message into the canonical named Agent. */
@@ -119,8 +122,7 @@ export const make = <Message, RouteInput, IdentityFailure, Failure>(
 ) => ({
   admit: (message: Message): Effect.Effect<AdmissionOutcome, Failure | IdentityFailure> =>
     Effect.gen(function* () {
-      const contentDigest = yield* options.identity.deriveContent(message);
-      const route = yield* options.persistence.route(options.routeInput(message, contentDigest));
+      const route = yield* options.persistence.route(options.routeInput(message));
       if (route._tag === "Unbound") {
         yield* options.onboarding(message);
         return { _tag: "OnboardingAccepted" } as const;

@@ -42,16 +42,15 @@ describe("Postgres migrations", () => {
             "billing_subscriptions",
             "channel_bindings",
             "deletion_cases",
-            "inbound_whatsapp_events",
             "migrations",
             "rate_limits",
             "registration_invitations",
             "sessions",
-            "telegram_onboarding_deliveries",
             "user_suspension_events",
             "users",
             "verifications",
             "webhook_events",
+            "webhook_jobs",
           ]);
         }),
       closeTestDatabase,
@@ -91,6 +90,91 @@ describe("Postgres migrations", () => {
           expect(Exit.isFailure(result)).toBe(true);
           expect(createdTable.rows).toEqual([]);
           expect(appliedMigration.rows).toEqual([]);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("migrates Stripe jobs and drops obsolete chat tables without copying chat data", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          const migrations = yield* readMigrations;
+          const initial = migrations[0];
+          if (initial === undefined) return yield* Effect.die("The initial migration is missing");
+          yield* applyMigrations(client, [initial]);
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO inbound_whatsapp_events (
+                channel_identity, content_digest, message_kind, phone_number_id,
+                provider, provider_message_id
+              ) VALUES (
+                '14165550123', '${"a".repeat(40)}', 'text', '123456789',
+                'whatsapp', 'wamid.legacy'
+              );
+              INSERT INTO webhook_events (
+                attempts, event_type, external_event_id, external_object_id,
+                provider, webhook_event_id
+              ) VALUES (
+                0, 'checkout.session.completed', 'evt_legacy', 'cs_legacy',
+                'stripe', 'webhook-event-legacy'
+              );
+            `),
+          );
+
+          yield* applyMigrations(client, migrations);
+          const events = yield* Effect.promise(() =>
+            client.query<{
+              readonly external_event_id: string;
+              readonly external_object_id: string;
+              readonly provider: string;
+              readonly webhook_event_id: string;
+            }>(`
+                SELECT
+                  payload_json::jsonb ->> 'externalEventId' AS external_event_id,
+                  payload_json::jsonb ->> 'externalObjectId' AS external_object_id,
+                  provider,
+                  webhook_event_id
+                FROM webhook_events
+              `),
+          );
+          const jobs = yield* Effect.promise(() =>
+            client.query<{
+              readonly attempts: number;
+              readonly status: string;
+              readonly webhook_event_id: string;
+            }>(`
+                SELECT attempts, status, webhook_event_id
+                FROM webhook_jobs
+              `),
+          );
+          const removedTables = yield* Effect.promise(() =>
+            client.query<{ readonly table_name: string }>(`
+              SELECT table_name
+              FROM information_schema.tables
+              WHERE table_schema = 'public'
+                AND table_name IN ('inbound_whatsapp_events', 'telegram_onboarding_deliveries')
+            `),
+          );
+
+          expect(events.rows).toEqual([
+            {
+              external_event_id: "evt_legacy",
+              external_object_id: "cs_legacy",
+              provider: "stripe",
+              webhook_event_id: "webhook-event-legacy",
+            },
+          ]);
+          expect(jobs.rows).toEqual([
+            {
+              attempts: 1,
+              status: "pending",
+              webhook_event_id: "webhook-event-legacy",
+            },
+          ]);
+          expect(removedTables.rows).toEqual([]);
+          return undefined;
         }),
       closeTestDatabase,
     ),
@@ -235,9 +319,9 @@ describe("Postgres migrations", () => {
                 'prod_adventurer', 'price_adventurer', 'creating'
               );
               INSERT INTO webhook_events (
-                webhook_event_id, provider, external_event_id, event_type, external_object_id
+                webhook_event_id, provider, external_event_id, event_type, payload_json
               ) VALUES (
-                'webhook-event-1', 'stripe', 'evt_1', 'invoice.paid', 'in_1'
+                'webhook-event-1', 'stripe', 'evt_1', 'invoice.paid', '{}'
               );
             `),
           );
@@ -282,8 +366,8 @@ describe("Postgres migrations", () => {
                  stripe_current_period_end = '2026-08-01T00:00:00Z'
              WHERE user_id = 'stripe-user-1'`,
             `INSERT INTO webhook_events (
-               webhook_event_id, provider, external_event_id, event_type, external_object_id
-             ) VALUES ('webhook-event-duplicate', 'stripe', 'evt_1', 'invoice.paid', 'in_1')`,
+               webhook_event_id, provider, external_event_id, event_type, payload_json
+             ) VALUES ('webhook-event-duplicate', 'stripe', 'evt_1', 'invoice.paid', '{}')`,
           ];
 
           for (const statement of rejectedStatements) {

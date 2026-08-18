@@ -53,7 +53,10 @@ export interface SubmissionInspection<Metadata> {
 /** Stable message and metadata supplied for one idempotent Think submission. */
 export interface SubmissionIntent<Metadata> {
   readonly idempotencyKey: string;
-  readonly message: { readonly text: string; readonly userMessageId: UserMessageId };
+  readonly message: {
+    readonly text: string;
+    readonly userMessageId: UserMessageId;
+  };
   readonly metadata: Metadata;
   readonly submissionId: ThinkSubmissionId;
 }
@@ -102,7 +105,10 @@ export interface Interface<
   };
   readonly store: ReceiptStore<Receipt, StoreFailure> & {
     readonly inspect: Effect.Effect<
-      { readonly currentSessionId: SessionId; readonly routeId: ConversationRouteId },
+      {
+        readonly currentSessionId: SessionId;
+        readonly routeId: ConversationRouteId;
+      },
       StoreFailure
     >;
   };
@@ -129,7 +135,7 @@ export const accept = <
   readonly codec: MetadataCodec<Metadata>;
   readonly dependencies: Interface<Metadata, Receipt, StoreFailure, AuthorizationFailure>;
   readonly input: AgentAcceptanceInput;
-  readonly provider: "telegram" | "whatsapp";
+  readonly provider: "whatsapp";
 }) =>
   Effect.gen(function* () {
     const { codec, dependencies, input, provider } = options;
@@ -212,7 +218,7 @@ export const recover = <
   readonly codec: MetadataCodec<Metadata>;
   readonly dependencies: RecoveryInterface<Metadata, Receipt, StoreFailure>;
   readonly input: AgentRecoveryInput;
-  readonly provider: "telegram" | "whatsapp";
+  readonly provider: "whatsapp";
 }) =>
   Effect.gen(function* () {
     const { codec, dependencies, input, provider } = options;

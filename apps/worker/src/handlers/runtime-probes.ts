@@ -1,4 +1,6 @@
 import { Effect, Schema } from "effect";
+
+import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
 import type { RuntimeProbeResult } from "../layers";
@@ -12,6 +14,10 @@ class CloudflareHostUnavailable extends Schema.TaggedError<CloudflareHostUnavail
   },
 ) {}
 
+interface DirectoryProbeStub {
+  readonly probeAgent: (agentId: string) => Promise<RuntimeProbeResult>;
+}
+
 interface RuntimeProbeStub {
   readonly probeRuntime: () => Promise<RuntimeProbeResult>;
 }
@@ -22,7 +28,9 @@ interface RuntimeProbeNamespace {
 
 /** Cloudflare bindings used only by temporary runtime probes. */
 export interface Bindings {
-  readonly OSFO_AGENT: RuntimeProbeNamespace;
+  readonly OSFO_DIRECTORY: {
+    readonly getByName: (identity: string) => DirectoryProbeStub;
+  };
   readonly REGISTRATION_DIALOGUE: RuntimeProbeNamespace;
 }
 
@@ -32,7 +40,9 @@ export const agent = (env: Bindings) =>
     Effect.flatMap(({ identity }) =>
       identity === undefined
         ? Effect.succeed(notFound)
-        : call("osfo-agent", () => env.OSFO_AGENT.getByName(identity).probeRuntime()),
+        : call("osfo-agent", () =>
+            env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).probeAgent(identity),
+          ),
     ),
   );
 

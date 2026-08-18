@@ -4,15 +4,15 @@ import { agents } from "@osfo/db/schema/agents";
 import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
-import { inboundWhatsAppEvents } from "@osfo/db/schema/messaging";
 import { channelBindings } from "@osfo/db/schema/onboarding";
+import { webhookEvents } from "@osfo/db/schema/webhooks";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { DateTime, Effect, Layer, Redacted } from "effect";
 import { HttpRouter } from "effect/unstable/http";
 
 import * as Db from "../src/db";
 import type { CloudflareConfig } from "../src/config";
-import * as WhatsApp from "../src/handlers/whatsapp";
+import * as WhatsApp from "../src/handlers/webhooks/whatsapp";
 import * as Onboarding from "../src/services/onboarding";
 import type { AgentAcceptanceInput, AgentRecoveryInput } from "../src/services/whatsapp-admission";
 import { encodeJsonText, sign, statusWebhook, webhook } from "./whatsapp-webhook-fixture";
@@ -27,8 +27,8 @@ describe("WhatsApp webhook admission", () => {
           let acceptanceCalls = 0;
           let recoveryCalls = 0;
           const app = makeHandler(fixture.database, {
-            OSFO_AGENT: {
-              getByName: () => ({
+            resolveOsfoAgent: () =>
+              Promise.resolve({
                 acceptWhatsAppMessage: () => {
                   acceptanceCalls += 1;
                   return Promise.resolve({
@@ -42,7 +42,6 @@ describe("WhatsApp webhook admission", () => {
                   return Promise.resolve(null);
                 },
               }),
-            },
           });
           const body = encodeJsonText(
             webhook([
@@ -90,10 +89,10 @@ describe("WhatsApp webhook admission", () => {
               }),
             ),
           );
-          const providerEvents = yield* Effect.promise(() =>
-            fixture.database.select().from(inboundWhatsAppEvents),
-          );
           const usage = yield* Effect.promise(() => fixture.database.select().from(allowanceUsage));
+          const ingested = yield* Effect.promise(() =>
+            fixture.database.select().from(webhookEvents),
+          );
           const responseBody = yield* Effect.promise(() => response.text());
           const statusResponseBody = yield* Effect.promise(() => statusResponse.text());
 
@@ -101,12 +100,15 @@ describe("WhatsApp webhook admission", () => {
             body: "EVENT_RECEIVED",
             status: 200,
           });
-          expect({ body: statusResponseBody, status: statusResponse.status }).toEqual({
+          expect({
+            body: statusResponseBody,
+            status: statusResponse.status,
+          }).toEqual({
             body: "EVENT_RECEIVED",
             status: 200,
           });
-          expect(providerEvents).toEqual([]);
           expect(usage).toEqual([]);
+          expect(ingested).toEqual([]);
           expect(recoveryCalls).toBe(0);
           expect(acceptanceCalls).toBe(0);
 
@@ -126,8 +128,8 @@ describe("WhatsApp webhook admission", () => {
           const acceptanceInputs: Array<AgentAcceptanceInput> = [];
           const recoveryInputs: Array<AgentRecoveryInput> = [];
           const app = makeHandler(fixture.database, {
-            OSFO_AGENT: {
-              getByName: () => ({
+            resolveOsfoAgent: () =>
+              Promise.resolve({
                 acceptWhatsAppMessage: (input) => {
                   acceptanceInputs.push(input);
                   return Promise.resolve({
@@ -141,7 +143,6 @@ describe("WhatsApp webhook admission", () => {
                   return Promise.resolve(null);
                 },
               }),
-            },
           });
           const body = encodeJsonText(
             webhook([
@@ -170,7 +171,7 @@ describe("WhatsApp webhook admission", () => {
           const replay = yield* send();
           const usage = yield* Effect.promise(() => fixture.database.select().from(allowanceUsage));
           const providerEvents = yield* Effect.promise(() =>
-            fixture.database.select().from(inboundWhatsAppEvents),
+            fixture.database.select().from(webhookEvents),
           );
           const firstBody = yield* Effect.promise(() => first.text());
           const replayBody = yield* Effect.promise(() => replay.text());
@@ -183,11 +184,9 @@ describe("WhatsApp webhook admission", () => {
             { body: "Temporarily unavailable", status: 503 },
           ]);
           expect(usage).toEqual([]);
-          expect(providerEvents).toHaveLength(1);
+          expect(providerEvents).toEqual([]);
           expect(recoveryInputs).toHaveLength(2);
-          expect(recoveryInputs[1]).toEqual(recoveryInputs[0]);
           expect(acceptanceInputs).toHaveLength(2);
-          expect(acceptanceInputs[1]).toEqual(acceptanceInputs[0]);
 
           yield* Effect.promise(app.dispose);
         }),

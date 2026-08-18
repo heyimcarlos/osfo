@@ -34,11 +34,10 @@
     { "binding": "ARTIFACTS", "bucket_name": "osfo-test-generated-artifacts" },
     { "binding": "FILES", "bucket_name": "osfo-test-files" },
   ],
-  "ai": { "binding": "AI" },
   "durable_objects": {
     "bindings": [
       { "name": "DOCUMENT_SANDBOX", "class_name": "Sandbox" },
-      { "name": "OSFO_AGENT", "class_name": "OsfoAgent" },
+      { "name": "OSFO_DIRECTORY", "class_name": "OsfoDirectory" },
       {
         "name": "REGISTRATION_DIALOGUE",
         "class_name": "RegistrationDialogue",
@@ -51,6 +50,7 @@
       "new_sqlite_classes": ["OsfoAgent", "RegistrationDialogue"],
     },
     { "tag": "v2", "new_sqlite_classes": ["Sandbox"] },
+    { "tag": "v3", "new_sqlite_classes": ["OsfoDirectory"] },
   ],
   "containers": [
     {

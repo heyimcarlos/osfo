@@ -1,5 +1,6 @@
 import { Effect, Layer, Schema } from "effect";
 
+import { OSFO_DIRECTORY_NAME } from "../../agents/osfo/identity";
 import { AgentInitializationId, ConversationRouteId, SessionId } from "../../domain";
 import * as Onboarding from "../../services/onboarding";
 
@@ -14,23 +15,37 @@ const RegistrationResult = Schema.Union([
     response: Schema.String,
     verifyUrl: Schema.String,
   }),
-  Schema.TaggedStruct("RegistrationTurnUnavailable", { message: Schema.String }),
+  Schema.TaggedStruct("RegistrationTurnUnavailable", {
+    message: Schema.String,
+  }),
 ]);
 
-interface AgentOnboardingStub {
-  readonly initialize: (input: {
-    readonly agentId: string;
-    readonly initializationId: string;
-    readonly initializedAt: string;
-    readonly routeId: string;
-    readonly sessionId: string;
-  }) => Promise<TaggedRpcResult>;
-  readonly commitWelcome: (input: {
-    readonly channelBindingId: string;
-    readonly helpAreas: ReadonlyArray<Onboarding.HelpArea>;
-    readonly locale: Onboarding.OnboardingLocale;
-    readonly preferredName: string | null;
-  }) => Promise<TaggedRpcResult>;
+interface DirectoryOnboardingStub {
+  readonly ensureAgent: (agentId: string) => Promise<AgentFacetIdentity>;
+  readonly initializeAgent: (
+    agentId: string,
+    input: {
+      readonly agentId: string;
+      readonly initializationId: string;
+      readonly initializedAt: string;
+      readonly routeId: string;
+      readonly sessionId: string;
+    },
+  ) => Promise<TaggedRpcResult>;
+  readonly commitAgentWelcome: (
+    agentId: string,
+    input: {
+      readonly channelBindingId: string;
+      readonly helpAreas: ReadonlyArray<Onboarding.HelpArea>;
+      readonly locale: Onboarding.OnboardingLocale;
+      readonly preferredName: string | null;
+    },
+  ) => Promise<TaggedRpcResult>;
+}
+
+interface AgentFacetIdentity {
+  readonly className: string;
+  readonly name: string;
 }
 
 interface TaggedRpcResult {
@@ -61,7 +76,7 @@ interface DurableNamespace<Stub> {
 
 /** Cloudflare Durable Object bindings used by onboarding application ports. */
 export interface Bindings {
-  readonly OSFO_AGENT: DurableNamespace<AgentOnboardingStub>;
+  readonly OSFO_DIRECTORY: DurableNamespace<DirectoryOnboardingStub>;
   readonly REGISTRATION_DIALOGUE: DurableNamespace<RegistrationDialogueStub>;
 }
 
@@ -73,10 +88,11 @@ export const layer = (env: Bindings) =>
       Onboarding.AgentOnboarding.of({
         initialize: (input) => {
           const agentId = input.agentId;
+          const directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
           const initializeWithRoute = (routeId: ConversationRouteId) =>
             call(
               () =>
-                env.OSFO_AGENT.getByName(agentId).initialize({
+                directory.initializeAgent(agentId, {
                   agentId,
                   initializationId: AgentInitializationId.make(`registration-${agentId}`),
                   initializedAt: input.completedAt.toISOString(),
@@ -85,7 +101,14 @@ export const layer = (env: Bindings) =>
                 }),
               "The personal Agent could not be initialized",
             );
-          return initializeWithRoute(ConversationRouteId.make(`primary-route-${agentId}`)).pipe(
+          return Effect.tryPromise({
+            try: () => directory.ensureAgent(agentId),
+            catch: (cause) =>
+              executionUnavailable("The personal Agent facet could not be created", cause),
+          }).pipe(
+            Effect.andThen(
+              initializeWithRoute(ConversationRouteId.make(`primary-route-${agentId}`)),
+            ),
             Effect.flatMap((result) => {
               if (result._tag === "AgentInitialized") return Effect.void;
               if (result._tag !== "AgentInitializationConflict") {
@@ -109,7 +132,7 @@ export const layer = (env: Bindings) =>
         commitWelcome: (input) =>
           call(
             () =>
-              env.OSFO_AGENT.getByName(input.agentId).commitWelcome({
+              env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).commitAgentWelcome(input.agentId, {
                 channelBindingId: input.channelBindingId,
                 helpAreas: input.profile.helpAreas,
                 locale: input.profile.locale,
@@ -143,7 +166,10 @@ export const layer = (env: Bindings) =>
             Effect.mapError((cause) => executionUnavailable("The Registration Turn failed", cause)),
             Effect.flatMap((result) =>
               result._tag === "RegistrationTurnCompleted"
-                ? Effect.succeed({ response: result.response, verifyUrl: result.verifyUrl })
+                ? Effect.succeed({
+                    response: result.response,
+                    verifyUrl: result.verifyUrl,
+                  })
                 : unavailable(result.message, result),
             ),
           ),

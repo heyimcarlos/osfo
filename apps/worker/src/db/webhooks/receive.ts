@@ -1,18 +1,18 @@
-import { webhookEvents } from "@osfo/db/schema/webhooks";
-import { and, eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { webhookEvents, webhookJobs } from "@osfo/db/schema/webhooks";
+import { Effect, Schema } from "effect";
 
 import {
   WebhookPersistenceUnavailable,
+  VerifiedStripeEvent,
   type ReceiveResult,
-  type VerifiedStripeEvent,
 } from "../../services/stripe-webhooks";
 import type { Database } from "../index";
-import { beginAttempt } from "./begin-attempt";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle owns this transaction Promise boundary. */
 
-/** Insert or find one verified Stripe event and begin one processing attempt. */
+const encodePayload = Schema.encodeSync(Schema.fromJsonString(VerifiedStripeEvent));
+
+/** Insert one verified Stripe event and its generic processing job. */
 export const receive = (
   database: Pick<Database, "transaction">,
   webhookEventId: string,
@@ -21,35 +21,26 @@ export const receive = (
   Effect.tryPromise({
     try: () =>
       database.transaction(async (transaction) => {
-        await transaction
+        const [inserted] = await transaction
           .insert(webhookEvents)
           .values({
-            billingCheckoutSessionId: event.billingCheckoutSessionId,
             eventType: event.type,
             externalEventId: event.externalEventId,
-            externalObjectId: event.externalObjectId,
+            payloadJson: encodePayload(event),
             provider: "stripe",
             webhookEventId,
           })
           .onConflictDoNothing({
             target: [webhookEvents.provider, webhookEvents.externalEventId],
-          });
-        const [stored] = await transaction
-          .select({
-            status: webhookEvents.status,
-            webhookEventId: webhookEvents.webhookEventId,
           })
-          .from(webhookEvents)
-          .where(
-            and(
-              eq(webhookEvents.provider, "stripe"),
-              eq(webhookEvents.externalEventId, event.externalEventId),
-            ),
-          )
-          .for("update")
-          .limit(1);
-        if (stored === undefined) return undefined;
-        return beginAttempt(transaction, stored.webhookEventId, stored.status);
+          .returning({ webhookEventId: webhookEvents.webhookEventId });
+        if (inserted === undefined) return { _tag: "ProcessedDuplicate" } as const;
+        await transaction.insert(webhookJobs).values({ webhookEventId: inserted.webhookEventId });
+        return {
+          _tag: "Pending",
+          attempt: 1,
+          webhookEventId: inserted.webhookEventId,
+        } as const;
       }),
     catch: (cause) =>
       new WebhookPersistenceUnavailable({

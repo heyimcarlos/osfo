@@ -64,7 +64,11 @@ describe("Agent-owned file ingestion", () => {
 
       expect(normalized).toEqual({
         normalizedText: "bounded text",
-        provenance: { mediaType: "text/plain", parser: "python-test-v1", sourceSha256 },
+        provenance: {
+          mediaType: "text/plain",
+          parser: "python-test-v1",
+          sourceSha256,
+        },
         vendorCost: null,
       });
       expect(sandbox.commands).toEqual(["python3 /workspace/file-task.py"]);
@@ -137,7 +141,10 @@ describe("Agent-owned file ingestion", () => {
         }),
       );
 
-      expect(failure).toMatchObject({ _tag: "FileComputeFailed", reason: "parser_failure" });
+      expect(failure).toMatchObject({
+        _tag: "FileComputeFailed",
+        reason: "parser_failure",
+      });
       expect(sandbox.commands).toEqual([]);
     }),
   );
@@ -145,7 +152,11 @@ describe("Agent-owned file ingestion", () => {
   it.effect("reconciles normalization result after an ambiguous execution response", () =>
     Effect.gen(function* () {
       const sandbox = new TestFileSandbox(
-        { normalizedText: "recovered text", ok: true, parser: "python-test-v1" },
+        {
+          normalizedText: "recovered text",
+          ok: true,
+          parser: "python-test-v1",
+        },
         true,
       );
       const compute = makeFileCompute(() => sandbox);
@@ -176,7 +187,10 @@ describe("Agent-owned file ingestion", () => {
       const objects = makeR2FileObjects(env.FILES);
       const key = "tests/r2-file-object";
       const bytes = new TextEncoder().encode("r2 source");
-      const inspected = yield* inspectFileContent({ bytes, declaredMediaType: "text/plain" });
+      const inspected = yield* inspectFileContent({
+        bytes,
+        declaredMediaType: "text/plain",
+      });
 
       yield* objects.put(key, bytes, inspected.sha256);
       expect(yield* objects.stat(key)).toEqual({
@@ -190,7 +204,7 @@ describe("Agent-owned file ingestion", () => {
   );
   it.effect("normalizes an accepted upload with provenance and records it once", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-service"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-files-service"));
       const objects = new Map<string, Uint8Array>();
       const usage: Array<{
         readonly kind: string;
@@ -220,7 +234,10 @@ describe("Agent-owned file ingestion", () => {
         }),
       );
 
-      expect(result).toMatchObject({ _tag: "FileReady", file: { state: "ready" } });
+      expect(result).toMatchObject({
+        _tag: "FileReady",
+        file: { state: "ready" },
+      });
       if (result._tag !== "FileReady") expect.unreachable("upload should be admitted");
       expect(result.file.provenanceJson).toContain('"sourceSha256"');
       expect(replay).toMatchObject({ _tag: "FileReady" });
@@ -230,7 +247,7 @@ describe("Agent-owned file ingestion", () => {
 
   it.effect("checks current ownership authority before returning a ready upload replay", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-ready-recheck"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-files-ready-recheck"));
       const objects = new Map<string, Uint8Array>();
       const usage: Array<{
         readonly kind: string;
@@ -264,13 +281,16 @@ describe("Agent-owned file ingestion", () => {
         (files) => files.upload(input),
       );
 
-      expect(denied).toMatchObject({ _tag: "Denied", reason: "authorityRevoked" });
+      expect(denied).toMatchObject({
+        _tag: "Denied",
+        reason: "authorityRevoked",
+      });
     }),
   );
 
   it.effect("retains parser rejection and conservative incurred cost for malicious content", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-malicious"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-files-malicious"));
       const objects = new Map<string, Uint8Array>();
       const usage: Array<{
         readonly kind: string;
@@ -314,7 +334,7 @@ describe("Agent-owned file ingestion", () => {
 
   it.effect("fails closed when R2 write ambiguity cannot prove the exact bytes", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-r2-ambiguity"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-files-r2-ambiguity"));
       const ambiguous = yield* Effect.flip(
         withFileService(
           agent,
@@ -332,13 +352,18 @@ describe("Agent-owned file ingestion", () => {
         ),
       );
 
-      expect(ambiguous).toMatchObject({ _tag: "FileStorageAmbiguous", operation: "put" });
+      expect(ambiguous).toMatchObject({
+        _tag: "FileStorageAmbiguous",
+        operation: "put",
+      });
     }),
   );
 
   it.effect("recovers ambiguous analysis before retry and deletes its full lineage", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-analysis-recovery"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-analysis-recovery"),
+      );
       const objects = new Map<string, Uint8Array>();
       const usage: Array<{
         readonly kind: string;
@@ -423,7 +448,10 @@ describe("Agent-owned file ingestion", () => {
         ),
       );
 
-      expect(first).toMatchObject({ state: "ambiguous", vendorUsdMicros: null });
+      expect(first).toMatchObject({
+        state: "ambiguous",
+        vendorUsdMicros: null,
+      });
       expect(recovered).toMatchObject({
         state: "completed",
         resultText: "Recovered answer with source provenance",
@@ -434,7 +462,9 @@ describe("Agent-owned file ingestion", () => {
         fileId: "file-analysis",
       });
       expect(replayedDeletion).toEqual(deleted);
-      expect(deletedUploadReplay).toMatchObject({ _tag: "FileContentUnavailable" });
+      expect(deletedUploadReplay).toMatchObject({
+        _tag: "FileContentUnavailable",
+      });
       expect(objects.size).toBe(0);
       expect(objects.size).toBe(0);
       expect(usage.filter(({ kind }) => kind === "vendorUsdMicros")).toEqual([
@@ -445,7 +475,9 @@ describe("Agent-owned file ingestion", () => {
 
   it.effect("ends unresolved analysis reconciliation with conservative cost evidence", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-analysis-unresolved"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-analysis-unresolved"),
+      );
       const usage: Array<{
         readonly kind: string;
         readonly quantity: bigint;
@@ -453,8 +485,16 @@ describe("Agent-owned file ingestion", () => {
       }> = [];
       const shared = {
         analysisResults: [
-          { _tag: "AnalysisAmbiguous" as const, evidence: "execution uncertain", vendorCost: null },
-          { _tag: "AnalysisAmbiguous" as const, evidence: "result unavailable", vendorCost: null },
+          {
+            _tag: "AnalysisAmbiguous" as const,
+            evidence: "execution uncertain",
+            vendorCost: null,
+          },
+          {
+            _tag: "AnalysisAmbiguous" as const,
+            evidence: "result unavailable",
+            vendorCost: null,
+          },
         ],
         objects: new Map<string, Uint8Array>(),
         usage,
@@ -490,7 +530,10 @@ describe("Agent-owned file ingestion", () => {
       );
 
       expect(first).toMatchObject({ state: "ambiguous" });
-      expect(terminal).toMatchObject({ state: "failed", vendorUsdMicros: 30_000n });
+      expect(terminal).toMatchObject({
+        state: "failed",
+        vendorUsdMicros: 30_000n,
+      });
       expect(usage).toContainEqual({
         kind: "vendorUsdMicros",
         quantity: 30_000n,
@@ -501,8 +544,11 @@ describe("Agent-owned file ingestion", () => {
 
   it.effect("blocks new Free uploads after downgrade while retained data stays readable", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-downgrade"));
-      const catalog = catalogWithRetainedLimits({ adventurer: 200n, free: 100n });
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-files-downgrade"));
+      const catalog = catalogWithRetainedLimits({
+        adventurer: 200n,
+        free: 100n,
+      });
       const objects = new Map<string, Uint8Array>();
       const usage: Array<{
         readonly kind: string;
@@ -540,14 +586,22 @@ describe("Agent-owned file ingestion", () => {
         }),
       );
 
-      expect(denied).toMatchObject({ _tag: "Denied", reason: "liveResourceLimitReached" });
-      expect(readable).toMatchObject({ _tag: "FileRead", file: { fileId: "file-excess" } });
+      expect(denied).toMatchObject({
+        _tag: "Denied",
+        reason: "liveResourceLimitReached",
+      });
+      expect(readable).toMatchObject({
+        _tag: "FileRead",
+        file: { fileId: "file-excess" },
+      });
     }),
   );
 
   it.effect("finishes an admitted upload after the current Plan size cap becomes smaller", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-admitted-downgrade"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-admitted-downgrade"),
+      );
       const catalog = catalogWithRetainedLimits({
         adventurer: 200n,
         adventurerUploadBytes: 200n,
@@ -593,24 +647,43 @@ describe("Agent-owned file ingestion", () => {
       );
       const completed = yield* withFileService(
         agent,
-        { catalog, currentContext: authorizationContext("free"), objects, usage },
+        {
+          catalog,
+          currentContext: authorizationContext("free"),
+          objects,
+          usage,
+        },
         (files) => files.upload({ ...input, context: authorizationContext("free") }),
       );
 
-      expect(interrupted).toMatchObject({ _tag: "Denied", reason: "authorityRevoked" });
-      expect(completed).toMatchObject({ _tag: "FileReady", file: { state: "ready" } });
+      expect(interrupted).toMatchObject({
+        _tag: "Denied",
+        reason: "authorityRevoked",
+      });
+      expect(completed).toMatchObject({
+        _tag: "FileReady",
+        file: { state: "ready" },
+      });
       expect(usage).toEqual([
-        { kind: "fileUploads", quantity: 1n, sourceId: "file-admitted-downgrade" },
+        {
+          kind: "fileUploads",
+          quantity: 1n,
+          sourceId: "file-admitted-downgrade",
+        },
       ]);
     }),
   );
 
   it.effect("accepts one upload identity once and enforces retained bytes atomically", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-retention"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-files-retention"));
       const first = yield* inAgent(agent, (store) =>
         store.acceptUpload(
-          acceptedInput({ byteLength: 60n, fileId: "file-1", uploadId: "upload-1" }),
+          acceptedInput({
+            byteLength: 60n,
+            fileId: "file-1",
+            uploadId: "upload-1",
+          }),
         ),
       );
       const replay = yield* inAgent(agent, (store) =>
@@ -626,13 +699,20 @@ describe("Agent-owned file ingestion", () => {
       const overLimit = yield* Effect.flip(
         inAgent(agent, (store) =>
           store.acceptUpload(
-            acceptedInput({ byteLength: 41n, fileId: "file-2", uploadId: "upload-2" }),
+            acceptedInput({
+              byteLength: 41n,
+              fileId: "file-2",
+              uploadId: "upload-2",
+            }),
           ),
         ),
       );
 
       expect(first._tag).toBe("FileAccepted");
-      expect(replay).toEqual({ _tag: "FileUploadReplayed", file: first.file });
+      expect(replay).toEqual({
+        _tag: "FileUploadReplayed",
+        file: first.file,
+      });
       expect(overLimit).toMatchObject({
         _tag: "RetainedFileLimitExceeded",
         attemptedBytes: 41n,
@@ -646,7 +726,7 @@ describe("Agent-owned file ingestion", () => {
 
   it.effect("rejects untrusted normalization provenance", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-provenance"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-files-provenance"));
       const failure = yield* Effect.flip(
         withFileService(
           agent,
@@ -672,13 +752,18 @@ describe("Agent-owned file ingestion", () => {
         ),
       );
 
-      expect(failure).toMatchObject({ _tag: "FileComputeFailed", reason: "parser_failure" });
+      expect(failure).toMatchObject({
+        _tag: "FileComputeFailed",
+        reason: "parser_failure",
+      });
     }),
   );
 
   it.effect("records failed analysis cost and does not repeat the same identity", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-analysis-failure"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-analysis-failure"),
+      );
       const objects = new Map<string, Uint8Array>();
       const usage: Array<{
         readonly kind: string;
@@ -692,7 +777,12 @@ describe("Agent-owned file ingestion", () => {
         vendorUsdMicros: 400n,
       });
       const analysisCalls = { analyze: 0, reconcile: 0, release: 0 };
-      const shared = { analysisCalls, analysisFailure: failure, objects, usage };
+      const shared = {
+        analysisCalls,
+        analysisFailure: failure,
+        objects,
+        usage,
+      };
       yield* withFileService(agent, shared, (files) =>
         files.upload({
           actionId: "upload-analysis-failure",
@@ -726,7 +816,10 @@ describe("Agent-owned file ingestion", () => {
       );
 
       expect(first).toEqual(failure);
-      expect(repeated).toMatchObject({ state: "failed", failure: "parser_failure" });
+      expect(repeated).toMatchObject({
+        state: "failed",
+        failure: "parser_failure",
+      });
       expect(analysisCalls.release).toBe(1);
       expect(usage).toContainEqual({
         kind: "vendorUsdMicros",
@@ -738,7 +831,9 @@ describe("Agent-owned file ingestion", () => {
 
   it.effect("retries analysis cleanup before persisting its terminal result", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-analysis-cleanup-retry"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-analysis-cleanup-retry"),
+      );
       const cleanupFailure = new FileComputeFailed({
         basis: null,
         message: "Disposable file compute cleanup failed",
@@ -783,14 +878,19 @@ describe("Agent-owned file ingestion", () => {
       const recovered = yield* withFileService(agent, shared, (files) => files.analyze(request));
 
       expect(first).toEqual(cleanupFailure);
-      expect(recovered).toMatchObject({ resultText: "clean result", state: "completed" });
+      expect(recovered).toMatchObject({
+        resultText: "clean result",
+        state: "completed",
+      });
       expect(analysisCalls).toEqual({ analyze: 1, reconcile: 0, release: 2 });
     }),
   );
 
   it.effect("finishes analysis cleanup after authority loss without returning the result", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-analysis-cleanup-denied"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-analysis-cleanup-denied"),
+      );
       const cleanupFailure = new FileComputeFailed({
         basis: null,
         message: "Disposable file compute cleanup failed",
@@ -850,15 +950,23 @@ describe("Agent-owned file ingestion", () => {
       const recovered = yield* withFileService(agent, shared, (files) => files.analyze(request));
 
       expect(first).toEqual(cleanupFailure);
-      expect(denied).toMatchObject({ _tag: "Denied", reason: "authorityRevoked" });
-      expect(recovered).toMatchObject({ resultText: "private stored result", state: "completed" });
+      expect(denied).toMatchObject({
+        _tag: "Denied",
+        reason: "authorityRevoked",
+      });
+      expect(recovered).toMatchObject({
+        resultText: "private stored result",
+        state: "completed",
+      });
       expect(analysisCalls).toEqual({ analyze: 1, reconcile: 0, release: 2 });
     }),
   );
 
   it.effect("recovers stored analysis evidence when finalization fails after cleanup", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-analysis-finalize-retry"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-analysis-finalize-retry"),
+      );
       const analysisCalls = { analyze: 0, reconcile: 0, release: 0 };
       const failAnalysisFinalizationOnce = { value: true };
       const shared = {
@@ -910,7 +1018,7 @@ describe("Agent-owned file ingestion", () => {
 
   it.effect("keeps a file readable when current authority denies deletion", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-delete-recheck"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-files-delete-recheck"));
       const objects = new Map<string, Uint8Array>();
       const approved = {
         ...authorizationContext(),
@@ -958,14 +1066,19 @@ describe("Agent-owned file ingestion", () => {
         store.find(FileId.make("file-delete-recheck")),
       );
 
-      expect(denied).toMatchObject({ _tag: "Denied", reason: "authorityRevoked" });
+      expect(denied).toMatchObject({
+        _tag: "Denied",
+        reason: "authorityRevoked",
+      });
       expect(stored.state).toBe("ready");
     }),
   );
 
   it.effect("keeps a file when exact deletion Approval is invalidated before R2", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-delete-approval"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-delete-approval"),
+      );
       const objects = new Map<string, Uint8Array>();
       const usage: Array<{
         readonly kind: string;
@@ -991,7 +1104,10 @@ describe("Agent-owned file ingestion", () => {
           userId: UserId.make("user-files"),
         },
       };
-      const invalidated = { ...approved, approval: null } satisfies AuthorizationContext;
+      const invalidated = {
+        ...approved,
+        approval: null,
+      } satisfies AuthorizationContext;
       const denied = yield* withFileService(
         agent,
         { currentContexts: [approved, invalidated], objects, usage },
@@ -1006,7 +1122,10 @@ describe("Agent-owned file ingestion", () => {
         store.find(FileId.make("file-delete-approval")),
       );
 
-      expect(denied).toMatchObject({ _tag: "Denied", reason: "approvalRequired" });
+      expect(denied).toMatchObject({
+        _tag: "Denied",
+        reason: "approvalRequired",
+      });
       expect(stored.state).toBe("ready");
       expect(objects.size).toBe(1);
     }),
@@ -1014,7 +1133,7 @@ describe("Agent-owned file ingestion", () => {
 
   it.effect("rejects one upload identity when trusted facts change", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-conflict"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-files-conflict"));
       yield* inAgent(agent, (store) => store.acceptUpload(acceptedInput()));
       const conflict = yield* Effect.flip(
         inAgent(agent, (store) =>
@@ -1022,13 +1141,16 @@ describe("Agent-owned file ingestion", () => {
         ),
       );
 
-      expect(conflict).toMatchObject({ _tag: "FileUploadConflict", uploadId: "upload-1" });
+      expect(conflict).toMatchObject({
+        _tag: "FileUploadConflict",
+        uploadId: "upload-1",
+      });
     }),
   );
 
   it.effect("guards file lifecycle transitions and clears normalized content before deletion", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-state-guards"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-files-state-guards"));
       const fileId = FileId.make("file-state-guards");
       yield* inAgent(agent, (store) =>
         Effect.gen(function* () {
@@ -1076,7 +1198,7 @@ describe("Agent-owned file ingestion", () => {
 
   it.effect("grants one durable execution claim for one analysis identity", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-analysis-claim"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-files-analysis-claim"));
       const claims = yield* inAgent(agent, (store) =>
         Effect.gen(function* () {
           const fileId = FileId.make("file-analysis-claim");
@@ -1122,7 +1244,9 @@ describe("Agent-owned file ingestion", () => {
 
   it.effect("does not reconcile while the claimed analysis execution is active", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-analysis-active"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-analysis-active"),
+      );
       const objects = new Map<string, Uint8Array>();
       const usage: Array<{
         readonly kind: string;
@@ -1179,14 +1303,19 @@ describe("Agent-owned file ingestion", () => {
         failure: fileAnalysisExecutionPending,
         state: "ambiguous",
       });
-      expect(results.completed).toMatchObject({ resultText: "one result", state: "completed" });
+      expect(results.completed).toMatchObject({
+        resultText: "one result",
+        state: "completed",
+      });
       expect(analysisCalls).toEqual({ analyze: 1, reconcile: 0 });
     }),
   );
 
   it.effect("runs one normalization for concurrent retries of one upload identity", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-normalization-active"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-normalization-active"),
+      );
       const started = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
       const normalizationCalls = { count: 0 };
@@ -1209,7 +1338,11 @@ describe("Agent-owned file ingestion", () => {
               Effect.andThen(Deferred.await(release)),
               Effect.as({
                 normalizedText: "one normalization",
-                provenance: { mediaType, parser: "test-parser-v1", sourceSha256: sha256 },
+                provenance: {
+                  mediaType,
+                  parser: "test-parser-v1",
+                  sourceSha256: sha256,
+                },
                 vendorCost: null,
               }),
             ),
@@ -1230,16 +1363,24 @@ describe("Agent-owned file ingestion", () => {
         _tag: "FileNormalizationPending",
         file: { state: "normalizing" },
       });
-      expect(results.completed).toMatchObject({ _tag: "FileReady", file: { state: "ready" } });
+      expect(results.completed).toMatchObject({
+        _tag: "FileReady",
+        file: { state: "ready" },
+      });
       expect(normalizationCalls.count).toBe(1);
     }),
   );
 
   it.effect("reclaims a stale normalization execution after its bounded lease", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-normalization-stale"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-normalization-stale"),
+      );
       const bytes = new TextEncoder().encode("stale normalize");
-      const inspected = yield* inspectFileContent({ bytes, declaredMediaType: "text/plain" });
+      const inspected = yield* inspectFileContent({
+        bytes,
+        declaredMediaType: "text/plain",
+      });
       const fileId = FileId.make("file-normalization-stale");
       yield* inAgent(agent, (store) =>
         Effect.gen(function* () {
@@ -1279,13 +1420,18 @@ describe("Agent-owned file ingestion", () => {
           }),
       );
 
-      expect(recovered).toMatchObject({ _tag: "FileReady", file: { state: "ready" } });
+      expect(recovered).toMatchObject({
+        _tag: "FileReady",
+        file: { state: "ready" },
+      });
     }),
   );
 
   it.effect("fences a stale normalization worker after a newer claim takes over", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-normalization-fence"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-normalization-fence"),
+      );
       const fileId = FileId.make("file-normalization-fence");
       const oldClaim = DbTimestamp.make("2026-08-16T11:58:00.000Z");
       const newClaim = DbTimestamp.make("2026-08-16T12:00:00.000Z");
@@ -1317,19 +1463,28 @@ describe("Agent-owned file ingestion", () => {
         _tag: "FileStateTransitionConflict",
         currentState: "normalizing",
       });
-      expect(outcome.file).toMatchObject({ normalizedText: "winner", state: "ready" });
+      expect(outcome.file).toMatchObject({
+        normalizedText: "winner",
+        state: "ready",
+      });
     }),
   );
 
   it.effect("releases ambiguous analysis compute when its source file is deleted", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-analysis-delete-release"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-analysis-delete-release"),
+      );
       const analysisCalls = { analyze: 0, reconcile: 0, release: 0 };
       const objects = new Map<string, Uint8Array>();
       const shared = {
         analysisCalls,
         analysisResults: [
-          { _tag: "AnalysisAmbiguous" as const, evidence: "still running", vendorCost: null },
+          {
+            _tag: "AnalysisAmbiguous" as const,
+            evidence: "still running",
+            vendorCost: null,
+          },
         ],
         objects,
         usage: [],
@@ -1364,7 +1519,11 @@ describe("Agent-owned file ingestion", () => {
         },
       };
       yield* withFileService(agent, shared, (files) =>
-        files.remove({ actionId: "delete-analysis-release", context: approved, fileId }),
+        files.remove({
+          actionId: "delete-analysis-release",
+          context: approved,
+          fileId,
+        }),
       );
 
       expect(analysisCalls.release).toBe(1);
@@ -1373,7 +1532,9 @@ describe("Agent-owned file ingestion", () => {
 
   it.effect("retries failed analysis cleanup before completing file deletion", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-delete-cleanup-retry"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-delete-cleanup-retry"),
+      );
       const cleanupFailure = new FileComputeFailed({
         basis: null,
         message: "Disposable file compute cleanup failed",
@@ -1383,7 +1544,11 @@ describe("Agent-owned file ingestion", () => {
       const objects = new Map<string, Uint8Array>();
       const shared = {
         analysisResults: [
-          { _tag: "AnalysisAmbiguous" as const, evidence: "still running", vendorCost: null },
+          {
+            _tag: "AnalysisAmbiguous" as const,
+            evidence: "still running",
+            vendorCost: null,
+          },
         ],
         objects,
         releaseFailures: [cleanupFailure],
@@ -1420,12 +1585,20 @@ describe("Agent-owned file ingestion", () => {
       };
       const first = yield* Effect.flip(
         withFileService(agent, shared, (files) =>
-          files.remove({ actionId: "delete-cleanup-retry", context: approved, fileId }),
+          files.remove({
+            actionId: "delete-cleanup-retry",
+            context: approved,
+            fileId,
+          }),
         ),
       );
       const retained = yield* inAgent(agent, (store) => store.find(fileId));
       const recovered = yield* withFileService(agent, shared, (files) =>
-        files.remove({ actionId: "delete-cleanup-retry", context: approved, fileId }),
+        files.remove({
+          actionId: "delete-cleanup-retry",
+          context: approved,
+          fileId,
+        }),
       );
 
       expect(first).toEqual(cleanupFailure);
@@ -1437,7 +1610,9 @@ describe("Agent-owned file ingestion", () => {
 
   it.effect("removes an R2 write when deletion wins the file-state transition", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-upload-delete-race"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-files-upload-delete-race"),
+      );
       const objects = new Map<string, Uint8Array>();
       const fileId = FileId.make("file-upload-delete-race");
       const failure = yield* Effect.flip(
@@ -1484,12 +1659,18 @@ describe("Agent-owned file ingestion", () => {
           expectedTag: "FileStateTransitionConflict",
           size: 0,
         },
-        { deleteMode: "fail-retained" as const, expectedTag: "FileStorageAmbiguous", size: 1 },
+        {
+          deleteMode: "fail-retained" as const,
+          expectedTag: "FileStorageAmbiguous",
+          size: 1,
+        },
       ],
       ({ deleteMode, expectedTag, size }) =>
         Effect.gen(function* () {
           const suffix = deleteMode === "apply-then-fail" ? "missing" : "retained";
-          const agent = env.OSFO_AGENT.getByName(AgentId.make(`agent-files-cleanup-${suffix}`));
+          const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+            AgentId.make(`agent-files-cleanup-${suffix}`),
+          );
           const objects = new Map<string, Uint8Array>();
           const fileId = FileId.make(`file-cleanup-${suffix}`);
           const failure = yield* Effect.flip(
@@ -1531,7 +1712,7 @@ describe("Agent-owned file ingestion", () => {
 
   it.effect("retries retained R2 cleanup from completed deletion lineage", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-cleanup-retry"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-files-cleanup-retry"));
       const objects = new Map<string, Uint8Array>();
       const fileId = FileId.make("file-cleanup-retry");
       yield* Effect.flip(
@@ -1574,17 +1755,25 @@ describe("Agent-owned file ingestion", () => {
       const lineage = yield* withFileService(
         agent,
         { deleteMode: "success", objects, usage: [] },
-        (files) => files.remove({ actionId: "delete-cleanup-retry", context: approved, fileId }),
+        (files) =>
+          files.remove({
+            actionId: "delete-cleanup-retry",
+            context: approved,
+            fileId,
+          }),
       );
 
-      expect(lineage).toMatchObject({ actionId: "delete-cleanup-retry", fileId });
+      expect(lineage).toMatchObject({
+        actionId: "delete-cleanup-retry",
+        fileId,
+      });
       expect(objects.size).toBe(0);
     }),
   );
 
   it.effect("preserves the valid source when another retry reaches ready first", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-files-ready-race"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-files-ready-race"));
       const objects = new Map<string, Uint8Array>();
       const fileId = FileId.make("file-ready-race");
       const result = yield* withFileService(
@@ -1620,7 +1809,10 @@ describe("Agent-owned file ingestion", () => {
           }),
       );
 
-      expect(result).toMatchObject({ _tag: "FileReady", file: { state: "ready" } });
+      expect(result).toMatchObject({
+        _tag: "FileReady",
+        file: { state: "ready" },
+      });
       expect(objects.size).toBe(1);
     }),
   );
@@ -1629,7 +1821,11 @@ describe("Agent-owned file ingestion", () => {
 const withFileService = <A, E>(
   agent: DurableObjectStub<OsfoAgent>,
   state: {
-    readonly analysisCalls?: { analyze: number; reconcile: number; release?: number };
+    readonly analysisCalls?: {
+      analyze: number;
+      reconcile: number;
+      release?: number;
+    };
     readonly analysisEffect?: Effect.Effect<FileAnalysisComputeResult, FileComputeFailed>;
     readonly analysisResults?: Array<FileAnalysisComputeResult>;
     readonly analysisFailure?: FileComputeFailed;
@@ -1750,18 +1946,24 @@ const withFileService = <A, E>(
         objects: {
           delete: (key) => {
             if (state.deleteMode === "fail-retained") {
-              return new TestObjectUnavailable({ message: "The test R2 delete is ambiguous" });
+              return new TestObjectUnavailable({
+                message: "The test R2 delete is ambiguous",
+              });
             }
             if (state.deleteMode === "apply-then-fail") {
               state.objects.delete(key);
-              return new TestObjectUnavailable({ message: "The test R2 delete response was lost" });
+              return new TestObjectUnavailable({
+                message: "The test R2 delete response was lost",
+              });
             }
             return Effect.sync(() => void state.objects.delete(key));
           },
           get: (key) => Effect.succeed(state.objects.get(key) ?? null),
           put: (key, bytes) =>
             state.putMode === "ambiguous-mismatch"
-              ? new TestObjectUnavailable({ message: "The test R2 put is ambiguous" })
+              ? new TestObjectUnavailable({
+                  message: "The test R2 put is ambiguous",
+                })
               : Effect.gen(function* () {
                   if (state.beforePut !== undefined) yield* state.beforePut(store);
                   state.objects.set(key, Uint8Array.from(bytes));
@@ -1772,7 +1974,10 @@ const withFileService = <A, E>(
             return Effect.succeed(
               bytes === undefined
                 ? null
-                : { byteLength: BigInt(bytes.byteLength), sha256: digestForBytes(bytes) },
+                : {
+                    byteLength: BigInt(bytes.byteLength),
+                    sha256: digestForBytes(bytes),
+                  },
             );
           },
         },
@@ -1827,7 +2032,10 @@ const authorizationContext = (plan: "adventurer" | "free" = "free"): Authorizati
   },
   requestVendorUsdMicros: 0n,
   resourceOwnerUserId: UserId.make("user-files"),
-  subscription: { plan, planPolicyVersion: PlanPolicyVersion.make("launch-v1") },
+  subscription: {
+    plan,
+    planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+  },
   user: { _tag: "ActiveUser", userId: UserId.make("user-files") },
 });
 
@@ -1894,7 +2102,9 @@ class TestFileSandbox {
     this.commands.push(command);
     return this.failExecution
       ? Effect.runPromise(
-          new TestObjectUnavailable({ message: "The sandbox response is ambiguous" }),
+          new TestObjectUnavailable({
+            message: "The sandbox response is ambiguous",
+          }),
         )
       : Promise.resolve({ success: true });
   }
@@ -1912,7 +2122,11 @@ class TestFileSandbox {
 }
 
 type TestTaskResult =
-  | { readonly normalizedText: string; readonly ok: true; readonly parser: string }
+  | {
+      readonly normalizedText: string;
+      readonly ok: true;
+      readonly parser: string;
+    }
   | { readonly ok: true; readonly resultText: string };
 
 const catalogWithRetainedLimits = (limits: {

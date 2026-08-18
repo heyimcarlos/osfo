@@ -199,7 +199,7 @@ describe("Osfo Cloudflare host", () => {
     Effect.gen(function* () {
       const response = yield* Effect.promise(() =>
         exports.default.fetch(
-          new Request("https://osfo.test/v1/webhooks/stripe", {
+          new Request("https://osfo.test/webhooks/stripe", {
             body: '{"id":"evt_invalid"}',
             headers: { "stripe-signature": "invalid" },
             method: "POST",
@@ -216,6 +216,9 @@ describe("Osfo Cloudflare host", () => {
 
   it.effect("reuses one runtime inside an Osfo Agent activation", () =>
     Effect.gen(function* () {
+      const directory = env.OSFO_DIRECTORY.getByName("main");
+      yield* Effect.promise(() => directory.ensureAgent("agent-1"));
+      yield* Effect.promise(() => directory.ensureAgent("agent-2"));
       const first = yield* Effect.promise(() =>
         exports.default.fetch(new Request("https://osfo.test/agents/agent-1/health")),
       );
@@ -236,9 +239,10 @@ describe("Osfo Cloudflare host", () => {
 
       expect(firstProbe).toMatchObject({
         executionUnit: "osfo-agent",
-        identity: "agent-1",
         stage: "test",
       });
+      expect(secondProbe.identity).toBe(firstProbe.identity);
+      expect(otherProbe.identity).not.toBe(firstProbe.identity);
       expect(secondProbe.activationId).toBe(firstProbe.activationId);
       expect(otherProbe.activationId).not.toBe(firstProbe.activationId);
     }),

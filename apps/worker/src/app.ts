@@ -13,6 +13,7 @@ import { makeWorkerRuntime, type ExecutionUnit, RuntimeProbeResult } from "./lay
 import * as Routes from "./routes";
 import * as Onboarding from "./services/onboarding";
 import * as Registration from "./services/registration";
+import { OSFO_DIRECTORY_NAME } from "./agents/osfo/identity";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare RPC adapters expose Promise-based interfaces. */
 
@@ -20,7 +21,9 @@ import * as Registration from "./services/registration";
 export interface Bindings {
   readonly ARTIFACTS?: R2Bucket;
   readonly DB: Pick<Hyperdrive, "connectionString">;
-  readonly OSFO_AGENT: Routes.Bindings["OSFO_AGENT"];
+  readonly OSFO_DIRECTORY: Routes.Bindings["OSFO_DIRECTORY"];
+  readonly resolveOsfoAgent: Routes.Bindings["resolveOsfoAgent"];
+  readonly routeOsfoAgentRequest: Routes.Bindings["routeOsfoAgentRequest"];
   readonly REGISTRATION_DIALOGUE: Routes.Bindings["REGISTRATION_DIALOGUE"];
 }
 
@@ -35,7 +38,9 @@ const RegistrationRpcResult = Schema.Union([
     response: Schema.String,
     verifyUrl: Schema.String,
   }),
-  Schema.TaggedStruct("RegistrationTurnUnavailable", { message: Schema.String }),
+  Schema.TaggedStruct("RegistrationTurnUnavailable", {
+    message: Schema.String,
+  }),
 ]);
 
 /** Build one request-scoped Cloudflare application from the current bindings. */
@@ -70,10 +75,12 @@ const makeWebHandler = (
   const authDependencies =
     options?.authDependencies ??
     Layer.merge(Db.layer({ db: env.DB }), TwilioVerify.layer(config.twilioVerify));
-  const appLayer = Routes.layer({ authDependencies, config, env, runtime }).pipe(
-    Layer.provide(BrowserCrypto.layer),
-    Layer.provide(HttpServer.layerServices),
-  );
+  const appLayer = Routes.layer({
+    authDependencies,
+    config,
+    env,
+    runtime,
+  }).pipe(Layer.provide(BrowserCrypto.layer), Layer.provide(HttpServer.layerServices));
   return HttpRouter.toWebHandler(appLayer, { disableLogger: true });
 };
 
@@ -104,22 +111,37 @@ const runInvitationExpiry = (env: Bindings, config: CloudflareConfig) => {
 const adaptBindings = (env: CloudflareEnv): Bindings => ({
   ARTIFACTS: env.ARTIFACTS,
   DB: env.DB,
-  OSFO_AGENT: {
-    getByName: (identity) => {
-      const agent = env.OSFO_AGENT.getByName(identity);
+  OSFO_DIRECTORY: {
+    getByName: () => {
+      const directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
       return {
-        acceptWhatsAppMessage: async (input) => agent.acceptWhatsAppMessage(input),
-        acceptTelegramMessage: async (input) => agent.acceptTelegramMessage(input),
-        commitWelcome: async (input) =>
-          Schema.decodePromise(AgentRpcTag)(await agent.commitWelcome(input)),
-        initialize: async (input) =>
-          Schema.decodePromise(AgentRpcTag)(await agent.initialize(input)),
-        probeRuntime: async () =>
-          Schema.decodePromise(RuntimeProbeResult)(await agent.probeRuntime()),
-        recoverWhatsAppMessage: async (input) => agent.recoverWhatsAppMessage(input),
-        recoverTelegramMessage: async (input) => agent.recoverTelegramMessage(input),
+        commitAgentWelcome: async (agentId, input) =>
+          Schema.decodePromise(AgentRpcTag)(await directory.commitAgentWelcome(agentId, input)),
+        ensureAgent: async (agentId) => {
+          const identity = await directory.ensureAgent(agentId);
+          return { className: identity.className, name: identity.name };
+        },
+        initializeAgent: async (agentId, input) =>
+          Schema.decodePromise(AgentRpcTag)(await directory.initializeAgent(agentId, input)),
+        probeAgent: async (agentId) =>
+          Schema.decodeSync(RuntimeProbeResult)(await directory.probeAgent(agentId)),
       };
     },
+  },
+  resolveOsfoAgent: async (agentId) => {
+    const { getSubAgentByName } = await import("agents");
+    const { OsfoAgent } = await import("./agents/osfo/agent");
+    const directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
+    return getSubAgentByName(directory, OsfoAgent, agentId);
+  },
+  routeOsfoAgentRequest: async (request, agentId, childPath) => {
+    const { camelCaseToKebabCase, routeSubAgentRequest } = await import("agents");
+    const { OsfoAgent } = await import("./agents/osfo/agent");
+    const directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
+    const segment = camelCaseToKebabCase(OsfoAgent.name);
+    return routeSubAgentRequest(request, directory, {
+      fromPath: `/sub/${segment}/${agentId}${childPath}`,
+    });
   },
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => {

@@ -3,7 +3,7 @@ import { Effect, Predicate, Schema } from "effect";
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schemas use the standard _tag discriminator. */
 
 import type { BillingTransactionRetryExhausted, DatabaseUnavailable } from "../domain/allowance";
-import { type BillingCheckoutSessionId, StripeCheckoutSessionId } from "../domain";
+import { BillingCheckoutSessionId, StripeCheckoutSessionId } from "../domain";
 import { InvalidStripeSnapshot } from "./billing-subscriptions";
 import type {
   ApplyStripeSnapshotResult,
@@ -35,13 +35,16 @@ const supportedEventTypes = new Set([
 ]);
 
 /** Signature-verified Stripe event locator with no embedded projection state. */
-export interface VerifiedStripeEvent {
-  readonly billingCheckoutSessionId: BillingCheckoutSessionId | null;
-  readonly decodeErrorCode?: "invalid_stripe_event";
-  readonly externalEventId: string;
-  readonly externalObjectId: string;
-  readonly type: string;
-}
+export const VerifiedStripeEvent = Schema.Struct({
+  billingCheckoutSessionId: Schema.NullOr(BillingCheckoutSessionId),
+  decodeErrorCode: Schema.optional(Schema.Literal("invalid_stripe_event")),
+  externalEventId: Schema.String,
+  externalObjectId: Schema.String,
+  type: Schema.String,
+});
+
+/** Signature-verified Stripe event locator with no embedded projection state. */
+export type VerifiedStripeEvent = typeof VerifiedStripeEvent.Type;
 
 /** Expected rejection for an invalid or mutated Stripe signature. */
 export class InvalidStripeSignature extends Schema.TaggedError<InvalidStripeSignature>()(
@@ -64,7 +67,11 @@ export class PermanentStripeWebhookFailure extends Schema.TaggedError<PermanentS
 /** Durable webhook receipt returned after signature verification. */
 export type ReceiveResult =
   | { readonly _tag: "ProcessedDuplicate" }
-  | { readonly _tag: "Pending"; readonly attempt?: number; readonly webhookEventId: string };
+  | {
+      readonly _tag: "Pending";
+      readonly attempt?: number;
+      readonly webhookEventId: string;
+    };
 
 /** Verified stored event returned for an explicit operator replay. */
 export interface StoredWebhookEvent extends VerifiedStripeEvent {
@@ -113,11 +120,12 @@ export interface Persistence {
 
 /** Explicit Stripe boundary for webhook verification and current-object retrieval. */
 export interface StripeGateway {
-  readonly fetchCurrentSnapshot: (
-    event: VerifiedStripeEvent,
-  ) => Effect.Effect<
+  readonly fetchCurrentSnapshot: (event: VerifiedStripeEvent) => Effect.Effect<
     | { readonly _tag: "NoOp" }
-    | { readonly _tag: "Snapshot"; readonly snapshot: StripeSubscriptionSnapshot },
+    | {
+        readonly _tag: "Snapshot";
+        readonly snapshot: StripeSubscriptionSnapshot;
+      },
     PermanentStripeWebhookFailure | StripeRequestFailed
   >;
   /** Compatibility-only adapter hook; HTTP uses StripeWebhookTransport directly. */
@@ -141,7 +149,11 @@ export interface BillingProjection {
     userId: StripeSubscriptionSnapshot["userId"],
   ) => Effect.Effect<Date, BillingTransactionRetryExhausted | DatabaseUnavailable>;
   readonly applyStripeSnapshot: (
-    source: { readonly _tag: "Webhook"; readonly attempt: number; readonly webhookEventId: string },
+    source: {
+      readonly _tag: "Webhook";
+      readonly attempt: number;
+      readonly webhookEventId: string;
+    },
     expectedUpdatedAt: Date,
     snapshot: StripeSubscriptionSnapshot,
     checkoutEvidence: StripeCheckoutEvidence | null,
@@ -172,6 +184,10 @@ export interface Interface {
     signature?: string,
   ) => Effect.Effect<HandleResult, InvalidStripeSignature | ProjectionError>;
   readonly replay: (webhookEventId: string) => Effect.Effect<HandleResult, ProjectionError>;
+  readonly processVerified: (
+    event: VerifiedStripeEvent,
+    webhookEventId: string,
+  ) => Effect.Effect<HandleResult, ProjectionError>;
 }
 
 /** Construct durable Stripe webhook ingestion from explicit provider and persistence ports. */
@@ -418,6 +434,20 @@ export const make = (options: {
         }
         return yield* process(event, receipt.webhookEventId, webhookAttempt);
       }),
+    processVerified: (event, webhookEventId) =>
+      event.decodeErrorCode === "invalid_stripe_event"
+        ? persistFailure(webhookEventId, 1, event.decodeErrorCode, null).pipe(
+            Effect.andThen(
+              Effect.logError("Signed Stripe webhook failed closed decoding").pipe(
+                Effect.annotateLogs({
+                  externalEventId: event.externalEventId,
+                  webhookEventId,
+                }),
+              ),
+            ),
+            Effect.as({ _tag: "FailedAcknowledged" } as const),
+          )
+        : process(event, webhookEventId, 1),
     replay: (webhookEventId) =>
       Effect.gen(function* () {
         const receipt = yield* options.persistence.replay(webhookEventId);

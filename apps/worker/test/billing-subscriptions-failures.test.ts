@@ -6,7 +6,7 @@ import {
   billingCustomers,
   billingSubscriptions,
 } from "@osfo/db/schema/billing";
-import { webhookEvents } from "@osfo/db/schema/webhooks";
+import { webhookEvents, webhookJobs } from "@osfo/db/schema/webhooks";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
@@ -160,12 +160,15 @@ describe("BillingSubscriptions projection failures", () => {
           yield* Effect.promise(() =>
             fixture.database.insert(webhookEvents).values({
               externalEventId: "evt_rollback",
-              externalObjectId: "cs_test_rollback",
               eventType: "checkout.session.completed",
+              payloadJson:
+                '{"billingCheckoutSessionId":"checkout-rollback","externalEventId":"evt_rollback","externalObjectId":"cs_test_rollback","type":"checkout.session.completed"}',
               provider: "stripe",
-              status: "pending",
               webhookEventId: "webhook-rollback",
             }),
+          );
+          yield* Effect.promise(() =>
+            fixture.database.insert(webhookJobs).values({ webhookEventId: "webhook-rollback" }),
           );
           const billing = Billing.make(fixture.database);
           const service = BillingSubscriptions.make(billing, {
@@ -181,7 +184,11 @@ describe("BillingSubscriptions projection failures", () => {
           const revision = yield* service.loadRevision(rollbackUserId);
           const exit = yield* service
             .applyStripeSnapshot(
-              { _tag: "Webhook", attempt: 1, webhookEventId: "webhook-rollback" },
+              {
+                _tag: "Webhook",
+                attempt: 1,
+                webhookEventId: "webhook-rollback",
+              },
               revision,
               snapshot,
               {
@@ -204,8 +211,8 @@ describe("BillingSubscriptions projection failures", () => {
           const [storedWebhook] = yield* Effect.promise(() =>
             fixture.database
               .select()
-              .from(webhookEvents)
-              .where(eq(webhookEvents.webhookEventId, "webhook-rollback")),
+              .from(webhookJobs)
+              .where(eq(webhookJobs.webhookEventId, "webhook-rollback")),
           );
           const storedPeriods = yield* Effect.promise(() =>
             fixture.database
@@ -222,7 +229,10 @@ describe("BillingSubscriptions projection failures", () => {
 
           expect(exit._tag).toBe("Failure");
           expect(storedSubscription?.plan).toBe("free");
-          expect(storedWebhook).toMatchObject({ processedAt: null, status: "pending" });
+          expect(storedWebhook).toMatchObject({
+            processedAt: null,
+            status: "pending",
+          });
           expect(storedCheckout).toMatchObject({
             state: "creating",
             stripeCheckoutSessionId: null,
@@ -242,14 +252,38 @@ describe("BillingSubscriptions projection failures", () => {
         Effect.gen(function* () {
           yield* applyMigrations(fixture.client);
           const cases = [
-            { payment: { _tag: "Unknown" as const }, status: "active" as const },
-            { payment: { _tag: "NotPaid" as const }, status: "trialing" as const },
-            { payment: { _tag: "NotPaid" as const }, status: "incomplete" as const },
-            { payment: { _tag: "NotPaid" as const }, status: "incomplete_expired" as const },
-            { payment: { _tag: "NotPaid" as const }, status: "past_due" as const },
-            { payment: { _tag: "NotPaid" as const }, status: "unpaid" as const },
-            { payment: { _tag: "NotPaid" as const }, status: "paused" as const },
-            { payment: { _tag: "NotPaid" as const }, status: "canceled" as const },
+            {
+              payment: { _tag: "Unknown" as const },
+              status: "active" as const,
+            },
+            {
+              payment: { _tag: "NotPaid" as const },
+              status: "trialing" as const,
+            },
+            {
+              payment: { _tag: "NotPaid" as const },
+              status: "incomplete" as const,
+            },
+            {
+              payment: { _tag: "NotPaid" as const },
+              status: "incomplete_expired" as const,
+            },
+            {
+              payment: { _tag: "NotPaid" as const },
+              status: "past_due" as const,
+            },
+            {
+              payment: { _tag: "NotPaid" as const },
+              status: "unpaid" as const,
+            },
+            {
+              payment: { _tag: "NotPaid" as const },
+              status: "paused" as const,
+            },
+            {
+              payment: { _tag: "NotPaid" as const },
+              status: "canceled" as const,
+            },
           ];
           const billing = Billing.make(fixture.database);
           const service = makeService(billing);
@@ -372,7 +406,11 @@ describe("BillingSubscriptions projection failures", () => {
       });
 
       expect(result).toEqual({ _tag: "Activated" });
-      expect({ applies, fetches, loads }).toEqual({ applies: 2, fetches: 2, loads: 2 });
+      expect({ applies, fetches, loads }).toEqual({
+        applies: 2,
+        fetches: 2,
+        loads: 2,
+      });
       expect(order).toEqual(["load", "fetch", "apply", "load", "fetch", "apply"]);
     }),
   );

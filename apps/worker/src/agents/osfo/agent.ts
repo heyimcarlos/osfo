@@ -7,6 +7,7 @@ import {
   type ActionAuthorizationDecision,
   type ChatErrorContext,
   type ChatResponseResult,
+  type StreamCallback,
   type PrepareStepContext,
   type PendingApproval,
   type StepContext,
@@ -15,7 +16,8 @@ import {
   type TurnConfig,
   type TurnContext,
 } from "@cloudflare/think";
-import { tool, type ToolSet } from "ai";
+import type { MessengerContext } from "@cloudflare/think/messengers";
+import { tool, type ToolSet, type UIMessage } from "ai";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import { DateTime, Effect, Exit, Option, Predicate, Result, Schema } from "effect";
 import { HelpArea, OnboardingLocale } from "@osfo/api";
@@ -27,6 +29,7 @@ import {
   AllowancePeriodId,
   AssistantMessageId,
   ChannelBindingId,
+  ChannelIdentity,
   ConversationRouteId as ConversationRouteIdSchema,
   SessionId as SessionIdSchema,
   ThinkSubmissionId,
@@ -40,6 +43,8 @@ import { database as workerDatabase, DbTimestamp } from "../../db";
 import * as Billing from "../../db/billing";
 import { decodeOsfoStage } from "../../config";
 import * as ProviderAuthorizationPostgres from "../../integrations/postgres/provider-authorization";
+import * as ChannelBindingPostgres from "../../integrations/postgres/channel-binding";
+import { completeDeterministicTelegramReply } from "../../integrations/telegram";
 import * as SessionRecallAuthorizationPostgres from "../../integrations/postgres/session-recall-authorization";
 import {
   CancelManagedConversationInput,
@@ -64,12 +69,7 @@ import {
 } from "../../services/managed-conversation";
 import * as WhatsAppAgentAdmission from "../../services/whatsapp-agent-admission";
 import { AgentAcceptanceInput, AgentRecoveryInput } from "../../services/whatsapp-admission";
-import * as TelegramAgentAdmission from "../../services/telegram-agent-admission";
 import type * as ProviderAgentAdmission from "../../services/provider-agent-admission";
-import {
-  AgentAcceptanceInput as ProviderAgentAcceptanceInput,
-  AgentRecoveryInput as ProviderAgentRecoveryInput,
-} from "../../services/provider-message-admission";
 import {
   launchModelAccessPolicy,
   type ManagedRouteUnavailable,
@@ -214,7 +214,7 @@ import { makeAgentSessionLifecycle } from "./session-lifecycle";
 import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
 import { effectToolSchema } from "./effect-tool-schema";
 
-/* oxlint-disable effecttsgo/async-function -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries. */
+/* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries, and Effect results use _tag. */
 
 const pendingSessionId = "__osfo_uninitialized__";
 const gatewayId = "default";
@@ -366,16 +366,6 @@ const WhatsAppThinkSubmissionAccepted = Schema.Struct({
   submissionId: ThinkSubmissionId,
 });
 
-const TelegramThinkSubmissionInspection = Schema.Struct({
-  idempotencyKey: Schema.String,
-  metadata: TelegramAgentAdmission.TelegramSubmissionMetadata,
-  submissionId: ThinkSubmissionId,
-});
-
-const TelegramThinkSubmissionAccepted = Schema.Struct({
-  submissionId: ThinkSubmissionId,
-});
-
 /** Durable result for the deterministic first personal response. */
 export interface PersonalWelcomeCommitted {
   readonly _tag: "PersonalWelcomeCommitted";
@@ -486,7 +476,10 @@ export class OsfoAgent extends Think<Env> {
     readRoute: (requestedRouteId) =>
       this.#store.readRoute(requestedRouteId).pipe(
         Effect.mapError((failure) => sessionLifecycleStoreFailure("readRoute", failure)),
-        Effect.map(({ currentSessionId, routeId }) => ({ currentSessionId, routeId })),
+        Effect.map(({ currentSessionId, routeId }) => ({
+          currentSessionId,
+          routeId,
+        })),
       ),
   });
   readonly #sessionRecall = makeSessionRecall({
@@ -544,6 +537,101 @@ export class OsfoAgent extends Think<Env> {
   /** Resolve a safe model before trusted per-turn metadata selects the exact managed route. */
   override getModel() {
     return launchModelAccessPolicy.plans.free.route;
+  }
+
+  /** Apply Osfo policy before a Think messenger turn starts on this user-owned facet. */
+  override async chatWithMessengerContext(
+    userMessage: string | UIMessage,
+    callback: StreamCallback,
+    context: MessengerContext,
+  ): Promise<void> {
+    await this.#migrationsReady;
+    const authorId = context.message?.author.userId ?? context.author?.userId;
+    const message = context.message;
+    if (context.provider !== "telegram" || authorId === undefined || message === undefined) {
+      await this.#completeTelegramPolicyReply(
+        callback,
+        context,
+        "I could not authorize that message. Please reconnect Telegram from Osfo.",
+      );
+      return;
+    }
+
+    const binding = await this.#resolveTelegramBinding(authorId);
+    if (binding === null || binding.agentId !== this.name) {
+      await this.#completeTelegramPolicyReply(
+        callback,
+        context,
+        "This Telegram connection is no longer authorized. Please reconnect it from Osfo.",
+      );
+      return;
+    }
+
+    const submissionId = ThinkSubmissionId.make(
+      `telegram:${context.thread.id}:${message.providerMessageId}`,
+    );
+    const store = this.#store;
+    const inspectAuthorization = (channelBindingId: ChannelBindingId) =>
+      this.#inspectCurrentProviderAuthorization("telegram", channelBindingId);
+    const replaceCurrent = (admission: ManagedSessionReplacementAdmitted) =>
+      this.#agentSessionLifecycle.replaceCurrent(admission);
+    const operation = Effect.gen(function* () {
+      const [agent, currentAuthorization] = yield* Effect.all([
+        store.inspect(),
+        inspectAuthorization(binding.channelBindingId),
+      ]);
+      const admission = yield* admitManagedConversation(
+        {
+          authorization: currentAuthorization,
+          idempotencyKey: `telegram:${context.thread.id}:${message.providerMessageId}`,
+          message: message.text,
+          routeId: agent.routeId,
+          submissionId,
+        },
+        { currentSessionId: agent.currentSessionId, routeId: agent.routeId },
+      );
+      if (Predicate.isTagged(admission, "ManagedSessionReplacementAdmitted")) {
+        yield* replaceCurrent(admission);
+      }
+      return { admission, currentAuthorization };
+    });
+    const result = await Effect.runPromiseExit(
+      message.text.trim() === "/new"
+        ? this.#sessionExecution.runWhenIdle(operation)
+        : this.#sessionExecution.run(operation),
+    );
+    if (Exit.isFailure(result)) {
+      await this.#completeTelegramPolicyReply(
+        callback,
+        context,
+        "I could not authorize that message right now. Please try again.",
+      );
+      return;
+    }
+    if (Predicate.isTagged(result.value.admission, "ManagedConversationDenied")) {
+      await this.#completeTelegramPolicyReply(
+        callback,
+        context,
+        "Your current Osfo allowance does not permit this request.",
+      );
+      return;
+    }
+    if (Predicate.isTagged(result.value.admission, "ManagedSessionReplacementAdmitted")) {
+      await this.#recordTelegramAcceptedMessage(
+        result.value.currentAuthorization,
+        message.providerMessageId,
+      );
+      await this.#completeTelegramPolicyReply(callback, context, "Started a new Osfo session.");
+      return;
+    }
+
+    await this.#recordTelegramAcceptedMessage(
+      result.value.currentAuthorization,
+      message.providerMessageId,
+    );
+    await super.chatWithMessengerContext(userMessage, callback, context, {
+      metadata: result.value.admission.metadata,
+    });
   }
 
   /** Register document and test actions in their owning stages. */
@@ -896,7 +984,11 @@ export class OsfoAgent extends Think<Env> {
     const recheck = authorization.recheck(
       {
         ...current,
-        approval: { actionId, operation: "memory.clear", userId: current.user.userId },
+        approval: {
+          actionId,
+          operation: "memory.clear",
+          userId: current.user.userId,
+        },
       },
       { actionId, kind: "memory.clear" },
     );
@@ -1160,75 +1252,6 @@ export class OsfoAgent extends Think<Env> {
           input: decoded.success,
         }),
       ),
-    );
-  }
-
-  /** Recoverably accept one authorized Telegram UserMessage into the canonical Think Session. */
-  async acceptTelegramMessage(input: typeof ProviderAgentAcceptanceInput.Encoded) {
-    await this.#migrationsReady;
-    const decoded = Schema.decodeResult(ProviderAgentAcceptanceInput)(input);
-    if (Result.isFailure(decoded)) return invalidRequest("acceptTelegramMessage");
-    const bridge = this.#providerAgentBridge(
-      decodeTelegramThinkSubmissionInspection,
-      decodeTelegramThinkSubmissionAccepted,
-    );
-    const parsed = decoded.success;
-    const operation = TelegramAgentAdmission.accept<
-      AcceptanceReceipt,
-      | AcceptanceReceiptConflict
-      | AgentStateNotFound
-      | AgentStoreRecordInvalid
-      | AgentStoreUnavailable
-      | CurrentSessionActivationUnavailable
-      | CurrentSessionReplacementConflict
-      | SessionLifecycleNotFound
-      | SessionLifecycleUnavailable
-      | SessionCommandReceiptConflict
-    >({
-      dependencies: {
-        ...bridge.acceptance({
-          inspect: (channelBindingId) =>
-            this.#inspectCurrentProviderAuthorization("telegram", channelBindingId).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new TelegramAgentAdmission.TelegramAuthorizationUnavailable({
-                    cause,
-                    message: "Current Telegram authorization could not be checked",
-                  }),
-              ),
-            ),
-        }),
-      },
-      input: parsed,
-    });
-    return runRpc(
-      parsed.message.trim() === "/new"
-        ? this.#sessionExecution.runWhenIdle(operation)
-        : this.#sessionExecution.run(operation),
-    );
-  }
-
-  /** Recover one stable Telegram acceptance before consulting mutable authority. */
-  async recoverTelegramMessage(input: typeof ProviderAgentRecoveryInput.Encoded) {
-    await this.#migrationsReady;
-    const decoded = Schema.decodeResult(ProviderAgentRecoveryInput)(input);
-    if (Result.isFailure(decoded)) return invalidRequest("recoverTelegramMessage");
-    return runRpc(
-      TelegramAgentAdmission.recover<
-        AcceptanceReceipt,
-        | AcceptanceReceiptConflict
-        | AgentStateNotFound
-        | AgentStoreRecordInvalid
-        | AgentStoreUnavailable
-        | CurrentSessionActivationUnavailable
-        | SessionCommandReceiptConflict
-      >({
-        dependencies: this.#providerAgentBridge(
-          decodeTelegramThinkSubmissionInspection,
-          decodeTelegramThinkSubmissionAccepted,
-        ).recovery,
-        input: decoded.success,
-      }),
     );
   }
 
@@ -1668,7 +1691,11 @@ export class OsfoAgent extends Think<Env> {
             env,
             database,
             currentAuthorization,
-          ).delete({ actionId, authorization: currentContext, contentId: input.contentId });
+          ).delete({
+            actionId,
+            authorization: currentContext,
+            contentId: input.contentId,
+          });
         }),
       ),
     );
@@ -1684,10 +1711,7 @@ export class OsfoAgent extends Think<Env> {
   ) {
     // oxlint-disable-next-line effecttsgo/prefer-typed-schema-decoder -- Agent metadata is optional and supplied by the external Think boundary.
     return Schema.decodeUnknownEffect(
-      Schema.Union([
-        WhatsAppAgentAdmission.WhatsAppSubmissionMetadata,
-        TelegramAgentAdmission.TelegramSubmissionMetadata,
-      ]),
+      Schema.Union([WhatsAppAgentAdmission.WhatsAppSubmissionMetadata, ManagedTurnMetadata]),
     )(this.activeTurnMetadata).pipe(
       Effect.mapError(
         (cause) =>
@@ -1696,12 +1720,24 @@ export class OsfoAgent extends Think<Env> {
             message: "The active ToolCall has no trusted provider authority identity",
           }),
       ),
-      Effect.flatMap((metadata) =>
-        this.#inspectCurrentProviderAuthorization(
-          "whatsappAcceptance" in metadata ? "whatsapp" : "telegram",
+      Effect.flatMap((metadata) => {
+        const authority =
           "whatsappAcceptance" in metadata
-            ? metadata.whatsappAcceptance.channelBindingId
-            : metadata.telegramAcceptance.channelBindingId,
+            ? metadata.whatsappAcceptance
+            : metadata.authorityIdentity._tag === "ChannelBinding"
+              ? metadata.authorityIdentity
+              : null;
+        if (authority === null) {
+          return Effect.fail(
+            new DocumentGeneration.DocumentAuthorizationUnavailable({
+              cause: { authority: metadata.authorityIdentity._tag },
+              message: "The active ToolCall has no channel binding authority",
+            }),
+          );
+        }
+        return this.#inspectCurrentProviderAuthorization(
+          "whatsappAcceptance" in metadata ? "whatsapp" : "telegram",
+          authority.channelBindingId,
         ).pipe(
           Effect.mapError(
             (cause) =>
@@ -1710,8 +1746,8 @@ export class OsfoAgent extends Think<Env> {
                 message: "Current document authorization facts could not be loaded",
               }),
           ),
-        ),
-      ),
+        );
+      }),
       Effect.map((currentContext) =>
         AuthorizationContext.make({
           ...currentContext,
@@ -2051,6 +2087,78 @@ export class OsfoAgent extends Think<Env> {
     });
   }
 
+  async #resolveTelegramBinding(authorId: string) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) return null;
+    const result = await Effect.runPromiseExit(
+      Effect.promise(() =>
+        runtime.runPromise(
+          Effect.scoped(
+            workerDatabase.pipe(
+              Effect.flatMap((database) =>
+                ChannelBindingPostgres.resolveActiveAgentBinding(
+                  database,
+                  "telegram",
+                  ChannelIdentity.make(`telegram:${authorId}`),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    return Exit.isSuccess(result) ? result.value : null;
+  }
+
+  async #recordTelegramAcceptedMessage(
+    currentAuthorization: AuthorizationContext,
+    providerMessageId: string,
+  ): Promise<void> {
+    if (currentAuthorization.allowance._tag !== "Metered") return;
+    const allowancePeriodId = currentAuthorization.allowance.allowancePeriodId;
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) return;
+    await runtime.runPromise(
+      Effect.scoped(
+        workerDatabase.pipe(
+          Effect.flatMap((database) =>
+            Allowances.make({
+              billing: Billing.make(database),
+              catalog: retainedCatalog,
+              now: Effect.succeed(currentAuthorization.now),
+            }).record(
+              allowancePeriodId,
+              {
+                sourceId: `telegram:${providerMessageId}`,
+                sourceType: "acceptanceReceipt",
+              },
+              [
+                {
+                  allowanceKind: "acceptedMessages",
+                  basis: "known_at_start",
+                  quantity: 1n,
+                },
+              ],
+            ),
+          ),
+          Effect.asVoid,
+        ),
+      ),
+    );
+  }
+
+  async #completeTelegramPolicyReply(
+    callback: StreamCallback,
+    context: MessengerContext,
+    text: string,
+  ): Promise<void> {
+    await this.deliverNotice(text, {
+      channel: "telegram",
+      thread: context.thread.id,
+    });
+    await completeDeterministicTelegramReply(callback);
+  }
+
   #providerAgentBridge<Metadata extends ManagedTurnMetadata>(
     decodeInspection: (
       inspection: ThinkSubmissionInspection,
@@ -2339,30 +2447,6 @@ const decodeWhatsAppThinkSubmissionAccepted = (submission: SubmitMessagesResult)
         new ThinkSubmissionUnavailable({
           cause,
           message: "Think returned invalid WhatsApp Submission acceptance facts",
-          operation: "runTurn",
-        }),
-    ),
-  );
-
-const decodeTelegramThinkSubmissionInspection = (inspection: ThinkSubmissionInspection) =>
-  Schema.decodeUnknownEffect(TelegramThinkSubmissionInspection)(inspection).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ThinkSubmissionUnavailable({
-          cause,
-          message: "Think returned invalid Telegram Submission inspection facts",
-          operation: "inspectSubmission",
-        }),
-    ),
-  );
-
-const decodeTelegramThinkSubmissionAccepted = (submission: SubmitMessagesResult) =>
-  Schema.decodeEffect(TelegramThinkSubmissionAccepted)(submission).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ThinkSubmissionUnavailable({
-          cause,
-          message: "Think returned invalid Telegram Submission acceptance facts",
           operation: "runTurn",
         }),
     ),

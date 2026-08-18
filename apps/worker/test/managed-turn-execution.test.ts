@@ -15,7 +15,6 @@ import {
   UserId,
 } from "../src/domain";
 import * as SessionRecallAuthorizationPostgres from "../src/integrations/postgres/session-recall-authorization";
-import * as ProviderAuthorizationPostgres from "../src/integrations/postgres/provider-authorization";
 import { AuthorizationContext } from "../src/services/authorization";
 import { OsfoAgent } from "../src/agents/osfo/agent";
 
@@ -38,7 +37,7 @@ describe("managed Think Submission execution", () => {
         const replacementId = ThinkSubmissionId.make("submission-managed-new");
         const channelBindingId = ChannelBindingId.make("binding-managed-drain");
         const userId = UserId.make("user-managed-drain");
-        const agent = env.OSFO_AGENT.getByName(agentId);
+        const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
         yield* Effect.promise(async () => {
           await agent.initialize({
             agentId,
@@ -89,7 +88,10 @@ describe("managed Think Submission execution", () => {
                           type: "tool-call",
                         },
                         {
-                          finishReason: { raw: "tool-calls", unified: "tool-calls" },
+                          finishReason: {
+                            raw: "tool-calls",
+                            unified: "tool-calls",
+                          },
                           type: "finish",
                           usage: emptyUsage,
                         },
@@ -128,7 +130,11 @@ describe("managed Think Submission execution", () => {
               .spyOn(SessionRecallAuthorizationPostgres, "inspect")
               .mockReturnValue(
                 Effect.succeed({
-                  authority: { _tag: "ChannelBinding", channelBindingId, userId },
+                  authority: {
+                    _tag: "ChannelBinding",
+                    channelBindingId,
+                    userId,
+                  },
                   deletionAccess: { _tag: "DeletionAccessAvailable" },
                   now: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-17T12:00:00.000Z")),
                   resourceOwnerUserId: userId,
@@ -193,16 +199,26 @@ describe("managed Think Submission execution", () => {
           }),
         );
 
-        expect(observed.accepted).toMatchObject({ status: "pending", submissionId });
+        expect(observed.accepted).toMatchObject({
+          status: "pending",
+          submissionId,
+        });
         expect(observed.replacementWaited).toBe(true);
         expect(observed.modelCalls).toBe(2);
         expect(observed.recallCompleted).toBe(true);
         expect(observed.authorizationInspections).toBe(1);
         expect(observed.secondPrompt).toContain("SessionRecallCompleted");
         expect(observed.secondPrompt).toContain("Remember orchid");
-        expect(observed.inspection).toMatchObject({ status: "completed", submissionId });
+        expect(observed.inspection).toMatchObject({
+          status: "completed",
+          submissionId,
+        });
         expect(observed.committed).toEqual([
-          expect.objectContaining({ sessionId, source: "hook", thinkRequestId: submissionId }),
+          expect.objectContaining({
+            sessionId,
+            source: "hook",
+            thinkRequestId: submissionId,
+          }),
         ]);
         expect(observed.original).toMatchObject({
           _tag: "SessionHistoryFound",
@@ -219,145 +235,6 @@ describe("managed Think Submission execution", () => {
       }),
   );
 
-  it.effect(
-    "orders Telegram admission after a waiting /new and executes in the replacement Session",
-    () =>
-      Effect.gen(function* () {
-        const agentId = AgentId.make("agent-telegram-reset-race");
-        const routeId = ConversationRouteId.make("route-telegram-reset-race");
-        const initialSessionId = SessionId.make("session-telegram-reset-race");
-        const blockerId = ThinkSubmissionId.make("submission-telegram-reset-blocker");
-        const replacementId = ThinkSubmissionId.make("submission-telegram-reset-new");
-        const telegramSubmissionId = ThinkSubmissionId.make("submission-telegram-reset-message");
-        const replacementSessionId = SessionId.make(`session-${replacementId}`);
-        const channelBindingId = ChannelBindingId.make("binding-telegram-reset-race");
-        const userId = UserId.make("user-telegram-reset-race");
-        const authorization = managedAuthorization(channelBindingId, userId);
-        const agent = env.OSFO_AGENT.getByName(agentId);
-        yield* Effect.promise(async () => {
-          await agent.initialize({
-            agentId,
-            initializationId: AgentInitializationId.make("init-telegram-reset-race"),
-            initializedAt: "2026-08-17T12:00:00.000Z",
-            routeId,
-            sessionId: initialSessionId,
-          });
-        });
-
-        const observed = yield* Effect.promise(() =>
-          runInDurableObject(agent, async (instance) => {
-            const model = new MockLanguageModelV3({
-              provider: "osfo-test",
-              modelId: "telegram-reset-race",
-              doStream: async () => ({
-                stream: simulateReadableStream({
-                  chunks: [
-                    { type: "stream-start", warnings: [] },
-                    { id: "answer", type: "text-start" },
-                    { delta: "completed", id: "answer", type: "text-delta" },
-                    { id: "answer", type: "text-end" },
-                    {
-                      finishReason: { raw: "stop", unified: "stop" },
-                      type: "finish",
-                      usage: emptyUsage,
-                    },
-                  ],
-                  initialDelayInMs: null,
-                  chunkDelayInMs: null,
-                }),
-              }),
-            });
-            vi.spyOn(instance, "getActions").mockImplementation(() => Object.create(null));
-            vi.spyOn(instance, "resolveModel").mockReturnValue(model);
-            vi.spyOn(instance, "onStepEnd").mockImplementation(async () => {});
-            vi.spyOn(ProviderAuthorizationPostgres, "make").mockReturnValue(
-              Effect.succeed({ admit: () => Effect.succeed(authorization) }),
-            );
-            await instance.onStart();
-
-            await instance.submitManagedConversation({
-              authorization,
-              idempotencyKey: "telegram-reset-blocker",
-              message: "Finish earlier work",
-              routeId,
-              submissionId: blockerId,
-            });
-
-            let replacementFinished = false;
-            const replacement = instance
-              .submitManagedConversation({
-                authorization,
-                idempotencyKey: "telegram-reset-new",
-                message: "/new",
-                routeId,
-                submissionId: replacementId,
-              })
-              .then((result) => {
-                replacementFinished = true;
-                return result;
-              });
-            await Promise.resolve();
-
-            let telegramFinished = false;
-            const telegram = instance
-              .acceptTelegramMessage({
-                channelBindingId,
-                message: "Use the new Session",
-                providerMessageId: "telegram-reset-event",
-                receiptId: "receipt-telegram-reset-event",
-                submissionId: telegramSubmissionId,
-                userMessageId: "message-telegram-reset-event",
-              })
-              .then((result) => {
-                telegramFinished = true;
-                return result;
-              });
-            await Promise.resolve();
-            const telegramWaitedBehindReset = !telegramFinished && !replacementFinished;
-
-            await instance._drainThinkSubmissions();
-            const replaced = await replacement;
-            const receipt = await telegram;
-            await instance._drainThinkSubmissions();
-            const telegramSubmission = await instance.inspectSubmission(telegramSubmissionId);
-            const replacementSession = await instance.readSession(replacementSessionId);
-            return {
-              receipt,
-              replaced,
-              replacementSession,
-              telegramSubmission,
-              telegramWaitedBehindReset,
-            };
-          }),
-        );
-
-        expect(observed.telegramWaitedBehindReset).toBe(true);
-        expect(observed.replaced).toMatchObject({
-          _tag: "CurrentSessionReplaced",
-          currentSessionId: replacementSessionId,
-        });
-        expect(observed.receipt).toMatchObject({
-          _tag: "AcceptanceReceipt",
-          sessionId: replacementSessionId,
-          thinkSubmissionId: telegramSubmissionId,
-        });
-        expect(observed.telegramSubmission).toMatchObject({
-          metadata: {
-            sessionId: replacementSessionId,
-            telegramAcceptance: { sessionId: replacementSessionId },
-          },
-          status: "completed",
-        });
-        expect(observed.replacementSession).toMatchObject({
-          _tag: "SessionHistoryFound",
-          messages: [
-            expect.objectContaining({ role: "user" }),
-            expect.objectContaining({ role: "assistant" }),
-          ],
-        });
-      }),
-  );
-
   it.effect("reconstructs a pending Submission pin from Think after Agent eviction", () =>
     Effect.gen(function* () {
       const agentId = AgentId.make("agent-managed-eviction");
@@ -368,7 +245,7 @@ describe("managed Think Submission execution", () => {
       const channelBindingId = ChannelBindingId.make("binding-managed-eviction");
       const userId = UserId.make("user-managed-eviction");
       const authorization = managedAuthorization(channelBindingId, userId);
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
       let releaseModel: () => void = () => {};
       let markModelStarted: () => void = () => {};
       const modelStarted = new Promise<void>((resolve) => {
@@ -463,13 +340,22 @@ describe("managed Think Submission execution", () => {
           const replaced = await replacement;
           const inspection = await instance.inspectSubmission(submissionId);
           const original = await instance.readSession(sessionId);
-          return { inspection, original, replaced, waitedBeforeDrain, waitedDuringExecution };
+          return {
+            inspection,
+            original,
+            replaced,
+            waitedBeforeDrain,
+            waitedDuringExecution,
+          };
         }),
       );
 
       expect(observed.waitedBeforeDrain).toBe(true);
       expect(observed.waitedDuringExecution).toBe(true);
-      expect(observed.inspection).toMatchObject({ status: "completed", submissionId });
+      expect(observed.inspection).toMatchObject({
+        status: "completed",
+        submissionId,
+      });
       expect(observed.original).toMatchObject({
         _tag: "SessionHistoryFound",
         messages: [
@@ -495,7 +381,7 @@ describe("managed Think Submission execution", () => {
       const channelBindingId = ChannelBindingId.make("binding-managed-interruption");
       const userId = UserId.make("user-managed-interruption");
       const authorization = managedAuthorization(channelBindingId, userId);
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(async () => {
         await agent.initialize({
@@ -573,9 +459,20 @@ describe("managed Think Submission execution", () => {
         }),
       );
 
-      expect(observed.accepted).toMatchObject({ accepted: true, status: "pending", submissionId });
-      expect(observed.terminal).toMatchObject({ status: "aborted", submissionId });
-      expect(observed.replayed).toMatchObject({ accepted: false, status: "aborted", submissionId });
+      expect(observed.accepted).toMatchObject({
+        accepted: true,
+        status: "pending",
+        submissionId,
+      });
+      expect(observed.terminal).toMatchObject({
+        status: "aborted",
+        submissionId,
+      });
+      expect(observed.replayed).toMatchObject({
+        accepted: false,
+        status: "aborted",
+        submissionId,
+      });
       expect(observed.replaced).toMatchObject({
         _tag: "CurrentSessionReplaced",
         currentSessionId: `session-${replacementId}`,
@@ -592,7 +489,7 @@ describe("managed Think Submission execution", () => {
       const authorization = managedAuthorization(channelBindingId, userId);
       const submissionId = ThinkSubmissionId.make("submission-invalid-running-wakeup");
       const replacementId = ThinkSubmissionId.make("submission-invalid-running-new");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
       yield* Effect.promise(async () => {
         await agent.initialize({
           agentId,
@@ -633,7 +530,10 @@ describe("managed Think Submission execution", () => {
             status: "running",
             submissionId: "not-a-managed-submission-id",
           });
-          return { cancelCalls: cancel.mock.calls.length, replaced: await replacement };
+          return {
+            cancelCalls: cancel.mock.calls.length,
+            replaced: await replacement,
+          };
         }),
       );
 

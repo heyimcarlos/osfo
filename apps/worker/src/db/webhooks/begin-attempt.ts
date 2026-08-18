@@ -1,4 +1,4 @@
-import { webhookEvents } from "@osfo/db/schema/webhooks";
+import { webhookJobs } from "@osfo/db/schema/webhooks";
 import { eq, sql } from "drizzle-orm";
 
 import type { Database } from "../index";
@@ -15,15 +15,15 @@ export const beginAttempt = async (
 ) => {
   if (status === "processed") return { _tag: "ProcessedDuplicate" } as const;
   const [updated] = await transaction
-    .update(webhookEvents)
+    .update(webhookJobs)
     .set({
-      attempts: sql`${webhookEvents.attempts} + 1`,
+      attempts: sql`${webhookJobs.attempts} + 1`,
       errorCode: null,
       status: "pending",
       updatedAt: sql`clock_timestamp()`,
     })
-    .where(eq(webhookEvents.webhookEventId, webhookEventId))
-    .returning({ attempts: webhookEvents.attempts });
+    .where(eq(webhookJobs.webhookEventId, webhookEventId))
+    .returning({ attempts: webhookJobs.attempts });
   return updated === undefined
     ? ({ _tag: "ProcessedDuplicate" } as const)
     : ({ _tag: "Pending", attempt: updated.attempts, webhookEventId } as const);

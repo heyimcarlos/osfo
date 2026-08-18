@@ -2,7 +2,7 @@ import { Effect, Redacted, Schema } from "effect";
 
 import { ProviderMessageId } from "../../domain";
 import {
-  type InboundWhatsAppMessage,
+  InboundWhatsAppMessage,
   WhatsAppDirectChannelIdentity,
   WhatsAppMessageText,
   WhatsAppPhoneNumberId,
@@ -33,43 +33,55 @@ export interface ChallengeVerified {
 }
 
 /** Valid inbound facts that do not enter normal UserMessage admission. */
-export type IgnoredMetaEvent =
-  | {
-      readonly _tag: "GroupMessageRejected";
-      readonly phoneNumberId: WhatsAppPhoneNumberId;
-      readonly providerMessageId: ProviderMessageId;
-    }
-  | {
-      readonly _tag: "MessageStatus";
-      readonly phoneNumberId: WhatsAppPhoneNumberId;
-      readonly providerMessageId: ProviderMessageId;
-      readonly recipientId: typeof WhatsAppDirectChannelIdentity.Type;
-      readonly status: "deleted" | "delivered" | "failed" | "read" | "sent";
-      readonly timestamp: string;
-    }
-  | {
-      readonly _tag: "NonMessageNotification";
-      readonly notification:
-        | "account_update"
-        | "account_review_update"
-        | "message_template_status_update"
-        | "phone_number_name_update"
-        | "phone_number_quality_update";
-      readonly whatsAppBusinessAccountId: string;
-    }
-  | {
-      readonly _tag: "ProviderEcho";
-      readonly phoneNumberId: WhatsAppPhoneNumberId;
-      readonly providerMessageId: ProviderMessageId;
-    }
-  | {
-      readonly _tag: "UnsupportedDirectMessage";
-      readonly phoneNumberId: WhatsAppPhoneNumberId;
-      readonly providerMessageId: ProviderMessageId;
-    };
+export const IgnoredMetaEvent = Schema.Union([
+  Schema.TaggedStruct("GroupMessageRejected", {
+    phoneNumberId: WhatsAppPhoneNumberId,
+    providerMessageId: ProviderMessageId,
+  }),
+  Schema.TaggedStruct("MessageStatus", {
+    errors: Schema.Array(
+      Schema.Struct({
+        code: Schema.Finite,
+        details: Schema.optional(Schema.String),
+        message: Schema.optional(Schema.String),
+        title: Schema.String,
+      }),
+    ),
+    phoneNumberId: WhatsAppPhoneNumberId,
+    providerMessageId: ProviderMessageId,
+    recipientId: WhatsAppDirectChannelIdentity,
+    status: Schema.Literals(["deleted", "delivered", "failed", "read", "sent"]),
+    timestamp: Schema.String,
+  }),
+  Schema.TaggedStruct("NonMessageNotification", {
+    notification: Schema.Literals([
+      "account_update",
+      "account_review_update",
+      "message_template_status_update",
+      "phone_number_name_update",
+      "phone_number_quality_update",
+    ]),
+    occurredAt: Schema.NullOr(Schema.Finite),
+    whatsAppBusinessAccountId: Schema.String,
+  }),
+  Schema.TaggedStruct("ProviderEcho", {
+    phoneNumberId: WhatsAppPhoneNumberId,
+    providerMessageId: ProviderMessageId,
+  }),
+  Schema.TaggedStruct("UnsupportedDirectMessage", {
+    phoneNumberId: WhatsAppPhoneNumberId,
+    providerMessageId: ProviderMessageId,
+  }),
+]);
+
+/** Valid inbound facts that do not enter normal UserMessage admission. */
+export type IgnoredMetaEvent = typeof IgnoredMetaEvent.Type;
 
 /** Closed normalized output of one authenticated Meta webhook body. */
-export type MetaInboundFact = IgnoredMetaEvent | InboundWhatsAppMessage;
+export const MetaInboundFact = Schema.Union([IgnoredMetaEvent, InboundWhatsAppMessage]);
+
+/** Closed normalized output of one authenticated Meta webhook body. */
+export type MetaInboundFact = typeof MetaInboundFact.Type;
 
 const MessageContext = Schema.Struct({
   forwarded: Schema.optional(Schema.Boolean),
@@ -163,7 +175,10 @@ const Contact = Schema.Struct({
   ),
   urls: Schema.optional(
     Schema.Array(
-      Schema.Struct({ type: Schema.optional(Schema.String), url: Schema.optional(Schema.String) }),
+      Schema.Struct({
+        type: Schema.optional(Schema.String),
+        url: Schema.optional(Schema.String),
+      }),
     ),
   ),
 });
@@ -181,7 +196,10 @@ const MetaMessage = Schema.Union([
   Schema.Struct({
     ...MessageBase,
     interactive: Schema.Struct({
-      button_reply: Schema.Struct({ id: Schema.String, title: WhatsAppMessageText }),
+      button_reply: Schema.Struct({
+        id: Schema.String,
+        title: WhatsAppMessageText,
+      }),
       type: Schema.Literal("button_reply"),
     }),
     type: Schema.Literal("interactive"),
@@ -210,17 +228,26 @@ const MetaMessage = Schema.Union([
   }),
   Schema.Struct({
     ...MessageBase,
-    button: Schema.Struct({ payload: Schema.String, text: WhatsAppMessageText }),
+    button: Schema.Struct({
+      payload: Schema.String,
+      text: WhatsAppMessageText,
+    }),
     type: Schema.Literal("button"),
   }),
   Schema.Struct({
     ...MessageBase,
-    image: Schema.Struct({ ...MediaIdentity, caption: Schema.optional(Schema.String) }),
+    image: Schema.Struct({
+      ...MediaIdentity,
+      caption: Schema.optional(Schema.String),
+    }),
     type: Schema.Literal("image"),
   }),
   Schema.Struct({
     ...MessageBase,
-    audio: Schema.Struct({ ...MediaIdentity, voice: Schema.optional(Schema.Boolean) }),
+    audio: Schema.Struct({
+      ...MediaIdentity,
+      voice: Schema.optional(Schema.Boolean),
+    }),
     type: Schema.Literal("audio"),
   }),
   Schema.Struct({
@@ -234,12 +261,18 @@ const MetaMessage = Schema.Union([
   }),
   Schema.Struct({
     ...MessageBase,
-    sticker: Schema.Struct({ ...MediaIdentity, animated: Schema.optional(Schema.Boolean) }),
+    sticker: Schema.Struct({
+      ...MediaIdentity,
+      animated: Schema.optional(Schema.Boolean),
+    }),
     type: Schema.Literal("sticker"),
   }),
   Schema.Struct({
     ...MessageBase,
-    video: Schema.Struct({ ...MediaIdentity, caption: Schema.optional(Schema.String) }),
+    video: Schema.Struct({
+      ...MediaIdentity,
+      caption: Schema.optional(Schema.String),
+    }),
     type: Schema.Literal("video"),
   }),
   Schema.Struct({
@@ -260,7 +293,10 @@ const MetaMessage = Schema.Union([
   }),
   Schema.Struct({
     ...MessageBase,
-    reaction: Schema.Struct({ emoji: Schema.String, message_id: ProviderMessageId }),
+    reaction: Schema.Struct({
+      emoji: Schema.String,
+      message_id: ProviderMessageId,
+    }),
     type: Schema.Literal("reaction"),
   }),
   Schema.Struct({
@@ -384,7 +420,10 @@ const MetaNonMessageChange = Schema.Union([
   Schema.Struct({
     field: Schema.Literal("account_update"),
     value: Schema.Union([
-      Schema.Struct({ event: Schema.Literal("VERIFIED_ACCOUNT"), phone_number: Schema.String }),
+      Schema.Struct({
+        event: Schema.Literal("VERIFIED_ACCOUNT"),
+        phone_number: Schema.String,
+      }),
       Schema.Struct({
         ban_info: Schema.Struct({
           waba_ban_date: Schema.String,
@@ -396,7 +435,9 @@ const MetaNonMessageChange = Schema.Union([
   }),
   Schema.Struct({
     field: Schema.Literal("account_review_update"),
-    value: Schema.Struct({ decision: Schema.Literals(["APPROVED", "REJECTED"]) }),
+    value: Schema.Struct({
+      decision: Schema.Literals(["APPROVED", "REJECTED"]),
+    }),
   }),
   Schema.Struct({
     field: Schema.Literal("message_template_status_update"),
@@ -442,7 +483,9 @@ export const verifyChallenge = (
   const challenge = url.searchParams.get("hub.challenge");
   return mode === "subscribe" && token === Redacted.value(verificationToken) && challenge !== null
     ? { _tag: "ChallengeVerified", challenge }
-    : new MetaWebhookAuthenticationFailed({ message: "Meta webhook verification failed" });
+    : new MetaWebhookAuthenticationFailed({
+        message: "Meta webhook verification failed",
+      });
 };
 
 /** Authenticate exact request bytes, then decode only the supported Meta event shape. */
@@ -489,6 +532,7 @@ export const authenticateAndDecode = (
             {
               _tag: "NonMessageNotification",
               notification: change.field,
+              occurredAt: entry.time ?? null,
               whatsAppBusinessAccountId: entry.id,
             },
           ];
@@ -497,6 +541,15 @@ export const authenticateAndDecode = (
         if ("statuses" in change.value) {
           return change.value.statuses.map((status) => ({
             _tag: "MessageStatus",
+            errors:
+              "errors" in status
+                ? status.errors.map((error) => ({
+                    code: error.code,
+                    details: error.error_data?.details,
+                    message: error.message,
+                    title: error.title,
+                  }))
+                : [],
             phoneNumberId,
             providerMessageId: status.id,
             recipientId: status.recipient_id,
