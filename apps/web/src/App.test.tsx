@@ -5,6 +5,7 @@ import { AuthScreen } from "./components/auth-screen";
 import { GetStartedScreen } from "./components/get-started-screen";
 import { HomeScreen } from "./components/home-screen";
 import { PlanDetails, PrivacyNotice } from "./components/public-information";
+import { withTestRouter } from "./testing/router";
 
 describe("App", () => {
   it("renders only the phone sign-in surface", () => {
@@ -28,7 +29,7 @@ describe("App", () => {
   });
 
   it("renders a public home page with authentication entry points", () => {
-    const html = renderToStaticMarkup(<HomeScreen />);
+    const html = renderToStaticMarkup(withTestRouter(<HomeScreen />));
 
     expect(html).toContain("Get the busy work out of your way.");
     expect(html).toContain('href="/login"');
@@ -37,7 +38,9 @@ describe("App", () => {
   });
 
   it("renders the public phone-first registration entry", () => {
-    const html = renderToStaticMarkup(<GetStartedScreen onComplete={() => undefined} />);
+    const html = renderToStaticMarkup(
+      withTestRouter(<GetStartedScreen onComplete={() => undefined} />),
+    );
 
     expect(html).toContain("How can Osfo help?");
     expect(html).toContain("Both fields are optional");
@@ -48,10 +51,10 @@ describe("App", () => {
   });
 
   it("renders the complete linked privacy notice and Plan details", () => {
-    const privacy = renderToStaticMarkup(<PrivacyNotice />);
-    const plans = renderToStaticMarkup(<PlanDetails />);
-    const spanishPrivacy = renderToStaticMarkup(<PrivacyNotice locale="es" />);
-    const spanishPlans = renderToStaticMarkup(<PlanDetails locale="es" />);
+    const privacy = renderToStaticMarkup(withTestRouter(<PrivacyNotice />));
+    const plans = renderToStaticMarkup(withTestRouter(<PlanDetails />));
+    const spanishPrivacy = renderToStaticMarkup(withTestRouter(<PrivacyNotice locale="es" />));
+    const spanishPlans = renderToStaticMarkup(withTestRouter(<PlanDetails locale="es" />));
 
     expect(privacy).toContain("What Osfo stores");
     expect(privacy).toContain("Your choices and rights");

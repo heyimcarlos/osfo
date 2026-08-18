@@ -10,9 +10,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ai-sdk/react": "4.0.69",
+    "@cloudflare/think": "0.15.1",
     "@osfo/api": "workspace:*",
     "@osfo/ui": "workspace:*",
     "@tanstack/react-form": "1.33.5",
+    "@tanstack/react-router": "1.168.22",
+    "agents": "0.20.1",
+    "ai": "7.0.66",
     "better-auth": "1.6.28",
     "effect": "catalog:",
     "libphonenumber-js": "1.13.11",

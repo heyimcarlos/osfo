@@ -1,0 +1,30 @@
+import { Option, Schema } from "effect";
+
+/* oxlint-disable eslint/no-underscore-dangle -- Typed route states use the standard _tag discriminator. */
+
+const BillingReturnQuery = Schema.Struct({
+  session_id: Schema.optional(Schema.String),
+  source: Schema.optional(Schema.String),
+});
+
+/** Legal states parsed from a hosted billing return query. */
+export type BillingReturnSearch =
+  | { readonly _tag: "Checkout"; readonly checkoutSessionId: string }
+  | { readonly _tag: "Invalid" }
+  | { readonly _tag: "Ordinary" }
+  | { readonly _tag: "Portal" };
+
+/** Parse unknown hosted billing query data into one legal return state. */
+export const parseBillingReturnSearch = (input: {
+  readonly session_id?: unknown;
+  readonly source?: unknown;
+}): BillingReturnSearch => {
+  const decoded = Schema.decodeUnknownOption(BillingReturnQuery)(input);
+  if (Option.isNone(decoded)) return { _tag: "Invalid" };
+  const { session_id: sessionId, source } = decoded.value;
+  if (source === undefined && sessionId === undefined) return { _tag: "Ordinary" };
+  if (source === "portal" && sessionId === undefined) return { _tag: "Portal" };
+  if (source === "checkout" && sessionId !== undefined && sessionId.length > 0)
+    return { _tag: "Checkout", checkoutSessionId: sessionId };
+  return { _tag: "Invalid" };
+};

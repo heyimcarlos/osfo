@@ -1,13 +1,17 @@
 import { describe, expect, it } from "@effect/vitest";
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import { withTestRouter } from "../testing/router";
 import { BillingScreen } from "./billing-screen";
 
 /* oxlint-disable effecttsgo/global-date -- These static presentation tests use fixed Date fixtures. */
 
+const renderBilling = (children: ReactNode) => renderToStaticMarkup(withTestRouter(children));
+
 describe("BillingScreen", () => {
   it("shows current Plan, scheduled cancellation, period, and safe actions", () => {
-    const html = renderToStaticMarkup(
+    const html = renderBilling(
       <BillingScreen
         onCheckout={() => undefined}
         onPortal={() => undefined}
@@ -35,7 +39,7 @@ describe("BillingScreen", () => {
   });
 
   it("offers Stripe-hosted Checkout on Free without technical payment details", () => {
-    const html = renderToStaticMarkup(
+    const html = renderBilling(
       <BillingScreen
         onCheckout={() => undefined}
         onPortal={() => undefined}
@@ -58,7 +62,7 @@ describe("BillingScreen", () => {
   });
 
   it("uses safe payment-attention language after a failed Checkout", () => {
-    const html = renderToStaticMarkup(
+    const html = renderBilling(
       <BillingScreen
         onCheckout={() => undefined}
         onPortal={() => undefined}
