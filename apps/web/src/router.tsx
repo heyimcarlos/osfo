@@ -78,7 +78,7 @@ const thinkRoute = createRoute({
   component: lazyRouteComponent(() => import("./pages/think-page"), "ThinkPage"),
 });
 const settingsRoute = createRoute({
-  getParentRoute: () => framedAuthenticatedRoute,
+  getParentRoute: () => authenticatedRoute,
   id: "settingsDetails",
   component: SettingsShell,
 });
@@ -88,6 +88,14 @@ const settingsOverviewRoute = createRoute({
   component: lazyRouteComponent(
     () => import("./pages/settings-overview-page"),
     "SettingsOverviewPage",
+  ),
+});
+const settingsGeneralRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "settings/general",
+  component: lazyRouteComponent(
+    () => import("./pages/settings-general-page"),
+    "SettingsGeneralPage",
   ),
 });
 const settingsChannelsRoute = createRoute({
@@ -119,6 +127,14 @@ const settingsBillingRoute = createRoute({
   path: "settings/billing",
   component: lazyRouteComponent(() => import("./pages/billing-page"), "BillingPage"),
 });
+const settingsMarketplaceRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "settings/marketplace",
+  component: lazyRouteComponent(
+    () => import("./pages/settings-marketplace-page"),
+    "SettingsMarketplacePage",
+  ),
+});
 const billingRoute = createRoute({
   getParentRoute: () => framedAuthenticatedRoute,
   path: "billing",
@@ -140,17 +156,15 @@ const routeTree = rootRoute.addChildren([
   plansRoute,
   authenticatedRoute.addChildren([
     settingsOverviewRoute,
-    framedAuthenticatedRoute.addChildren([
-      thinkRoute,
-      settingsRoute.addChildren([
-        settingsChannelsRoute,
-        settingsPrivacyRoute,
-        settingsProfileRoute,
-        settingsBillingRoute,
-      ]),
-      billingRoute,
-      billingReturnRoute,
+    settingsRoute.addChildren([
+      settingsGeneralRoute,
+      settingsChannelsRoute,
+      settingsPrivacyRoute,
+      settingsProfileRoute,
+      settingsBillingRoute,
+      settingsMarketplaceRoute,
     ]),
+    framedAuthenticatedRoute.addChildren([thinkRoute, billingRoute, billingReturnRoute]),
   ]),
 ]);
 

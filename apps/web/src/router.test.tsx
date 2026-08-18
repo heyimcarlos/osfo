@@ -150,10 +150,9 @@ describe("Osfo route tree", () => {
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Privacy" })).toBeTruthy());
     const settingsNavigation = screen.getByRole("navigation", { name: "Settings" });
-    expect(settingsNavigation.className).toContain("max-md:hidden");
-    const backLink = screen.getByRole("link", { name: "Back to settings" });
+    const backLink = screen.getByRole("link", { name: "Back to dashboard" });
     expect(backLink.getAttribute("href")).toBe("/settings");
-    expect(backLink.className).toContain("md:hidden");
+    expect(settingsNavigation.className).toContain("grid-cols-2");
   });
 
   it("shows a safe not-found page", async () => {

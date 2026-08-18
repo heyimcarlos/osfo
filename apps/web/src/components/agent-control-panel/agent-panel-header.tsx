@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { MoreHorizontal } from "lucide-react";
+import { Bell, MoreHorizontal } from "lucide-react";
 
 /** Logo, status, title, and accessible overflow actions for the Agent panel. */
 export function AgentPanelHeader({ status }: { readonly status: { readonly kind: "Active" } }) {
@@ -24,35 +24,48 @@ export function AgentPanelHeader({ status }: { readonly status: { readonly kind:
           {status.kind === "Active" ? "Agent Active" : null}
         </span>
       </div>
-      <details className="group relative z-30 justify-self-end md:col-start-3">
-        <summary
-          aria-label="Agent menu"
-          className="grid size-11 cursor-pointer list-none place-items-center rounded-full border border-white/80 bg-white/55 text-[#18223f] shadow-[0_8px_20px_rgba(45,68,110,0.12)] transition hover:bg-white/80 focus-visible:ring-2 focus-visible:ring-[#2f7df4] focus-visible:ring-offset-2 focus-visible:outline-none [&::-webkit-details-marker]:hidden"
+      <div className="flex items-center gap-2 justify-self-end md:col-start-3">
+        <button
+          aria-label="Notification center, unavailable"
+          className="relative grid size-11 cursor-not-allowed place-items-center rounded-full border border-white/80 bg-white/55 text-[#18223f] opacity-80 shadow-[0_8px_20px_rgba(45,68,110,0.12)]"
+          disabled
+          type="button"
         >
-          <MoreHorizontal aria-hidden="true" className="size-5" />
-        </summary>
-        <div className="absolute top-13 right-0 grid min-w-44 gap-1 rounded-2xl border border-white/85 bg-white/90 p-2 text-sm font-semibold text-[#101936] shadow-[0_18px_45px_rgba(45,68,110,0.2)] backdrop-blur-xl">
-          <Link
-            className="flex min-h-11 items-center rounded-xl px-3 py-2.5 hover:bg-[#edf4ff] focus-visible:outline-2"
-            to="/settings/profile"
-          >
-            Agent details
-          </Link>
+          <Bell aria-hidden="true" className="size-5" />
           <span
-            aria-disabled="true"
-            className="flex min-h-11 cursor-not-allowed items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-[#65718a]"
+            aria-hidden="true"
+            className="absolute top-1.5 right-1.5 size-2 rounded-full bg-[#2f7df4] ring-2 ring-white"
+          />
+        </button>
+        <details className="group relative z-30">
+          <summary
+            aria-label="Agent menu"
+            className="grid size-11 cursor-pointer list-none place-items-center rounded-full border border-white/80 bg-white/55 text-[#18223f] shadow-[0_8px_20px_rgba(45,68,110,0.12)] transition hover:bg-white/80 focus-visible:ring-2 focus-visible:ring-[#2f7df4] focus-visible:ring-offset-2 focus-visible:outline-none [&::-webkit-details-marker]:hidden"
           >
-            Pause agent <small>Unavailable</small>
-          </span>
-          <Link
-            className="flex min-h-11 items-center rounded-xl px-3 py-2.5 hover:bg-[#edf4ff] focus-visible:outline-2"
-            search={{ lang: "en" }}
-            to="/privacy"
-          >
-            Help
-          </Link>
-        </div>
-      </details>
+            <MoreHorizontal aria-hidden="true" className="size-5" />
+          </summary>
+          <div className="absolute top-13 right-0 grid min-w-44 gap-1 rounded-2xl border border-white/85 bg-white/90 p-2 text-sm font-semibold text-[#101936] shadow-[0_18px_45px_rgba(45,68,110,0.2)] backdrop-blur-xl">
+            <Link
+              className="flex min-h-11 items-center rounded-xl px-3 py-2.5 hover:bg-[#edf4ff] focus-visible:outline-2"
+              to="/settings/general"
+            >
+              Settings
+            </Link>
+            <Link
+              className="flex min-h-11 items-center rounded-xl px-3 py-2.5 hover:bg-[#edf4ff] focus-visible:outline-2"
+              to="/settings/profile"
+            >
+              Profile
+            </Link>
+            <Link
+              className="flex min-h-11 items-center rounded-xl px-3 py-2.5 hover:bg-[#edf4ff] focus-visible:outline-2"
+              to="/settings/marketplace"
+            >
+              Marketplace
+            </Link>
+          </div>
+        </details>
+      </div>
     </header>
   );
 }
