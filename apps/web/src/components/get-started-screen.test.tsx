@@ -1,13 +1,14 @@
 // @vitest-environment happy-dom
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import { AgentId, ChannelBindingId, UserId } from "@osfo/api";
 import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
 import { DateTime, Effect } from "effect";
 
 import type { CompleteOnboardingPayload } from "../lib/api-client";
+import { renderWithTestRouter as render } from "../testing/router";
 import { GetStartedScreen, type GetStartedDependencies } from "./get-started-screen";
 
 /* oxlint-disable effecttsgo/async-function -- Testing Library owns browser interaction Promises. */

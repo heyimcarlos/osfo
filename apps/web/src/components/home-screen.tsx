@@ -1,4 +1,5 @@
 import { buttonVariants } from "@osfo/ui/components/button";
+import { Link } from "@tanstack/react-router";
 import { ArrowRight, LockKeyhole, MessageCircle, Sparkles } from "lucide-react";
 
 const features = [
@@ -25,20 +26,20 @@ export function HomeScreen() {
     <div className="min-h-dvh overflow-x-hidden bg-[radial-gradient(circle_at_top,oklch(0.96_0.035_250),oklch(0.985_0.006_250)_42%,oklch(0.965_0.008_250))] text-foreground">
       <header className="border-b-2 border-border bg-background">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-5 sm:px-8">
-          <a className="flex items-center gap-3" href="/" aria-label="Osfo home">
+          <Link aria-label="Osfo home" className="flex items-center gap-3" to="/">
             <span className="grid size-10 place-items-center rounded-full bg-primary text-lg font-black text-primary-foreground shadow-sm">
               O
             </span>
             <span className="text-xl font-black tracking-tight">Osfo</span>
-          </a>
+          </Link>
           <nav className="flex items-center gap-4" aria-label="Primary navigation">
-            <a className="font-black text-sm uppercase hover:underline" href="/login">
+            <Link className="font-black text-sm uppercase hover:underline" to="/login">
               Sign in
-            </a>
-            <a className={buttonVariants({ size: "sm" })} href="/login">
+            </Link>
+            <Link className={buttonVariants({ size: "sm" })} to="/login">
               Get started
               <ArrowRight data-icon="inline-end" />
-            </a>
+            </Link>
           </nav>
         </div>
       </header>
@@ -53,16 +54,16 @@ export function HomeScreen() {
             <p className="mt-6 max-w-2xl text-balance text-xl font-medium leading-snug text-foreground/75 sm:text-2xl">
               Osfo helps you plan, write, organize, and act, through one simple conversation.
             </p>
-            <a
+            <Link
               className={buttonVariants({
                 className: "mt-8 min-w-56 justify-between",
                 size: "lg",
               })}
-              href="/login"
+              to="/login"
             >
               Get started
               <ArrowRight data-icon="inline-end" />
-            </a>
+            </Link>
           </div>
 
           <div className="grid gap-4" aria-label="What Osfo offers">

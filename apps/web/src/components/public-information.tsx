@@ -1,4 +1,6 @@
-import { useEffect } from "react";
+import { Link } from "@tanstack/react-router";
+
+import { useDocumentLanguage } from "../lib/document-language";
 
 type Locale = "en" | "es";
 
@@ -150,16 +152,14 @@ const InformationPage = ({
   readonly locale: Locale;
   readonly title: string;
 }) => {
-  useEffect(() => {
-    globalThis.document?.documentElement.setAttribute("lang", locale);
-  }, [locale]);
+  useDocumentLanguage(locale);
 
   return (
     <main className="min-h-dvh bg-background px-5 py-10 text-foreground">
       <article className="mx-auto max-w-3xl space-y-5 [&_h2]:pt-3 [&_h2]:text-2xl [&_h2]:font-black [&_h2]:uppercase [&_p]:leading-relaxed">
-        <a className="font-bold underline" href={`/get-started?lang=${locale}`}>
+        <Link className="font-bold underline" search={{ lang: locale }} to="/get-started">
           {locale === "es" ? "Volver a la configuración" : "Back to setup"}
-        </a>
+        </Link>
         <h1 className="text-4xl font-black uppercase sm:text-6xl">{title}</h1>
         {children}
       </article>

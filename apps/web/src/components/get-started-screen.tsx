@@ -1,5 +1,6 @@
 import type { HelpArea, InvitationResponse, OnboardingLocale, OnboardingResponse } from "@osfo/api";
 import { Button } from "@osfo/ui/components/button";
+import { Link } from "@tanstack/react-router";
 import {
   Card,
   CardContent,
@@ -14,6 +15,7 @@ import { ArrowRight, ExternalLink } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { completeOnboarding, inspectRegistrationInvitation } from "../lib/api-client";
+import { useDocumentLanguage } from "../lib/document-language";
 import {
   defaultPhoneAuthDependencies,
   PhoneAuthForm,
@@ -26,6 +28,7 @@ interface GetStartedScreenProps {
   readonly dependencies?: GetStartedDependencies;
   readonly enrollmentProvider?: "telegram" | "whatsapp";
   readonly invitationToken?: string;
+  readonly initialLocale?: OnboardingLocale;
   readonly isAuthenticated?: boolean;
   readonly onComplete: () => void;
 }
@@ -58,10 +61,11 @@ export function GetStartedScreen({
   dependencies = defaultDependencies,
   enrollmentProvider = "whatsapp",
   invitationToken,
+  initialLocale,
   isAuthenticated = false,
   onComplete,
 }: GetStartedScreenProps) {
-  const [locale, setLocale] = useState<OnboardingLocale>(() => browserLocale());
+  const [locale, setLocale] = useState<OnboardingLocale>(() => initialLocale ?? browserLocale());
   const [preferredName, setPreferredName] = useState("");
   const [helpAreas, setHelpAreas] = useState<ReadonlyArray<HelpArea>>([]);
   const [state, setState] = useState<OnboardingState>(() =>
@@ -232,9 +236,9 @@ export function GetStartedScreen({
               <li>{text.stopNotice}</li>
             </ul>
             <p className="text-sm">
-              <a className="font-bold underline" href={`/privacy?lang=${locale}`}>
+              <Link className="font-bold underline" search={{ lang: locale }} to="/privacy">
                 {text.privacyLink}
-              </a>
+              </Link>
             </p>
             <Button
               className="w-full justify-between border-2 font-black uppercase"
@@ -273,12 +277,13 @@ export function GetStartedScreen({
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
-            <a
+            <Link
               className="inline-flex items-center gap-1 font-bold underline"
-              href={`/plans?lang=${locale}`}
+              search={{ lang: locale }}
+              to="/plans"
             >
               {text.planLink} <ExternalLink className="size-4" aria-hidden="true" />
-            </a>
+            </Link>
             {invitationToken !== undefined ? (
               <fieldset className="space-y-3">
                 <legend className="font-black uppercase">{text.bindingTitle}</legend>
@@ -399,9 +404,7 @@ function Shell({
   readonly locale: OnboardingLocale;
   readonly onLocaleChange: (locale: OnboardingLocale) => void;
 }) {
-  useEffect(() => {
-    globalThis.document?.documentElement.setAttribute("lang", locale);
-  }, [locale]);
+  useDocumentLanguage(locale);
 
   return (
     <main className="flex min-h-dvh flex-col bg-[radial-gradient(circle_at_top,oklch(0.96_0.035_250),oklch(0.985_0.006_250)_42%,oklch(0.965_0.008_250))] text-foreground">
@@ -512,10 +515,7 @@ const toggleArea = (current: ReadonlyArray<HelpArea>, area: HelpArea) =>
   current.includes(area) ? current.filter((value) => value !== area) : [...current, area];
 
 const browserLocale = (): OnboardingLocale =>
-  new URLSearchParams(globalThis.location?.search).get("lang") === "es" ||
-  globalThis.navigator?.language.toLowerCase().startsWith("es")
-    ? "es"
-    : "en";
+  globalThis.navigator?.language.toLowerCase().startsWith("es") ? "es" : "en";
 
 const providerFromEnrollmentUrl = (url: URL): "telegram" | "whatsapp" =>
   url.hostname.toLowerCase() === "t.me" ? "telegram" : "whatsapp";

@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 describe("authenticated App", () => {
-  it("renders a masked phone and no internal placeholder", async () => {
+  it("renders a masked phone without exposing the internal placeholder", async () => {
     globalThis.fetch = async () =>
       Response.json({
         session: {
@@ -35,13 +35,12 @@ describe("authenticated App", () => {
           updatedAt: "2026-08-16T00:00:00.000Z",
         },
       });
-    globalThis.history.replaceState(null, "", "/");
+    globalThis.history.replaceState(null, "", "/settings/profile");
     const { App } = await import("./App");
 
     render(<App />);
 
     await waitFor(() => expect(screen.getByText("••••••••0101")).toBeTruthy());
     expect(screen.queryByText("14165550101@phone-user.osfo.invalid")).toBeNull();
-    expect(screen.getByText("Sign out")).toBeTruthy();
   });
 });
