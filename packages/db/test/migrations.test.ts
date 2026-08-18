@@ -95,48 +95,89 @@ describe("Postgres migrations", () => {
     ),
   );
 
-  it.effect(
-    "drops obsolete chat receipt and Telegram delivery tables without copying chat data",
-    () =>
-      Effect.acquireUseRelease(
-        makeTestDatabase,
-        ({ client }) =>
-          Effect.gen(function* () {
-            const migrations = yield* readMigrations;
-            const initial = migrations[0];
-            if (initial === undefined) return yield* Effect.die("The initial migration is missing");
-            yield* applyMigrations(client, [initial]);
-            yield* Effect.promise(() =>
-              client.exec(`
+  it.effect("migrates Stripe jobs and drops obsolete chat tables without copying chat data", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          const migrations = yield* readMigrations;
+          const initial = migrations[0];
+          if (initial === undefined) return yield* Effect.die("The initial migration is missing");
+          yield* applyMigrations(client, [initial]);
+          yield* Effect.promise(() =>
+            client.exec(`
               INSERT INTO inbound_whatsapp_events (
                 channel_identity, content_digest, message_kind, phone_number_id,
                 provider, provider_message_id
               ) VALUES (
                 '14165550123', '${"a".repeat(40)}', 'text', '123456789',
                 'whatsapp', 'wamid.legacy'
-              )
+              );
+              INSERT INTO webhook_events (
+                attempts, event_type, external_event_id, external_object_id,
+                provider, webhook_event_id
+              ) VALUES (
+                0, 'checkout.session.completed', 'evt_legacy', 'cs_legacy',
+                'stripe', 'webhook-event-legacy'
+              );
             `),
-            );
+          );
 
-            yield* applyMigrations(client, migrations);
-            const events = yield* Effect.promise(() =>
-              client.query(`SELECT * FROM webhook_events`),
-            );
-            const removedTables = yield* Effect.promise(() =>
-              client.query<{ readonly table_name: string }>(`
+          yield* applyMigrations(client, migrations);
+          const events = yield* Effect.promise(() =>
+            client.query<{
+              readonly external_event_id: string;
+              readonly external_object_id: string;
+              readonly provider: string;
+              readonly webhook_event_id: string;
+            }>(`
+                SELECT
+                  payload_json::jsonb ->> 'externalEventId' AS external_event_id,
+                  payload_json::jsonb ->> 'externalObjectId' AS external_object_id,
+                  provider,
+                  webhook_event_id
+                FROM webhook_events
+              `),
+          );
+          const jobs = yield* Effect.promise(() =>
+            client.query<{
+              readonly attempts: number;
+              readonly status: string;
+              readonly webhook_event_id: string;
+            }>(`
+                SELECT attempts, status, webhook_event_id
+                FROM webhook_jobs
+              `),
+          );
+          const removedTables = yield* Effect.promise(() =>
+            client.query<{ readonly table_name: string }>(`
               SELECT table_name
               FROM information_schema.tables
               WHERE table_schema = 'public'
                 AND table_name IN ('inbound_whatsapp_events', 'telegram_onboarding_deliveries')
             `),
-            );
+          );
 
-            expect(events.rows).toEqual([]);
-            expect(removedTables.rows).toEqual([]);
-            return undefined;
-          }),
-        closeTestDatabase,
-      ),
+          expect(events.rows).toEqual([
+            {
+              external_event_id: "evt_legacy",
+              external_object_id: "cs_legacy",
+              provider: "stripe",
+              webhook_event_id: "webhook-event-legacy",
+            },
+          ]);
+          expect(jobs.rows).toEqual([
+            {
+              attempts: 1,
+              status: "pending",
+              webhook_event_id: "webhook-event-legacy",
+            },
+          ]);
+          expect(removedTables.rows).toEqual([]);
+          return undefined;
+        }),
+      closeTestDatabase,
+    ),
   );
 
   it.effect(

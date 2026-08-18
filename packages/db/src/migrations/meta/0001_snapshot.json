@@ -1,5 +1,5 @@
 {
-  "id": "977a9ec0-3b0f-497d-bb3c-b182758c16bc",
+  "id": "42f6b405-142f-4bfd-842e-b37b79c05664",
   "prevId": "bbfd4f21-0c25-4ca3-b6ec-9d486c1b226d",
   "version": "7",
   "dialect": "postgresql",
@@ -1111,119 +1111,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.inbound_whatsapp_events": {
-      "name": "inbound_whatsapp_events",
-      "schema": "",
-      "columns": {
-        "binding_resolved_at": {
-          "name": "binding_resolved_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "channel_identity": {
-          "name": "channel_identity",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content_digest": {
-          "name": "content_digest",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "message_kind": {
-          "name": "message_kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "phone_number_id": {
-          "name": "phone_number_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'whatsapp'"
-        },
-        "provider_message_id": {
-          "name": "provider_message_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "received_at": {
-          "name": "received_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "resolved_channel_binding_id": {
-          "name": "resolved_channel_binding_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "inbound_whatsapp_events_binding_index": {
-          "name": "inbound_whatsapp_events_binding_index",
-          "columns": [
-            {
-              "expression": "resolved_channel_binding_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "inbound_whatsapp_events_resolved_channel_binding_id_channel_bindings_channel_binding_id_fk": {
-          "name": "inbound_whatsapp_events_resolved_channel_binding_id_channel_bindings_channel_binding_id_fk",
-          "tableFrom": "inbound_whatsapp_events",
-          "tableTo": "channel_bindings",
-          "columnsFrom": ["resolved_channel_binding_id"],
-          "columnsTo": ["channel_binding_id"],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "inbound_whatsapp_events_provider_phone_number_id_provider_message_id_pk": {
-          "name": "inbound_whatsapp_events_provider_phone_number_id_provider_message_id_pk",
-          "columns": ["provider", "phone_number_id", "provider_message_id"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "inbound_provider_events_provider_check": {
-          "name": "inbound_provider_events_provider_check",
-          "value": "\"inbound_whatsapp_events\".\"provider\" in ('telegram', 'whatsapp')"
-        },
-        "inbound_whatsapp_events_message_kind_check": {
-          "name": "inbound_whatsapp_events_message_kind_check",
-          "value": "\"inbound_whatsapp_events\".\"message_kind\" in ('text', 'button_reply')"
-        },
-        "inbound_whatsapp_events_resolution_check": {
-          "name": "inbound_whatsapp_events_resolution_check",
-          "value": "\"inbound_whatsapp_events\".\"binding_resolved_at\" is not null or \"inbound_whatsapp_events\".\"resolved_channel_binding_id\" is null"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.channel_bindings": {
       "name": "channel_bindings",
       "schema": "",
@@ -1608,66 +1495,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.telegram_onboarding_deliveries": {
-      "name": "telegram_onboarding_deliveries",
-      "schema": "",
-      "columns": {
-        "event_id": {
-          "name": "event_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "claim_token": {
-          "name": "claim_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'not_applied'"
-        },
-        "lease_expires_at": {
-          "name": "lease_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "applied_at": {
-          "name": "applied_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "telegram_onboarding_deliveries_state_check": {
-          "name": "telegram_onboarding_deliveries_state_check",
-          "value": "\"telegram_onboarding_deliveries\".\"state\" in ('not_applied', 'prepared', 'ambiguous', 'applied')"
-        },
-        "telegram_onboarding_deliveries_lifecycle_check": {
-          "name": "telegram_onboarding_deliveries_lifecycle_check",
-          "value": "(\"telegram_onboarding_deliveries\".\"state\" in ('not_applied', 'prepared') and \"telegram_onboarding_deliveries\".\"lease_expires_at\" is not null and \"telegram_onboarding_deliveries\".\"applied_at\" is null) or (\"telegram_onboarding_deliveries\".\"state\" = 'ambiguous' and \"telegram_onboarding_deliveries\".\"lease_expires_at\" is null and \"telegram_onboarding_deliveries\".\"applied_at\" is null) or (\"telegram_onboarding_deliveries\".\"state\" = 'applied' and \"telegram_onboarding_deliveries\".\"lease_expires_at\" is null and \"telegram_onboarding_deliveries\".\"applied_at\" is not null)"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.deletion_cases": {
       "name": "deletion_cases",
       "schema": "",
@@ -1904,7 +1731,7 @@
       "checkConstraints": {
         "webhook_events_provider_check": {
           "name": "webhook_events_provider_check",
-          "value": "\"webhook_events\".\"provider\" in ('stripe', 'telegram', 'whatsapp')"
+          "value": "\"webhook_events\".\"provider\" = 'stripe'"
         }
       },
       "isRLSEnabled": false

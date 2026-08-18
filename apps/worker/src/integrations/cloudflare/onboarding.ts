@@ -21,6 +21,7 @@ const RegistrationResult = Schema.Union([
 ]);
 
 interface DirectoryOnboardingStub {
+  readonly ensureAgent: (agentId: string) => Promise<AgentFacetIdentity>;
   readonly initializeAgent: (
     agentId: string,
     input: {
@@ -40,6 +41,11 @@ interface DirectoryOnboardingStub {
       readonly preferredName: string | null;
     },
   ) => Promise<TaggedRpcResult>;
+}
+
+interface AgentFacetIdentity {
+  readonly className: string;
+  readonly name: string;
 }
 
 interface TaggedRpcResult {
@@ -82,10 +88,11 @@ export const layer = (env: Bindings) =>
       Onboarding.AgentOnboarding.of({
         initialize: (input) => {
           const agentId = input.agentId;
+          const directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
           const initializeWithRoute = (routeId: ConversationRouteId) =>
             call(
               () =>
-                env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).initializeAgent(agentId, {
+                directory.initializeAgent(agentId, {
                   agentId,
                   initializationId: AgentInitializationId.make(`registration-${agentId}`),
                   initializedAt: input.completedAt.toISOString(),
@@ -94,7 +101,14 @@ export const layer = (env: Bindings) =>
                 }),
               "The personal Agent could not be initialized",
             );
-          return initializeWithRoute(ConversationRouteId.make(`primary-route-${agentId}`)).pipe(
+          return Effect.tryPromise({
+            try: () => directory.ensureAgent(agentId),
+            catch: (cause) =>
+              executionUnavailable("The personal Agent facet could not be created", cause),
+          }).pipe(
+            Effect.andThen(
+              initializeWithRoute(ConversationRouteId.make(`primary-route-${agentId}`)),
+            ),
             Effect.flatMap((result) => {
               if (result._tag === "AgentInitialized") return Effect.void;
               if (result._tag !== "AgentInitializationConflict") {

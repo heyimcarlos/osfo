@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "@effect/vitest";
+import { deliverMessengerReply } from "@cloudflare/think/messengers";
 import { SELF } from "cloudflare:test";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
+
+import {
+  completeDeterministicTelegramReply,
+  makeTelegramChannel,
+} from "../src/integrations/telegram";
+
+/* oxlint-disable effecttsgo/async-function -- Think delivery surfaces and callbacks are Promise-based. */
 
 describe("Think Telegram channel", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -55,6 +63,47 @@ describe("Think Telegram channel", () => {
       expect(telegramCalls.filter((url) => url.endsWith("/getMe"))).toHaveLength(1);
     }),
   );
+
+  it.effect("does not append an empty fallback after a deterministic notice", () =>
+    Effect.gen(function* () {
+      const visibleMessages: Array<string> = [];
+      const channel = makeTelegramChannel({
+        conversation: () => ({ target: "self" }),
+        secretToken: "telegram-test-webhook-secret",
+        token: "telegram-test-bot-token",
+        userName: "osfo_test_bot",
+      });
+      const policy = channel.delivery ?? {};
+      const surface = {
+        post: async (message: string | { markdown: string } | AsyncIterable<string>) => {
+          if (Schema.is(Schema.String)(message)) {
+            visibleMessages.push(message);
+          } else if (Schema.is(PostedMarkdown)(message)) {
+            visibleMessages.push(message.markdown);
+          } else {
+            for await (const chunk of message) visibleMessages.push(chunk);
+          }
+        },
+      };
+
+      yield* Effect.promise(() =>
+        deliverMessengerReply({
+          event: telegramEvent,
+          policy,
+          surface,
+          target: {
+            cancelChat: () => undefined,
+            chat: async (_message, callback) => {
+              await surface.post("Connect Telegram from Osfo.");
+              await completeDeterministicTelegramReply(callback);
+            },
+          },
+        }),
+      );
+
+      expect(visibleMessages).toEqual(["Connect Telegram from Osfo."]);
+    }),
+  );
 });
 
 const request = (body: ReturnType<typeof update>, secret = "telegram-test-webhook-secret") =>
@@ -82,3 +131,24 @@ const update = (updateId: number, userId = 900100200) => ({
   },
   update_id: updateId,
 });
+
+const telegramEvent = {
+  capabilities: {},
+  kind: "direct-message" as const,
+  message: {
+    attachments: [],
+    author: { userId: "telegram-user-1" },
+    id: "telegram-message-1",
+    providerMessageId: "telegram-message-1",
+    text: "Hello",
+  },
+  messengerId: "telegram",
+  provider: "telegram",
+  thread: {
+    id: "telegram-thread-1",
+    isDirectMessage: true,
+    providerThreadId: "telegram-thread-1",
+  },
+};
+
+const PostedMarkdown = Schema.Struct({ markdown: Schema.String });

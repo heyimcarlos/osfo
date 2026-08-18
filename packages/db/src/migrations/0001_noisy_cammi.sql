@@ -10,6 +10,10 @@ CREATE TABLE "webhook_jobs" (
 	CONSTRAINT "webhook_jobs_processed_at_check" CHECK (("webhook_jobs"."status" = 'processed') = ("webhook_jobs"."processed_at" is not null))
 );
 --> statement-breakpoint
+ALTER TABLE "inbound_whatsapp_events" DISABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "telegram_onboarding_deliveries" DISABLE ROW LEVEL SECURITY;--> statement-breakpoint
+DROP TABLE "inbound_whatsapp_events" CASCADE;--> statement-breakpoint
+DROP TABLE "telegram_onboarding_deliveries" CASCADE;--> statement-breakpoint
 ALTER TABLE "webhook_events" DROP CONSTRAINT "webhook_events_attempts_check";--> statement-breakpoint
 ALTER TABLE "webhook_events" DROP CONSTRAINT "webhook_events_status_check";--> statement-breakpoint
 ALTER TABLE "webhook_events" DROP CONSTRAINT "webhook_events_processed_at_check";--> statement-breakpoint
@@ -36,4 +40,4 @@ ALTER TABLE "webhook_events" DROP COLUMN "external_object_id";--> statement-brea
 ALTER TABLE "webhook_events" DROP COLUMN "processed_at";--> statement-breakpoint
 ALTER TABLE "webhook_events" DROP COLUMN "status";--> statement-breakpoint
 ALTER TABLE "webhook_events" DROP COLUMN "updated_at";--> statement-breakpoint
-ALTER TABLE "webhook_events" ADD CONSTRAINT "webhook_events_provider_check" CHECK ("webhook_events"."provider" in ('stripe', 'telegram', 'whatsapp'));
+ALTER TABLE "webhook_events" ADD CONSTRAINT "webhook_events_provider_check" CHECK ("webhook_events"."provider" = 'stripe');

@@ -30,6 +30,7 @@
     "bindings": [
       { "name": "DOCUMENT_SANDBOX", "class_name": "Sandbox" },
       { "name": "OSFO_DIRECTORY", "class_name": "OsfoDirectory" },
+      // Direct OsfoAgent binding for isolated behavior tests. Topology tests use OSFO_DIRECTORY.
       { "name": "OSFO_AGENT_TEST_FACET", "class_name": "OsfoAgent" },
       { "name": "REGISTRATION_DIALOGUE", "class_name": "RegistrationDialogue" },
       {

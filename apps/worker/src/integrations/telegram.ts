@@ -66,6 +66,10 @@ export const makeTelegramChannel = (options: TelegramChannelOptions): ChannelDef
   },
 });
 
-/** End the empty messenger reply stream after `deliverNotice` posts a deterministic response. */
-export const completeDeterministicTelegramReply = (callback: StreamCallback): Promise<void> =>
-  Promise.resolve(callback.onError(DETERMINISTIC_REPLY_COMPLETE));
+/** End the messenger reply after `deliverNotice` posts a deterministic response. */
+export const completeDeterministicTelegramReply = async (
+  callback: StreamCallback,
+): Promise<never> => {
+  await callback.onError(DETERMINISTIC_REPLY_COMPLETE);
+  throw new Error(DETERMINISTIC_REPLY_COMPLETE);
+};

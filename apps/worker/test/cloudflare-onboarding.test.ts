@@ -9,14 +9,20 @@ import * as Onboarding from "../src/services/onboarding";
 
 describe("Cloudflare onboarding adapter", () => {
   it.effect("mints a provider-neutral primary Conversation Route for a new Agent", () => {
+    const lifecycle: Array<string> = [];
     const routeIds: Array<string> = [];
     const layer = OnboardingCloudflare.layer({
       OSFO_DIRECTORY: {
         getByName: () => ({
           commitAgentWelcome: () => Promise.resolve({ _tag: "PersonalWelcomeCommitted" }),
           initializeAgent: (_agentId, input) => {
+            lifecycle.push("initialize");
             routeIds.push(input.routeId);
             return Promise.resolve({ _tag: "AgentInitialized" });
+          },
+          ensureAgent: (agentId) => {
+            lifecycle.push("ensure");
+            return Promise.resolve({ className: "OsfoAgent", name: agentId });
           },
         }),
       },
@@ -42,9 +48,10 @@ describe("Cloudflare onboarding adapter", () => {
         }),
       ),
       Effect.andThen(
-        Effect.sync(() =>
-          expect(routeIds).toEqual(["primary-route-agent-new-provider-neutral-route"]),
-        ),
+        Effect.sync(() => {
+          expect(lifecycle).toEqual(["ensure", "initialize"]);
+          expect(routeIds).toEqual(["primary-route-agent-new-provider-neutral-route"]);
+        }),
       ),
       Effect.provide(layer),
     );
@@ -56,6 +63,7 @@ describe("Cloudflare onboarding adapter", () => {
       OSFO_DIRECTORY: {
         getByName: () => ({
           commitAgentWelcome: () => Promise.resolve({ _tag: "PersonalWelcomeCommitted" }),
+          ensureAgent: (agentId) => Promise.resolve({ className: "OsfoAgent", name: agentId }),
           initializeAgent: (_agentId, input) => {
             routeIds.push(input.routeId);
             return Promise.resolve({

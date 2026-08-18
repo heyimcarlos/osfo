@@ -117,6 +117,10 @@ const adaptBindings = (env: CloudflareEnv): Bindings => ({
       return {
         commitAgentWelcome: async (agentId, input) =>
           Schema.decodePromise(AgentRpcTag)(await directory.commitAgentWelcome(agentId, input)),
+        ensureAgent: async (agentId) => {
+          const identity = await directory.ensureAgent(agentId);
+          return { className: identity.className, name: identity.name };
+        },
         initializeAgent: async (agentId, input) =>
           Schema.decodePromise(AgentRpcTag)(await directory.initializeAgent(agentId, input)),
         probeAgent: async (agentId) =>

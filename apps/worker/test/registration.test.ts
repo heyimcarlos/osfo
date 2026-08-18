@@ -435,6 +435,7 @@ const testBindings: App.Bindings = {
           _tag: "PersonalWelcomeCommitted",
           messageId: "welcome-test",
         }),
+      ensureAgent: (agentId) => Promise.resolve({ className: "OsfoAgent", name: agentId }),
       initializeAgent: () => Promise.resolve({ _tag: "AgentInitialized" }),
       probeAgent: () =>
         Promise.resolve({

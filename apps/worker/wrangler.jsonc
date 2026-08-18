@@ -34,7 +34,6 @@
     { "binding": "ARTIFACTS", "bucket_name": "osfo-test-generated-artifacts" },
     { "binding": "FILES", "bucket_name": "osfo-test-files" },
   ],
-  "ai": { "binding": "AI" },
   "durable_objects": {
     "bindings": [
       { "name": "DOCUMENT_SANDBOX", "class_name": "Sandbox" },
