@@ -1,4 +1,5 @@
 import { exports } from "cloudflare:workers";
+import { createHmac } from "node:crypto";
 import { createExecutionContext, createScheduledController, env } from "cloudflare:test";
 import { describe, expect, it, vi } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -125,7 +126,7 @@ describe("Osfo Cloudflare host", () => {
       const accepted = yield* Effect.promise(() =>
         exports.default.fetch(
           new Request(
-            "https://osfo.test/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=test-only-meta-webhook-token&hub.challenge=challenge-174",
+            "https://osfo.test/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=test-only-whatsapp-verify-token&hub.challenge=challenge-174",
           ),
         ),
       );
@@ -146,7 +147,9 @@ describe("Osfo Cloudflare host", () => {
   it.effect("returns only safe public responses for Meta signature failures", () =>
     Effect.gen(function* () {
       const body = '{"entry":[],"object":"whatsapp_business_account"}';
-      const validHex = "293ba76ede55e6a948757a2a707815429f12481f8c6c93f07f2d5aa3edad288f";
+      const validHex = createHmac("sha256", "test-only-whatsapp-app-secret")
+        .update(body)
+        .digest("hex");
       const accepted = yield* Effect.promise(() =>
         exports.default.fetch(
           new Request("https://osfo.test/webhooks/whatsapp", {
@@ -182,15 +185,15 @@ describe("Osfo Cloudflare host", () => {
       );
 
       expect(accepted.status).toBe(200);
-      expect(yield* Effect.promise(() => accepted.text())).toBe("EVENT_RECEIVED");
+      expect(yield* Effect.promise(() => accepted.text())).toBe("ok");
       expect(rejected.map((response) => response.status)).toEqual([401, 401, 401, 401, 401, 401]);
       expect(rejectedBodies).toEqual([
-        "Unauthorized",
-        "Unauthorized",
-        "Unauthorized",
-        "Unauthorized",
-        "Unauthorized",
-        "Unauthorized",
+        "Invalid signature",
+        "Invalid signature",
+        "Invalid signature",
+        "Invalid signature",
+        "Invalid signature",
+        "Invalid signature",
       ]);
     }),
   );

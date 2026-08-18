@@ -45,6 +45,7 @@ import { decodeOsfoStage } from "../../config";
 import * as ProviderAuthorizationPostgres from "../../integrations/postgres/provider-authorization";
 import * as ChannelBindingPostgres from "../../integrations/postgres/channel-binding";
 import { completeDeterministicTelegramReply } from "../../integrations/telegram";
+import { completeDeterministicWhatsAppReply } from "../../integrations/whatsapp";
 import * as SessionRecallAuthorizationPostgres from "../../integrations/postgres/session-recall-authorization";
 import {
   CancelManagedConversationInput,
@@ -67,9 +68,7 @@ import {
   type ManagedSessionReplacementAdmitted,
   SubmitManagedConversationInput,
 } from "../../services/managed-conversation";
-import * as WhatsAppAgentAdmission from "../../services/whatsapp-agent-admission";
-import { AgentAcceptanceInput, AgentRecoveryInput } from "../../services/whatsapp-admission";
-import type * as ProviderAgentAdmission from "../../services/provider-agent-admission";
+import type { ChannelProvider } from "../../services/onboarding";
 import {
   launchModelAccessPolicy,
   type ManagedRouteUnavailable,
@@ -143,14 +142,13 @@ import {
   SessionRecallStoreUnavailable,
 } from "../../services/session-recall";
 import { makeSessionRecallAuthorization } from "../../services/session-recall-authorization";
-import {
+import type {
   CurrentSessionActivationUnavailable,
-  type CurrentSessionReplaced,
-  type CurrentSessionReplacementConflict,
+  CurrentSessionReplaced,
+  CurrentSessionReplacementConflict,
 } from "../../services/session-replacement";
 import {
   type AgentInitializationConflict,
-  type AcceptanceReceiptConflict,
   AgentRequestInvalid,
   type AgentRequestOperation,
   AgentStateNotFound,
@@ -164,13 +162,6 @@ import {
 import { applyAgentMigrations } from "./db/migrate";
 import { makeModelCallUsageStore } from "./db/model-call-usage";
 import { makeSessionExecution } from "./session-execution";
-import { makeAgentSessionCommand } from "./session-command";
-import type { AcceptanceReceipt } from "../../services/provider-acceptance-receipt";
-import type {
-  SessionCommandReceipt,
-  SessionCommandReceiptConflict,
-  SessionCommandReceiptInput,
-} from "../../services/session-command-receipt";
 import {
   AgentInitializationInput,
   type AgentInitializationEncoded,
@@ -354,18 +345,6 @@ const PersonalWelcomeInput = Schema.Struct({
 });
 type PersonalWelcomeEncoded = typeof PersonalWelcomeInput.Encoded;
 
-type AcceptWhatsAppMessageEncoded = typeof AgentAcceptanceInput.Encoded;
-
-const WhatsAppThinkSubmissionInspection = Schema.Struct({
-  idempotencyKey: Schema.String,
-  metadata: WhatsAppAgentAdmission.WhatsAppSubmissionMetadata,
-  submissionId: ThinkSubmissionId,
-});
-
-const WhatsAppThinkSubmissionAccepted = Schema.Struct({
-  submissionId: ThinkSubmissionId,
-});
-
 /** Durable result for the deterministic first personal response. */
 export interface PersonalWelcomeCommitted {
   readonly _tag: "PersonalWelcomeCommitted";
@@ -519,10 +498,6 @@ export class OsfoAgent extends Think<Env> {
     activateCurrentSession: () => this.#activateCurrentSession(),
     store: this.#store,
   });
-  readonly #sessionCommand = makeAgentSessionCommand({
-    activateCurrentSession: () => this.#activateCurrentSession(),
-    store: this.#store,
-  });
   readonly #sessionRecallTools = makeSessionRecallTools({
     authorize: (metadata) => this.#sessionRecallAuthorization.authorize(metadata),
     readActiveTurn: () =>
@@ -548,31 +523,36 @@ export class OsfoAgent extends Think<Env> {
     await this.#migrationsReady;
     const authorId = context.message?.author.userId ?? context.author?.userId;
     const message = context.message;
-    if (context.provider !== "telegram" || authorId === undefined || message === undefined) {
-      await this.#completeTelegramPolicyReply(
+    const provider = context.provider;
+    if (
+      (provider !== "telegram" && provider !== "whatsapp") ||
+      authorId === undefined ||
+      message === undefined
+    ) {
+      await this.#completeMessengerPolicyReply(
         callback,
         context,
-        "I could not authorize that message. Please reconnect Telegram from Osfo.",
+        "I could not authorize that message. Please reconnect this channel from Osfo.",
       );
       return;
     }
 
-    const binding = await this.#resolveTelegramBinding(authorId);
+    const binding = await this.#resolveMessengerBinding(provider, authorId);
     if (binding === null || binding.agentId !== this.name) {
-      await this.#completeTelegramPolicyReply(
+      await this.#completeMessengerPolicyReply(
         callback,
         context,
-        "This Telegram connection is no longer authorized. Please reconnect it from Osfo.",
+        "This connection is no longer authorized. Please reconnect it from Osfo.",
       );
       return;
     }
 
     const submissionId = ThinkSubmissionId.make(
-      `telegram:${context.thread.id}:${message.providerMessageId}`,
+      `${provider}:${context.thread.id}:${message.providerMessageId}`,
     );
     const store = this.#store;
     const inspectAuthorization = (channelBindingId: ChannelBindingId) =>
-      this.#inspectCurrentProviderAuthorization("telegram", channelBindingId);
+      this.#inspectCurrentProviderAuthorization(provider, channelBindingId);
     const replaceCurrent = (admission: ManagedSessionReplacementAdmitted) =>
       this.#agentSessionLifecycle.replaceCurrent(admission);
     const operation = Effect.gen(function* () {
@@ -583,7 +563,7 @@ export class OsfoAgent extends Think<Env> {
       const admission = yield* admitManagedConversation(
         {
           authorization: currentAuthorization,
-          idempotencyKey: `telegram:${context.thread.id}:${message.providerMessageId}`,
+          idempotencyKey: `${provider}:${context.thread.id}:${message.providerMessageId}`,
           message: message.text,
           routeId: agent.routeId,
           submissionId,
@@ -601,7 +581,7 @@ export class OsfoAgent extends Think<Env> {
         : this.#sessionExecution.run(operation),
     );
     if (Exit.isFailure(result)) {
-      await this.#completeTelegramPolicyReply(
+      await this.#completeMessengerPolicyReply(
         callback,
         context,
         "I could not authorize that message right now. Please try again.",
@@ -609,7 +589,7 @@ export class OsfoAgent extends Think<Env> {
       return;
     }
     if (Predicate.isTagged(result.value.admission, "ManagedConversationDenied")) {
-      await this.#completeTelegramPolicyReply(
+      await this.#completeMessengerPolicyReply(
         callback,
         context,
         "Your current Osfo allowance does not permit this request.",
@@ -617,16 +597,18 @@ export class OsfoAgent extends Think<Env> {
       return;
     }
     if (Predicate.isTagged(result.value.admission, "ManagedSessionReplacementAdmitted")) {
-      await this.#recordTelegramAcceptedMessage(
+      await this.#recordMessengerAcceptedMessage(
         result.value.currentAuthorization,
+        provider,
         message.providerMessageId,
       );
-      await this.#completeTelegramPolicyReply(callback, context, "Started a new Osfo session.");
+      await this.#completeMessengerPolicyReply(callback, context, "Started a new Osfo session.");
       return;
     }
 
-    await this.#recordTelegramAcceptedMessage(
+    await this.#recordMessengerAcceptedMessage(
       result.value.currentAuthorization,
+      provider,
       message.providerMessageId,
     );
     await super.chatWithMessengerContext(userMessage, callback, context, {
@@ -1150,111 +1132,6 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
-  /** Recoverably accept one authorized WhatsApp UserMessage into Think. */
-  async acceptWhatsAppMessage(
-    input: AcceptWhatsAppMessageEncoded,
-  ): Promise<
-    | AcceptanceReceipt
-    | AcceptanceReceiptConflict
-    | AgentRequestInvalid
-    | AgentStateNotFound
-    | AgentStoreRecordInvalid
-    | AgentStoreUnavailable
-    | CurrentSessionActivationUnavailable
-    | CurrentSessionReplacementConflict
-    | ManagedConversationDenied
-    | ManagedRouteUnavailable
-    | PlanPolicyNotFound
-    | SessionLifecycleNotFound
-    | SessionLifecycleUnavailable
-    | SessionCommandReceipt
-    | SessionCommandReceiptConflict
-    | ThinkSubmissionUnavailable
-    | WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable
-  > {
-    await this.#migrationsReady;
-    const decoded = Schema.decodeResult(AgentAcceptanceInput)(input);
-    if (Result.isFailure(decoded)) return invalidRequest("acceptWhatsAppMessage");
-    const parsed = decoded.success;
-    const bridge = this.#providerAgentBridge(
-      decodeWhatsAppThinkSubmissionInspection,
-      decodeWhatsAppThinkSubmissionAccepted,
-    );
-    const operation = WhatsAppAgentAdmission.accept<
-      AcceptanceReceipt,
-      | AcceptanceReceiptConflict
-      | AgentStateNotFound
-      | AgentStoreRecordInvalid
-      | AgentStoreUnavailable
-      | CurrentSessionActivationUnavailable
-      | CurrentSessionReplacementConflict
-      | SessionLifecycleNotFound
-      | SessionLifecycleUnavailable
-      | SessionCommandReceiptConflict
-    >({
-      dependencies: {
-        ...bridge.acceptance({
-          inspect: (channelBindingId) =>
-            this.#inspectCurrentProviderAuthorization("whatsapp", channelBindingId).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new WhatsAppAgentAdmission.WhatsAppAuthorizationUnavailable({
-                    cause,
-                    message: "Current WhatsApp authorization could not be checked",
-                  }),
-              ),
-            ),
-        }),
-      },
-      input: parsed,
-    });
-    return runRpc(
-      parsed.message.trim() === "/new"
-        ? this.#sessionExecution.runWhenIdle(operation)
-        : this.#sessionExecution.run(operation),
-    );
-  }
-
-  /** Recover one stable WhatsApp acceptance before callers request fresh admission facts. */
-  async recoverWhatsAppMessage(
-    input: typeof AgentRecoveryInput.Encoded,
-  ): Promise<
-    | AcceptanceReceipt
-    | AcceptanceReceiptConflict
-    | AgentRequestInvalid
-    | AgentStateNotFound
-    | AgentStoreRecordInvalid
-    | AgentStoreUnavailable
-    | CurrentSessionActivationUnavailable
-    | ThinkSubmissionUnavailable
-    | SessionCommandReceipt
-    | SessionCommandReceiptConflict
-    | null
-  > {
-    await this.#migrationsReady;
-    const decoded = Schema.decodeResult(AgentRecoveryInput)(input);
-    if (Result.isFailure(decoded)) return invalidRequest("recoverWhatsAppMessage");
-    return runRpc(
-      this.#sessionExecution.run(
-        WhatsAppAgentAdmission.recover<
-          AcceptanceReceipt,
-          | AcceptanceReceiptConflict
-          | AgentStateNotFound
-          | AgentStoreRecordInvalid
-          | AgentStoreUnavailable
-          | CurrentSessionActivationUnavailable
-          | SessionCommandReceiptConflict
-        >({
-          dependencies: this.#providerAgentBridge(
-            decodeWhatsAppThinkSubmissionInspection,
-            decodeWhatsAppThinkSubmissionAccepted,
-          ).recovery,
-          input: decoded.success,
-        }),
-      ),
-    );
-  }
-
   /** Cancel one Think-owned managed conversation without creating another lifecycle. */
   async cancelManagedConversation(
     input: CancelManagedConversationRequest,
@@ -1710,9 +1587,7 @@ export class OsfoAgent extends Think<Env> {
     },
   ) {
     // oxlint-disable-next-line effecttsgo/prefer-typed-schema-decoder -- Agent metadata is optional and supplied by the external Think boundary.
-    return Schema.decodeUnknownEffect(
-      Schema.Union([WhatsAppAgentAdmission.WhatsAppSubmissionMetadata, ManagedTurnMetadata]),
-    )(this.activeTurnMetadata).pipe(
+    return Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata).pipe(
       Effect.mapError(
         (cause) =>
           new DocumentGeneration.DocumentAuthorizationUnavailable({
@@ -1722,11 +1597,7 @@ export class OsfoAgent extends Think<Env> {
       ),
       Effect.flatMap((metadata) => {
         const authority =
-          "whatsappAcceptance" in metadata
-            ? metadata.whatsappAcceptance
-            : metadata.authorityIdentity._tag === "ChannelBinding"
-              ? metadata.authorityIdentity
-              : null;
+          metadata.authorityIdentity._tag === "ChannelBinding" ? metadata.authorityIdentity : null;
         if (authority === null) {
           return Effect.fail(
             new DocumentGeneration.DocumentAuthorizationUnavailable({
@@ -1735,10 +1606,7 @@ export class OsfoAgent extends Think<Env> {
             }),
           );
         }
-        return this.#inspectCurrentProviderAuthorization(
-          "whatsappAcceptance" in metadata ? "whatsapp" : "telegram",
-          authority.channelBindingId,
-        ).pipe(
+        return this.#inspectCurrentChannelBindingAuthorization(authority.channelBindingId).pipe(
           Effect.mapError(
             (cause) =>
               new DocumentGeneration.DocumentAuthorizationUnavailable({
@@ -2087,7 +1955,53 @@ export class OsfoAgent extends Think<Env> {
     });
   }
 
-  async #resolveTelegramBinding(authorId: string) {
+  #inspectCurrentChannelBindingAuthorization(channelBindingId: ChannelBindingId) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new DocumentGeneration.DocumentAuthorizationUnavailable({
+          cause: invalidOsfoEnvironment,
+          message: "Current document authorization facts could not be loaded",
+        }),
+      );
+    }
+    return Effect.tryPromise({
+      try: async () => {
+        const binding = await runtime.runPromise(
+          Effect.scoped(
+            workerDatabase.pipe(
+              Effect.flatMap((database) =>
+                Effect.promise(() =>
+                  ChannelBindingPostgres.readBindingById(database, channelBindingId),
+                ),
+              ),
+            ),
+          ),
+        );
+        if (binding === null) throw new Error("Channel binding was not found");
+        return runtime.runPromise(
+          Effect.scoped(
+            ProviderAuthorizationPostgres.make({ provider: binding.provider }).pipe(
+              Effect.flatMap((providerAuthorization) =>
+                providerAuthorization.admit({
+                  _tag: "Bound",
+                  agentId: AgentId.make(this.name),
+                  channelBindingId,
+                }),
+              ),
+            ),
+          ),
+        );
+      },
+      catch: (cause) =>
+        new DocumentGeneration.DocumentAuthorizationUnavailable({
+          cause,
+          message: "Current document authorization facts could not be loaded",
+        }),
+    });
+  }
+
+  async #resolveMessengerBinding(provider: ChannelProvider, authorId: string) {
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) return null;
     const result = await Effect.runPromiseExit(
@@ -2098,8 +2012,8 @@ export class OsfoAgent extends Think<Env> {
               Effect.flatMap((database) =>
                 ChannelBindingPostgres.resolveActiveAgentBinding(
                   database,
-                  "telegram",
-                  ChannelIdentity.make(`telegram:${authorId}`),
+                  provider,
+                  ChannelIdentity.make(provider === "telegram" ? `telegram:${authorId}` : authorId),
                 ),
               ),
             ),
@@ -2110,8 +2024,9 @@ export class OsfoAgent extends Think<Env> {
     return Exit.isSuccess(result) ? result.value : null;
   }
 
-  async #recordTelegramAcceptedMessage(
+  async #recordMessengerAcceptedMessage(
     currentAuthorization: AuthorizationContext,
+    provider: ChannelProvider,
     providerMessageId: string,
   ): Promise<void> {
     if (currentAuthorization.allowance._tag !== "Metered") return;
@@ -2129,7 +2044,7 @@ export class OsfoAgent extends Think<Env> {
             }).record(
               allowancePeriodId,
               {
-                sourceId: `telegram:${providerMessageId}`,
+                sourceId: `${provider}:${providerMessageId}`,
                 sourceType: "acceptanceReceipt",
               },
               [
@@ -2147,92 +2062,20 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
-  async #completeTelegramPolicyReply(
+  async #completeMessengerPolicyReply(
     callback: StreamCallback,
     context: MessengerContext,
     text: string,
   ): Promise<void> {
     await this.deliverNotice(text, {
-      channel: "telegram",
+      channel: context.provider,
       thread: context.thread.id,
     });
+    if (context.provider === "whatsapp") {
+      await completeDeterministicWhatsAppReply(callback);
+      return;
+    }
     await completeDeterministicTelegramReply(callback);
-  }
-
-  #providerAgentBridge<Metadata extends ManagedTurnMetadata>(
-    decodeInspection: (
-      inspection: ThinkSubmissionInspection,
-    ) => Effect.Effect<
-      ProviderAgentAdmission.SubmissionInspection<Metadata>,
-      ThinkSubmissionUnavailable
-    >,
-    decodeAccepted: (
-      submission: SubmitMessagesResult,
-    ) => Effect.Effect<{ readonly submissionId: ThinkSubmissionId }, ThinkSubmissionUnavailable>,
-  ) {
-    const recovery = {
-      store: {
-        readAcceptanceReceipt: this.#store.readAcceptanceReceipt,
-        readSessionCommandReceipt: this.#store.readSessionCommandReceipt,
-        recordAcceptanceReceipt: this.#store.recordAcceptanceReceipt,
-      },
-      session: {
-        recover: (receipt: SessionCommandReceipt) =>
-          Effect.tryPromise({
-            try: () => this.#activateCurrentSession(),
-            catch: (cause) =>
-              new CurrentSessionActivationUnavailable({
-                cause,
-                message: "Think could not activate the recovered Session command",
-              }),
-          }).pipe(Effect.as(receipt)),
-      },
-      think: {
-        inspect: (submissionId: ThinkSubmissionId) =>
-          callThinkSubmission("inspectSubmission", () => this.inspectSubmission(submissionId)).pipe(
-            Effect.flatMap((inspection) =>
-              inspection === null ? Effect.succeed(null) : decodeInspection(inspection),
-            ),
-          ),
-      },
-    };
-    return {
-      acceptance: <AuthorizationFailure>(authorizationOwner: {
-        readonly inspect: (
-          channelBindingId: ChannelBindingId,
-        ) => Effect.Effect<AuthorizationContext, AuthorizationFailure>;
-      }) => ({
-        ...recovery,
-        authorization: authorizationOwner,
-        session: {
-          ...recovery.session,
-          replace: (
-            command: ManagedSessionReplacementAdmitted,
-            receipt: SessionCommandReceiptInput,
-          ) => this.#sessionCommand.replace(command, receipt),
-        },
-        store: { ...recovery.store, inspect: this.#store.inspect() },
-        think: {
-          ...recovery.think,
-          submit: (submission: ProviderAgentAdmission.SubmissionIntent<Metadata>) =>
-            callThinkSubmission("runTurn", () =>
-              this.runTurn({
-                idempotencyKey: submission.idempotencyKey,
-                input: {
-                  id: submission.message.userMessageId,
-                  metadata: { turnMetadata: submission.metadata },
-                  parts: [{ text: submission.message.text, type: "text" }],
-                  role: "user",
-                },
-                metadata: submission.metadata,
-                mode: "submit",
-                submissionId: submission.submissionId,
-              }),
-            ).pipe(Effect.flatMap(decodeAccepted)),
-        },
-      }),
-      recovery,
-    };
   }
 
   #inspectSessionRecallAuthorization(identity: ManagedTurnAuthorityIdentity) {
@@ -2427,30 +2270,6 @@ const callThinkSubmission = <A>(operation: string, run: () => Promise<A>) =>
         operation,
       }),
   });
-
-const decodeWhatsAppThinkSubmissionInspection = (inspection: ThinkSubmissionInspection) =>
-  Schema.decodeUnknownEffect(WhatsAppThinkSubmissionInspection)(inspection).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ThinkSubmissionUnavailable({
-          cause,
-          message: "Think returned invalid WhatsApp Submission inspection facts",
-          operation: "inspectSubmission",
-        }),
-    ),
-  );
-
-const decodeWhatsAppThinkSubmissionAccepted = (submission: SubmitMessagesResult) =>
-  Schema.decodeEffect(WhatsAppThinkSubmissionAccepted)(submission).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ThinkSubmissionUnavailable({
-          cause,
-          message: "Think returned invalid WhatsApp Submission acceptance facts",
-          operation: "runTurn",
-        }),
-    ),
-  );
 
 const approvalActorAuthorizationUnavailable = (userId: UserId, cause: unknown) =>
   new ApprovalActorAuthorizationUnavailable({

@@ -15,6 +15,11 @@ import {
   makeTelegramChannel,
   makeTelegramConversationResolver,
 } from "../../integrations/telegram";
+import {
+  completeDeterministicWhatsAppReply,
+  makeWhatsAppChannel,
+  makeWhatsAppConversationResolver,
+} from "../../integrations/whatsapp";
 import { invalidOsfoEnvironment, type RuntimeProbeResult } from "../../layers";
 import type { RuntimeSecrets } from "../../runtime-secrets";
 import * as Onboarding from "../../services/onboarding";
@@ -33,30 +38,47 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     return "@cf/openai/gpt-oss-120b";
   }
 
-  /** Configure the shared Telegram webhook and its user-facet resolver. */
+  /** Configure the shared messenger webhooks and their user-facet resolvers. */
   override configureChannels(): ThinkChannels {
-    const conversation = makeTelegramConversationResolver({
+    const telegramConversation = makeTelegramConversationResolver({
       agentClass: OsfoAgent,
       hasAgent: (agentId) => this.hasSubAgent(OsfoAgent, agentId),
       isAllowed: (authorId) => this.#telegramAllowedUserIds().has(authorId),
       resolveAgentId: (authorId) => this.#resolveTelegramAgentId(authorId),
     });
+    const whatsAppConversation = makeWhatsAppConversationResolver({
+      agentClass: OsfoAgent,
+      hasAgent: (agentId) => this.hasSubAgent(OsfoAgent, agentId),
+      resolveAgentId: (authorId) => this.#resolveWhatsAppAgentId(authorId),
+    });
     return {
       telegram: makeTelegramChannel({
-        conversation,
+        conversation: telegramConversation,
         secretToken: this.env.TELEGRAM_WEBHOOK_SECRET_TOKEN,
         token: this.env.TELEGRAM_BOT_TOKEN,
         userName: this.env.TELEGRAM_BOT_USERNAME,
       }),
+      whatsapp: makeWhatsAppChannel({
+        accessToken: this.env.WHATSAPP_ACCESS_TOKEN,
+        appSecret: this.env.WHATSAPP_APP_SECRET,
+        conversation: whatsAppConversation,
+        phoneNumberId: this.env.WHATSAPP_PHONE_NUMBER_ID,
+        userName: this.env.WHATSAPP_BOT_USERNAME,
+        verifyToken: this.env.WHATSAPP_VERIFY_TOKEN,
+      }),
     };
   }
 
-  /** Handle only deterministic Telegram outcomes that intentionally target the directory. */
+  /** Handle only deterministic messenger outcomes that intentionally target the directory. */
   override async chatWithMessengerContext(
     _userMessage: string | UIMessage,
     callback: StreamCallback,
     context: MessengerContext,
   ): Promise<void> {
+    if (context.provider === "whatsapp") {
+      await this.#handleWhatsAppDirectoryTurn(callback, context);
+      return;
+    }
     const authorId = context.message?.author.userId ?? context.author?.userId;
     const message = context.message;
     if (authorId === undefined || message === undefined) {
@@ -160,14 +182,25 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   }
 
   async #resolveTelegramAgentId(authorId: string): Promise<string | null> {
+    return this.#resolveAgentId("telegram", ChannelIdentity.make(`telegram:${authorId}`));
+  }
+
+  async #resolveWhatsAppAgentId(authorId: string): Promise<string | null> {
+    return this.#resolveAgentId("whatsapp", ChannelIdentity.make(authorId));
+  }
+
+  async #resolveAgentId(
+    provider: Onboarding.ChannelProvider,
+    channelIdentity: ChannelIdentity,
+  ): Promise<string | null> {
     const binding = await Effect.runPromiseExit(
       Effect.scoped(
         Effect.gen(function* () {
           const database = yield* Db.database;
           return yield* ChannelBindingPostgres.resolveActiveAgentBinding(
             database,
-            "telegram",
-            ChannelIdentity.make(`telegram:${authorId}`),
+            provider,
+            channelIdentity,
           );
         }).pipe(Effect.provide(Db.layer({ db: this.env.DB }))),
       ),
@@ -180,6 +213,50 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       return null;
     }
     return binding.value.agentId;
+  }
+
+  async #handleWhatsAppDirectoryTurn(
+    callback: StreamCallback,
+    context: MessengerContext,
+  ): Promise<void> {
+    const authorId = context.message?.author.userId ?? context.author?.userId;
+    const message = context.message;
+    if (authorId === undefined || message === undefined) {
+      await this.#deliverWhatsAppNotice(
+        context,
+        "I could not read that message. Please try again.",
+      );
+      await completeDeterministicWhatsAppReply(callback);
+      return;
+    }
+
+    const token = readWhatsAppEnrollmentToken(message.text);
+    const text =
+      token === null
+        ? await this.#whatsAppInvitationReply(authorId, message.id, message.text)
+        : await this.#whatsAppEnrollmentReply(authorId, message.id, token);
+    await this.#deliverWhatsAppNotice(context, text);
+    await completeDeterministicWhatsAppReply(callback);
+  }
+
+  async #whatsAppInvitationReply(authorId: string, eventId: string, message: string) {
+    const result = await Effect.runPromiseExit(
+      this.#issueWhatsAppInvitation(authorId, eventId, message),
+    );
+    return Exit.isSuccess(result)
+      ? result.value.response
+      : "I could not complete WhatsApp setup. Open Osfo and create a new connection link.";
+  }
+
+  async #whatsAppEnrollmentReply(
+    authorId: string,
+    eventId: string,
+    token: Onboarding.RegistrationToken,
+  ) {
+    const result = await Effect.runPromiseExit(this.#enrollWhatsApp(authorId, eventId, token));
+    return Exit.isSuccess(result)
+      ? "WhatsApp is connected to your Osfo Agent."
+      : "I could not complete WhatsApp setup. Open Osfo and create a new connection link.";
   }
 
   #telegramAllowedUserIds(): ReadonlySet<string> {
@@ -197,7 +274,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       OnboardingCloudflare.layer(this.env),
       OnboardingLinks.layer({
         enrollmentProvider: "telegram",
-        officialWhatsAppNumber: this.env.WHATSAPP_PHONE_NUMBER,
+        officialWhatsAppNumber: this.env.WHATSAPP_PUBLIC_PHONE_NUMBER,
         publicBaseUrl: new URL(this.env.BETTER_AUTH_BASE_URL),
         telegramBotUsername: this.env.TELEGRAM_BOT_USERNAME,
       }),
@@ -217,9 +294,65 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     );
   }
 
+  #enrollWhatsApp(authorId: string, eventId: string, token: Onboarding.RegistrationToken) {
+    return this.#whatsAppOnboarding.pipe(
+      Effect.flatMap((service) =>
+        service.enrollWhatsApp({
+          channelIdentity: ChannelIdentity.make(authorId),
+          eventId,
+          token: Redacted.make(token),
+        }),
+      ),
+    );
+  }
+
+  #issueWhatsAppInvitation(authorId: string, eventId: string, message: string) {
+    return this.#whatsAppOnboarding.pipe(
+      Effect.flatMap((service) =>
+        service.issueWhatsAppInvitation({
+          channelIdentity: ChannelIdentity.make(authorId),
+          eventId,
+          invitedPhoneNumber: authorId,
+          locale: "en",
+          message,
+        }),
+      ),
+    );
+  }
+
+  get #whatsAppOnboarding() {
+    const base = Layer.merge(Db.layer({ db: this.env.DB }), BrowserCrypto.layer);
+    const dependencies = Layer.mergeAll(
+      Registration.layerWithoutDependencies,
+      OnboardingCloudflare.layer(this.env),
+      OnboardingLinks.layer({
+        enrollmentProvider: "whatsapp",
+        officialWhatsAppNumber: this.env.WHATSAPP_PUBLIC_PHONE_NUMBER,
+        publicBaseUrl: new URL(this.env.BETTER_AUTH_BASE_URL),
+        telegramBotUsername: this.env.TELEGRAM_BOT_USERNAME,
+      }),
+    ).pipe(Layer.provideMerge(base));
+    return Onboarding.Service.pipe(
+      Effect.provide(
+        Onboarding.layerWithoutDependencies.pipe(
+          Layer.provide(OnboardingPostgres.layerWithoutDependencies),
+          Layer.provide(dependencies),
+        ),
+      ),
+      Effect.scoped,
+    );
+  }
+
   #deliverTelegramNotice(context: MessengerContext, text: string): Promise<void> {
     return this.deliverNotice(text, {
       channel: "telegram",
+      thread: context.thread.id,
+    });
+  }
+
+  #deliverWhatsAppNotice(context: MessengerContext, text: string): Promise<void> {
+    return this.deliverNotice(text, {
+      channel: "whatsapp",
       thread: context.thread.id,
     });
   }
@@ -227,5 +360,10 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
 
 const readTelegramEnrollmentToken = (text: string): Onboarding.RegistrationToken | null => {
   const match = /^\/start(?:@[A-Za-z0-9_]+)? ([0-9a-f]{64})$/u.exec(text.trim());
+  return match?.[1] === undefined ? null : Onboarding.RegistrationToken.make(match[1]);
+};
+
+const readWhatsAppEnrollmentToken = (text: string): Onboarding.RegistrationToken | null => {
+  const match = /^OSFO ENROLL ([0-9a-f]{64})$/u.exec(text.trim());
   return match?.[1] === undefined ? null : Onboarding.RegistrationToken.make(match[1]);
 };

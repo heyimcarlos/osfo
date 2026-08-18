@@ -7,8 +7,6 @@ const workerBindings = {
   BETTER_AUTH_BASE_URL: "https://osfo.test",
   BETTER_AUTH_SECRET: "test-only-better-auth-secret-32-characters",
   BETTER_AUTH_TRUSTED_ORIGINS: '["https://osfo.test"]',
-  META_APP_SECRET: "test-only-meta-app-secret",
-  META_WEBHOOK_VERIFY_TOKEN: "test-only-meta-webhook-token",
   TWILIO_ACCOUNT_SID: "AC11111111111111111111111111111111",
   STRIPE_ADVENTURER_PRICE_ID: "price_adventurer",
   STRIPE_ADVENTURER_PRODUCT_ID: "prod_adventurer",
@@ -21,7 +19,12 @@ const workerBindings = {
   TELEGRAM_WEBHOOK_SECRET_TOKEN: "telegram-test-webhook-secret",
   TWILIO_AUTH_TOKEN: "test-only-twilio-token",
   TWILIO_VERIFY_SERVICE_SID: "VA22222222222222222222222222222222",
-  WHATSAPP_PHONE_NUMBER: "14165550100",
+  WHATSAPP_ACCESS_TOKEN: "test-only-whatsapp-access-token",
+  WHATSAPP_APP_SECRET: "test-only-whatsapp-app-secret",
+  WHATSAPP_BOT_USERNAME: "osfo_test_whatsapp",
+  WHATSAPP_PHONE_NUMBER_ID: "123456789",
+  WHATSAPP_PUBLIC_PHONE_NUMBER: "14165550100",
+  WHATSAPP_VERIFY_TOKEN: "test-only-whatsapp-verify-token",
 };
 
 /** Local Cloudflare Worker and execution-unit test configuration. */
@@ -50,6 +53,8 @@ export default defineConfig({
       "test/session-lifecycle.test.ts",
       "test/session-recall.test.ts",
       "test/telegram-webhook.test.ts",
+      "test/whatsapp-think-framework.test.ts",
+      "test/whatsapp-adapter.test.ts",
       "test/worker.test.ts",
     ],
     testTimeout: 30_000,

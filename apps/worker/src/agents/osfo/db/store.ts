@@ -15,26 +15,14 @@ import {
   AgentId,
   AgentInitializationId,
   AssistantMessageId,
-  type ChannelBindingId,
   ConversationRouteId,
-  type ProviderMessageId,
   SessionId,
   ThinkRequestId,
   type ThinkRequestId as ThinkRequestIdType,
 } from "../../../domain";
-import {
-  AcceptanceReceipt,
-  type AcceptanceReceiptInput,
-} from "../../../services/provider-acceptance-receipt";
-import {
-  SessionCommandReceipt,
-  SessionCommandReceiptConflict,
-  type SessionCommandReceiptInput,
-} from "../../../services/session-command-receipt";
 import type { AgentDb } from "./client";
 import {
   AgentInitializationConflict,
-  AcceptanceReceiptConflict,
   AgentStateNotFound,
   type AgentStoreOperation,
   AgentStoreRecordInvalid,
@@ -42,12 +30,10 @@ import {
   CommittedTurnConflict,
 } from "./errors";
 import {
-  acceptanceReceipts,
   agentInitialization,
   committedTurns,
   conversationRoutes,
   sessionRecallCursors,
-  sessionCommandReceipts,
   sessionOwnership,
 } from "./schema";
 
@@ -58,10 +44,6 @@ interface ReplaceCurrentSessionRecordInput {
   readonly replacedAt: DbTimestamp;
   readonly replacementSessionId: SessionId;
   readonly routeId: ConversationRouteId;
-}
-
-interface ReplaceCurrentSessionWithCommandReceiptRecordInput extends ReplaceCurrentSessionRecordInput {
-  readonly receipt: SessionCommandReceiptInput;
 }
 
 type AgentTransaction = Parameters<Parameters<AgentDb["transaction"]>[0]>[0];
@@ -271,88 +253,6 @@ const SessionRecallCursorStateRecord = Schema.Struct({
 type SessionRecallCursorStateRecord = typeof SessionRecallCursorStateRecord.Type;
 /** Construct deep Agent-local persistence operations over a typed Durable SQLite client. */
 export const makeAgentStore = (db: AgentDb) => {
-  const readAcceptanceReceipt = (
-    channelBindingId: ChannelBindingId,
-    providerMessageId: ProviderMessageId,
-  ) =>
-    execute("readAcceptanceReceipt", () =>
-      db
-        .select(acceptanceReceiptFields)
-        .from(acceptanceReceipts)
-        .where(
-          and(
-            eq(acceptanceReceipts.channelBindingId, channelBindingId),
-            eq(acceptanceReceipts.providerMessageId, providerMessageId),
-          ),
-        )
-        .limit(1)
-        .get(),
-    ).pipe(
-      Effect.flatMap((row) =>
-        row === undefined
-          ? Effect.succeed(null)
-          : decodeAcceptanceReceipt("readAcceptanceReceipt", row),
-      ),
-    );
-
-  const recordAcceptanceReceipt = (input: AcceptanceReceiptInput) =>
-    Effect.gen(function* () {
-      const existing = yield* readAcceptanceReceipt(
-        input.channelBindingId,
-        input.providerMessageId,
-      );
-      if (existing !== null) {
-        if (
-          existing.allowancePeriodId === input.allowancePeriodId &&
-          existing.receiptId === input.receiptId &&
-          existing.sessionId === input.sessionId &&
-          existing.thinkSubmissionId === input.thinkSubmissionId &&
-          existing.userMessageId === input.userMessageId
-        ) {
-          return existing;
-        }
-        return yield* new AcceptanceReceiptConflict({
-          channelBindingId: input.channelBindingId,
-          existingReceiptId: existing.receiptId,
-          existingThinkSubmissionId: existing.thinkSubmissionId,
-          existingUserMessageId: existing.userMessageId,
-          message: "The Channel Message Key already has different acceptance facts",
-          providerMessageId: input.providerMessageId,
-          receiptId: input.receiptId,
-          thinkSubmissionId: input.thinkSubmissionId,
-          userMessageId: input.userMessageId,
-        });
-      }
-      const inserted = yield* execute("recordAcceptanceReceipt", () =>
-        db.insert(acceptanceReceipts).values(input).returning(acceptanceReceiptFields).get(),
-      );
-      return yield* decodeAcceptanceReceipt("recordAcceptanceReceipt", inserted);
-    });
-
-  const readSessionCommandReceipt = (
-    channelBindingId: ChannelBindingId,
-    providerMessageId: ProviderMessageId,
-  ) =>
-    execute("readSessionCommandReceipt", () =>
-      db
-        .select(sessionCommandReceiptFields)
-        .from(sessionCommandReceipts)
-        .where(
-          and(
-            eq(sessionCommandReceipts.channelBindingId, channelBindingId),
-            eq(sessionCommandReceipts.providerMessageId, providerMessageId),
-          ),
-        )
-        .limit(1)
-        .get(),
-    ).pipe(
-      Effect.flatMap((row) =>
-        row === undefined
-          ? Effect.succeed(null)
-          : decodeSessionCommandReceipt("readSessionCommandReceipt", row),
-      ),
-    );
-
   const initialize = (namedAgentId: AgentId, input: AgentInitializationInput) =>
     Effect.gen(function* () {
       if (input.agentId !== namedAgentId) {
@@ -689,82 +589,6 @@ export const makeAgentStore = (db: AgentDb) => {
     });
   });
 
-  const replaceCurrentSessionWithCommandReceipt = Effect.fn(
-    "AgentStore.replaceCurrentSessionWithCommandReceipt",
-  )(function* (input: ReplaceCurrentSessionWithCommandReceiptRecordInput) {
-    const outcome = yield* execute("replaceCurrentSessionWithCommandReceipt", () =>
-      db.transaction((transaction) => {
-        const existing = transaction
-          .select(sessionCommandReceiptFields)
-          .from(sessionCommandReceipts)
-          .where(
-            and(
-              eq(sessionCommandReceipts.channelBindingId, input.receipt.channelBindingId),
-              eq(sessionCommandReceipts.providerMessageId, input.receipt.providerMessageId),
-            ),
-          )
-          .limit(1)
-          .get();
-        if (existing !== undefined) {
-          const matches =
-            existing.allowancePeriodId === input.receipt.allowancePeriodId &&
-            existing.channelBindingId === input.receipt.channelBindingId &&
-            existing.command === input.receipt.command &&
-            existing.currentSessionId === input.replacementSessionId &&
-            existing.providerMessageId === input.receipt.providerMessageId &&
-            existing.receiptId === input.receipt.receiptId &&
-            existing.routeId === input.routeId &&
-            existing.userMessageId === input.receipt.userMessageId;
-          return { existing, kind: matches ? ("Existing" as const) : ("ReceiptConflict" as const) };
-        }
-        const replacement = replaceCurrentSessionTransaction(transaction, input);
-        if (replacement.kind !== "Replaced") return replacement;
-        const receipt = transaction
-          .insert(sessionCommandReceipts)
-          .values({
-            ...input.receipt,
-            currentSessionId: input.replacementSessionId,
-            historicalSessionId: input.expectedCurrentSessionId,
-            routeId: input.routeId,
-          })
-          .returning(sessionCommandReceiptFields)
-          .get();
-        if (receipt === undefined)
-          throw new Error("Session command receipt insert returned no row");
-        return { kind: "Replaced" as const, receipt };
-      }),
-    );
-    if (outcome.kind === "ReceiptConflict") {
-      return yield* new SessionCommandReceiptConflict({
-        existingReceiptId: outcome.existing.receiptId,
-        existingReplacementSessionId: outcome.existing.currentSessionId,
-        existingUserMessageId: outcome.existing.userMessageId,
-        message: "The Channel Message Key already has different Session command facts",
-        providerMessageId: input.receipt.providerMessageId,
-        receiptId: input.receipt.receiptId,
-        requestedReplacementSessionId: input.replacementSessionId,
-        userMessageId: input.receipt.userMessageId,
-      });
-    }
-    if (isReplacementConflict(outcome)) return yield* replacementConflict(outcome, input);
-    if (outcome.kind === "Existing") {
-      return yield* decodeSessionCommandReceipt(
-        "replaceCurrentSessionWithCommandReceipt",
-        outcome.existing,
-      );
-    }
-    if (outcome.receipt === undefined) {
-      return yield* new AgentStoreRecordInvalid({
-        message: "Session command receipt insert returned no row",
-        operation: "replaceCurrentSessionWithCommandReceipt",
-      });
-    }
-    return yield* decodeSessionCommandReceipt(
-      "replaceCurrentSessionWithCommandReceipt",
-      outcome.receipt,
-    );
-  });
-
   const ownsSession = (sessionId: SessionId) =>
     execute("readSessionOwnership", () =>
       db
@@ -968,9 +792,6 @@ export const makeAgentStore = (db: AgentDb) => {
     });
 
   return {
-    readAcceptanceReceipt,
-    readSessionCommandReceipt,
-    recordAcceptanceReceipt,
     initialize,
     inspect,
     ownsSession,
@@ -981,53 +802,8 @@ export const makeAgentStore = (db: AgentDb) => {
     readSessionIds,
     recordCommittedTurn,
     replaceCurrentSession,
-    replaceCurrentSessionWithCommandReceipt,
   };
 };
-
-const sessionCommandReceiptFields = {
-  acceptedAt: sessionCommandReceipts.acceptedAt,
-  allowancePeriodId: sessionCommandReceipts.allowancePeriodId,
-  channelBindingId: sessionCommandReceipts.channelBindingId,
-  command: sessionCommandReceipts.command,
-  currentSessionId: sessionCommandReceipts.currentSessionId,
-  historicalSessionId: sessionCommandReceipts.historicalSessionId,
-  providerMessageId: sessionCommandReceipts.providerMessageId,
-  receiptId: sessionCommandReceipts.receiptId,
-  routeId: sessionCommandReceipts.routeId,
-  userMessageId: sessionCommandReceipts.userMessageId,
-};
-
-const decodeSessionCommandReceipt = (
-  operation: AgentStoreOperation,
-  row: typeof sessionCommandReceipts.$inferSelect,
-) =>
-  Schema.decodeEffect(SessionCommandReceipt)({
-    ...row,
-    _tag: "SessionCommandReceipt",
-    acceptedAt: `${row.acceptedAt.replace(" ", "T")}Z`,
-  }).pipe(Effect.mapError(() => invalidStoreRecord(operation)));
-
-const acceptanceReceiptFields = {
-  acceptedAt: acceptanceReceipts.acceptedAt,
-  allowancePeriodId: acceptanceReceipts.allowancePeriodId,
-  channelBindingId: acceptanceReceipts.channelBindingId,
-  providerMessageId: acceptanceReceipts.providerMessageId,
-  receiptId: acceptanceReceipts.receiptId,
-  sessionId: acceptanceReceipts.sessionId,
-  thinkSubmissionId: acceptanceReceipts.thinkSubmissionId,
-  userMessageId: acceptanceReceipts.userMessageId,
-};
-
-const decodeAcceptanceReceipt = (
-  operation: AgentStoreOperation,
-  row: typeof acceptanceReceipts.$inferSelect,
-) =>
-  Schema.decodeEffect(AcceptanceReceipt)({
-    ...row,
-    _tag: "AcceptanceReceipt",
-    acceptedAt: `${row.acceptedAt.replace(" ", "T")}Z`,
-  }).pipe(Effect.mapError(() => invalidStoreRecord(operation)));
 
 const committedTurnReceiptFields = {
   assistantMessageId: committedTurns.assistantMessageId,

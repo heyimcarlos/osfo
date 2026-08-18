@@ -605,10 +605,6 @@ const responseJson = (response: Response) =>
 
 const runtimeConfig: CloudflareConfig = {
   auth: authConfig,
-  meta: {
-    appSecret: Redacted.make("test-only-meta-app-secret"),
-    webhookVerifyToken: Redacted.make("test-only-meta-webhook-token"),
-  },
   stage: "test",
   telegram: {
     allowedUserIds: ["12345"],
@@ -623,7 +619,14 @@ const runtimeConfig: CloudflareConfig = {
     secretKey: Redacted.make("sk_test_osfo"),
     webhookSecret: Redacted.make("whsec_test_osfo"),
   },
-  whatsApp: { phoneNumber: "14165550100" },
+  whatsApp: {
+    accessToken: Redacted.make("test-only-whatsapp-access-token"),
+    appSecret: Redacted.make("test-only-whatsapp-app-secret"),
+    botUsername: "osfo_test_whatsapp",
+    phoneNumberId: "123456789",
+    publicPhoneNumber: "14165550100",
+    verifyToken: Redacted.make("test-only-whatsapp-verify-token"),
+  },
   twilioVerify: {
     accountSid: Redacted.make(`AC${"1".repeat(32)}`),
     authToken: Redacted.make("test-only-token"),
@@ -652,15 +655,6 @@ const testBindings: App.Bindings = {
         }),
     }),
   },
-  resolveOsfoAgent: () =>
-    Promise.resolve({
-      acceptWhatsAppMessage: () =>
-        Promise.resolve({
-          _tag: "ManagedConversationDenied",
-          reason: "userSuspended",
-        }),
-      recoverWhatsAppMessage: () => Promise.resolve(null),
-    }),
   routeOsfoAgentRequest: () => Promise.resolve(new Response(null, { status: 404 })),
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => ({
