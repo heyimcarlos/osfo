@@ -8,7 +8,9 @@
   "ai": { "binding": "AI" },
   "vars": {
     "OSFO_STAGE": "test",
-    "WHATSAPP_PHONE_NUMBER": "14165550100",
+    "WHATSAPP_BOT_USERNAME": "osfo_test_whatsapp",
+    "WHATSAPP_PHONE_NUMBER_ID": "123456789",
+    "WHATSAPP_PUBLIC_PHONE_NUMBER": "14165550100",
   },
   "secrets": {
     "required": [
@@ -16,8 +18,9 @@
       "BETTER_AUTH_BASE_URL",
       "BETTER_AUTH_SECRET",
       "BETTER_AUTH_TRUSTED_ORIGINS",
-      "META_APP_SECRET",
-      "META_WEBHOOK_VERIFY_TOKEN",
+      "WHATSAPP_ACCESS_TOKEN",
+      "WHATSAPP_APP_SECRET",
+      "WHATSAPP_VERIFY_TOKEN",
       "TWILIO_ACCOUNT_SID",
       "TWILIO_AUTH_TOKEN",
       "TWILIO_VERIFY_SERVICE_SID",

@@ -109,24 +109,11 @@ export const layer = (env: Bindings) =>
             Effect.andThen(
               initializeWithRoute(ConversationRouteId.make(`primary-route-${agentId}`)),
             ),
-            Effect.flatMap((result) => {
-              if (result._tag === "AgentInitialized") return Effect.void;
-              if (result._tag !== "AgentInitializationConflict") {
-                return unavailable("The personal Agent rejected its stable initialization", result);
-              }
-              return initializeWithRoute(
-                ConversationRouteId.make(`whatsapp-route-${agentId}`),
-              ).pipe(
-                Effect.flatMap((legacyResult) =>
-                  legacyResult._tag === "AgentInitialized"
-                    ? Effect.void
-                    : unavailable(
-                        "The personal Agent rejected its legacy stable initialization",
-                        legacyResult,
-                      ),
-                ),
-              );
-            }),
+            Effect.flatMap((result) =>
+              result._tag === "AgentInitialized"
+                ? Effect.void
+                : unavailable("The personal Agent rejected its stable initialization", result),
+            ),
           );
         },
         commitWelcome: (input) =>

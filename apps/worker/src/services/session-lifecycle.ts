@@ -14,12 +14,7 @@ export class SessionLifecycleUnavailable extends Schema.TaggedError<SessionLifec
   {
     cause: Schema.Defect(),
     message: Schema.String,
-    operation: Schema.Literals([
-      "inspect",
-      "readRoute",
-      "replaceCurrentSession",
-      "replaceCurrentSessionWithCommandReceipt",
-    ]),
+    operation: Schema.Literals(["inspect", "readRoute", "replaceCurrentSession"]),
   },
 ) {}
 

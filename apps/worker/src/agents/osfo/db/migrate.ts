@@ -5,6 +5,7 @@ import modelCallUsageMigrationSql from "./migrations/0001_youthful_dreadnoughts.
 import acceptanceReceiptMigrationSql from "./migrations/0002_absurd_unus.sql";
 import sessionRecallMigrationSql from "./migrations/0003_typical_sir_ram.sql";
 import fileCapabilityMigrationSql from "./migrations/0004_sudden_invaders.sql";
+import transportReceiptRemovalMigrationSql from "./migrations/0005_tidy_james_howlett.sql";
 import {
   AgentMigrationDefinitionMismatch,
   AgentMigrationDigestMismatch,
@@ -46,6 +47,11 @@ export const agentMigrations: ReadonlyArray<AgentMigration> = [
     digest: "sha256:d5c80c790098fdb3a41c5c623ab35c06da863a39b2f585d6bb1b279b8e661f62",
     sql: fileCapabilityMigrationSql,
     version: 5,
+  },
+  {
+    digest: "sha256:db33de4b3d6accce7384198dd43143dcd7ccc6d179d2f5fd86cfec5a885a5ec0",
+    sql: transportReceiptRemovalMigrationSql,
+    version: 6,
   },
 ];
 

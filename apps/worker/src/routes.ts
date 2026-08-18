@@ -45,7 +45,7 @@ export interface Options {
 export const layer = (options: Options) => {
   const onboardingLinks = OnboardingLinks.layer({
     enrollmentProvider: "telegram",
-    officialWhatsAppNumber: options.config.whatsApp.phoneNumber,
+    officialWhatsAppNumber: options.config.whatsApp.publicPhoneNumber,
     publicBaseUrl: new URL(options.config.auth.baseURL),
     telegramBotUsername: options.config.telegram.botUsername,
   });
