@@ -6,6 +6,7 @@ import { Effect } from "effect";
 import { OsfoAgent } from "../src/agents/osfo/agent";
 import { OSFO_DIRECTORY_NAME } from "../src/agents/osfo/directory";
 import { makeTelegramConversationResolver } from "../src/integrations/telegram";
+import { makeWhatsAppConversationResolver } from "../src/integrations/whatsapp";
 
 /* oxlint-disable effecttsgo/async-function, typescript/consistent-return -- Cloudflare Agent test helpers expose Promise boundaries, and Effect generators use typed early failure. */
 
@@ -58,6 +59,15 @@ describe("Osfo directory topology", () => {
         Promise.resolve(telegramResolver(telegramEvent)),
       );
       const telegramTargetState = yield* Effect.promise(() => directory.inspectAgent(firstAgentId));
+      const whatsAppResolver = makeWhatsAppConversationResolver({
+        agentClass: OsfoAgent,
+        hasAgent: (agentId) => registry.some(({ name }) => name === agentId),
+        resolveAgentId: () => Promise.resolve(firstAgentId),
+      });
+      const whatsAppTarget = yield* Effect.promise(() =>
+        Promise.resolve(whatsAppResolver(whatsAppEvent)),
+      );
+      const whatsAppTargetState = yield* Effect.promise(() => directory.inspectAgent(firstAgentId));
       const secondState = yield* Effect.promise(() => directory.inspectAgent(secondAgentId));
 
       expect(firstResolution).toEqual({ className: "OsfoAgent", name: firstAgentId });
@@ -68,11 +78,13 @@ describe("Osfo directory topology", () => {
         currentSessionId: "session-topology-first",
       });
       expect(telegramTarget).toMatchObject({ name: firstAgentId, target: "subagent" });
+      expect(whatsAppTarget).toMatchObject({ name: firstAgentId, target: "subagent" });
       expect(telegramTargetState).toMatchObject({
         agentId: webState.agentId,
         currentSessionId: webState.currentSessionId,
         routeId: webState.routeId,
       });
+      expect(whatsAppTargetState).toEqual(telegramTargetState);
       expect(secondState).toMatchObject({
         agentId: secondAgentId,
         currentSessionId: "session-topology-second",
@@ -150,5 +162,22 @@ const telegramEvent = {
     id: "telegram-thread-1",
     isDirectMessage: true,
     providerThreadId: "telegram-thread-1",
+  },
+};
+
+const whatsAppEvent = {
+  ...telegramEvent,
+  message: {
+    ...telegramEvent.message,
+    author: { userId: "15551234567" },
+    id: "wamid.topology-1",
+    providerMessageId: "wamid.topology-1",
+  },
+  messengerId: "whatsapp",
+  provider: "whatsapp",
+  thread: {
+    id: "whatsapp:123456789:15551234567",
+    isDirectMessage: true,
+    providerThreadId: "whatsapp:123456789:15551234567",
   },
 };

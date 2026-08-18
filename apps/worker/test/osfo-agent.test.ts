@@ -9,18 +9,15 @@ import { DateTime, Effect, Schema } from "effect";
 import {
   AgentId,
   AgentInitializationId,
-  AcceptanceReceiptId,
   AllowancePeriodId,
   AssistantMessageId,
   ChannelBindingId,
   ConversationRouteId,
   PlanPolicyVersion,
-  ProviderMessageId,
   SessionId,
   ThinkSubmissionId,
   ThinkRequestId,
   UserId,
-  UserMessageId,
 } from "../src/domain";
 import { ManagedTurnMetadata } from "../src/domain/managed-conversation";
 import { ModelCallAttemptId } from "../src/domain/model-call-attempt";
@@ -53,7 +50,6 @@ import {
   conversationRoutes,
   sessionOwnership,
 } from "../src/agents/osfo/db/schema";
-import { admitManagedConversation } from "../src/services/managed-conversation";
 import { replaceOwnedSession } from "./support/session-store";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/prefer-typed-schema-decoder, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, eslint/no-await-in-loop, eslint/no-underscore-dangle, osfo/no-chained-type-assertions, osfo/no-unknown-parameters, osfo/no-unknown-returns, typescript/await-thenable, typescript/no-unsafe-type-assertion -- Worker integration tests cross Promise, RPC, Effect, Think's private Action compiler, and raw SQLite test boundaries. */
@@ -560,296 +556,6 @@ describe("Osfo Agent and Think Session foundation", () => {
       expect(registered.actions).toContain("generateDocument");
       expect(registered.actions).toContain("deleteDocument");
       expect(registered.tools).toContain("exportDocument");
-    }),
-  );
-
-  it.effect("identifies malformed WhatsApp recovery RPC input", () =>
-    Effect.gen(function* () {
-      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
-        AgentId.make("agent-invalid-whatsapp-recovery"),
-      );
-      const invalid = yield* Effect.promise(() =>
-        runInDurableObject(agent, async (instance) => {
-          // @ts-expect-error Test the public RPC decoder with a malformed wire value.
-          return await instance.recoverWhatsAppMessage({});
-        }),
-      );
-
-      expect(invalid).toMatchObject({
-        _tag: "AgentRequestInvalid",
-        message: "The Agent RPC input is invalid",
-        operation: "recoverWhatsAppMessage",
-      });
-    }),
-  );
-
-  it.effect("returns the exact Acceptance Receipt when one WhatsApp message is replayed", () =>
-    Effect.gen(function* () {
-      const agentId = Schema.decodeUnknownSync(AgentId)("agent-whatsapp-acceptance");
-      const initializationId = Schema.decodeUnknownSync(AgentInitializationId)(
-        "init-whatsapp-acceptance",
-      );
-      const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-whatsapp-acceptance");
-      const sessionId = Schema.decodeUnknownSync(SessionId)("session-whatsapp-acceptance");
-      const channelBindingId = Schema.decodeUnknownSync(ChannelBindingId)(
-        "binding-whatsapp-acceptance",
-      );
-      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
-      yield* Effect.promise(
-        async () =>
-          await agent.initialize({
-            agentId,
-            initializationId,
-            initializedAt: "2026-08-16T12:00:00.000Z",
-            routeId,
-            sessionId,
-          }),
-      );
-
-      const input = {
-        channelBindingId,
-        message: "Please help with my schedule",
-        providerMessageId: "wamid.whatsapp-acceptance",
-        receiptId: "receipt-whatsapp-acceptance",
-        submissionId: "submission-whatsapp-acceptance",
-        userMessageId: "message-whatsapp-acceptance",
-      } as const;
-      const results = yield* Effect.promise(() =>
-        runInDurableObject(agent, async (instance, state) => {
-          state.storage.sql.exec(
-            `INSERT INTO osfo_acceptance_receipts
-              (allowance_period_id, channel_binding_id, provider_message_id, receipt_id,
-               session_id, think_submission_id, user_message_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            "period-whatsapp-acceptance",
-            channelBindingId,
-            input.providerMessageId,
-            input.receiptId,
-            sessionId,
-            input.submissionId,
-            input.userMessageId,
-          );
-          const first = await instance.acceptWhatsAppMessage(input);
-          const repeated = await instance.acceptWhatsAppMessage(input);
-          const conflict = await instance.acceptWhatsAppMessage({
-            ...input,
-            userMessageId: "message-whatsapp-conflict",
-          });
-          return { conflict, first, repeated };
-        }),
-      );
-
-      expect(results.repeated).toEqual(results.first);
-      expect(results.first).toEqual({
-        _tag: "AcceptanceReceipt",
-        acceptedAt: expect.any(String),
-        allowancePeriodId: "period-whatsapp-acceptance",
-        channelBindingId,
-        providerMessageId: "wamid.whatsapp-acceptance",
-        receiptId: "receipt-whatsapp-acceptance",
-        sessionId,
-        thinkSubmissionId: "submission-whatsapp-acceptance",
-        userMessageId: "message-whatsapp-acceptance",
-      });
-      expect(results.conflict).toMatchObject({
-        _tag: "AcceptanceReceiptConflict",
-        existingUserMessageId: "message-whatsapp-acceptance",
-        userMessageId: "message-whatsapp-conflict",
-      });
-    }),
-  );
-
-  it.effect("atomically replaces the current Session with one immutable command receipt", () =>
-    Effect.gen(function* () {
-      const agentId = AgentId.make("agent-command-receipt-atomic");
-      const routeId = ConversationRouteId.make("route-command-receipt-atomic");
-      const initialSessionId = SessionId.make("session-command-receipt-initial");
-      const replacementSessionId = SessionId.make("session-command-receipt-replacement");
-      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
-      yield* Effect.promise(
-        async () =>
-          await agent.initialize({
-            agentId,
-            initializationId: AgentInitializationId.make("init-command-receipt-atomic"),
-            initializedAt: "2026-08-16T12:00:00.000Z",
-            routeId,
-            sessionId: initialSessionId,
-          }),
-      );
-
-      const observed = yield* Effect.promise(() =>
-        runInDurableObject(agent, async (_instance, state) => {
-          const store = makeAgentStore(makeAgentDb(state.storage));
-          const input = {
-            expectedCurrentSessionId: initialSessionId,
-            receipt: {
-              allowancePeriodId: AllowancePeriodId.make("period-command-receipt"),
-              channelBindingId: ChannelBindingId.make("binding-command-receipt"),
-              command: "/new" as const,
-              providerMessageId: ProviderMessageId.make("provider-command-receipt"),
-              receiptId: Schema.decodeUnknownSync(AcceptanceReceiptId)("receipt-command-receipt"),
-              userMessageId: UserMessageId.make("message-command-receipt"),
-            },
-            replacedAt: DbTimestamp.make("2026-08-16T12:01:00.000Z"),
-            replacementSessionId,
-            routeId,
-          };
-          const [first, replay] = await Promise.all([
-            Effect.runPromise(store.replaceCurrentSessionWithCommandReceipt(input)),
-            Effect.runPromise(store.replaceCurrentSessionWithCommandReceipt(input)),
-          ]);
-          const conflict = await Effect.runPromise(
-            Effect.flip(
-              store.replaceCurrentSessionWithCommandReceipt({
-                ...input,
-                receipt: {
-                  ...input.receipt,
-                  userMessageId: UserMessageId.make("message-command-receipt-conflict"),
-                },
-              }),
-            ),
-          );
-          const replacementConflict = await Effect.runPromise(
-            Effect.flip(
-              store.replaceCurrentSessionWithCommandReceipt({
-                ...input,
-                replacementSessionId: SessionId.make("session-command-receipt-changed"),
-              }),
-            ),
-          );
-          const route = await Effect.runPromise(store.readRoute(routeId));
-          return { conflict, first, replacementConflict, replay, route };
-        }),
-      );
-
-      expect(observed.replay).toEqual(observed.first);
-      expect(observed.first).toMatchObject({
-        _tag: "SessionCommandReceipt",
-        currentSessionId: replacementSessionId,
-        historicalSessionId: initialSessionId,
-      });
-      expect(observed.conflict).toMatchObject({
-        _tag: "SessionCommandReceiptConflict",
-      });
-      expect(observed.replacementConflict).toMatchObject({
-        _tag: "SessionCommandReceiptConflict",
-        existingReplacementSessionId: replacementSessionId,
-        requestedReplacementSessionId: "session-command-receipt-changed",
-      });
-      expect(observed.route).toMatchObject({
-        currentSessionId: replacementSessionId,
-        historicalSessionIds: [initialSessionId],
-      });
-    }),
-  );
-
-  it.effect("recovers a real Think acceptance into one SQLite Acceptance Receipt", () =>
-    Effect.gen(function* () {
-      const agentId = AgentId.make("agent-whatsapp-think-recovery");
-      const channelBindingId = ChannelBindingId.make("binding-whatsapp-think-recovery");
-      const routeId = ConversationRouteId.make("route-whatsapp-think-recovery");
-      const sessionId = SessionId.make("session-whatsapp-think-recovery");
-      const submissionId = ThinkSubmissionId.make("submission-whatsapp-think-recovery");
-      const providerMessageId = ProviderMessageId.make("wamid.whatsapp-think-recovery");
-      const userMessageId = UserMessageId.make("message-whatsapp-think-recovery");
-      const receiptId = "receipt-whatsapp-think-recovery";
-      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
-      const authorization = yield* Schema.decodeUnknownEffect(AuthorizationContext)(
-        whatsappAuthorization(channelBindingId),
-      );
-      const managed = yield* admitManagedConversation(
-        {
-          authorization,
-          idempotencyKey: `whatsapp-${receiptId}`,
-          message: "Recover accepted work",
-          routeId,
-          submissionId,
-        },
-        { currentSessionId: sessionId, routeId },
-      );
-      const admitted = yield* Schema.decodeUnknownEffect(
-        Schema.TaggedStruct("ManagedConversationAdmitted", {
-          idempotencyKey: Schema.String,
-          metadata: ManagedTurnMetadata,
-          submissionId: ThinkSubmissionId,
-        }),
-      )(managed);
-      const metadata = {
-        ...admitted.metadata,
-        whatsappAcceptance: {
-          channelBindingId,
-          providerMessageId,
-          sessionId,
-          userMessageId,
-        },
-      };
-      const input = {
-        authorization,
-        channelBindingId,
-        message: "Recover accepted work",
-        providerMessageId,
-        receiptId,
-        submissionId,
-        userMessageId,
-      } as const;
-      yield* Effect.promise(
-        async () =>
-          await agent.initialize({
-            agentId,
-            initializationId: "init-whatsapp-think-recovery",
-            initializedAt: "2026-08-16T12:00:00.000Z",
-            routeId,
-            sessionId,
-          }),
-      );
-
-      const recovered = yield* Effect.promise(() =>
-        runInDurableObject(agent, async (instance, state) => {
-          await instance.runTurn({
-            idempotencyKey: admitted.idempotencyKey,
-            input: {
-              id: userMessageId,
-              parts: [{ text: input.message, type: "text" }],
-              role: "user",
-            },
-            metadata,
-            mode: "submit",
-            submissionId,
-          });
-          const acceptedSubmission = await instance.inspectSubmission(submissionId);
-          const receipt = await instance.recoverWhatsAppMessage({
-            channelBindingId: input.channelBindingId,
-            providerMessageId: input.providerMessageId,
-            receiptId: input.receiptId,
-            submissionId: input.submissionId,
-            userMessageId: input.userMessageId,
-          });
-          const receiptRows = Array.from(
-            state.storage.sql.exec<{ count: number }>(
-              "SELECT count(*) AS count FROM osfo_acceptance_receipts",
-            ),
-          );
-          return {
-            acceptedSubmission,
-            receipt,
-            receiptCount: receiptRows[0]?.count,
-          };
-        }),
-      );
-
-      expect(recovered.receipt).toMatchObject({
-        _tag: "AcceptanceReceipt",
-        channelBindingId,
-        providerMessageId,
-        receiptId,
-        thinkSubmissionId: submissionId,
-        userMessageId,
-      });
-      expect(recovered.acceptedSubmission).toMatchObject({
-        idempotencyKey: admitted.idempotencyKey,
-        submissionId,
-      });
-      expect(recovered.receiptCount).toBe(1);
     }),
   );
 
@@ -1786,7 +1492,7 @@ describe("Osfo Agent and Think Session foundation", () => {
     }),
   );
 
-  it.effect("upgrades a populated 0002 Agent database through 0004 without losing receipts", () =>
+  it.effect("drops obsolete transport receipts when a populated Agent database upgrades", () =>
     Effect.gen(function* () {
       const agent = env.OSFO_AGENT_TEST_FACET.getByName("agent-migration-populated-0002");
       const observed = yield* Effect.promise(() =>
@@ -1805,19 +1511,6 @@ describe("Osfo Agent and Think Session foundation", () => {
             "route-upgrade-0002",
             "session-upgrade-0002",
           );
-          state.storage.sql.exec(
-            `INSERT INTO osfo_acceptance_receipts
-              (allowance_period_id, channel_binding_id, provider_message_id, receipt_id,
-               session_id, think_submission_id, user_message_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            "period-upgrade-0002",
-            "binding-upgrade-0002",
-            "provider-upgrade-0002",
-            "receipt-upgrade-0002",
-            "session-upgrade-0002",
-            "submission-upgrade-0002",
-            "message-upgrade-0002",
-          );
 
           const upgraded = await Effect.runPromise(
             applyMigrationChain(state.storage, agentMigrations),
@@ -1830,12 +1523,12 @@ describe("Osfo Agent and Think Session foundation", () => {
               "SELECT session_id, ownership_sequence FROM osfo_session_ownership",
             )
             .one();
-          const receipt = state.storage.sql
-            .exec<{ receipt_id: string; session_id: string }>(
-              "SELECT receipt_id, session_id FROM osfo_acceptance_receipts",
-            )
-            .one();
-          return { ownership, receipt, repeated, upgraded };
+          const tables = Array.from(
+            state.storage.sql.exec<{ name: string }>(
+              "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+            ),
+          ).map(({ name }) => name);
+          return { ownership, repeated, tables, upgraded };
         }),
       );
 
@@ -1844,12 +1537,12 @@ describe("Osfo Agent and Think Session foundation", () => {
           ownership_sequence: 1,
           session_id: "session-upgrade-0002",
         },
-        receipt: {
-          receipt_id: "receipt-upgrade-0002",
-          session_id: "session-upgrade-0002",
-        },
-        repeated: { appliedVersions: [], currentVersion: 5 },
-        upgraded: { appliedVersions: [4, 5], currentVersion: 5 },
+        repeated: { appliedVersions: [], currentVersion: 6 },
+        tables: expect.not.arrayContaining([
+          "osfo_acceptance_receipts",
+          "osfo_session_command_receipts",
+        ]),
+        upgraded: { appliedVersions: [4, 5, 6], currentVersion: 6 },
       });
     }),
   );
@@ -2189,38 +1882,6 @@ const parkCoreMemoryClearAction = (
       await clear.execute({ block }, { messages: [], toolCallId }),
     );
   });
-
-const whatsappAuthorization = (channelBindingId: string) => ({
-  allowance: {
-    _tag: "Metered" as const,
-    allowancePeriodId: "period-whatsapp-acceptance",
-    endsAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-09-01T00:00:00.000Z")),
-    plan: "free" as const,
-    planPolicyVersion: "launch-v1",
-    startsAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-01T00:00:00.000Z")),
-    usage: [],
-  },
-  approval: null,
-  authority: {
-    _tag: "ChannelBinding" as const,
-    channelBindingId,
-    userId: "user-whatsapp-acceptance",
-  },
-  deletionAccess: { _tag: "DeletionAccessAvailable" as const },
-  gmailConnection: null,
-  liveFacts: {
-    activeGmSummonsInSession: 0n,
-    activeReminders: 0n,
-    concurrentWorkflows: 0n,
-    retainedFileBytes: 0n,
-  },
-  now: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z")),
-  originatingAuthority: { _tag: "ChannelBinding" as const, channelBindingId },
-  requestVendorUsdMicros: 0n,
-  resourceOwnerUserId: "user-whatsapp-acceptance",
-  subscription: { plan: "free" as const, planPolicyVersion: "launch-v1" },
-  user: { _tag: "ActiveUser" as const, userId: "user-whatsapp-acceptance" },
-});
 
 const resetOsfoTables = (storage: DurableObjectStorage): void => {
   storage.sql.exec("DROP TABLE IF EXISTS osfo_file_deletions");

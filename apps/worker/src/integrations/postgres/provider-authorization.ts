@@ -5,9 +5,8 @@ import { DateTime, Effect, Schema } from "effect";
 
 import { database } from "../../db";
 import * as Billing from "../../db/billing";
-import { UserId } from "../../domain";
+import { type AgentId, type ChannelBindingId, UserId } from "../../domain";
 import type { ChannelProvider } from "../../services/onboarding";
-import type { InboundRoute } from "../../services/provider-message-admission";
 import { AuthorizationContext } from "../../services/authorization";
 import { readBinding } from "./channel-binding";
 import * as DeletionCasePostgres from "./deletion-case";
@@ -34,7 +33,11 @@ export const make = (options: {
     const deletionCases = yield* DeletionCasePostgres.make;
     const userSuspensions = yield* UserSuspensionPostgres.make;
 
-    const admit = (fixedRoute: Extract<InboundRoute, { readonly _tag: "Bound" }>) =>
+    const admit = (fixedRoute: {
+      readonly _tag: "Bound";
+      readonly agentId: AgentId;
+      readonly channelBindingId: ChannelBindingId;
+    }) =>
       Effect.gen(function* () {
         const now = yield* options.now ?? DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
         const facts = yield* Effect.tryPromise({
