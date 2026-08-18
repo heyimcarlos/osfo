@@ -22,7 +22,6 @@ export interface Bindings {
   readonly ARTIFACTS?: R2Bucket;
   readonly DB: Pick<Hyperdrive, "connectionString">;
   readonly OSFO_DIRECTORY: Routes.Bindings["OSFO_DIRECTORY"];
-  readonly resolveOsfoAgent: Routes.Bindings["resolveOsfoAgent"];
   readonly routeOsfoAgentRequest: Routes.Bindings["routeOsfoAgentRequest"];
   readonly REGISTRATION_DIALOGUE: Routes.Bindings["REGISTRATION_DIALOGUE"];
 }
@@ -95,7 +94,7 @@ const runInvitationExpiry = (env: Bindings, config: CloudflareConfig) => {
     OnboardingCloudflare.layer(env),
     OnboardingLinks.layer({
       enrollmentProvider: "telegram",
-      officialWhatsAppNumber: config.whatsApp.phoneNumber,
+      officialWhatsAppNumber: config.whatsApp.publicPhoneNumber,
       publicBaseUrl: new URL(config.auth.baseURL),
       telegramBotUsername: config.telegram.botUsername,
     }),
@@ -127,12 +126,6 @@ const adaptBindings = (env: CloudflareEnv): Bindings => ({
           Schema.decodeSync(RuntimeProbeResult)(await directory.probeAgent(agentId)),
       };
     },
-  },
-  resolveOsfoAgent: async (agentId) => {
-    const { getSubAgentByName } = await import("agents");
-    const { OsfoAgent } = await import("./agents/osfo/agent");
-    const directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
-    return getSubAgentByName(directory, OsfoAgent, agentId);
   },
   routeOsfoAgentRequest: async (request, agentId, childPath) => {
     const { camelCaseToKebabCase, routeSubAgentRequest } = await import("agents");

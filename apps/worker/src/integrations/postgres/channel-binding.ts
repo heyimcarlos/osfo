@@ -29,11 +29,9 @@ export const make = Effect.gen(function* () {
   const database = yield* Db.database;
   return {
     inspect: (userId, channelBindingId) =>
-      Db.execute("inspectChannelBinding", () =>
-        readCurrentWhatsAppBinding(database, userId, channelBindingId),
-      ).pipe(
+      Db.execute("inspectChannelBinding", () => readBindingById(database, channelBindingId)).pipe(
         Effect.map((record) =>
-          record === null
+          record === null || record.userId !== userId || record.revokedAt !== null
             ? ({
                 _tag: "RevokedChannelBinding",
                 channelBindingId,
@@ -44,13 +42,6 @@ export const make = Effect.gen(function* () {
       ),
   } satisfies ChannelBinding.Interface;
 });
-
-/** Resolve one active WhatsApp binding inside a caller-owned transaction. */
-export const readActiveWhatsAppBinding = async (
-  transaction: BindingReader,
-  channelIdentity: ChannelIdentity,
-): Promise<StoredChannelBinding | null> =>
-  readActiveBinding(transaction, "whatsapp", channelIdentity);
 
 /** Resolve one active provider binding inside a caller-owned transaction. */
 export const readActiveBinding = async (
@@ -104,12 +95,6 @@ export const resolveActiveAgentBinding = (
     catch: (cause) => Db.dbUnavailable("resolveAgent", cause),
   });
 
-/** Read one fixed WhatsApp binding, including its revocation fact. */
-export const readWhatsAppBinding = async (
-  database: BindingReader,
-  channelBindingId: ChannelBindingId,
-): Promise<StoredChannelBinding | null> => readBinding(database, "whatsapp", channelBindingId);
-
 /** Read one fixed provider binding, including its revocation fact. */
 export const readBinding = async (
   database: BindingReader,
@@ -135,14 +120,23 @@ export const readBinding = async (
   return row === undefined ? null : decodeStoredBinding(row);
 };
 
-/** Read current authority for one fixed WhatsApp binding. */
-export const readCurrentWhatsAppBinding = async (
+/** Read one fixed provider binding without assuming its provider. */
+export const readBindingById = async (
   database: BindingReader,
-  userId: UserId,
   channelBindingId: ChannelBindingId,
 ): Promise<StoredChannelBinding | null> => {
-  const binding = await readWhatsAppBinding(database, channelBindingId);
-  return binding?.userId === userId && binding.revokedAt === null ? binding : null;
+  const [row] = await database
+    .select({
+      channelBindingId: channelBindings.channelBindingId,
+      channelIdentity: channelBindings.channelIdentity,
+      provider: channelBindings.provider,
+      revokedAt: channelBindings.revokedAt,
+      userId: channelBindings.userId,
+    })
+    .from(channelBindings)
+    .where(eq(channelBindings.channelBindingId, channelBindingId))
+    .limit(1);
+  return row === undefined ? null : decodeStoredBinding(row);
 };
 
 /** Read current authority for one fixed provider binding. */

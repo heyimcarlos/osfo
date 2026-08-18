@@ -16,8 +16,6 @@ type RawConfigBinding =
   | "BETTER_AUTH_BASE_URL"
   | "BETTER_AUTH_SECRET"
   | "BETTER_AUTH_TRUSTED_ORIGINS"
-  | "META_APP_SECRET"
-  | "META_WEBHOOK_VERIFY_TOKEN"
   | "OSFO_STAGE"
   | "STRIPE_ADVENTURER_PRICE_ID"
   | "STRIPE_ADVENTURER_PRODUCT_ID"
@@ -31,7 +29,12 @@ type RawConfigBinding =
   | "TWILIO_ACCOUNT_SID"
   | "TWILIO_AUTH_TOKEN"
   | "TWILIO_VERIFY_SERVICE_SID"
-  | "WHATSAPP_PHONE_NUMBER";
+  | "WHATSAPP_ACCESS_TOKEN"
+  | "WHATSAPP_APP_SECRET"
+  | "WHATSAPP_BOT_USERNAME"
+  | "WHATSAPP_PHONE_NUMBER_ID"
+  | "WHATSAPP_PUBLIC_PHONE_NUMBER"
+  | "WHATSAPP_VERIFY_TOKEN";
 
 type GeneratedCloudflareBindings = Omit<Env, RawConfigBinding>;
 
@@ -41,8 +44,6 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly BETTER_AUTH_BASE_URL?: string;
   readonly BETTER_AUTH_SECRET?: string;
   readonly BETTER_AUTH_TRUSTED_ORIGINS?: string;
-  readonly META_APP_SECRET?: string;
-  readonly META_WEBHOOK_VERIFY_TOKEN?: string;
   readonly OSFO_STAGE?: string;
   readonly STRIPE_ADVENTURER_PRICE_ID?: string;
   readonly STRIPE_ADVENTURER_PRODUCT_ID?: string;
@@ -56,7 +57,12 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly TWILIO_ACCOUNT_SID?: string;
   readonly TWILIO_AUTH_TOKEN?: string;
   readonly TWILIO_VERIFY_SERVICE_SID?: string;
-  readonly WHATSAPP_PHONE_NUMBER?: string;
+  readonly WHATSAPP_ACCESS_TOKEN?: string;
+  readonly WHATSAPP_APP_SECRET?: string;
+  readonly WHATSAPP_BOT_USERNAME?: string;
+  readonly WHATSAPP_PHONE_NUMBER_ID?: string;
+  readonly WHATSAPP_PUBLIC_PHONE_NUMBER?: string;
+  readonly WHATSAPP_VERIFY_TOKEN?: string;
 }
 
 /** Better Auth and dashboard configuration. */
@@ -73,10 +79,14 @@ export interface AuthConfig {
   readonly trustedOrigins: ReadonlyArray<string>;
 }
 
-/** Meta webhook configuration. */
-export interface MetaConfig {
+/** WhatsApp webhook, delivery, and public identity configuration. */
+export interface WhatsAppConfig {
+  readonly accessToken: Redacted.Redacted;
   readonly appSecret: Redacted.Redacted;
-  readonly webhookVerifyToken: Redacted.Redacted;
+  readonly botUsername: string;
+  readonly phoneNumberId: string;
+  readonly publicPhoneNumber: string;
+  readonly verifyToken: Redacted.Redacted;
 }
 
 /** Stripe billing configuration. */
@@ -103,15 +113,9 @@ export interface TwilioVerifyConfig {
   readonly serviceSid: string;
 }
 
-/** WhatsApp messaging configuration. */
-export interface WhatsAppConfig {
-  readonly phoneNumber: string;
-}
-
 /** Parsed configuration used by one request application. */
 export interface CloudflareConfig {
   readonly auth: AuthConfig;
-  readonly meta: MetaConfig;
   readonly stage: OsfoStage;
   readonly stripe: StripeConfig;
   readonly telegram: TelegramConfig;
@@ -153,10 +157,6 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
       secret: Redacted.make(secret),
       trustedOrigins,
     },
-    meta: {
-      appSecret: Redacted.make(required(env, "META_APP_SECRET")),
-      webhookVerifyToken: Redacted.make(required(env, "META_WEBHOOK_VERIFY_TOKEN")),
-    },
     stage,
     stripe: {
       adventurerPriceId: required(env, "STRIPE_ADVENTURER_PRICE_ID").trim(),
@@ -176,7 +176,14 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
       authToken: Redacted.make(required(env, "TWILIO_AUTH_TOKEN")),
       serviceSid: required(env, "TWILIO_VERIFY_SERVICE_SID").trim(),
     },
-    whatsApp: { phoneNumber: required(env, "WHATSAPP_PHONE_NUMBER").trim() },
+    whatsApp: {
+      accessToken: Redacted.make(required(env, "WHATSAPP_ACCESS_TOKEN")),
+      appSecret: Redacted.make(required(env, "WHATSAPP_APP_SECRET")),
+      botUsername: required(env, "WHATSAPP_BOT_USERNAME").trim(),
+      phoneNumberId: required(env, "WHATSAPP_PHONE_NUMBER_ID").trim(),
+      publicPhoneNumber: required(env, "WHATSAPP_PUBLIC_PHONE_NUMBER").trim(),
+      verifyToken: Redacted.make(required(env, "WHATSAPP_VERIFY_TOKEN")),
+    },
   };
 };
 

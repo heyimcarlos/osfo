@@ -24,7 +24,7 @@ export const activateCurrentSession = (activate: () => Promise<void>, message: s
 
 /** Preserve exact Agent SQLite lifecycle operation context at the adapter boundary. */
 export const translateSessionLifecycleFailure = (
-  operation: "readRoute" | "replaceCurrentSession" | "replaceCurrentSessionWithCommandReceipt",
+  operation: "readRoute" | "replaceCurrentSession",
   failure: StoreFailure,
 ): SessionLifecycleNotFound | SessionLifecycleUnavailable =>
   Predicate.isTagged(failure, "AgentStateNotFound")

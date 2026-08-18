@@ -1,10 +1,11 @@
-import { Schema } from "effect";
+import { Redacted, Schema } from "effect";
 import { getAgentByName } from "agents";
 
 import * as App from "./app";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/directory";
 import { loadConfig, WorkerConfigurationError, type CloudflareEnv } from "./config";
 import * as DocumentCostReconciliation from "./document-cost-reconciliation";
+import { makeWhatsAppAdapter } from "./integrations/whatsapp";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Cloudflare RPC tags and adapter boundaries require these forms. */
 
@@ -18,9 +19,32 @@ export { Sandbox } from "@cloudflare/sandbox";
 /** Osfo Cloudflare Worker host. */
 const worker = {
   async fetch(request: Request, env: CloudflareEnv): Promise<Response> {
-    if (new URL(request.url).pathname === "/webhooks/telegram") {
+    const path = new URL(request.url).pathname;
+    if (path === "/webhooks/telegram") {
       const directory = await getAgentByName(env.OSFO_DIRECTORY, OSFO_DIRECTORY_NAME);
       return directory.fetch(request);
+    }
+    if (path === "/webhooks/whatsapp" && request.method === "POST") {
+      const directory = await getAgentByName(env.OSFO_DIRECTORY, OSFO_DIRECTORY_NAME);
+      return directory.fetch(request);
+    }
+    if (path === "/webhooks/whatsapp" && request.method === "GET") {
+      try {
+        const config = loadConfig(env).whatsApp;
+        return makeWhatsAppAdapter({
+          accessToken: Redacted.value(config.accessToken),
+          appSecret: Redacted.value(config.appSecret),
+          phoneNumberId: config.phoneNumberId,
+          userName: config.botUsername,
+          verifyToken: Redacted.value(config.verifyToken),
+        }).handleWebhook(request);
+      } catch (error) {
+        if (Schema.is(WorkerConfigurationError)(error)) {
+          logConfigurationError(error);
+          return environmentErrorResponse();
+        }
+        throw error;
+      }
     }
     let app: Awaited<ReturnType<typeof App.makeCloudflareApp>>;
     try {

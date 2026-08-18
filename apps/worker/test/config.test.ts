@@ -36,7 +36,7 @@ describe("Worker configuration", () => {
       STRIPE_PORTAL_CONFIGURATION_ID: "configured-portal",
       TWILIO_ACCOUNT_SID: "configured-account",
       TWILIO_VERIFY_SERVICE_SID: "configured-service",
-      WHATSAPP_PHONE_NUMBER: "configured-number",
+      WHATSAPP_PUBLIC_PHONE_NUMBER: "configured-number",
     });
 
     expect(config.stripe).toMatchObject({
@@ -45,7 +45,7 @@ describe("Worker configuration", () => {
       portalConfigurationId: "configured-portal",
     });
     expect(config.twilioVerify.serviceSid).toBe("configured-service");
-    expect(config.whatsApp.phoneNumber).toBe("configured-number");
+    expect(config.whatsApp.publicPhoneNumber).toBe("configured-number");
   });
 
   it("accepts product stages but rejects infrastructure stage names", () => {
