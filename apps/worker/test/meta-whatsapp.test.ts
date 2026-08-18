@@ -53,7 +53,9 @@ describe("Meta WhatsApp adapter", () => {
           expect.objectContaining({ _tag: "MetaWebhookAuthenticationFailed" }),
         ),
       );
-      expect(mutated).toMatchObject({ _tag: "MetaWebhookAuthenticationFailed" });
+      expect(mutated).toMatchObject({
+        _tag: "MetaWebhookAuthenticationFailed",
+      });
     }),
   );
 
@@ -90,7 +92,9 @@ describe("Meta WhatsApp adapter", () => {
           providerMessageId: "wamid.1",
         },
       ]);
-      expect(rejected).toMatchObject({ _tag: "MetaWebhookAuthenticationFailed" });
+      expect(rejected).toMatchObject({
+        _tag: "MetaWebhookAuthenticationFailed",
+      });
     }),
   );
 
@@ -173,7 +177,10 @@ describe("Meta WhatsApp adapter", () => {
 
   it.effect("rejects signed excess properties at root, message, and context boundaries", () =>
     Effect.gen(function* () {
-      const rootBody = encodeJsonText({ ...webhook([textMessage()]), unexpected: true });
+      const rootBody = encodeJsonText({
+        ...webhook([textMessage()]),
+        unexpected: true,
+      });
       const nestedBody = encodeJsonText(
         webhook([{ ...textMessage(), unexpected: "provider-field" }]),
       );
@@ -229,10 +236,18 @@ describe("Meta WhatsApp adapter", () => {
         ),
       );
 
-      expect(rootRejected).toMatchObject({ _tag: "MetaWebhookPayloadInvalid" });
-      expect(nestedRejected).toMatchObject({ _tag: "MetaWebhookPayloadInvalid" });
-      expect(contextRejected).toMatchObject({ _tag: "MetaWebhookPayloadInvalid" });
-      expect(productRejected).toMatchObject({ _tag: "MetaWebhookPayloadInvalid" });
+      expect(rootRejected).toMatchObject({
+        _tag: "MetaWebhookPayloadInvalid",
+      });
+      expect(nestedRejected).toMatchObject({
+        _tag: "MetaWebhookPayloadInvalid",
+      });
+      expect(contextRejected).toMatchObject({
+        _tag: "MetaWebhookPayloadInvalid",
+      });
+      expect(productRejected).toMatchObject({
+        _tag: "MetaWebhookPayloadInvalid",
+      });
     }),
   );
 
@@ -347,7 +362,11 @@ describe("Meta WhatsApp adapter", () => {
             from: "14165550123",
             id: "wamid.list",
             interactive: {
-              list_reply: { description: "Details", id: "item-1", title: "Item" },
+              list_reply: {
+                description: "Details",
+                id: "item-1",
+                title: "Item",
+              },
               type: "list_reply",
             },
             timestamp: "1786924800",
@@ -410,6 +429,7 @@ describe("Meta WhatsApp adapter", () => {
       expect(status).toEqual([
         {
           _tag: "MessageStatus",
+          errors: [],
           phoneNumberId: "123456789",
           providerMessageId: "wamid.outbound",
           recipientId: "14165550123",
@@ -438,6 +458,17 @@ describe("Meta WhatsApp adapter", () => {
           variants.map((status) => [
             {
               _tag: "MessageStatus",
+              errors:
+                status === "failed"
+                  ? [
+                      {
+                        code: 131_047,
+                        details: "Message failed to send",
+                        message: "Re-engagement message",
+                        title: "Re-engagement message",
+                      },
+                    ]
+                  : [],
               phoneNumberId: "123456789",
               providerMessageId: status === "delivered" ? "wamid.outbound" : `wamid.${status}`,
               recipientId: "14165550123",
@@ -467,9 +498,14 @@ describe("Meta WhatsApp adapter", () => {
           }),
           notificationWebhook("account_update", {
             event: "DISABLED_UPDATE",
-            ban_info: { waba_ban_date: "January 31, 2021", waba_ban_state: "FLAGGED" },
+            ban_info: {
+              waba_ban_date: "January 31, 2021",
+              waba_ban_state: "FLAGGED",
+            },
           }),
-          notificationWebhook("account_review_update", { decision: "APPROVED" }),
+          notificationWebhook("account_review_update", {
+            decision: "APPROVED",
+          }),
           notificationWebhook("message_template_status_update", {
             event: "APPROVED",
             message_template_id: "template-1",
@@ -499,6 +535,7 @@ describe("Meta WhatsApp adapter", () => {
             {
               _tag: "NonMessageNotification",
               notification: "phone_number_name_update",
+              occurredAt: 1_608_243_062,
               whatsAppBusinessAccountId: "waba-1",
             },
           ],
@@ -506,6 +543,7 @@ describe("Meta WhatsApp adapter", () => {
             {
               _tag: "NonMessageNotification",
               notification: "phone_number_quality_update",
+              occurredAt: 1_608_243_062,
               whatsAppBusinessAccountId: "waba-1",
             },
           ],
@@ -513,6 +551,7 @@ describe("Meta WhatsApp adapter", () => {
             {
               _tag: "NonMessageNotification",
               notification: "account_update",
+              occurredAt: 1_608_243_062,
               whatsAppBusinessAccountId: "waba-1",
             },
           ],
@@ -520,6 +559,7 @@ describe("Meta WhatsApp adapter", () => {
             {
               _tag: "NonMessageNotification",
               notification: "account_review_update",
+              occurredAt: 1_608_243_062,
               whatsAppBusinessAccountId: "waba-1",
             },
           ],
@@ -527,6 +567,7 @@ describe("Meta WhatsApp adapter", () => {
             {
               _tag: "NonMessageNotification",
               notification: "message_template_status_update",
+              occurredAt: 1_608_243_062,
               whatsAppBusinessAccountId: "waba-1",
             },
           ],
@@ -544,10 +585,17 @@ describe("Meta WhatsApp adapter", () => {
       };
       const messages = [
         { ...unsupportedMessage("audio"), audio: { ...media, voice: true } },
-        { ...unsupportedMessage("video"), video: { ...media, caption: "A video" } },
+        {
+          ...unsupportedMessage("video"),
+          video: { ...media, caption: "A video" },
+        },
         {
           ...unsupportedMessage("document"),
-          document: { ...media, caption: "A document", filename: "brief.pdf" },
+          document: {
+            ...media,
+            caption: "A document",
+            filename: "brief.pdf",
+          },
         },
         {
           ...unsupportedMessage("sticker"),
@@ -782,7 +830,10 @@ const mixedStatusAndMessageWebhook = () => {
             value: {
               messaging_product: "whatsapp",
               messages: [textMessage()],
-              metadata: { display_phone_number: "14165550100", phone_number_id: "123456789" },
+              metadata: {
+                display_phone_number: "14165550100",
+                phone_number_id: "123456789",
+              },
               statuses: [statusFixture("sent")],
             },
           },

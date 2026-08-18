@@ -4,7 +4,6 @@ import { agents } from "@osfo/db/schema/agents";
 import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
-import { inboundWhatsAppEvents } from "@osfo/db/schema/messaging";
 import { channelBindings } from "@osfo/db/schema/onboarding";
 import { eq } from "drizzle-orm";
 import { DateTime, Deferred, Effect } from "effect";
@@ -22,7 +21,6 @@ import { WhatsAppMessageText } from "../src/services/whatsapp-admission";
 import { withRealPostgresFixture } from "./real-postgres-fixture";
 import {
   makeWhatsAppAdmissionFixture,
-  providerContentDigest,
   receiptFromAcceptance,
   recoveredReceipt,
   routeMessage,
@@ -112,14 +110,17 @@ describe("WhatsApp admission with native PostgreSQL", () => {
           );
           const usage = yield* Effect.promise(() => database.select().from(allowanceUsage));
 
-          expect(outcome).toEqual({ _tag: "MessageDenied", reason: "allowanceExhausted" });
+          expect(outcome).toEqual({
+            _tag: "MessageDenied",
+            reason: "allowanceExhausted",
+          });
           expect(usage).toEqual([]);
         }),
       ),
     ),
   );
 
-  it.effect("conflicts changed provider facts without another usage row", () =>
+  it.effect("recovers changed redelivery facts without another usage row", () =>
     withRealPostgresFixture(({ database }) =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -132,12 +133,13 @@ describe("WhatsApp admission with native PostgreSQL", () => {
           const original = routeMessage("14165550203", "wamid.native-conflict");
           yield* admission.admit(original);
 
-          const conflict = yield* Effect.flip(
-            admission.admit({ ...original, message: WhatsAppMessageText.make("Changed facts") }),
-          );
+          const replay = yield* admission.admit({
+            ...original,
+            message: WhatsAppMessageText.make("Changed facts"),
+          });
           const usage = yield* Effect.promise(() => database.select().from(allowanceUsage));
 
-          expect(conflict).toMatchObject({ _tag: "InboundWhatsAppEventConflict" });
+          expect(replay).toMatchObject({ _tag: "MessageAccepted" });
           expect(usage).toHaveLength(1);
         }),
       ),
@@ -188,43 +190,6 @@ describe("WhatsApp admission with native PostgreSQL", () => {
       ),
     ),
   );
-
-  it.effect("fixes the first binding through revocation and replacement", () =>
-    withRealPostgresFixture(({ database }) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          yield* Effect.promise(() => seedBoundUser(database, "first", "14165550205"));
-          const persistence = yield* makePersistence({
-            now: Effect.succeed(date("2026-08-16T12:00:00.000Z")),
-          }).pipe(Effect.provide(layerFromDatabase(database)));
-          const input = {
-            ...routeMessage("14165550205", "wamid.native-fixed"),
-            contentDigest: providerContentDigest,
-          };
-          const first = yield* persistence.route(input);
-          yield* Effect.promise(async () => {
-            await database
-              .update(channelBindings)
-              .set({ revokedAt: date("2026-08-16T12:01:00.000Z") })
-              .where(eq(channelBindings.channelBindingId, "binding-first"));
-            await seedBoundUser(database, "replacement", "14165550205");
-          });
-
-          const replay = yield* persistence.route(input);
-          const [stored] = yield* Effect.promise(() =>
-            database
-              .select()
-              .from(inboundWhatsAppEvents)
-              .where(eq(inboundWhatsAppEvents.providerMessageId, input.providerMessageId)),
-          );
-
-          expect(first).toMatchObject({ _tag: "Bound", channelBindingId: "binding-first" });
-          expect(replay).toMatchObject({ _tag: "Bound", channelBindingId: "binding-first" });
-          expect(stored?.resolvedChannelBindingId).toBe("binding-first");
-        }),
-      ),
-    ),
-  );
 });
 
 const makeRealAdmission = (
@@ -239,9 +204,9 @@ const makeRealAdmission = (
 ) =>
   Effect.gen(function* () {
     const now = options?.now ?? date("2026-08-16T12:00:00.000Z");
-    const persistence = yield* makePersistence({ now: Effect.succeed(now) }).pipe(
-      Effect.provide(layerFromDatabase(database)),
-    );
+    const persistence = yield* makePersistence({
+      now: Effect.succeed(now),
+    }).pipe(Effect.provide(layerFromDatabase(database)));
     const allowances = Allowances.make({
       billing: Billing.make(database),
       catalog: retainedCatalog,
@@ -254,14 +219,20 @@ const makeRealAdmission = (
       accept,
       persistence: {
         admit: (route) => persistence.admit(route).pipe(Effect.asVoid),
-        route: (input) => persistence.route(input),
+        route: persistence.route,
       },
       recordAcceptedMessage: (receipt) =>
         allowances
           .record(
             receipt.allowancePeriodId,
             { sourceId: receipt.receiptId, sourceType: "acceptanceReceipt" },
-            [{ allowanceKind: "acceptedMessages", basis: "known_at_start", quantity: 1n }],
+            [
+              {
+                allowanceKind: "acceptedMessages",
+                basis: "known_at_start",
+                quantity: 1n,
+              },
+            ],
           )
           .pipe(Effect.orDie, Effect.asVoid),
       recover: options?.recover,

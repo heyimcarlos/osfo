@@ -68,8 +68,8 @@ export const WhatsAppProviderContentDigest = ProviderAdmission.ProviderContentDi
 export const WhatsAppAdmissionIdentityDigest = ProviderAdmission.ProviderAdmissionIdentityDigest;
 
 /** Provider-event facts fixed before Channel Binding resolution. */
-export type RouteInput = InboundWhatsAppMessage & {
-  readonly contentDigest: ProviderAdmission.ProviderContentDigest;
+export type RouteInput = {
+  readonly channelIdentity: typeof WhatsAppDirectChannelIdentity.Type;
 };
 
 /** Expected failure when stable inbound identities cannot be derived. */
@@ -116,9 +116,15 @@ export type AgentAcceptanceInput = typeof AgentAcceptanceInput.Type;
 
 /** Observable inbound result used by the HTTP webhook boundary. */
 export type AdmissionOutcome =
-  | { readonly _tag: "CommandAccepted"; readonly receipt: SessionCommandReceipt }
+  | {
+      readonly _tag: "CommandAccepted";
+      readonly receipt: SessionCommandReceipt;
+    }
   | { readonly _tag: "MessageAccepted"; readonly receipt: AcceptanceReceipt }
-  | { readonly _tag: "MessageDenied"; readonly reason: AuthorizationDenialReason }
+  | {
+      readonly _tag: "MessageDenied";
+      readonly reason: AuthorizationDenialReason;
+    }
   | { readonly _tag: "OnboardingAccepted" };
 
 /** Dependencies required by WhatsApp inbound admission policy. */
@@ -172,8 +178,9 @@ export interface Service<Failure> {
 }
 
 /** Construct inbound admission from caller-shaped provider, Agent, and persistence ports. */
-export const make = <Failure>(options: Interface<Failure>): Service<Failure> => ({
-  admit: ProviderAdmission.make({
+export const make = <Failure>(options: Interface<Failure>): Service<Failure> => {
+  type IngestedMessage = InboundWhatsAppMessage;
+  const admission = ProviderAdmission.make({
     agent: {
       accept: (agentId, input) =>
         options.agent.accept(agentId, {
@@ -184,19 +191,20 @@ export const make = <Failure>(options: Interface<Failure>): Service<Failure> => 
     },
     allowances: options.allowances,
     identity: options.identity,
-    message: (message: InboundWhatsAppMessage) => ({
+    message: (message: IngestedMessage) => ({
       providerMessageId: message.providerMessageId,
       text: message.message,
     }),
-    onboarding: (message: InboundWhatsAppMessage) =>
-      options.onboarding.handle(onboardingCommand(message)),
+    onboarding: (message: IngestedMessage) => options.onboarding.handle(onboardingCommand(message)),
     persistence: options.persistence,
-    routeInput: (message: InboundWhatsAppMessage, contentDigest) => ({
-      ...message,
-      contentDigest,
+    routeInput: (message: IngestedMessage) => ({
+      channelIdentity: message.channelIdentity,
     }),
-  }).admit,
-});
+  });
+  return {
+    admit: (message) => admission.admit(message),
+  };
+};
 
 const onboardingCommand = (message: InboundWhatsAppMessage): WhatsAppOnboardingCommand => {
   const enrollment = /^OSFO ENROLL (\S+)$/u.exec(message.message.trim());

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { users } from "@osfo/db/schema/auth";
 import { billingCheckoutSessions, billingCustomers } from "@osfo/db/schema/billing";
-import { webhookEvents } from "@osfo/db/schema/webhooks";
+import { webhookEvents, webhookJobs } from "@osfo/db/schema/webhooks";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
@@ -53,34 +53,42 @@ describe("Webhook persistence", () => {
           yield* webhooks.markProcessed("webhook-local-1", null);
           const processedDuplicate = yield* webhooks.receive(event);
           const processedReplay = yield* webhooks.replay("webhook-local-1");
-          const [stored] = yield* Effect.promise(() =>
+          const [storedEvent] = yield* Effect.promise(() =>
             fixture.database
               .select()
               .from(webhookEvents)
               .where(eq(webhookEvents.webhookEventId, "webhook-local-1")),
           );
+          const [storedJob] = yield* Effect.promise(() =>
+            fixture.database
+              .select()
+              .from(webhookJobs)
+              .where(eq(webhookJobs.webhookEventId, "webhook-local-1")),
+          );
 
-          expect(first).toEqual({ _tag: "Pending", attempt: 1, webhookEventId: "webhook-local-1" });
-          expect(redelivery).toEqual({
+          expect(first).toEqual({
             _tag: "Pending",
-            attempt: 2,
+            attempt: 1,
             webhookEventId: "webhook-local-1",
           });
+          expect(redelivery).toEqual({ _tag: "ProcessedDuplicate" });
           expect(replayed).toEqual({
             _tag: "Pending",
-            attempt: 3,
+            attempt: 2,
             event: { provider: "stripe", ...event },
             webhookEventId: "webhook-local-1",
           });
           expect(processedDuplicate).toEqual({ _tag: "ProcessedDuplicate" });
           expect(processedReplay).toEqual({ _tag: "ProcessedDuplicate" });
-          expect(stored).toMatchObject({
-            attempts: 3,
-            errorCode: null,
+          expect(storedEvent).toMatchObject({
             provider: "stripe",
+          });
+          expect(storedJob).toMatchObject({
+            attempts: 2,
+            errorCode: null,
             status: "processed",
           });
-          expect(stored?.processedAt).toBeInstanceOf(Date);
+          expect(storedJob?.processedAt).toBeInstanceOf(Date);
         }),
       closeTestDatabase,
     ),

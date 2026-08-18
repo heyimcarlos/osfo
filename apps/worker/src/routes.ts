@@ -1,6 +1,6 @@
 import { Api } from "@osfo/api";
 import { Effect, Layer, type ManagedRuntime } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import * as Auth from "./auth";
@@ -8,29 +8,30 @@ import { productApiLayer } from "./cors";
 import type { CloudflareConfig } from "./config";
 import * as Handlers from "./handlers";
 import * as RuntimeProbes from "./handlers/runtime-probes";
-import * as StripeWebhook from "./handlers/stripe-webhook";
 import * as InvitationAuth from "./handlers/invitation-auth";
-import * as WhatsApp from "./handlers/whatsapp";
-import * as TelegramRoutes from "./handlers/telegram";
+import * as Webhooks from "./handlers/webhooks";
 import type { ExecutionUnit } from "./layers";
 import * as AuthMiddleware from "./middleware/auth";
 import * as OnboardingCloudflare from "./integrations/cloudflare/onboarding";
-import * as TelegramAdmissionCloudflare from "./integrations/cloudflare/telegram-admission";
-import * as TelegramAdmissionPostgres from "./integrations/postgres/telegram-admission";
-import * as TelegramDeliveryPostgres from "./integrations/postgres/telegram-onboarding-delivery";
 import * as OnboardingPostgres from "./integrations/postgres/onboarding";
 import * as OnboardingLinks from "./integrations/public/onboarding-links";
 import * as Onboarding from "./services/onboarding";
-import * as TelegramAdmission from "./services/telegram-message-admission";
-import * as TelegramDelivery from "./services/telegram-onboarding-delivery";
 import * as Registration from "./services/registration";
 import * as DocumentDownload from "./integrations/cloudflare/document-download";
+import * as AgentDirectory from "./services/agent-directory";
+import { UserId } from "./domain";
 
 /** Cloudflare bindings used by the Worker route tree. */
 export type Bindings = RuntimeProbes.Bindings &
   OnboardingCloudflare.Bindings &
-  TelegramAdmissionCloudflare.Bindings &
-  WhatsApp.Bindings & { readonly ARTIFACTS?: R2Bucket };
+  Webhooks.Bindings & {
+    readonly ARTIFACTS?: R2Bucket;
+    readonly routeOsfoAgentRequest: (
+      request: Request,
+      agentId: string,
+      childPath: string,
+    ) => Promise<Response>;
+  };
 
 /** Options used to assemble the Worker route tree. */
 export interface Options {
@@ -69,10 +70,6 @@ export const layer = (options: Options) => {
   const invitationAuth = InvitationAuth.layer({
     config: options.config.auth,
   }).pipe(HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)));
-  const whatsapp = WhatsApp.layer({
-    config: options.config,
-    env: options.env,
-  }).pipe(HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)));
   const documentDownload =
     options.env.ARTIFACTS === undefined
       ? Layer.empty
@@ -84,48 +81,42 @@ export const layer = (options: Options) => {
             AuthMiddleware.currentDownloadUser(options.config.auth),
           ),
         ).pipe(HttpRouter.provideRequest(options.authDependencies));
-  const telegramAdmission = TelegramAdmission.layerWithoutDependencies.pipe(
-    Layer.provide(TelegramAdmissionPostgres.layerWithoutDependencies),
-    Layer.provide(TelegramAdmissionCloudflare.layer(options.env)),
-    Layer.provide(options.authDependencies),
-  );
-  const telegramInvitationPersistence = Layer.effect(
-    TelegramDelivery.InvitationPersistence,
-    Onboarding.Persistence.pipe(
-      Effect.map((persistence) =>
-        TelegramDelivery.InvitationPersistence.of({
-          expireLive: persistence.expireLive,
-          findLiveChannel: (channelIdentity) =>
-            persistence.findLiveChannel("telegram", channelIdentity),
-        }),
-      ),
+  const webhookRequest = Layer.mergeAll(onboardingRequest, options.authDependencies);
+  const webhooks = Webhooks.layer({
+    config: options.config,
+    env: options.env,
+  }).pipe(HttpRouter.provideRequest(webhookRequest));
+  const webAgent = HttpRouter.add(
+    "*",
+    "/agent/*",
+    Effect.gen(function* () {
+      const user = yield* AuthMiddleware.currentUser(options.config.auth);
+      const directory = yield* AgentDirectory.make;
+      const route = yield* directory.resolve(UserId.make(user.userId));
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const source = request.source;
+      if (!(source instanceof Request)) return HttpServerResponse.empty({ status: 503 });
+      const childPath = new URL(source.url).pathname.slice("/agent".length) || "/";
+      const response = yield* Effect.promise(() =>
+        options.env.routeOsfoAgentRequest(source, route.agentId, childPath),
+      );
+      return HttpServerResponse.fromWeb(response);
+    }).pipe(
+      Effect.catchTags({
+        AgentRouteNotFound: () => Effect.succeed(HttpServerResponse.empty({ status: 404 })),
+        AuthenticationUnavailable: () => Effect.succeed(HttpServerResponse.empty({ status: 503 })),
+        DbUnavailable: () => Effect.succeed(HttpServerResponse.empty({ status: 503 })),
+        Unauthorized: () => Effect.succeed(HttpServerResponse.empty({ status: 401 })),
+      }),
     ),
-  ).pipe(Layer.provide(OnboardingPostgres.layerWithoutDependencies));
-  const telegramDelivery = TelegramDelivery.layerWithoutDependencies.pipe(
-    Layer.provide(TelegramDeliveryPostgres.layerWithoutDependencies),
-    Layer.provide(telegramInvitationPersistence),
-    Layer.provide(OnboardingCloudflare.layer(options.env)),
-    Layer.provide(onboardingLinks),
-    Layer.provide(options.authDependencies),
-  );
-  const telegram = TelegramRoutes.layer({
-    telegram: options.config.telegram,
-  }).pipe(
-    Layer.provide(onboardingRequest),
-    Layer.provide(telegramAdmission),
-    Layer.provide(telegramDelivery),
-  );
-  const stripeWebhook = StripeWebhook.layer(options.config).pipe(
-    HttpRouter.provideRequest(options.authDependencies),
-  );
+  ).pipe(HttpRouter.provideRequest(options.authDependencies));
 
   return Layer.mergeAll(
     api,
     invitationAuth,
-    whatsapp,
+    webhooks,
+    webAgent,
     documentDownload,
-    telegram,
-    stripeWebhook,
     Auth.layer({
       config: options.config.auth,
       dependencies: options.authDependencies,

@@ -116,8 +116,12 @@ describe("Registration HTTP API", () => {
           expect(unverified.status).toBe(403);
           expect(first.status).toBe(200);
           expect(firstBody.channel._tag).toBe("EnrollmentPending");
-          expect(firstBody.channel).toMatchObject({ _tag: "EnrollmentPending" });
-          expect(retriedBody.channel).toMatchObject({ _tag: "EnrollmentPending" });
+          expect(firstBody.channel).toMatchObject({
+            _tag: "EnrollmentPending",
+          });
+          expect(retriedBody.channel).toMatchObject({
+            _tag: "EnrollmentPending",
+          });
           if (
             firstBody.channel._tag === "EnrollmentPending" &&
             retriedBody.channel._tag === "EnrollmentPending"
@@ -190,7 +194,9 @@ describe("Registration HTTP API", () => {
               billingSubscriptionId: firstPeriod.billingSubscriptionId,
               createdAt: firstPeriod.endsAt,
               endsAt: DateTime.toDateUtc(
-                DateTime.add(DateTime.fromDateUnsafe(firstPeriod.endsAt), { days: 30 }),
+                DateTime.add(DateTime.fromDateUnsafe(firstPeriod.endsAt), {
+                  days: 30,
+                }),
               ),
               plan: "free",
               planPolicyVersion: "launch-v1",
@@ -422,30 +428,15 @@ const runtimeConfig: CloudflareConfig = {
 
 const testBindings: App.Bindings = {
   DB: { connectionString: "postgres://unused.invalid/osfo" },
-  OSFO_AGENT: {
+  OSFO_DIRECTORY: {
     getByName: (identity) => ({
-      acceptWhatsAppMessage: () =>
+      commitAgentWelcome: () =>
         Promise.resolve({
-          _tag: "ManagedConversationDenied",
-          reason: "userSuspended",
-          resetAt: null,
+          _tag: "PersonalWelcomeCommitted",
+          messageId: "welcome-test",
         }),
-      acceptTelegramMessage: () =>
-        Promise.resolve({
-          _tag: "ManagedConversationDenied",
-          reason: "userSuspended",
-          resetAt: null,
-        }),
-      commitWelcome: () =>
-        Promise.resolve({ _tag: "PersonalWelcomeCommitted", messageId: "welcome-test" }),
-      initialize: () => Promise.resolve({ _tag: "AgentInitialized" }),
-      submitManagedConversation: () =>
-        Promise.resolve({
-          accepted: true,
-          status: "pending" as const,
-          submissionId: "submission-test",
-        }),
-      probeRuntime: () =>
+      initializeAgent: () => Promise.resolve({ _tag: "AgentInitialized" }),
+      probeAgent: () =>
         Promise.resolve({
           activationId: "test-agent-activation",
           executionUnit: "osfo-agent" as const,
@@ -453,10 +444,18 @@ const testBindings: App.Bindings = {
           kind: "RuntimeProbe" as const,
           stage: "test" as const,
         }),
-      recoverWhatsAppMessage: () => Promise.resolve(null),
-      recoverTelegramMessage: () => Promise.resolve(null),
     }),
   },
+  resolveOsfoAgent: () =>
+    Promise.resolve({
+      acceptWhatsAppMessage: () =>
+        Promise.resolve({
+          _tag: "ManagedConversationDenied",
+          reason: "userSuspended",
+        }),
+      recoverWhatsAppMessage: () => Promise.resolve(null),
+    }),
+  routeOsfoAgentRequest: () => Promise.resolve(new Response(null, { status: 404 })),
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => ({
       begin: () =>

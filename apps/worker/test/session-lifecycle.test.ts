@@ -101,7 +101,7 @@ describe("Osfo Session lifecycle", () => {
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-history");
       const initialSessionId = Schema.decodeUnknownSync(SessionId)("session-initial");
       const replacementSessionId = Schema.decodeUnknownSync(SessionId)("session-replacement");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>
@@ -213,7 +213,7 @@ describe("Osfo Session lifecycle", () => {
       const replacementSessionId = Schema.decodeUnknownSync(SessionId)(
         "session-submission-session-new",
       );
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>
@@ -299,7 +299,7 @@ describe("Osfo Session lifecycle", () => {
       const secondReplacementSessionId = Schema.decodeUnknownSync(SessionId)(
         "session-new-competing-second",
       );
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>
@@ -364,7 +364,7 @@ describe("Osfo Session lifecycle", () => {
         Schema.decodeUnknownSync(AgentInitializationId)("init-session-continuity");
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-session-continuity");
       const sessionId = Schema.decodeUnknownSync(SessionId)("session-continuity");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>

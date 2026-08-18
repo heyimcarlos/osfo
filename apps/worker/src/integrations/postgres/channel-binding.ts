@@ -1,9 +1,10 @@
 import { channelBindings } from "@osfo/db/schema/onboarding";
+import { agents } from "@osfo/db/schema/agents";
 import { and, eq, isNull } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
 import * as Db from "../../db";
-import { ChannelBindingId, ChannelIdentity, UserId } from "../../domain";
+import { AgentId, ChannelBindingId, ChannelIdentity, UserId } from "../../domain";
 import type * as ChannelBinding from "../../services/channel-binding";
 import type { ChannelProvider } from "../../services/onboarding";
 
@@ -33,7 +34,11 @@ export const make = Effect.gen(function* () {
       ).pipe(
         Effect.map((record) =>
           record === null
-            ? ({ _tag: "RevokedChannelBinding", channelBindingId, userId } as const)
+            ? ({
+                _tag: "RevokedChannelBinding",
+                channelBindingId,
+                userId,
+              } as const)
             : ({ _tag: "ChannelBinding", channelBindingId, userId } as const),
         ),
       ),
@@ -72,6 +77,32 @@ export const readActiveBinding = async (
     .limit(1);
   return row === undefined ? null : decodeStoredBinding(row);
 };
+
+/** Resolve one active provider identity to its stable product Agent. */
+export const resolveActiveAgentBinding = (
+  database: BindingReader,
+  provider: ChannelProvider,
+  channelIdentity: ChannelIdentity,
+) =>
+  Effect.tryPromise({
+    try: async () => {
+      const binding = await readActiveBinding(database, provider, channelIdentity);
+      if (binding === null) return null;
+      const [agent] = await database
+        .select({ agentId: agents.agentId })
+        .from(agents)
+        .where(eq(agents.userId, binding.userId))
+        .limit(1);
+      return agent === undefined
+        ? null
+        : {
+            agentId: AgentId.make(agent.agentId),
+            channelBindingId: binding.channelBindingId,
+            userId: binding.userId,
+          };
+    },
+    catch: (cause) => Db.dbUnavailable("resolveAgent", cause),
+  });
 
 /** Read one fixed WhatsApp binding, including its revocation fact. */
 export const readWhatsAppBinding = async (

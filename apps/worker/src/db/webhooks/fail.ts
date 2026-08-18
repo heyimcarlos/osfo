@@ -1,4 +1,4 @@
-import { webhookEvents } from "@osfo/db/schema/webhooks";
+import { webhookJobs } from "@osfo/db/schema/webhooks";
 import { and, eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 
@@ -22,7 +22,7 @@ export const fail = (
 ): Effect.Effect<void, PermanentStripeWebhookFailure | WebhookPersistenceUnavailable> =>
   execute("fail", database, webhookEventId, attempt, checkoutEvidence, async (transaction) => {
     const [updated] = await transaction
-      .update(webhookEvents)
+      .update(webhookJobs)
       .set({
         errorCode,
         processedAt: null,
@@ -31,14 +31,14 @@ export const fail = (
       })
       .where(
         attempt === 0
-          ? eq(webhookEvents.webhookEventId, webhookEventId)
+          ? eq(webhookJobs.webhookEventId, webhookEventId)
           : and(
-              eq(webhookEvents.webhookEventId, webhookEventId),
-              eq(webhookEvents.attempts, attempt),
-              eq(webhookEvents.status, "pending"),
+              eq(webhookJobs.webhookEventId, webhookEventId),
+              eq(webhookJobs.attempts, attempt),
+              eq(webhookJobs.status, "pending"),
             ),
       )
-      .returning({ webhookEventId: webhookEvents.webhookEventId });
+      .returning({ webhookEventId: webhookJobs.webhookEventId });
     return updated !== undefined;
   });
 
@@ -57,7 +57,7 @@ export const markProcessed = (
     checkoutEvidence,
     async (transaction) => {
       const [updated] = await transaction
-        .update(webhookEvents)
+        .update(webhookJobs)
         .set({
           errorCode: null,
           processedAt: sql`clock_timestamp()`,
@@ -66,14 +66,14 @@ export const markProcessed = (
         })
         .where(
           attempt === 0
-            ? eq(webhookEvents.webhookEventId, webhookEventId)
+            ? eq(webhookJobs.webhookEventId, webhookEventId)
             : and(
-                eq(webhookEvents.webhookEventId, webhookEventId),
-                eq(webhookEvents.attempts, attempt),
-                eq(webhookEvents.status, "pending"),
+                eq(webhookJobs.webhookEventId, webhookEventId),
+                eq(webhookJobs.attempts, attempt),
+                eq(webhookJobs.status, "pending"),
               ),
         )
-        .returning({ webhookEventId: webhookEvents.webhookEventId });
+        .returning({ webhookEventId: webhookJobs.webhookEventId });
       return updated !== undefined;
     },
   );
@@ -92,15 +92,15 @@ const execute = (
     try: () =>
       database.transaction(async (transaction) => {
         const [claim] = await transaction
-          .select({ webhookEventId: webhookEvents.webhookEventId })
-          .from(webhookEvents)
+          .select({ webhookEventId: webhookJobs.webhookEventId })
+          .from(webhookJobs)
           .where(
             attempt === 0
-              ? eq(webhookEvents.webhookEventId, webhookEventId)
+              ? eq(webhookJobs.webhookEventId, webhookEventId)
               : and(
-                  eq(webhookEvents.webhookEventId, webhookEventId),
-                  eq(webhookEvents.attempts, attempt),
-                  eq(webhookEvents.status, "pending"),
+                  eq(webhookJobs.webhookEventId, webhookEventId),
+                  eq(webhookJobs.attempts, attempt),
+                  eq(webhookJobs.status, "pending"),
                 ),
           )
           .for("update")

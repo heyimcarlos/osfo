@@ -1,12 +1,16 @@
 import { Schema } from "effect";
+import { getAgentByName } from "agents";
 
 import * as App from "./app";
+import { OSFO_DIRECTORY_NAME } from "./agents/osfo/directory";
 import { loadConfig, WorkerConfigurationError, type CloudflareEnv } from "./config";
 import * as DocumentCostReconciliation from "./document-cost-reconciliation";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Cloudflare RPC tags and adapter boundaries require these forms. */
 
 export { OsfoAgent } from "./agents/osfo/agent";
+export { OsfoDirectory } from "./agents/osfo/directory";
+export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 export { RegistrationDialogue } from "./agents/registration/registration";
 export { ExecutionUnitWorkflow } from "./workflows/runtime";
 export { Sandbox } from "@cloudflare/sandbox";
@@ -14,6 +18,10 @@ export { Sandbox } from "@cloudflare/sandbox";
 /** Osfo Cloudflare Worker host. */
 const worker = {
   async fetch(request: Request, env: CloudflareEnv): Promise<Response> {
+    if (new URL(request.url).pathname === "/webhooks/telegram") {
+      const directory = await getAgentByName(env.OSFO_DIRECTORY, OSFO_DIRECTORY_NAME);
+      return directory.fetch(request);
+    }
     let app: Awaited<ReturnType<typeof App.makeCloudflareApp>>;
     try {
       app = await App.makeCloudflareApp(env);

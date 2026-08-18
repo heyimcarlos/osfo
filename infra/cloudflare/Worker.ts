@@ -33,8 +33,8 @@ export default Cloudflare.Worker(
         FILES: Files,
         META_APP_SECRET: Config.redacted("META_APP_SECRET"),
         META_WEBHOOK_VERIFY_TOKEN: Config.redacted("META_WEBHOOK_VERIFY_TOKEN"),
-        OSFO_AGENT: Cloudflare.DurableObject("OsfoAgent", {
-          className: "OsfoAgent",
+        OSFO_DIRECTORY: Cloudflare.DurableObject("OsfoDirectory", {
+          className: "OsfoDirectory",
         }),
         OSFO_STAGE: stage === "development" || stage === "production" ? stage : "preview",
         STRIPE_ADVENTURER_PRICE_ID: Config.string("STRIPE_ADVENTURER_PRICE_ID"),

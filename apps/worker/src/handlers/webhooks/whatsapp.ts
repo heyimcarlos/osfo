@@ -2,29 +2,28 @@ import { Crypto, DateTime, Effect, Predicate, Schema } from "effect";
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 
-import { database } from "../db";
-import * as Billing from "../db/billing";
-import { retainedCatalog } from "../domain/plan-policy";
-import type { CloudflareConfig } from "../config";
-import { handleWhatsAppOnboardingCommand } from "./whatsapp-onboarding";
-import * as WhatsAppIdentity from "../integrations/cloudflare/whatsapp-identity";
+import { database } from "../../db";
+import * as Billing from "../../db/billing";
+import { retainedCatalog } from "../../domain/plan-policy";
+import type { CloudflareConfig } from "../../config";
+import { handleWhatsAppOnboardingCommand } from "../whatsapp-onboarding";
+import * as WhatsAppIdentity from "../../integrations/cloudflare/whatsapp-identity";
 import {
   authenticateAndDecode,
   type MetaInboundFact,
   verifyChallenge,
-} from "../integrations/meta/whatsapp";
-import * as WhatsAppPostgres from "../integrations/postgres/whatsapp-admission";
-import * as Allowances from "../services/allowances";
-import * as Onboarding from "../services/onboarding";
-import { ManagedConversationDenied } from "../services/managed-conversation";
-import { AcceptanceReceipt } from "../services/provider-acceptance-receipt";
-import { SessionCommandReceipt } from "../services/session-command-receipt";
-import * as WhatsAppAdmission from "../services/whatsapp-admission";
+} from "../../integrations/meta/whatsapp";
+import * as WhatsAppPostgres from "../../integrations/postgres/whatsapp-admission";
+import * as Allowances from "../../services/allowances";
+import * as Onboarding from "../../services/onboarding";
+import { ManagedConversationDenied } from "../../services/managed-conversation";
+import { AcceptanceReceipt } from "../../services/provider-acceptance-receipt";
+import { SessionCommandReceipt } from "../../services/session-command-receipt";
+import * as WhatsAppAdmission from "../../services/whatsapp-admission";
 
-/* oxlint-disable eslint/no-underscore-dangle -- Effect schemas and RPC values use the standard _tag discriminator. */
+/* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Effect schemas and RPC values use the standard _tag discriminator, and Cloudflare RPC is Promise-based. */
 
 const AgentRpcTag = Schema.Struct({ _tag: Schema.String });
-
 type AgentAcceptanceRpcResult =
   | AcceptanceReceipt
   | ManagedConversationDenied
@@ -42,9 +41,7 @@ interface WhatsAppAgentStub {
 
 /** Cloudflare binding needed for direct named-Agent admission. */
 export interface Bindings {
-  readonly OSFO_AGENT: {
-    readonly getByName: (agentId: string) => WhatsAppAgentStub;
-  };
+  readonly resolveOsfoAgent: (agentId: string) => Promise<WhatsAppAgentStub>;
 }
 
 /** Install authenticated Meta verification and inbound event routes. */
@@ -64,7 +61,8 @@ export const layer = (options: { readonly config: CloudflareConfig; readonly env
       agent: {
         accept: (agentId, input) =>
           Effect.tryPromise({
-            try: () => options.env.OSFO_AGENT.getByName(agentId).acceptWhatsAppMessage(input),
+            try: async () =>
+              (await options.env.resolveOsfoAgent(agentId)).acceptWhatsAppMessage(input),
             catch: (cause) =>
               new WhatsAppAdmission.WhatsAppAdmissionUnavailable({
                 cause,
@@ -73,7 +71,8 @@ export const layer = (options: { readonly config: CloudflareConfig; readonly env
           }).pipe(Effect.flatMap(decodeAgentAcceptance)),
         recover: (agentId, input) =>
           Effect.tryPromise({
-            try: () => options.env.OSFO_AGENT.getByName(agentId).recoverWhatsAppMessage(input),
+            try: async () =>
+              (await options.env.resolveOsfoAgent(agentId)).recoverWhatsAppMessage(input),
             catch: (cause) =>
               new WhatsAppAdmission.WhatsAppAdmissionUnavailable({
                 cause,
@@ -142,7 +141,6 @@ export const layer = (options: { readonly config: CloudflareConfig; readonly env
           ),
       },
     });
-
     const runRequest = (request: Request) => {
       // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- boundary: WebHandler requires a Promise and handleRequest has no Effect services.
       return Effect.runPromise(handleRequest(request, options.config, admission));
@@ -167,8 +165,6 @@ const handleRequest = (
         : new Response("Forbidden", { status: 403 }),
     );
   }
-  if (request.method !== "POST") return Effect.succeed(new Response("Not found", { status: 404 }));
-
   return authenticateAndDecode(request, config.meta.appSecret).pipe(
     Effect.flatMap((facts) =>
       Effect.forEach(facts, (fact) => admitFact(admission, fact), { discard: true }),

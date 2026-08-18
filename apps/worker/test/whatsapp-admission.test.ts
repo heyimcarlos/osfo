@@ -24,28 +24,26 @@ class SimulatedAgentFailure extends Schema.TaggedError<SimulatedAgentFailure>()(
 ) {}
 
 describe("WhatsApp inbound admission", () => {
-  it.effect(
-    "derives provider content and admission identities through the stable identity port",
-    () =>
-      Effect.gen(function* () {
-        const calls: Array<string> = [];
-        const service = admission({
-          deriveAdmission: (route, providerMessageId) =>
-            Effect.sync(() => {
-              calls.push(`admission:${route.channelBindingId}:${providerMessageId}`);
-              return WhatsAppAdmissionIdentityDigest.make("b".repeat(40));
-            }),
-          deriveContent: (message) =>
-            Effect.sync(() => {
-              calls.push(`content:${message.providerMessageId}`);
-              return WhatsAppProviderContentDigest.make("a".repeat(40));
-            }),
-        });
+  it.effect("derives only the admission identity through the stable identity port", () =>
+    Effect.gen(function* () {
+      const calls: Array<string> = [];
+      const service = admission({
+        deriveAdmission: (route, providerMessageId) =>
+          Effect.sync(() => {
+            calls.push(`admission:${route.channelBindingId}:${providerMessageId}`);
+            return WhatsAppAdmissionIdentityDigest.make("b".repeat(40));
+          }),
+        deriveContent: (message) =>
+          Effect.sync(() => {
+            calls.push(`content:${message.providerMessageId}`);
+            return WhatsAppProviderContentDigest.make("a".repeat(40));
+          }),
+      });
 
-        yield* service.admit(textMessage());
+      yield* service.admit(textMessage());
 
-        expect(calls).toEqual(["content:wamid.1", "admission:binding-1:wamid.1"]);
-      }),
+      expect(calls).toEqual(["admission:binding-1:wamid.1"]);
+    }),
   );
 
   it.effect("recovers an existing receipt when current allowance admission is unavailable", () =>
@@ -55,7 +53,9 @@ describe("WhatsApp inbound admission", () => {
       const service = admission({
         admit: () =>
           Effect.fail(
-            new SimulatedAgentFailure({ message: "No current allowance period is available" }),
+            new SimulatedAgentFailure({
+              message: "No current allowance period is available",
+            }),
           ),
         record: () => Effect.sync(() => void (recorded += 1)),
         recover: () => Effect.succeed(receipt),
@@ -119,7 +119,9 @@ describe("WhatsApp inbound admission", () => {
               acceptedInputs.push(input);
               recoverable = receipt;
               return Effect.fail(
-                new SimulatedAgentFailure({ message: "response lost after Think accepted" }),
+                new SimulatedAgentFailure({
+                  message: "response lost after Think accepted",
+                }),
               );
             }),
           record: () => Effect.sync(() => void (recorded += 1)),

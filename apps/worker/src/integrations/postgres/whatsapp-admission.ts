@@ -1,21 +1,11 @@
-import { DateTime, Effect, Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { database } from "../../db";
 import type { RouteInput } from "../../services/whatsapp-admission";
 import * as ProviderAuthorization from "./provider-authorization";
-import * as ProviderEventRouting from "./provider-event-routing";
+import { resolveActiveAgentBinding } from "./channel-binding";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect and persistence result values use the standard _tag discriminator. */
-
-/** Expected conflict when one provider event key is retried with changed facts. */
-export class InboundWhatsAppEventConflict extends Schema.TaggedError<InboundWhatsAppEventConflict>()(
-  "InboundWhatsAppEventConflict",
-  {
-    message: Schema.String,
-    phoneNumberId: Schema.String,
-    providerMessageId: Schema.String,
-  },
-) {}
 
 /** Expected failure when inbound control-plane facts cannot be recovered. */
 export class WhatsAppAdmissionPersistenceUnavailable extends Schema.TaggedError<WhatsAppAdmissionPersistenceUnavailable>()(
@@ -34,44 +24,23 @@ export const make = (options?: { readonly now?: Effect.Effect<Date> }) =>
     );
 
     const route = (input: RouteInput) =>
-      Effect.gen(function* () {
-        const now = yield* options?.now ?? DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-        const fixed = yield* ProviderEventRouting.route(
-          db,
-          {
-            channelIdentity: input.channelIdentity,
-            contentDigest: input.contentDigest,
-            eventScope: input.phoneNumberId,
-            messageKind: input._tag === "TextMessage" ? "text" : "button_reply",
-            provider: "whatsapp",
-            providerMessageId: input.providerMessageId,
-          },
-          now,
-        ).pipe(
-          Effect.mapError(
-            (cause) =>
-              new WhatsAppAdmissionPersistenceUnavailable({
-                cause,
-                message: "PostgreSQL could not fix the inbound WhatsApp route",
-              }),
-          ),
-        );
-        if (fixed._tag === "Conflict") {
-          return yield* new InboundWhatsAppEventConflict({
-            message: "The provider event key was retried with changed message facts",
-            phoneNumberId: input.phoneNumberId,
-            providerMessageId: input.providerMessageId,
-          });
-        }
-        if (fixed._tag === "Incomplete") {
-          return yield* new WhatsAppAdmissionPersistenceUnavailable({
-            cause: fixed,
-            message: "The fixed inbound WhatsApp route is incomplete",
-          });
-        }
-        if (fixed._tag === "Unbound") return fixed;
-
-        return fixed;
-      });
+      resolveActiveAgentBinding(db, "whatsapp", input.channelIdentity).pipe(
+        Effect.map((binding) =>
+          binding === null
+            ? ({ _tag: "Unbound" } as const)
+            : ({
+                _tag: "Bound",
+                agentId: binding.agentId,
+                channelBindingId: binding.channelBindingId,
+              } as const),
+        ),
+        Effect.mapError(
+          (cause) =>
+            new WhatsAppAdmissionPersistenceUnavailable({
+              cause,
+              message: "PostgreSQL could not resolve the inbound WhatsApp route",
+            }),
+        ),
+      );
     return { admit: authorization.admit, route };
   });

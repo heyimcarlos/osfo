@@ -227,7 +227,9 @@ describe("phone authentication", () => {
           );
           const phoneNumber = "+14165550109";
 
-          yield* request(app.handler, "/auth/phone-number/send-otp", { phoneNumber });
+          yield* request(app.handler, "/auth/phone-number/send-otp", {
+            phoneNumber,
+          });
           const first = yield* request(app.handler, "/auth/phone-number/verify", {
             code: twilio.code,
             phoneNumber,
@@ -243,7 +245,9 @@ describe("phone authentication", () => {
             }),
           );
           twilio.advanceBy(30 * 1_000);
-          yield* request(app.handler, "/auth/phone-number/send-otp", { phoneNumber });
+          yield* request(app.handler, "/auth/phone-number/send-otp", {
+            phoneNumber,
+          });
           const suspendedSignIn = yield* request(app.handler, "/auth/phone-number/verify", {
             code: twilio.code,
             phoneNumber,
@@ -579,7 +583,9 @@ const request = (
     ),
   );
 
-const AuthResponse = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
+const AuthResponse = Schema.Struct({
+  user: Schema.Struct({ id: Schema.String }),
+});
 type AuthRequestBody =
   | {
       readonly code?: string;
@@ -627,30 +633,15 @@ const runtimeConfig: CloudflareConfig = {
 
 const testBindings: App.Bindings = {
   DB: { connectionString: "postgres://unused.invalid/osfo" },
-  OSFO_AGENT: {
+  OSFO_DIRECTORY: {
     getByName: (identity) => ({
-      acceptWhatsAppMessage: () =>
+      commitAgentWelcome: () =>
         Promise.resolve({
-          _tag: "ManagedConversationDenied",
-          reason: "userSuspended",
-          resetAt: null,
+          _tag: "PersonalWelcomeCommitted",
+          messageId: "welcome-test",
         }),
-      acceptTelegramMessage: () =>
-        Promise.resolve({
-          _tag: "ManagedConversationDenied",
-          reason: "userSuspended",
-          resetAt: null,
-        }),
-      commitWelcome: () =>
-        Promise.resolve({ _tag: "PersonalWelcomeCommitted", messageId: "welcome-test" }),
-      initialize: () => Promise.resolve({ _tag: "AgentInitialized" }),
-      submitManagedConversation: () =>
-        Promise.resolve({
-          accepted: true,
-          status: "pending" as const,
-          submissionId: "submission-test",
-        }),
-      probeRuntime: () =>
+      initializeAgent: () => Promise.resolve({ _tag: "AgentInitialized" }),
+      probeAgent: () =>
         Promise.resolve({
           activationId: "test-agent-activation",
           executionUnit: "osfo-agent" as const,
@@ -658,10 +649,18 @@ const testBindings: App.Bindings = {
           kind: "RuntimeProbe" as const,
           stage: "test" as const,
         }),
-      recoverWhatsAppMessage: () => Promise.resolve(null),
-      recoverTelegramMessage: () => Promise.resolve(null),
     }),
   },
+  resolveOsfoAgent: () =>
+    Promise.resolve({
+      acceptWhatsAppMessage: () =>
+        Promise.resolve({
+          _tag: "ManagedConversationDenied",
+          reason: "userSuspended",
+        }),
+      recoverWhatsAppMessage: () => Promise.resolve(null),
+    }),
+  routeOsfoAgentRequest: () => Promise.resolve(new Response(null, { status: 404 })),
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => ({
       begin: () =>

@@ -134,7 +134,11 @@ describe("Osfo Session Recall", () => {
       const result = yield* Effect.promise(() =>
         execute(
           { query: "orchid" },
-          { context: undefined, messages: [], toolCallId: "tool-call-recall-order" },
+          {
+            context: undefined,
+            messages: [],
+            toolCallId: "tool-call-recall-order",
+          },
         ),
       );
 
@@ -156,7 +160,7 @@ describe("Osfo Session Recall", () => {
         const currentSessionId = Schema.decodeUnknownSync(SessionId)("session-recall-current");
         const otherRouteId = Schema.decodeUnknownSync(ConversationRouteId)("route-recall-other");
         const otherSessionId = Schema.decodeUnknownSync(SessionId)("session-recall-other");
-        const agent = env.OSFO_AGENT.getByName(agentId);
+        const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
         yield* Effect.promise(
           async () =>
@@ -301,7 +305,7 @@ describe("Osfo Session Recall", () => {
         );
         const unavailableToolRecall = yield* Effect.promise(() =>
           runInDurableObject(
-            env.OSFO_AGENT.getByName(
+            env.OSFO_AGENT_TEST_FACET.getByName(
               Schema.decodeUnknownSync(AgentId)("agent-session-recall-uninitialized"),
             ),
             async (instance) => {
@@ -417,7 +421,7 @@ describe("Osfo Session Recall", () => {
       );
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-recall-bounded");
       const initialSessionId = Schema.decodeUnknownSync(SessionId)("session-recall-bounded-0");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>
@@ -435,7 +439,12 @@ describe("Osfo Session Recall", () => {
             .forSession(initialSessionId)
             .appendMessage({
               id: "message-oldest-archive-marker",
-              parts: [{ text: "The archive-marker is in the oldest Session", type: "text" }],
+              parts: [
+                {
+                  text: "The archive-marker is in the oldest Session",
+                  type: "text",
+                },
+              ],
               role: "assistant",
             });
         }),
@@ -696,7 +705,7 @@ describe("Osfo Session Recall", () => {
       const replacementSessionId = Schema.decodeUnknownSync(SessionId)(
         "session-recall-deep-replacement",
       );
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>
@@ -851,7 +860,7 @@ describe("Osfo Session Recall", () => {
       );
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-recall-timeout");
       const sessionId = Schema.decodeUnknownSync(SessionId)("session-recall-timeout");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
       yield* Effect.promise(
         async () =>
           await agent.initialize({
@@ -893,7 +902,10 @@ describe("Osfo Session Recall", () => {
               },
             );
             await vi.advanceTimersByTimeAsync(2_000);
-            return { result: await execution, searches: search.mock.calls.length };
+            return {
+              result: await execution,
+              searches: search.mock.calls.length,
+            };
           } finally {
             activeTurnMetadata.mockRestore();
             search.mockRestore();

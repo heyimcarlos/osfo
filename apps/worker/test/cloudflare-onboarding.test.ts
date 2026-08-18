@@ -11,10 +11,10 @@ describe("Cloudflare onboarding adapter", () => {
   it.effect("mints a provider-neutral primary Conversation Route for a new Agent", () => {
     const routeIds: Array<string> = [];
     const layer = OnboardingCloudflare.layer({
-      OSFO_AGENT: {
+      OSFO_DIRECTORY: {
         getByName: () => ({
-          commitWelcome: () => Promise.resolve({ _tag: "PersonalWelcomeCommitted" }),
-          initialize: (input) => {
+          commitAgentWelcome: () => Promise.resolve({ _tag: "PersonalWelcomeCommitted" }),
+          initializeAgent: (_agentId, input) => {
             routeIds.push(input.routeId);
             return Promise.resolve({ _tag: "AgentInitialized" });
           },
@@ -53,10 +53,10 @@ describe("Cloudflare onboarding adapter", () => {
   it.effect("preserves a legacy canonical route when existing-Agent initialization retries", () => {
     const routeIds: Array<string> = [];
     const layer = OnboardingCloudflare.layer({
-      OSFO_AGENT: {
+      OSFO_DIRECTORY: {
         getByName: () => ({
-          commitWelcome: () => Promise.resolve({ _tag: "PersonalWelcomeCommitted" }),
-          initialize: (input) => {
+          commitAgentWelcome: () => Promise.resolve({ _tag: "PersonalWelcomeCommitted" }),
+          initializeAgent: (_agentId, input) => {
             routeIds.push(input.routeId);
             return Promise.resolve({
               _tag:

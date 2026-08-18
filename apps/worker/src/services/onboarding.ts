@@ -110,9 +110,13 @@ export type RegistrationTurnIssued = typeof RegistrationTurnIssued.Type;
 /** Channel state returned after authenticated onboarding completion. */
 export const ChannelOnboardingState = Schema.Union([
   Schema.TaggedStruct("BindingCreated", { channelBindingId: ChannelBindingId }),
-  Schema.TaggedStruct("BindingExisting", { channelBindingId: ChannelBindingId }),
+  Schema.TaggedStruct("BindingExisting", {
+    channelBindingId: ChannelBindingId,
+  }),
   Schema.TaggedStruct("ConsentRefused", {}),
-  Schema.TaggedStruct("EnrollmentPending", { enrollmentUrl: Schema.URLFromString }),
+  Schema.TaggedStruct("EnrollmentPending", {
+    enrollmentUrl: Schema.URLFromString,
+  }),
   Schema.TaggedStruct("ProfileConfirmationPending", {}),
 ]);
 
@@ -329,7 +333,10 @@ type PersistedBindingChannel = Extract<
 
 /** Application-selected atomic completion transition. */
 export type CompletePersistenceDecision =
-  | { readonly _tag: "Commit"; readonly channel: PersistedBindingChannel | "web-enrollment" }
+  | {
+      readonly _tag: "Commit";
+      readonly channel: PersistedBindingChannel | "web-enrollment";
+    }
   | {
       readonly _tag: "Reject";
       readonly reason:
@@ -582,7 +589,9 @@ export const make = Effect.gen(function* () {
       invitation.state !== "live" ||
       invitation.invitedPhoneNumber === null
     ) {
-      return yield* new RegistrationInvitationUnavailable({ reason: "invalid" });
+      return yield* new RegistrationInvitationUnavailable({
+        reason: "invalid",
+      });
     }
     return Redacted.make(invitation.invitedPhoneNumber);
   });
@@ -654,7 +663,11 @@ export const make = Effect.gen(function* () {
       message: input.message,
       verifyUrl: verifyUrl.href,
     });
-    return { invitationId, response: turn.response, verifyUrl: new URL(turn.verifyUrl) };
+    return {
+      invitationId,
+      response: turn.response,
+      verifyUrl: new URL(turn.verifyUrl),
+    };
   });
 
   const complete = Effect.fn("Onboarding.complete")(function* (input: CompleteInput) {
@@ -669,10 +682,14 @@ export const make = Effect.gen(function* () {
             DateTime.toDateUtc(currentTime),
           );
     if (invitation !== null && invitation.kind === "web_enrollment") {
-      return yield* new RegistrationInvitationUnavailable({ reason: "invalid" });
+      return yield* new RegistrationInvitationUnavailable({
+        reason: "invalid",
+      });
     }
     if (invitation?.state === "consumed" && invitation.userId !== input.userId) {
-      return yield* new RegistrationInvitationUnavailable({ reason: "consumed" });
+      return yield* new RegistrationInvitationUnavailable({
+        reason: "consumed",
+      });
     }
 
     const profile = normalizeProfile(input.profile);
@@ -691,7 +708,9 @@ export const make = Effect.gen(function* () {
       invitation.invitedPhoneNumber !== null &&
       invitation.invitedPhoneNumber !== existingUser.phoneNumber
     ) {
-      return yield* new RegistrationInvitationUnavailable({ reason: "invalid" });
+      return yield* new RegistrationInvitationUnavailable({
+        reason: "invalid",
+      });
     }
     const wasRegistered = existingUser.registrationCompletedAt !== null;
     const existingProfile = existingUser.profile;
@@ -712,7 +731,9 @@ export const make = Effect.gen(function* () {
 
     if (invitation?.state === "consumed") {
       if (invitation.consumptionDigest !== requestDigest) {
-        return yield* new RegistrationInvitationUnavailable({ reason: "consumed" });
+        return yield* new RegistrationInvitationUnavailable({
+          reason: "consumed",
+        });
       }
       const recoveredChannel = yield* readChannelReceipt(invitation);
       const registrationResult = yield* registration.complete(input.userId);
@@ -756,18 +777,26 @@ export const make = Effect.gen(function* () {
       requestDigest,
       userId: input.userId,
     };
+    const registrationResult = yield* registration.complete(input.userId);
+    yield* agentOnboarding.initialize(registrationResult);
     const channel = yield* persistence.complete(persistenceInput, (context) =>
       decideCompletion(persistenceInput, context),
     );
 
     if (channel === "invitation-unavailable") {
-      return yield* new RegistrationInvitationUnavailable({ reason: "consumed" });
+      return yield* new RegistrationInvitationUnavailable({
+        reason: "consumed",
+      });
     }
     if (channel === "invitation-expired") {
-      return yield* new RegistrationInvitationUnavailable({ reason: "expired" });
+      return yield* new RegistrationInvitationUnavailable({
+        reason: "expired",
+      });
     }
     if (channel === "invitation-invalid") {
-      return yield* new RegistrationInvitationUnavailable({ reason: "invalid" });
+      return yield* new RegistrationInvitationUnavailable({
+        reason: "invalid",
+      });
     }
     if (channel === "binding-conflict") {
       return yield* new ChannelBindingConflict({
@@ -775,8 +804,6 @@ export const make = Effect.gen(function* () {
       });
     }
 
-    const registrationResult = yield* registration.complete(input.userId);
-    yield* agentOnboarding.initialize(registrationResult);
     if (invitation !== null) {
       yield* registrationTurn.delete(invitation.invitationId);
     }
@@ -821,7 +848,9 @@ export const make = Effect.gen(function* () {
       invitation.userId === null ||
       invitation.provider !== input.provider
     ) {
-      return yield* new RegistrationInvitationUnavailable({ reason: "invalid" });
+      return yield* new RegistrationInvitationUnavailable({
+        reason: "invalid",
+      });
     }
     const userId = invitation.userId;
     const nowDate = DateTime.toDateUtc(now);
@@ -834,11 +863,15 @@ export const make = Effect.gen(function* () {
       invitation.state === "consumed"
         ? yield* Effect.gen(function* () {
             if (invitation.consumptionDigest !== enrollmentDigest) {
-              return yield* new RegistrationInvitationUnavailable({ reason: "consumed" });
+              return yield* new RegistrationInvitationUnavailable({
+                reason: "consumed",
+              });
             }
             const recovered = yield* readChannelReceipt(invitation);
             if (recovered._tag !== "BindingCreated" && recovered._tag !== "BindingExisting") {
-              return yield* new RegistrationInvitationUnavailable({ reason: "consumed" });
+              return yield* new RegistrationInvitationUnavailable({
+                reason: "consumed",
+              });
             }
             const currentBinding = yield* persistence.readCurrentBinding({
               channelBindingId: recovered.channelBindingId,
@@ -846,7 +879,9 @@ export const make = Effect.gen(function* () {
               userId,
             });
             if (currentBinding?.channelIdentity !== input.channelIdentity) {
-              return yield* new RegistrationInvitationUnavailable({ reason: "consumed" });
+              return yield* new RegistrationInvitationUnavailable({
+                reason: "consumed",
+              });
             }
             return recovered;
           })
@@ -864,10 +899,14 @@ export const make = Effect.gen(function* () {
               decideEnrollment(bindingId, input.channelIdentity, userId, nowDate, context),
           );
     if (result === "invitation-unavailable") {
-      return yield* new RegistrationInvitationUnavailable({ reason: "consumed" });
+      return yield* new RegistrationInvitationUnavailable({
+        reason: "consumed",
+      });
     }
     if (result === "invitation-expired") {
-      return yield* new RegistrationInvitationUnavailable({ reason: "expired" });
+      return yield* new RegistrationInvitationUnavailable({
+        reason: "expired",
+      });
     }
     if (result === "binding-conflict") {
       return yield* new ChannelBindingConflict({
@@ -1064,7 +1103,10 @@ const decideBinding = (
   if (matching !== undefined) {
     return {
       _tag: "Commit",
-      channel: { _tag: "BindingExisting", channelBindingId: matching.channelBindingId },
+      channel: {
+        _tag: "BindingExisting",
+        channelBindingId: matching.channelBindingId,
+      },
     };
   }
   if (activeBindings.length > 0) return { _tag: "Reject", reason: "binding-conflict" };
@@ -1083,7 +1125,9 @@ const readUsableInvitation = Effect.fn("Onboarding.readUsableInvitation")(functi
   const digest = yield* digestRegistrationToken(crypto, token);
   const invitation = yield* persistence.findByDigest(digest);
   if (invitation === null) {
-    return yield* new RegistrationInvitationUnavailable({ reason: "invalid" });
+    return yield* new RegistrationInvitationUnavailable({
+      reason: "invalid",
+    });
   }
   if (invitation.state === "expired") {
     return yield* new RegistrationInvitationUnavailable({
@@ -1092,7 +1136,9 @@ const readUsableInvitation = Effect.fn("Onboarding.readUsableInvitation")(functi
   }
   if (invitation.state === "live" && invitation.expiresAt.getTime() <= now.getTime()) {
     yield* persistence.expireByDigest(digest, now);
-    return yield* new RegistrationInvitationUnavailable({ reason: "expired" });
+    return yield* new RegistrationInvitationUnavailable({
+      reason: "expired",
+    });
   }
   return invitation;
 });

@@ -1,6 +1,6 @@
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { billingCustomers, billingSubscriptions } from "@osfo/db/schema/billing";
-import { webhookEvents } from "@osfo/db/schema/webhooks";
+import { webhookJobs } from "@osfo/db/schema/webhooks";
 import { and, eq, gt, gte, lte, sql } from "drizzle-orm";
 import { Effect } from "effect";
 
@@ -146,7 +146,9 @@ export const applyStripeSnapshot = (
       const result: ApplyStripeSnapshotResult = decision.result;
       if (decision._tag === "Activate") {
         if (input.snapshot.period === null || input.snapshot.payment._tag !== "Paid") {
-          return new InvalidStripeSnapshot({ message: "Paid transition lacks payment evidence" });
+          return new InvalidStripeSnapshot({
+            message: "Paid transition lacks payment evidence",
+          });
         }
         const period = input.snapshot.period;
         const payment = input.snapshot.payment;
@@ -239,13 +241,13 @@ export const applyStripeSnapshot = (
       }
       if (input.source._tag === "Webhook") {
         await transaction
-          .update(webhookEvents)
+          .update(webhookJobs)
           .set({ processedAt: now, status: "processed", updatedAt: now })
           .where(
             and(
-              eq(webhookEvents.webhookEventId, input.source.webhookEventId),
-              eq(webhookEvents.attempts, input.source.attempt),
-              eq(webhookEvents.status, "pending"),
+              eq(webhookJobs.webhookEventId, input.source.webhookEventId),
+              eq(webhookJobs.attempts, input.source.attempt),
+              eq(webhookJobs.status, "pending"),
             ),
           );
       }

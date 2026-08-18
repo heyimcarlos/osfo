@@ -143,7 +143,9 @@ describe("Osfo Agent and Think Session foundation", () => {
         _tag: "CoreMemoryCorrected",
         content: "I have medical debt.",
       });
-      expect(memory).toMatchObject({ userContext: { content: "I have medical debt." } });
+      expect(memory).toMatchObject({
+        userContext: { content: "I have medical debt." },
+      });
     }),
   );
 
@@ -169,7 +171,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       const beforeApproval = yield* Effect.promise(() => inspectAgentMemory(agent, "clear-before"));
       yield* Effect.promise(() => evictDurableObject(agent));
       const reactivated = yield* Effect.promise(
-        async () => await getAgentByName(env.OSFO_AGENT, "agent-core-memory-clear"),
+        async () => await getAgentByName(env.OSFO_AGENT_TEST_FACET, "agent-core-memory-clear"),
       );
       const actor = {
         _tag: "ChannelBinding" as const,
@@ -190,7 +192,10 @@ describe("Osfo Agent and Think Session foundation", () => {
       );
       const memory = yield* Effect.promise(() => inspectAgentMemory(reactivated, "clear-after"));
 
-      expect(parked).toMatchObject({ action: coreMemoryClearActionName, status: "paused" });
+      expect(parked).toMatchObject({
+        action: coreMemoryClearActionName,
+        status: "paused",
+      });
       expect(beforeApproval).toMatchObject({
         userContext: { content: "The User lives in Toronto." },
       });
@@ -232,12 +237,21 @@ describe("Osfo Agent and Think Session foundation", () => {
       );
       const inspection = yield* Effect.promise(
         async () =>
-          await agent.inspectCoreMemory({ actionId: "revoked-inspection", authorization }),
+          await agent.inspectCoreMemory({
+            actionId: "revoked-inspection",
+            authorization,
+          }),
       );
       const memory = yield* Effect.promise(() => inspectAgentMemory(agent, "revoked-proof"));
 
-      expect(correction).toMatchObject({ _tag: "Denied", reason: "authorityRevoked" });
-      expect(inspection).toMatchObject({ _tag: "Denied", reason: "authorityRevoked" });
+      expect(correction).toMatchObject({
+        _tag: "Denied",
+        reason: "authorityRevoked",
+      });
+      expect(inspection).toMatchObject({
+        _tag: "Denied",
+        reason: "authorityRevoked",
+      });
       expect(memory).toMatchObject({ userContext: { content: "" } });
     }),
   );
@@ -350,7 +364,11 @@ describe("Osfo Agent and Think Session foundation", () => {
           for (const [index, content] of sensitiveContent.entries()) {
             await setContext.execute(
               { action: "replace", block: "userContext", content },
-              { context: {}, messages: [], toolCallId: `tool-core-memory-sensitive-${index}` },
+              {
+                context: {},
+                messages: [],
+                toolCallId: `tool-core-memory-sensitive-${index}`,
+              },
             );
             await instance.session.refreshSystemPrompt();
             rejectedSensitive.push(
@@ -363,7 +381,11 @@ describe("Osfo Agent and Think Session foundation", () => {
               block: "agentNotes",
               content: "Reasoning: private chain-of-thought about the User.",
             },
-            { context: {}, messages: [], toolCallId: "tool-core-memory-reasoning" },
+            {
+              context: {},
+              messages: [],
+              toolCallId: "tool-core-memory-reasoning",
+            },
           );
           await instance.session.refreshSystemPrompt();
           const rejectedReasoning =
@@ -376,7 +398,11 @@ describe("Osfo Agent and Think Session foundation", () => {
           ].entries()) {
             await setContext.execute(
               { action: "replace", block: "agentNotes", content },
-              { context: {}, messages: [], toolCallId: `tool-core-memory-named-${index}` },
+              {
+                context: {},
+                messages: [],
+                toolCallId: `tool-core-memory-named-${index}`,
+              },
             );
             await instance.session.refreshSystemPrompt();
             rejectedNamedSensitive.push(
@@ -390,8 +416,16 @@ describe("Osfo Agent and Think Session foundation", () => {
             "Use conservative backoff.",
           ].join("\n");
           await setContext.execute(
-            { action: "replace", block: "agentNotes", content: safeAgentNotes },
-            { context: {}, messages: [], toolCallId: "tool-core-memory-safe-agent-notes" },
+            {
+              action: "replace",
+              block: "agentNotes",
+              content: safeAgentNotes,
+            },
+            {
+              context: {},
+              messages: [],
+              toolCallId: "tool-core-memory-safe-agent-notes",
+            },
           );
           await setContext.execute(
             {
@@ -399,7 +433,11 @@ describe("Osfo Agent and Think Session foundation", () => {
               block: "userContext",
               content: "The User prefers calendar times in Eastern Time.",
             },
-            { context: {}, messages: [], toolCallId: "tool-core-memory-proactive" },
+            {
+              context: {},
+              messages: [],
+              toolCallId: "tool-core-memory-proactive",
+            },
           );
           return {
             prompt: await instance.session.refreshSystemPrompt(),
@@ -426,7 +464,9 @@ describe("Osfo Agent and Think Session foundation", () => {
           content:
             "Review the quarterly financial results.\nMonitor database health.\nVote on the release proposal.\nUse conservative backoff.",
         },
-        userContext: { content: "The User prefers calendar times in Eastern Time." },
+        userContext: {
+          content: "The User prefers calendar times in Eastern Time.",
+        },
       });
     }),
   );
@@ -437,10 +477,16 @@ describe("Osfo Agent and Think Session foundation", () => {
       const content = "fact ".repeat(690).trim();
 
       const agentNotes = yield* Effect.promise(async () =>
-        correctAgentMemory(agent, "budget-notes", { block: "agentNotes", content }),
+        correctAgentMemory(agent, "budget-notes", {
+          block: "agentNotes",
+          content,
+        }),
       );
       const userContext = yield* Effect.promise(async () =>
-        correctAgentMemory(agent, "budget-user", { block: "userContext", content }),
+        correctAgentMemory(agent, "budget-user", {
+          block: "userContext",
+          content,
+        }),
       );
       const memory = yield* Effect.promise(() => inspectAgentMemory(agent, "budget-inspect"));
 
@@ -466,10 +512,16 @@ describe("Osfo Agent and Think Session foundation", () => {
       const { agent } = yield* initializeCoreMemoryAgent("user-bounds");
 
       yield* Effect.promise(async () =>
-        boundAgentMemory(agent, "bound-user", { block: "userContext", maxTokens: 900 }),
+        boundAgentMemory(agent, "bound-user", {
+          block: "userContext",
+          maxTokens: 900,
+        }),
       );
       yield* Effect.promise(async () =>
-        boundAgentMemory(agent, "bound-notes", { block: "agentNotes", maxTokens: 400 }),
+        boundAgentMemory(agent, "bound-notes", {
+          block: "agentNotes",
+          maxTokens: 400,
+        }),
       );
       const overBound = yield* Effect.promise(async () =>
         correctAgentMemory(agent, "bound-over", {
@@ -495,7 +547,7 @@ describe("Osfo Agent and Think Session foundation", () => {
 
   it.effect("exposes bounded document generation through the Agent ToolCall boundary", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-document-tools"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(AgentId.make("agent-document-tools"));
       const registered = yield* Effect.promise(() =>
         runInDurableObject(agent, async (instance) =>
           Promise.resolve({
@@ -513,7 +565,9 @@ describe("Osfo Agent and Think Session foundation", () => {
 
   it.effect("identifies malformed WhatsApp recovery RPC input", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(AgentId.make("agent-invalid-whatsapp-recovery"));
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
+        AgentId.make("agent-invalid-whatsapp-recovery"),
+      );
       const invalid = yield* Effect.promise(() =>
         runInDurableObject(agent, async (instance) => {
           // @ts-expect-error Test the public RPC decoder with a malformed wire value.
@@ -529,59 +583,6 @@ describe("Osfo Agent and Think Session foundation", () => {
     }),
   );
 
-  it.effect("recovers Telegram acceptance in the established canonical Session", () =>
-    Effect.gen(function* () {
-      const agentId = AgentId.make("agent-telegram-acceptance");
-      const channelBindingId = ChannelBindingId.make("binding-telegram-acceptance");
-      const sessionId = SessionId.make("session-telegram-canonical");
-      const agent = env.OSFO_AGENT.getByName(agentId);
-      yield* Effect.promise(
-        async () =>
-          await agent.initialize({
-            agentId,
-            initializationId: "init-telegram-acceptance",
-            initializedAt: "2026-08-17T00:00:00.000Z",
-            routeId: "route-telegram-acceptance",
-            sessionId,
-          }),
-      );
-      const input = {
-        channelBindingId,
-        message: "Plan my day",
-        providerMessageId: "telegram-update-9001",
-        receiptId: "receipt-telegram-acceptance",
-        submissionId: "submission-telegram-acceptance",
-        userMessageId: "message-telegram-acceptance",
-      } as const;
-      const receipt = yield* Effect.promise(() =>
-        runInDurableObject(agent, async (instance, state) => {
-          state.storage.sql.exec(
-            `INSERT INTO osfo_acceptance_receipts
-              (allowance_period_id, channel_binding_id, provider_message_id, receipt_id,
-               session_id, think_submission_id, user_message_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            "period-telegram-acceptance",
-            channelBindingId,
-            input.providerMessageId,
-            input.receiptId,
-            sessionId,
-            input.submissionId,
-            input.userMessageId,
-          );
-          return await instance.acceptTelegramMessage(input);
-        }),
-      );
-
-      expect(receipt).toMatchObject({
-        _tag: "AcceptanceReceipt",
-        channelBindingId,
-        providerMessageId: input.providerMessageId,
-        sessionId,
-        thinkSubmissionId: input.submissionId,
-      });
-    }),
-  );
-
   it.effect("returns the exact Acceptance Receipt when one WhatsApp message is replayed", () =>
     Effect.gen(function* () {
       const agentId = Schema.decodeUnknownSync(AgentId)("agent-whatsapp-acceptance");
@@ -593,7 +594,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       const channelBindingId = Schema.decodeUnknownSync(ChannelBindingId)(
         "binding-whatsapp-acceptance",
       );
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
       yield* Effect.promise(
         async () =>
           await agent.initialize({
@@ -664,7 +665,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       const routeId = ConversationRouteId.make("route-command-receipt-atomic");
       const initialSessionId = SessionId.make("session-command-receipt-initial");
       const replacementSessionId = SessionId.make("session-command-receipt-replacement");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
       yield* Effect.promise(
         async () =>
           await agent.initialize({
@@ -727,7 +728,9 @@ describe("Osfo Agent and Think Session foundation", () => {
         currentSessionId: replacementSessionId,
         historicalSessionId: initialSessionId,
       });
-      expect(observed.conflict).toMatchObject({ _tag: "SessionCommandReceiptConflict" });
+      expect(observed.conflict).toMatchObject({
+        _tag: "SessionCommandReceiptConflict",
+      });
       expect(observed.replacementConflict).toMatchObject({
         _tag: "SessionCommandReceiptConflict",
         existingReplacementSessionId: replacementSessionId,
@@ -750,7 +753,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       const providerMessageId = ProviderMessageId.make("wamid.whatsapp-think-recovery");
       const userMessageId = UserMessageId.make("message-whatsapp-think-recovery");
       const receiptId = "receipt-whatsapp-think-recovery";
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
       const authorization = yield* Schema.decodeUnknownEffect(AuthorizationContext)(
         whatsappAuthorization(channelBindingId),
       );
@@ -857,7 +860,7 @@ describe("Osfo Agent and Think Session foundation", () => {
         Schema.decodeUnknownSync(AgentInitializationId)("init-personal-welcome");
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-personal-welcome");
       const sessionId = Schema.decodeUnknownSync(SessionId)("session-personal-welcome");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
       yield* Effect.promise(
         async () =>
           await agent.initialize({
@@ -909,7 +912,7 @@ describe("Osfo Agent and Think Session foundation", () => {
 
   it.effect("keeps managed inference private and disables blind Action replay", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
         Schema.decodeUnknownSync(AgentId)("agent-managed-runtime-policy"),
       );
       const policy = yield* Effect.promise(() =>
@@ -944,7 +947,7 @@ describe("Osfo Agent and Think Session foundation", () => {
 
   it.effect("delegates managed conversation cancellation to Think's Submission ledger", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
         Schema.decodeUnknownSync(AgentId)("agent-managed-cancellation"),
       );
       const canceled = yield* Effect.promise(
@@ -961,7 +964,7 @@ describe("Osfo Agent and Think Session foundation", () => {
 
   it.effect("keeps a missing AI Gateway cost pending before conservative settlement", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
         Schema.decodeUnknownSync(AgentId)("agent-gateway-cost-settlement"),
       );
       yield* Effect.promise(() =>
@@ -1008,7 +1011,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       const initializationId = Schema.decodeUnknownSync(AgentInitializationId)("init-stable");
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-primary");
       const sessionId = Schema.decodeUnknownSync(SessionId)("session-primary");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       const initialized = yield* Effect.promise(() =>
         (async () =>
@@ -1109,7 +1112,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       const invalidSequenceSessionId = Schema.decodeUnknownSync(SessionId)("invalid-sequence");
       const duplicateSequenceSessionId = Schema.decodeUnknownSync(SessionId)("duplicate-sequence");
       const initializedAt = Schema.decodeUnknownSync(DbTimestamp)("2026-08-15T12:00:00.000Z");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>
@@ -1252,7 +1255,7 @@ describe("Osfo Agent and Think Session foundation", () => {
         Schema.decodeUnknownSync(AgentInitializationId)("init-canonical-read");
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-canonical-read");
       const sessionId = Schema.decodeUnknownSync(SessionId)("session-canonical-read");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>
@@ -1307,7 +1310,7 @@ describe("Osfo Agent and Think Session foundation", () => {
         Schema.decodeUnknownSync(AgentInitializationId)("init-committed-hook");
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-committed-hook");
       const sessionId = Schema.decodeUnknownSync(SessionId)("session-committed-hook");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>
@@ -1382,7 +1385,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       const replacementSessionId = Schema.decodeUnknownSync(SessionId)(
         "session-delayed-replacement",
       );
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>
@@ -1459,7 +1462,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-turn-reconciliation");
       const firstSessionId = Schema.decodeUnknownSync(SessionId)("session-turn-first");
       const secondSessionId = Schema.decodeUnknownSync(SessionId)("session-turn-second");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>
@@ -1554,7 +1557,7 @@ describe("Osfo Agent and Think Session foundation", () => {
         Schema.decodeUnknownSync(AgentInitializationId)("init-turn-enrichment");
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-turn-enrichment");
       const sessionId = Schema.decodeUnknownSync(SessionId)("session-turn-enrichment");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>
@@ -1616,7 +1619,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-turn-conflicts");
       const firstSessionId = Schema.decodeUnknownSync(SessionId)("session-conflict-first");
       const secondSessionId = Schema.decodeUnknownSync(SessionId)("session-conflict-second");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>
@@ -1698,7 +1701,7 @@ describe("Osfo Agent and Think Session foundation", () => {
       );
       const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-invalid-observed-at");
       const sessionId = Schema.decodeUnknownSync(SessionId)("session-invalid-observed-at");
-      const agent = env.OSFO_AGENT.getByName(agentId);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(
         async () =>
@@ -1744,7 +1747,7 @@ describe("Osfo Agent and Think Session foundation", () => {
 
   it.effect("migrates every synthetic Agent SQLite source version and repeats safely", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName("agent-migration-source-versions");
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName("agent-migration-source-versions");
       const reports = yield* Effect.promise(() =>
         runInDurableObject(agent, async (_instance, state) => {
           const observed = [];
@@ -1785,7 +1788,7 @@ describe("Osfo Agent and Think Session foundation", () => {
 
   it.effect("upgrades a populated 0002 Agent database through 0004 without losing receipts", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName("agent-migration-populated-0002");
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName("agent-migration-populated-0002");
       const observed = yield* Effect.promise(() =>
         runInDurableObject(agent, async (_instance, state) => {
           resetOsfoTables(state.storage);
@@ -1837,8 +1840,14 @@ describe("Osfo Agent and Think Session foundation", () => {
       );
 
       expect(observed).toEqual({
-        ownership: { ownership_sequence: 1, session_id: "session-upgrade-0002" },
-        receipt: { receipt_id: "receipt-upgrade-0002", session_id: "session-upgrade-0002" },
+        ownership: {
+          ownership_sequence: 1,
+          session_id: "session-upgrade-0002",
+        },
+        receipt: {
+          receipt_id: "receipt-upgrade-0002",
+          session_id: "session-upgrade-0002",
+        },
         repeated: { appliedVersions: [], currentVersion: 5 },
         upgraded: { appliedVersions: [4, 5], currentVersion: 5 },
       });
@@ -1847,7 +1856,7 @@ describe("Osfo Agent and Think Session foundation", () => {
 
   it.effect("rolls back an interrupted migration and retries it safely", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName("agent-migration-interruption");
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName("agent-migration-interruption");
       const observed = yield* Effect.promise(() =>
         runInDurableObject(agent, async (_instance, state) => {
           resetOsfoTables(state.storage);
@@ -1889,7 +1898,7 @@ describe("Osfo Agent and Think Session foundation", () => {
 
   it.effect("fails closed when an applied migration digest changes", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName("agent-migration-digest");
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName("agent-migration-digest");
       const observed = yield* Effect.promise(() =>
         runInDurableObject(agent, async (_instance, state) => {
           resetOsfoTables(state.storage);
@@ -1922,7 +1931,7 @@ describe("Osfo Agent and Think Session foundation", () => {
 
   it.effect("rejects generated migration SQL that does not match its manifest digest", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName("agent-migration-definition-digest");
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName("agent-migration-definition-digest");
       const observed = yield* Effect.promise(() =>
         runInDurableObject(agent, async (_instance, state) => {
           resetOsfoTables(state.storage);
@@ -1951,7 +1960,7 @@ describe("Osfo Agent and Think Session foundation", () => {
 
   it.effect("fails closed when Agent SQLite contains an unsupported future version", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName("agent-migration-future-version");
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName("agent-migration-future-version");
       const observed = yield* Effect.promise(() =>
         runInDurableObject(agent, async (_instance, state) => {
           resetOsfoTables(state.storage);
@@ -1984,7 +1993,7 @@ describe("Osfo Agent and Think Session foundation", () => {
 
   it.effect("leaves all Think-owned tables unchanged during Osfo migration", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName("agent-migration-think-isolation");
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName("agent-migration-think-isolation");
       const observed = yield* Effect.promise(() =>
         runInDurableObject(agent, async (_instance, state) => {
           resetOsfoTables(state.storage);
@@ -2008,7 +2017,7 @@ const initializeCoreMemoryAgent = (name: string) =>
     const agentId = Schema.decodeUnknownSync(AgentId)(`agent-core-memory-${name}`);
     const routeId = Schema.decodeUnknownSync(ConversationRouteId)(`route-core-memory-${name}`);
     const sessionId = Schema.decodeUnknownSync(SessionId)(`session-core-memory-${name}`);
-    const agent = env.OSFO_AGENT.getByName(agentId);
+    const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
     yield* Effect.promise(
       async () =>
         await agent.initialize({
@@ -2023,20 +2032,38 @@ const initializeCoreMemoryAgent = (name: string) =>
   });
 
 const inspectAgentMemory = async (agent: DurableObjectStub<OsfoAgent>, actionId: string) =>
-  await agent.inspectCoreMemory({ actionId, authorization: coreMemoryAuthorization() });
+  await agent.inspectCoreMemory({
+    actionId,
+    authorization: coreMemoryAuthorization(),
+  });
 
 const correctAgentMemory = async (
   agent: DurableObjectStub<OsfoAgent>,
   actionId: string,
-  input: { readonly block: "agentNotes" | "userContext"; readonly content: string },
+  input: {
+    readonly block: "agentNotes" | "userContext";
+    readonly content: string;
+  },
 ) =>
-  await agent.correctCoreMemory({ ...input, actionId, authorization: coreMemoryAuthorization() });
+  await agent.correctCoreMemory({
+    ...input,
+    actionId,
+    authorization: coreMemoryAuthorization(),
+  });
 
 const boundAgentMemory = async (
   agent: DurableObjectStub<OsfoAgent>,
   actionId: string,
-  input: { readonly block: "agentNotes" | "userContext"; readonly maxTokens: number },
-) => await agent.boundCoreMemory({ ...input, actionId, authorization: coreMemoryAuthorization() });
+  input: {
+    readonly block: "agentNotes" | "userContext";
+    readonly maxTokens: number;
+  },
+) =>
+  await agent.boundCoreMemory({
+    ...input,
+    actionId,
+    authorization: coreMemoryAuthorization(),
+  });
 
 const coreMemoryAuthorization = () =>
   AuthorizationContext.make({
@@ -2070,7 +2097,10 @@ const coreMemoryAuthorization = () =>
     },
     requestVendorUsdMicros: 0n,
     resourceOwnerUserId: UserId.make("user-core-memory"),
-    subscription: { plan: "free", planPolicyVersion: PlanPolicyVersion.make("launch-v1") },
+    subscription: {
+      plan: "free",
+      planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+    },
     user: { _tag: "ActiveUser", userId: UserId.make("user-core-memory") },
   });
 
@@ -2086,7 +2116,11 @@ const revokedCoreMemoryAuthorization = () =>
 
 const approvalAuthorization = (authority: "active" | "revoked") =>
   Schema.encodeSync(AuthorizationContext)(
-    currentTestAuthorization({ authority, currentFact: "current", providerOutcome: "applied" }),
+    currentTestAuthorization({
+      authority,
+      currentFact: "current",
+      providerOutcome: "applied",
+    }),
   );
 
 const managedTurnMetadata = (name: string) => {

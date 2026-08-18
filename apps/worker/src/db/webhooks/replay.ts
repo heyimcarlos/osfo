@@ -1,9 +1,12 @@
-import { webhookEvents } from "@osfo/db/schema/webhooks";
+import { webhookEvents, webhookJobs } from "@osfo/db/schema/webhooks";
 import { eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
-import { BillingCheckoutSessionId } from "../../domain";
-import { WebhookPersistenceUnavailable, type ReplayResult } from "../../services/stripe-webhooks";
+import {
+  VerifiedStripeEvent,
+  WebhookPersistenceUnavailable,
+  type ReplayResult,
+} from "../../services/stripe-webhooks";
 import type { Database } from "../index";
 import { beginAttempt } from "./begin-attempt";
 
@@ -19,32 +22,27 @@ export const replay = (
       database.transaction(async (transaction) => {
         const [stored] = await transaction
           .select({
-            billingCheckoutSessionId: webhookEvents.billingCheckoutSessionId,
-            eventType: webhookEvents.eventType,
-            externalEventId: webhookEvents.externalEventId,
-            externalObjectId: webhookEvents.externalObjectId,
+            payloadJson: webhookEvents.payloadJson,
             provider: webhookEvents.provider,
-            status: webhookEvents.status,
+            status: webhookJobs.status,
           })
           .from(webhookEvents)
+          .innerJoin(webhookJobs, eq(webhookJobs.webhookEventId, webhookEvents.webhookEventId))
           .where(eq(webhookEvents.webhookEventId, webhookEventId))
           .for("update")
           .limit(1);
         if (stored === undefined) return undefined;
         const transition = await beginAttempt(transaction, webhookEventId, stored.status);
         if (transition._tag === "ProcessedDuplicate") return transition;
+        const event = Schema.decodeSync(Schema.fromJsonString(VerifiedStripeEvent))(
+          stored.payloadJson,
+        );
         return {
           _tag: "Pending",
           attempt: transition.attempt,
           event: {
-            billingCheckoutSessionId:
-              stored.billingCheckoutSessionId === null
-                ? null
-                : BillingCheckoutSessionId.make(stored.billingCheckoutSessionId),
-            externalEventId: stored.externalEventId,
-            externalObjectId: stored.externalObjectId,
+            ...event,
             provider: stored.provider,
-            type: stored.eventType,
           },
           webhookEventId,
         } as const;

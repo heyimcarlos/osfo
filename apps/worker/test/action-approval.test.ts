@@ -31,10 +31,13 @@ describe("Think Action and exact Approval", () => {
   it.effect("parks in Think, recovers after activation, and executes once after Approval", () =>
     Effect.gen(function* () {
       const agentName = Schema.decodeUnknownSync(AgentId)("agent-think-action-recovery");
-      const agent = env.OSFO_AGENT.getByName(agentName);
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentName);
       const parked = yield* Effect.promise(() => parkTestAction(agent, "call-recovery"));
 
-      expect(parked).toMatchObject({ action: testProtectedActionName, status: "paused" });
+      expect(parked).toMatchObject({
+        action: testProtectedActionName,
+        status: "paused",
+      });
       expect(parked.executionId).toMatch(/^actpause_/);
 
       const beforeActivation = yield* Effect.promise(async () => await agent.pendingApprovals());
@@ -52,7 +55,7 @@ describe("Think Action and exact Approval", () => {
 
       yield* Effect.promise(() => evictDurableObject(agent));
       const reactivatedAgent = yield* Effect.promise(
-        async () => await getAgentByName(env.OSFO_AGENT, agentName),
+        async () => await getAgentByName(env.OSFO_AGENT_TEST_FACET, agentName),
       );
       const afterActivation = yield* Effect.promise(
         async () => await reactivatedAgent.pendingApprovals(),
@@ -112,7 +115,7 @@ describe("Think Action and exact Approval", () => {
   ] as const) {
     it.effect(`rechecks current ${testCase.name} before provider contact`, () =>
       Effect.gen(function* () {
-        const agent = env.OSFO_AGENT.getByName(
+        const agent = env.OSFO_AGENT_TEST_FACET.getByName(
           Schema.decodeUnknownSync(AgentId)(`agent-think-action-${testCase.currentFact}`),
         );
         const parked = yield* Effect.promise(() =>
@@ -129,14 +132,18 @@ describe("Think Action and exact Approval", () => {
         const result = yield* Effect.promise(
           async () => await agent.approveExecution(parked.executionId),
         );
-        expect(result).toEqual({ _tag: "Denied", reason: testCase.denial, resetAt: null });
+        expect(result).toEqual({
+          _tag: "Denied",
+          reason: testCase.denial,
+          resetAt: null,
+        });
       }),
     );
   }
 
   it.effect("returns explicit provider ambiguity", () =>
     Effect.gen(function* () {
-      const ambiguousAgent = env.OSFO_AGENT.getByName(
+      const ambiguousAgent = env.OSFO_AGENT_TEST_FACET.getByName(
         Schema.decodeUnknownSync(AgentId)("agent-think-action-ambiguous"),
       );
       yield* Effect.promise(() =>
@@ -162,7 +169,7 @@ describe("Think Action and exact Approval", () => {
 
   it.effect("creates a new Action and Approval for materially changed input", () =>
     Effect.gen(function* () {
-      const agent = env.OSFO_AGENT.getByName(
+      const agent = env.OSFO_AGENT_TEST_FACET.getByName(
         Schema.decodeUnknownSync(AgentId)("agent-think-action-material-change"),
       );
       const first = yield* Effect.promise(() =>
@@ -269,7 +276,11 @@ const parkTestAction = async (
           {
             execute?: (
               input: unknown,
-              options: { abortSignal?: AbortSignal; messages?: []; toolCallId?: string },
+              options: {
+                abortSignal?: AbortSignal;
+                messages?: [];
+                toolCallId?: string;
+              },
             ) => Promise<unknown>;
           }
         >

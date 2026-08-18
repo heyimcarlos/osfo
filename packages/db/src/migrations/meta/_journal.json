@@ -8,6 +8,27 @@
       "when": 1786987414939,
       "tag": "0000_thankful_la_nuit",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787010868828,
+      "tag": "0001_mushy_living_mummy",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787011255397,
+      "tag": "0002_sparkling_micromacro",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1787014829799,
+      "tag": "0003_typical_onslaught",
+      "breakpoints": true
     }
   ]
 }

@@ -105,7 +105,7 @@ users outside this list, and invalid webhook secrets.
 Register this webhook URL with Telegram's `setWebhook` Bot API method:
 
 ```text
-https://<development-worker>/messengers/telegram/webhook
+https://<development-worker>/webhooks/telegram
 ```
 
 Supply `TELEGRAM_WEBHOOK_SECRET_TOKEN` as the `secret_token` for that request.
@@ -113,18 +113,11 @@ The same value must arrive in Telegram's
 `X-Telegram-Bot-Api-Secret-Token` header. Web-first enrollment opens the bot with
 a single-use `start` token. Only the token digest is stored.
 
-This adapter uses Think's documented manual-ingress shape. The Worker completes
-allowlist, onboarding, consent, and stable Agent lookup before it submits to the
-named Agent. It does not use Think's default per-thread sub-agent routing, and
-Chat SDK state is not conversation authority.
-
-Telegram `sendMessage` has no idempotency key. A `not_applied` or `prepared` delivery means that
-Telegram was definitely not contacted, so its fenced lease can be taken over. Immediately before
-provider contact Osfo durably changes the delivery to `ambiguous`; it never resends that event and
-returns a retryable failure. A successful provider response advances the same fenced claim to
-`applied`. This conservative policy can suppress one response if the Worker stops before contact,
-but it cannot silently acknowledge ambiguity or duplicate a Telegram send. The User can recover
-with a new Telegram event.
+Cloudflare Think and Chat SDK verify and decode Telegram updates. They also own
+update deduplication, reply recovery, streaming, message edits, splitting, and
+delivery. The shared webhook enters `OsfoDirectory("main")`. The directory
+resolves the provider-neutral channel binding and routes a bound conversation
+to the registered `OsfoAgent[agentId]` facet. Web chat uses the same facet.
 
 ## Verification
 

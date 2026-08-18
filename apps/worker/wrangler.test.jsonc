@@ -5,6 +5,7 @@
   "rules": [{ "type": "Text", "globs": ["**/*.sql", "**/*.txt"], "fallthrough": true }],
   "compatibility_date": "2026-08-12",
   "compatibility_flags": ["nodejs_compat"],
+  "ai": { "binding": "AI" },
   "vars": {
     "META_APP_SECRET": "test-only-meta-app-secret",
     "META_WEBHOOK_VERIFY_TOKEN": "test-only-meta-webhook-token",
@@ -29,8 +30,13 @@
   "durable_objects": {
     "bindings": [
       { "name": "DOCUMENT_SANDBOX", "class_name": "Sandbox" },
-      { "name": "OSFO_AGENT", "class_name": "OsfoAgent" },
+      { "name": "OSFO_DIRECTORY", "class_name": "OsfoDirectory" },
+      { "name": "OSFO_AGENT_TEST_FACET", "class_name": "OsfoAgent" },
       { "name": "REGISTRATION_DIALOGUE", "class_name": "RegistrationDialogue" },
+      {
+        "name": "THINK_MESSENGER_STATE_TEST",
+        "class_name": "ThinkMessengerStateAgent",
+      },
     ],
   },
   "migrations": [
@@ -39,6 +45,7 @@
       "new_sqlite_classes": ["OsfoAgent", "RegistrationDialogue"],
     },
     { "tag": "v2", "new_sqlite_classes": ["Sandbox"] },
+    { "tag": "v3", "new_sqlite_classes": ["OsfoDirectory"] },
   ],
   "containers": [
     {

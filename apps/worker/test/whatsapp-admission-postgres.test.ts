@@ -16,14 +16,11 @@ import {
   AllowancePeriodId,
   AcceptanceReceiptId,
   ChannelBindingId,
-  ChannelIdentity,
-  ProviderMessageId,
   ThinkSubmissionId,
   UserMessageId,
   UserId,
 } from "../src/domain";
 import { retainedCatalog } from "../src/domain/plan-policy";
-import * as ChannelBindingPostgres from "../src/integrations/postgres/channel-binding";
 import { make } from "../src/integrations/postgres/whatsapp-admission";
 import * as Allowances from "../src/services/allowances";
 import type { ManagedConversationDenied } from "../src/services/managed-conversation";
@@ -32,12 +29,11 @@ import { AcceptanceReceipt } from "../src/services/provider-acceptance-receipt";
 import {
   type AgentAcceptanceInput,
   type AgentRecoveryInput,
-  InboundWhatsAppMessage,
+  type InboundWhatsAppMessage,
   WhatsAppMessageText,
 } from "../src/services/whatsapp-admission";
 import {
   makeWhatsAppAdmissionFixture,
-  providerContentDigest,
   receiptFromAcceptance,
   recoveredReceipt,
   routeMessage,
@@ -88,7 +84,9 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
             .where(eq(allowanceUsage.allowancePeriodId, seeded.allowancePeriodId)),
         );
         const accepted = yield* Schema.decodeUnknownEffect(
-          Schema.TaggedStruct("MessageAccepted", { receipt: AcceptanceReceipt }),
+          Schema.TaggedStruct("MessageAccepted", {
+            receipt: AcceptanceReceipt,
+          }),
         )(concurrent[0]);
 
         expect(concurrent[1]).toEqual(concurrent[0]);
@@ -127,7 +125,10 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
           .where(eq(allowanceUsage.allowancePeriodId, seeded.allowancePeriodId)),
       );
 
-      expect(outcome).toEqual({ _tag: "MessageDenied", reason: "allowanceExhausted" });
+      expect(outcome).toEqual({
+        _tag: "MessageDenied",
+        reason: "allowanceExhausted",
+      });
       expect(usage).toEqual([]);
     }),
   );
@@ -258,7 +259,9 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
         }),
       );
 
-      expect(failure).toMatchObject({ _tag: "WhatsAppAuthorizationUnavailable" });
+      expect(failure).toMatchObject({
+        _tag: "WhatsAppAuthorizationUnavailable",
+      });
       expect(submissions).toBe(0);
     }),
   );
@@ -373,7 +376,8 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
         now: Effect.succeed(date("2026-08-16T12:00:00.000Z")),
       });
       const message = routeMessage("14165550134", "wamid.revocation-race");
-      const routed = yield* persistence.route({ ...message, contentDigest: providerContentDigest });
+      const input = routeInputFor(message);
+      const routed = yield* persistence.route(input);
       const bound = yield* Schema.decodeUnknownEffect(
         Schema.Struct({
           agentId: AgentId,
@@ -442,75 +446,7 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
     }),
   );
 
-  it.effect("keeps the first binding after revocation and replacement", () =>
-    Effect.gen(function* () {
-      const admission = yield* make({ now: Effect.succeed(date("2026-08-16T12:00:00.000Z")) });
-      const database = fixture.database;
-      yield* Effect.promise(() => seedBoundUser(database, "old", "14165550123"));
-      const first = yield* admission.route(routeInput());
-      yield* Effect.promise(() =>
-        database
-          .update(channelBindings)
-          .set({ revokedAt: date("2026-08-16T12:05:00.000Z") })
-          .where(eq(channelBindings.channelBindingId, "binding-old")),
-      );
-      yield* Effect.promise(() => seedBoundUser(database, "new", "14165550123"));
-
-      const repeated = yield* admission.route(routeInput());
-      const repeatedBound = yield* Schema.decodeUnknownEffect(
-        Schema.TaggedStruct("Bound", {
-          agentId: AgentId,
-          channelBindingId: ChannelBindingId,
-        }),
-      )(repeated);
-      const repeatedAuthorization = yield* admission.admit(repeatedBound);
-      const authority = yield* ChannelBindingPostgres.make;
-      const oldAuthority = yield* authority.inspect(
-        UserId.make("user-old"),
-        ChannelBindingId.make("binding-old"),
-      );
-      const newAuthority = yield* authority.inspect(
-        UserId.make("user-new"),
-        ChannelBindingId.make("binding-new"),
-      );
-
-      expect(first).toMatchObject({ _tag: "Bound", channelBindingId: "binding-old" });
-      expect(repeated).toMatchObject({
-        _tag: "Bound",
-        channelBindingId: "binding-old",
-      });
-      expect(repeatedAuthorization).toMatchObject({
-        authority: { _tag: "RevokedChannelBinding" },
-      });
-      expect(oldAuthority).toMatchObject({ _tag: "RevokedChannelBinding" });
-      expect(newAuthority).toMatchObject({
-        _tag: "ChannelBinding",
-        channelBindingId: "binding-new",
-        userId: "user-new",
-      });
-    }),
-  );
-
-  it.effect("keeps an unbound first resolution after later enrollment", () =>
-    Effect.gen(function* () {
-      const admission = yield* make({ now: Effect.succeed(date("2026-08-16T12:00:00.000Z")) });
-      const database = fixture.database;
-      const input = {
-        ...routeInput(),
-        channelIdentity: ChannelIdentity.make("14165550124"),
-        providerMessageId: ProviderMessageId.make("wamid.unbound"),
-      };
-      const first = yield* admission.route(input);
-      yield* Effect.promise(() => seedBoundUser(database, "later", "14165550124"));
-
-      const repeated = yield* admission.route(input);
-
-      expect(first).toEqual({ _tag: "Unbound" });
-      expect(repeated).toEqual({ _tag: "Unbound" });
-    }),
-  );
-
-  it.effect("rejects changed message facts under one provider event key", () =>
+  it.effect("recovers the first acceptance under one provider event key", () =>
     Effect.gen(function* () {
       const database = fixture.database;
       const seeded = yield* Effect.promise(() =>
@@ -522,14 +458,14 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
       const input = routeMessage("14165550135", "wamid.conflict");
       const accepted = yield* admission.admit(input);
 
-      const conflict = yield* Effect.flip(
-        admission.admit({
-          ...input,
-          message: WhatsAppMessageText.make("Changed"),
-        }),
-      );
+      const repeated = yield* admission.admit({
+        ...input,
+        message: WhatsAppMessageText.make("Changed"),
+      });
       const receipt = yield* Schema.decodeUnknownEffect(
-        Schema.TaggedStruct("MessageAccepted", { receipt: AcceptanceReceipt }),
+        Schema.TaggedStruct("MessageAccepted", {
+          receipt: AcceptanceReceipt,
+        }),
       )(accepted).pipe(Effect.map((outcome) => outcome.receipt));
       const usage = yield* Effect.promise(() =>
         database
@@ -538,7 +474,7 @@ layer(layerFromDatabase(fixture.database))("WhatsApp admission PostgreSQL", (it)
           .where(eq(allowanceUsage.allowancePeriodId, seeded.allowancePeriodId)),
       );
 
-      expect(conflict).toMatchObject({ _tag: "InboundWhatsAppEventConflict" });
+      expect(repeated).toEqual(accepted);
       expect(usage).toHaveLength(1);
       expect(usage[0]?.sourceId).toBe(receipt.receiptId);
     }),
@@ -570,14 +506,20 @@ const makeRealAdmission = (
       accept,
       persistence: {
         admit: (route) => persistence.admit(route).pipe(Effect.asVoid),
-        route: (input) => persistence.route(input),
+        route: persistence.route,
       },
       recordAcceptedMessage: (receipt) =>
         allowances
           .record(
             receipt.allowancePeriodId,
             { sourceId: receipt.receiptId, sourceType: "acceptanceReceipt" },
-            [{ allowanceKind: "acceptedMessages", basis: "known_at_start", quantity: 1n }],
+            [
+              {
+                allowanceKind: "acceptedMessages",
+                basis: "known_at_start",
+                quantity: 1n,
+              },
+            ],
           )
           .pipe(Effect.orDie, Effect.asVoid),
       recover: options?.recover,
@@ -595,10 +537,8 @@ const admitThroughAgent = (
     const persistence = yield* make({
       now: Effect.succeed(date("2026-08-16T12:00:00.000Z")),
     });
-    const route = yield* persistence.route({
-      ...message,
-      contentDigest: providerContentDigest,
-    });
+    const input = routeInputFor(message);
+    const route = yield* persistence.route(input);
     const bound = yield* Schema.decodeUnknownEffect(
       Schema.TaggedStruct("Bound", {
         agentId: AgentId,
@@ -655,15 +595,8 @@ const admitThroughAgent = (
     return { outcome, submissions };
   });
 
-const routeInput = () => ({
-  ...Schema.decodeSync(InboundWhatsAppMessage)({
-    _tag: "TextMessage",
-    channelIdentity: ChannelIdentity.make("14165550123"),
-    message: "Please help",
-    phoneNumberId: "123456789",
-    providerMessageId: ProviderMessageId.make("wamid.1"),
-  }),
-  contentDigest: providerContentDigest,
+const routeInputFor = (message: InboundWhatsAppMessage) => ({
+  channelIdentity: message.channelIdentity,
 });
 
 // oxlint-disable-next-line effecttsgo/async-function -- test fixture: Drizzle setup is a contained Promise boundary.
