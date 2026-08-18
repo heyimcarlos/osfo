@@ -156,22 +156,6 @@ CREATE TABLE "billing_subscriptions" (
 	CONSTRAINT "billing_subscriptions_adventurer_evidence_check" CHECK ("billing_subscriptions"."plan" <> 'adventurer' or ("billing_subscriptions"."stripe_subscription_id" is not null and "billing_subscriptions"."stripe_current_period_start" is not null and "billing_subscriptions"."stripe_latest_invoice_id" is not null))
 );
 --> statement-breakpoint
-CREATE TABLE "inbound_whatsapp_events" (
-	"binding_resolved_at" timestamp with time zone,
-	"channel_identity" text NOT NULL,
-	"content_digest" text NOT NULL,
-	"message_kind" text NOT NULL,
-	"phone_number_id" text NOT NULL,
-	"provider" text DEFAULT 'whatsapp' NOT NULL,
-	"provider_message_id" text NOT NULL,
-	"received_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"resolved_channel_binding_id" text,
-	CONSTRAINT "inbound_whatsapp_events_provider_phone_number_id_provider_message_id_pk" PRIMARY KEY("provider","phone_number_id","provider_message_id"),
-	CONSTRAINT "inbound_provider_events_provider_check" CHECK ("inbound_whatsapp_events"."provider" in ('telegram', 'whatsapp')),
-	CONSTRAINT "inbound_whatsapp_events_message_kind_check" CHECK ("inbound_whatsapp_events"."message_kind" in ('text', 'button_reply')),
-	CONSTRAINT "inbound_whatsapp_events_resolution_check" CHECK ("inbound_whatsapp_events"."binding_resolved_at" is not null or "inbound_whatsapp_events"."resolved_channel_binding_id" is null)
-);
---> statement-breakpoint
 CREATE TABLE "channel_bindings" (
 	"channel_binding_id" text PRIMARY KEY NOT NULL,
 	"provider" text NOT NULL,
@@ -212,17 +196,6 @@ CREATE TABLE "registration_invitations" (
 	CONSTRAINT "registration_invitations_expiry_check" CHECK ("registration_invitations"."created_at" < "registration_invitations"."expires_at")
 );
 --> statement-breakpoint
-CREATE TABLE "telegram_onboarding_deliveries" (
-	"event_id" text PRIMARY KEY NOT NULL,
-	"claim_token" text NOT NULL,
-	"state" text DEFAULT 'not_applied' NOT NULL,
-	"lease_expires_at" timestamp with time zone,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"applied_at" timestamp with time zone,
-	CONSTRAINT "telegram_onboarding_deliveries_state_check" CHECK ("telegram_onboarding_deliveries"."state" in ('not_applied', 'prepared', 'ambiguous', 'applied')),
-	CONSTRAINT "telegram_onboarding_deliveries_lifecycle_check" CHECK (("telegram_onboarding_deliveries"."state" in ('not_applied', 'prepared') and "telegram_onboarding_deliveries"."lease_expires_at" is not null and "telegram_onboarding_deliveries"."applied_at" is null) or ("telegram_onboarding_deliveries"."state" = 'ambiguous' and "telegram_onboarding_deliveries"."lease_expires_at" is null and "telegram_onboarding_deliveries"."applied_at" is null) or ("telegram_onboarding_deliveries"."state" = 'applied' and "telegram_onboarding_deliveries"."lease_expires_at" is null and "telegram_onboarding_deliveries"."applied_at" is not null))
-);
---> statement-breakpoint
 CREATE TABLE "deletion_cases" (
 	"deletion_case_id" text PRIMARY KEY NOT NULL,
 	"user_id" text NOT NULL,
@@ -246,22 +219,26 @@ CREATE TABLE "user_suspension_events" (
 );
 --> statement-breakpoint
 CREATE TABLE "webhook_events" (
-	"attempts" integer DEFAULT 0 NOT NULL,
-	"billing_checkout_session_id" text,
-	"error_code" text,
 	"event_type" text NOT NULL,
 	"external_event_id" text NOT NULL,
-	"external_object_id" text NOT NULL,
-	"processed_at" timestamp with time zone,
+	"payload_json" text NOT NULL,
 	"provider" text NOT NULL,
 	"received_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"webhook_event_id" text PRIMARY KEY NOT NULL,
+	CONSTRAINT "webhook_events_provider_external_event_unique" UNIQUE("provider","external_event_id"),
+	CONSTRAINT "webhook_events_provider_check" CHECK ("webhook_events"."provider" = 'stripe')
+);
+--> statement-breakpoint
+CREATE TABLE "webhook_jobs" (
+	"attempts" integer DEFAULT 1 NOT NULL,
+	"error_code" text,
+	"processed_at" timestamp with time zone,
 	"status" text DEFAULT 'pending' NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"webhook_event_id" text PRIMARY KEY NOT NULL,
-	CONSTRAINT "webhook_events_provider_external_event_unique" UNIQUE("provider","external_event_id"),
-	CONSTRAINT "webhook_events_attempts_check" CHECK ("webhook_events"."attempts" >= 0),
-	CONSTRAINT "webhook_events_status_check" CHECK ("webhook_events"."status" in ('pending', 'processed', 'failed')),
-	CONSTRAINT "webhook_events_processed_at_check" CHECK (("webhook_events"."status" = 'processed') = ("webhook_events"."processed_at" is not null))
+	CONSTRAINT "webhook_jobs_attempts_check" CHECK ("webhook_jobs"."attempts" >= 1),
+	CONSTRAINT "webhook_jobs_status_check" CHECK ("webhook_jobs"."status" in ('pending', 'processed', 'failed')),
+	CONSTRAINT "webhook_jobs_processed_at_check" CHECK (("webhook_jobs"."status" = 'processed') = ("webhook_jobs"."processed_at" is not null))
 );
 --> statement-breakpoint
 ALTER TABLE "agents" ADD CONSTRAINT "agents_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -275,18 +252,17 @@ ALTER TABLE "billing_checkout_sessions" ADD CONSTRAINT "billing_checkout_session
 ALTER TABLE "billing_customers" ADD CONSTRAINT "billing_customers_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "billing_subscriptions" ADD CONSTRAINT "billing_subscriptions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "billing_subscriptions" ADD CONSTRAINT "billing_subscriptions_user_customer_fk" FOREIGN KEY ("user_id","billing_customer_id") REFERENCES "public"."billing_customers"("user_id","billing_customer_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "inbound_whatsapp_events" ADD CONSTRAINT "inbound_whatsapp_events_resolved_channel_binding_id_channel_bindings_channel_binding_id_fk" FOREIGN KEY ("resolved_channel_binding_id") REFERENCES "public"."channel_bindings"("channel_binding_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "channel_bindings" ADD CONSTRAINT "channel_bindings_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "registration_invitations" ADD CONSTRAINT "registration_invitations_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deletion_cases" ADD CONSTRAINT "deletion_cases_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_suspension_events" ADD CONSTRAINT "user_suspension_events_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "webhook_jobs" ADD CONSTRAINT "webhook_jobs_event_fk" FOREIGN KEY ("webhook_event_id") REFERENCES "public"."webhook_events"("webhook_event_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "agents_agent_id_unique" ON "agents" USING btree ("agent_id");--> statement-breakpoint
 CREATE INDEX "allowance_periods_user_bounds_index" ON "allowance_periods" USING btree ("user_id","starts_at","ends_at");--> statement-breakpoint
 CREATE INDEX "allowance_usage_period_kind_index" ON "allowance_usage" USING btree ("allowance_period_id","allowance_kind");--> statement-breakpoint
 CREATE INDEX "accounts_userId_idx" ON "accounts" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "sessions_userId_idx" ON "sessions" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "verifications_identifier_idx" ON "verifications" USING btree ("identifier");--> statement-breakpoint
-CREATE INDEX "inbound_whatsapp_events_binding_index" ON "inbound_whatsapp_events" USING btree ("resolved_channel_binding_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "channel_bindings_active_identity_unique" ON "channel_bindings" USING btree ("provider","channel_identity") WHERE "channel_bindings"."revoked_at" is null;--> statement-breakpoint
 CREATE UNIQUE INDEX "channel_bindings_active_user_unique" ON "channel_bindings" USING btree ("provider","user_id") WHERE "channel_bindings"."revoked_at" is null;--> statement-breakpoint
 CREATE INDEX "channel_bindings_user_index" ON "channel_bindings" USING btree ("user_id");--> statement-breakpoint
