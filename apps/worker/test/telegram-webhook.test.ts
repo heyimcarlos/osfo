@@ -5,10 +5,7 @@ import { Effect, Schema } from "effect";
 
 import { ThinkSubmissionId } from "../src/domain";
 import { messengerSubmissionId } from "../src/agents/osfo/agent";
-import {
-  completeDeterministicTelegramReply,
-  makeTelegramChannel,
-} from "../src/integrations/telegram";
+import { makeTelegramChannel } from "../src/integrations/telegram";
 
 /* oxlint-disable effecttsgo/async-function -- Think delivery surfaces and callbacks are Promise-based. */
 
@@ -88,7 +85,7 @@ describe("Think Telegram channel", () => {
     }),
   );
 
-  it.effect("does not append an empty fallback after a deterministic notice", () =>
+  it.effect("delivers deterministic directory replies through the active stream", () =>
     Effect.gen(function* () {
       const visibleMessages: Array<string> = [];
       const channel = makeTelegramChannel({
@@ -118,8 +115,11 @@ describe("Think Telegram channel", () => {
           target: {
             cancelChat: () => undefined,
             chat: async (_message, callback) => {
-              await surface.post("Connect Telegram from Osfo.");
-              await completeDeterministicTelegramReply(callback);
+              await callback.onStart({ requestId: "directory-reply" });
+              await callback.onEvent(
+                JSON.stringify({ delta: "Connect Telegram from Osfo.", type: "text-delta" }),
+              );
+              await callback.onDone();
             },
           },
         }),

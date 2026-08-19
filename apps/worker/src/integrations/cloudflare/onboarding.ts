@@ -10,16 +10,6 @@ const RpcResult = Schema.StructWithRest(Schema.Struct({ _tag: Schema.String }), 
   Schema.Record(Schema.String, Schema.Unknown),
 ]);
 
-const RegistrationResult = Schema.Union([
-  Schema.TaggedStruct("RegistrationTurnCompleted", {
-    response: Schema.String,
-    verifyUrl: Schema.String,
-  }),
-  Schema.TaggedStruct("RegistrationTurnUnavailable", {
-    message: Schema.String,
-  }),
-]);
-
 interface DirectoryOnboardingStub {
   readonly ensureAgent: (agentId: string) => Promise<AgentFacetIdentity>;
   readonly initializeAgent: (
@@ -53,22 +43,8 @@ interface TaggedRpcResult {
 }
 
 interface RegistrationDialogueStub {
-  readonly begin: (input: {
-    readonly eventId: string;
-    readonly locale: Onboarding.OnboardingLocale;
-    readonly message: string;
-    readonly verifyUrl: string;
-  }) => Promise<RegistrationTurnRpcResult>;
   readonly deleteDialogue: () => Promise<void>;
 }
-
-type RegistrationTurnRpcResult =
-  | {
-      readonly _tag: "RegistrationTurnCompleted";
-      readonly response: string;
-      readonly verifyUrl: string;
-    }
-  | { readonly _tag: "RegistrationTurnUnavailable"; readonly message: string };
 
 interface DurableNamespace<Stub> {
   readonly getByName: (identity: string) => Stub;
@@ -136,30 +112,8 @@ export const layer = (env: Bindings) =>
       }),
     ),
     Layer.succeed(
-      Onboarding.RegistrationTurn,
-      Onboarding.RegistrationTurn.of({
-        begin: (input) =>
-          Effect.tryPromise({
-            try: () =>
-              env.REGISTRATION_DIALOGUE.getByName(input.invitationId).begin({
-                eventId: input.eventId,
-                locale: input.locale,
-                message: input.message,
-                verifyUrl: input.verifyUrl,
-              }),
-            catch: (cause) => executionUnavailable("The Registration Turn is unavailable", cause),
-          }).pipe(
-            Effect.flatMap(Schema.decodeUnknownEffect(RegistrationResult)),
-            Effect.mapError((cause) => executionUnavailable("The Registration Turn failed", cause)),
-            Effect.flatMap((result) =>
-              result._tag === "RegistrationTurnCompleted"
-                ? Effect.succeed({
-                    response: result.response,
-                    verifyUrl: result.verifyUrl,
-                  })
-                : unavailable(result.message, result),
-            ),
-          ),
+      Onboarding.RegistrationDialogueCleanup,
+      Onboarding.RegistrationDialogueCleanup.of({
         delete: (invitationId) =>
           Effect.tryPromise({
             try: () => env.REGISTRATION_DIALOGUE.getByName(invitationId).deleteDialogue(),

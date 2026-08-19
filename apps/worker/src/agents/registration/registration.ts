@@ -1,4 +1,4 @@
-import { Think } from "@cloudflare/think";
+import { Think, type StreamCallback, type TurnConfig } from "@cloudflare/think";
 import { Option, Schema } from "effect";
 
 import { decodeOsfoStage } from "../../config";
@@ -9,42 +9,36 @@ import {
   type RuntimeProbeResult,
 } from "../../layers";
 
-/* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function, effecttsgo/global-date -- Cloudflare RPC, Think submission tags, and absolute schedule boundaries require these forms. */
+/* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function, effecttsgo/global-date -- Effect result tags, Cloudflare RPC, and absolute schedule boundaries require these forms. */
 
-/** Pinned multilingual Workers AI model for the one restricted Registration Turn. */
-export const registrationModel = "@cf/meta/llama-3.1-8b-instruct-fp8" as const;
+/** Small multilingual model used only for temporary registration conversation. */
+export const registrationModel = "@cf/meta/llama-3.2-1b-instruct" as const;
 
-const BeginRegistrationInput = Schema.Struct({
+const RegistrationReplyInput = Schema.Struct({
   eventId: Schema.String,
   locale: Schema.Literals(["en", "es"]),
   message: Schema.String,
   verifyUrl: Schema.String,
 });
-type BeginRegistrationEncoded = typeof BeginRegistrationInput.Encoded;
-type BeginRegistration = typeof BeginRegistrationInput.Type;
+type RegistrationReply = typeof RegistrationReplyInput.Type;
 
-interface StoredRegistrationTurn {
-  readonly eventId: string;
+interface StoredRegistrationDialogue {
   readonly expiresAt: number;
   readonly locale: "en" | "es";
-  readonly response: string | null;
   readonly verifyUrl: string;
 }
 
-/** Observable result from the invitation-scoped restricted turn. */
-export type RegistrationTurnResult =
-  | {
-      readonly _tag: "RegistrationTurnCompleted";
-      readonly response: string;
-      readonly verifyUrl: string;
-    }
-  | { readonly _tag: "RegistrationTurnUnavailable"; readonly message: string };
+/** Observable outcome from one invitation-scoped dialogue reply. */
+export type RegistrationDialogueResult =
+  | { readonly _tag: "RegistrationDialogueCompleted" }
+  | { readonly _tag: "RegistrationDialogueUnavailable"; readonly message: string };
 
-const stateKey = "registration-turn";
+const stateKey = "registration-dialogue";
 const registrationLifetimeMs = 24 * 60 * 60 * 1_000;
 
-/** Invitation-scoped restricted Think harness for the ephemeral Registration Turn. */
+/** Temporary conversation for one Registration Invitation. */
 export class RegistrationDialogue extends Think<Env> {
+  override includeMcpTools = false;
   override maxSteps = 1;
   override workspaceBash = false;
 
@@ -52,23 +46,28 @@ export class RegistrationDialogue extends Think<Env> {
     makeRegistrationDialogueRuntime(this.ctx.id.name ?? this.ctx.id.toString(), stage),
   );
 
-  readonly #activeTurns = new Map<string, Promise<RegistrationTurnResult>>();
-
-  /** Select the pinned Workers AI model through Think's supported model interface. */
   override getModel(): typeof registrationModel {
     return registrationModel;
   }
 
-  /** Give the one Registration Turn its restricted operating policy. */
   override getSystemPrompt(): string {
     return [
       "You are Osfo during registration only.",
-      "Reply once in the language named in the user message.",
-      "If the person states a clear need, acknowledge that need briefly.",
-      "If the message is vague, ask naturally what the person wants help with.",
-      "Do not start work, use tools, claim memory, claim personal Agent capabilities, or claim that registration is complete.",
-      "Return only the natural response. The application adds the registration continuation separately.",
+      "Be warm, concise, a little quirky, and reply in the person's language.",
+      "You may discuss what they want help with, but do not perform tasks or claim that registration is complete.",
+      "Explain naturally that using Osfo requires registration.",
+      "Do not include or ask for a link, phone number, code, payment, or other secret; the application provides the registration link.",
     ].join(" ");
+  }
+
+  override beforeTurn(): TurnConfig {
+    return {
+      activeTools: [],
+      maxOutputTokens: 80,
+      maxRetries: 0,
+      maxSteps: 1,
+      sendReasoning: false,
+    };
   }
 
   /** Return the restricted runtime identity for local smoke verification. */
@@ -79,131 +78,108 @@ export class RegistrationDialogue extends Think<Env> {
     });
   }
 
-  /** Admit at most one natural Think turn, then return a deterministic registration prompt. */
-  async begin(input: BeginRegistrationEncoded): Promise<RegistrationTurnResult> {
-    const parsed = Schema.decodeExit(BeginRegistrationInput)(input);
+  /** Continue the temporary conversation and complete the caller's messenger stream. */
+  async reply(
+    input: typeof RegistrationReplyInput.Encoded,
+    callback: StreamCallback,
+  ): Promise<RegistrationDialogueResult> {
+    const parsed = Schema.decodeExit(RegistrationReplyInput)(input);
     if (parsed._tag === "Failure") {
       return {
-        _tag: "RegistrationTurnUnavailable",
-        message: "The Registration Turn input is invalid",
-      };
-    }
-    const value = parsed.value;
-    const existing = await this.ctx.storage.get<StoredRegistrationTurn>(stateKey);
-    if (existing !== undefined && existing.eventId !== value.eventId) {
-      return {
-        _tag: "RegistrationTurnCompleted",
-        response: deterministicPrompt(existing.locale, existing.verifyUrl),
-        verifyUrl: existing.verifyUrl,
-      };
-    }
-    if (existing?.response !== null && existing?.response !== undefined) {
-      return {
-        _tag: "RegistrationTurnCompleted",
-        response: existing.response,
-        verifyUrl: existing.verifyUrl,
+        _tag: "RegistrationDialogueUnavailable",
+        message: "The Registration Dialogue input is invalid",
       };
     }
 
-    const expiresAt = existing?.expiresAt ?? Date.now() + registrationLifetimeMs;
-    if (existing === undefined) {
-      await this.ctx.storage.put<StoredRegistrationTurn>(stateKey, {
-        eventId: value.eventId,
-        expiresAt,
-        locale: value.locale,
-        response: null,
-        verifyUrl: value.verifyUrl,
+    let dialogue: StoredRegistrationDialogue;
+    try {
+      dialogue = await this.#open(parsed.value);
+    } catch {
+      return {
+        _tag: "RegistrationDialogueUnavailable",
+        message: "The Registration Dialogue could not be opened",
+      };
+    }
+
+    await callback.onStart({ requestId: parsed.value.eventId });
+    await callback.onEvent(
+      JSON.stringify({
+        delta: registrationPrompt(dialogue.locale, dialogue.verifyUrl),
+        type: "text-delta",
+      }),
+    );
+
+    try {
+      const turn = await this.runTurn({
+        input: {
+          id: parsed.value.eventId,
+          parts: [{ text: parsed.value.message, type: "text" }],
+          role: "user",
+        },
+        mode: "wait",
       });
-      await this.schedule(new Date(expiresAt), "expireDialogue", undefined, { idempotent: true });
+      const natural = assistantText(turn.message);
+      if (natural !== null) {
+        await callback.onEvent(JSON.stringify({ delta: `\n\n${natural}`, type: "text-delta" }));
+      }
+    } catch {
+      // The deterministic registration link is already in the visible response.
     }
 
-    const active = this.#activeTurns.get(value.eventId);
-    if (active !== undefined) return await active;
-
-    const turn = this.#runFirstTurn(value, expiresAt).finally(() => {
-      this.#activeTurns.delete(value.eventId);
-    });
-    this.#activeTurns.set(value.eventId, turn);
-    return await turn;
+    await callback.onDone();
+    return { _tag: "RegistrationDialogueCompleted" };
   }
 
-  /** Delete the temporary Think Session and invitation-scoped dialogue after registration. */
+  /** Delete the temporary Think Session and invitation-scoped state. */
   async deleteDialogue(): Promise<void> {
     await this.clearMessages();
     await this.ctx.storage.deleteAll();
     await this.ctx.storage.deleteAlarm();
   }
 
-  /** Delete temporary Think and dialogue data when the Registration Invitation expires. */
+  /** Delete temporary Think and dialogue data when the invitation expires. */
   async expireDialogue(): Promise<void> {
     await this.deleteDialogue();
   }
 
-  async #runFirstTurn(
-    input: BeginRegistration,
-    expiresAt: number,
-  ): Promise<RegistrationTurnResult> {
-    const complete = async (response: string): Promise<RegistrationTurnResult> => {
-      await this.ctx.storage.put<StoredRegistrationTurn>(stateKey, {
-        eventId: input.eventId,
-        expiresAt,
-        locale: input.locale,
-        response,
-        verifyUrl: input.verifyUrl,
-      });
-      return { _tag: "RegistrationTurnCompleted", response, verifyUrl: input.verifyUrl };
-    };
-    try {
-      const submission = await this.submitMessages(
-        [
-          {
-            id: input.eventId,
-            role: "user",
-            parts: [
-              {
-                type: "text",
-                text: `Language: ${input.locale}. Message: ${input.message}`,
-              },
-            ],
-          },
-        ],
-        { idempotencyKey: input.eventId },
-      );
-      await this._drainThinkSubmissions();
-      const inspection = await this.inspectSubmission(submission.submissionId);
-      if (inspection?.status !== "completed") {
-        return await complete(deterministicPrompt(input.locale, input.verifyUrl));
-      }
+  async #open(input: RegistrationReply): Promise<StoredRegistrationDialogue> {
+    const existing = await this.ctx.storage.get<StoredRegistrationDialogue>(stateKey);
+    if (existing !== undefined) return existing;
 
-      const natural = latestAssistantText(await this.getMessages());
-      if (natural === null) {
-        return await complete(deterministicPrompt(input.locale, input.verifyUrl));
-      }
-      const response = `${natural} ${deterministicPrompt(input.locale, input.verifyUrl)}`;
-      return await complete(response);
-    } catch {
-      return await complete(deterministicPrompt(input.locale, input.verifyUrl));
-    }
+    const dialogue = {
+      expiresAt: Date.now() + registrationLifetimeMs,
+      locale: input.locale,
+      verifyUrl: input.verifyUrl,
+    } satisfies StoredRegistrationDialogue;
+    await this.schedule(new Date(dialogue.expiresAt), "expireDialogue", undefined, {
+      idempotent: true,
+    });
+    await this.ctx.storage.put(stateKey, dialogue);
+    return dialogue;
   }
 }
 
-const latestAssistantText = (
-  messages: Awaited<ReturnType<RegistrationDialogue["getMessages"]>>,
+const assistantText = (
+  message:
+    | {
+        readonly parts: ReadonlyArray<
+          { readonly text: string; readonly type: "text" } | { readonly type: string }
+        >;
+      }
+    | undefined,
 ): string | null => {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== "assistant") continue;
-    const text = message.parts
-      .filter((part) => part.type === "text")
-      .map((part) => part.text)
-      .join("")
-      .trim();
-    return text.length === 0 ? null : text;
-  }
-  return null;
+  if (message === undefined) return null;
+  const text = message.parts
+    .filter(
+      (part): part is { readonly text: string; readonly type: "text" } => part.type === "text",
+    )
+    .map((part) => part.text)
+    .join("")
+    .trim();
+  return text.length === 0 ? null : text;
 };
 
-const deterministicPrompt = (locale: "en" | "es", verifyUrl: string): string =>
+const registrationPrompt = (locale: "en" | "es", verifyUrl: string): string =>
   locale === "es"
-    ? `Usa tu enlace de registro para continuar: ${verifyUrl}`
-    : `Use your registration link to continue: ${verifyUrl}`;
+    ? `Regístrate para seguir usando Osfo: ${verifyUrl}`
+    : `Register to keep using Osfo: ${verifyUrl}`;

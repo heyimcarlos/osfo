@@ -3,6 +3,7 @@ import { Button } from "@osfo/ui/components/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@osfo/ui/components/card";
 import { Input } from "@osfo/ui/components/input";
 import { Label } from "@osfo/ui/components/label";
+import { PageStatusCard } from "@osfo/ui/components/page-status-card";
 import { Navigate, useNavigate, useSearch } from "@tanstack/react-router";
 import { Effect, Exit } from "effect";
 import { ArrowRight } from "lucide-react";
@@ -186,7 +187,12 @@ export function GetStartedPage({
       ) : null}
 
       {state._tag === "Submitting" ? (
-        <StatusCard description={text.completingBody} title={text.completingTitle} />
+        <PageStatusCard
+          aria-live="polite"
+          description={text.completingBody}
+          role="status"
+          title={text.completingTitle}
+        />
       ) : null}
 
       {state._tag === "SubmissionFailed" ? (
@@ -224,21 +230,6 @@ const ContinueButton = ({ label }: { readonly label: string }) => (
     {label}
     <ArrowRight data-icon="inline-end" />
   </Button>
-);
-
-const StatusCard = ({
-  description,
-  title,
-}: {
-  readonly description: string;
-  readonly title: string;
-}) => (
-  <Card className="w-full max-w-[34rem] bg-background shadow-[8px_8px_0_var(--foreground)]">
-    <CardHeader>
-      <h1 className="text-4xl font-black uppercase leading-none">{title}</h1>
-      <CardDescription>{description}</CardDescription>
-    </CardHeader>
-  </Card>
 );
 
 const helpAreaOrder: ReadonlyArray<HelpArea> = [

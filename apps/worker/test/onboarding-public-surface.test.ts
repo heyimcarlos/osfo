@@ -7,7 +7,7 @@ import type * as Onboarding from "../src/services/onboarding";
 
 type ChannelInvitationOperation = Extract<
   keyof Onboarding.Interface | keyof Onboarding.PersistencePort,
-  "insertChannelInvitation" | "issueTelegramInvitation"
+  "insertChannelInvitation" | "issueChannelInvitation"
 >;
 
 type ChannelInvitationPersistenceInput = Parameters<
@@ -21,7 +21,7 @@ type ConfigurableTransportFacts = Extract<
 
 const channelInvitationOperations = {
   insertChannelInvitation: true,
-  issueTelegramInvitation: true,
+  issueChannelInvitation: true,
 } satisfies Record<ChannelInvitationOperation, true>;
 const noConfigurableTransportFacts: Record<ConfigurableTransportFacts, never> = {};
 
@@ -39,7 +39,7 @@ describe("onboarding public surface", () => {
 
     expect(channelInvitationOperations).toEqual({
       insertChannelInvitation: true,
-      issueTelegramInvitation: true,
+      issueChannelInvitation: true,
     });
     expect(noConfigurableTransportFacts).toEqual({});
     expect(telegram._tag).toBe("TelegramFirst");

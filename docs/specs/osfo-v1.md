@@ -163,11 +163,11 @@ extract a shared audit model only after several concrete workflows need it.
 ## Channel-first registration and onboarding
 
 Osfo presents one visible persona. An unregistered sender from a supported
-messaging provider may receive one natural Registration Turn. This turn can
-identify language, ask what help the person wants, and issue a Registration
-Invitation. It may use registration-scoped tools and skills. It has no stable
-AgentId, Session, memory, entitlements, or external authority. More unregistered
-messages receive a deterministic registration prompt.
+messaging provider may converse naturally with the temporary Registration
+Dialogue until its Registration Invitation is consumed or expires. The dialogue
+can identify language, ask what help the person wants, and issue the invitation,
+but it has no tools, stable AgentId, User Session, memory, entitlements, or
+external authority.
 
 The Registration Dialogue and its temporary transcript are deleted after
 registration or invitation expiry. Osfo creates no handoff summary. Only a
@@ -180,9 +180,7 @@ fields can enter the new User profile.
 /get-started
   -> optional preferred name and help areas
   -> phone-number entry
-  -> privacy and channel notice
   -> SMS Phone Verification
-  -> Free Plan confirmation
   -> User Registration or existing-User sign-in
   -> explicit messaging-provider enrollment when the journey started on the web
   -> personal Osfo welcome
@@ -211,18 +209,13 @@ A web-first provider enrollment completes binding only after a provider-authenti
 inbound enrollment event. The enrollment control message is not a conversational
 UserMessage.
 
-Before completion, Osfo states: "You are starting on Free. No card is required.
-You get 30 messages every 30 days." The full Plan details remain linked.
-
 The first personal response is a normal committed response in the new primary
 Session. It uses the chosen language and only accepted setup facts. It asks for
 the first task. It does not start work, show a tutorial, or request payment.
 
 The web flow must meet WCAG 2.2 AA. It must support keyboard use, visible focus,
 screen readers, accessible validation summaries, non-color errors,
-international phone input, and SMS code paste and autofill. Before Phone
-Verification it must explain AI processing, message storage, WhatsApp
-involvement, Channel Binding, and how to stop proactive messages.
+international phone input, and SMS code paste and autofill.
 
 ## Sessions, Think, and execution
 

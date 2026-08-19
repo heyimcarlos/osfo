@@ -1,5 +1,5 @@
 import { createWhatsAppAdapter, type WhatsAppAdapter } from "@chat-adapter/whatsapp";
-import { messengerChannel, type ChannelDefinition, type StreamCallback } from "@cloudflare/think";
+import { messengerChannel, type ChannelDefinition } from "@cloudflare/think";
 import {
   chatSdkMessenger,
   type MessengerConversationResolver,
@@ -12,7 +12,6 @@ import type { OsfoAgent } from "../agents/osfo/agent";
 
 const WHATSAPP_INSTRUCTIONS =
   "Reply for a private WhatsApp chat. Use concise text and short paragraphs. Do not expose internal identifiers or operational details.";
-const DETERMINISTIC_REPLY_COMPLETE = "osfo:whatsapp:deterministic-reply-complete";
 
 /** Official WhatsApp adapter credentials and identity. */
 export interface WhatsAppAdapterOptions {
@@ -74,8 +73,6 @@ export const makeWhatsAppChannel = (options: WhatsAppChannelOptions): ChannelDef
       delivery: {
         errorResponseText: "I could not answer that right now. Please try again.",
         interruptedResponseText: "My response was interrupted. Please send your message again.",
-        isExpectedDeliveryCompletion: (error) =>
-          error instanceof Error && error.message === DETERMINISTIC_REPLY_COMPLETE,
       },
       path: "/webhooks/whatsapp",
       provider: "whatsapp",
@@ -93,11 +90,3 @@ export const makeWhatsAppChannel = (options: WhatsAppChannelOptions): ChannelDef
     return selected;
   },
 });
-
-/** End the Think reply fiber after `deliverNotice` posts a deterministic response. */
-export const completeDeterministicWhatsAppReply = async (
-  callback: StreamCallback,
-): Promise<never> => {
-  await callback.onError(DETERMINISTIC_REPLY_COMPLETE);
-  throw new Error(DETERMINISTIC_REPLY_COMPLETE);
-};

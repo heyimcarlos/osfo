@@ -1,4 +1,4 @@
-import { messengerChannel, type ChannelDefinition, type StreamCallback } from "@cloudflare/think";
+import { messengerChannel, type ChannelDefinition } from "@cloudflare/think";
 import type { MessengerConversationResolver, MessengerEvent } from "@cloudflare/think/messengers";
 import {
   isExpectedTelegramFinalEditNoop,
@@ -11,7 +11,6 @@ import type { OsfoAgent } from "../agents/osfo/agent";
 
 const TELEGRAM_INSTRUCTIONS =
   "Reply for a private Telegram chat. Use concise text and short paragraphs. Do not expose internal identifiers or operational details.";
-const DETERMINISTIC_REPLY_COMPLETE = "osfo:telegram:deterministic-reply-complete";
 
 /** Configuration required by the Cloudflare Think Telegram channel. */
 export interface TelegramChannelOptions {
@@ -49,9 +48,7 @@ export const makeTelegramChannel = (options: TelegramChannelOptions): ChannelDef
       delivery: {
         errorResponseText: "I could not answer that right now. Please try again.",
         interruptedResponseText: "My response was interrupted. Please send your message again.",
-        isExpectedDeliveryCompletion: (error, callback) =>
-          (error instanceof Error && error.message === DETERMINISTIC_REPLY_COMPLETE) ||
-          isExpectedTelegramFinalEditNoop(error, callback),
+        isExpectedDeliveryCompletion: isExpectedTelegramFinalEditNoop,
       },
       mode: "webhook",
       path: "/webhooks/telegram",
@@ -69,11 +66,3 @@ export const makeTelegramChannel = (options: TelegramChannelOptions): ChannelDef
     return selected;
   },
 });
-
-/** End the messenger reply after `deliverNotice` posts a deterministic response. */
-export const completeDeterministicTelegramReply = async (
-  callback: StreamCallback,
-): Promise<never> => {
-  await callback.onError(DETERMINISTIC_REPLY_COMPLETE);
-  throw new Error(DETERMINISTIC_REPLY_COMPLETE);
-};

@@ -1,6 +1,7 @@
 import type { InvitationResponse, OnboardingLocale } from "@osfo/api";
 import { Button } from "@osfo/ui/components/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@osfo/ui/components/card";
+import { PageStatusCard } from "@osfo/ui/components/page-status-card";
 import { useParams } from "@tanstack/react-router";
 import { Effect, Exit } from "effect";
 import { useEffect, useRef, useState } from "react";
@@ -96,11 +97,20 @@ export function VerifyPage({
   return (
     <OnboardingLayout locale={locale} onLocaleChange={setLocale}>
       {state._tag === "Checking" ? (
-        <StatusCard description={text.checkingBody} title={text.checkingTitle} />
+        <PageStatusCard
+          aria-live="polite"
+          description={text.checkingBody}
+          role="status"
+          title={text.checkingTitle}
+        />
       ) : null}
 
       {state._tag === "Unavailable" ? (
-        <StatusCard description={text.unavailableBody} title={text.unavailableTitle} />
+        <PageStatusCard
+          description={text.unavailableBody}
+          role="alert"
+          title={text.unavailableTitle}
+        />
       ) : null}
 
       {state._tag === "Phone" ? (
@@ -119,14 +129,16 @@ export function VerifyPage({
       ) : null}
 
       {state._tag === "Submitting" ? (
-        <StatusCard
+        <PageStatusCard
+          aria-live="polite"
           description={text.connectingBody.replace("{provider}", providerName)}
+          role="status"
           title={text.connectingTitle}
         />
       ) : null}
 
       {state._tag === "Failed" ? (
-        <StatusCard description={text.failedBody} title={text.failedTitle} />
+        <PageStatusCard description={text.failedBody} role="alert" title={text.failedTitle} />
       ) : null}
 
       {state._tag === "Complete" ? (
@@ -195,21 +207,6 @@ const completeBinding = (
     return undefined;
   });
 };
-
-const StatusCard = ({
-  description,
-  title,
-}: {
-  readonly description: string;
-  readonly title: string;
-}) => (
-  <Card className="w-full max-w-[34rem] bg-background shadow-[8px_8px_0_var(--foreground)]">
-    <CardHeader>
-      <h1 className="text-4xl font-black uppercase leading-none">{title}</h1>
-      <CardDescription>{description}</CardDescription>
-    </CardHeader>
-  </Card>
-);
 
 const copy = {
   en: {

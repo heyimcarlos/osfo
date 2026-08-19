@@ -851,12 +851,6 @@ const testBindings: App.Bindings = {
   routeOsfoAgentRequest: () => Promise.resolve(new Response(null, { status: 404 })),
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => ({
-      begin: () =>
-        Promise.resolve({
-          _tag: "RegistrationTurnCompleted",
-          response: "Register",
-          verifyUrl: "https://osfo.ai/verify/test",
-        }),
       deleteDialogue: () => Promise.resolve(),
       probeRuntime: () =>
         Promise.resolve({

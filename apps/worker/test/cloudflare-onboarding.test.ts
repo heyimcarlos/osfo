@@ -28,12 +28,6 @@ describe("Cloudflare onboarding adapter", () => {
       },
       REGISTRATION_DIALOGUE: {
         getByName: () => ({
-          begin: () =>
-            Promise.resolve({
-              _tag: "RegistrationTurnCompleted",
-              response: "Continue registration.",
-              verifyUrl: "https://osfo.ai/verify/test",
-            }),
           deleteDialogue: () => Promise.resolve(),
         }),
       },

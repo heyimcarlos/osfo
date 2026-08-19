@@ -6,21 +6,13 @@ import { Effect, Exit, Layer, Redacted } from "effect";
 
 import { loadConfig, publicWebBaseUrl } from "../../config";
 import * as Db from "../../db";
-import { ChannelIdentity } from "../../domain";
+import { ChannelBindingId, ChannelIdentity } from "../../domain";
 import * as OnboardingCloudflare from "../../integrations/cloudflare/onboarding";
 import * as ChannelBindingPostgres from "../../integrations/postgres/channel-binding";
 import * as OnboardingPostgres from "../../integrations/postgres/onboarding";
 import * as OnboardingLinks from "../../integrations/public/onboarding-links";
-import {
-  completeDeterministicTelegramReply,
-  makeTelegramChannel,
-  makeTelegramConversationResolver,
-} from "../../integrations/telegram";
-import {
-  completeDeterministicWhatsAppReply,
-  makeWhatsAppChannel,
-  makeWhatsAppConversationResolver,
-} from "../../integrations/whatsapp";
+import { makeTelegramChannel, makeTelegramConversationResolver } from "../../integrations/telegram";
+import { makeWhatsAppChannel, makeWhatsAppConversationResolver } from "../../integrations/whatsapp";
 import { invalidOsfoEnvironment, type RuntimeProbeResult } from "../../layers";
 import type { RuntimeSecrets } from "../../runtime-secrets";
 import * as Onboarding from "../../services/onboarding";
@@ -70,7 +62,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     };
   }
 
-  /** Handle only deterministic messenger outcomes that intentionally target the directory. */
+  /** Handle enrollment and temporary registration dialogue for unbound senders. */
   override async chatWithMessengerContext(
     _userMessage: string | UIMessage,
     callback: StreamCallback,
@@ -83,37 +75,45 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     const authorId = context.message?.author.userId ?? context.author?.userId;
     const message = context.message;
     if (authorId === undefined || message === undefined) {
-      await this.#deliverTelegramNotice(
-        context,
+      await streamReply(
+        callback,
+        "telegram-unreadable",
         "I could not read that message. Please try again.",
       );
-      await completeDeterministicTelegramReply(callback);
       return;
     }
     if (!this.#telegramAllowedUserIds().has(authorId)) {
-      await this.#deliverTelegramNotice(context, "This Telegram account is not authorized.");
-      await completeDeterministicTelegramReply(callback);
+      await streamReply(callback, message.id, "This Telegram account is not authorized.");
       return;
     }
 
     const token = readTelegramEnrollmentToken(message.text);
     if (token !== null) {
       const enrolled = await Effect.runPromiseExit(
-        this.#enrollTelegram(authorId, message.id, token),
+        this.#enrollChannel({
+          channelIdentity: ChannelIdentity.make(`telegram:${authorId}`),
+          eventId: message.id,
+          provider: "telegram",
+          token: Redacted.make(token),
+        }),
       );
-      await this.#deliverTelegramNotice(
-        context,
+      await streamReply(
+        callback,
+        message.id,
         enrolled._tag === "Success"
           ? "Telegram is connected to your Osfo Agent."
           : "I could not connect Telegram. Open Osfo and create a new connection link.",
       );
-      await completeDeterministicTelegramReply(callback);
       return;
     }
 
-    const reply = await this.#telegramInvitationReply(authorId, message.id, message.text);
-    await this.#deliverTelegramNotice(context, reply);
-    await completeDeterministicTelegramReply(callback);
+    await this.#registrationReply(callback, {
+      channelIdentity: ChannelIdentity.make(`telegram:${authorId}`),
+      eventId: message.id,
+      locale: "en",
+      message: message.text,
+      provider: "telegram",
+    });
   }
 
   /** Reject an HTTP route to a facet that is absent from the directory registry. */
@@ -145,6 +145,9 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   async commitAgentWelcome(agentId: string, input: Parameters<OsfoAgent["commitWelcome"]>[0]) {
     const agent = await this.subAgent(OsfoAgent, agentId);
     const result = await agent.commitWelcome(input);
+    if (result._tag !== "PersonalWelcomeCommitted") return { _tag: result._tag };
+    const route = await this.#welcomeRoute(agentId, ChannelBindingId.make(input.channelBindingId));
+    await this.deliverNotice(result.text, route);
     return { _tag: result._tag };
   }
 
@@ -213,6 +216,43 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     return binding.value.agentId;
   }
 
+  async #welcomeRoute(
+    agentId: string,
+    channelBindingId: ChannelBindingId,
+  ): Promise<{ readonly channel: "telegram" | "whatsapp"; readonly thread: string }> {
+    const facts = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const database = yield* Db.database;
+          const binding = yield* Effect.promise(() =>
+            ChannelBindingPostgres.readBindingById(database, channelBindingId),
+          );
+          if (binding === null || binding.revokedAt !== null) return null;
+          const owner = yield* ChannelBindingPostgres.resolveActiveAgentBinding(
+            database,
+            binding.provider,
+            binding.channelIdentity,
+          );
+          return { binding, owner };
+        }).pipe(Effect.provide(Db.layer({ db: this.env.DB }))),
+      ),
+    );
+    if (
+      facts === null ||
+      facts.owner?.agentId !== agentId ||
+      facts.owner.channelBindingId !== channelBindingId
+    ) {
+      throw new Error("The welcome Channel Binding is unavailable");
+    }
+    return {
+      channel: facts.binding.provider,
+      thread:
+        facts.binding.provider === "telegram"
+          ? facts.binding.channelIdentity
+          : `whatsapp:${this.env.WHATSAPP_PHONE_NUMBER_ID}:${facts.binding.channelIdentity}`,
+    };
+  }
+
   async #handleWhatsAppDirectoryTurn(
     callback: StreamCallback,
     context: MessengerContext,
@@ -220,62 +260,42 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     const authorId = context.message?.author.userId ?? context.author?.userId;
     const message = context.message;
     if (authorId === undefined || message === undefined) {
-      await this.#deliverWhatsAppNotice(
-        context,
+      await streamReply(
+        callback,
+        "whatsapp-unreadable",
         "I could not read that message. Please try again.",
       );
-      await completeDeterministicWhatsAppReply(callback);
       return;
     }
 
     const token = readWhatsAppEnrollmentToken(message.text);
-    const text =
-      token === null
-        ? await this.#whatsAppInvitationReply(authorId, message.id, message.text)
-        : await this.#whatsAppEnrollmentReply(authorId, message.id, token);
-    await this.#deliverWhatsAppNotice(context, text);
-    await completeDeterministicWhatsAppReply(callback);
-  }
+    if (token !== null) {
+      const result = await Effect.runPromiseExit(
+        this.#enrollChannel({
+          channelIdentity: ChannelIdentity.make(authorId),
+          eventId: message.id,
+          provider: "whatsapp",
+          token: Redacted.make(token),
+        }),
+      );
+      await streamReply(
+        callback,
+        message.id,
+        Exit.isSuccess(result)
+          ? "WhatsApp is connected to your Osfo Agent."
+          : "I could not complete WhatsApp setup. Open Osfo and create a new connection link.",
+      );
+      return;
+    }
 
-  async #whatsAppInvitationReply(authorId: string, eventId: string, message: string) {
-    const result = await Effect.runPromiseExit(
-      this.#issueWhatsAppInvitation(authorId, eventId, message),
-    );
-    return Exit.isSuccess(result)
-      ? result.value.response
-      : "I could not complete WhatsApp setup. Open Osfo and create a new connection link.";
-  }
-
-  async #telegramInvitationReply(authorId: string, eventId: string, message: string) {
-    const result = await Effect.runPromiseExit(
-      this.#issueTelegramInvitation(authorId, eventId, message).pipe(
-        Effect.tapError((failure) =>
-          Effect.logError("Telegram-first invitation failed").pipe(
-            Effect.annotateLogs({
-              failureTag: failure._tag,
-              operation:
-                failure._tag === "OnboardingPersistenceUnavailable"
-                  ? failure.operation
-                  : "issueTelegramInvitation",
-            }),
-          ),
-        ),
-      ),
-    );
-    return Exit.isSuccess(result)
-      ? result.value.response
-      : "I could not complete Telegram setup. Please try again.";
-  }
-
-  async #whatsAppEnrollmentReply(
-    authorId: string,
-    eventId: string,
-    token: Onboarding.RegistrationToken,
-  ) {
-    const result = await Effect.runPromiseExit(this.#enrollWhatsApp(authorId, eventId, token));
-    return Exit.isSuccess(result)
-      ? "WhatsApp is connected to your Osfo Agent."
-      : "I could not complete WhatsApp setup. Open Osfo and create a new connection link.";
+    await this.#registrationReply(callback, {
+      channelIdentity: ChannelIdentity.make(authorId),
+      eventId: message.id,
+      invitedPhoneNumber: authorId,
+      locale: "en",
+      message: message.text,
+      provider: "whatsapp",
+    });
   }
 
   #telegramAllowedUserIds(): ReadonlySet<string> {
@@ -286,47 +306,41 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     );
   }
 
-  #enrollTelegram(authorId: string, eventId: string, token: Onboarding.RegistrationToken) {
-    return this.#withOnboarding((service) =>
-      service.enrollTelegram({
-        channelIdentity: ChannelIdentity.make(`telegram:${authorId}`),
-        eventId,
-        token: Redacted.make(token),
-      }),
-    );
+  #enrollChannel(input: Onboarding.ChannelEnrollment) {
+    return this.#withOnboarding((service) => service.enrollChannel(input));
   }
 
-  #enrollWhatsApp(authorId: string, eventId: string, token: Onboarding.RegistrationToken) {
-    return this.#withOnboarding((service) =>
-      service.enrollWhatsApp({
-        channelIdentity: ChannelIdentity.make(authorId),
-        eventId,
-        token: Redacted.make(token),
-      }),
+  async #registrationReply(
+    callback: StreamCallback,
+    input: Onboarding.ChannelInvitationMessage,
+  ): Promise<void> {
+    const issued = await Effect.runPromiseExit(
+      this.#withOnboarding((service) => service.issueChannelInvitation(input)).pipe(
+        Effect.tapError((failure) =>
+          Effect.logError("Channel-first invitation failed").pipe(
+            Effect.annotateLogs({ failureTag: failure._tag, provider: input.provider }),
+          ),
+        ),
+      ),
     );
-  }
+    if (Exit.isFailure(issued)) {
+      await streamReply(callback, input.eventId, "I could not complete setup. Please try again.");
+      return;
+    }
 
-  #issueWhatsAppInvitation(authorId: string, eventId: string, message: string) {
-    return this.#withOnboarding((service) =>
-      service.issueWhatsAppInvitation({
-        channelIdentity: ChannelIdentity.make(authorId),
-        eventId,
-        invitedPhoneNumber: authorId,
-        locale: "en",
-        message,
-      }),
+    const dialogue = this.env.REGISTRATION_DIALOGUE.getByName(issued.value.invitationId);
+    const result = await dialogue.reply(
+      {
+        eventId: input.eventId,
+        locale: input.locale,
+        message: input.message,
+        verifyUrl: issued.value.verifyUrl.href,
+      },
+      callback,
     );
-  }
-
-  #issueTelegramInvitation(authorId: string, eventId: string, message: string) {
-    return this.#withOnboarding((service) =>
-      service.issueTelegramInvitation({
-        channelIdentity: ChannelIdentity.make(`telegram:${authorId}`),
-        eventId,
-        locale: "en",
-        message,
-      }),
-    );
+    if (result._tag === "RegistrationDialogueUnavailable") {
+      await streamReply(callback, input.eventId, "I could not complete setup. Please try again.");
+    }
   }
 
   #withOnboarding<A, E>(operation: (service: Onboarding.Interface) => Effect.Effect<A, E>) {
@@ -348,21 +362,13 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       Effect.flatMap(Onboarding.Service, operation).pipe(Effect.provide(onboarding)),
     );
   }
-
-  #deliverTelegramNotice(context: MessengerContext, text: string): Promise<void> {
-    return this.deliverNotice(text, {
-      channel: "telegram",
-      thread: context.thread.id,
-    });
-  }
-
-  #deliverWhatsAppNotice(context: MessengerContext, text: string): Promise<void> {
-    return this.deliverNotice(text, {
-      channel: "whatsapp",
-      thread: context.thread.id,
-    });
-  }
 }
+
+const streamReply = async (callback: StreamCallback, requestId: string, text: string) => {
+  await callback.onStart({ requestId });
+  await callback.onEvent(JSON.stringify({ delta: text, type: "text-delta" }));
+  await callback.onDone();
+};
 
 const readTelegramEnrollmentToken = (text: string): Onboarding.RegistrationToken | null => {
   const match = /^\/start(?:@[A-Za-z0-9_]+)? ([0-9a-f]{64})$/u.exec(text.trim());

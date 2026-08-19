@@ -32,15 +32,6 @@ export interface MakeOptions {
 }
 
 const AgentRpcTag = Schema.Struct({ _tag: Schema.String });
-const RegistrationRpcResult = Schema.Union([
-  Schema.TaggedStruct("RegistrationTurnCompleted", {
-    response: Schema.String,
-    verifyUrl: Schema.String,
-  }),
-  Schema.TaggedStruct("RegistrationTurnUnavailable", {
-    message: Schema.String,
-  }),
-]);
 
 /** Build one request-scoped Cloudflare application from the current bindings. */
 export const makeCloudflareApp = async (env: CloudflareEnv) => {
@@ -139,10 +130,6 @@ const adaptBindings = (env: CloudflareEnv): Bindings => ({
     getByName: (identity) => {
       const dialogue = async () => env.REGISTRATION_DIALOGUE.getByName(identity);
       return {
-        begin: async (input) => {
-          const agent = await dialogue();
-          return Schema.decodePromise(RegistrationRpcResult)(await agent.begin(input));
-        },
         deleteDialogue: async () => {
           const agent = await dialogue();
           await agent.deleteDialogue();

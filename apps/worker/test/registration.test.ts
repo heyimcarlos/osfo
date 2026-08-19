@@ -132,7 +132,7 @@ describe("Registration HTTP API", () => {
     ),
   );
 
-  it.effect("keeps completed Telegram onboarding successful when follow-up work fails", () =>
+  it.effect("reports welcome failure and recovers the committed Telegram onboarding on retry", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
       (fixture) =>
@@ -154,11 +154,15 @@ describe("Registration HTTP API", () => {
               tokenDigest: digest,
             }),
           );
+          let welcomeAvailable = false;
           const app = makeApp(fixture.database, acceptingTwilio, {
             ...testBindings,
             OSFO_DIRECTORY: {
               getByName: (identity) => ({
-                commitAgentWelcome: () => Promise.reject(new Error("temporary welcome failure")),
+                commitAgentWelcome: () =>
+                  welcomeAvailable
+                    ? Promise.resolve({ _tag: "PersonalWelcomeCommitted" })
+                    : Promise.reject(new Error("temporary welcome failure")),
                 ensureAgent: (agentId) =>
                   Promise.resolve({ className: "OsfoAgent", name: agentId }),
                 initializeAgent: () => Promise.resolve({ _tag: "AgentInitialized" }),
@@ -174,12 +178,6 @@ describe("Registration HTTP API", () => {
             },
             REGISTRATION_DIALOGUE: {
               getByName: () => ({
-                begin: () =>
-                  Promise.resolve({
-                    _tag: "RegistrationTurnCompleted",
-                    response: "Register",
-                    verifyUrl: "https://osfo.ai/verify/test",
-                  }),
                 deleteDialogue: () => Promise.reject(new Error("temporary cleanup failure")),
                 probeRuntime: () =>
                   Promise.resolve({
@@ -219,8 +217,25 @@ describe("Registration HTTP API", () => {
             cookie,
           );
 
-          expect(completed.status).toBe(200);
-          expect((yield* onboardingResponseJson(completed)).channel._tag).toBe("BindingCreated");
+          expect(completed.status).toBe(503);
+
+          welcomeAvailable = true;
+          const recovered = yield* sendJson(
+            app.handler,
+            "PUT",
+            "/v1/onboarding",
+            {
+              existingProfileChoice: null,
+              helpAreas: [],
+              invitationToken: token,
+              locale: "en",
+              preferredName: null,
+            },
+            cookie,
+          );
+
+          expect(recovered.status).toBe(200);
+          expect((yield* onboardingResponseJson(recovered)).channel._tag).toBe("BindingCreated");
 
           yield* Effect.promise(app.dispose);
         }),
@@ -666,12 +681,6 @@ const testBindings: App.Bindings = {
   routeOsfoAgentRequest: () => Promise.resolve(new Response(null, { status: 404 })),
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => ({
-      begin: () =>
-        Promise.resolve({
-          _tag: "RegistrationTurnCompleted",
-          response: "Register",
-          verifyUrl: "https://osfo.ai/verify/test",
-        }),
       deleteDialogue: () => Promise.resolve(),
       probeRuntime: () =>
         Promise.resolve({

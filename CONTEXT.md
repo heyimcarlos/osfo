@@ -164,9 +164,9 @@ _Avoid_: Provisional User, Registration Token, anonymous conversation
 
 **Registration Dialogue**:
 The temporary pre-registration exchange presented as Osfo to an unbound Channel
-Identity under one Registration Invitation. It contains at most one natural
-Registration Turn, is not a Session, User memory, or authority source, and is
-deleted after registration or expiry.
+Identity under one Registration Invitation. It may continue naturally until the
+invitation is consumed or expires, is not a User Session, User memory, or
+authority source, and is deleted after registration or expiry.
 _Avoid_: Anonymous Session, Provisional User, Agent handoff
 
 **Registration Token**:
