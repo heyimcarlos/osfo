@@ -93,7 +93,6 @@ const runInvitationExpiry = (env: Bindings, config: CloudflareConfig) => {
     Registration.layerWithoutDependencies,
     OnboardingCloudflare.layer(env),
     OnboardingLinks.layer({
-      enrollmentProvider: "telegram",
       officialWhatsAppNumber: config.whatsApp.publicPhoneNumber,
       publicBaseUrl: publicWebBaseUrl(config.auth),
       telegramBotUsername: config.telegram.botUsername,

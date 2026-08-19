@@ -287,7 +287,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   }
 
   #enrollTelegram(authorId: string, eventId: string, token: Onboarding.RegistrationToken) {
-    return this.#withOnboarding("telegram", (service) =>
+    return this.#withOnboarding((service) =>
       service.enrollTelegram({
         channelIdentity: ChannelIdentity.make(`telegram:${authorId}`),
         eventId,
@@ -297,7 +297,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   }
 
   #enrollWhatsApp(authorId: string, eventId: string, token: Onboarding.RegistrationToken) {
-    return this.#withOnboarding("whatsapp", (service) =>
+    return this.#withOnboarding((service) =>
       service.enrollWhatsApp({
         channelIdentity: ChannelIdentity.make(authorId),
         eventId,
@@ -307,7 +307,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   }
 
   #issueWhatsAppInvitation(authorId: string, eventId: string, message: string) {
-    return this.#withOnboarding("whatsapp", (service) =>
+    return this.#withOnboarding((service) =>
       service.issueWhatsAppInvitation({
         channelIdentity: ChannelIdentity.make(authorId),
         eventId,
@@ -319,7 +319,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   }
 
   #issueTelegramInvitation(authorId: string, eventId: string, message: string) {
-    return this.#withOnboarding("telegram", (service) =>
+    return this.#withOnboarding((service) =>
       service.issueTelegramInvitation({
         channelIdentity: ChannelIdentity.make(`telegram:${authorId}`),
         eventId,
@@ -329,16 +329,12 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     );
   }
 
-  #withOnboarding<A, E>(
-    enrollmentProvider: Onboarding.ChannelProvider,
-    operation: (service: Onboarding.Interface) => Effect.Effect<A, E>,
-  ) {
+  #withOnboarding<A, E>(operation: (service: Onboarding.Interface) => Effect.Effect<A, E>) {
     const base = Layer.merge(Db.layer({ db: this.env.DB }), BrowserCrypto.layer);
     const dependencies = Layer.mergeAll(
       Registration.layerWithoutDependencies,
       OnboardingCloudflare.layer(this.env),
       OnboardingLinks.layer({
-        enrollmentProvider,
         officialWhatsAppNumber: this.env.WHATSAPP_PUBLIC_PHONE_NUMBER,
         publicBaseUrl: publicWebBaseUrl(loadConfig(this.env).auth),
         telegramBotUsername: this.env.TELEGRAM_BOT_USERNAME,

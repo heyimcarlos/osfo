@@ -51,15 +51,30 @@ const renderAt = (path: string, authState: AuthState = signedOut) => {
 };
 
 describe("Osfo route tree", () => {
+  it("opens email-password sign-in without offering credential sign-up", async () => {
+    renderAt("/login");
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Email and password" })).toBeTruthy(),
+    );
+    act(() => screen.getByRole("button", { name: "Email and password" }).click());
+
+    expect(screen.getByText(/New accounts must start with an SMS code/)).toBeTruthy();
+    expect(screen.getByLabelText("Email")).toBeTruthy();
+    expect(screen.getByLabelText("Password")).toBeTruthy();
+    expect(screen.queryByText("Create account")).toBeNull();
+  });
+
   it("matches public direct links and parameters", async () => {
-    renderAt("/verify/invitation-token");
+    const { router } = renderAt("/verify/invitation-token");
 
     await waitFor(() => expect(screen.getByText("This link is unavailable")).toBeTruthy());
+    expect(router.state.location.pathname).toBe("/verify/invitation-token");
   });
 
   it.each([
-    ["/get-started", "How can Osfo help?"],
-    ["/get-started?lang=es", "¿Cómo puede ayudarte Osfo?"],
+    ["/get-started", "What should Osfo call you?"],
+    ["/get-started?lang=es", "¿Cómo quieres que te llame Osfo?"],
     ["/privacy?lang=es", "Aviso de privacidad"],
     ["/plans", "Plans and allowances"],
   ])("preserves the public direct link %s", async (path, heading) => {
@@ -106,14 +121,14 @@ describe("Osfo route tree", () => {
     const { router, view } = renderAt("/get-started", pending);
 
     await waitFor(() => expect(screen.getByText("Loading Osfo...")).toBeTruthy());
-    expect(screen.queryByText("How can Osfo help?")).toBeNull();
+    expect(screen.queryByText("What should Osfo call you?")).toBeNull();
 
     view.rerender(
       <AuthStateProvider value={signedOut}>
         <RouterProvider router={router} />
       </AuthStateProvider>,
     );
-    await waitFor(() => expect(screen.getByText("How can Osfo help?")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("What should Osfo call you?")).toBeTruthy());
   });
 
   it("keeps an authenticated direct link across an auth transition", async () => {
@@ -128,13 +143,14 @@ describe("Osfo route tree", () => {
     );
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Profile" })).toBeTruthy());
+    expect(screen.getByRole("heading", { name: "Add sign-in credentials" })).toBeTruthy();
     expect(router.state.location.pathname).toBe("/settings/profile");
   });
 
   it("routes an authenticated account without an Agent back through onboarding", async () => {
     const { router } = renderAt("/settings", registrationIncomplete);
 
-    await waitFor(() => expect(screen.getByText("How can Osfo help?")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("What should Osfo call you?")).toBeTruthy());
     expect(router.state.location.pathname).toBe("/get-started");
   });
 

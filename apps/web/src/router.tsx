@@ -42,12 +42,12 @@ const getStartedRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "get-started",
   validateSearch: parseOnboardingSearch,
-  component: lazyRouteComponent(() => import("./pages/get-started-page"), "GetStartedPage"),
+  component: lazyRouteComponent(() => import("./pages/get-started-page"), "GetStartedRoute"),
 });
 const verifyRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "verify/$token",
-  component: lazyRouteComponent(() => import("./pages/get-started-page"), "VerifyPage"),
+  component: lazyRouteComponent(() => import("./pages/verify-page"), "VerifyRoute"),
 });
 const privacyRoute = createRoute({
   getParentRoute: () => rootRoute,

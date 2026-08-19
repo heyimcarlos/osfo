@@ -54,6 +54,7 @@ export const ChannelOnboardingResponse = Schema.Union([
   Schema.TaggedStruct("BindingExisting", { channelBindingId: ChannelBindingId }),
   Schema.TaggedStruct("ConsentRefused", {}),
   Schema.TaggedStruct("EnrollmentPending", { enrollmentUrl: Schema.URLFromString }),
+  Schema.TaggedStruct("NotConnected", {}),
   Schema.TaggedStruct("ProfileConfirmationPending", {}),
 ]);
 
@@ -101,7 +102,6 @@ export class PhoneVerificationRequired extends Schema.TaggedError<PhoneVerificat
 ) {}
 
 const CompletePayload = Schema.Struct({
-  bindingConsent: Schema.Literals(["accepted", "refused", "web-enrollment"]),
   existingProfileChoice: Schema.NullOr(Schema.Literals(["apply", "keep"])),
   helpAreas: Schema.Array(HelpArea),
   invitationToken: Schema.NullOr(RegistrationToken),
@@ -116,6 +116,29 @@ const CompletePayload = Schema.Struct({
     ),
   ),
 });
+
+/** Supported messaging provider for an explicit channel connection. */
+export const ChannelProvider = Schema.Literals(["telegram", "whatsapp"]);
+
+/** Supported messaging provider for an explicit channel connection. */
+export type ChannelProvider = typeof ChannelProvider.Type;
+
+/** Request to start one authenticated channel connection. */
+export const StartChannelEnrollmentRequest = Schema.Struct({
+  provider: ChannelProvider,
+});
+
+/** Request to start one authenticated channel connection. */
+export type StartChannelEnrollmentRequest = typeof StartChannelEnrollmentRequest.Type;
+
+/** Deep link that continues one authenticated channel connection. */
+export const ChannelEnrollmentResponse = Schema.Struct({
+  enrollmentUrl: Schema.URLFromString,
+  provider: ChannelProvider,
+});
+
+/** Deep link that continues one authenticated channel connection. */
+export type ChannelEnrollmentResponse = typeof ChannelEnrollmentResponse.Type;
 
 /** Public invitation inspection and authenticated onboarding completion. */
 export const OnboardingGroup = HttpApiGroup.make("onboarding")
@@ -149,6 +172,21 @@ export const OnboardingGroup = HttpApiGroup.make("onboarding")
           description: "Complete phone-first setup and prepare or create a Channel Binding.",
           identifier: "onboarding.complete",
           summary: "Complete onboarding",
+        }),
+      ),
+  )
+  .add(
+    HttpApiEndpoint.post("startChannelEnrollment", "/v1/onboarding/enrollments", {
+      error: [PhoneVerificationRequired, OnboardingUnavailable],
+      payload: StartChannelEnrollmentRequest,
+      success: ChannelEnrollmentResponse,
+    })
+      .middleware(Auth)
+      .annotateMerge(
+        OpenApi.annotations({
+          description: "Create a finite-lived deep link for one messaging channel.",
+          identifier: "onboarding.startChannelEnrollment",
+          summary: "Start channel enrollment",
         }),
       ),
   );

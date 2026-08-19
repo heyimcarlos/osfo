@@ -1,31 +1,23 @@
 import { describe, expect, it } from "@effect/vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import { AuthStateProvider } from "./auth-state";
 import { AuthScreen } from "./components/auth-screen";
-import { GetStartedScreen } from "./components/get-started-screen";
 import { HomeScreen } from "./components/home-screen";
 import { PlanDetails, PrivacyNotice } from "./components/public-information";
+import { GetStartedPage } from "./pages/get-started-page";
 import { withTestRouter } from "./testing/router";
 
 describe("App", () => {
-  it("renders only the phone sign-in surface", () => {
+  it("renders SMS first and offers email-password sign-in", () => {
     const html = renderToStaticMarkup(<AuthScreen onAuthenticated={() => undefined} />);
 
     expect(html).toContain("Continue by SMS");
     expect(html).toContain('autoComplete="tel-national"');
-    expect(html).not.toContain("Email and password");
-    expect(html).not.toContain('type="password"');
-  });
-
-  it("renders development credentials without replacing SMS authentication", () => {
-    const html = renderToStaticMarkup(
-      <AuthScreen enableCredentials onAuthenticated={() => undefined} />,
-    );
-
-    expect(html).toContain("Development access");
     expect(html).toContain("Email and password");
+    expect(html).not.toContain("Phone and password");
     expect(html).toContain("SMS code");
-    expect(html).toContain('type="password"');
+    expect(html).not.toContain('type="password"');
   });
 
   it("renders a public home page with authentication entry points", () => {
@@ -40,12 +32,22 @@ describe("App", () => {
 
   it("renders the public phone-first registration entry", () => {
     const html = renderToStaticMarkup(
-      withTestRouter(<GetStartedScreen onComplete={() => undefined} />),
+      withTestRouter(
+        <AuthStateProvider
+          value={{
+            data: null,
+            isPending: false,
+            refreshFromAuthority: () => Promise.resolve(),
+          }}
+        >
+          <GetStartedPage onComplete={() => undefined} />
+        </AuthStateProvider>,
+      ),
     );
 
-    expect(html).toContain("How can Osfo help?");
-    expect(html).toContain("Both fields are optional");
-    expect(html).toContain("Writing and email");
+    expect(html).toContain("What should Osfo call you?");
+    expect(html).toContain("Enter the name that you want Osfo to use.");
+    expect(html).not.toContain("Writing and email");
     expect(html).toContain("English");
     expect(html).toContain("Español");
     expect(html).toContain('autoComplete="name"');

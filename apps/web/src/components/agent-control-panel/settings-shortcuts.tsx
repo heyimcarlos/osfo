@@ -1,5 +1,12 @@
 import { Link } from "@tanstack/react-router";
-import { Bell, Brain, ChevronRight, ShieldCheck, Sparkles, type LucideIcon } from "lucide-react";
+import {
+  Brain,
+  ChevronRight,
+  MessagesSquare,
+  ShieldCheck,
+  Sparkles,
+  type LucideIcon,
+} from "lucide-react";
 import { type KeyboardEvent, type MouseEvent, useEffect, useRef, useState } from "react";
 
 type Shortcut = {
@@ -7,15 +14,19 @@ type Shortcut = {
   readonly description: string;
   readonly icon: LucideIcon;
   readonly title: string;
-} & ({ readonly kind: "Link"; readonly to: "/settings/privacy" } | { readonly kind: "Explainer" });
+} & (
+  | { readonly kind: "Link"; readonly to: "/settings/channels" | "/settings/privacy" }
+  | { readonly kind: "Explainer" }
+);
 
 const shortcuts: ReadonlyArray<Shortcut> = [
   {
-    kind: "Explainer",
-    accent: "bg-[#eee9ff] text-[#7867f2]",
-    description: "Manage alerts and notification preferences",
-    icon: Bell,
-    title: "Notifications",
+    kind: "Link",
+    accent: "bg-[#e2f0ff] text-[#2f7df4]",
+    description: "Connect Telegram or WhatsApp",
+    icon: MessagesSquare,
+    title: "Channels",
+    to: "/settings/channels",
   },
   {
     kind: "Explainer",

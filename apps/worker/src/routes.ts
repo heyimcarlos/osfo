@@ -44,7 +44,6 @@ export interface Options {
 /** Assemble typed product routes, Better Auth, and Cloudflare host probes. */
 export const layer = (options: Options) => {
   const onboardingLinks = OnboardingLinks.layer({
-    enrollmentProvider: "telegram",
     officialWhatsAppNumber: options.config.whatsApp.publicPhoneNumber,
     publicBaseUrl: publicWebBaseUrl(options.config.auth),
     telegramBotUsername: options.config.telegram.botUsername,

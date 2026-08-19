@@ -80,6 +80,7 @@ const makeOptions = (options: AuthOptions): BetterAuthOptions => ({
   },
   emailAndPassword: {
     autoSignIn: false,
+    disableSignUp: true,
     enabled: options.credentialAuthentication === "enabled",
   },
   rateLimit: {
@@ -118,6 +119,10 @@ const makeOptions = (options: AuthOptions): BetterAuthOptions => ({
         required: false,
         type: "date",
       },
+    },
+    changeEmail: {
+      enabled: true,
+      updateEmailWithoutVerification: true,
     },
     modelName: "users",
   },

@@ -10,6 +10,8 @@ export type OsfoStage = typeof OsfoStage.Type;
 export const decodeOsfoStage = Schema.decodeUnknownOption(OsfoStage);
 
 const TrustedOrigins = Schema.fromJsonString(Schema.Array(Schema.URLFromString));
+const productionApiOrigin = "https://api.osfo.ai";
+const productionWebOrigin = "https://osfo.ai";
 
 type RawConfigBinding =
   | "BETTER_AUTH_API_KEY"
@@ -139,7 +141,11 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
     invalid("OSFO_STAGE is not supported"),
   );
   const baseURL = parseUrl("BETTER_AUTH_BASE_URL", required(env, "BETTER_AUTH_BASE_URL").trim());
-  const trustedOrigins = parseTrustedOrigins(required(env, "BETTER_AUTH_TRUSTED_ORIGINS").trim());
+  const trustedOrigins = selectTrustedOrigins(
+    stage,
+    baseURL,
+    parseTrustedOrigins(required(env, "BETTER_AUTH_TRUSTED_ORIGINS").trim()),
+  );
   const secret = required(env, "BETTER_AUTH_SECRET");
   if (secret.length < 32) invalid("BETTER_AUTH_SECRET must contain at least 32 characters");
 
@@ -152,8 +158,7 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
   return {
     auth: {
       baseURL: baseURL.href,
-      credentialAuthentication:
-        stage === "development" || stage === "test" ? "enabled" : "disabled",
+      credentialAuthentication: "enabled",
       dashboard: {
         apiKey: Redacted.make(required(env, "BETTER_AUTH_API_KEY")),
         kind: "enabled",
@@ -219,6 +224,15 @@ const parseTrustedOrigins = (value: string): ReadonlyArray<string> => {
         : origins.map((origin) => parseUrl("BETTER_AUTH_TRUSTED_ORIGINS", origin.href).origin),
   });
 };
+
+const selectTrustedOrigins = (
+  stage: OsfoStage,
+  baseURL: URL,
+  configuredOrigins: ReadonlyArray<string>,
+): ReadonlyArray<string> =>
+  stage === "production" && baseURL.origin === productionApiOrigin
+    ? [productionWebOrigin]
+    : configuredOrigins;
 
 const invalid = (message: string): never => {
   throw new WorkerConfigurationError({

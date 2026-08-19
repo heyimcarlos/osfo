@@ -103,4 +103,16 @@ describe("Worker configuration", () => {
 
     expect(publicWebBaseUrl(config.auth).href).toBe("https://osfo.test/");
   });
+
+  it("uses the hosted web origin for production auth and public links", () => {
+    const config = loadConfig({
+      ...env,
+      BETTER_AUTH_BASE_URL: "https://api.osfo.ai",
+      BETTER_AUTH_TRUSTED_ORIGINS: '["http://localhost:5173"]',
+      OSFO_STAGE: "production",
+    });
+
+    expect(config.auth.trustedOrigins).toEqual(["https://osfo.ai"]);
+    expect(publicWebBaseUrl(config.auth).href).toBe("https://osfo.ai/");
+  });
 });

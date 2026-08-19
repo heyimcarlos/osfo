@@ -4,7 +4,6 @@ import * as Onboarding from "../../services/onboarding";
 
 /** Configuration owned by the public onboarding URL adapter. */
 export interface Options {
-  readonly enrollmentProvider: Onboarding.ChannelProvider;
   readonly officialWhatsAppNumber: string;
   readonly publicBaseUrl: URL;
   readonly telegramBotUsername: string;
@@ -15,8 +14,8 @@ export const layer = (options: Options) =>
   Layer.succeed(
     Onboarding.OnboardingLinks,
     Onboarding.OnboardingLinks.of({
-      enrollment: (token) =>
-        options.enrollmentProvider === "telegram"
+      enrollment: (token, provider) =>
+        provider === "telegram"
           ? {
               provider: "telegram",
               url: new URL(

@@ -1,6 +1,7 @@
 import {
   Api,
   type BillingReconciliationRequest,
+  type ChannelProvider,
   type HelpArea,
   type OnboardingLocale,
   RegistrationToken,
@@ -9,7 +10,8 @@ import { Effect, Layer, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { HttpApiClient } from "effect/unstable/httpapi";
 
-const apiBaseURL = new URL(import.meta.env.VITE_API_URL).href.replace(/\/$/, "");
+import { apiBaseURL } from "../config";
+
 const httpClientLayer = FetchHttpClient.layer.pipe(
   Layer.provideMerge(
     Layer.succeed(FetchHttpClient.RequestInit, {
@@ -42,7 +44,6 @@ export const inspectRegistrationInvitation = (token: string) =>
 
 /** Complete authenticated onboarding through the shared typed contract. */
 export interface CompleteOnboardingPayload {
-  readonly bindingConsent: "accepted" | "refused" | "web-enrollment";
   readonly existingProfileChoice: "apply" | "keep" | null;
   readonly helpAreas: ReadonlyArray<HelpArea>;
   readonly invitationToken: string | null;
@@ -61,6 +62,16 @@ export const completeOnboarding = (payload: CompleteOnboardingPayload) =>
     return yield* client.onboarding.complete({
       payload: { ...payload, invitationToken },
     });
+  }).pipe(
+    // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The browser API client owns its Fetch runtime.
+    Effect.provide(httpClientLayer),
+  );
+
+/** Start an explicit messaging channel connection for the authenticated User. */
+export const startChannelEnrollment = (provider: ChannelProvider) =>
+  Effect.gen(function* () {
+    const client = yield* HttpApiClient.make(Api, { baseUrl: apiBaseURL });
+    return yield* client.onboarding.startChannelEnrollment({ payload: { provider } });
   }).pipe(
     // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The browser API client owns its Fetch runtime.
     Effect.provide(httpClientLayer),

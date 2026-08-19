@@ -5,15 +5,12 @@ import { CredentialAuthForm } from "./credential-auth-form";
 import { PhoneAuthForm } from "./phone-auth-form";
 
 interface AuthScreenProps {
-  readonly enableCredentials?: boolean;
   readonly onAuthenticated: () => void;
 }
 
-/** Osfo sign-in surface, with development credentials when enabled by the caller. */
-export function AuthScreen({ enableCredentials = false, onAuthenticated }: AuthScreenProps) {
-  const [method, setMethod] = useState<"credentials" | "phone">(
-    enableCredentials ? "credentials" : "phone",
-  );
+/** Osfo phone-first sign-in surface. */
+export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
+  const [method, setMethod] = useState<"email" | "sms">("sms");
 
   return (
     <main className="flex min-h-dvh flex-col bg-[radial-gradient(circle_at_top,oklch(0.96_0.035_250),oklch(0.985_0.006_250)_42%,oklch(0.965_0.008_250))] text-foreground">
@@ -25,31 +22,29 @@ export function AuthScreen({ enableCredentials = false, onAuthenticated }: AuthS
           <span className="text-3xl font-black tracking-tight">Osfo</span>
         </div>
 
-        {enableCredentials ? (
-          <div
-            className="grid w-full max-w-[31rem] grid-cols-2 gap-2 rounded-xl border bg-background/90 p-1.5 shadow-sm"
-            aria-label="Authentication method"
+        <div
+          className="grid w-full max-w-[31rem] grid-cols-2 gap-2 rounded-xl border bg-background/90 p-1.5 shadow-sm"
+          aria-label="Authentication method"
+        >
+          <Button
+            aria-pressed={method === "sms"}
+            type="button"
+            variant={method === "sms" ? "default" : "ghost"}
+            onClick={() => setMethod("sms")}
           >
-            <Button
-              aria-pressed={method === "credentials"}
-              type="button"
-              variant={method === "credentials" ? "default" : "ghost"}
-              onClick={() => setMethod("credentials")}
-            >
-              Email and password
-            </Button>
-            <Button
-              aria-pressed={method === "phone"}
-              type="button"
-              variant={method === "phone" ? "default" : "ghost"}
-              onClick={() => setMethod("phone")}
-            >
-              SMS code
-            </Button>
-          </div>
-        ) : null}
+            SMS code
+          </Button>
+          <Button
+            aria-pressed={method === "email"}
+            type="button"
+            variant={method === "email" ? "default" : "ghost"}
+            onClick={() => setMethod("email")}
+          >
+            Email and password
+          </Button>
+        </div>
 
-        {method === "credentials" ? (
+        {method === "email" ? (
           <CredentialAuthForm onAuthenticated={onAuthenticated} />
         ) : (
           <PhoneAuthForm onAuthenticated={onAuthenticated} />

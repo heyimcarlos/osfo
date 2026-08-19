@@ -11,10 +11,5 @@ export function LoginPage() {
   if (session.isPending) return <LoadingScreen />;
   if (session.data !== null)
     return <Navigate replace to={authenticatedLandingPath(session.data.user)} />;
-  return (
-    <AuthScreen
-      enableCredentials={import.meta.env.DEV}
-      onAuthenticated={() => void router.navigate({ to: "/get-started" })}
-    />
-  );
+  return <AuthScreen onAuthenticated={() => void router.navigate({ to: "/get-started" })} />;
 }

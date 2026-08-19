@@ -4,6 +4,7 @@ import {
   Bell,
   CreditCard,
   LogOut,
+  MessagesSquare,
   MoreHorizontal,
   Settings,
   ShieldCheck,
@@ -16,6 +17,7 @@ import { authClient } from "../lib/auth-client";
 
 type SettingsDestination =
   | "/settings/general"
+  | "/settings/channels"
   | "/settings/profile"
   | "/settings/privacy"
   | "/settings/billing"
@@ -29,6 +31,7 @@ type SettingsNavigationItem = {
 
 const settingsItems: ReadonlyArray<SettingsNavigationItem> = [
   { icon: Settings, label: "Settings", to: "/settings/general" },
+  { icon: MessagesSquare, label: "Channels", to: "/settings/channels" },
   { icon: UserRound, label: "Profile", to: "/settings/profile" },
   { icon: ShieldCheck, label: "Privacy", to: "/settings/privacy" },
   { icon: CreditCard, label: "Billing", to: "/settings/billing" },

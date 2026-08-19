@@ -132,6 +132,102 @@ describe("Registration HTTP API", () => {
     ),
   );
 
+  it.effect("keeps completed Telegram onboarding successful when follow-up work fails", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const token = "a".repeat(64);
+          const digest = yield* sha256(token);
+          const createdAt = new Date();
+          yield* Effect.promise(() =>
+            fixture.database.insert(registrationInvitations).values({
+              channelIdentity: "telegram:cleanup-failure",
+              createdAt,
+              expiresAt: new Date(createdAt.getTime() + 24 * 60 * 60 * 1_000),
+              invitationId: "registration-invitation-cleanup-failure",
+              kind: "telegram_first",
+              locale: "en",
+              provider: "telegram",
+              providerEventId: "telegram-message-cleanup-failure",
+              tokenDigest: digest,
+            }),
+          );
+          const app = makeApp(fixture.database, acceptingTwilio, {
+            ...testBindings,
+            OSFO_DIRECTORY: {
+              getByName: (identity) => ({
+                commitAgentWelcome: () => Promise.reject(new Error("temporary welcome failure")),
+                ensureAgent: (agentId) =>
+                  Promise.resolve({ className: "OsfoAgent", name: agentId }),
+                initializeAgent: () => Promise.resolve({ _tag: "AgentInitialized" }),
+                probeAgent: () =>
+                  Promise.resolve({
+                    activationId: "test-agent-activation",
+                    executionUnit: "osfo-agent" as const,
+                    identity,
+                    kind: "RuntimeProbe" as const,
+                    stage: "test" as const,
+                  }),
+              }),
+            },
+            REGISTRATION_DIALOGUE: {
+              getByName: () => ({
+                begin: () =>
+                  Promise.resolve({
+                    _tag: "RegistrationTurnCompleted",
+                    response: "Register",
+                    verifyUrl: "https://osfo.ai/verify/test",
+                  }),
+                deleteDialogue: () => Promise.reject(new Error("temporary cleanup failure")),
+                probeRuntime: () =>
+                  Promise.resolve({
+                    activationId: "test-registration-activation",
+                    executionUnit: "registration-dialogue" as const,
+                    identity: "registration-invitation-cleanup-failure",
+                    kind: "RuntimeProbe" as const,
+                    stage: "test" as const,
+                  }),
+              }),
+            },
+          });
+          yield* sendJson(app.handler, "POST", "/auth/onboarding/send-otp", {
+            phoneNumber: "+16049230317",
+            token,
+          });
+          const verified = yield* sendJson(app.handler, "POST", "/auth/onboarding/verify", {
+            code: "123456",
+            phoneNumber: "+16049230317",
+            token,
+          });
+          const cookie = yield* Schema.decodeUnknownEffect(Schema.String)(
+            verified.headers.get("set-cookie")?.split(";", 1)[0],
+          );
+
+          const completed = yield* sendJson(
+            app.handler,
+            "PUT",
+            "/v1/onboarding",
+            {
+              existingProfileChoice: null,
+              helpAreas: [],
+              invitationToken: token,
+              locale: "en",
+              preferredName: null,
+            },
+            cookie,
+          );
+
+          expect(completed.status).toBe(200);
+          expect((yield* onboardingResponseJson(completed)).channel._tag).toBe("BindingCreated");
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
   it.effect("stores Telegram-first invitation identity for later binding", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
@@ -180,7 +276,7 @@ describe("Registration HTTP API", () => {
     ),
   );
 
-  it.effect("requires Phone Verification and completes resumable web onboarding", () =>
+  it.effect("completes website onboarding before an explicit channel connection", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
       (fixture) =>
@@ -193,12 +289,10 @@ describe("Registration HTTP API", () => {
           );
           const payload = {
             existingProfileChoice: null,
-            bindingConsent: "web-enrollment",
             helpAreas: ["research"],
             invitationToken: null,
             locale: "en",
             preferredName: "River",
-            webEnrollmentToken: "e".repeat(64),
           };
 
           const unverified = yield* sendJson(app.handler, "PUT", "/v1/onboarding", payload, cookie);
@@ -215,20 +309,31 @@ describe("Registration HTTP API", () => {
 
           expect(unverified.status).toBe(403);
           expect(first.status).toBe(200);
-          expect(firstBody.channel._tag).toBe("EnrollmentPending");
-          expect(firstBody.channel).toMatchObject({
-            _tag: "EnrollmentPending",
+          expect(firstBody.channel).toEqual({ _tag: "NotConnected" });
+          expect(retriedBody.channel).toEqual({ _tag: "NotConnected" });
+          expect(
+            yield* Effect.promise(() =>
+              fixture.database.select().from(registrationInvitations).execute(),
+            ),
+          ).toHaveLength(0);
+
+          const enrollment = yield* sendJson(
+            app.handler,
+            "POST",
+            "/v1/onboarding/enrollments",
+            { provider: "telegram" },
+            cookie,
+          );
+          const enrollmentBody = yield* Effect.promise(() => enrollment.json());
+          expect(enrollment.status).toBe(200);
+          expect(enrollmentBody).toMatchObject({
+            provider: "telegram",
           });
-          expect(retriedBody.channel).toMatchObject({
-            _tag: "EnrollmentPending",
-          });
-          if (
-            firstBody.channel._tag === "EnrollmentPending" &&
-            retriedBody.channel._tag === "EnrollmentPending"
-          ) {
-            expect(firstBody.channel.enrollmentUrl.href).not.toContain("e".repeat(64));
-            expect(retriedBody.channel.enrollmentUrl).not.toEqual(firstBody.channel.enrollmentUrl);
-          }
+          expect(
+            yield* Effect.promise(() =>
+              fixture.database.select().from(registrationInvitations).execute(),
+            ),
+          ).toHaveLength(1);
 
           yield* Effect.promise(app.dispose);
         }),
@@ -384,7 +489,7 @@ describe("Registration HTTP API", () => {
             app.handler(
               new Request("https://osfo.test/v1/registration", {
                 headers: {
-                  "access-control-request-headers": "content-type",
+                  "access-control-request-headers": "b3,content-type,traceparent",
                   "access-control-request-method": "PUT",
                   origin: "https://osfo.test",
                 },
@@ -396,6 +501,12 @@ describe("Registration HTTP API", () => {
           expect(response.status).toBe(204);
           expect(response.headers.get("access-control-allow-origin")).toBe("https://osfo.test");
           expect(response.headers.get("access-control-allow-credentials")).toBe("true");
+          expect(response.headers.get("access-control-allow-headers")?.toLowerCase()).toContain(
+            "b3",
+          );
+          expect(response.headers.get("access-control-allow-headers")?.toLowerCase()).toContain(
+            "traceparent",
+          );
           expect(response.headers.get("access-control-allow-methods")).toContain("PUT");
 
           yield* Effect.promise(app.dispose);
@@ -411,8 +522,9 @@ const makeApp = (
     sendCode: () => Effect.void,
     verifyCode: () => Effect.succeed(false),
   },
+  bindings: App.Bindings = testBindings,
 ) =>
-  App.make(testBindings, runtimeConfig, {
+  App.make(bindings, runtimeConfig, {
     authDependencies: Layer.merge(
       Db.layerFromDatabase(database),
       Layer.succeed(TwilioVerify.TwilioVerify, TwilioVerify.TwilioVerify.of(twilio)),

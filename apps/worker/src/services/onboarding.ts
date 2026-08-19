@@ -117,6 +117,7 @@ export const ChannelOnboardingState = Schema.Union([
   Schema.TaggedStruct("EnrollmentPending", {
     enrollmentUrl: Schema.URLFromString,
   }),
+  Schema.TaggedStruct("NotConnected", {}),
   Schema.TaggedStruct("ProfileConfirmationPending", {}),
 ]);
 
@@ -238,7 +239,10 @@ export class RegistrationTurn extends Context.Service<RegistrationTurn, Registra
 
 /** Public URL projections needed by onboarding policy. */
 export interface OnboardingLinksPort {
-  readonly enrollment: (token: Redacted.Redacted<RegistrationToken>) => {
+  readonly enrollment: (
+    token: Redacted.Redacted<RegistrationToken>,
+    provider: ChannelProvider,
+  ) => {
     readonly provider: ChannelProvider;
     readonly url: URL;
   };
@@ -253,7 +257,6 @@ export class OnboardingLinks extends Context.Service<OnboardingLinks, Onboarding
 
 /** Authenticated completion input from the web journey. */
 export interface CompleteInput {
-  readonly bindingConsent: "accepted" | "refused" | "web-enrollment";
   readonly existingProfileChoice: "apply" | "keep" | null;
   readonly invitationToken: Redacted.Redacted<RegistrationToken> | null;
   readonly profile: SetupProfile;
@@ -327,7 +330,7 @@ export interface EnrollmentPersistenceContext {
 type PersistedBindingChannel = Extract<
   ChannelOnboardingState,
   {
-    readonly _tag: "BindingCreated" | "BindingExisting" | "ConsentRefused";
+    readonly _tag: "BindingCreated" | "BindingExisting" | "ConsentRefused" | "NotConnected";
   }
 >;
 
@@ -335,7 +338,7 @@ type PersistedBindingChannel = Extract<
 export type CompletePersistenceDecision =
   | {
       readonly _tag: "Commit";
-      readonly channel: PersistedBindingChannel | "web-enrollment";
+      readonly channel: PersistedBindingChannel;
     }
   | {
       readonly _tag: "Reject";
@@ -366,8 +369,7 @@ export type CompletePersistenceResult =
   | "binding-conflict"
   | "invitation-expired"
   | "invitation-invalid"
-  | "invitation-unavailable"
-  | "web-enrollment";
+  | "invitation-unavailable";
 
 /** Atomic enrollment outcomes returned by onboarding persistence. */
 export type EnrollmentPersistenceResult =
@@ -380,7 +382,7 @@ export type EnrollmentPersistenceResult =
 export interface CompletePersistenceInput {
   readonly acceptedProfile: SetupProfile;
   readonly applyProfile: boolean;
-  readonly bindingConsent: CompleteInput["bindingConsent"];
+  readonly bindingConsent: "accepted" | "web-enrollment";
   readonly bindingId: ChannelBindingId;
   readonly invitationId: RegistrationInvitationId | null;
   readonly now: Date;
@@ -525,6 +527,16 @@ export interface Interface {
     | OnboardingPhoneVerificationRequired
     | Registration.RegistrationError
     | RegistrationInvitationUnavailable
+  >;
+  readonly startChannelEnrollment: (input: {
+    readonly provider: ChannelProvider;
+    readonly userId: UserId;
+  }) => Effect.Effect<
+    { readonly enrollmentUrl: URL; readonly provider: ChannelProvider },
+    | OnboardingIdentityUnavailable
+    | OnboardingPersistenceRejected
+    | OnboardingPersistenceUnavailable
+    | OnboardingPhoneVerificationRequired
   >;
   readonly enrollWhatsApp: (
     input: WhatsAppEnrollment,
@@ -737,6 +749,7 @@ export const make = Effect.gen(function* () {
     });
 
   const complete = Effect.fn("Onboarding.complete")(function* (input: CompleteInput) {
+    const bindingConsent = input.invitationToken === null ? "web-enrollment" : "accepted";
     const currentTime = yield* DateTime.now;
     const invitation =
       input.invitationToken === null
@@ -787,7 +800,7 @@ export const make = Effect.gen(function* () {
     const profileConfirmationRequired =
       wasRegistered && input.existingProfileChoice === null && !profileAlreadyApplied;
     const requestDigest = yield* digestJson(crypto, {
-      bindingConsent: input.bindingConsent,
+      bindingConsent,
       existingProfileChoice: input.existingProfileChoice,
       profile,
       userId: input.userId,
@@ -804,16 +817,22 @@ export const make = Effect.gen(function* () {
       const recoveredChannel = yield* readChannelReceipt(invitation);
       const registrationResult = yield* registration.complete(input.userId);
       yield* agentOnboarding.initialize(registrationResult);
-      yield* registrationTurn.delete(invitation.invitationId);
+      yield* ignorePostCommitFailure(
+        registrationTurn.delete(invitation.invitationId),
+        "delete-registration-dialogue",
+      );
       if (
         recoveredChannel._tag === "BindingCreated" ||
         recoveredChannel._tag === "BindingExisting"
       ) {
-        yield* agentOnboarding.commitWelcome({
-          agentId: registrationResult.agentId,
-          channelBindingId: recoveredChannel.channelBindingId,
-          profile: acceptedProfile,
-        });
+        yield* ignorePostCommitFailure(
+          agentOnboarding.commitWelcome({
+            agentId: registrationResult.agentId,
+            channelBindingId: recoveredChannel.channelBindingId,
+            profile: acceptedProfile,
+          }),
+          "commit-personal-welcome",
+        );
       }
       return {
         ...registrationResult,
@@ -836,7 +855,7 @@ export const make = Effect.gen(function* () {
     const persistenceInput: CompletePersistenceInput = {
       acceptedProfile,
       applyProfile: !(wasRegistered && input.existingProfileChoice === "keep"),
-      bindingConsent: input.bindingConsent,
+      bindingConsent,
       bindingId,
       invitationId: invitation?.invitationId ?? null,
       now: nowDate,
@@ -871,31 +890,56 @@ export const make = Effect.gen(function* () {
     }
 
     if (invitation !== null) {
-      yield* registrationTurn.delete(invitation.invitationId);
+      yield* ignorePostCommitFailure(
+        registrationTurn.delete(invitation.invitationId),
+        "delete-registration-dialogue",
+      );
     }
 
-    const finalChannel =
-      channel === "web-enrollment"
-        ? yield* createWebEnrollment(
-            persistence,
-            crypto,
-            input.userId,
-            acceptedProfile.locale,
-            now,
-            links,
-          )
-        : channel;
+    const finalChannel = channel;
     if (finalChannel._tag === "BindingCreated" || finalChannel._tag === "BindingExisting") {
-      yield* agentOnboarding.commitWelcome({
-        agentId: registrationResult.agentId,
-        channelBindingId: finalChannel.channelBindingId,
-        profile: acceptedProfile,
-      });
+      yield* ignorePostCommitFailure(
+        agentOnboarding.commitWelcome({
+          agentId: registrationResult.agentId,
+          channelBindingId: finalChannel.channelBindingId,
+          profile: acceptedProfile,
+        }),
+        "commit-personal-welcome",
+      );
     }
     return {
       ...registrationResult,
       channel: finalChannel,
       profileConfirmationRequired: false,
+    };
+  });
+
+  const startChannelEnrollment: Interface["startChannelEnrollment"] = Effect.fn(
+    "Onboarding.startChannelEnrollment",
+  )(function* (input) {
+    const user = yield* persistence.readUser(input.userId);
+    if (
+      user === null ||
+      user.phoneNumber === null ||
+      !user.phoneNumberVerified ||
+      user.registrationCompletedAt === null
+    ) {
+      return yield* new OnboardingPhoneVerificationRequired({
+        message: "Complete Phone Verification and registration before connecting a channel",
+      });
+    }
+    const enrollment = yield* createWebEnrollment(
+      persistence,
+      crypto,
+      input.userId,
+      user.profile.locale,
+      yield* DateTime.now,
+      links,
+      input.provider,
+    );
+    return {
+      enrollmentUrl: enrollment.enrollmentUrl,
+      provider: input.provider,
     };
   });
 
@@ -986,11 +1030,14 @@ export const make = Effect.gen(function* () {
         operation: "readWelcomeRoute",
       });
     }
-    yield* agentOnboarding.commitWelcome({
-      agentId: route.agentId,
-      channelBindingId: result.channelBindingId,
-      profile: route.profile,
-    });
+    yield* ignorePostCommitFailure(
+      agentOnboarding.commitWelcome({
+        agentId: route.agentId,
+        channelBindingId: result.channelBindingId,
+        profile: route.profile,
+      }),
+      "commit-personal-welcome",
+    );
     return result;
   });
 
@@ -1013,6 +1060,7 @@ export const make = Effect.gen(function* () {
     issueTelegramInvitation,
     issueWhatsAppInvitation,
     phoneVerificationTarget,
+    startChannelEnrollment,
   });
 });
 
@@ -1083,7 +1131,7 @@ export const digestRegistrationToken = (
 
 type RetryDigestInput =
   | {
-      readonly bindingConsent: CompleteInput["bindingConsent"];
+      readonly bindingConsent: "accepted" | "web-enrollment";
       readonly existingProfileChoice: CompleteInput["existingProfileChoice"];
       readonly profile: SetupProfile;
       readonly userId: UserId;
@@ -1108,15 +1156,25 @@ const encodeHex = (bytes: Uint8Array) =>
 const sameHelpAreas = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean =>
   left.length === right.length && left.every((value, index) => value === right[index]);
 
+const ignorePostCommitFailure = (
+  operation: Effect.Effect<void, OnboardingExecutionUnavailable>,
+  operationName: "commit-personal-welcome" | "delete-registration-dialogue",
+) =>
+  operation.pipe(
+    Effect.catch((error) =>
+      Effect.logWarning("Onboarding follow-up failed after durable completion").pipe(
+        Effect.annotateLogs({ failureTag: error._tag, operation: operationName }),
+      ),
+    ),
+  );
+
 const decideCompletion = (
   input: CompletePersistenceInput,
   context: CompletePersistenceContext,
 ): CompletePersistenceDecision => {
   const invitation = context.invitation;
   if (invitation === null) {
-    return input.bindingConsent === "web-enrollment"
-      ? { _tag: "Commit", channel: "web-enrollment" }
-      : { _tag: "Reject", reason: "invitation-invalid" };
+    return { _tag: "Commit", channel: { _tag: "NotConnected" } };
   }
   if (invitation.state !== "live") {
     return { _tag: "Reject", reason: "invitation-unavailable" };
@@ -1236,11 +1294,12 @@ const createWebEnrollment = Effect.fn("Onboarding.createWebEnrollment")(function
   locale: OnboardingLocale,
   now: DateTime.Utc,
   links: OnboardingLinksPort,
+  provider: ChannelProvider,
 ) {
   const identity = yield* generateRegistrationInvitationIdentity(crypto);
   const nowDate = DateTime.toDateUtc(now);
   yield* persistence.expireLive(nowDate);
-  const enrollment = links.enrollment(identity.token);
+  const enrollment = links.enrollment(identity.token, provider);
   const invitationId = RegistrationInvitationId.make(`registration-invitation-${identity.id}`);
   yield* persistence.createWebEnrollment({
     digest: identity.digest,

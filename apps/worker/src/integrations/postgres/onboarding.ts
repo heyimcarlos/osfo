@@ -326,7 +326,7 @@ const completeTransaction = async (
     });
     if (decision._tag === "Reject") return decision.reason;
     const channel = decision.channel;
-    if (channel !== "web-enrollment" && channel._tag === "BindingCreated") {
+    if (channel._tag === "BindingCreated") {
       if (invitation?.channelIdentity === null || invitation?.channelIdentity === undefined) {
         return "invitation-invalid";
       }
@@ -339,7 +339,7 @@ const completeTransaction = async (
       });
     }
     await applyProfile();
-    if (input.invitationId === null || channel === "web-enrollment") return channel;
+    if (input.invitationId === null) return channel;
     await transaction
       .update(registrationInvitations)
       .set({
