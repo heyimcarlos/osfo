@@ -46,7 +46,7 @@ describe("managed model access policy", () => {
           targetInputTokens: 18_000,
         },
         maxRetries: 0,
-        route: "@cf/moonshotai/kimi-k2.6",
+        route: "@cf/deepseek-ai/deepseek-v4-flash-0731",
       });
       expect(adventurer).toEqual({
         context: {
@@ -55,7 +55,7 @@ describe("managed model access policy", () => {
           targetInputTokens: 72_000,
         },
         maxRetries: 0,
-        route: "@cf/moonshotai/kimi-k2.6",
+        route: "@cf/deepseek-ai/deepseek-v4-flash-0731",
       });
     }),
   );
@@ -113,7 +113,7 @@ describe("managed model access policy", () => {
             originatingAuthority: { _tag: "AuthSession", authSessionId: "auth-managed" },
             plan,
             routeId: `route-${plan}`,
-            route: "@cf/moonshotai/kimi-k2.6",
+            route: "@cf/deepseek-ai/deepseek-v4-flash-0731",
             targetInputTokens: plan === "free" ? 18_000 : 72_000,
           },
           submissionId: `submission-${plan}`,

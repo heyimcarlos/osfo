@@ -73,7 +73,7 @@ export const launchModelAccessPolicy = Schema.decodeSync(ModelAccessPolicy)({
         targetInputTokens: 72_000,
       },
       maxRetries: 0,
-      route: "@cf/moonshotai/kimi-k2.6",
+      route: "@cf/deepseek-ai/deepseek-v4-flash-0731",
     },
     free: {
       context: {
@@ -82,7 +82,7 @@ export const launchModelAccessPolicy = Schema.decodeSync(ModelAccessPolicy)({
         targetInputTokens: 18_000,
       },
       maxRetries: 0,
-      route: "@cf/moonshotai/kimi-k2.6",
+      route: "@cf/deepseek-ai/deepseek-v4-flash-0731",
     },
   },
 });
