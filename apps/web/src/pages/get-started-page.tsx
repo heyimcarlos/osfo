@@ -1,4 +1,4 @@
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { Navigate, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 
 import { useAuthState } from "../auth-state";
 import { GetStartedScreen } from "../components/get-started-screen";
@@ -26,13 +26,19 @@ function RegistrationPage({
   const navigate = useNavigate();
   const session = useAuthState();
   if (session.isPending) return <LoadingScreen />;
+  if (invitationToken === undefined && session.data?.user.registrationCompletedAt != null)
+    return <Navigate replace to="/settings" />;
   return (
     <GetStartedScreen
       {...(invitationToken === undefined ? {} : { invitationToken })}
       enrollmentProvider="telegram"
       {...(initialLocale === undefined ? {} : { initialLocale })}
       isAuthenticated={session.data !== null}
-      onComplete={() => void navigate({ to: session.data === null ? "/" : "/think" })}
+      onComplete={() => {
+        void session
+          .refreshFromAuthority()
+          .then(() => navigate({ to: session.data === null ? "/" : "/settings" }));
+      }}
     />
   );
 }

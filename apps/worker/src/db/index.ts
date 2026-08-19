@@ -83,22 +83,23 @@ export const layerFromClient = (client: Sql) => Layer.succeed(Db, make(client));
 export const layerFromDatabase = (provided: Database) =>
   Layer.succeed(Db, { database: Effect.succeed(provided) });
 
+/** Keep one PostgreSQL client alive for the full owning Layer scope. */
+export const layerFromClientAcquisition = (acquire: Effect.Effect<Sql, never, Scope.Scope>) =>
+  Layer.effect(Db, acquire.pipe(Effect.map(make)));
+
 /** Production database Layer backed by one Cloudflare Hyperdrive binding. */
 export const layer = (options: Options) =>
-  Layer.effect(
-    Db,
-    Effect.cached(
-      Effect.acquireRelease(
-        Effect.sync(() =>
-          postgres(options.db.connectionString, {
-            fetch_types: false,
-            max: 5,
-            prepare: true,
-          }),
-        ),
-        (client) => Effect.promise(() => client.end()),
-      ).pipe(Effect.map((client) => createDb(client))),
-    ).pipe(Effect.map((cachedDatabase) => ({ database: cachedDatabase }))),
+  layerFromClientAcquisition(
+    Effect.acquireRelease(
+      Effect.sync(() =>
+        postgres(options.db.connectionString, {
+          fetch_types: false,
+          max: 5,
+          prepare: true,
+        }),
+      ),
+      (client) => Effect.promise(() => client.end()),
+    ),
   );
 
 /** Translate an unknown Postgres failure into a safe database failure. */

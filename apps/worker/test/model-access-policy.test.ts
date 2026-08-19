@@ -46,7 +46,7 @@ describe("managed model access policy", () => {
           targetInputTokens: 18_000,
         },
         maxRetries: 0,
-        route: "dynamic/osfo-free-v1",
+        route: "@cf/moonshotai/kimi-k2.6",
       });
       expect(adventurer).toEqual({
         context: {
@@ -55,7 +55,7 @@ describe("managed model access policy", () => {
           targetInputTokens: 72_000,
         },
         maxRetries: 0,
-        route: "dynamic/osfo-adventurer-v1",
+        route: "@cf/moonshotai/kimi-k2.6",
       });
     }),
   );
@@ -113,7 +113,7 @@ describe("managed model access policy", () => {
             originatingAuthority: { _tag: "AuthSession", authSessionId: "auth-managed" },
             plan,
             routeId: `route-${plan}`,
-            route: `dynamic/osfo-${plan}-v1`,
+            route: "@cf/moonshotai/kimi-k2.6",
             targetInputTokens: plan === "free" ? 18_000 : 72_000,
           },
           submissionId: `submission-${plan}`,

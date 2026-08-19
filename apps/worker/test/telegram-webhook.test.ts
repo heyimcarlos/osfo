@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "@effect/vitest";
-import { deliverMessengerReply } from "@cloudflare/think/messengers";
+import { deliverMessengerReply, TextStreamCallback } from "@cloudflare/think/messengers";
 import { SELF } from "cloudflare:test";
 import { Effect, Schema } from "effect";
 
+import { ThinkSubmissionId } from "../src/domain";
+import { messengerSubmissionId } from "../src/agents/osfo/agent";
 import {
   completeDeterministicTelegramReply,
   makeTelegramChannel,
@@ -12,6 +14,28 @@ import {
 
 describe("Think Telegram channel", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it.effect(
+    "derives a stable schema-valid submission identity from Telegram message identity",
+    () =>
+      Effect.gen(function* () {
+        const first = yield* Effect.promise(() =>
+          messengerSubmissionId("telegram", "telegram:900100200", "message:102"),
+        );
+        const retry = yield* Effect.promise(() =>
+          messengerSubmissionId("telegram", "telegram:900100200", "message:102"),
+        );
+        const otherProvider = yield* Effect.promise(() =>
+          messengerSubmissionId("whatsapp", "telegram:900100200", "message:102"),
+        );
+        const decoded = yield* Schema.decodeEffect(ThinkSubmissionId)(first);
+
+        expect(decoded).toBe(first);
+        expect(first).toBe(retry);
+        expect(first).not.toBe(otherProvider);
+        expect(first).not.toContain(":");
+      }),
+  );
 
   it.effect("rejects an invalid webhook secret before it decodes the update", () =>
     Effect.gen(function* () {
@@ -104,6 +128,24 @@ describe("Think Telegram channel", () => {
       expect(visibleMessages).toEqual(["Connect Telegram from Osfo."]);
     }),
   );
+
+  it("accepts Telegram's final edit no-op after reaching the visible stream limit", () => {
+    const channel = makeTelegramChannel({
+      conversation: () => ({ target: "self" }),
+      secretToken: "telegram-test-webhook-secret",
+      token: "telegram-test-bot-token",
+      userName: "osfo_test_bot",
+    });
+    const callback = new TextStreamCallback({ visibleSoftLimit: 1 });
+    callback.onEvent(JSON.stringify({ delta: "Hello", type: "text-delta" }));
+
+    expect(
+      channel.delivery?.isExpectedDeliveryCompletion?.(
+        { code: "VALIDATION_ERROR", message: "message is not modified" },
+        callback,
+      ),
+    ).toBe(true);
+  });
 });
 
 const request = (body: ReturnType<typeof update>, secret = "telegram-test-webhook-secret") =>

@@ -5,7 +5,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import * as Auth from "./auth";
 import { productApiLayer } from "./cors";
-import type { CloudflareConfig } from "./config";
+import { publicWebBaseUrl, type CloudflareConfig } from "./config";
 import * as Handlers from "./handlers";
 import * as RuntimeProbes from "./handlers/runtime-probes";
 import * as InvitationAuth from "./handlers/invitation-auth";
@@ -46,7 +46,7 @@ export const layer = (options: Options) => {
   const onboardingLinks = OnboardingLinks.layer({
     enrollmentProvider: "telegram",
     officialWhatsAppNumber: options.config.whatsApp.publicPhoneNumber,
-    publicBaseUrl: new URL(options.config.auth.baseURL),
+    publicBaseUrl: publicWebBaseUrl(options.config.auth),
     telegramBotUsername: options.config.telegram.botUsername,
   });
   const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(

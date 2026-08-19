@@ -33,6 +33,7 @@ describe("App", () => {
 
     expect(html).toContain("Get the busy work out of your way.");
     expect(html).toContain('href="/login"');
+    expect(html).toContain('href="/get-started"');
     expect(html).toContain("Get started");
     expect(html).toContain("Sign in");
   });

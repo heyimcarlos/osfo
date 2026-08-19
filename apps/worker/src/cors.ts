@@ -14,7 +14,7 @@ const exposedHeaders = "X-PoW-Challenge, X-PoW-Reason";
 export const productApiLayer = (trustedOrigins: ReadonlyArray<string>) =>
   HttpRouter.cors({
     allowedHeaders: ["Content-Type"],
-    allowedMethods: ["GET", "POST", "OPTIONS"],
+    allowedMethods: ["GET", "POST", "PUT", "OPTIONS"],
     allowedOrigins: [...trustedOrigins],
     credentials: true,
     maxAge: 600,

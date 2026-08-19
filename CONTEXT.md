@@ -185,8 +185,8 @@ _Avoid_: Phone Account, Channel Identity, AuthSession
 **Channel Binding**:
 A revocable association between a Channel Identity and a User. It lets messages
 from that provider identity act as the User without making the provider identity
-a reusable Account or recovery authority. In v1, a User has at most one active
-WhatsApp binding. Conflicts fail closed to manual support.
+a reusable Account or recovery authority. A User has at most one active binding
+for each supported messaging provider. Conflicts fail closed to manual support.
 _Avoid_: AuthSession, permanent phone login, conversation ownership
 
 **Free Plan**:

@@ -193,10 +193,10 @@ export const make = Effect.gen(function* () {
       }),
     findByDigest,
     findLiveChannel,
-    insertWhatsAppInvitation: (input) =>
+    insertChannelInvitation: (input) =>
       Effect.tryPromise({
-        try: () => insertWhatsAppInvitationTransaction(db, input),
-        catch: (cause) => rejected("insertWhatsAppInvitation", input.invitationId, cause),
+        try: () => insertChannelInvitationTransaction(db, input),
+        catch: (cause) => rejected("insertChannelInvitation", input.invitationId, cause),
       }),
     readCurrentBinding: (query) =>
       Effect.tryPromise({
@@ -234,14 +234,39 @@ const unavailable = (operation: string, cause: unknown) =>
 const rejected = (operation: string, operationId: string, cause: unknown) =>
   new Onboarding.OnboardingPersistenceRejected({ cause, operation, operationId });
 
-const insertWhatsAppInvitationTransaction = async (
+const insertChannelInvitationTransaction = async (
   db: Database,
-  input: Onboarding.WhatsAppInvitationPersistenceInput,
+  input: Onboarding.ChannelInvitationPersistenceInput,
 ) =>
   db.transaction(async (transaction) => {
+    const channel =
+      input.channel._tag === "TelegramFirst"
+        ? {
+            channelIdentity: input.channel.channelIdentity,
+            invitedPhoneNumber: null,
+            kind: "telegram_first" as const,
+            provider: "telegram" as const,
+          }
+        : {
+            channelIdentity: input.channel.channelIdentity,
+            invitedPhoneNumber: input.channel.invitedPhoneNumber,
+            kind: "whatsapp_first" as const,
+            provider: "whatsapp" as const,
+          };
     const invitation = await transaction
       .insert(registrationInvitations)
-      .values({ ...input, kind: "whatsapp_first", provider: "whatsapp" })
+      .values({
+        channelIdentity: channel.channelIdentity,
+        createdAt: input.createdAt,
+        expiresAt: input.expiresAt,
+        invitationId: input.invitationId,
+        invitedPhoneNumber: channel.invitedPhoneNumber,
+        kind: channel.kind,
+        locale: input.locale,
+        provider: channel.provider,
+        providerEventId: input.providerEventId,
+        tokenDigest: input.tokenDigest,
+      })
       .onConflictDoNothing()
       .returning({ invitationId: registrationInvitations.invitationId });
     if (invitation.length > 0) return true;

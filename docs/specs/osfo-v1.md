@@ -160,14 +160,14 @@ support early operational debugging. A future security workflow adds its own
 purpose-built history, such as User suspension and restoration events. Osfo can
 extract a shared audit model only after several concrete workflows need it.
 
-## Phone-first registration and onboarding
+## Channel-first registration and onboarding
 
-Osfo presents one visible persona. An unregistered WhatsApp sender may receive one
-natural Registration Turn. This turn can identify language, ask what help the
-person wants, and issue a Registration Invitation. It may use registration-scoped
-tools and skills. It has no stable AgentId, Session, memory, entitlements, or
-external authority. More unregistered messages receive a deterministic
-registration prompt.
+Osfo presents one visible persona. An unregistered sender from a supported
+messaging provider may receive one natural Registration Turn. This turn can
+identify language, ask what help the person wants, and issue a Registration
+Invitation. It may use registration-scoped tools and skills. It has no stable
+AgentId, Session, memory, entitlements, or external authority. More unregistered
+messages receive a deterministic registration prompt.
 
 The Registration Dialogue and its temporary transcript are deleted after
 registration or invitation expiry. Osfo creates no handoff summary. Only a
@@ -184,13 +184,14 @@ fields can enter the new User profile.
   -> SMS Phone Verification
   -> Free Plan confirmation
   -> User Registration or existing-User sign-in
-  -> explicit Continue in WhatsApp enrollment
+  -> explicit messaging-provider enrollment when the journey started on the web
   -> personal Osfo welcome
 ```
 
-The WhatsApp-first path uses a high-entropy, single-use Registration Token at
-`https://osfo.ai/verify/<token>`. Osfo stores only its digest. The page shows a
-masked invited number and requires an explicit `Send code` action.
+A messaging-provider-first path uses a high-entropy, single-use Registration
+Token at `https://osfo.ai/verify/<token>`. Osfo stores only its digest. WhatsApp
+can lock the invited phone number. Telegram requires the person to enter the
+Phone Account number before an explicit `Send code` action.
 
 Phone Verification uses a six-digit, single-use code, a ten-minute lifetime, at
 most five entry attempts, resend after 30 seconds, and at most five sends per
@@ -201,14 +202,14 @@ A new verified phone causes one idempotent registration operation to establish:
 
 - the User and Phone Account;
 - an AuthSession and Free Plan;
-- the personal Osfo Agent, AgentId, WhatsApp route, and primary Session;
-- the invited WhatsApp Channel Binding only after explicit consent.
+- the personal Osfo Agent, AgentId, primary conversation route, and primary Session;
+- the invited provider Channel Binding only after explicit consent.
 
 A verified phone that already belongs to a User signs in to that User. It does
-not create or merge another User. A conflicting WhatsApp binding fails closed.
-The web-first `Continue in WhatsApp` flow completes binding only after a
-provider-authenticated inbound enrollment event. The enrollment control message
-is not a conversational UserMessage.
+not create or merge another User. A conflicting provider binding fails closed.
+A web-first provider enrollment completes binding only after a provider-authenticated
+inbound enrollment event. The enrollment control message is not a conversational
+UserMessage.
 
 Before completion, Osfo states: "You are starting on Free. No card is required.
 You get 30 messages every 30 days." The full Plan details remain linked.

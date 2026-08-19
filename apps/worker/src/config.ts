@@ -79,6 +79,10 @@ export interface AuthConfig {
   readonly trustedOrigins: ReadonlyArray<string>;
 }
 
+/** Resolve the first trusted web origin used for public Osfo links. */
+export const publicWebBaseUrl = (config: AuthConfig): URL =>
+  new URL(config.trustedOrigins[0] ?? config.baseURL);
+
 /** WhatsApp webhook, delivery, and public identity configuration. */
 export interface WhatsAppConfig {
   readonly accessToken: Redacted.Redacted;

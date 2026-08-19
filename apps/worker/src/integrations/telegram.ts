@@ -1,6 +1,9 @@
 import { messengerChannel, type ChannelDefinition, type StreamCallback } from "@cloudflare/think";
 import type { MessengerConversationResolver, MessengerEvent } from "@cloudflare/think/messengers";
-import { telegramMessenger } from "@cloudflare/think/messengers/telegram";
+import {
+  isExpectedTelegramFinalEditNoop,
+  telegramMessenger,
+} from "@cloudflare/think/messengers/telegram";
 
 import type { OsfoAgent } from "../agents/osfo/agent";
 
@@ -46,8 +49,9 @@ export const makeTelegramChannel = (options: TelegramChannelOptions): ChannelDef
       delivery: {
         errorResponseText: "I could not answer that right now. Please try again.",
         interruptedResponseText: "My response was interrupted. Please send your message again.",
-        isExpectedDeliveryCompletion: (error) =>
-          error instanceof Error && error.message === DETERMINISTIC_REPLY_COMPLETE,
+        isExpectedDeliveryCompletion: (error, callback) =>
+          (error instanceof Error && error.message === DETERMINISTIC_REPLY_COMPLETE) ||
+          isExpectedTelegramFinalEditNoop(error, callback),
       },
       mode: "webhook",
       path: "/webhooks/telegram",

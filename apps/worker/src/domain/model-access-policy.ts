@@ -4,14 +4,17 @@ import { Plan, PlanPolicyVersion } from "../domain";
 
 const PositiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0));
 
-/** Server-owned Cloudflare AI Gateway route selected by Osfo policy. */
+/** Server-owned model route selected by Osfo policy. */
 export const ManagedModelRoute = Schema.String.check(
   Schema.makeFilter(
-    (value) => /^dynamic\/[a-z0-9-]+$/.test(value) || "must name one dynamic AI Gateway route",
+    (value) =>
+      /^dynamic\/[a-z0-9-]+$/.test(value) ||
+      /^@cf\/[a-z0-9-]+\/[a-z0-9.-]+$/.test(value) ||
+      "must name one managed AI Gateway or Workers AI route",
   ),
 ).pipe(Schema.brand("ManagedModelRoute"));
 
-/** Server-owned Cloudflare AI Gateway route selected by Osfo policy. */
+/** Server-owned model route selected by Osfo policy. */
 export type ManagedModelRoute = typeof ManagedModelRoute.Type;
 
 /** Bounded context contract required from one managed route. */
@@ -70,7 +73,7 @@ export const launchModelAccessPolicy = Schema.decodeSync(ModelAccessPolicy)({
         targetInputTokens: 72_000,
       },
       maxRetries: 0,
-      route: "dynamic/osfo-adventurer-v1",
+      route: "@cf/moonshotai/kimi-k2.6",
     },
     free: {
       context: {
@@ -79,7 +82,7 @@ export const launchModelAccessPolicy = Schema.decodeSync(ModelAccessPolicy)({
         targetInputTokens: 18_000,
       },
       maxRetries: 0,
-      route: "dynamic/osfo-free-v1",
+      route: "@cf/moonshotai/kimi-k2.6",
     },
   },
 });

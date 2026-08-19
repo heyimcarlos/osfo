@@ -143,6 +143,16 @@ export class RegistrationDialogue extends Think<Env> {
     input: BeginRegistration,
     expiresAt: number,
   ): Promise<RegistrationTurnResult> {
+    const complete = async (response: string): Promise<RegistrationTurnResult> => {
+      await this.ctx.storage.put<StoredRegistrationTurn>(stateKey, {
+        eventId: input.eventId,
+        expiresAt,
+        locale: input.locale,
+        response,
+        verifyUrl: input.verifyUrl,
+      });
+      return { _tag: "RegistrationTurnCompleted", response, verifyUrl: input.verifyUrl };
+    };
     try {
       const submission = await this.submitMessages(
         [
@@ -162,33 +172,17 @@ export class RegistrationDialogue extends Think<Env> {
       await this._drainThinkSubmissions();
       const inspection = await this.inspectSubmission(submission.submissionId);
       if (inspection?.status !== "completed") {
-        return {
-          _tag: "RegistrationTurnUnavailable",
-          message: "The Registration Turn is temporarily unavailable",
-        };
+        return await complete(deterministicPrompt(input.locale, input.verifyUrl));
       }
 
       const natural = latestAssistantText(await this.getMessages());
       if (natural === null) {
-        return {
-          _tag: "RegistrationTurnUnavailable",
-          message: "The Registration Turn did not return a response",
-        };
+        return await complete(deterministicPrompt(input.locale, input.verifyUrl));
       }
       const response = `${natural} ${deterministicPrompt(input.locale, input.verifyUrl)}`;
-      await this.ctx.storage.put<StoredRegistrationTurn>(stateKey, {
-        eventId: input.eventId,
-        expiresAt,
-        locale: input.locale,
-        response,
-        verifyUrl: input.verifyUrl,
-      });
-      return { _tag: "RegistrationTurnCompleted", response, verifyUrl: input.verifyUrl };
+      return await complete(response);
     } catch {
-      return {
-        _tag: "RegistrationTurnUnavailable",
-        message: "The Registration Turn is temporarily unavailable",
-      };
+      return await complete(deterministicPrompt(input.locale, input.verifyUrl));
     }
   }
 }

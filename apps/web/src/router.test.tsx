@@ -3,24 +3,38 @@
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { DateTime } from "effect";
 
 import { AuthStateProvider, type AuthState } from "./auth-state";
-import { parseAgentConnection } from "./lib/agent-connection";
 import { parseBillingReturnSearch } from "./lib/billing-return";
 import { createAppRouter } from "./router";
 
 /* oxlint-disable effecttsgo/async-function -- Router navigation and Testing Library own browser Promises. */
 
-const signedOut: AuthState = { data: null, isPending: false };
-const pending: AuthState = { data: null, isPending: true };
+const refreshFromAuthority = () => Promise.resolve();
+const signedOut: AuthState = { data: null, isPending: false, refreshFromAuthority };
+const pending: AuthState = { data: null, isPending: true, refreshFromAuthority };
 const signedIn: AuthState = {
   data: {
     user: {
       name: "Osfo User",
       phoneNumber: "+14165550101",
+      registrationCompletedAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-18T12:00:00.000Z")),
     },
   },
   isPending: false,
+  refreshFromAuthority,
+};
+const registrationIncomplete: AuthState = {
+  data: {
+    user: {
+      name: "Osfo User",
+      phoneNumber: "+14165550102",
+      registrationCompletedAt: null,
+    },
+  },
+  isPending: false,
+  refreshFromAuthority,
 };
 
 afterEach(cleanup);
@@ -64,11 +78,12 @@ describe("Osfo route tree", () => {
     });
   });
 
-  it("rejects illegal billing return and Agent configuration states", () => {
-    expect(parseBillingReturnSearch({ source: "checkout" })).toEqual({ _tag: "Invalid" });
-    expect(parseBillingReturnSearch({ session_id: "orphan" })).toEqual({ _tag: "Invalid" });
-    expect(parseAgentConnection("ftp://example.com")).toEqual({
-      _tag: "InvalidConfiguration",
+  it("rejects illegal billing return states", () => {
+    expect(parseBillingReturnSearch({ source: "checkout" })).toEqual({
+      _tag: "Invalid",
+    });
+    expect(parseBillingReturnSearch({ session_id: "orphan" })).toEqual({
+      _tag: "Invalid",
     });
   });
 
@@ -116,6 +131,21 @@ describe("Osfo route tree", () => {
     expect(router.state.location.pathname).toBe("/settings/profile");
   });
 
+  it("routes an authenticated account without an Agent back through onboarding", async () => {
+    const { router } = renderAt("/settings", registrationIncomplete);
+
+    await waitFor(() => expect(screen.getByText("How can Osfo help?")).toBeTruthy());
+    expect(router.state.location.pathname).toBe("/get-started");
+  });
+
+  it("does not expose a web chat route", async () => {
+    renderAt("/think", signedIn);
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Page not found" })).toBeTruthy(),
+    );
+  });
+
   it("uses router history for settings navigation and browser back", async () => {
     const { history, router } = renderAt("/settings", signedIn);
 
@@ -149,7 +179,9 @@ describe("Osfo route tree", () => {
     renderAt("/settings/privacy", signedIn);
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Privacy" })).toBeTruthy());
-    const settingsNavigation = screen.getByRole("navigation", { name: "Settings" });
+    const settingsNavigation = screen.getByRole("navigation", {
+      name: "Settings",
+    });
     const backLink = screen.getByRole("link", { name: "Back to dashboard" });
     expect(backLink.getAttribute("href")).toBe("/settings");
     expect(settingsNavigation.className).toContain("grid-cols-2");

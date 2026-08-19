@@ -3,7 +3,7 @@ import { Effect, Layer, Schema, type ManagedRuntime } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 
 import type * as Auth from "./auth";
-import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "./config";
+import { loadConfig, publicWebBaseUrl, type CloudflareConfig, type CloudflareEnv } from "./config";
 import * as Db from "./db";
 import * as TwilioVerify from "./integrations/twilio/verify";
 import * as OnboardingCloudflare from "./integrations/cloudflare/onboarding";
@@ -95,7 +95,7 @@ const runInvitationExpiry = (env: Bindings, config: CloudflareConfig) => {
     OnboardingLinks.layer({
       enrollmentProvider: "telegram",
       officialWhatsAppNumber: config.whatsApp.publicPhoneNumber,
-      publicBaseUrl: new URL(config.auth.baseURL),
+      publicBaseUrl: publicWebBaseUrl(config.auth),
       telegramBotUsername: config.telegram.botUsername,
     }),
   ).pipe(Layer.provideMerge(base));

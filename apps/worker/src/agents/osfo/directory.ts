@@ -4,6 +4,7 @@ import type { MessengerContext } from "@cloudflare/think/messengers";
 import type { UIMessage } from "ai";
 import { Effect, Exit, Layer, Redacted } from "effect";
 
+import { loadConfig, publicWebBaseUrl } from "../../config";
 import * as Db from "../../db";
 import { ChannelIdentity } from "../../domain";
 import * as OnboardingCloudflare from "../../integrations/cloudflare/onboarding";
@@ -110,11 +111,8 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       return;
     }
 
-    const enrollmentUrl = new URL("/get-started", this.env.BETTER_AUTH_BASE_URL).href;
-    await this.#deliverTelegramNotice(
-      context,
-      `Open ${enrollmentUrl} to connect Telegram to your Osfo Agent.`,
-    );
+    const reply = await this.#telegramInvitationReply(authorId, message.id, message.text);
+    await this.#deliverTelegramNotice(context, reply);
     await completeDeterministicTelegramReply(callback);
   }
 
@@ -248,6 +246,27 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       : "I could not complete WhatsApp setup. Open Osfo and create a new connection link.";
   }
 
+  async #telegramInvitationReply(authorId: string, eventId: string, message: string) {
+    const result = await Effect.runPromiseExit(
+      this.#issueTelegramInvitation(authorId, eventId, message).pipe(
+        Effect.tapError((failure) =>
+          Effect.logError("Telegram-first invitation failed").pipe(
+            Effect.annotateLogs({
+              failureTag: failure._tag,
+              operation:
+                failure._tag === "OnboardingPersistenceUnavailable"
+                  ? failure.operation
+                  : "issueTelegramInvitation",
+            }),
+          ),
+        ),
+      ),
+    );
+    return Exit.isSuccess(result)
+      ? result.value.response
+      : "I could not complete Telegram setup. Please try again.";
+  }
+
   async #whatsAppEnrollmentReply(
     authorId: string,
     eventId: string,
@@ -268,14 +287,60 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   }
 
   #enrollTelegram(authorId: string, eventId: string, token: Onboarding.RegistrationToken) {
+    return this.#withOnboarding("telegram", (service) =>
+      service.enrollTelegram({
+        channelIdentity: ChannelIdentity.make(`telegram:${authorId}`),
+        eventId,
+        token: Redacted.make(token),
+      }),
+    );
+  }
+
+  #enrollWhatsApp(authorId: string, eventId: string, token: Onboarding.RegistrationToken) {
+    return this.#withOnboarding("whatsapp", (service) =>
+      service.enrollWhatsApp({
+        channelIdentity: ChannelIdentity.make(authorId),
+        eventId,
+        token: Redacted.make(token),
+      }),
+    );
+  }
+
+  #issueWhatsAppInvitation(authorId: string, eventId: string, message: string) {
+    return this.#withOnboarding("whatsapp", (service) =>
+      service.issueWhatsAppInvitation({
+        channelIdentity: ChannelIdentity.make(authorId),
+        eventId,
+        invitedPhoneNumber: authorId,
+        locale: "en",
+        message,
+      }),
+    );
+  }
+
+  #issueTelegramInvitation(authorId: string, eventId: string, message: string) {
+    return this.#withOnboarding("telegram", (service) =>
+      service.issueTelegramInvitation({
+        channelIdentity: ChannelIdentity.make(`telegram:${authorId}`),
+        eventId,
+        locale: "en",
+        message,
+      }),
+    );
+  }
+
+  #withOnboarding<A, E>(
+    enrollmentProvider: Onboarding.ChannelProvider,
+    operation: (service: Onboarding.Interface) => Effect.Effect<A, E>,
+  ) {
     const base = Layer.merge(Db.layer({ db: this.env.DB }), BrowserCrypto.layer);
     const dependencies = Layer.mergeAll(
       Registration.layerWithoutDependencies,
       OnboardingCloudflare.layer(this.env),
       OnboardingLinks.layer({
-        enrollmentProvider: "telegram",
+        enrollmentProvider,
         officialWhatsAppNumber: this.env.WHATSAPP_PUBLIC_PHONE_NUMBER,
-        publicBaseUrl: new URL(this.env.BETTER_AUTH_BASE_URL),
+        publicBaseUrl: publicWebBaseUrl(loadConfig(this.env).auth),
         telegramBotUsername: this.env.TELEGRAM_BOT_USERNAME,
       }),
     ).pipe(Layer.provideMerge(base));
@@ -284,62 +349,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       Layer.provide(dependencies),
     );
     return Effect.scoped(
-      Effect.flatMap(Onboarding.Service, (service) =>
-        service.enrollTelegram({
-          channelIdentity: ChannelIdentity.make(`telegram:${authorId}`),
-          eventId,
-          token: Redacted.make(token),
-        }),
-      ).pipe(Effect.provide(onboarding)),
-    );
-  }
-
-  #enrollWhatsApp(authorId: string, eventId: string, token: Onboarding.RegistrationToken) {
-    return this.#whatsAppOnboarding.pipe(
-      Effect.flatMap((service) =>
-        service.enrollWhatsApp({
-          channelIdentity: ChannelIdentity.make(authorId),
-          eventId,
-          token: Redacted.make(token),
-        }),
-      ),
-    );
-  }
-
-  #issueWhatsAppInvitation(authorId: string, eventId: string, message: string) {
-    return this.#whatsAppOnboarding.pipe(
-      Effect.flatMap((service) =>
-        service.issueWhatsAppInvitation({
-          channelIdentity: ChannelIdentity.make(authorId),
-          eventId,
-          invitedPhoneNumber: authorId,
-          locale: "en",
-          message,
-        }),
-      ),
-    );
-  }
-
-  get #whatsAppOnboarding() {
-    const base = Layer.merge(Db.layer({ db: this.env.DB }), BrowserCrypto.layer);
-    const dependencies = Layer.mergeAll(
-      Registration.layerWithoutDependencies,
-      OnboardingCloudflare.layer(this.env),
-      OnboardingLinks.layer({
-        enrollmentProvider: "whatsapp",
-        officialWhatsAppNumber: this.env.WHATSAPP_PUBLIC_PHONE_NUMBER,
-        publicBaseUrl: new URL(this.env.BETTER_AUTH_BASE_URL),
-        telegramBotUsername: this.env.TELEGRAM_BOT_USERNAME,
-      }),
-    ).pipe(Layer.provideMerge(base));
-    return Onboarding.Service.pipe(
-      Effect.provide(
-        Onboarding.layerWithoutDependencies.pipe(
-          Layer.provide(OnboardingPostgres.layerWithoutDependencies),
-          Layer.provide(dependencies),
-        ),
-      ),
-      Effect.scoped,
+      Effect.flatMap(Onboarding.Service, operation).pipe(Effect.provide(onboarding)),
     );
   }
 

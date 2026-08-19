@@ -111,6 +111,56 @@ describe("Registration Dialogue", () => {
     }),
   );
 
+  it.effect("keeps the verification link available when the natural turn fails", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = Object.getOwnPropertyDescriptor(env.AI, "run");
+        Object.defineProperty(env.AI, "run", {
+          configurable: true,
+          value: () => Promise.reject(new Error("model unavailable")),
+        });
+        return previous;
+      }),
+      () =>
+        Effect.gen(function* () {
+          const dialogue = yield* Effect.promise(() =>
+            getAgentByName(env.REGISTRATION_DIALOGUE, "registration-fallback-turn"),
+          );
+          const result = yield* Effect.promise(
+            async () =>
+              await dialogue.begin({
+                eventId: "telegram-first",
+                locale: "en",
+                message: "Hello",
+                verifyUrl: "https://osfo.ai/verify/token-fallback",
+              }),
+          );
+          const laterMessage = yield* Effect.promise(
+            async () =>
+              await dialogue.begin({
+                eventId: "telegram-later",
+                locale: "en",
+                message: "Hello again",
+                verifyUrl: "https://osfo.ai/verify/ignored-token",
+              }),
+          );
+
+          expect(result).toEqual({
+            _tag: "RegistrationTurnCompleted",
+            response:
+              "Use your registration link to continue: https://osfo.ai/verify/token-fallback",
+            verifyUrl: "https://osfo.ai/verify/token-fallback",
+          });
+          expect(laterMessage).toEqual(result);
+        }),
+      (previous) =>
+        Effect.sync(() => {
+          if (previous === undefined) Reflect.deleteProperty(env.AI, "run");
+          else Object.defineProperty(env.AI, "run", previous);
+        }),
+    ),
+  );
+
   it.effect("admits one stable Think submission for concurrent retries of one event", () =>
     Effect.acquireUseRelease(
       Effect.sync(() => {

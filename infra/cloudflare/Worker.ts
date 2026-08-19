@@ -18,6 +18,7 @@ export default Cloudflare.Worker(
         flags: ["nodejs_compat"],
       },
       env: {
+        AI: Cloudflare.Workers.AI(),
         ARTIFACTS: Artifacts,
         BETTER_AUTH_API_KEY: Config.redacted("BETTER_AUTH_API_KEY"),
         BETTER_AUTH_BASE_URL: Config.string("BETTER_AUTH_BASE_URL"),

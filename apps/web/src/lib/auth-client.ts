@@ -16,16 +16,21 @@ export const authClient = createAuthClient({
   plugins: [phoneNumberClient()],
 });
 
-/** Send SMS to an invitation-owned phone number without exposing that number. */
-export const sendInvitationOtp = (token: string) => invitationAuthRequest("send-otp", { token });
+/** Send SMS for a channel-first invitation without exposing provider-owned identity facts. */
+export const sendInvitationOtp = (token: string, phoneNumber?: string) =>
+  phoneNumber === undefined
+    ? invitationAuthRequest("send-otp", { token })
+    : invitationAuthRequest("send-otp", { phoneNumber, token });
 
 /** Verify SMS for an invitation-owned phone number and retain the Better Auth session cookie. */
-export const verifyInvitationOtp = (token: string, code: string) =>
-  invitationAuthRequest("verify", { code, token });
+export const verifyInvitationOtp = (token: string, code: string, phoneNumber?: string) =>
+  phoneNumber === undefined
+    ? invitationAuthRequest("verify", { code, token })
+    : invitationAuthRequest("verify", { code, phoneNumber, token });
 
 type InvitationAuthBody =
-  | { readonly token: string }
-  | { readonly code: string; readonly token: string };
+  | { readonly phoneNumber?: string; readonly token: string }
+  | { readonly code: string; readonly phoneNumber?: string; readonly token: string };
 
 const invitationHttpClient = FetchHttpClient.layer.pipe(
   Layer.provideMerge(

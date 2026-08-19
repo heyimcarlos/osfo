@@ -472,6 +472,50 @@ describe("GetStartedScreen acceptance journeys", () => {
     expect(await screen.findByText("How can Osfo help?")).toBeTruthy();
     expect(inspections).toBe(2);
   });
+
+  it("uses the entered phone number for a Telegram-first invitation", async () => {
+    const user = userEvent.setup();
+    const sentNumbers: Array<string> = [];
+    const verifiedNumbers: Array<string> = [];
+    const dependencies = makeDependencies({
+      inspectInvitation: () =>
+        Effect.succeed({
+          locale: "en",
+          maskedPhoneNumber: null,
+          provider: "telegram",
+          state: "live",
+        }),
+      phoneAuth: {
+        sendCode: ({ phoneNumber }) => {
+          sentNumbers.push(phoneNumber);
+          return Promise.resolve({ error: null });
+        },
+        verifyCode: ({ phoneNumber }) => {
+          verifiedNumbers.push(phoneNumber);
+          return Promise.resolve({ error: null });
+        },
+      },
+    });
+    render(
+      <GetStartedScreen
+        dependencies={dependencies}
+        invitationToken={"6".repeat(64)}
+        onComplete={() => undefined}
+      />,
+    );
+
+    await screen.findByText("How can Osfo help?");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(screen.getByRole("button", { name: /Continue to phone verification/u }));
+    await user.type(screen.getByLabelText("Phone number"), "6049230316");
+    await user.click(screen.getByRole("button", { name: "Send code" }));
+    await user.type(await screen.findByLabelText("Verification code"), "123456");
+    await user.click(screen.getByRole("button", { name: "Verify and continue" }));
+
+    expect(sentNumbers).toEqual(["+16049230316"]);
+    expect(verifiedNumbers).toEqual(["+16049230316"]);
+    expect(await screen.findByText(/You are starting on Free/u)).toBeTruthy();
+  });
 });
 
 interface TestDependencies extends GetStartedDependencies {

@@ -10,8 +10,10 @@ import { eq } from "drizzle-orm";
 import { DateTime, Effect, Layer, Redacted, Schema } from "effect";
 
 import * as App from "../src/app";
-import * as Db from "../src/db";
 import type { CloudflareConfig } from "../src/config";
+import * as Db from "../src/db";
+import { ChannelIdentity, RegistrationInvitationId } from "../src/domain";
+import * as OnboardingPostgres from "../src/integrations/postgres/onboarding";
 import * as TwilioVerify from "../src/integrations/twilio/verify";
 
 /* oxlint-disable eslint/no-underscore-dangle -- HTTP tests assert typed tagged API results. */
@@ -75,6 +77,104 @@ describe("Registration HTTP API", () => {
           expect(verified.headers.get("set-cookie")).toContain("better-auth.session_token");
 
           yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("accepts an entered phone number for a Telegram-first invitation", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const sentNumbers: Array<string> = [];
+          const app = makeApp(fixture.database, {
+            sendCode: (phoneNumber) => Effect.sync(() => sentNumbers.push(phoneNumber)),
+            verifyCode: (_phoneNumber, code) => Effect.succeed(Redacted.value(code) === "123456"),
+          });
+          const token = "8".repeat(64);
+          const digest = yield* sha256(token);
+          const createdAt = new Date();
+          const expiresAt = new Date(createdAt.getTime() + 24 * 60 * 60 * 1_000);
+          yield* Effect.promise(() =>
+            fixture.database.insert(registrationInvitations).values({
+              channelIdentity: "telegram:900100200",
+              createdAt,
+              expiresAt,
+              invitationId: "registration-invitation-telegram-first",
+              kind: "telegram_first",
+              locale: "en",
+              provider: "telegram",
+              providerEventId: "telegram-message-1",
+              tokenDigest: digest,
+            }),
+          );
+
+          const sent = yield* sendJson(app.handler, "POST", "/auth/onboarding/send-otp", {
+            phoneNumber: "+16049230316",
+            token,
+          });
+          const verified = yield* sendJson(app.handler, "POST", "/auth/onboarding/verify", {
+            code: "123456",
+            phoneNumber: "+16049230316",
+            token,
+          });
+
+          expect(sent.status).toBe(200);
+          expect(sentNumbers).toEqual(["+16049230316"]);
+          expect(verified.status).toBe(200);
+          expect(verified.headers.get("set-cookie")).toContain("better-auth.session_token");
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("stores Telegram-first invitation identity for later binding", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const persistence = yield* OnboardingPostgres.make.pipe(
+            // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This test is the application boundary for the concrete Postgres adapter.
+            Effect.provide(Db.layerFromDatabase(fixture.database)),
+          );
+          const createdAt = new Date();
+          const inserted = yield* persistence.insertChannelInvitation({
+            channel: {
+              _tag: "TelegramFirst",
+              channelIdentity: ChannelIdentity.make("telegram:900100200"),
+            },
+            createdAt,
+            expiresAt: new Date(createdAt.getTime() + 24 * 60 * 60 * 1_000),
+            invitationId: RegistrationInvitationId.make(
+              "registration-invitation-telegram-persistence",
+            ),
+            locale: "en",
+            providerEventId: "telegram-message-persistence",
+            tokenDigest: "telegram-invitation-digest",
+          });
+          const [stored] = yield* Effect.promise(() =>
+            fixture.database
+              .select({
+                channelIdentity: registrationInvitations.channelIdentity,
+                invitedPhoneNumber: registrationInvitations.invitedPhoneNumber,
+                kind: registrationInvitations.kind,
+                provider: registrationInvitations.provider,
+              })
+              .from(registrationInvitations),
+          );
+
+          expect(inserted).toBe(true);
+          expect(stored).toEqual({
+            channelIdentity: "telegram:900100200",
+            invitedPhoneNumber: null,
+            kind: "telegram_first",
+            provider: "telegram",
+          });
         }),
       closeTestDatabase,
     ),
@@ -296,6 +396,7 @@ describe("Registration HTTP API", () => {
           expect(response.status).toBe(204);
           expect(response.headers.get("access-control-allow-origin")).toBe("https://osfo.test");
           expect(response.headers.get("access-control-allow-credentials")).toBe("true");
+          expect(response.headers.get("access-control-allow-methods")).toContain("PUT");
 
           yield* Effect.promise(app.dispose);
         }),
