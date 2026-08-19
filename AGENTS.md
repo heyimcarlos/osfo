@@ -10,19 +10,14 @@ in `docs/adr/`, and active work in GitHub Issues.
 - Use the narrowest meaningful verification while iterating. Merge-ready gates
   are `bun run format:check`, `lint`, `typecheck`, and `test`.
 - Run `bun run format` before a PR and include only files owned by the branch.
-- User-visible web changes require the relevant `@osfo/web` test, a production
+- User-visible work require the relevant `@osfo/web` test, a production
   build, and inspection in the browser development instance. Record the exact
   commands and observable evidence in the issue or PR.
-- Report required gates as PASS, FAIL, or MISSING. Never present an omitted or
-  skipped gate as passing evidence.
 
 ## Collaboration Notes
 
 - The user uses speech-to-text; infer likely intent from odd wording, ask only when
   needed.
-- Code is cheap to write: no time estimates, implementation time isn't a blocker.
-- Never use em-dashes anywhere. Use commas, colons, parentheses, or separate sentences.
-- Always reply in ASD-STE100 Simplified Technical English
 
 ## Reference Repositories
 
