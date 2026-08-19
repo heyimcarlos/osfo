@@ -13,15 +13,15 @@ in `docs/adr/`, and active work in GitHub Issues.
 Repositories under `.reference/` are read-only reference material.
 
 - Before making an important implementation or pattern decision involving a related
-library, inspect the relevant reference repository and compare its source, tests,
-and examples.
+  library, inspect the relevant reference repository and compare its source, tests,
+  and examples.
 - Prefer patterns found in these repositories over generated guesses or web search
-results.
+  results.
 - Do not edit, format, or generate files under `.reference/` unless explicitly asked.
 - Do not import from `.reference/`. Application code must use its normal package
-dependencies.
+  dependencies.
 - When given a Git URL for a missing reference, clone it into `.reference/`. Update
-an existing reference from its configured remote before relying on it.
+  an existing reference from its configured remote before relying on it.
 
 ## Package Ownership
 
@@ -54,11 +54,11 @@ an existing reference from its configured remote before relying on it.
 ### Effect
 
 - In Effect generators, bind services to named variables before calling methods.
-Do not use nested service yields such as `yield* (yield* Foo.Service).bar()`.
+  Do not use nested service yields such as `yield* (yield* Foo.Service).bar()`.
 - Do not return `Effect` from helpers unless they actually perform effectful work.
-Synchronous parsing, validation, and option building should stay synchronous.
+  Synchronous parsing, validation, and option building should stay synchronous.
 - Prefer Effect schema helpers such as `Schema.UnknownFromJsonString` and `Schema.decodeUnknownOption`
-over manual `JSON.parse` wrapped in `Effect.try` when parsing untrusted JSON strings.
+  over manual `JSON.parse` wrapped in `Effect.try` when parsing untrusted JSON strings.
 
 ## Verification and evidence
 
