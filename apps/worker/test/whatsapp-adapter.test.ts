@@ -6,7 +6,6 @@ import { OsfoAgent } from "../src/agents/osfo/agent";
 import {
   makeWhatsAppAdapter,
   makeWhatsAppConversationResolver,
-  completeDeterministicWhatsAppReply,
   makeWhatsAppChannel,
 } from "../src/integrations/whatsapp";
 
@@ -58,7 +57,7 @@ describe("Official WhatsApp adapter boundary", () => {
     expect(chunks.join("")).toBe(`${"a".repeat(4_090)}${"b".repeat(100)}`);
   });
 
-  it("delivers one deterministic notice without an empty fallback", async () => {
+  it("delivers deterministic directory replies through the active stream", async () => {
     const visible: Array<string> = [];
     const channel = makeWhatsAppChannel({
       accessToken: "test-access-token",
@@ -84,8 +83,11 @@ describe("Official WhatsApp adapter boundary", () => {
       target: {
         cancelChat: () => undefined,
         chat: async (_message, callback) => {
-          await surface.post("Connect WhatsApp from Osfo.");
-          await completeDeterministicWhatsAppReply(callback);
+          await callback.onStart({ requestId: "directory-reply" });
+          await callback.onEvent(
+            JSON.stringify({ delta: "Connect WhatsApp from Osfo.", type: "text-delta" }),
+          );
+          await callback.onDone();
         },
       },
     });

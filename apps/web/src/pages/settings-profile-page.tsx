@@ -1,6 +1,11 @@
+import { Button } from "@osfo/ui/components/button";
+import { Input } from "@osfo/ui/components/input";
+import { Label } from "@osfo/ui/components/label";
 import { KeyRound, ShieldCheck, UserRound } from "lucide-react";
+import { useState } from "react";
 
 import { useAuthState } from "../auth-state";
+import { setLoginCredentials } from "../lib/auth-client";
 import { presentUserLabel } from "../lib/user-label";
 
 const fieldClassName =
@@ -67,12 +72,101 @@ export function SettingsProfilePage() {
         <section className="rounded-[1.35rem] border border-white/85 bg-white/68 p-4 shadow-[0_12px_32px_rgba(70,103,145,0.1)]">
           <h2 className="px-1 font-bold">Security</h2>
           <div className="mt-3 grid gap-2">
-            <SecurityRow icon={KeyRound} label="Change password" />
+            <PasswordSetup />
             <SecurityRow icon={ShieldCheck} label="Two-factor authentication" />
           </div>
         </section>
       </aside>
     </div>
+  );
+}
+
+function PasswordSetup() {
+  const [confirmation, setConfirmation] = useState("");
+  const [email, setEmail] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [message, setMessage] = useState<string>();
+  const [password, setPassword] = useState("");
+
+  const submit = () => {
+    if (password !== confirmation) {
+      setMessage("The passwords do not match.");
+      return Promise.resolve();
+    }
+    setIsSubmitting(true);
+    setMessage(undefined);
+    return setLoginCredentials(email, password).then((result) => {
+      setIsSubmitting(false);
+      if (result.error !== null) {
+        setMessage(result.error);
+        return;
+      }
+      setConfirmation("");
+      setEmail("");
+      setPassword("");
+      setMessage("Sign-in credentials added. You can now use email and password.");
+    });
+  };
+
+  return (
+    <form
+      className="grid gap-3 rounded-xl border border-[#d6e1ef] bg-white/65 p-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <div className="flex items-center gap-3">
+        <span className="grid size-9 place-items-center rounded-full bg-[#e7f1ff] text-[#2f7df4]">
+          <KeyRound aria-hidden="true" className="size-5" />
+        </span>
+        <div>
+          <h3 className="font-semibold">Add sign-in credentials</h3>
+          <p className="text-xs text-[#687896]">
+            Phone verification remains your account identity.
+          </p>
+        </div>
+      </div>
+      <div className="grid gap-2">
+        <Label htmlFor="login-email">Email</Label>
+        <Input
+          autoComplete="email"
+          id="login-email"
+          required
+          type="email"
+          value={email}
+          onChange={(event) => setEmail(event.target.value.trim())}
+        />
+        <Label htmlFor="new-login-password">New password</Label>
+        <Input
+          autoComplete="new-password"
+          id="new-login-password"
+          minLength={8}
+          required
+          type="password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+        />
+        <Label htmlFor="confirm-login-password">Confirm password</Label>
+        <Input
+          autoComplete="new-password"
+          id="confirm-login-password"
+          minLength={8}
+          required
+          type="password"
+          value={confirmation}
+          onChange={(event) => setConfirmation(event.target.value)}
+        />
+      </div>
+      {message === undefined ? null : (
+        <p className="text-xs font-medium text-[#44556f]" role="status">
+          {message}
+        </p>
+      )}
+      <Button disabled={isSubmitting} type="submit">
+        {isSubmitting ? "Saving..." : "Add email and password"}
+      </Button>
+    </form>
   );
 }
 

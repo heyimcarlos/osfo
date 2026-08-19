@@ -19,7 +19,7 @@ import {
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import { tool, type ToolSet, type UIMessage } from "ai";
 import { createCompactFunction } from "agents/experimental/memory/utils";
-import { DateTime, Effect, Exit, Option, Predicate, Result, Schema } from "effect";
+import { Cause, DateTime, Effect, Exit, Option, Predicate, Result, Schema } from "effect";
 import { HelpArea, OnboardingLocale } from "@osfo/api";
 
 import type { AssistantMessageId as AssistantMessageIdType, SessionId, UserId } from "../../domain";
@@ -44,8 +44,6 @@ import * as Billing from "../../db/billing";
 import { decodeOsfoStage } from "../../config";
 import * as ProviderAuthorizationPostgres from "../../integrations/postgres/provider-authorization";
 import * as ChannelBindingPostgres from "../../integrations/postgres/channel-binding";
-import { completeDeterministicTelegramReply } from "../../integrations/telegram";
-import { completeDeterministicWhatsAppReply } from "../../integrations/whatsapp";
 import * as SessionRecallAuthorizationPostgres from "../../integrations/postgres/session-recall-authorization";
 import {
   CancelManagedConversationInput,
@@ -537,8 +535,25 @@ export class OsfoAgent extends Think<Env> {
       return;
     }
 
-    const binding = await this.#resolveMessengerBinding(provider, authorId);
+    const bindingResolution = await this.#resolveMessengerBinding(provider, authorId);
+    if (bindingResolution._tag === "Unavailable") {
+      await this.#completeMessengerPolicyReply(
+        callback,
+        context,
+        "I could not authorize that message right now. Please try again.",
+      );
+      return;
+    }
+    const binding = bindingResolution.binding;
     if (binding === null || binding.agentId !== this.name) {
+      await Effect.runPromise(
+        Effect.logWarning("Messenger binding could not authorize the current Agent facet").pipe(
+          Effect.annotateLogs({
+            bindingResolution: binding === null ? "missing" : "agentMismatch",
+            runtimeAvailable: Option.isSome(this.#runtime),
+          }),
+        ),
+      );
       await this.#completeMessengerPolicyReply(
         callback,
         context,
@@ -547,8 +562,10 @@ export class OsfoAgent extends Think<Env> {
       return;
     }
 
-    const submissionId = ThinkSubmissionId.make(
-      `${provider}:${context.thread.id}:${message.providerMessageId}`,
+    const submissionId = await messengerSubmissionId(
+      provider,
+      context.thread.id,
+      message.providerMessageId,
     );
     const store = this.#store;
     const inspectAuthorization = (channelBindingId: ChannelBindingId) =>
@@ -581,6 +598,13 @@ export class OsfoAgent extends Think<Env> {
         : this.#sessionExecution.run(operation),
     );
     if (Exit.isFailure(result)) {
+      const failureTag = Option.match(Cause.findErrorOption(result.cause), {
+        onNone: () => "DefectOrInterruption",
+        onSome: (value) => value._tag,
+      });
+      await Effect.runPromise(
+        Effect.logError("Messenger authorization failed").pipe(Effect.annotateLogs({ failureTag })),
+      );
       await this.#completeMessengerPolicyReply(
         callback,
         context,
@@ -597,20 +621,36 @@ export class OsfoAgent extends Think<Env> {
       return;
     }
     if (Predicate.isTagged(result.value.admission, "ManagedSessionReplacementAdmitted")) {
-      await this.#recordMessengerAcceptedMessage(
+      const recorded = await this.#recordMessengerAcceptedMessage(
         result.value.currentAuthorization,
         provider,
         message.providerMessageId,
       );
+      if (!recorded) {
+        await this.#completeMessengerPolicyReply(
+          callback,
+          context,
+          "I could not reserve this message in your allowance. Please try again.",
+        );
+        return;
+      }
       await this.#completeMessengerPolicyReply(callback, context, "Started a new Osfo session.");
       return;
     }
 
-    await this.#recordMessengerAcceptedMessage(
+    const recorded = await this.#recordMessengerAcceptedMessage(
       result.value.currentAuthorization,
       provider,
       message.providerMessageId,
     );
+    if (!recorded) {
+      await this.#completeMessengerPolicyReply(
+        callback,
+        context,
+        "I could not reserve this message in your allowance. Please try again.",
+      );
+      return;
+    }
     await super.chatWithMessengerContext(userMessage, callback, context, {
       metadata: result.value.admission.metadata,
     });
@@ -683,9 +723,9 @@ export class OsfoAgent extends Think<Env> {
   }
 
   /** Apply only the route and limits pinned to the current durable Think Submission. */
-  override async beforeTurn(_context: TurnContext): Promise<TurnConfig> {
+  override async beforeTurn(context: TurnContext): Promise<TurnConfig> {
     const system = await this.session.refreshSystemPrompt();
-    const tools = { ...this.getTools(), ...coreMemoryTools(this.session) };
+    const tools = { ...context.tools, ...coreMemoryTools(this.session) };
     return Effect.runPromise(
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata).pipe(
         Effect.map((metadata) => {
@@ -1947,11 +1987,13 @@ export class OsfoAgent extends Think<Env> {
           ),
         ),
       catch: (cause) =>
-        new ProviderAuthorizationPostgres.ProviderAuthorizationPersistenceUnavailable({
-          cause,
-          message: "Current provider authorization could not be checked",
-          provider,
-        }),
+        Predicate.isTagged(cause, "ProviderAuthorizationPersistenceUnavailable")
+          ? cause
+          : new ProviderAuthorizationPostgres.ProviderAuthorizationPersistenceUnavailable({
+              cause,
+              message: "Current provider authorization could not be checked",
+              provider,
+            }),
     });
   }
 
@@ -1981,7 +2023,9 @@ export class OsfoAgent extends Think<Env> {
         if (binding === null) throw new Error("Channel binding was not found");
         return runtime.runPromise(
           Effect.scoped(
-            ProviderAuthorizationPostgres.make({ provider: binding.provider }).pipe(
+            ProviderAuthorizationPostgres.make({
+              provider: binding.provider,
+            }).pipe(
               Effect.flatMap((providerAuthorization) =>
                 providerAuthorization.admit({
                   _tag: "Bound",
@@ -2003,7 +2047,9 @@ export class OsfoAgent extends Think<Env> {
 
   async #resolveMessengerBinding(provider: ChannelProvider, authorId: string) {
     const runtime = Option.getOrUndefined(this.#runtime);
-    if (runtime === undefined) return null;
+    if (runtime === undefined) {
+      return { _tag: "Unavailable" } as const;
+    }
     const result = await Effect.runPromiseExit(
       Effect.promise(() =>
         runtime.runPromise(
@@ -2021,19 +2067,22 @@ export class OsfoAgent extends Think<Env> {
         ),
       ),
     );
-    return Exit.isSuccess(result) ? result.value : null;
+    if (Exit.isSuccess(result)) {
+      return { _tag: "Resolved", binding: result.value } as const;
+    }
+    return { _tag: "Unavailable" } as const;
   }
 
   async #recordMessengerAcceptedMessage(
     currentAuthorization: AuthorizationContext,
     provider: ChannelProvider,
     providerMessageId: string,
-  ): Promise<void> {
-    if (currentAuthorization.allowance._tag !== "Metered") return;
+  ): Promise<boolean> {
+    if (currentAuthorization.allowance._tag !== "Metered") return false;
     const allowancePeriodId = currentAuthorization.allowance.allowancePeriodId;
     const runtime = Option.getOrUndefined(this.#runtime);
-    if (runtime === undefined) return;
-    await runtime.runPromise(
+    if (runtime === undefined) return false;
+    const result = await runtime.runPromiseExit(
       Effect.scoped(
         workerDatabase.pipe(
           Effect.flatMap((database) =>
@@ -2060,6 +2109,17 @@ export class OsfoAgent extends Think<Env> {
         ),
       ),
     );
+    if (Exit.isSuccess(result)) return true;
+    const failureTag = Option.match(Cause.findErrorOption(result.cause), {
+      onNone: () => "DefectOrInterruption",
+      onSome: (failure) => failure._tag,
+    });
+    await Effect.runPromise(
+      Effect.logError("Messenger allowance reservation failed").pipe(
+        Effect.annotateLogs({ failureTag }),
+      ),
+    );
+    return false;
   }
 
   async #completeMessengerPolicyReply(
@@ -2067,15 +2127,10 @@ export class OsfoAgent extends Think<Env> {
     context: MessengerContext,
     text: string,
   ): Promise<void> {
-    await this.deliverNotice(text, {
-      channel: context.provider,
-      thread: context.thread.id,
-    });
-    if (context.provider === "whatsapp") {
-      await completeDeterministicWhatsAppReply(callback);
-      return;
-    }
-    await completeDeterministicTelegramReply(callback);
+    const requestId = `policy:${context.message?.providerMessageId ?? context.thread.id}`;
+    await callback.onStart({ requestId });
+    await callback.onEvent(JSON.stringify({ delta: text, id: requestId, type: "text-delta" }));
+    await callback.onDone();
   }
 
   #inspectSessionRecallAuthorization(identity: ManagedTurnAuthorityIdentity) {
@@ -2252,6 +2307,20 @@ const helpAreaLabels = {
 const formatList = (values: ReadonlyArray<string>, conjunction: string): string => {
   if (values.length < 2) return values[0] ?? "";
   return `${values.slice(0, -1).join(", ")} ${conjunction} ${values.at(-1)}`;
+};
+
+/** Derive one stable, schema-valid Think submission identity from provider message identity. */
+export const messengerSubmissionId = async (
+  provider: ChannelProvider,
+  threadId: string,
+  providerMessageId: string,
+): Promise<ThinkSubmissionId> => {
+  const bytes = new TextEncoder().encode(`${provider}\u0000${threadId}\u0000${providerMessageId}`);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  return ThinkSubmissionId.make(`messenger-${hex}`);
 };
 
 const modelCallUsageDispatchUnavailable = (usage: PendingModelCallUsage) =>

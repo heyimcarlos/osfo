@@ -11,6 +11,12 @@ import { Artifacts } from "./Artifacts";
 export default Cloudflare.Worker(
   "Api",
   Stack.useSync(({ stage }) => {
+    const authBaseUrl =
+      stage === "production" ? "https://api.osfo.ai" : Config.string("BETTER_AUTH_BASE_URL");
+    const authTrustedOrigins =
+      stage === "production"
+        ? JSON.stringify(["https://osfo.ai"])
+        : Config.string("BETTER_AUTH_TRUSTED_ORIGINS");
     const workerOptions = {
       compatibility: {
         // Alchemy 2.0.0-beta.72 bundles a local Workerd runtime that supports dates through 2026-07-11.
@@ -18,11 +24,12 @@ export default Cloudflare.Worker(
         flags: ["nodejs_compat"],
       },
       env: {
+        AI: Cloudflare.Workers.AI(),
         ARTIFACTS: Artifacts,
         BETTER_AUTH_API_KEY: Config.redacted("BETTER_AUTH_API_KEY"),
-        BETTER_AUTH_BASE_URL: Config.string("BETTER_AUTH_BASE_URL"),
+        BETTER_AUTH_BASE_URL: authBaseUrl,
         BETTER_AUTH_SECRET: Config.redacted("BETTER_AUTH_SECRET"),
-        BETTER_AUTH_TRUSTED_ORIGINS: Config.string("BETTER_AUTH_TRUSTED_ORIGINS"),
+        BETTER_AUTH_TRUSTED_ORIGINS: authTrustedOrigins,
         DB: Hyperdrive,
         DOCUMENT_SANDBOX: Cloudflare.Container("DocumentSandbox", {
           className: "Sandbox",

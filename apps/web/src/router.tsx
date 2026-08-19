@@ -8,7 +8,6 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 
-import { ControlCenterShell } from "./components/control-center-shell";
 import { AuthenticatedGate } from "./components/authenticated-gate";
 import { LoadingScreen } from "./components/loading-screen";
 import { NotFoundScreen } from "./components/not-found-screen";
@@ -43,12 +42,12 @@ const getStartedRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "get-started",
   validateSearch: parseOnboardingSearch,
-  component: lazyRouteComponent(() => import("./pages/get-started-page"), "GetStartedPage"),
+  component: lazyRouteComponent(() => import("./pages/get-started-page"), "GetStartedRoute"),
 });
 const verifyRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "verify/$token",
-  component: lazyRouteComponent(() => import("./pages/get-started-page"), "VerifyPage"),
+  component: lazyRouteComponent(() => import("./pages/verify-page"), "VerifyRoute"),
 });
 const privacyRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -66,16 +65,6 @@ const authenticatedRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "authenticated",
   component: AuthenticatedGate,
-});
-const framedAuthenticatedRoute = createRoute({
-  getParentRoute: () => authenticatedRoute,
-  id: "framed",
-  component: ControlCenterShell,
-});
-const thinkRoute = createRoute({
-  getParentRoute: () => framedAuthenticatedRoute,
-  path: "think",
-  component: lazyRouteComponent(() => import("./pages/think-page"), "ThinkPage"),
 });
 const settingsRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
@@ -136,12 +125,12 @@ const settingsMarketplaceRoute = createRoute({
   ),
 });
 const billingRoute = createRoute({
-  getParentRoute: () => framedAuthenticatedRoute,
+  getParentRoute: () => authenticatedRoute,
   path: "billing",
   component: lazyRouteComponent(() => import("./pages/billing-page"), "BillingPage"),
 });
 const billingReturnRoute = createRoute({
-  getParentRoute: () => framedAuthenticatedRoute,
+  getParentRoute: () => authenticatedRoute,
   path: "billing/return",
   validateSearch: parseBillingReturnSearch,
   component: lazyRouteComponent(() => import("./pages/billing-page"), "BillingReturnPage"),
@@ -164,7 +153,8 @@ const routeTree = rootRoute.addChildren([
       settingsBillingRoute,
       settingsMarketplaceRoute,
     ]),
-    framedAuthenticatedRoute.addChildren([thinkRoute, billingRoute, billingReturnRoute]),
+    billingRoute,
+    billingReturnRoute,
   ]),
 ]);
 

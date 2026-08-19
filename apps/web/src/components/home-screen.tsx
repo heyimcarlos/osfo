@@ -36,7 +36,7 @@ export function HomeScreen() {
             <Link className="font-black text-sm uppercase hover:underline" to="/login">
               Sign in
             </Link>
-            <Link className={buttonVariants({ size: "sm" })} to="/login">
+            <Link className={buttonVariants({ size: "sm" })} to="/get-started">
               Get started
               <ArrowRight data-icon="inline-end" />
             </Link>
@@ -59,7 +59,7 @@ export function HomeScreen() {
                 className: "mt-8 min-w-56 justify-between",
                 size: "lg",
               })}
-              to="/login"
+              to="/get-started"
             >
               Get started
               <ArrowRight data-icon="inline-end" />

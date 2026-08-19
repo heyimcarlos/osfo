@@ -6,10 +6,18 @@ export type AuthState = {
     readonly user: {
       readonly name: string;
       readonly phoneNumber?: string | null | undefined;
+      readonly registrationCompletedAt?: Date | null | undefined;
     };
   };
   readonly isPending: boolean;
+  readonly refreshFromAuthority: () => Promise<void>;
 };
+
+/** Select the first route that an authenticated User can safely enter. */
+export const authenticatedLandingPath = (
+  user: NonNullable<AuthState["data"]>["user"],
+): "/get-started" | "/settings" =>
+  user.registrationCompletedAt == null ? "/get-started" : "/settings";
 
 const AuthStateContext = createContext<AuthState | null>(null);
 

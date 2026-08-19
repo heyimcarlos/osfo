@@ -67,7 +67,7 @@ export function BillingPage({
 /** Compatibility route for Stripe hosted billing returns. */
 export function BillingReturnPage() {
   const returnState = useSearch({
-    from: "/authenticated/framed/billing/return",
+    from: "/authenticated/billing/return",
   });
   switch (returnState._tag) {
     case "Checkout":

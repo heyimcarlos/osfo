@@ -3,43 +3,25 @@
 Stable contracts live here. Product truth lives in `CONTEXT.md`, durable decisions
 in `docs/adr/`, and active work in GitHub Issues.
 
-## Verification and evidence
-
-- Tests use Effect Vitest. Run scoped tests with `vitest run ...` or the
-  package script. Never use `bun test`.
-- Use the narrowest meaningful verification while iterating. Merge-ready gates
-  are `bun run format:check`, `lint`, `typecheck`, and `test`.
-- Run `bun run format` before a PR and include only files owned by the branch.
-- User-visible web changes require the relevant `@osfo/web` test, a production
-  build, and inspection in the browser development instance. Record the exact
-  commands and observable evidence in the issue or PR.
-- Report required gates as PASS, FAIL, or MISSING. Never present an omitted or
-  skipped gate as passing evidence.
-
 ## Collaboration Notes
 
 - The user uses speech-to-text; infer likely intent from odd wording, ask only when
   needed.
-- Code is cheap to write: no time estimates, implementation time isn't a blocker.
-- Never use em-dashes anywhere. Use commas, colons, parentheses, or separate sentences.
-- Always reply in ASD-STE100 Simplified Technical English
 
-## Reference Repositories
+## Reference repositories
 
-Repos in `.reference` (effect, executor, opencode, ...) are available
-for patterns. Clone a given Git URL into `.reference` and pull latest before using
-it.
+Repositories under `.reference/` are read-only reference material.
 
-## Engineering boundaries
-
-- Prefer correctness and predictable behavior over short-term convenience.
-- Preserve runtime behavior during lint, typing, or test structure changes.
-- Use public package exports; never cross package boundaries with relative
-  imports.
-- Extract shared logic only for genuinely shared behavior. Avoid generic
-  abstractions for one-off duplication.
-- Public PRs, commits, generated files, and documentation contain no private
-  names, internal context, customer-derived data, or AI attribution.
+- Before making an important implementation or pattern decision involving a related
+  library, inspect the relevant reference repository and compare its source, tests,
+  and examples.
+- Prefer patterns found in these repositories over generated guesses or web search
+  results.
+- Do not edit, format, or generate files under `.reference/` unless explicitly asked.
+- Do not import from `.reference/`. Application code must use its normal package
+  dependencies.
+- When given a Git URL for a missing reference, clone it into `.reference/`. Update
+  an existing reference from its configured remote before relying on it.
 
 ## Package Ownership
 
@@ -58,6 +40,36 @@ it.
 - Extract a workspace package only after a second consumer or supported public
   interface proves the seam. Create `packages/api` only when Worker and web share
   a real wire contract.
+
+## Engineering boundaries
+
+- Preserve runtime behavior during lint, typing, or test structure changes.
+- Use public package exports; never cross package boundaries with relative
+  imports.
+- Public PRs, commits, generated files, and documentation contain no private
+  names, internal context, customer-derived data, or AI attribution.
+
+## Code style
+
+### Effect
+
+- In Effect generators, bind services to named variables before calling methods.
+  Do not use nested service yields such as `yield* (yield* Foo.Service).bar()`.
+- Do not return `Effect` from helpers unless they actually perform effectful work.
+  Synchronous parsing, validation, and option building should stay synchronous.
+- Prefer Effect schema helpers such as `Schema.UnknownFromJsonString` and `Schema.decodeUnknownOption`
+  over manual `JSON.parse` wrapped in `Effect.try` when parsing untrusted JSON strings.
+
+## Verification and evidence
+
+- Tests use Effect Vitest. Run scoped tests with `vitest run ...` or the
+  package script. Never use `bun test`.
+- Use the narrowest meaningful verification while iterating. Merge-ready gates
+  are `bun run format:check`, `lint`, `typecheck`, and `test`.
+- Run `bun run format` before a PR and include only files owned by the branch.
+- User-visible work require the relevant `@osfo/web` test, a production
+  build, and inspection in the browser development instance. Record the exact
+  commands and observable evidence in the issue or PR.
 
 ## Agent skills
 

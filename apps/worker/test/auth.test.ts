@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
-import { sessions, users, verifications } from "@osfo/db/schema/auth";
+import { accounts, sessions, users, verifications } from "@osfo/db/schema/auth";
 import { userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { count, eq } from "drizzle-orm";
 import { Effect, Layer, Redacted, Schema } from "effect";
@@ -48,7 +48,7 @@ describe("launch authentication policy", () => {
     ),
   );
 
-  it.effect("exposes email-and-password authentication in development", () =>
+  it.effect("does not expose email-and-password sign-up when credential sign-in is enabled", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
       (fixture) =>
@@ -65,16 +65,10 @@ describe("launch authentication policy", () => {
             name: "Osfo Tester",
             password: "test-password",
           });
-          const signIn = yield* request(app.handler, "/auth/sign-in/email", {
-            email: "tester@osfo.test",
-            password: "test-password",
-          });
           const storedUsers = yield* Effect.promise(() => fixture.database.select().from(users));
 
-          expect(response.status).toBe(200);
-          expect(signIn.status).toBe(200);
-          expect(signIn.headers.get("set-cookie")).toContain("better-auth.session_token");
-          expect(storedUsers).toHaveLength(1);
+          expect(response.status).toBe(400);
+          expect(storedUsers).toEqual([]);
 
           yield* Effect.promise(app.dispose);
         }),
@@ -84,6 +78,63 @@ describe("launch authentication policy", () => {
 });
 
 describe("authentication CORS", () => {
+  it.effect("allows the configured web origin on auth preflight requests", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const app = makeAuthApp(
+            Db.layerFromDatabase(fixture.database),
+            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
+            { ...authConfig, trustedOrigins: ["https://osfo.ai"] },
+          );
+
+          const response = yield* preflight(app.handler, "/auth/phone-number/send-otp", {
+            origin: "https://osfo.ai",
+          });
+
+          expect(response.status).toBe(204);
+          expect(response.headers.get("access-control-allow-origin")).toBe("https://osfo.ai");
+          expect(response.headers.get("access-control-allow-credentials")).toBe("true");
+          expect(response.headers.get("access-control-allow-headers")?.toLowerCase()).toContain(
+            "b3",
+          );
+          expect(response.headers.get("access-control-allow-headers")?.toLowerCase()).toContain(
+            "traceparent",
+          );
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("removes Better Auth CORS headers for untrusted origins", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const app = makeAuthApp(
+            Db.layerFromDatabase(fixture.database),
+            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
+            { ...authConfig, trustedOrigins: ["http://localhost:5173"] },
+          );
+
+          const response = yield* authGet(app.handler, "/auth/get-session", {
+            origin: "https://osfo.ai",
+          });
+
+          expect(response.headers.get("access-control-allow-origin")).toBeNull();
+          expect(response.headers.get("access-control-allow-credentials")).toBeNull();
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
   it.effect("allows the Better Auth dashboard origin", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
@@ -95,17 +146,10 @@ describe("authentication CORS", () => {
             Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
           );
 
-          const response = yield* Effect.promise(() =>
-            app.handler(
-              new Request("https://osfo.test/auth/dash/config", {
-                headers: {
-                  "access-control-request-method": "GET",
-                  origin: "https://dash.better-auth.com",
-                },
-                method: "OPTIONS",
-              }),
-            ),
-          );
+          const response = yield* preflight(app.handler, "/auth/dash/config", {
+            method: "GET",
+            origin: "https://dash.better-auth.com",
+          });
 
           expect(response.status).toBe(204);
           expect(response.headers.get("access-control-allow-origin")).toBe(
@@ -160,6 +204,84 @@ describe("phone authentication", () => {
           expect(storedSessions).toHaveLength(1);
           expect(storedSessions[0]?.userId).toBe(storedUsers[0]?.id);
           expect(storedVerifications).toEqual([]);
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("adds email credentials after SMS verification and permits only email sign-in", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const twilio = makeTestTwilio();
+          const app = makeAuthApp(
+            Db.layerFromDatabase(fixture.database),
+            Layer.succeed(TwilioVerify.TwilioVerify, twilio.service),
+            { ...authConfig, credentialAuthentication: "enabled" },
+          );
+          const phoneNumber = "+14165550108";
+
+          yield* request(app.handler, "/auth/phone-number/send-otp", { phoneNumber });
+          const verified = yield* request(app.handler, "/auth/phone-number/verify", {
+            code: twilio.code,
+            phoneNumber,
+          });
+          const cookie = verified.headers.get("set-cookie")?.split(";", 1)[0];
+          const credentialsSet = yield* requestWithSession(
+            app.handler,
+            "/auth/set-login-credentials",
+            { email: "tester@osfo.test", newPassword: "test-password" },
+            cookie,
+          );
+          const emailSignIn = yield* request(app.handler, "/auth/sign-in/email", {
+            email: "tester@osfo.test",
+            password: "test-password",
+          });
+          const repeatedCredentialSetup = yield* requestWithSession(
+            app.handler,
+            "/auth/set-login-credentials",
+            { email: "replacement@osfo.test", newPassword: "replacement-password" },
+            cookie,
+          );
+          const directEmailChange = yield* requestWithSession(
+            app.handler,
+            "/auth/change-email",
+            { newEmail: "replacement@osfo.test" },
+            cookie,
+          );
+          const blockedPhonePasswordRoutes = yield* Effect.all([
+            request(app.handler, "/auth/sign-in/phone-number", {
+              password: "test-password",
+              phoneNumber,
+            }),
+            request(app.handler, "/auth/phone-number/request-password-reset", { phoneNumber }),
+            request(app.handler, "/auth/phone-number/reset-password", {
+              newPassword: "replacement-password",
+              otp: twilio.code,
+              phoneNumber,
+            }),
+          ]);
+          const storedAccounts = yield* Effect.promise(() =>
+            fixture.database.select().from(accounts).where(eq(accounts.providerId, "credential")),
+          );
+          const storedUsers = yield* Effect.promise(() => fixture.database.select().from(users));
+
+          expect(cookie).toBeDefined();
+          expect(credentialsSet.status).toBe(200);
+          expect(emailSignIn.status).toBe(200);
+          expect(emailSignIn.headers.get("set-cookie")).toContain("better-auth.session_token");
+          expect(repeatedCredentialSetup.status).toBe(409);
+          expect(directEmailChange.status).toBe(404);
+          expect(blockedPhonePasswordRoutes.map((response) => response.status)).toEqual([
+            404, 404, 404,
+          ]);
+          expect(storedAccounts).toHaveLength(1);
+          expect(storedUsers).toHaveLength(1);
+          expect(storedUsers[0]?.email).toBe("tester@osfo.test");
 
           yield* Effect.promise(app.dispose);
         }),
@@ -583,6 +705,58 @@ const request = (
     ),
   );
 
+const requestWithSession = (
+  handler: (request: Request) => Promise<Response>,
+  path: string,
+  body: AuthRequestBody,
+  cookie: string | undefined,
+) =>
+  Effect.promise(() => {
+    const headers = new Headers({
+      "content-type": "application/json",
+      origin: "https://osfo.test",
+    });
+    if (cookie !== undefined) headers.set("cookie", cookie);
+    return handler(
+      new Request(`https://osfo.test${path}`, {
+        body: encodeJsonText(body),
+        headers,
+        method: "POST",
+      }),
+    );
+  });
+
+const preflight = (
+  handler: (request: Request) => Promise<Response>,
+  path: string,
+  options: { readonly method?: string; readonly origin: string },
+) =>
+  Effect.promise(() =>
+    handler(
+      new Request(`https://osfo.test${path}`, {
+        headers: {
+          "access-control-request-method": options.method ?? "POST",
+          origin: options.origin,
+        },
+        method: "OPTIONS",
+      }),
+    ),
+  );
+
+const authGet = (
+  handler: (request: Request) => Promise<Response>,
+  path: string,
+  options: { readonly origin: string },
+) =>
+  Effect.promise(() =>
+    handler(
+      new Request(`https://osfo.test${path}`, {
+        headers: { origin: options.origin },
+        method: "GET",
+      }),
+    ),
+  );
+
 const AuthResponse = Schema.Struct({
   user: Schema.Struct({ id: Schema.String }),
 });
@@ -595,6 +769,25 @@ type AuthRequestBody =
       readonly email: string;
       readonly name?: string;
       readonly password: string;
+    }
+  | {
+      readonly email: string;
+      readonly newPassword: string;
+    }
+  | {
+      readonly password: string;
+      readonly phoneNumber: string;
+    }
+  | {
+      readonly phoneNumber: string;
+    }
+  | {
+      readonly newPassword: string;
+      readonly otp: string;
+      readonly phoneNumber: string;
+    }
+  | {
+      readonly newEmail: string;
     };
 const encodeJsonText = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -658,12 +851,6 @@ const testBindings: App.Bindings = {
   routeOsfoAgentRequest: () => Promise.resolve(new Response(null, { status: 404 })),
   REGISTRATION_DIALOGUE: {
     getByName: (identity) => ({
-      begin: () =>
-        Promise.resolve({
-          _tag: "RegistrationTurnCompleted",
-          response: "Register",
-          verifyUrl: "https://osfo.ai/verify/test",
-        }),
       deleteDialogue: () => Promise.resolve(),
       probeRuntime: () =>
         Promise.resolve({

@@ -32,6 +32,7 @@ describe("authenticated App", () => {
           name: "14165550101@phone-user.osfo.invalid",
           phoneNumber: "+14165550101",
           phoneNumberVerified: true,
+          registrationCompletedAt: "2026-08-16T00:00:00.000Z",
           updatedAt: "2026-08-16T00:00:00.000Z",
         },
       });

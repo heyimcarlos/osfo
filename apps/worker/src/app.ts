@@ -3,7 +3,7 @@ import { Effect, Layer, Schema, type ManagedRuntime } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 
 import type * as Auth from "./auth";
-import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "./config";
+import { loadConfig, publicWebBaseUrl, type CloudflareConfig, type CloudflareEnv } from "./config";
 import * as Db from "./db";
 import * as TwilioVerify from "./integrations/twilio/verify";
 import * as OnboardingCloudflare from "./integrations/cloudflare/onboarding";
@@ -32,15 +32,6 @@ export interface MakeOptions {
 }
 
 const AgentRpcTag = Schema.Struct({ _tag: Schema.String });
-const RegistrationRpcResult = Schema.Union([
-  Schema.TaggedStruct("RegistrationTurnCompleted", {
-    response: Schema.String,
-    verifyUrl: Schema.String,
-  }),
-  Schema.TaggedStruct("RegistrationTurnUnavailable", {
-    message: Schema.String,
-  }),
-]);
 
 /** Build one request-scoped Cloudflare application from the current bindings. */
 export const makeCloudflareApp = async (env: CloudflareEnv) => {
@@ -93,9 +84,8 @@ const runInvitationExpiry = (env: Bindings, config: CloudflareConfig) => {
     Registration.layerWithoutDependencies,
     OnboardingCloudflare.layer(env),
     OnboardingLinks.layer({
-      enrollmentProvider: "telegram",
       officialWhatsAppNumber: config.whatsApp.publicPhoneNumber,
-      publicBaseUrl: new URL(config.auth.baseURL),
+      publicBaseUrl: publicWebBaseUrl(config.auth),
       telegramBotUsername: config.telegram.botUsername,
     }),
   ).pipe(Layer.provideMerge(base));
@@ -140,10 +130,6 @@ const adaptBindings = (env: CloudflareEnv): Bindings => ({
     getByName: (identity) => {
       const dialogue = async () => env.REGISTRATION_DIALOGUE.getByName(identity);
       return {
-        begin: async (input) => {
-          const agent = await dialogue();
-          return Schema.decodePromise(RegistrationRpcResult)(await agent.begin(input));
-        },
         deleteDialogue: async () => {
           const agent = await dialogue();
           await agent.deleteDialogue();

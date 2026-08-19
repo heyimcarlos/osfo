@@ -42,7 +42,6 @@ export const layer = Layer.unwrap(
                     ),
                   );
             return yield* onboarding.complete({
-              bindingConsent: payload.bindingConsent,
               existingProfileChoice: payload.existingProfileChoice,
               invitationToken,
               profile: {
@@ -53,6 +52,15 @@ export const layer = Layer.unwrap(
               userId: UserId.make(currentUser.userId),
             });
           }).pipe(Effect.mapError(toPublicError)),
+        )
+        .handle("startChannelEnrollment", ({ payload }) =>
+          Effect.gen(function* () {
+            const currentUser = yield* CurrentUser;
+            return yield* onboarding.startChannelEnrollment({
+              provider: payload.provider,
+              userId: UserId.make(currentUser.userId),
+            });
+          }).pipe(Effect.mapError(toEnrollmentPublicError)),
         ),
     ),
   ),
@@ -78,3 +86,12 @@ const toPublicError = (error: { readonly _tag: string }) => {
     message: "Onboarding is temporarily unavailable. Please try again.",
   });
 };
+
+const toEnrollmentPublicError = (error: { readonly _tag: string }) =>
+  error._tag === "OnboardingPhoneVerificationRequired"
+    ? new PhoneVerificationRequired({
+        message: "Complete phone verification before connecting a channel.",
+      })
+    : new OnboardingUnavailable({
+        message: "The channel connection is temporarily unavailable. Please try again.",
+      });

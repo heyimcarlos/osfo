@@ -164,9 +164,9 @@ _Avoid_: Provisional User, Registration Token, anonymous conversation
 
 **Registration Dialogue**:
 The temporary pre-registration exchange presented as Osfo to an unbound Channel
-Identity under one Registration Invitation. It contains at most one natural
-Registration Turn, is not a Session, User memory, or authority source, and is
-deleted after registration or expiry.
+Identity under one Registration Invitation. It may continue naturally until the
+invitation is consumed or expires, is not a User Session, User memory, or
+authority source, and is deleted after registration or expiry.
 _Avoid_: Anonymous Session, Provisional User, Agent handoff
 
 **Registration Token**:
@@ -185,8 +185,8 @@ _Avoid_: Phone Account, Channel Identity, AuthSession
 **Channel Binding**:
 A revocable association between a Channel Identity and a User. It lets messages
 from that provider identity act as the User without making the provider identity
-a reusable Account or recovery authority. In v1, a User has at most one active
-WhatsApp binding. Conflicts fail closed to manual support.
+a reusable Account or recovery authority. A User has at most one active binding
+for each supported messaging provider. Conflicts fail closed to manual support.
 _Avoid_: AuthSession, permanent phone login, conversation ownership
 
 **Free Plan**:

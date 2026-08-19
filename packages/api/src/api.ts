@@ -32,7 +32,9 @@ export {
 export {
   ChannelBindingId,
   ChannelBindingNeedsSupport,
+  ChannelEnrollmentResponse,
   ChannelOnboardingResponse,
+  ChannelProvider,
   HelpArea,
   InvitationResponse,
   InvitationUnavailable,
@@ -42,6 +44,7 @@ export {
   OnboardingUnavailable,
   PhoneVerificationRequired,
   RegistrationToken,
+  StartChannelEnrollmentRequest,
 } from "./groups/onboarding";
 export {
   AgentId,

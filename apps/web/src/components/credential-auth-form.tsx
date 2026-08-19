@@ -3,7 +3,6 @@ import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@osfo/ui/components/card";
@@ -18,55 +17,37 @@ interface CredentialAuthFormProps {
   readonly onAuthenticated: () => void;
 }
 
-/** Development-only email-and-password authentication form. */
+/** Sign in a verified Phone Account that already has login credentials. */
 export function CredentialAuthForm({ onAuthenticated }: CredentialAuthFormProps) {
   const [email, setEmail] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [password, setPassword] = useState("");
   const [requestError, setRequestError] = useState<string>();
-  const isSignIn = mode === "sign-in";
 
   const submit = () => {
     setIsSubmitting(true);
     setRequestError(undefined);
     const callbacks = {
-      onError: ({
-        error,
-      }: {
-        readonly error: { readonly message?: string; readonly statusText?: string };
-      }) => {
+      onError: () => {
         setIsSubmitting(false);
-        setRequestError(error.message || error.statusText || "Authentication failed.");
+        setRequestError("The email or password is not correct.");
       },
       onSuccess: () => {
         setIsSubmitting(false);
         onAuthenticated();
       },
     };
-
-    if (isSignIn) return authClient.signIn.email({ email, password }, callbacks);
-
-    return authClient.signUp.email(
-      { email, name: email.split("@")[0] || "Osfo User", password },
-      {
-        ...callbacks,
-        onSuccess: () => {
-          void authClient.signIn.email({ email, password }, callbacks);
-        },
-      },
-    );
+    return authClient.signIn.email({ email, password }, callbacks);
   };
 
   return (
     <Card className="w-full max-w-[31rem] bg-background shadow-[8px_8px_0_var(--foreground)]">
       <CardHeader className="gap-3 border-b-2 border-border pb-5">
-        <p className="font-black text-xs uppercase tracking-[0.22em]">Development access</p>
-        <CardTitle className="text-4xl uppercase leading-none sm:text-5xl">
-          {isSignIn ? "Sign in" : "Create account"}
-        </CardTitle>
+        <p className="font-black text-xs uppercase tracking-[0.22em]">Linked account</p>
+        <CardTitle className="text-4xl uppercase leading-none sm:text-5xl">Sign in</CardTitle>
         <CardDescription className="max-w-sm text-base font-medium leading-snug text-foreground/75">
-          Use a local test account without sending an SMS.
+          Use credentials that you added after phone verification. New accounts must start with an
+          SMS code.
         </CardDescription>
       </CardHeader>
 
@@ -85,11 +66,10 @@ export function CredentialAuthForm({ onAuthenticated }: CredentialAuthFormProps)
             <Input
               autoComplete="email"
               id="credential-email"
-              minLength={3}
               required
               type="email"
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              onChange={(event) => setEmail(event.target.value.trim())}
             />
           </div>
           <div className="space-y-2">
@@ -97,7 +77,7 @@ export function CredentialAuthForm({ onAuthenticated }: CredentialAuthFormProps)
               Password
             </Label>
             <Input
-              autoComplete={isSignIn ? "current-password" : "new-password"}
+              autoComplete="current-password"
               id="credential-password"
               minLength={8}
               required
@@ -118,27 +98,11 @@ export function CredentialAuthForm({ onAuthenticated }: CredentialAuthFormProps)
             disabled={isSubmitting}
             type="submit"
           >
-            {isSubmitting ? "Working..." : isSignIn ? "Sign in" : "Create account"}
+            {isSubmitting ? "Working..." : "Sign in"}
             <ArrowRight data-icon="inline-end" />
           </Button>
         </form>
       </CardContent>
-
-      <CardFooter className="justify-between gap-3">
-        <p className="font-medium text-sm">
-          {isSignIn ? "No test account yet?" : "Already have a test account?"}
-        </p>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => {
-            setMode(isSignIn ? "sign-up" : "sign-in");
-            setRequestError(undefined);
-          }}
-        >
-          {isSignIn ? "Create account" : "Sign in"}
-        </Button>
-      </CardFooter>
     </Card>
   );
 }

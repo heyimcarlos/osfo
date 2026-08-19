@@ -1,17 +1,38 @@
 import { afterEach, describe, expect, it, vi } from "@effect/vitest";
-import { deliverMessengerReply } from "@cloudflare/think/messengers";
+import { deliverMessengerReply, TextStreamCallback } from "@cloudflare/think/messengers";
 import { SELF } from "cloudflare:test";
 import { Effect, Schema } from "effect";
 
-import {
-  completeDeterministicTelegramReply,
-  makeTelegramChannel,
-} from "../src/integrations/telegram";
+import { ThinkSubmissionId } from "../src/domain";
+import { messengerSubmissionId } from "../src/agents/osfo/agent";
+import { makeTelegramChannel } from "../src/integrations/telegram";
 
 /* oxlint-disable effecttsgo/async-function -- Think delivery surfaces and callbacks are Promise-based. */
 
 describe("Think Telegram channel", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it.effect(
+    "derives a stable schema-valid submission identity from Telegram message identity",
+    () =>
+      Effect.gen(function* () {
+        const first = yield* Effect.promise(() =>
+          messengerSubmissionId("telegram", "telegram:900100200", "message:102"),
+        );
+        const retry = yield* Effect.promise(() =>
+          messengerSubmissionId("telegram", "telegram:900100200", "message:102"),
+        );
+        const otherProvider = yield* Effect.promise(() =>
+          messengerSubmissionId("whatsapp", "telegram:900100200", "message:102"),
+        );
+        const decoded = yield* Schema.decodeEffect(ThinkSubmissionId)(first);
+
+        expect(decoded).toBe(first);
+        expect(first).toBe(retry);
+        expect(first).not.toBe(otherProvider);
+        expect(first).not.toContain(":");
+      }),
+  );
 
   it.effect("rejects an invalid webhook secret before it decodes the update", () =>
     Effect.gen(function* () {
@@ -64,7 +85,7 @@ describe("Think Telegram channel", () => {
     }),
   );
 
-  it.effect("does not append an empty fallback after a deterministic notice", () =>
+  it.effect("delivers deterministic directory replies through the active stream", () =>
     Effect.gen(function* () {
       const visibleMessages: Array<string> = [];
       const channel = makeTelegramChannel({
@@ -94,8 +115,11 @@ describe("Think Telegram channel", () => {
           target: {
             cancelChat: () => undefined,
             chat: async (_message, callback) => {
-              await surface.post("Connect Telegram from Osfo.");
-              await completeDeterministicTelegramReply(callback);
+              await callback.onStart({ requestId: "directory-reply" });
+              await callback.onEvent(
+                JSON.stringify({ delta: "Connect Telegram from Osfo.", type: "text-delta" }),
+              );
+              await callback.onDone();
             },
           },
         }),
@@ -104,6 +128,24 @@ describe("Think Telegram channel", () => {
       expect(visibleMessages).toEqual(["Connect Telegram from Osfo."]);
     }),
   );
+
+  it("accepts Telegram's final edit no-op after reaching the visible stream limit", () => {
+    const channel = makeTelegramChannel({
+      conversation: () => ({ target: "self" }),
+      secretToken: "telegram-test-webhook-secret",
+      token: "telegram-test-bot-token",
+      userName: "osfo_test_bot",
+    });
+    const callback = new TextStreamCallback({ visibleSoftLimit: 1 });
+    callback.onEvent(JSON.stringify({ delta: "Hello", type: "text-delta" }));
+
+    expect(
+      channel.delivery?.isExpectedDeliveryCompletion?.(
+        { code: "VALIDATION_ERROR", message: "message is not modified" },
+        callback,
+      ),
+    ).toBe(true);
+  });
 });
 
 const request = (body: ReturnType<typeof update>, secret = "telegram-test-webhook-secret") =>

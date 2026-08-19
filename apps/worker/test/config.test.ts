@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { describe, expect, it } from "@effect/vitest";
 import { Option } from "effect";
 
-import { decodeOsfoStage, loadConfig } from "../src/config";
+import { decodeOsfoStage, loadConfig, publicWebBaseUrl } from "../src/config";
 
 describe("Worker configuration", () => {
   it("loads the complete deployment configuration", () => {
@@ -96,5 +96,23 @@ describe("Worker configuration", () => {
     expect(() => loadConfig({ ...env, BETTER_AUTH_TRUSTED_ORIGINS: "[]" })).toThrowError(
       "Worker configuration is invalid: BETTER_AUTH_TRUSTED_ORIGINS must contain a URL",
     );
+  });
+
+  it("uses the first trusted web origin for public links", () => {
+    const config = loadConfig(env);
+
+    expect(publicWebBaseUrl(config.auth).href).toBe("https://osfo.test/");
+  });
+
+  it("uses the hosted web origin for production auth and public links", () => {
+    const config = loadConfig({
+      ...env,
+      BETTER_AUTH_BASE_URL: "https://api.osfo.ai",
+      BETTER_AUTH_TRUSTED_ORIGINS: '["http://localhost:5173"]',
+      OSFO_STAGE: "production",
+    });
+
+    expect(config.auth.trustedOrigins).toEqual(["https://osfo.ai"]);
+    expect(publicWebBaseUrl(config.auth).href).toBe("https://osfo.ai/");
   });
 });

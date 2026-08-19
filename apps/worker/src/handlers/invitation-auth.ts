@@ -4,15 +4,20 @@ import { HttpEffect, HttpRouter } from "effect/unstable/http";
 import * as Auth from "../auth";
 import * as AccountAccess from "../composition/account-access";
 import { handleAuthRequest } from "../cors";
+import { PhoneNumber } from "../domain/phone-account";
 import * as Onboarding from "../services/onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Fetch control flow and Effect tags require these forms. */
 
-const InvitationRequest = Schema.Struct({ token: Onboarding.RegistrationToken });
+const InvitationRequest = Schema.Struct({
+  phoneNumber: Schema.optionalKey(PhoneNumber),
+  token: Onboarding.RegistrationToken,
+});
 const InvitationVerificationRequest = Schema.Struct({
   code: Schema.String.check(
     Schema.makeFilter((value) => /^\d{6}$/u.test(value) || "must be a six-digit code"),
   ),
+  phoneNumber: Schema.optionalKey(PhoneNumber),
   token: Onboarding.RegistrationToken,
 });
 
@@ -64,7 +69,7 @@ const proxyInvitationRequest = async (
     onboarding.phoneVerificationTarget(Redacted.make(body.token)).pipe(
       Effect.match({
         onFailure: (error) => ({ _tag: "Failure" as const, error }),
-        onSuccess: (phoneNumber) => ({ _tag: "Success" as const, phoneNumber }),
+        onSuccess: (target) => ({ _tag: "Success" as const, target }),
       }),
     ),
   );
@@ -78,7 +83,13 @@ const proxyInvitationRequest = async (
   }
 
   try {
-    const phoneNumber = Redacted.value(targetResult.phoneNumber);
+    const phoneNumber =
+      targetResult.target._tag === "LockedPhone"
+        ? Redacted.value(targetResult.target.phoneNumber)
+        : body.phoneNumber;
+    if (phoneNumber === undefined) {
+      return jsonResponse({ error: "Enter a valid phone number." }, 400);
+    }
     const target = new URL(
       action === "send-otp" ? "/auth/phone-number/send-otp" : "/auth/phone-number/verify",
       request.url,

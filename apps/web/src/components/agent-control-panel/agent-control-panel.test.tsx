@@ -33,13 +33,13 @@ describe("OsfoAgentControlPanel", () => {
     renderWithTestRouter(<OsfoAgentControlPanel />);
 
     expect(screen.getByRole("radio", { name: "WhatsApp" }).matches(":checked")).toBe(true);
-    expect(screen.getByRole("button", { name: /WhatsApp, Primary/u })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /WhatsApp, Preferred/u })).toBeTruthy();
 
     await user.click(screen.getByRole("radio", { name: "Telegram" }));
 
     expect(screen.getByRole("radio", { name: "Telegram" }).matches(":checked")).toBe(true);
-    expect(screen.getByRole("button", { name: /Telegram, Primary/u })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /WhatsApp, Connected/u })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Telegram, Preferred/u })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /WhatsApp, Available/u })).toBeTruthy();
   });
 
   it("exposes an operable receive-messages switch", async () => {
@@ -60,29 +60,29 @@ describe("OsfoAgentControlPanel", () => {
     await user.keyboard("{ArrowRight}");
 
     expect(screen.getByRole("radio", { name: "Telegram" }).matches(":checked")).toBe(true);
-    expect(screen.getByRole("button", { name: /Telegram, Primary/u })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Telegram, Preferred/u })).toBeTruthy();
   });
 
   it("explains settings that are not supported instead of presenting inert controls", async () => {
     const user = userEvent.setup();
     renderWithTestRouter(<OsfoAgentControlPanel />);
 
-    await user.click(screen.getByRole("button", { name: /Notifications/u }));
-    expect(screen.getByRole("dialog", { name: "Notifications" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Memory/u }));
+    expect(screen.getByRole("dialog", { name: "Memory" })).toBeTruthy();
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close" }));
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: /Notifications/u }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: /Memory/u }));
   });
 
   it("restores saved browser preferences after remount", async () => {
     const user = userEvent.setup();
     const first = renderWithTestRouter(<OsfoAgentControlPanel />);
-    await user.click(screen.getByRole("radio", { name: "SMS" }));
+    await user.click(screen.getByRole("radio", { name: "Telegram" }));
     first.unmount();
 
     renderWithTestRouter(<OsfoAgentControlPanel />);
-    expect(screen.getByRole("radio", { name: "SMS" }).matches(":checked")).toBe(true);
+    expect(screen.getByRole("radio", { name: "Telegram" }).matches(":checked")).toBe(true);
   });
 
   it("degrades to safe in-memory defaults when browser storage is corrupt or unavailable", () => {

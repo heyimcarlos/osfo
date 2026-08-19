@@ -1,13 +1,13 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { getAgentByName } from "agents";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/run-effect-inside-effect -- Durable Object tests cross RPC, alarm, and Effect boundaries. */
 
 describe("Registration Dialogue", () => {
-  it.effect("runs one natural Registration Turn and uses deterministic prompts after it", () =>
+  it.effect("keeps a natural conversation available for every invitation turn", () =>
     Effect.acquireUseRelease(
       Effect.sync(() => {
         const previous = Object.getOwnPropertyDescriptor(env.AI, "run");
@@ -16,7 +16,9 @@ describe("Registration Dialogue", () => {
           configurable: true,
           value: () => {
             calls += 1;
-            return Promise.resolve({ response: "I can help you plan your week." });
+            return Promise.resolve({
+              response: calls === 1 ? "A tiny plan sounds fun." : "Still here.",
+            });
           },
         });
         return { calls: () => calls, previous };
@@ -24,51 +26,94 @@ describe("Registration Dialogue", () => {
       (probe) =>
         Effect.gen(function* () {
           const dialogue = yield* Effect.promise(() =>
-            getAgentByName(env.REGISTRATION_DIALOGUE, "registration-natural-turn"),
+            getAgentByName(env.REGISTRATION_DIALOGUE, "registration-multi-turn"),
           );
-          const first = yield* Effect.promise(
-            async () =>
-              await dialogue.begin({
-                eventId: "wamid-first",
-                locale: "en",
-                message: "Help me plan my week.",
-                verifyUrl: "https://osfo.ai/verify/token-first",
-              }),
-          );
-          const exactRetry = yield* Effect.promise(
-            async () =>
-              await dialogue.begin({
-                eventId: "wamid-first",
-                locale: "en",
-                message: "Help me plan my week.",
-                verifyUrl: "https://osfo.ai/verify/token-first",
-              }),
-          );
-          const laterMessage = yield* Effect.promise(
-            async () =>
-              await dialogue.begin({
-                eventId: "wamid-later",
-                locale: "en",
-                message: "Are you there?",
-                verifyUrl: "https://osfo.ai/verify/ignored-token",
-              }),
+          const replies = yield* Effect.promise(() =>
+            runInDurableObject(dialogue, async (instance) => {
+              const first = recordingCallback();
+              const second = recordingCallback();
+              const firstResult = await instance.reply(
+                {
+                  eventId: "telegram-first",
+                  locale: "en",
+                  message: "Help me plan my week.",
+                  verifyUrl: "https://osfo.ai/verify/token-first",
+                },
+                first.callback,
+              );
+              const secondResult = await instance.reply(
+                {
+                  eventId: "telegram-second",
+                  locale: "en",
+                  message: "Are you still there?",
+                  verifyUrl: "https://osfo.ai/verify/ignored-token",
+                },
+                second.callback,
+              );
+              return {
+                first: first.text(),
+                firstResult,
+                second: second.text(),
+                secondResult,
+              };
+            }),
           );
 
-          expect(first).toEqual({
-            _tag: "RegistrationTurnCompleted",
-            response:
-              "I can help you plan your week. Use your registration link to continue: https://osfo.ai/verify/token-first",
-            verifyUrl: "https://osfo.ai/verify/token-first",
-          });
-          expect(exactRetry).toEqual(first);
-          expect(laterMessage).toEqual({
-            _tag: "RegistrationTurnCompleted",
-            response: "Use your registration link to continue: https://osfo.ai/verify/token-first",
-            verifyUrl: "https://osfo.ai/verify/token-first",
-          });
-          expect(probe.calls()).toBe(1);
+          expect(replies.first).toBe(
+            "Register to keep using Osfo: https://osfo.ai/verify/token-first\n\nA tiny plan sounds fun.",
+          );
+          expect(replies.second).toBe(
+            "Register to keep using Osfo: https://osfo.ai/verify/token-first\n\nStill here.",
+          );
+          expect(replies.firstResult).toEqual({ _tag: "RegistrationDialogueCompleted" });
+          expect(replies.secondResult).toEqual({ _tag: "RegistrationDialogueCompleted" });
+          expect(probe.calls()).toBe(2);
         }),
       ({ previous }) =>
+        Effect.sync(() => {
+          if (previous === undefined) Reflect.deleteProperty(env.AI, "run");
+          else Object.defineProperty(env.AI, "run", previous);
+        }),
+    ),
+  );
+
+  it.effect("keeps the registration link visible when inference fails", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = Object.getOwnPropertyDescriptor(env.AI, "run");
+        Object.defineProperty(env.AI, "run", {
+          configurable: true,
+          value: () => Promise.reject(new Error("model unavailable")),
+        });
+        return previous;
+      }),
+      () =>
+        Effect.gen(function* () {
+          const dialogue = yield* Effect.promise(() =>
+            getAgentByName(env.REGISTRATION_DIALOGUE, "registration-fallback"),
+          );
+          const reply = yield* Effect.promise(() =>
+            runInDurableObject(dialogue, async (instance) => {
+              const recorded = recordingCallback();
+              const result = await instance.reply(
+                {
+                  eventId: "telegram-fallback",
+                  locale: "en",
+                  message: "Hello",
+                  verifyUrl: "https://osfo.ai/verify/token-fallback",
+                },
+                recorded.callback,
+              );
+              return { result, text: recorded.text() };
+            }),
+          );
+
+          expect(reply).toEqual({
+            result: { _tag: "RegistrationDialogueCompleted" },
+            text: "Register to keep using Osfo: https://osfo.ai/verify/token-fallback",
+          });
+        }),
+      (previous) =>
         Effect.sync(() => {
           if (previous === undefined) Reflect.deleteProperty(env.AI, "run");
           else Object.defineProperty(env.AI, "run", previous);
@@ -110,57 +155,22 @@ describe("Registration Dialogue", () => {
       expect(expiredState).toBeUndefined();
     }),
   );
-
-  it.effect("admits one stable Think submission for concurrent retries of one event", () =>
-    Effect.acquireUseRelease(
-      Effect.sync(() => {
-        const previous = Object.getOwnPropertyDescriptor(env.AI, "run");
-        Object.defineProperty(env.AI, "run", {
-          configurable: true,
-          value: () => Promise.resolve({ response: "What would you like help with?" }),
-        });
-        return previous;
-      }),
-      () =>
-        Effect.gen(function* () {
-          const dialogue = yield* Effect.promise(() =>
-            getAgentByName(env.REGISTRATION_DIALOGUE, "registration-idempotent-turn"),
-          );
-          const result = yield* Effect.promise(() =>
-            runInDurableObject(dialogue, async (instance, state) => {
-              const input = {
-                eventId: "wamid-concurrent",
-                locale: "en" as const,
-                message: "Hi",
-                verifyUrl: "https://osfo.ai/verify/token-concurrent",
-              };
-              const [first, retry] = await Promise.all([
-                instance.begin(input),
-                instance.begin(input),
-              ]);
-              const submissions = state.storage.sql
-                .exec<{ idempotency_key: string }>(
-                  "SELECT idempotency_key FROM cf_think_submissions ORDER BY created_at",
-                )
-                .toArray();
-              return { first, retry, submissions };
-            }),
-          );
-
-          expect(result.first).toEqual(result.retry);
-          expect(result.first).toEqual({
-            _tag: "RegistrationTurnCompleted",
-            response:
-              "What would you like help with? Use your registration link to continue: https://osfo.ai/verify/token-concurrent",
-            verifyUrl: "https://osfo.ai/verify/token-concurrent",
-          });
-          expect(result.submissions).toEqual([{ idempotency_key: "wamid-concurrent" }]);
-        }),
-      (previous) =>
-        Effect.sync(() => {
-          if (previous === undefined) Reflect.deleteProperty(env.AI, "run");
-          else Object.defineProperty(env.AI, "run", previous);
-        }),
-    ),
-  );
 });
+
+const recordingCallback = () => {
+  const deltas: Array<string> = [];
+  return {
+    callback: {
+      onDone: () => undefined,
+      onError: () => undefined,
+      onEvent: (json: string) => {
+        const chunk = Schema.decodeSync(
+          Schema.fromJsonString(Schema.Struct({ delta: Schema.optionalKey(Schema.String) })),
+        )(json);
+        if (chunk.delta !== undefined) deltas.push(chunk.delta);
+      },
+      onStart: () => undefined,
+    },
+    text: () => deltas.join(""),
+  };
+};

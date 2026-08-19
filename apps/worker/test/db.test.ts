@@ -1,14 +1,15 @@
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
-import { expect, layer } from "@effect/vitest";
+import { describe, expect, it as effectIt, layer } from "@effect/vitest";
 import { agents } from "@osfo/db/schema/agents";
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { sessions, users as usersTable } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { applyMigrations, makeTestDatabase } from "@osfo/db/testing";
 import { eq } from "drizzle-orm";
-import { DateTime, Effect, Layer } from "effect";
+import { DateTime, Effect, Layer, ManagedRuntime } from "effect";
+import postgres from "postgres";
 
-import { database, dbUnavailable, layerFromDatabase } from "../src/db";
+import { database, dbUnavailable, layerFromClientAcquisition, layerFromDatabase } from "../src/db";
 import { AgentId, PlanPolicyVersion, UserId } from "../src/domain";
 import { AuthSessionId } from "../src/domain/auth-session";
 import { loadCurrentFileAuthorization } from "../src/integrations/postgres/file-authorization";
@@ -23,6 +24,34 @@ const serviceLayer = Layer.merge(
   Registration.layerWithoutDependencies,
   AgentDirectory.layerWithoutDependencies,
 ).pipe(Layer.provideMerge(dbLayer), Layer.provide(BrowserCrypto.layer));
+
+describe("PostgreSQL Layer lifetime", () => {
+  // oxlint-disable-next-line effecttsgo/async-function -- ManagedRuntime exposes Promise boundaries for independent scopes and disposal.
+  effectIt("keeps one client open across query scopes and closes it with the runtime", async () => {
+    let endCalls = 0;
+    const client = postgres("postgres://test:test@localhost/test", { max: 1 });
+    client.end = () => {
+      endCalls += 1;
+      return Promise.resolve();
+    };
+    const runtime = ManagedRuntime.make(
+      layerFromClientAcquisition(
+        Effect.acquireRelease(Effect.succeed(client), (acquired) =>
+          Effect.promise(() => acquired.end()),
+        ),
+      ),
+    );
+
+    const first = await runtime.runPromise(Effect.scoped(database));
+    const second = await runtime.runPromise(Effect.scoped(database));
+
+    expect(second).toBe(first);
+    expect(endCalls).toBe(0);
+
+    await runtime.dispose();
+    expect(endCalls).toBe(1);
+  });
+});
 
 layer(serviceLayer)("Control-plane services", (it) => {
   it.effect("provisions a User and stable Agent route atomically", () =>

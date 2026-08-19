@@ -81,10 +81,13 @@ export function PhoneAuthForm({
       return Promise.resolve();
     }
     setIsSubmitting(true);
+    const submittedPhoneNumber = lockedPhoneNumber
+      ? phoneNumber
+      : (normalizedPhoneNumber ?? phoneNumber);
     const input =
       invitationToken === undefined
-        ? { phoneNumber: normalizedPhoneNumber ?? phoneNumber }
-        : { invitationToken, phoneNumber };
+        ? { phoneNumber: submittedPhoneNumber }
+        : { invitationToken, phoneNumber: submittedPhoneNumber };
     return dependencies.sendCode(input).then((result) => {
       if (result.error) {
         setRequestError(text.sendError);
@@ -102,10 +105,13 @@ export function PhoneAuthForm({
     setRequestError(undefined);
     setIsSubmitting(true);
     const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber, country);
+    const submittedPhoneNumber = lockedPhoneNumber
+      ? phoneNumber
+      : (normalizedPhoneNumber ?? phoneNumber);
     const input =
       invitationToken === undefined
-        ? { code, phoneNumber: normalizedPhoneNumber ?? phoneNumber }
-        : { code, invitationToken, phoneNumber };
+        ? { code, phoneNumber: submittedPhoneNumber }
+        : { code, invitationToken, phoneNumber: submittedPhoneNumber };
     return dependencies.verifyCode(input).then((result) => {
       if (result.error) {
         setRequestError(text.verifyError);
@@ -267,11 +273,11 @@ export const defaultPhoneAuthDependencies: PhoneAuthDependencies = {
   sendCode: ({ invitationToken, phoneNumber }) =>
     invitationToken === undefined
       ? authClient.phoneNumber.sendOtp({ phoneNumber })
-      : sendInvitationOtp(invitationToken),
+      : sendInvitationOtp(invitationToken, phoneNumber === "" ? undefined : phoneNumber),
   verifyCode: ({ code, invitationToken, phoneNumber }) =>
     invitationToken === undefined
       ? authClient.phoneNumber.verify({ code, phoneNumber })
-      : verifyInvitationOtp(invitationToken, code),
+      : verifyInvitationOtp(invitationToken, code, phoneNumber === "" ? undefined : phoneNumber),
 };
 
 const phoneText = {
