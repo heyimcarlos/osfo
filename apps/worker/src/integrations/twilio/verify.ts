@@ -6,7 +6,7 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http";
 
-import * as PhoneAccount from "../../services/phone-account";
+import { PhoneAccount } from "../../services/phone-account";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect tagged errors use the _tag discriminator. */
 
@@ -55,7 +55,7 @@ export interface Options {
   readonly serviceSid: string;
 }
 
-interface TwilioVerifyService {
+export interface Interface {
   readonly sendCode: (
     phoneNumber: string,
   ) => Effect.Effect<void, TwilioVerifyRejected | TwilioVerifyUnavailable>;
@@ -66,14 +66,12 @@ interface TwilioVerifyService {
 }
 
 /** SMS verification authority backed by Twilio Verify. */
-export class TwilioVerify extends Context.Service<TwilioVerify, TwilioVerifyService>()(
-  "@osfo/worker/TwilioVerify",
-) {}
+export class Service extends Context.Service<Service, Interface>()("@osfo/worker/TwilioVerify") {}
 
 /** Construct the Twilio Verify service with the current Effect HTTP client. */
 export const make = (
   options: Options,
-): Effect.Effect<TwilioVerify["Service"], never, HttpClient.HttpClient> =>
+): Effect.Effect<Service["Service"], never, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const serviceURL = `${options.apiBaseURL ?? "https://verify.twilio.com"}/v2/Services/${options.serviceSid}`;
@@ -168,19 +166,18 @@ export const make = (
       return decoded.status === "approved";
     });
 
-    return TwilioVerify.of({ sendCode, verifyCode });
+    return Service.of({ sendCode, verifyCode });
   });
 
 /** Twilio Verify Layer that preserves the HTTP client requirement. */
-export const layerWithoutDependencies = (options: Options) =>
-  Layer.effect(TwilioVerify, make(options));
+export const layerWithoutDependencies = (options: Options) => Layer.effect(Service, make(options));
 
 /** Production Twilio Verify Layer backed by the Worker Fetch HTTP client. */
 export const layer = (options: Options) =>
   layerWithoutDependencies(options).pipe(Layer.provide(FetchHttpClient.layer));
 
 /** Adapt Twilio Verify to the provider-neutral Phone Account verification interface. */
-export const makePhoneAccountVerification = Effect.map(TwilioVerify, (twilio) =>
+export const makePhoneAccountVerification = Effect.map(Service, (twilio) =>
   PhoneAccount.Verification.of({
     sendCode: (phoneNumber) =>
       twilio
@@ -208,3 +205,5 @@ export const phoneAccountVerificationLayerWithoutDependencies = Layer.effect(
   PhoneAccount.Verification,
   makePhoneAccountVerification,
 );
+
+export * as TwilioVerify from "./verify";

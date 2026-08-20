@@ -1,10 +1,10 @@
 import { DateTime, Effect, Redacted } from "effect";
 import Stripe from "stripe";
 
-import * as BillingDb from "./db/billing";
+import { BillingDb } from "./db/billing";
 import { inspectStripeBilling } from "./db/billing/stripe-inspect";
 import { makeStripePersistence } from "./db/billing/stripe-persistence";
-import * as WebhooksDb from "./db/webhooks";
+import { WebhooksDb } from "./db/webhooks";
 import type { Database } from "./db";
 import {
   BillingCheckoutSessionId,
@@ -15,11 +15,11 @@ import {
   StripeProductId,
 } from "./domain";
 import type { CloudflareConfig } from "./config";
-import * as StripeAdapter from "./integrations/stripe/billing";
-import * as BillingPresentation from "./services/billing-presentation";
-import * as BillingSubscriptions from "./services/billing-subscriptions";
-import * as StripeBilling from "./services/stripe-billing";
-import * as StripeWebhooks from "./services/stripe-webhooks";
+import { StripeAdapter } from "./integrations/stripe/billing";
+import { BillingPresentation } from "./services/billing-presentation";
+import { BillingSubscriptions } from "./services/billing-subscriptions";
+import { StripeBilling } from "./services/stripe-billing";
+import { StripeWebhooks } from "./services/stripe-webhooks";
 
 /* oxlint-disable effecttsgo/crypto-random-uuid-in-effect -- The composition root supplies secure identity effects to application services. */
 

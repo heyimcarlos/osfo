@@ -1,10 +1,10 @@
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { BrowserCrypto } from "@effect/platform-browser";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { sessions, users } from "@osfo/db/schema/auth";
 import { Effect, Layer, Schema } from "effect";
 
-import * as AccountAuthorities from "../src/composition/account-authorities";
-import * as Db from "../src/db";
+import { AccountAuthorities } from "../src/composition/account-authorities";
+import { Db } from "../src/db";
 import { UserId } from "../src/domain";
 import { AdminActorId, AdminReason } from "../src/domain/account-administration";
 

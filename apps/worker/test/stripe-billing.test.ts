@@ -12,7 +12,7 @@ import {
   StripeSubscriptionId,
   UserId,
 } from "../src/domain";
-import * as StripeBilling from "../src/services/stripe-billing";
+import { StripeBilling } from "../src/services/stripe-billing";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/global-date -- These deterministic provider tests assert Effect tags and fixed Date values. */
 
@@ -52,8 +52,8 @@ describe("StripeBilling", () => {
         persistence: {
           failCheckout: () => Effect.void,
           releaseCheckoutClaim: () => Effect.void,
-          inspectCheckoutEligibility: () => Effect.die("unused"),
-          prepareCheckout: () => Effect.die("unused"),
+          inspectCheckoutEligibility: () => Effect.die(new Error("unused")),
+          prepareCheckout: () => Effect.die(new Error("unused")),
           prepareCustomer: () =>
             Effect.succeed({
               billingCustomerId: customerId,
@@ -65,13 +65,13 @@ describe("StripeBilling", () => {
         },
         portal,
         stripe: {
-          createCheckout: () => Effect.die("unused"),
-          createCustomer: () => Effect.die("unused"),
+          createCheckout: () => Effect.die(new Error("unused")),
+          createCustomer: () => Effect.die(new Error("unused")),
           createPortal: (input) => {
             portalInputs.push(input);
             return Effect.succeed(new URL("https://billing.stripe.test/session"));
           },
-          retrieveCheckout: () => Effect.die("unused"),
+          retrieveCheckout: () => Effect.die(new Error("unused")),
         },
         urls: {
           cancel: new URL("https://osfo.test/billing"),
@@ -158,8 +158,8 @@ describe("StripeBilling", () => {
             customerKeys.push(input.idempotencyKey);
             return Effect.succeed(StripeCustomerId.make("cus_checkout"));
           },
-          createPortal: () => Effect.die("unused"),
-          retrieveCheckout: () => Effect.die("unused"),
+          createPortal: () => Effect.die(new Error("unused")),
+          retrieveCheckout: () => Effect.die(new Error("unused")),
         },
         urls: {
           cancel: new URL("https://osfo.test/billing"),
@@ -212,10 +212,10 @@ describe("StripeBilling", () => {
         stripe: {
           createCheckout: () => {
             creates += 1;
-            return Effect.die("must not create");
+            return Effect.die(new Error("must not create"));
           },
-          createCustomer: () => Effect.die("must not create"),
-          createPortal: () => Effect.die("unused"),
+          createCustomer: () => Effect.die(new Error("must not create")),
+          createPortal: () => Effect.die(new Error("unused")),
           retrieveCheckout: () =>
             Effect.succeed({
               expiresAt: new Date("2026-08-17T12:00:00.000Z"),
@@ -309,8 +309,8 @@ describe("StripeBilling", () => {
               url: new URL("https://checkout.stripe.test/new"),
             });
           },
-          createCustomer: () => Effect.die("must not create"),
-          createPortal: () => Effect.die("unused"),
+          createCustomer: () => Effect.die(new Error("must not create")),
+          createPortal: () => Effect.die(new Error("unused")),
           retrieveCheckout: () =>
             Effect.succeed({
               expiresAt: new Date("2026-08-17T12:00:00.000Z"),
@@ -383,10 +383,10 @@ describe("StripeBilling", () => {
         stripe: {
           createCheckout: () => {
             creates += 1;
-            return Effect.die("must not create");
+            return Effect.die(new Error("must not create"));
           },
-          createCustomer: () => Effect.die("must not create"),
-          createPortal: () => Effect.die("unused"),
+          createCustomer: () => Effect.die(new Error("must not create")),
+          createPortal: () => Effect.die(new Error("unused")),
           retrieveCheckout: () =>
             Effect.succeed({
               expiresAt: new Date("2026-08-17T12:00:00.000Z"),

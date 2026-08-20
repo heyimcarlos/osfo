@@ -6,9 +6,9 @@ import { HttpServerRequest } from "effect/unstable/http";
 
 import { AllowancePeriodId, UserId } from "../src/domain";
 import { ContentId } from "../src/domain/client-content";
-import * as DocumentArtifacts from "../src/integrations/cloudflare/document-artifacts";
-import * as DocumentArtifactValidation from "../src/integrations/cloudflare/document-artifact-validation";
-import * as DocumentDownload from "../src/integrations/cloudflare/document-download";
+import { DocumentArtifacts } from "../src/integrations/cloudflare/document-artifacts";
+import { DocumentArtifactValidation } from "../src/integrations/cloudflare/document-artifact-validation";
+import { DocumentDownload } from "../src/integrations/cloudflare/document-download";
 import { DocumentIntentDigest } from "../src/services/document-generation";
 
 describe("Generated document download", () => {

@@ -6,11 +6,11 @@ import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { Cause, Data, DateTime, Effect, Exit, Schema } from "effect";
 
-import * as Billing from "../src/db/billing";
+import { BillingDb } from "../src/db/billing";
 import { AllowancePeriodId, BillingSubscriptionId, UserId } from "../src/domain";
 import { retainedCatalog } from "../src/domain/plan-policy";
-import * as Allowances from "../src/services/allowances";
-import { AuthorizationContext, make as makeAuthorization } from "../src/services/authorization";
+import { Allowances } from "../src/services/allowances";
+import { Authorization, AuthorizationContext } from "../src/services/authorization";
 
 describe("Allowances", () => {
   it.effect("records first trusted use and exposes only visible Plan allowance facts", () =>
@@ -21,7 +21,7 @@ describe("Allowances", () => {
           yield* applyMigrations(fixture.client);
           const seeded = yield* seedPeriod(fixture.database, "first-record", "adventurer");
           const allowances = Allowances.make({
-            billing: Billing.make(fixture.database),
+            billing: BillingDb.make(fixture.database),
             catalog: retainedCatalog,
             now: Effect.succeed(seeded.now),
           });
@@ -63,7 +63,7 @@ describe("Allowances", () => {
           yield* applyMigrations(fixture.client);
           const seeded = yield* seedPeriod(fixture.database, "idempotency", "free");
           const allowances = Allowances.make({
-            billing: Billing.make(fixture.database),
+            billing: BillingDb.make(fixture.database),
             catalog: retainedCatalog,
             now: Effect.succeed(seeded.now),
           });
@@ -100,7 +100,7 @@ describe("Allowances", () => {
           yield* applyMigrations(fixture.client);
           const seeded = yield* seedPeriod(fixture.database, "mixed-conflict", "free");
           const allowances = Allowances.make({
-            billing: Billing.make(fixture.database),
+            billing: BillingDb.make(fixture.database),
             catalog: retainedCatalog,
             now: Effect.succeed(seeded.now),
           });
@@ -124,7 +124,7 @@ describe("Allowances", () => {
             allowanceKind: "acceptedMessages",
           });
           expect(stored).toHaveLength(1);
-          expect(stored[0]?.allowanceKind).toBe("acceptedMessages");
+          expect(stored[0]?.allowance_kind).toBe("acceptedMessages");
         }),
       closeTestDatabase,
     ),
@@ -137,13 +137,13 @@ describe("Allowances", () => {
         Effect.gen(function* () {
           yield* applyMigrations(fixture.client);
           const seeded = yield* seedPeriod(fixture.database, "soft-cap", "free");
-          const billing = Billing.make(fixture.database);
+          const billing = BillingDb.make(fixture.database);
           const allowances = Allowances.make({
             billing,
             catalog: retainedCatalog,
             now: Effect.succeed(seeded.now),
           });
-          const authorization = makeAuthorization(retainedCatalog);
+          const authorization = Authorization.make(retainedCatalog);
           yield* allowances.record(
             seeded.allowancePeriodId,
             { sourceId: "accepted-batch", sourceType: "acceptanceReceipt" },
@@ -191,7 +191,7 @@ describe("Allowances", () => {
           Effect.gen(function* () {
             yield* applyMigrations(fixture.client);
             const seeded = yield* seedPeriod(fixture.database, "evidence-basis", "free");
-            const billing = Billing.make(fixture.database);
+            const billing = BillingDb.make(fixture.database);
             const allowances = Allowances.make({
               billing,
               catalog: retainedCatalog,
@@ -237,17 +237,17 @@ describe("Allowances", () => {
           const laterPeriodId = AllowancePeriodId.make("allowance-period-later");
           yield* Effect.promise(() =>
             fixture.database.insert(allowancePeriods).values({
-              allowancePeriodId: laterPeriodId,
-              billingSubscriptionId: seeded.billingSubscriptionId,
-              createdAt: seeded.endsAt,
-              endsAt: date("2026-10-01T00:00:00.000Z"),
+              allowance_period_id: laterPeriodId,
+              billing_subscription_id: seeded.billingSubscriptionId,
+              created_at: seeded.endsAt,
+              ends_at: date("2026-10-01T00:00:00.000Z"),
               plan: "free",
-              planPolicyVersion: "launch-v1",
-              startsAt: seeded.endsAt,
-              userId: seeded.userId,
+              plan_policy_version: "launch-v1",
+              starts_at: seeded.endsAt,
+              user_id: seeded.userId,
             }),
           );
-          const billing = Billing.make(fixture.database);
+          const billing = BillingDb.make(fixture.database);
           const recorder = Allowances.make({
             billing,
             catalog: retainedCatalog,
@@ -282,8 +282,8 @@ describe("Allowances", () => {
           // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Postgres.js reports serialization failures by rejecting its transaction Promise.
           throw new SerializationFailure();
         },
-      } satisfies Billing.BillingDatabase;
-      const billing = Billing.make(failingDatabase);
+      } satisfies BillingDb.BillingDatabase;
+      const billing = BillingDb.make(failingDatabase);
 
       const result = yield* billing
         .recordUsage(
@@ -327,22 +327,22 @@ const seedPeriod = (database: Database, suffix: string, plan: SeedPlan) =>
       }),
     );
     const subscriptionValues = {
-      billingSubscriptionId,
-      createdAt: startsAt,
+      billing_subscription_id: billingSubscriptionId,
+      created_at: startsAt,
       plan,
-      planPolicyVersion: "launch-v1",
-      updatedAt: startsAt,
-      userId,
+      plan_policy_version: "launch-v1",
+      updated_at: startsAt,
+      user_id: userId,
     };
     const paidSubscriptionValues = {
       ...subscriptionValues,
-      stripeCurrentPeriodEnd: endsAt,
-      stripeCurrentPeriodStart: startsAt,
-      stripeLatestInvoiceId: "in_allowance",
-      stripePriceId: "price_adventurer",
-      stripeProductId: "prod_adventurer",
-      stripeStatus: "active",
-      stripeSubscriptionId: "sub_allowance",
+      stripe_current_period_end: endsAt,
+      stripe_current_period_start: startsAt,
+      stripe_latest_invoice_id: "in_allowance",
+      stripe_price_id: "price_adventurer",
+      stripe_product_id: "prod_adventurer",
+      stripe_status: "active",
+      stripe_subscription_id: "sub_allowance",
     };
     yield* Effect.promise(() =>
       database
@@ -350,21 +350,21 @@ const seedPeriod = (database: Database, suffix: string, plan: SeedPlan) =>
         .values(plan === "adventurer" ? paidSubscriptionValues : subscriptionValues),
     );
     const periodValues = {
-      allowancePeriodId,
-      billingSubscriptionId,
-      createdAt: startsAt,
-      endsAt,
+      allowance_period_id: allowancePeriodId,
+      billing_subscription_id: billingSubscriptionId,
+      created_at: startsAt,
+      ends_at: endsAt,
       plan,
-      planPolicyVersion: "launch-v1",
-      startsAt,
-      userId,
+      plan_policy_version: "launch-v1",
+      starts_at: startsAt,
+      user_id: userId,
     };
     yield* Effect.promise(() =>
       database
         .insert(allowancePeriods)
         .values(
           plan === "adventurer"
-            ? { ...periodValues, stripeInvoiceId: "in_allowance" }
+            ? { ...periodValues, stripe_invoice_id: "in_allowance" }
             : periodValues,
         ),
     );
@@ -372,7 +372,9 @@ const seedPeriod = (database: Database, suffix: string, plan: SeedPlan) =>
     return { allowancePeriodId, billingSubscriptionId, endsAt, now, userId };
   });
 
-const authorizationContext = (admission: Effect.Success<ReturnType<Billing.Interface["admit"]>>) =>
+const authorizationContext = (
+  admission: Effect.Success<ReturnType<BillingDb.Interface["admit"]>>,
+) =>
   Schema.decodeSync(AuthorizationContext)({
     allowance: {
       _tag: "Metered",

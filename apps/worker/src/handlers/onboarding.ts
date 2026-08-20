@@ -10,7 +10,7 @@ import { Effect, Layer, Redacted, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { UserId } from "../domain";
-import * as Onboarding from "../services/onboarding";
+import { Onboarding } from "../services/onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect errors use the standard _tag discriminator. */
 
@@ -95,3 +95,5 @@ const toEnrollmentPublicError = (error: { readonly _tag: string }) =>
     : new OnboardingUnavailable({
         message: "The channel connection is temporarily unavailable. Please try again.",
       });
+
+export * as OnboardingHandlers from "./onboarding";

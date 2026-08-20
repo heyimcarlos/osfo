@@ -6,8 +6,8 @@ import { Effect, Layer, Schema } from "effect";
 
 import { database, decodeOptionalRow, type Database } from "../../db";
 import { AgentId } from "../../domain";
-import * as Onboarding from "../../services/onboarding";
-import * as ChannelBindingPostgres from "./channel-binding";
+import { ChannelBindingPostgres } from "../../integrations/postgres/channel-binding";
+import { Onboarding } from "../onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Drizzle transactions and domain tags require these forms. */
 
@@ -31,31 +31,31 @@ const WelcomeRouteRecord = Schema.Struct({
 
 const UserPhoneRecord = Schema.Struct({ phoneNumber: Schema.NullOr(Schema.String) });
 
-/** Postgres implementation of the onboarding control-plane persistence port. */
+/** Construct the private PostgreSQL implementation of Onboarding. */
 export const make = Effect.gen(function* () {
   const db = yield* database;
 
-  const findByDigest: Onboarding.PersistencePort["findByDigest"] = (digest) =>
+  const findByDigest: Onboarding.Persistence["findByDigest"] = (digest) =>
     Effect.tryPromise({
       try: () =>
         db
           .select({
-            bindingOutcome: registrationInvitations.bindingOutcome,
-            channelBindingId: registrationInvitations.channelBindingId,
-            channelIdentity: registrationInvitations.channelIdentity,
-            consumptionDigest: registrationInvitations.consumptionDigest,
-            expiresAt: registrationInvitations.expiresAt,
-            expiryReason: registrationInvitations.expiryReason,
-            invitationId: registrationInvitations.invitationId,
-            invitedPhoneNumber: registrationInvitations.invitedPhoneNumber,
+            bindingOutcome: registrationInvitations.binding_outcome,
+            channelBindingId: registrationInvitations.channel_binding_id,
+            channelIdentity: registrationInvitations.channel_identity,
+            consumptionDigest: registrationInvitations.consumption_digest,
+            expiresAt: registrationInvitations.expires_at,
+            expiryReason: registrationInvitations.expiry_reason,
+            invitationId: registrationInvitations.invitation_id,
+            invitedPhoneNumber: registrationInvitations.invited_phone_number,
             kind: registrationInvitations.kind,
             locale: registrationInvitations.locale,
             provider: registrationInvitations.provider,
             state: registrationInvitations.state,
-            userId: registrationInvitations.userId,
+            userId: registrationInvitations.user_id,
           })
           .from(registrationInvitations)
-          .where(eq(registrationInvitations.tokenDigest, digest))
+          .where(eq(registrationInvitations.token_digest, digest))
           .limit(1),
       catch: (cause) => unavailable("findByDigest", cause),
     }).pipe(
@@ -66,19 +66,16 @@ export const make = Effect.gen(function* () {
       Effect.map((record) => record ?? null),
     );
 
-  const findLiveChannel: Onboarding.PersistencePort["findLiveChannel"] = (
-    provider,
-    channelIdentity,
-  ) =>
+  const findLiveChannel: Onboarding.Persistence["findLiveChannel"] = (provider, channelIdentity) =>
     Effect.tryPromise({
       try: () =>
         db
-          .select({ invitationId: registrationInvitations.invitationId })
+          .select({ invitationId: registrationInvitations.invitation_id })
           .from(registrationInvitations)
           .where(
             and(
               eq(registrationInvitations.provider, provider),
-              eq(registrationInvitations.channelIdentity, channelIdentity),
+              eq(registrationInvitations.channel_identity, channelIdentity),
               eq(registrationInvitations.state, "live"),
             ),
           )
@@ -96,7 +93,7 @@ export const make = Effect.gen(function* () {
       Effect.map((record) => record?.invitationId ?? null),
     );
 
-  const readUser: Onboarding.PersistencePort["readUser"] = (userId) =>
+  const readUser: Onboarding.Persistence["readUser"] = (userId) =>
     Effect.tryPromise({
       try: () =>
         db
@@ -133,19 +130,19 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  const readWelcomeRoute: Onboarding.PersistencePort["readWelcomeRoute"] = (userId) =>
+  const readWelcomeRoute: Onboarding.Persistence["readWelcomeRoute"] = (userId) =>
     Effect.tryPromise({
       try: () =>
         db
           .select({
-            agentId: agents.agentId,
+            agentId: agents.agent_id,
             helpAreas: users.helpAreas,
             locale: users.locale,
             preferredName: users.preferredName,
           })
           .from(agents)
-          .innerJoin(users, eq(users.id, agents.userId))
-          .where(eq(agents.userId, userId))
+          .innerJoin(users, eq(users.id, agents.user_id))
+          .where(eq(agents.user_id, userId))
           .limit(1),
       catch: (cause) => unavailable("readWelcomeRoute", cause),
     }).pipe(
@@ -165,7 +162,7 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  return Onboarding.Persistence.of({
+  return {
     complete: (input, decide) =>
       Effect.tryPromise({
         try: () => completeTransaction(db, input, decide),
@@ -222,11 +219,11 @@ export const make = Effect.gen(function* () {
       ),
     readUser,
     readWelcomeRoute,
-  });
+  } satisfies Onboarding.Persistence;
 });
 
-/** Postgres onboarding adapter Layer that preserves its request-scoped database requirement. */
-export const layerWithoutDependencies = Layer.effect(Onboarding.Persistence, make);
+/** Onboarding service Layer backed by PostgreSQL and explicit graph dependencies. */
+export const layer = Layer.effect(Onboarding.Service, Effect.flatMap(make, Onboarding.make));
 
 const unavailable = (operation: string, cause: unknown) =>
   new Onboarding.OnboardingPersistenceUnavailable({ cause, operation });
@@ -256,19 +253,19 @@ const insertChannelInvitationTransaction = async (
     const invitation = await transaction
       .insert(registrationInvitations)
       .values({
-        channelIdentity: channel.channelIdentity,
-        createdAt: input.createdAt,
-        expiresAt: input.expiresAt,
-        invitationId: input.invitationId,
-        invitedPhoneNumber: channel.invitedPhoneNumber,
+        channel_identity: channel.channelIdentity,
+        created_at: input.createdAt,
+        expires_at: input.expiresAt,
+        invitation_id: input.invitationId,
+        invited_phone_number: channel.invitedPhoneNumber,
         kind: channel.kind,
         locale: input.locale,
         provider: channel.provider,
-        providerEventId: input.providerEventId,
-        tokenDigest: input.tokenDigest,
+        provider_event_id: input.providerEventId,
+        token_digest: input.tokenDigest,
       })
       .onConflictDoNothing()
-      .returning({ invitationId: registrationInvitations.invitationId });
+      .returning({ invitationId: registrationInvitations.invitation_id });
     if (invitation.length > 0) return true;
     return false;
   });
@@ -331,11 +328,11 @@ const completeTransaction = async (
         return "invitation-invalid";
       }
       await transaction.insert(channelBindings).values({
-        channelBindingId: channel.channelBindingId,
-        channelIdentity: invitation.channelIdentity,
-        createdAt: input.now,
+        channel_binding_id: channel.channelBindingId,
+        channel_identity: invitation.channelIdentity,
+        created_at: input.now,
         provider: invitation.provider,
-        userId: input.userId,
+        user_id: input.userId,
       });
     }
     await applyProfile();
@@ -343,24 +340,24 @@ const completeTransaction = async (
     await transaction
       .update(registrationInvitations)
       .set({
-        bindingOutcome:
+        binding_outcome:
           channel._tag === "BindingCreated"
             ? "created"
             : channel._tag === "BindingExisting"
               ? "existing"
               : "refused",
-        channelBindingId:
+        channel_binding_id:
           channel._tag === "BindingCreated" || channel._tag === "BindingExisting"
             ? channel.channelBindingId
             : null,
-        channelIdentity: null,
-        consumedAt: input.now,
-        consumptionDigest: input.requestDigest,
-        invitedPhoneNumber: null,
+        channel_identity: null,
+        consumed_at: input.now,
+        consumption_digest: input.requestDigest,
+        invited_phone_number: null,
         state: "consumed",
-        userId: input.userId,
+        user_id: input.userId,
       })
-      .where(eq(registrationInvitations.invitationId, input.invitationId));
+      .where(eq(registrationInvitations.invitation_id, input.invitationId));
     return channel;
   });
 
@@ -384,23 +381,23 @@ const enrollTransaction = async (
     const channel = decision.channel;
     if (channel._tag === "BindingCreated") {
       await transaction.insert(channelBindings).values({
-        channelBindingId: channel.channelBindingId,
-        channelIdentity: input.channelIdentity,
-        createdAt: input.now,
+        channel_binding_id: channel.channelBindingId,
+        channel_identity: input.channelIdentity,
+        created_at: input.now,
         provider: input.provider,
-        userId: input.userId,
+        user_id: input.userId,
       });
     }
     await transaction
       .update(registrationInvitations)
       .set({
-        bindingOutcome: channel._tag === "BindingExisting" ? "existing" : "created",
-        channelBindingId: channel.channelBindingId,
-        consumedAt: input.now,
-        consumptionDigest: input.enrollmentDigest,
+        binding_outcome: channel._tag === "BindingExisting" ? "existing" : "created",
+        channel_binding_id: channel.channelBindingId,
+        consumed_at: input.now,
+        consumption_digest: input.enrollmentDigest,
         state: "consumed",
       })
-      .where(eq(registrationInvitations.invitationId, input.invitationId));
+      .where(eq(registrationInvitations.invitation_id, input.invitationId));
     return channel;
   });
 
@@ -417,15 +414,15 @@ const createWebEnrollmentTransaction = async (
       .limit(1);
     const [existing] = await transaction
       .select({
-        invitationId: registrationInvitations.invitationId,
-        tokenDigest: registrationInvitations.tokenDigest,
+        invitationId: registrationInvitations.invitation_id,
+        tokenDigest: registrationInvitations.token_digest,
       })
       .from(registrationInvitations)
       .where(
         and(
           eq(registrationInvitations.kind, "web_enrollment"),
           eq(registrationInvitations.state, "live"),
-          eq(registrationInvitations.userId, input.userId),
+          eq(registrationInvitations.user_id, input.userId),
         ),
       )
       .limit(1);
@@ -433,18 +430,18 @@ const createWebEnrollmentTransaction = async (
     if (existing !== undefined) {
       await transaction
         .update(registrationInvitations)
-        .set({ expiryReason: "replaced", state: "expired", userId: null })
-        .where(eq(registrationInvitations.invitationId, existing.invitationId));
+        .set({ expiry_reason: "replaced", state: "expired", user_id: null })
+        .where(eq(registrationInvitations.invitation_id, existing.invitationId));
     }
     await transaction.insert(registrationInvitations).values({
-      createdAt: input.now,
-      expiresAt: input.expiresAt,
-      invitationId: input.invitationId,
+      created_at: input.now,
+      expires_at: input.expiresAt,
+      invitation_id: input.invitationId,
       kind: "web_enrollment",
       locale: input.locale,
       provider: input.provider,
-      tokenDigest: input.digest,
-      userId: input.userId,
+      token_digest: input.digest,
+      user_id: input.userId,
     });
   });
 
@@ -456,22 +453,22 @@ const readLockedInvitation = async (
 ): Promise<Onboarding.StoredInvitation | null> => {
   const [row] = await transaction
     .select({
-      bindingOutcome: registrationInvitations.bindingOutcome,
-      channelBindingId: registrationInvitations.channelBindingId,
-      channelIdentity: registrationInvitations.channelIdentity,
-      consumptionDigest: registrationInvitations.consumptionDigest,
-      expiresAt: registrationInvitations.expiresAt,
-      expiryReason: registrationInvitations.expiryReason,
-      invitationId: registrationInvitations.invitationId,
-      invitedPhoneNumber: registrationInvitations.invitedPhoneNumber,
+      bindingOutcome: registrationInvitations.binding_outcome,
+      channelBindingId: registrationInvitations.channel_binding_id,
+      channelIdentity: registrationInvitations.channel_identity,
+      consumptionDigest: registrationInvitations.consumption_digest,
+      expiresAt: registrationInvitations.expires_at,
+      expiryReason: registrationInvitations.expiry_reason,
+      invitationId: registrationInvitations.invitation_id,
+      invitedPhoneNumber: registrationInvitations.invited_phone_number,
       kind: registrationInvitations.kind,
       locale: registrationInvitations.locale,
       provider: registrationInvitations.provider,
       state: registrationInvitations.state,
-      userId: registrationInvitations.userId,
+      userId: registrationInvitations.user_id,
     })
     .from(registrationInvitations)
-    .where(eq(registrationInvitations.invitationId, invitationId))
+    .where(eq(registrationInvitations.invitation_id, invitationId))
     .for("update")
     .limit(1);
   return row === undefined ? null : Schema.decodeUnknownSync(Onboarding.StoredInvitation)(row);
@@ -485,19 +482,19 @@ const readActiveBindings = async (
 ): Promise<ReadonlyArray<Onboarding.StoredChannelBinding>> => {
   const rows = await transaction
     .select({
-      channelBindingId: channelBindings.channelBindingId,
-      channelIdentity: channelBindings.channelIdentity,
+      channelBindingId: channelBindings.channel_binding_id,
+      channelIdentity: channelBindings.channel_identity,
       provider: channelBindings.provider,
-      userId: channelBindings.userId,
+      userId: channelBindings.user_id,
     })
     .from(channelBindings)
     .where(
       and(
         eq(channelBindings.provider, provider),
-        isNull(channelBindings.revokedAt),
+        isNull(channelBindings.revoked_at),
         or(
-          eq(channelBindings.channelIdentity, channelIdentity),
-          eq(channelBindings.userId, userId),
+          eq(channelBindings.channel_identity, channelIdentity),
+          eq(channelBindings.user_id, userId),
         ),
       ),
     )
@@ -511,9 +508,9 @@ const expireByDigest = (db: Database, digest: string, now: Date) =>
     .set(expiredInvitation)
     .where(
       and(
-        eq(registrationInvitations.tokenDigest, digest),
+        eq(registrationInvitations.token_digest, digest),
         eq(registrationInvitations.state, "live"),
-        lt(registrationInvitations.expiresAt, now),
+        lt(registrationInvitations.expires_at, now),
       ),
     );
 
@@ -522,9 +519,9 @@ const expireLive = async (db: Database, now: Date) => {
     .update(registrationInvitations)
     .set(expiredInvitation)
     .where(
-      and(eq(registrationInvitations.state, "live"), lt(registrationInvitations.expiresAt, now)),
+      and(eq(registrationInvitations.state, "live"), lt(registrationInvitations.expires_at, now)),
     )
-    .returning({ invitationId: registrationInvitations.invitationId });
+    .returning({ invitationId: registrationInvitations.invitation_id });
   return expired.length;
 };
 
@@ -535,3 +532,5 @@ const expiredInvitation = {
   state: "expired" as const,
   userId: null,
 };
+
+export * as OnboardingPostgres from "./postgres";

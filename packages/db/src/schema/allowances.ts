@@ -21,29 +21,29 @@ const basisValues = ["known_at_start", "observed", "conservative"] as const;
 export const allowancePeriods = pgTable(
   "allowance_periods",
   {
-    allowancePeriodId: text("allowance_period_id").notNull().primaryKey(),
-    billingSubscriptionId: text("billing_subscription_id").notNull(),
-    createdAt: timestamp("created_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
-    endsAt: timestamp("ends_at", { mode: "date", withTimezone: true }).notNull(),
-    plan: text("plan", { enum: planValues }).notNull(),
-    planPolicyVersion: text("plan_policy_version").notNull(),
-    stripeInvoiceId: text("stripe_invoice_id"),
-    startsAt: timestamp("starts_at", { mode: "date", withTimezone: true }).notNull(),
-    userId: text("user_id")
+    allowance_period_id: text().notNull().primaryKey(),
+    billing_subscription_id: text().notNull(),
+    created_at: timestamp({ mode: "date", withTimezone: true }).defaultNow().notNull(),
+    ends_at: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    plan: text({ enum: planValues }).notNull(),
+    plan_policy_version: text().notNull(),
+    stripe_invoice_id: text(),
+    starts_at: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    user_id: text()
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
   },
   (table) => [
-    check("allowance_periods_starts_before_ends_check", sql`${table.startsAt} < ${table.endsAt}`),
+    check("allowance_periods_starts_before_ends_check", sql`${table.starts_at} < ${table.ends_at}`),
     foreignKey({
-      columns: [table.userId, table.billingSubscriptionId],
-      foreignColumns: [billingSubscriptions.userId, billingSubscriptions.billingSubscriptionId],
+      columns: [table.user_id, table.billing_subscription_id],
+      foreignColumns: [billingSubscriptions.user_id, billingSubscriptions.billing_subscription_id],
       name: "allowance_periods_user_subscription_fk",
     }).onDelete("cascade"),
-    unique("allowance_periods_user_start_unique").on(table.userId, table.startsAt),
-    unique("allowance_periods_user_period_unique").on(table.userId, table.allowancePeriodId),
-    unique("allowance_periods_stripe_invoice_id_unique").on(table.stripeInvoiceId),
-    index("allowance_periods_user_bounds_index").on(table.userId, table.startsAt, table.endsAt),
+    unique("allowance_periods_user_start_unique").on(table.user_id, table.starts_at),
+    unique("allowance_periods_user_period_unique").on(table.user_id, table.allowance_period_id),
+    unique("allowance_periods_stripe_invoice_id_unique").on(table.stripe_invoice_id),
+    index("allowance_periods_user_bounds_index").on(table.user_id, table.starts_at, table.ends_at),
   ],
 );
 
@@ -51,20 +51,23 @@ export const allowancePeriods = pgTable(
 export const allowanceUsage = pgTable(
   "allowance_usage",
   {
-    allowanceKind: text("allowance_kind").notNull(),
-    allowancePeriodId: text("allowance_period_id").notNull(),
-    basis: text("basis", { enum: basisValues }).notNull(),
-    quantity: bigint("quantity", { mode: "bigint" }).notNull(),
-    recordedAt: timestamp("recorded_at", { mode: "date", withTimezone: true })
-      .defaultNow()
-      .notNull(),
-    sourceId: text("source_id").notNull(),
-    sourceType: text("source_type").notNull(),
-    userId: text("user_id").notNull(),
+    allowance_kind: text().notNull(),
+    allowance_period_id: text().notNull(),
+    basis: text({ enum: basisValues }).notNull(),
+    quantity: bigint({ mode: "bigint" }).notNull(),
+    recorded_at: timestamp({ mode: "date", withTimezone: true }).defaultNow().notNull(),
+    source_id: text().notNull(),
+    source_type: text().notNull(),
+    user_id: text().notNull(),
   },
   (table) => [
     primaryKey({
-      columns: [table.allowancePeriodId, table.allowanceKind, table.sourceType, table.sourceId],
+      columns: [
+        table.allowance_period_id,
+        table.allowance_kind,
+        table.source_type,
+        table.source_id,
+      ],
       name: "allowance_usage_pk",
     }),
     check("allowance_usage_positive_quantity_check", sql`${table.quantity} > 0`),
@@ -73,10 +76,10 @@ export const allowanceUsage = pgTable(
       sql`${table.basis} in ('known_at_start', 'observed', 'conservative')`,
     ),
     foreignKey({
-      columns: [table.userId, table.allowancePeriodId],
-      foreignColumns: [allowancePeriods.userId, allowancePeriods.allowancePeriodId],
+      columns: [table.user_id, table.allowance_period_id],
+      foreignColumns: [allowancePeriods.user_id, allowancePeriods.allowance_period_id],
       name: "allowance_usage_user_period_fk",
     }).onDelete("cascade"),
-    index("allowance_usage_period_kind_index").on(table.allowancePeriodId, table.allowanceKind),
+    index("allowance_usage_period_kind_index").on(table.allowance_period_id, table.allowance_kind),
   ],
 );

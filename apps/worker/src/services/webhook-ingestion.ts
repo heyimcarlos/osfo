@@ -78,15 +78,22 @@ const persistNew = (
       database.transaction(async (transaction) => {
         const [inserted] = await transaction
           .insert(webhookEvents)
-          .values(event)
-          .onConflictDoNothing({
-            target: [webhookEvents.provider, webhookEvents.externalEventId],
+          .values({
+            event_type: event.eventType,
+            external_event_id: event.externalEventId,
+            payload_json: event.payloadJson,
+            provider: event.provider,
+            received_at: event.receivedAt,
+            webhook_event_id: event.webhookEventId,
           })
-          .returning({ webhookEventId: webhookEvents.webhookEventId });
+          .onConflictDoNothing({
+            target: [webhookEvents.provider, webhookEvents.external_event_id],
+          })
+          .returning({ webhookEventId: webhookEvents.webhook_event_id });
         if (inserted === undefined) return false;
         await transaction.insert(webhookJobs).values({
           attempts: 1,
-          webhookEventId: inserted.webhookEventId,
+          webhook_event_id: inserted.webhookEventId,
         });
         return true;
       }),
@@ -108,14 +115,14 @@ const complete = (
       database
         .update(webhookJobs)
         .set({
-          errorCode: null,
-          processedAt: sql`clock_timestamp()`,
+          error_code: null,
+          processed_at: sql`clock_timestamp()`,
           status: "processed",
-          updatedAt: sql`clock_timestamp()`,
+          updated_at: sql`clock_timestamp()`,
         })
         .where(
           and(
-            eq(webhookJobs.webhookEventId, event.webhookEventId),
+            eq(webhookJobs.webhook_event_id, event.webhookEventId),
             eq(webhookJobs.attempts, 1),
             eq(webhookJobs.status, "pending"),
           ),
@@ -129,3 +136,5 @@ const complete = (
         provider: event.provider,
       }),
   });
+
+export * as WebhookIngestion from "./webhook-ingestion";

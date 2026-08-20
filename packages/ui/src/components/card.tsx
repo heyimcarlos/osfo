@@ -1,9 +1,9 @@
-import type * as React from "react";
+import type { ComponentProps } from "react";
 
 import { cn } from "#lib/utils";
 
 /** Bordered content container. */
-function Card({ className, ...props }: React.ComponentProps<"div">) {
+function Card({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       data-slot="card"
@@ -17,7 +17,7 @@ function Card({ className, ...props }: React.ComponentProps<"div">) {
 }
 
 /** Card heading region. */
-function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
+function CardHeader({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       data-slot="card-header"
@@ -28,12 +28,12 @@ function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
 }
 
 /** Card title. */
-function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
+function CardTitle({ className, ...props }: ComponentProps<"div">) {
   return <div data-slot="card-title" className={cn("font-black text-sm", className)} {...props} />;
 }
 
 /** Supporting card title text. */
-function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
+function CardDescription({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       data-slot="card-description"
@@ -44,12 +44,12 @@ function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
 }
 
 /** Main card content region. */
-function CardContent({ className, ...props }: React.ComponentProps<"div">) {
+function CardContent({ className, ...props }: ComponentProps<"div">) {
   return <div data-slot="card-content" className={cn("px-4", className)} {...props} />;
 }
 
 /** Card action and summary footer. */
-function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
+function CardFooter({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       data-slot="card-footer"

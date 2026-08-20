@@ -2,7 +2,7 @@ import { Effect, Layer, Schema } from "effect";
 
 import { OSFO_DIRECTORY_NAME } from "../../agents/osfo/identity";
 import { AgentInitializationId, ConversationRouteId, SessionId } from "../../domain";
-import * as Onboarding from "../../services/onboarding";
+import { Onboarding } from "../../services/onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Cloudflare and Effect RPC results use the standard _tag discriminator. */
 
@@ -138,3 +138,5 @@ const unavailable = (message: string, cause: unknown) =>
 
 const executionUnavailable = (message: string, cause: unknown) =>
   new Onboarding.OnboardingExecutionUnavailable({ cause, message });
+
+export * as OnboardingCloudflare from "./onboarding";

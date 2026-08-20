@@ -6,10 +6,10 @@ import { ActionId } from "../domain/action-execution";
 import type { ActionExecutionResult } from "../domain/action-execution";
 import type { AuthSessionId } from "../domain/auth-session";
 import type { AuthorizationOperation as AuthorizationOperationType } from "../domain/authorization-operation";
-import type * as AuthSession from "./auth-session";
-import type * as ChannelBinding from "./channel-binding";
-import type * as DeletionCase from "./deletion-case";
-import type * as UserSuspension from "./user-suspension";
+import type { AuthSession } from "./auth-session";
+import type { ChannelBinding } from "./channel-binding";
+import type { DeletionCase } from "./deletion-case";
+import type { UserSuspension } from "./user-suspension";
 import type { AuthorizationContext, Denied, Interface as Authorization } from "./authorization";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Authority identities use the _tag discriminator. */
@@ -155,3 +155,5 @@ const inspectAuthority = (owners: AuthorityOwners, identities: ProtectedEffectId
   identities._tag === "AuthSession"
     ? owners.authSessions.inspect(identities.userId, identities.authSessionId)
     : owners.channelBindings.inspect(identities.userId, identities.channelBindingId);
+
+export * as ActionExecutor from "./action-executor";

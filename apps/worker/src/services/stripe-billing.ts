@@ -350,3 +350,5 @@ export const make = (options: MakeOptions): Interface => {
       }),
   };
 };
+
+export * as StripeBilling from "./stripe-billing";

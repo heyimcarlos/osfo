@@ -3,7 +3,7 @@ import { Context, Effect, Layer, type Redacted, Schema } from "effect";
 import type { UserId } from "../domain";
 import type { ManualSupportRequired } from "../domain/account-administration";
 import { PhoneNumber } from "../domain/phone-account";
-import { Service as DeletionCase } from "./deletion-case";
+import { DeletionCase } from "./deletion-case";
 import type { DbUnavailable } from "../db";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Domain facts and outcomes use the _tag discriminator. */
@@ -125,7 +125,7 @@ export class Service extends Context.Service<Service, Interface>()("@osfo/PhoneA
 
 /** Construct Phone Account authority from @osfo/auth, Deletion Case, and verification interfaces. */
 export const make = Effect.gen(function* () {
-  const deletionCases = yield* DeletionCase;
+  const deletionCases = yield* DeletionCase.Service;
   const store = yield* Store;
   const verification = yield* Verification;
   return Service.of({
@@ -176,3 +176,5 @@ const manualSupport = (message: string): ManualSupportRequired => ({
   _tag: "ManualSupportRequired",
   message,
 });
+
+export * as PhoneAccount from "./phone-account";

@@ -22,8 +22,8 @@ import {
   StripeSubscriptionId,
   UserId,
 } from "../src/domain";
-import * as BillingSubscriptions from "../src/services/billing-subscriptions";
-import * as Billing from "../src/db/billing";
+import { BillingSubscriptions } from "../src/services/billing-subscriptions";
+import { BillingDb } from "../src/db/billing";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/global-date, effecttsgo/global-date-in-effect -- These database tests use fixed Date fixtures at the Drizzle boundary and inspect Effect tags. */
 
@@ -114,63 +114,63 @@ describe("BillingSubscriptions projection failures", () => {
             fixture.database.insert(users).values({
               email: "billing-rollback@example.test",
               id: rollbackUserId,
-              name: "Billing Rollback User",
+              name: "BillingDb Rollback User",
               updatedAt: new Date("2026-08-01T00:00:00.000Z"),
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingCustomers).values({
-              billingCustomerId: "billing-customer-rollback",
-              stripeCustomerId: "cus_rollback",
-              userId: rollbackUserId,
+              billing_customer_id: "billing-customer-rollback",
+              stripe_customer_id: "cus_rollback",
+              user_id: rollbackUserId,
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingSubscriptions).values({
-              billingCustomerId: "billing-customer-rollback",
-              billingSubscriptionId: "billing-subscription-rollback",
+              billing_customer_id: "billing-customer-rollback",
+              billing_subscription_id: "billing-subscription-rollback",
               plan: "free",
-              planPolicyVersion: "launch-v1",
-              userId: rollbackUserId,
+              plan_policy_version: "launch-v1",
+              user_id: rollbackUserId,
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingCheckoutSessions).values({
-              billingCheckoutSessionId: "checkout-rollback",
-              billingCustomerId: "billing-customer-rollback",
+              billing_checkout_session_id: "checkout-rollback",
+              billing_customer_id: "billing-customer-rollback",
               state: "creating",
-              stripePriceId: "price_adventurer",
-              stripeProductId: "prod_adventurer",
-              targetPlan: "adventurer",
-              userId: rollbackUserId,
+              stripe_price_id: "price_adventurer",
+              stripe_product_id: "prod_adventurer",
+              target_plan: "adventurer",
+              user_id: rollbackUserId,
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(allowancePeriods).values({
-              allowancePeriodId: "allowance-period-collision",
-              billingSubscriptionId: "billing-subscription-rollback",
-              createdAt: new Date("2026-08-01T00:00:00.000Z"),
-              endsAt: new Date("2026-08-31T00:00:00.000Z"),
+              allowance_period_id: "allowance-period-collision",
+              billing_subscription_id: "billing-subscription-rollback",
+              created_at: new Date("2026-08-01T00:00:00.000Z"),
+              ends_at: new Date("2026-08-31T00:00:00.000Z"),
               plan: "free",
-              planPolicyVersion: "launch-v1",
-              startsAt: new Date("2026-08-01T00:00:00.000Z"),
-              userId: rollbackUserId,
+              plan_policy_version: "launch-v1",
+              starts_at: new Date("2026-08-01T00:00:00.000Z"),
+              user_id: rollbackUserId,
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(webhookEvents).values({
-              externalEventId: "evt_rollback",
-              eventType: "checkout.session.completed",
-              payloadJson:
+              external_event_id: "evt_rollback",
+              event_type: "checkout.session.completed",
+              payload_json:
                 '{"billingCheckoutSessionId":"checkout-rollback","externalEventId":"evt_rollback","externalObjectId":"cs_test_rollback","type":"checkout.session.completed"}',
               provider: "stripe",
-              webhookEventId: "webhook-rollback",
+              webhook_event_id: "webhook-rollback",
             }),
           );
           yield* Effect.promise(() =>
-            fixture.database.insert(webhookJobs).values({ webhookEventId: "webhook-rollback" }),
+            fixture.database.insert(webhookJobs).values({ webhook_event_id: "webhook-rollback" }),
           );
-          const billing = Billing.make(fixture.database);
+          const billing = BillingDb.make(fixture.database);
           const service = BillingSubscriptions.make(billing, {
             allowancePeriodId: Effect.succeed(AllowancePeriodId.make("allowance-period-collision")),
             now: Effect.succeed(confirmedAt),
@@ -206,40 +206,40 @@ describe("BillingSubscriptions projection failures", () => {
             fixture.database
               .select()
               .from(billingSubscriptions)
-              .where(eq(billingSubscriptions.userId, rollbackUserId)),
+              .where(eq(billingSubscriptions.user_id, rollbackUserId)),
           );
           const [storedWebhook] = yield* Effect.promise(() =>
             fixture.database
               .select()
               .from(webhookJobs)
-              .where(eq(webhookJobs.webhookEventId, "webhook-rollback")),
+              .where(eq(webhookJobs.webhook_event_id, "webhook-rollback")),
           );
           const storedPeriods = yield* Effect.promise(() =>
             fixture.database
               .select()
               .from(allowancePeriods)
-              .where(eq(allowancePeriods.userId, rollbackUserId)),
+              .where(eq(allowancePeriods.user_id, rollbackUserId)),
           );
           const [storedCheckout] = yield* Effect.promise(() =>
             fixture.database
               .select()
               .from(billingCheckoutSessions)
-              .where(eq(billingCheckoutSessions.billingCheckoutSessionId, "checkout-rollback")),
+              .where(eq(billingCheckoutSessions.billing_checkout_session_id, "checkout-rollback")),
           );
 
           expect(exit._tag).toBe("Failure");
           expect(storedSubscription?.plan).toBe("free");
           expect(storedWebhook).toMatchObject({
-            processedAt: null,
+            processed_at: null,
             status: "pending",
           });
           expect(storedCheckout).toMatchObject({
             state: "creating",
-            stripeCheckoutSessionId: null,
-            stripePaymentStatus: null,
+            stripe_checkout_session_id: null,
+            stripe_payment_status: null,
           });
           expect(storedPeriods).toHaveLength(1);
-          expect(storedPeriods[0]?.endsAt).toEqual(new Date("2026-08-31T00:00:00.000Z"));
+          expect(storedPeriods[0]?.ends_at).toEqual(new Date("2026-08-31T00:00:00.000Z"));
         }),
       closeTestDatabase,
     ),
@@ -285,7 +285,7 @@ describe("BillingSubscriptions projection failures", () => {
               status: "canceled" as const,
             },
           ];
-          const billing = Billing.make(fixture.database);
+          const billing = BillingDb.make(fixture.database);
           const service = makeService(billing);
 
           const results = yield* Effect.forEach(cases, (testCase, index) =>
@@ -302,32 +302,32 @@ describe("BillingSubscriptions projection failures", () => {
               );
               yield* Effect.promise(() =>
                 fixture.database.insert(billingCustomers).values({
-                  billingCustomerId: `billing-customer-fail-closed-${index}`,
-                  stripeCustomerId: `cus_failclosed${index}`,
-                  userId: caseUserId,
+                  billing_customer_id: `billing-customer-fail-closed-${index}`,
+                  stripe_customer_id: `cus_failclosed${index}`,
+                  user_id: caseUserId,
                 }),
               );
               yield* Effect.promise(() =>
                 fixture.database.insert(billingSubscriptions).values({
-                  billingSubscriptionId: subscriptionId,
-                  billingCustomerId: `billing-customer-fail-closed-${index}`,
-                  createdAt: new Date("2026-08-01T00:00:00.000Z"),
+                  billing_subscription_id: subscriptionId,
+                  billing_customer_id: `billing-customer-fail-closed-${index}`,
+                  created_at: new Date("2026-08-01T00:00:00.000Z"),
                   plan: "free",
-                  planPolicyVersion: "launch-v1",
-                  updatedAt: new Date("2026-08-01T00:00:00.000Z"),
-                  userId: caseUserId,
+                  plan_policy_version: "launch-v1",
+                  updated_at: new Date("2026-08-01T00:00:00.000Z"),
+                  user_id: caseUserId,
                 }),
               );
               yield* Effect.promise(() =>
                 fixture.database.insert(allowancePeriods).values({
-                  allowancePeriodId: `allowance-period-fail-closed-${index}`,
-                  billingSubscriptionId: subscriptionId,
-                  createdAt: new Date("2026-08-01T00:00:00.000Z"),
-                  endsAt: new Date("2030-09-01T00:00:00.000Z"),
+                  allowance_period_id: `allowance-period-fail-closed-${index}`,
+                  billing_subscription_id: subscriptionId,
+                  created_at: new Date("2026-08-01T00:00:00.000Z"),
+                  ends_at: new Date("2030-09-01T00:00:00.000Z"),
                   plan: "free",
-                  planPolicyVersion: "launch-v1",
-                  startsAt: new Date("2026-08-01T00:00:00.000Z"),
-                  userId: caseUserId,
+                  plan_policy_version: "launch-v1",
+                  starts_at: new Date("2026-08-01T00:00:00.000Z"),
+                  user_id: caseUserId,
                 }),
               );
               return yield* applyCurrent(

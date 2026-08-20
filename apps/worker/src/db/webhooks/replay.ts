@@ -22,13 +22,13 @@ export const replay = (
       database.transaction(async (transaction) => {
         const [stored] = await transaction
           .select({
-            payloadJson: webhookEvents.payloadJson,
+            payloadJson: webhookEvents.payload_json,
             provider: webhookEvents.provider,
             status: webhookJobs.status,
           })
           .from(webhookEvents)
-          .innerJoin(webhookJobs, eq(webhookJobs.webhookEventId, webhookEvents.webhookEventId))
-          .where(eq(webhookEvents.webhookEventId, webhookEventId))
+          .innerJoin(webhookJobs, eq(webhookJobs.webhook_event_id, webhookEvents.webhook_event_id))
+          .where(eq(webhookEvents.webhook_event_id, webhookEventId))
           .for("update")
           .limit(1);
         if (stored === undefined) return undefined;

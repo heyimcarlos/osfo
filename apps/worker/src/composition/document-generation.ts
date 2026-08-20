@@ -1,14 +1,14 @@
 import { DateTime, Effect } from "effect";
 
 import type { Database } from "../db";
-import * as Billing from "../db/billing";
+import { BillingDb } from "../db/billing";
 import { retainedCatalog } from "../domain/plan-policy";
-import * as ArtifactR2 from "../integrations/cloudflare/document-artifacts";
-import * as ArtifactValidation from "../integrations/cloudflare/document-artifact-validation";
-import * as DocumentCompute from "../integrations/cloudflare/document-compute";
-import * as Allowances from "../services/allowances";
-import { make as makeAuthorization } from "../services/authorization";
-import * as DocumentGeneration from "../services/document-generation";
+import { DocumentArtifacts } from "../integrations/cloudflare/document-artifacts";
+import { DocumentArtifactValidation } from "../integrations/cloudflare/document-artifact-validation";
+import { DocumentCompute } from "../integrations/cloudflare/document-compute";
+import { Allowances } from "../services/allowances";
+import { Authorization } from "../services/authorization";
+import { DocumentGeneration } from "../services/document-generation";
 import type { AuthorizationContext } from "../services/authorization";
 
 /** Cloudflare bindings required by the production document capability. */
@@ -30,13 +30,13 @@ export const make = (
 ): DocumentGeneration.Interface =>
   DocumentGeneration.make({
     allowances: Allowances.make({
-      billing: Billing.make(database),
+      billing: BillingDb.make(database),
       catalog: retainedCatalog,
       now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
     }),
-    artifacts: ArtifactR2.make(bindings.ARTIFACTS),
-    artifactValidator: ArtifactValidation,
-    authorization: makeAuthorization(retainedCatalog),
+    artifacts: DocumentArtifacts.make(bindings.ARTIFACTS),
+    artifactValidator: DocumentArtifactValidation,
+    authorization: Authorization.make(retainedCatalog),
     compute: DocumentCompute.make(
       bindings.DOCUMENT_SANDBOX,
       bindings.ARTIFACTS,
@@ -48,7 +48,7 @@ export const make = (
 /** Reconcile one bounded batch of durable incurred-cost evidence into Allowances. */
 export const reconcileCosts = (bindings: Pick<Bindings, "ARTIFACTS">, database: Database) => {
   const allowances = Allowances.make({
-    billing: Billing.make(database),
+    billing: BillingDb.make(database),
     catalog: retainedCatalog,
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
   });
@@ -78,3 +78,5 @@ export const reconcileCosts = (bindings: Pick<Bindings, "ARTIFACTS">, database: 
     ),
   );
 };
+
+export * as DocumentGenerationComposition from "./document-generation";

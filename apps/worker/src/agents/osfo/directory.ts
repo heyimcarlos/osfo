@@ -1,22 +1,22 @@
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { BrowserCrypto } from "@effect/platform-browser";
 import { Think, type StreamCallback, type ThinkChannels } from "@cloudflare/think";
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import type { UIMessage } from "ai";
 import { Effect, Exit, Layer, Redacted } from "effect";
 
 import { loadConfig, publicWebBaseUrl } from "../../config";
-import * as Db from "../../db";
+import { Db } from "../../db";
 import { ChannelBindingId, ChannelIdentity } from "../../domain";
-import * as OnboardingCloudflare from "../../integrations/cloudflare/onboarding";
-import * as ChannelBindingPostgres from "../../integrations/postgres/channel-binding";
-import * as OnboardingPostgres from "../../integrations/postgres/onboarding";
-import * as OnboardingLinks from "../../integrations/public/onboarding-links";
+import { OnboardingCloudflare } from "../../integrations/cloudflare/onboarding";
+import { ChannelBindingPostgres } from "../../integrations/postgres/channel-binding";
+import { OnboardingPostgres } from "../../services/onboarding/postgres";
+import { OnboardingLinksAdapter } from "../../integrations/public/onboarding-links";
 import { makeTelegramChannel, makeTelegramConversationResolver } from "../../integrations/telegram";
 import { makeWhatsAppChannel, makeWhatsAppConversationResolver } from "../../integrations/whatsapp";
 import { invalidOsfoEnvironment, type RuntimeProbeResult } from "../../layers";
 import type { RuntimeSecrets } from "../../runtime-secrets";
-import * as Onboarding from "../../services/onboarding";
-import * as Registration from "../../services/registration";
+import { Onboarding } from "../../services/onboarding";
+import { Registration } from "../../services/registration";
 import { OsfoAgent } from "./agent";
 import type { AgentInitializationEncoded } from "./db/store";
 
@@ -348,16 +348,13 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     const dependencies = Layer.mergeAll(
       Registration.layerWithoutDependencies,
       OnboardingCloudflare.layer(this.env),
-      OnboardingLinks.layer({
+      OnboardingLinksAdapter.layer({
         officialWhatsAppNumber: this.env.WHATSAPP_PUBLIC_PHONE_NUMBER,
         publicBaseUrl: publicWebBaseUrl(loadConfig(this.env).auth),
         telegramBotUsername: this.env.TELEGRAM_BOT_USERNAME,
       }),
     ).pipe(Layer.provideMerge(base));
-    const onboarding = Onboarding.layerWithoutDependencies.pipe(
-      Layer.provide(OnboardingPostgres.layerWithoutDependencies),
-      Layer.provide(dependencies),
-    );
+    const onboarding = OnboardingPostgres.layer.pipe(Layer.provide(dependencies));
     return Effect.scoped(
       Effect.flatMap(Onboarding.Service, operation).pipe(Effect.provide(onboarding)),
     );

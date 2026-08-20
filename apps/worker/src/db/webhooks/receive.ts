@@ -24,18 +24,18 @@ export const receive = (
         const [inserted] = await transaction
           .insert(webhookEvents)
           .values({
-            eventType: event.type,
-            externalEventId: event.externalEventId,
-            payloadJson: encodePayload(event),
+            event_type: event.type,
+            external_event_id: event.externalEventId,
+            payload_json: encodePayload(event),
             provider: "stripe",
-            webhookEventId,
+            webhook_event_id: webhookEventId,
           })
           .onConflictDoNothing({
-            target: [webhookEvents.provider, webhookEvents.externalEventId],
+            target: [webhookEvents.provider, webhookEvents.external_event_id],
           })
-          .returning({ webhookEventId: webhookEvents.webhookEventId });
+          .returning({ webhookEventId: webhookEvents.webhook_event_id });
         if (inserted === undefined) return { _tag: "ProcessedDuplicate" } as const;
-        await transaction.insert(webhookJobs).values({ webhookEventId: inserted.webhookEventId });
+        await transaction.insert(webhookJobs).values({ webhook_event_id: inserted.webhookEventId });
         return {
           _tag: "Pending",
           attempt: 1,

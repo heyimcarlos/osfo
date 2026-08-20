@@ -1,17 +1,17 @@
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { BrowserCrypto } from "@effect/platform-browser";
 import { describe, expect, it } from "@effect/vitest";
 import type { Database } from "@osfo/db";
 import { users } from "@osfo/db/schema/auth";
 import { Effect, Layer, Redacted } from "effect";
 
-import * as AccountAuthorities from "../src/composition/account-authorities";
-import * as Db from "../src/db";
+import { AccountAuthorities } from "../src/composition/account-authorities";
+import { Db } from "../src/db";
 import { UserId } from "../src/domain";
 import { AdminActorId, AdminReason } from "../src/domain/account-administration";
 import { PhoneNumber } from "../src/domain/phone-account";
-import * as PhoneAccountAdapter from "../src/integrations/auth/phone-account";
-import * as DeletionCase from "../src/services/deletion-case";
-import * as PhoneAccount from "../src/services/phone-account";
+import { PhoneAccountAdapter } from "../src/integrations/auth/phone-account";
+import { DeletionCase } from "../src/services/deletion-case";
+import { PhoneAccount } from "../src/services/phone-account";
 import { withRealPostgresFixture } from "./real-postgres-fixture";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function, effecttsgo/strict-effect-provide -- Tests assert tagged outcomes through native PostgreSQL Promise boundaries. */

@@ -6,12 +6,12 @@ import { users } from "./auth";
 export const agents = pgTable(
   "agents",
   {
-    agentId: text("agent_id").notNull(),
-    createdAt: text("created_at").notNull(),
-    userId: text("user_id")
+    agent_id: text().notNull(),
+    created_at: text().notNull(),
+    user_id: text()
       .notNull()
       .primaryKey()
       .references(() => users.id, { onDelete: "cascade" }),
   },
-  (table) => [uniqueIndex("agents_agent_id_unique").on(table.agentId)],
+  (table) => [uniqueIndex("agents_agent_id_unique").on(table.agent_id)],
 );

@@ -18,11 +18,11 @@ export const beginAttempt = async (
     .update(webhookJobs)
     .set({
       attempts: sql`${webhookJobs.attempts} + 1`,
-      errorCode: null,
+      error_code: null,
       status: "pending",
-      updatedAt: sql`clock_timestamp()`,
+      updated_at: sql`clock_timestamp()`,
     })
-    .where(eq(webhookJobs.webhookEventId, webhookEventId))
+    .where(eq(webhookJobs.webhook_event_id, webhookEventId))
     .returning({ attempts: webhookJobs.attempts });
   return updated === undefined
     ? ({ _tag: "ProcessedDuplicate" } as const)

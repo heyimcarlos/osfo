@@ -22,7 +22,7 @@ import { createCompactFunction } from "agents/experimental/memory/utils";
 import { Cause, DateTime, Effect, Exit, Option, Predicate, Result, Schema } from "effect";
 import { HelpArea, OnboardingLocale } from "@osfo/api";
 
-import type { AssistantMessageId as AssistantMessageIdType, SessionId, UserId } from "../../domain";
+import type { UserId } from "../../domain";
 import type { AllowanceItem, AllowanceSource } from "../../domain/allowance";
 import {
   AgentId,
@@ -30,21 +30,21 @@ import {
   AssistantMessageId,
   ChannelBindingId,
   ChannelIdentity,
-  ConversationRouteId as ConversationRouteIdSchema,
-  SessionId as SessionIdSchema,
+  ConversationRouteId,
+  SessionId,
   ThinkSubmissionId,
   ThinkRequestId,
 } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
 import { ContentId } from "../../domain/client-content";
-import * as DocumentArtifact from "../../domain/document-artifact";
-import * as DocumentGenerationComposition from "../../composition/document-generation";
-import { database as workerDatabase, DbTimestamp } from "../../db";
-import * as Billing from "../../db/billing";
+import { DocumentArtifact } from "../../domain/document-artifact";
+import { DocumentGenerationComposition } from "../../composition/document-generation";
+import { Db } from "../../db";
+import { BillingDb } from "../../db/billing";
 import { decodeOsfoStage } from "../../config";
-import * as ProviderAuthorizationPostgres from "../../integrations/postgres/provider-authorization";
-import * as ChannelBindingPostgres from "../../integrations/postgres/channel-binding";
-import * as SessionRecallAuthorizationPostgres from "../../integrations/postgres/session-recall-authorization";
+import { ProviderAuthorizationPostgres } from "../../integrations/postgres/provider-authorization";
+import { ChannelBindingPostgres } from "../../integrations/postgres/channel-binding";
+import { SessionRecallAuthorizationPostgres } from "../../integrations/postgres/session-recall-authorization";
 import {
   CancelManagedConversationInput,
   ManagedTurnMetadata,
@@ -80,7 +80,7 @@ import {
   makeR2FileObjects,
 } from "../../integrations/cloudflare/file-objects";
 import { loadCurrentFileAuthorization } from "../../integrations/postgres/file-authorization";
-import * as AgentDirectory from "../../services/agent-directory";
+import { AgentDirectory } from "../../services/agent-directory";
 import {
   invalidOsfoEnvironment,
   makeOsfoAgentRuntime,
@@ -117,16 +117,16 @@ import {
   InspectCoreMemoryInput,
   type InspectCoreMemoryEncoded,
 } from "./core-memory";
-import * as Allowances from "../../services/allowances";
+import { Allowances } from "../../services/allowances";
 import { makeActionApprovals } from "../../services/action-approvals";
 import {
-  make as makeAuthorization,
+  Authorization,
   restoreCoreMemoryAuthorization,
   type ApprovalRequired,
   AuthorizationContext,
   type Denied,
 } from "../../services/authorization";
-import * as DocumentGeneration from "../../services/document-generation";
+import { DocumentGeneration } from "../../services/document-generation";
 import { makeDurableModelCallUsage } from "../../services/model-call-usage";
 import {
   makeSessionLifecycle,
@@ -214,7 +214,7 @@ const defaultTestProtectedActionState: TestProtectedActionState = {
   currentFact: "current",
   providerOutcome: "applied",
 };
-const authorization = makeAuthorization(retainedCatalog);
+const authorization = Authorization.make(retainedCatalog);
 
 type AgentFilePersistenceError =
   | FileAnalysisConflict
@@ -346,7 +346,7 @@ type PersonalWelcomeEncoded = typeof PersonalWelcomeInput.Encoded;
 /** Durable result for the deterministic first personal response. */
 export interface PersonalWelcomeCommitted {
   readonly _tag: "PersonalWelcomeCommitted";
-  readonly messageId: AssistantMessageIdType;
+  readonly messageId: AssistantMessageId;
   readonly sessionId: SessionId;
   readonly text: string;
 }
@@ -397,12 +397,12 @@ export class OsfoAgent extends Think<Env> {
     allowances: {
       record: (periodId, source, items) => this.#recordFileAllowance(periodId, source, items),
     },
-    authorization: makeAuthorization(retainedCatalog),
+    authorization: Authorization.make(retainedCatalog),
     catalog: retainedCatalog,
     compute: makeCloudflareFileCompute(this.env.DOCUMENT_SANDBOX),
     currentAuthorizationContext: (context) => this.#currentFileAuthorizationContext(context),
     now: DateTime.now.pipe(
-      Effect.map((time) => DbTimestamp.make(DateTime.toDateUtc(time).toISOString())),
+      Effect.map((time) => Db.DbTimestamp.make(DateTime.toDateUtc(time).toISOString())),
     ),
     objects: makeR2FileObjects(this.env.FILES),
     store: this.#fileStore,
@@ -1468,7 +1468,7 @@ export class OsfoAgent extends Think<Env> {
   > {
     await this.#migrationsReady;
     return runRpc(
-      Schema.decodeEffect(ConversationRouteIdSchema)(routeId).pipe(
+      Schema.decodeEffect(ConversationRouteId)(routeId).pipe(
         Effect.mapError(() => invalidRequest("readRoute")),
         Effect.flatMap((parsed) => this.#store.readRoute(parsed)),
       ),
@@ -1486,7 +1486,7 @@ export class OsfoAgent extends Think<Env> {
   > {
     await this.#migrationsReady;
     return runRpc(
-      Schema.decodeEffect(ConversationRouteIdSchema)(routeId).pipe(
+      Schema.decodeEffect(ConversationRouteId)(routeId).pipe(
         Effect.mapError(() => invalidRequest("readSessionAuthorizationFacts")),
         Effect.flatMap((parsed) => this.#sessionLifecycle.readAuthorizationFacts(parsed)),
       ),
@@ -1509,7 +1509,7 @@ export class OsfoAgent extends Think<Env> {
     const store = this.#store;
     return runRpc(
       Effect.gen(function* () {
-        const parsed = yield* Schema.decodeEffect(SessionIdSchema)(sessionId).pipe(
+        const parsed = yield* Schema.decodeEffect(SessionId)(sessionId).pipe(
           Effect.mapError(() => invalidRequest("readSession")),
         );
         const owned = yield* store.ownsSession(parsed);
@@ -1543,7 +1543,7 @@ export class OsfoAgent extends Think<Env> {
       Effect.scoped(
         Effect.gen(function* () {
           const currentContext = yield* currentAuthorization();
-          const database = yield* workerDatabase;
+          const database = yield* Db.database;
           return yield* DocumentGenerationComposition.make(
             env,
             database,
@@ -1570,7 +1570,7 @@ export class OsfoAgent extends Think<Env> {
       Effect.scoped(
         Effect.gen(function* () {
           const currentContext = yield* currentAuthorization();
-          const database = yield* workerDatabase;
+          const database = yield* Db.database;
           return yield* DocumentGenerationComposition.make(
             env,
             database,
@@ -1603,7 +1603,7 @@ export class OsfoAgent extends Think<Env> {
       Effect.scoped(
         Effect.gen(function* () {
           const currentContext = yield* currentAuthorization();
-          const database = yield* workerDatabase;
+          const database = yield* Db.database;
           return yield* DocumentGenerationComposition.make(
             env,
             database,
@@ -1756,9 +1756,9 @@ export class OsfoAgent extends Think<Env> {
         runtime.runPromise(
           Effect.scoped(
             Effect.gen(function* () {
-              const database = yield* workerDatabase;
+              const database = yield* Db.database;
               const allowances = Allowances.make({
-                billing: Billing.make(database),
+                billing: BillingDb.make(database),
                 catalog: retainedCatalog,
                 now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
               });
@@ -1792,9 +1792,9 @@ export class OsfoAgent extends Think<Env> {
         runtime.runPromise(
           Effect.scoped(
             Effect.gen(function* () {
-              const database = yield* workerDatabase;
+              const database = yield* Db.database;
               const allowances = Allowances.make({
-                billing: Billing.make(database),
+                billing: BillingDb.make(database),
                 catalog: retainedCatalog,
                 now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
               });
@@ -1831,7 +1831,7 @@ export class OsfoAgent extends Think<Env> {
           Effect.scoped(
             Effect.gen(function* () {
               const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-              const database = yield* workerDatabase;
+              const database = yield* Db.database;
               return yield* loadCurrentFileAuthorization(database, agentId, context, now);
             }),
           ),
@@ -2011,7 +2011,7 @@ export class OsfoAgent extends Think<Env> {
       try: async () => {
         const binding = await runtime.runPromise(
           Effect.scoped(
-            workerDatabase.pipe(
+            Db.database.pipe(
               Effect.flatMap((database) =>
                 Effect.promise(() =>
                   ChannelBindingPostgres.readBindingById(database, channelBindingId),
@@ -2054,7 +2054,7 @@ export class OsfoAgent extends Think<Env> {
       Effect.promise(() =>
         runtime.runPromise(
           Effect.scoped(
-            workerDatabase.pipe(
+            Db.database.pipe(
               Effect.flatMap((database) =>
                 ChannelBindingPostgres.resolveActiveAgentBinding(
                   database,
@@ -2084,10 +2084,10 @@ export class OsfoAgent extends Think<Env> {
     if (runtime === undefined) return false;
     const result = await runtime.runPromiseExit(
       Effect.scoped(
-        workerDatabase.pipe(
+        Db.database.pipe(
           Effect.flatMap((database) =>
             Allowances.make({
-              billing: Billing.make(database),
+              billing: BillingDb.make(database),
               catalog: retainedCatalog,
               now: Effect.succeed(currentAuthorization.now),
             }).record(
@@ -2159,10 +2159,7 @@ export class OsfoAgent extends Think<Env> {
     });
   }
 
-  #findThinkMessageOwner(
-    assistantMessageId: AssistantMessageIdType,
-    thinkRequestId: ThinkRequestId,
-  ) {
+  #findThinkMessageOwner(assistantMessageId: AssistantMessageId, thinkRequestId: ThinkRequestId) {
     const makeSession = () => Session.create(this);
     const store = this.#store;
     return Effect.gen(function* () {
@@ -2438,7 +2435,7 @@ const readThinkHistory = (session: Session, sessionId: SessionId) =>
 const readThinkMessage = (
   session: Session,
   sessionId: SessionId,
-  assistantMessageId: AssistantMessageIdType,
+  assistantMessageId: AssistantMessageId,
 ) =>
   Effect.tryPromise({
     catch: (cause) =>

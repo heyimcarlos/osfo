@@ -95,3 +95,5 @@ export const make = Effect.map(Store, (store) =>
 
 /** AuthSession Layer that preserves its @osfo/auth Store dependency. */
 export const layerWithoutDependencies = Layer.effect(Service, make);
+
+export * as AuthSession from "./auth-session";

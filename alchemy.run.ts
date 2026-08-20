@@ -1,24 +1,25 @@
-import * as Alchemy from "alchemy";
-import * as Cloudflare from "alchemy/Cloudflare";
+import { Stack } from "alchemy";
+import { providers, state } from "alchemy/Cloudflare";
+// oxlint-disable-next-line osfo/no-star-import -- Alchemy's Cloudflare and Neon modules both expose `providers`; the named namespace keeps both canonical APIs.
 import * as Neon from "alchemy/Neon";
 import { Effect, Layer } from "effect";
 
-import { Db, Hyperdrive } from "./infra/cloudflare/Db";
+import { DatabaseHyperdrive, Db } from "./infra/cloudflare/Db";
 import { Artifacts } from "./infra/cloudflare/Artifacts";
 import Worker from "./infra/cloudflare/Worker";
 
 /** Stage-separated Osfo Cloudflare stack. */
-export default Alchemy.Stack(
+export default Stack(
   "Osfo",
   {
-    providers: Cloudflare.providers().pipe(Layer.provideMerge(Neon.providers())),
-    state: Cloudflare.state(),
+    providers: providers().pipe(Layer.provideMerge(Neon.providers())),
+    state: state(),
   },
   Effect.gen(function* () {
-    const { stage } = yield* Alchemy.Stack;
+    const { stage } = yield* Stack;
     const { branchId } = yield* Db;
     const artifacts = yield* Artifacts;
-    const db = yield* Hyperdrive;
+    const db = yield* DatabaseHyperdrive;
     const worker = yield* Worker;
 
     return {

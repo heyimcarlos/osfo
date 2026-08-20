@@ -1,12 +1,12 @@
-import { Input as InputPrimitive } from "@base-ui/react/input";
-import type * as React from "react";
+import { Input } from "@base-ui/react/input";
+import type { ComponentProps } from "react";
 
 import { cn } from "#lib/utils";
 
 /** Text input with the shared Osfo field treatment. */
-function Input({ className, type, ...props }: React.ComponentProps<"input">) {
+function InputField({ className, type, ...props }: ComponentProps<"input">) {
   return (
-    <InputPrimitive
+    <Input
       type={type}
       data-slot="input"
       className={cn(
@@ -18,4 +18,4 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
   );
 }
 
-export { Input };
+export { InputField as Input };

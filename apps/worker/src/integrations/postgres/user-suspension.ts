@@ -3,10 +3,10 @@ import { users } from "@osfo/db/schema/auth";
 import { desc, eq, sql } from "drizzle-orm";
 import { Effect, Layer, Predicate, Result, Schema } from "effect";
 
-import * as Db from "../../db";
+import { Db } from "../../db";
 import { AdminActorId, AdminReason } from "../../domain/account-administration";
 import { UserSuspensionEventId } from "../../domain/user-suspension";
-import * as UserSuspension from "../../services/user-suspension";
+import { UserSuspension } from "../../services/user-suspension";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Drizzle transactions and domain tags require these forms. */
 
@@ -33,14 +33,14 @@ export const make = Effect.gen(function* () {
         database
           .select({
             action: userSuspensionEvents.action,
-            adminActorId: userSuspensionEvents.adminActorId,
-            eventId: userSuspensionEvents.eventId,
-            occurredAt: userSuspensionEvents.occurredAt,
+            adminActorId: userSuspensionEvents.admin_actor_id,
+            eventId: userSuspensionEvents.event_id,
+            occurredAt: userSuspensionEvents.occurred_at,
             reason: userSuspensionEvents.reason,
           })
           .from(userSuspensionEvents)
-          .where(eq(userSuspensionEvents.userId, userId))
-          .orderBy(userSuspensionEvents.occurredAt, userSuspensionEvents.eventId),
+          .where(eq(userSuspensionEvents.user_id, userId))
+          .orderBy(userSuspensionEvents.occurred_at, userSuspensionEvents.event_id),
       ).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(History)),
         Effect.mapError((cause) =>
@@ -52,8 +52,8 @@ export const make = Effect.gen(function* () {
         database
           .select({ action: userSuspensionEvents.action })
           .from(userSuspensionEvents)
-          .where(eq(userSuspensionEvents.userId, userId))
-          .orderBy(desc(userSuspensionEvents.occurredAt), desc(userSuspensionEvents.eventId))
+          .where(eq(userSuspensionEvents.user_id, userId))
+          .orderBy(desc(userSuspensionEvents.occurred_at), desc(userSuspensionEvents.event_id))
           .limit(1),
       ).pipe(
         Effect.flatMap(([latest]) =>
@@ -79,8 +79,8 @@ export const make = Effect.gen(function* () {
           const [latest] = await transaction
             .select({ action: userSuspensionEvents.action })
             .from(userSuspensionEvents)
-            .where(eq(userSuspensionEvents.userId, command.userId))
-            .orderBy(desc(userSuspensionEvents.occurredAt), desc(userSuspensionEvents.eventId))
+            .where(eq(userSuspensionEvents.user_id, command.userId))
+            .orderBy(desc(userSuspensionEvents.occurred_at), desc(userSuspensionEvents.event_id))
             .limit(1);
           let suspended = false;
           if (latest !== undefined) {
@@ -95,11 +95,11 @@ export const make = Effect.gen(function* () {
           }
           await transaction.insert(userSuspensionEvents).values({
             action,
-            adminActorId: command.adminActorId,
-            eventId,
-            occurredAt: sql`clock_timestamp()`,
+            admin_actor_id: command.adminActorId,
+            event_id: eventId,
+            occurred_at: sql`clock_timestamp()`,
             reason: command.reason,
-            userId: command.userId,
+            user_id: command.userId,
           });
           return "changed" as const;
         }),
@@ -116,3 +116,5 @@ export const make = Effect.gen(function* () {
 
 /** User Suspension persistence Layer backed by Postgres. */
 export const layerWithoutDependencies = Layer.effect(UserSuspension.Persistence, make);
+
+export * as UserSuspensionPostgres from "./user-suspension";

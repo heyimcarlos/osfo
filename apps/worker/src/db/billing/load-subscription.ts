@@ -18,9 +18,9 @@ export const loadSubscription = (
   runBillingTransaction("loadBillingSubscription", () =>
     database.transaction(async (transaction) => {
       const [row] = await transaction
-        .select({ updatedAt: billingSubscriptions.updatedAt })
+        .select({ updatedAt: billingSubscriptions.updated_at })
         .from(billingSubscriptions)
-        .where(eq(billingSubscriptions.userId, userId))
+        .where(eq(billingSubscriptions.user_id, userId))
         .limit(1);
       return row;
     }),

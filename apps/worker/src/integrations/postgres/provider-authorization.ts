@@ -4,13 +4,13 @@ import { eq } from "drizzle-orm";
 import { DateTime, Effect, Schema } from "effect";
 
 import { database } from "../../db";
-import * as Billing from "../../db/billing";
+import { BillingDb } from "../../db/billing";
 import { type AgentId, type ChannelBindingId, UserId } from "../../domain";
 import type { ChannelProvider } from "../../services/onboarding";
 import { AuthorizationContext } from "../../services/authorization";
 import { readBinding } from "./channel-binding";
-import * as DeletionCasePostgres from "./deletion-case";
-import * as UserSuspensionPostgres from "./user-suspension";
+import { DeletionCasePostgres } from "./deletion-case";
+import { UserSuspensionPostgres } from "./user-suspension";
 
 /** Expected failure while reading current provider Channel Binding authorization. */
 export class ProviderAuthorizationPersistenceUnavailable extends Schema.TaggedError<ProviderAuthorizationPersistenceUnavailable>()(
@@ -29,7 +29,7 @@ export const make = (options: {
 }) =>
   Effect.gen(function* () {
     const db = yield* database;
-    const billing = Billing.make(db);
+    const billing = BillingDb.make(db);
     const deletionCases = yield* DeletionCasePostgres.make;
     const userSuspensions = yield* UserSuspensionPostgres.make;
 
@@ -47,13 +47,13 @@ export const make = (options: {
             if (binding === null) return null;
             const [record] = await db
               .select({
-                agentId: agents.agentId,
+                agentId: agents.agent_id,
                 plan: billingSubscriptions.plan,
-                planPolicyVersion: billingSubscriptions.planPolicyVersion,
+                planPolicyVersion: billingSubscriptions.plan_policy_version,
               })
               .from(agents)
-              .innerJoin(billingSubscriptions, eq(billingSubscriptions.userId, agents.userId))
-              .where(eq(agents.userId, binding.userId))
+              .innerJoin(billingSubscriptions, eq(billingSubscriptions.user_id, agents.user_id))
+              .where(eq(agents.user_id, binding.userId))
               .limit(1);
             return record === undefined ? null : { ...binding, ...record };
           },
@@ -104,3 +104,5 @@ const unavailable = (provider: ChannelProvider, cause: unknown) =>
     message: "PostgreSQL could not load provider authorization facts",
     provider,
   });
+
+export * as ProviderAuthorizationPostgres from "./provider-authorization";

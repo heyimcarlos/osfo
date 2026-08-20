@@ -7,9 +7,9 @@ import {
 import { Effect, Layer, Schema } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 
-import * as WorkerAuth from "../auth";
-import * as AccountAccess from "../composition/account-access";
-import * as Db from "../db";
+import { WorkerAuth } from "../auth";
+import { AccountAccess } from "../composition/account-access";
+import { Db } from "../db";
 import { UserId } from "../domain";
 import { TwilioVerify } from "../integrations/twilio/verify";
 
@@ -18,16 +18,16 @@ export const layer = (config: WorkerAuth.AuthRouteConfig) =>
   Layer.effect(
     Auth,
     Effect.gen(function* () {
-      const db = yield* Db.Db;
-      const twilio = yield* TwilioVerify;
+      const db = yield* Db.Service;
+      const twilio = yield* TwilioVerify.Service;
 
       return Auth.of((effect, _options) =>
         Effect.provideServiceEffect(
           effect,
           CurrentUser,
           currentUser(config).pipe(
-            Effect.provideService(Db.Db, db),
-            Effect.provideService(TwilioVerify, twilio),
+            Effect.provideService(Db.Service, db),
+            Effect.provideService(TwilioVerify.Service, twilio),
           ),
         ),
       );
@@ -84,3 +84,5 @@ export const currentDownloadUser = (config: WorkerAuth.AuthRouteConfig) =>
       Unauthorized: () => new DocumentDownloadUnauthorized({}),
     }),
   );
+
+export * as AuthMiddleware from "./auth";

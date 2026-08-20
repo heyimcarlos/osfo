@@ -3,9 +3,9 @@ import { agents } from "@osfo/db/schema/agents";
 import { and, eq, isNull } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 
-import * as Db from "../../db";
+import { Db } from "../../db";
 import { AgentId, ChannelBindingId, ChannelIdentity, UserId } from "../../domain";
-import type * as ChannelBinding from "../../services/channel-binding";
+import type { ChannelBinding } from "../../services/channel-binding";
 import type { ChannelProvider } from "../../services/onboarding";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle query helpers preserve caller-owned transaction scope. */
@@ -51,18 +51,18 @@ export const readActiveBinding = async (
 ): Promise<StoredChannelBinding | null> => {
   const [row] = await transaction
     .select({
-      channelBindingId: channelBindings.channelBindingId,
-      channelIdentity: channelBindings.channelIdentity,
+      channelBindingId: channelBindings.channel_binding_id,
+      channelIdentity: channelBindings.channel_identity,
       provider: channelBindings.provider,
-      revokedAt: channelBindings.revokedAt,
-      userId: channelBindings.userId,
+      revokedAt: channelBindings.revoked_at,
+      userId: channelBindings.user_id,
     })
     .from(channelBindings)
     .where(
       and(
         eq(channelBindings.provider, provider),
-        eq(channelBindings.channelIdentity, channelIdentity),
-        isNull(channelBindings.revokedAt),
+        eq(channelBindings.channel_identity, channelIdentity),
+        isNull(channelBindings.revoked_at),
       ),
     )
     .limit(1);
@@ -80,9 +80,9 @@ export const resolveActiveAgentBinding = (
       const binding = await readActiveBinding(database, provider, channelIdentity);
       if (binding === null) return null;
       const [agent] = await database
-        .select({ agentId: agents.agentId })
+        .select({ agentId: agents.agent_id })
         .from(agents)
-        .where(eq(agents.userId, binding.userId))
+        .where(eq(agents.user_id, binding.userId))
         .limit(1);
       return agent === undefined
         ? null
@@ -103,16 +103,16 @@ export const readBinding = async (
 ): Promise<StoredChannelBinding | null> => {
   const [row] = await database
     .select({
-      channelBindingId: channelBindings.channelBindingId,
-      channelIdentity: channelBindings.channelIdentity,
+      channelBindingId: channelBindings.channel_binding_id,
+      channelIdentity: channelBindings.channel_identity,
       provider: channelBindings.provider,
-      revokedAt: channelBindings.revokedAt,
-      userId: channelBindings.userId,
+      revokedAt: channelBindings.revoked_at,
+      userId: channelBindings.user_id,
     })
     .from(channelBindings)
     .where(
       and(
-        eq(channelBindings.channelBindingId, channelBindingId),
+        eq(channelBindings.channel_binding_id, channelBindingId),
         eq(channelBindings.provider, provider),
       ),
     )
@@ -127,14 +127,14 @@ export const readBindingById = async (
 ): Promise<StoredChannelBinding | null> => {
   const [row] = await database
     .select({
-      channelBindingId: channelBindings.channelBindingId,
-      channelIdentity: channelBindings.channelIdentity,
+      channelBindingId: channelBindings.channel_binding_id,
+      channelIdentity: channelBindings.channel_identity,
       provider: channelBindings.provider,
-      revokedAt: channelBindings.revokedAt,
-      userId: channelBindings.userId,
+      revokedAt: channelBindings.revoked_at,
+      userId: channelBindings.user_id,
     })
     .from(channelBindings)
-    .where(eq(channelBindings.channelBindingId, channelBindingId))
+    .where(eq(channelBindings.channel_binding_id, channelBindingId))
     .limit(1);
   return row === undefined ? null : decodeStoredBinding(row);
 };
@@ -151,3 +151,5 @@ export const readCurrentBinding = async (
 };
 
 const decodeStoredBinding = Schema.decodeUnknownSync(StoredChannelBinding);
+
+export * as ChannelBindingPostgres from "./channel-binding";

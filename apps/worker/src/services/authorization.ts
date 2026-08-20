@@ -4,16 +4,11 @@ import { AllowancePeriodId, ChannelBindingId, Plan, PlanPolicyVersion, UserId } 
 import { type AllowanceKind, RecordedAllowanceUse } from "../domain/allowance";
 import {
   AuthorizationOperation,
-  type AuthorizationOperation as AuthorizationOperationType,
   type AuthorizationOperationInput,
   AuthorizationOperationName,
-  type AuthorizationOperationName as AuthorizationOperationNameType,
 } from "../domain/authorization-operation";
 import { type Capability, type PlanPolicyCatalog, policyFor } from "../domain/plan-policy";
-import {
-  CoreMemoryAuthorizationSnapshot,
-  type CoreMemoryAuthorizationSnapshot as CoreMemoryAuthorizationSnapshotType,
-} from "../domain/core-memory-authorization";
+import { CoreMemoryAuthorizationSnapshot } from "../domain/core-memory-authorization";
 import { AuthSessionAuthorityFact, AuthSessionId } from "../domain/auth-session";
 import { ChannelBindingAuthorityFact } from "../domain/channel-binding";
 import { DeletionAccessFact } from "../domain/deletion-case";
@@ -103,7 +98,7 @@ export type AuthorizationContext = typeof AuthorizationContext.Type;
 /** Capture only facts used by memory.clear admission and protected-effect recheck. */
 export const snapshotCoreMemoryAuthorization = (
   context: AuthorizationContext,
-): CoreMemoryAuthorizationSnapshotType =>
+): CoreMemoryAuthorizationSnapshot =>
   CoreMemoryAuthorizationSnapshot.make({
     authority: context.authority,
     deletionAccess: context.deletionAccess,
@@ -139,7 +134,7 @@ export const restoreCoreMemoryAuthorization = (
   });
 
 const restoreActingAuthority = (
-  authority: CoreMemoryAuthorizationSnapshotType["authority"],
+  authority: CoreMemoryAuthorizationSnapshot["authority"],
 ): AuthorizationContext["authority"] => {
   if (authority === null) return null;
   if (Predicate.isTagged(authority, "AuthSession"))
@@ -154,7 +149,7 @@ const restoreActingAuthority = (
 };
 
 const restoreOriginatingAuthority = (
-  authority: CoreMemoryAuthorizationSnapshotType["originatingAuthority"],
+  authority: CoreMemoryAuthorizationSnapshot["originatingAuthority"],
 ): AuthorizationContext["originatingAuthority"] => {
   if (Predicate.isTagged(authority, "AuthSession"))
     return { ...authority, authSessionId: AuthSessionId.make(authority.authSessionId) };
@@ -204,7 +199,7 @@ export type Denied = {
 export type ApprovalRequired = {
   readonly _tag: "ApprovalRequired";
   readonly actionId: string;
-  readonly operation: AuthorizationOperationNameType;
+  readonly operation: AuthorizationOperationName;
 };
 
 /** Deterministic default-deny Authorization answer. */
@@ -255,7 +250,7 @@ export const make = (catalog: PlanPolicyCatalog): Interface => {
 const authorize = (
   catalog: PlanPolicyCatalog,
   context: AuthorizationContext,
-  operation: AuthorizationOperationType,
+  operation: AuthorizationOperation,
   mode: "admission" | "recheck",
 ): AuthorizationResult => {
   const authority = context.authority;
@@ -362,7 +357,7 @@ const denied = (reason: AuthorizationDenialReason, resetAt: Date | null = null):
 
 const authorityPermits = (
   authority: Exclude<AuthorizationContext["authority"], null>,
-  operation: AuthorizationOperationType,
+  operation: AuthorizationOperation,
 ) => {
   if (!Predicate.isTagged(authority, "DurableTrigger")) return true;
   if (authority.triggerType === "scheduledTask") return operation.kind === "reminder.deliver";
@@ -399,7 +394,7 @@ const authorityMatchesOrigin = (
   );
 };
 
-const requiresOwnership = (operation: AuthorizationOperationType) =>
+const requiresOwnership = (operation: AuthorizationOperation) =>
   operation.kind.startsWith("session.") ||
   operation.kind.startsWith("memory.") ||
   operation.kind.startsWith("file.") ||
@@ -409,11 +404,11 @@ const requiresOwnership = (operation: AuthorizationOperationType) =>
   operation.kind.startsWith("gmail.") ||
   operation.kind === "support.gmSummon";
 
-const requiresGmailConnection = (operation: AuthorizationOperationType) =>
+const requiresGmailConnection = (operation: AuthorizationOperation) =>
   operation.kind.startsWith("gmail.") && operation.kind !== "gmail.connection.manage";
 
 const exceedsLiveLimit = (
-  operation: AuthorizationOperationType,
+  operation: AuthorizationOperation,
   context: AuthorizationContext,
   rules: ReturnType<typeof policyFor>,
 ) => {
@@ -442,7 +437,7 @@ const exceedsLiveLimit = (
 };
 
 const exceedsOperationLimit = (
-  operation: AuthorizationOperationType,
+  operation: AuthorizationOperation,
   context: AuthorizationContext,
   rules: ReturnType<typeof policyFor>,
 ) => {
@@ -464,7 +459,7 @@ const exceedsOperationLimit = (
   }
 };
 
-const requiresApproval = (operation: AuthorizationOperationType) => {
+const requiresApproval = (operation: AuthorizationOperation) => {
   switch (operation.kind) {
     case "session.delete":
     case "memory.clear":
@@ -485,13 +480,13 @@ const requiresApproval = (operation: AuthorizationOperationType) => {
   }
 };
 
-const hasExactApproval = (context: AuthorizationContext, operation: AuthorizationOperationType) =>
+const hasExactApproval = (context: AuthorizationContext, operation: AuthorizationOperation) =>
   context.approval !== null &&
   context.approval.userId === context.user.userId &&
   context.approval.operation === operation.kind &&
   context.approval.actionId === operation.actionId;
 
-const isUnmetered = (operation: AuthorizationOperationType) => {
+const isUnmetered = (operation: AuthorizationOperation) => {
   switch (operation.kind) {
     case "session.delete":
     case "memory.clear":
@@ -519,7 +514,7 @@ const isUnmetered = (operation: AuthorizationOperationType) => {
   }
 };
 
-const allowanceKindsFor = (operation: AuthorizationOperationType): ReadonlyArray<AllowanceKind> => {
+const allowanceKindsFor = (operation: AuthorizationOperation): ReadonlyArray<AllowanceKind> => {
   switch (operation.kind) {
     case "conversation.accept":
       return ["acceptedMessages"];
@@ -546,7 +541,7 @@ const allowanceKindsFor = (operation: AuthorizationOperationType): ReadonlyArray
   }
 };
 
-const entitlementFor = (operation: AuthorizationOperationType): Capability | null => {
+const entitlementFor = (operation: AuthorizationOperation): Capability | null => {
   switch (operation.kind) {
     case "conversation.accept":
     case "conversation.run":
@@ -599,3 +594,5 @@ const entitlementFor = (operation: AuthorizationOperationType): Capability | nul
   }
   return null;
 };
+
+export * as Authorization from "./authorization";

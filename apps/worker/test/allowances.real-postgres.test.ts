@@ -4,11 +4,11 @@ import { users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { DateTime, Effect, Schema } from "effect";
 
-import * as Billing from "../src/db/billing";
+import { BillingDb } from "../src/db/billing";
 import { AllowancePeriodId, BillingSubscriptionId, UserId } from "../src/domain";
 import { retainedCatalog } from "../src/domain/plan-policy";
-import * as Allowances from "../src/services/allowances";
-import { AuthorizationContext, make as makeAuthorization } from "../src/services/authorization";
+import { Allowances } from "../src/services/allowances";
+import { Authorization, AuthorizationContext } from "../src/services/authorization";
 import { RealPostgresTestUnavailable, withRealPostgresFixture } from "./real-postgres-fixture";
 
 describe("Allowances with real PostgreSQL", () => {
@@ -32,22 +32,22 @@ describe("Allowances with real PostgreSQL", () => {
               name: "Real Concurrency",
             });
             await database.insert(billingSubscriptions).values({
-              billingSubscriptionId,
-              createdAt: startsAt,
+              billing_subscription_id: billingSubscriptionId,
+              created_at: startsAt,
               plan: "free",
-              planPolicyVersion: "launch-v1",
-              updatedAt: startsAt,
-              userId,
+              plan_policy_version: "launch-v1",
+              updated_at: startsAt,
+              user_id: userId,
             });
             await database.insert(allowancePeriods).values({
-              allowancePeriodId,
-              billingSubscriptionId,
-              createdAt: startsAt,
-              endsAt,
+              allowance_period_id: allowancePeriodId,
+              billing_subscription_id: billingSubscriptionId,
+              created_at: startsAt,
+              ends_at: endsAt,
               plan: "free",
-              planPolicyVersion: "launch-v1",
-              startsAt,
-              userId,
+              plan_policy_version: "launch-v1",
+              starts_at: startsAt,
+              user_id: userId,
             });
           },
           catch: () =>
@@ -55,13 +55,13 @@ describe("Allowances with real PostgreSQL", () => {
               message: "Could not seed the real PostgreSQL concurrency test",
             }),
         });
-        const billing = Billing.make(database);
+        const billing = BillingDb.make(database);
         const allowances = Allowances.make({
           billing,
           catalog: retainedCatalog,
           now: Effect.succeed(now),
         });
-        const authorization = makeAuthorization(retainedCatalog);
+        const authorization = Authorization.make(retainedCatalog);
         yield* allowances.record(
           allowancePeriodId,
           { sourceId: "accepted-batch", sourceType: "acceptanceReceipt" },
@@ -110,7 +110,7 @@ describe("Allowances with real PostgreSQL", () => {
 });
 
 const authorizationContext = (
-  admission: Effect.Success<ReturnType<Billing.Interface["admit"]>>,
+  admission: Effect.Success<ReturnType<BillingDb.Interface["admit"]>>,
   now: Date,
 ) =>
   Schema.decodeSync(AuthorizationContext)({

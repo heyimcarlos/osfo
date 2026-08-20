@@ -1,9 +1,9 @@
 import { Layer, type ManagedRuntime } from "effect";
 
-import * as Billing from "./handlers/billing";
-import * as Health from "./handlers/health";
-import * as Onboarding from "./handlers/onboarding";
-import * as Registration from "./handlers/registration";
+import { BillingHandlers } from "./handlers/billing";
+import { HealthHandlers } from "./handlers/health";
+import { OnboardingHandlers } from "./handlers/onboarding";
+import { RegistrationHandlers } from "./handlers/registration";
 import type { ExecutionUnit } from "./layers";
 import type { CloudflareConfig } from "./config";
 
@@ -13,8 +13,10 @@ export const layer = (
   config: CloudflareConfig,
 ) =>
   Layer.mergeAll(
-    Billing.layer(config),
-    Health.layer(runtime),
-    Onboarding.layer,
-    Registration.layer,
+    BillingHandlers.layer(config),
+    HealthHandlers.layer(runtime),
+    OnboardingHandlers.layer,
+    RegistrationHandlers.layer,
   );
+
+export * as Handlers from "./handlers";

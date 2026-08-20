@@ -3,13 +3,18 @@ import { definePlugin } from "@oxlint/plugins";
 import { noChainedTypeAssertionsRule } from "./rules/no-chained-type-assertions.ts";
 import { noConditionalEmptyObjectSpreadRule } from "./rules/no-conditional-empty-object-spread.ts";
 import noCrossPackageRelativeImports from "./rules/no-cross-package-relative-imports.ts";
+import noDrizzleColumnName from "./rules/no-drizzle-column-name.ts";
 import { noKnownValueWideningRule } from "./rules/no-known-value-widening.ts";
+import noImportAlias from "./rules/no-import-alias.ts";
+import noEffectDieString from "./rules/no-effect-die-string.ts";
 import { noModuleMockingRule } from "./rules/no-module-mocking.ts";
+import noNestedEffectServiceYield from "./rules/no-nested-effect-service-yield.ts";
 import { noObjectParametersRule } from "./rules/no-object-parameters.ts";
 import noRawFetch from "./rules/no-raw-fetch.ts";
 import { noReflectApplyRule } from "./rules/no-reflect-apply.ts";
 import { noReflectGetRule } from "./rules/no-reflect-get.ts";
 import { noRuntimeTypeofRule } from "./rules/no-runtime-typeof.ts";
+import noStarImport from "./rules/no-star-import.ts";
 import { noForbiddenTermInSymbolNamesRule } from "./rules/no-shape-in-symbol-names.ts";
 import { noUnknownParametersRule } from "./rules/no-unknown-parameters.ts";
 import { noUnknownReturnsRule } from "./rules/no-unknown-returns.ts";
@@ -24,13 +29,18 @@ const osfoPlugin = definePlugin({
     "no-chained-type-assertions": noChainedTypeAssertionsRule,
     "no-conditional-empty-object-spread": noConditionalEmptyObjectSpreadRule,
     "no-cross-package-relative-imports": noCrossPackageRelativeImports,
+    "no-drizzle-column-name": noDrizzleColumnName,
     "no-known-value-widening": noKnownValueWideningRule,
+    "no-import-alias": noImportAlias,
+    "no-effect-die-string": noEffectDieString,
     "no-module-mocking": noModuleMockingRule,
+    "no-nested-effect-service-yield": noNestedEffectServiceYield,
     "no-object-parameters": noObjectParametersRule,
     "no-raw-fetch": noRawFetch,
     "no-reflect-apply": noReflectApplyRule,
     "no-reflect-get": noReflectGetRule,
     "no-runtime-typeof": noRuntimeTypeofRule,
+    "no-star-import": noStarImport,
     "no-shape-in-symbol-names": noForbiddenTermInSymbolNamesRule,
     "no-unknown-parameters": noUnknownParametersRule,
     "no-unknown-returns": noUnknownReturnsRule,

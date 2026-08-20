@@ -15,8 +15,8 @@ import {
   StripeSubscriptionId,
   UserId,
 } from "../src/domain";
-import * as BillingSubscriptions from "../src/services/billing-subscriptions";
-import * as Billing from "../src/db/billing";
+import { BillingSubscriptions } from "../src/services/billing-subscriptions";
+import { BillingDb } from "../src/db/billing";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/global-date, effecttsgo/global-date-in-effect -- These database tests use fixed Date fixtures at the Drizzle boundary and inspect Effect tags. */
 
@@ -135,45 +135,45 @@ describe("BillingSubscriptions", () => {
             fixture.database.insert(users).values({
               email: "billing@example.test",
               id: userId,
-              name: "Billing User",
+              name: "BillingDb User",
               updatedAt: new Date("2026-08-01T00:00:00.000Z"),
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingCustomers).values({
-              billingCustomerId: "billing-customer-1",
-              stripeCustomerId: "cus_billing",
-              userId,
+              billing_customer_id: "billing-customer-1",
+              stripe_customer_id: "cus_billing",
+              user_id: userId,
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingSubscriptions).values({
-              billingSubscriptionId: "billing-subscription-1",
-              billingCustomerId: "billing-customer-1",
-              createdAt: new Date("2026-08-01T00:00:00.000Z"),
+              billing_subscription_id: "billing-subscription-1",
+              billing_customer_id: "billing-customer-1",
+              created_at: new Date("2026-08-01T00:00:00.000Z"),
               plan: "free",
-              planPolicyVersion: "launch-v1",
-              stripePriceId: "price_previous",
-              stripeProductId: "prod_previous",
-              stripeStatus: "canceled",
-              stripeSubscriptionId: "sub_previous",
-              updatedAt: new Date("2026-08-01T00:00:00.000Z"),
-              userId,
+              plan_policy_version: "launch-v1",
+              stripe_price_id: "price_previous",
+              stripe_product_id: "prod_previous",
+              stripe_status: "canceled",
+              stripe_subscription_id: "sub_previous",
+              updated_at: new Date("2026-08-01T00:00:00.000Z"),
+              user_id: userId,
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(allowancePeriods).values({
-              allowancePeriodId: "allowance-period-free",
-              billingSubscriptionId: "billing-subscription-1",
-              createdAt: new Date("2026-08-01T00:00:00.000Z"),
-              endsAt: new Date("2026-08-31T00:00:00.000Z"),
+              allowance_period_id: "allowance-period-free",
+              billing_subscription_id: "billing-subscription-1",
+              created_at: new Date("2026-08-01T00:00:00.000Z"),
+              ends_at: new Date("2026-08-31T00:00:00.000Z"),
               plan: "free",
-              planPolicyVersion: "launch-v1",
-              startsAt: new Date("2026-08-01T00:00:00.000Z"),
-              userId,
+              plan_policy_version: "launch-v1",
+              starts_at: new Date("2026-08-01T00:00:00.000Z"),
+              user_id: userId,
             }),
           );
-          const billing = Billing.make(fixture.database);
+          const billing = BillingDb.make(fixture.database);
           let currentTime = confirmedAt;
           const service = makeService(
             billing,
@@ -189,31 +189,31 @@ describe("BillingSubscriptions", () => {
             fixture.database
               .select()
               .from(billingSubscriptions)
-              .where(eq(billingSubscriptions.userId, userId)),
+              .where(eq(billingSubscriptions.user_id, userId)),
           );
           const periods = yield* Effect.promise(() =>
             fixture.database
               .select()
               .from(allowancePeriods)
-              .where(eq(allowancePeriods.userId, userId))
-              .orderBy(asc(allowancePeriods.startsAt)),
+              .where(eq(allowancePeriods.user_id, userId))
+              .orderBy(asc(allowancePeriods.starts_at)),
           );
 
           expect(result).toEqual({ _tag: "Activated" });
           expect(subscription).toMatchObject({
             plan: "adventurer",
-            stripeLatestInvoiceId: "in_billing",
-            stripePriceId: "price_adventurer",
-            stripeProductId: "prod_adventurer",
-            stripeStatus: "active",
-            stripeSubscriptionId: "sub_billing",
+            stripe_latest_invoice_id: "in_billing",
+            stripe_price_id: "price_adventurer",
+            stripe_product_id: "prod_adventurer",
+            stripe_status: "active",
+            stripe_subscription_id: "sub_billing",
           });
           expect(periods).toHaveLength(2);
-          expect(periods[0]?.endsAt.getTime()).toBe(periods[1]?.startsAt.getTime());
+          expect(periods[0]?.ends_at.getTime()).toBe(periods[1]?.starts_at.getTime());
           expect(periods[1]).toMatchObject({
-            endsAt: periodEnd,
+            ends_at: periodEnd,
             plan: "adventurer",
-            stripeInvoiceId: "in_billing",
+            stripe_invoice_id: "in_billing",
           });
 
           const renewalEnd = new Date("2026-10-16T12:00:00.000Z");
@@ -235,17 +235,17 @@ describe("BillingSubscriptions", () => {
             fixture.database
               .select()
               .from(allowancePeriods)
-              .where(eq(allowancePeriods.userId, userId))
-              .orderBy(asc(allowancePeriods.startsAt)),
+              .where(eq(allowancePeriods.user_id, userId))
+              .orderBy(asc(allowancePeriods.starts_at)),
           );
 
           expect(renewalResult).toEqual({ _tag: "Activated" });
           expect(renewedPeriods).toHaveLength(3);
-          expect(renewedPeriods[1]?.endsAt.getTime()).toBe(renewedPeriods[2]?.startsAt.getTime());
+          expect(renewedPeriods[1]?.ends_at.getTime()).toBe(renewedPeriods[2]?.starts_at.getTime());
           expect(renewedPeriods[2]).toMatchObject({
-            endsAt: renewalEnd,
+            ends_at: renewalEnd,
             plan: "adventurer",
-            stripeInvoiceId: "in_renewal",
+            stripe_invoice_id: "in_renewal",
           });
 
           const scheduledResult = yield* applyCurrent(
@@ -272,7 +272,7 @@ describe("BillingSubscriptions", () => {
             fixture.database
               .select()
               .from(billingSubscriptions)
-              .where(eq(billingSubscriptions.userId, userId)),
+              .where(eq(billingSubscriptions.user_id, userId)),
           );
           const immediateCancellationResult = yield* applyCurrent(
             service,
@@ -299,8 +299,8 @@ describe("BillingSubscriptions", () => {
 
           expect(scheduledResult).toEqual({ _tag: "DowngradeScheduled" });
           expect(paymentFailureResult).toEqual({ _tag: "DowngradeScheduled" });
-          expect(failedRenewal?.pendingPlanEffectiveAt).toEqual(renewalEnd);
-          expect(failedRenewal?.stripeCurrentPeriodEnd).toEqual(renewalEnd);
+          expect(failedRenewal?.pending_plan_effective_at).toEqual(renewalEnd);
+          expect(failedRenewal?.stripe_current_period_end).toEqual(renewalEnd);
           expect(immediateCancellationResult).toEqual({ _tag: "AccessEnded" });
           expect(recoveryResult).toEqual({ _tag: "Activated" });
 
@@ -317,14 +317,14 @@ describe("BillingSubscriptions", () => {
             fixture.database
               .select()
               .from(billingSubscriptions)
-              .where(eq(billingSubscriptions.userId, userId)),
+              .where(eq(billingSubscriptions.user_id, userId)),
           );
           const refundedPeriods = yield* Effect.promise(() =>
             fixture.database
               .select()
               .from(allowancePeriods)
-              .where(eq(allowancePeriods.userId, userId))
-              .orderBy(asc(allowancePeriods.startsAt)),
+              .where(eq(allowancePeriods.user_id, userId))
+              .orderBy(asc(allowancePeriods.starts_at)),
           );
 
           expect(refundResult).toEqual({ _tag: "AccessEnded" });
@@ -334,7 +334,7 @@ describe("BillingSubscriptions", () => {
             refundedPeriods.slice(1).every((period, index) => {
               const previous = refundedPeriods[index];
               return (
-                previous !== undefined && previous.endsAt.getTime() <= period.startsAt.getTime()
+                previous !== undefined && previous.ends_at.getTime() <= period.starts_at.getTime()
               );
             }),
           ).toBe(true);

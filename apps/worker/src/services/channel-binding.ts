@@ -11,3 +11,5 @@ export interface Interface {
     channelBindingId: ChannelBindingId,
   ) => Effect.Effect<ChannelBindingAuthorityFact, DbUnavailable>;
 }
+
+export * as ChannelBinding from "./channel-binding";

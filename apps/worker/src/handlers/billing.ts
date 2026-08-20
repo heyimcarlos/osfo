@@ -11,8 +11,8 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schemas use the standard _tag discriminator. */
 
 import { makeBillingServices } from "../billing-composition";
-import * as BillingAuthorization from "../composition/billing-authorization";
-import * as Db from "../db";
+import { BillingAuthorization } from "../composition/billing-authorization";
+import { Db } from "../db";
 import { findStripeCheckoutSession, findStripeSubscription } from "../db/billing/stripe-inspect";
 import {
   AllowancePeriodId,
@@ -173,3 +173,5 @@ const toBillingUnavailable = () =>
   new BillingUnavailable({
     message: "Billing is temporarily unavailable. Please try again.",
   });
+
+export * as BillingHandlers from "./billing";

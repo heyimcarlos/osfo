@@ -1,9 +1,9 @@
-import { schema as databaseSchema, type Database } from "@osfo/db";
+import { DbSchema, type Database } from "@osfo/db";
 import { drizzle } from "drizzle-orm/postgres-js";
 
 import { createAuth, type Auth } from "./index";
 
-const database: Database = drizzle.mock({ schema: databaseSchema });
+const database: Database = drizzle.mock({ schema: DbSchema });
 
 /** Build-only Better Auth instance loaded by the schema generator. */
 export const auth: Auth = createAuth({

@@ -17,7 +17,7 @@ import {
   StripeProductId,
   UserId,
 } from "../src/domain";
-import * as StripeBilling from "../src/services/stripe-billing";
+import { StripeBilling } from "../src/services/stripe-billing";
 import { RealPostgresTestUnavailable, withRealPostgresFixture } from "./real-postgres-fixture";
 
 /* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect -- Native PostgreSQL lease fixtures use fixed database timestamps. */
@@ -47,41 +47,41 @@ describe("StripeBilling with real PostgreSQL", () => {
               ]);
               await database.insert(billingCustomers).values([
                 {
-                  billingCustomerId: "customer-native-concurrent",
-                  stripeCustomerId: "cus_nativeconcurrent",
-                  userId: concurrentUserId,
+                  billing_customer_id: "customer-native-concurrent",
+                  stripe_customer_id: "cus_nativeconcurrent",
+                  user_id: concurrentUserId,
                 },
                 {
-                  billingCustomerId: "customer-native-stale",
-                  stripeCustomerId: "cus_nativestale",
-                  userId: staleUserId,
+                  billing_customer_id: "customer-native-stale",
+                  stripe_customer_id: "cus_nativestale",
+                  user_id: staleUserId,
                 },
               ]);
               await database.insert(billingSubscriptions).values([
                 {
-                  billingCustomerId: "customer-native-concurrent",
-                  billingSubscriptionId: "subscription-native-concurrent",
+                  billing_customer_id: "customer-native-concurrent",
+                  billing_subscription_id: "subscription-native-concurrent",
                   plan: "free",
-                  planPolicyVersion: "launch-v1",
-                  userId: concurrentUserId,
+                  plan_policy_version: "launch-v1",
+                  user_id: concurrentUserId,
                 },
                 {
-                  billingCustomerId: "customer-native-stale",
-                  billingSubscriptionId: "subscription-native-stale",
+                  billing_customer_id: "customer-native-stale",
+                  billing_subscription_id: "subscription-native-stale",
                   plan: "free",
-                  planPolicyVersion: "launch-v1",
-                  userId: staleUserId,
+                  plan_policy_version: "launch-v1",
+                  user_id: staleUserId,
                 },
               ]);
               await database.insert(billingCheckoutSessions).values({
-                billingCheckoutSessionId: "checkout-native-stale",
-                billingCustomerId: "customer-native-stale",
+                billing_checkout_session_id: "checkout-native-stale",
+                billing_customer_id: "customer-native-stale",
                 state: "creating",
-                stripePriceId: "price_adventurer",
-                stripeProductId: "prod_adventurer",
-                targetPlan: "adventurer",
-                updatedAt: new Date("2026-08-16T00:00:00.000Z"),
-                userId: staleUserId,
+                stripe_price_id: "price_adventurer",
+                stripe_product_id: "prod_adventurer",
+                target_plan: "adventurer",
+                updated_at: new Date("2026-08-16T00:00:00.000Z"),
+                user_id: staleUserId,
               });
             },
             catch: () =>
@@ -153,8 +153,8 @@ describe("StripeBilling with real PostgreSQL", () => {
                     url: new URL(`https://checkout.stripe.test/${input.idempotencyKey}`),
                   };
                 }),
-              createCustomer: () => Effect.die("must reuse native Customer"),
-              createPortal: () => Effect.die("unused"),
+              createCustomer: () => Effect.die(new Error("must reuse native Customer")),
+              createPortal: () => Effect.die(new Error("unused")),
               retrieveCheckout: (stripeCheckoutSessionId) =>
                 Effect.succeed({
                   expiresAt: new Date("2026-08-17T12:00:00.000Z"),

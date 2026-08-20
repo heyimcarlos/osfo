@@ -22,10 +22,7 @@ import { DbTimestamp } from "../src/db";
 import { FileAnalysisId, FileId, FileUploadId } from "../src/domain/file";
 import { FileDigest, inspectFileContent } from "../src/domain/file-content";
 import { retainedCatalog, type PlanPolicyCatalog } from "../src/domain/plan-policy";
-import {
-  make as makeAuthorization,
-  type AuthorizationContext,
-} from "../src/services/authorization";
+import { Authorization, type AuthorizationContext } from "../src/services/authorization";
 import {
   FileComputeFailed,
   fileAnalysisExecutionPending,
@@ -1905,7 +1902,7 @@ const withFileService = <A, E>(
             return Effect.succeed({ _tag: "Recorded" as const });
           },
         },
-        authorization: makeAuthorization(catalog),
+        authorization: Authorization.make(catalog),
         catalog,
         compute: {
           analyze: () => {

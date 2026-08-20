@@ -150,3 +150,5 @@ export const make = (options: MakeOptions): Interface => ({
       return recorded.outcome;
     }),
 });
+
+export * as Allowances from "./allowances";

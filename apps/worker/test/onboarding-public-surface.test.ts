@@ -1,17 +1,17 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import { ChannelIdentity } from "../src/domain";
-import type * as Onboarding from "../src/services/onboarding";
+import type { Onboarding } from "../src/services/onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect domain unions use the standard _tag discriminator. */
 
 type ChannelInvitationOperation = Extract<
-  keyof Onboarding.Interface | keyof Onboarding.PersistencePort,
+  keyof Onboarding.Interface | keyof Onboarding.Persistence,
   "insertChannelInvitation" | "issueChannelInvitation"
 >;
 
 type ChannelInvitationPersistenceInput = Parameters<
-  Onboarding.PersistencePort["insertChannelInvitation"]
+  Onboarding.Persistence["insertChannelInvitation"]
 >[0];
 
 type ConfigurableTransportFacts = Extract<

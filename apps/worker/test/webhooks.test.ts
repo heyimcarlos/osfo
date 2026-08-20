@@ -6,7 +6,7 @@ import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/t
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 
-import * as Webhooks from "../src/db/webhooks";
+import { WebhooksDb } from "../src/db/webhooks";
 import { BillingCheckoutSessionId, StripeCheckoutSessionId } from "../src/domain";
 
 describe("Webhook persistence", () => {
@@ -16,7 +16,7 @@ describe("Webhook persistence", () => {
       (fixture) =>
         Effect.gen(function* () {
           yield* applyMigrations(fixture.client);
-          const webhooks = Webhooks.make({
+          const webhooks = WebhooksDb.make({
             database: fixture.database,
             webhookEventId: Effect.succeed("webhook-local-unused"),
           });
@@ -35,7 +35,7 @@ describe("Webhook persistence", () => {
       (fixture) =>
         Effect.gen(function* () {
           yield* applyMigrations(fixture.client);
-          const webhooks = Webhooks.make({
+          const webhooks = WebhooksDb.make({
             database: fixture.database,
             webhookEventId: Effect.succeed("webhook-local-1"),
           });
@@ -57,13 +57,13 @@ describe("Webhook persistence", () => {
             fixture.database
               .select()
               .from(webhookEvents)
-              .where(eq(webhookEvents.webhookEventId, "webhook-local-1")),
+              .where(eq(webhookEvents.webhook_event_id, "webhook-local-1")),
           );
           const [storedJob] = yield* Effect.promise(() =>
             fixture.database
               .select()
               .from(webhookJobs)
-              .where(eq(webhookJobs.webhookEventId, "webhook-local-1")),
+              .where(eq(webhookJobs.webhook_event_id, "webhook-local-1")),
           );
 
           expect(first).toEqual({
@@ -85,10 +85,10 @@ describe("Webhook persistence", () => {
           });
           expect(storedJob).toMatchObject({
             attempts: 2,
-            errorCode: null,
+            error_code: null,
             status: "processed",
           });
-          expect(storedJob?.processedAt).toBeInstanceOf(Date);
+          expect(storedJob?.processed_at).toBeInstanceOf(Date);
         }),
       closeTestDatabase,
     ),
@@ -109,22 +109,22 @@ describe("Webhook persistence", () => {
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingCustomers).values({
-              billingCustomerId: "customer-checkout-webhook",
-              userId: "user-checkout-webhook",
+              billing_customer_id: "customer-checkout-webhook",
+              user_id: "user-checkout-webhook",
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingCheckoutSessions).values({
-              billingCheckoutSessionId: "checkout-local-webhook",
-              billingCustomerId: "customer-checkout-webhook",
+              billing_checkout_session_id: "checkout-local-webhook",
+              billing_customer_id: "customer-checkout-webhook",
               state: "creating",
-              stripePriceId: "price_adventurer",
-              stripeProductId: "prod_adventurer",
-              targetPlan: "adventurer",
-              userId: "user-checkout-webhook",
+              stripe_price_id: "price_adventurer",
+              stripe_product_id: "prod_adventurer",
+              target_plan: "adventurer",
+              user_id: "user-checkout-webhook",
             }),
           );
-          const webhooks = Webhooks.make({
+          const webhooks = WebhooksDb.make({
             database: fixture.database,
             webhookEventId: Effect.succeed("webhook-checkout-failed"),
           });
@@ -147,7 +147,7 @@ describe("Webhook persistence", () => {
               .select()
               .from(billingCheckoutSessions)
               .where(
-                eq(billingCheckoutSessions.billingCheckoutSessionId, "checkout-local-webhook"),
+                eq(billingCheckoutSessions.billing_checkout_session_id, "checkout-local-webhook"),
               ),
           );
 
@@ -158,8 +158,8 @@ describe("Webhook persistence", () => {
           });
           expect(checkout).toMatchObject({
             state: "failed",
-            stripeCheckoutSessionId: "cs_test_failedwebhook",
-            stripePaymentStatus: "unpaid",
+            stripe_checkout_session_id: "cs_test_failedwebhook",
+            stripe_payment_status: "unpaid",
           });
         }),
       closeTestDatabase,
@@ -181,23 +181,23 @@ describe("Webhook persistence", () => {
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingCustomers).values({
-              billingCustomerId: "customer-checkout-mismatch",
-              userId: "user-checkout-mismatch",
+              billing_customer_id: "customer-checkout-mismatch",
+              user_id: "user-checkout-mismatch",
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingCheckoutSessions).values({
-              billingCheckoutSessionId: "checkout-local-mismatch",
-              billingCustomerId: "customer-checkout-mismatch",
+              billing_checkout_session_id: "checkout-local-mismatch",
+              billing_customer_id: "customer-checkout-mismatch",
               state: "open",
-              stripeCheckoutSessionId: "cs_test_original",
-              stripePriceId: "price_adventurer",
-              stripeProductId: "prod_adventurer",
-              targetPlan: "adventurer",
-              userId: "user-checkout-mismatch",
+              stripe_checkout_session_id: "cs_test_original",
+              stripe_price_id: "price_adventurer",
+              stripe_product_id: "prod_adventurer",
+              target_plan: "adventurer",
+              user_id: "user-checkout-mismatch",
             }),
           );
-          const webhooks = Webhooks.make({
+          const webhooks = WebhooksDb.make({
             database: fixture.database,
             webhookEventId: Effect.succeed("webhook-checkout-mismatch"),
           });
@@ -224,7 +224,7 @@ describe("Webhook persistence", () => {
               .select()
               .from(billingCheckoutSessions)
               .where(
-                eq(billingCheckoutSessions.billingCheckoutSessionId, "checkout-local-mismatch"),
+                eq(billingCheckoutSessions.billing_checkout_session_id, "checkout-local-mismatch"),
               ),
           );
 
@@ -234,7 +234,7 @@ describe("Webhook persistence", () => {
           });
           expect(checkout).toMatchObject({
             state: "open",
-            stripeCheckoutSessionId: "cs_test_original",
+            stripe_checkout_session_id: "cs_test_original",
           });
         }),
       closeTestDatabase,

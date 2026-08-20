@@ -1,9 +1,9 @@
 import { createAuthSessionAuthority } from "@osfo/auth";
 import { Effect, Layer, Schema } from "effect";
 
-import * as Db from "../../db";
+import { Db } from "../../db";
 import { AuthSessionAuthorityFact } from "../../domain/auth-session";
-import * as AuthSession from "../../services/auth-session";
+import { AuthSession } from "../../services/auth-session";
 
 /** Build the AuthSession Store adapter from the request-scoped @osfo/auth capability. */
 export const make = Effect.gen(function* () {
@@ -45,3 +45,5 @@ const unavailable = (operation: string, cause: unknown) =>
     message: `The AuthSession authority could not complete ${operation}`,
     operation,
   });
+
+export * as AuthSessionAdapter from "./auth-session";

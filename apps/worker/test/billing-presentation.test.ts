@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { UserId } from "../src/domain";
-import * as BillingPresentation from "../src/services/billing-presentation";
+import { BillingPresentation } from "../src/services/billing-presentation";
 
 /* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect, effecttsgo/prefer-schema-over-json -- This presentation test uses fixed Date fixtures and inspects its safe JSON rendering. */
 

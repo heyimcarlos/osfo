@@ -16,22 +16,18 @@ import {
   StripeWebhookObjectId,
   UserId,
 } from "../../domain";
-import {
-  StripeSubscriptionSnapshot,
-  type StripeSubscriptionSnapshot as StripeSubscriptionSnapshotType,
-} from "../../services/billing-subscriptions";
-import {
-  CheckoutState,
-  StripeRequestFailed,
-  type StripeGateway as StripeBillingGateway,
-} from "../../services/stripe-billing";
+import { StripeSubscriptionSnapshot } from "../../services/billing-subscriptions";
+/* oxlint-disable import/no-duplicates -- Colliding type names use the convention's dedicated type-only imports. */
+import { CheckoutState, StripeRequestFailed } from "../../services/stripe-billing";
+import type { StripeGateway as StripeBillingGateway } from "../../services/stripe-billing";
 import {
   InvalidStripeSignature,
   PermanentStripeWebhookFailure,
-  type StripeGateway as StripeWebhookGateway,
   type StripeWebhookTransport,
   type VerifiedStripeEvent,
 } from "../../services/stripe-webhooks";
+import type { StripeGateway as StripeWebhookGateway } from "../../services/stripe-webhooks";
+/* oxlint-enable import/no-duplicates */
 
 const StripeReference = Schema.Union([Schema.String, Schema.Struct({ id: Schema.String })]);
 const RawSubscription = Schema.Struct({
@@ -126,7 +122,7 @@ export interface ReconciliationGateway {
   readonly fetchSubscription: (
     subscriptionId: StripeSubscriptionId,
   ) => Effect.Effect<
-    StripeSubscriptionSnapshotType,
+    StripeSubscriptionSnapshot,
     PermanentStripeWebhookFailure | StripeRequestFailed
   >;
   readonly retrieveCheckoutForReturn: (
@@ -149,7 +145,7 @@ export interface ReconciliationGateway {
 export const parseSubscriptionSnapshot = (
   input: unknown,
   offer: AdventurerOffer,
-): Effect.Effect<StripeSubscriptionSnapshotType, PermanentStripeWebhookFailure> =>
+): Effect.Effect<StripeSubscriptionSnapshot, PermanentStripeWebhookFailure> =>
   Effect.gen(function* () {
     const subscription = yield* Schema.decodeUnknownEffect(RawSubscription)(input).pipe(
       Effect.mapError(
@@ -475,11 +471,8 @@ export const make = (
 
 const discoverCurrentPeriodReversal = (
   client: Stripe,
-  snapshot: StripeSubscriptionSnapshotType,
-): Effect.Effect<
-  StripeSubscriptionSnapshotType,
-  PermanentStripeWebhookFailure | StripeRequestFailed
-> =>
+  snapshot: StripeSubscriptionSnapshot,
+): Effect.Effect<StripeSubscriptionSnapshot, PermanentStripeWebhookFailure | StripeRequestFailed> =>
   Effect.gen(function* () {
     if (snapshot.payment._tag !== "Paid") return snapshot;
     const invoiceId = snapshot.payment.invoiceId;
@@ -769,3 +762,5 @@ const tryStripe = <A>(operation: StripeRequestFailed["operation"], request: () =
       });
     },
   });
+
+export * as StripeAdapter from "./billing";

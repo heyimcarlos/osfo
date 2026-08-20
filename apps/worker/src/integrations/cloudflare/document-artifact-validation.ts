@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { strFromU8, unzipSync } from "fflate";
 
 import type { ContentId } from "../../domain/client-content";
-import * as DocumentArtifact from "../../domain/document-artifact";
+import { DocumentArtifact } from "../../domain/document-artifact";
 
 /** Validate disposable or retained bytes with document parsers owned by this adapter. */
 export const validate = (
@@ -121,3 +121,5 @@ const docxPages = (contentId: ContentId, bytes: Uint8Array) =>
 
 const hex = (bytes: Uint8Array) =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+export * as DocumentArtifactValidation from "./document-artifact-validation";

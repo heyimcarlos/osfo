@@ -1,5 +1,6 @@
 import type { Database } from "@osfo/db";
-import * as authSchema from "@osfo/db/schema/auth";
+// oxlint-disable-next-line osfo/no-star-import -- Better Auth's Drizzle adapter requires the complete generated schema module object.
+import * as AuthSchema from "@osfo/db/schema/auth";
 import { dash } from "@better-auth/infra";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
@@ -59,7 +60,7 @@ const makeOptions = (options: AuthOptions): BetterAuthOptions => ({
   basePath: "/auth",
   database: drizzleAdapter(options.database, {
     provider: "pg",
-    schema: authSchema,
+    schema: AuthSchema,
     transaction: true,
   }),
   databaseHooks: {

@@ -33,18 +33,18 @@ export const loadCurrentFileAuthorization = (
             .where(eq(users.id, context.user.userId))
             .limit(1),
           database
-            .select({ userId: agents.userId })
+            .select({ userId: agents.user_id })
             .from(agents)
-            .where(eq(agents.agentId, agentId))
+            .where(eq(agents.agent_id, agentId))
             .limit(1),
           database
             .select({
               plan: billingSubscriptions.plan,
-              planPolicyVersion: billingSubscriptions.planPolicyVersion,
-              userId: billingSubscriptions.userId,
+              planPolicyVersion: billingSubscriptions.plan_policy_version,
+              userId: billingSubscriptions.user_id,
             })
             .from(billingSubscriptions)
-            .where(eq(billingSubscriptions.userId, context.user.userId))
+            .where(eq(billingSubscriptions.user_id, context.user.userId))
             .limit(1),
         ]),
       catch: (cause) => unavailable(cause),
@@ -119,9 +119,9 @@ const loadCurrentAuthority = (
   return Effect.tryPromise({
     try: () =>
       database
-        .select({ revokedAt: channelBindings.revokedAt, userId: channelBindings.userId })
+        .select({ revokedAt: channelBindings.revoked_at, userId: channelBindings.user_id })
         .from(channelBindings)
-        .where(eq(channelBindings.channelBindingId, authority.channelBindingId))
+        .where(eq(channelBindings.channel_binding_id, authority.channelBindingId))
         .limit(1),
     catch: (cause) => unavailable(cause),
   }).pipe(

@@ -46,9 +46,9 @@ export const make = Effect.gen(function* () {
   const resolve = Effect.fn("AgentDirectory.resolve")(function* (userId: UserId) {
     const rows = yield* execute("resolveAgent", () =>
       db
-        .select({ agentId: agents.agentId, userId: agents.userId })
+        .select({ agentId: agents.agent_id, userId: agents.user_id })
         .from(agents)
-        .where(eq(agents.userId, userId))
+        .where(eq(agents.user_id, userId))
         .limit(1)
         .execute(),
     );
@@ -65,9 +65,9 @@ export const make = Effect.gen(function* () {
   const resolveAgent = Effect.fn("AgentDirectory.resolveAgent")(function* (agentId: AgentId) {
     const rows = yield* execute("resolveAgentOwner", () =>
       db
-        .select({ agentId: agents.agentId, userId: agents.userId })
+        .select({ agentId: agents.agent_id, userId: agents.user_id })
         .from(agents)
-        .where(eq(agents.agentId, agentId))
+        .where(eq(agents.agent_id, agentId))
         .limit(1)
         .execute(),
     );
@@ -86,3 +86,5 @@ export const make = Effect.gen(function* () {
 
 /** Agent directory Layer that preserves its database requirement. */
 export const layerWithoutDependencies = Layer.effect(Service, make);
+
+export * as AgentDirectory from "./agent-directory";

@@ -1,8 +1,8 @@
 import { Effect } from "effect";
 
 import type { UserId } from "../domain";
-import type * as DeletionCase from "./deletion-case";
-import type * as UserSuspension from "./user-suspension";
+import type { DeletionCase } from "./deletion-case";
+import type { UserSuspension } from "./user-suspension";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Domain facts use the _tag discriminator. */
 
@@ -18,3 +18,5 @@ export const canAccess = (
         user._tag === "ActiveUser" && deletionAccess._tag === "DeletionAccessAvailable",
     ),
   );
+
+export * as AccountAccess from "./account-access";

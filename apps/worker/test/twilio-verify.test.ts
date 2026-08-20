@@ -7,7 +7,7 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http";
 
-import * as TwilioVerify from "../src/integrations/twilio/verify";
+import { TwilioVerify } from "../src/integrations/twilio/verify";
 
 const options = {
   accountSid: Redacted.make(`AC${"1".repeat(32)}`),

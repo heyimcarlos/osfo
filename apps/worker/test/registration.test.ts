@@ -9,12 +9,12 @@ import { registrationInvitations } from "@osfo/db/schema/onboarding";
 import { eq } from "drizzle-orm";
 import { DateTime, Effect, Layer, Redacted, Schema } from "effect";
 
-import * as App from "../src/app";
+import { App } from "../src/app";
 import type { CloudflareConfig } from "../src/config";
-import * as Db from "../src/db";
+import { Db } from "../src/db";
 import { ChannelIdentity, RegistrationInvitationId } from "../src/domain";
-import * as OnboardingPostgres from "../src/integrations/postgres/onboarding";
-import * as TwilioVerify from "../src/integrations/twilio/verify";
+import { OnboardingPostgres } from "../src/services/onboarding/postgres";
+import { TwilioVerify } from "../src/integrations/twilio/verify";
 
 /* oxlint-disable eslint/no-underscore-dangle -- HTTP tests assert typed tagged API results. */
 /* oxlint-disable effecttsgo/global-date-in-effect -- This HTTP test needs wall time shared with the request runtime. */
@@ -37,15 +37,15 @@ describe("Registration HTTP API", () => {
           const expiresAt = new Date(createdAt.getTime() + 24 * 60 * 60 * 1_000);
           yield* Effect.promise(() =>
             fixture.database.insert(registrationInvitations).values({
-              channelIdentity: "whatsapp:server-side-phone",
-              createdAt,
-              expiresAt,
-              invitationId: "registration-invitation-server-side-phone",
-              invitedPhoneNumber: "+14165550183",
+              channel_identity: "whatsapp:server-side-phone",
+              created_at: createdAt,
+              expires_at: expiresAt,
+              invitation_id: "registration-invitation-server-side-phone",
+              invited_phone_number: "+14165550183",
               kind: "whatsapp_first",
               locale: "en",
               provider: "whatsapp",
-              tokenDigest: digest,
+              token_digest: digest,
             }),
           );
 
@@ -99,15 +99,15 @@ describe("Registration HTTP API", () => {
           const expiresAt = new Date(createdAt.getTime() + 24 * 60 * 60 * 1_000);
           yield* Effect.promise(() =>
             fixture.database.insert(registrationInvitations).values({
-              channelIdentity: "telegram:900100200",
-              createdAt,
-              expiresAt,
-              invitationId: "registration-invitation-telegram-first",
+              channel_identity: "telegram:900100200",
+              created_at: createdAt,
+              expires_at: expiresAt,
+              invitation_id: "registration-invitation-telegram-first",
               kind: "telegram_first",
               locale: "en",
               provider: "telegram",
-              providerEventId: "telegram-message-1",
-              tokenDigest: digest,
+              provider_event_id: "telegram-message-1",
+              token_digest: digest,
             }),
           );
 
@@ -143,15 +143,15 @@ describe("Registration HTTP API", () => {
           const createdAt = new Date();
           yield* Effect.promise(() =>
             fixture.database.insert(registrationInvitations).values({
-              channelIdentity: "telegram:cleanup-failure",
-              createdAt,
-              expiresAt: new Date(createdAt.getTime() + 24 * 60 * 60 * 1_000),
-              invitationId: "registration-invitation-cleanup-failure",
+              channel_identity: "telegram:cleanup-failure",
+              created_at: createdAt,
+              expires_at: new Date(createdAt.getTime() + 24 * 60 * 60 * 1_000),
+              invitation_id: "registration-invitation-cleanup-failure",
               kind: "telegram_first",
               locale: "en",
               provider: "telegram",
-              providerEventId: "telegram-message-cleanup-failure",
-              tokenDigest: digest,
+              provider_event_id: "telegram-message-cleanup-failure",
+              token_digest: digest,
             }),
           );
           let welcomeAvailable = false;
@@ -271,8 +271,8 @@ describe("Registration HTTP API", () => {
           const [stored] = yield* Effect.promise(() =>
             fixture.database
               .select({
-                channelIdentity: registrationInvitations.channelIdentity,
-                invitedPhoneNumber: registrationInvitations.invitedPhoneNumber,
+                channelIdentity: registrationInvitations.channel_identity,
+                invitedPhoneNumber: registrationInvitations.invited_phone_number,
                 kind: registrationInvitations.kind,
                 provider: registrationInvitations.provider,
               })
@@ -391,37 +391,37 @@ describe("Registration HTTP API", () => {
           expect(storedSubscriptions).toHaveLength(1);
           expect(storedPeriods).toHaveLength(1);
           expect(storedSubscriptions[0]).toMatchObject({
-            billingSubscriptionId: storedPeriods[0]?.billingSubscriptionId,
+            billing_subscription_id: storedPeriods[0]?.billing_subscription_id,
             plan: "free",
-            planPolicyVersion: "launch-v1",
+            plan_policy_version: "launch-v1",
           });
           expect(storedPeriods[0]).toMatchObject({
             plan: "free",
-            planPolicyVersion: "launch-v1",
+            plan_policy_version: "launch-v1",
           });
-          expect(storedPeriods[0]?.startsAt).toEqual(storedUsers[0]?.registrationCompletedAt);
+          expect(storedPeriods[0]?.starts_at).toEqual(storedUsers[0]?.registrationCompletedAt);
 
           const firstPeriod = yield* Schema.decodeUnknownEffect(
             Schema.Struct({
-              billingSubscriptionId: Schema.String,
-              endsAt: Schema.Date,
-              userId: Schema.String,
+              billing_subscription_id: Schema.String,
+              ends_at: Schema.Date,
+              user_id: Schema.String,
             }),
           )(storedPeriods[0]);
           yield* Effect.promise(() =>
             fixture.database.insert(allowancePeriods).values({
-              allowancePeriodId: "allowance-period-later-registration-recovery",
-              billingSubscriptionId: firstPeriod.billingSubscriptionId,
-              createdAt: firstPeriod.endsAt,
-              endsAt: DateTime.toDateUtc(
-                DateTime.add(DateTime.fromDateUnsafe(firstPeriod.endsAt), {
+              allowance_period_id: "allowance-period-later-registration-recovery",
+              billing_subscription_id: firstPeriod.billing_subscription_id,
+              created_at: firstPeriod.ends_at,
+              ends_at: DateTime.toDateUtc(
+                DateTime.add(DateTime.fromDateUnsafe(firstPeriod.ends_at), {
                   days: 30,
                 }),
               ),
               plan: "free",
-              planPolicyVersion: "launch-v1",
-              startsAt: firstPeriod.endsAt,
-              userId: firstPeriod.userId,
+              plan_policy_version: "launch-v1",
+              starts_at: firstPeriod.ends_at,
+              user_id: firstPeriod.user_id,
             }),
           );
           const recovered = yield* sendJson(app.handler, "PUT", "/v1/registration", {}, cookie);
@@ -533,7 +533,7 @@ describe("Registration HTTP API", () => {
 
 const makeApp = (
   database: Parameters<typeof Db.layerFromDatabase>[0],
-  twilio: TwilioVerify.TwilioVerify["Service"] = {
+  twilio: TwilioVerify.Service["Service"] = {
     sendCode: () => Effect.void,
     verifyCode: () => Effect.succeed(false),
   },
@@ -542,7 +542,7 @@ const makeApp = (
   App.make(bindings, runtimeConfig, {
     authDependencies: Layer.merge(
       Db.layerFromDatabase(database),
-      Layer.succeed(TwilioVerify.TwilioVerify, TwilioVerify.TwilioVerify.of(twilio)),
+      Layer.succeed(TwilioVerify.Service, TwilioVerify.Service.of(twilio)),
     ),
   });
 
@@ -572,7 +572,7 @@ const sendJson = (
   );
 };
 
-const acceptingTwilio: TwilioVerify.TwilioVerify["Service"] = {
+const acceptingTwilio: TwilioVerify.Service["Service"] = {
   sendCode: () => Effect.void,
   verifyCode: (_phoneNumber, code) => Effect.succeed(Redacted.value(code) === "123456"),
 };

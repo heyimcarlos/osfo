@@ -19,3 +19,5 @@ export const layer = (runtime: ManagedRuntime.ManagedRuntime<ExecutionUnit, neve
       ),
     ),
   );
+
+export * as HealthHandlers from "./health";

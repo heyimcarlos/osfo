@@ -3,7 +3,7 @@ import { webhookEvents, webhookJobs } from "@osfo/db/schema/webhooks";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { Effect } from "effect";
 
-import * as WebhookIngestion from "../src/services/webhook-ingestion";
+import { WebhookIngestion } from "../src/services/webhook-ingestion";
 
 /* oxlint-disable effecttsgo/global-date, effecttsgo/global-date-in-effect -- Tests use fixed receipt timestamps at the database boundary. */
 /* oxlint-disable eslint/no-underscore-dangle -- Effect exits use the standard _tag discriminator. */
@@ -33,13 +33,13 @@ describe("Webhook ingestion", () => {
           expect(processed).toEqual(["webhook-first"]);
           expect(events).toHaveLength(1);
           expect(events[0]).toMatchObject({
-            eventType: "customer.subscription.updated",
-            externalEventId: "evt_1",
+            event_type: "customer.subscription.updated",
+            external_event_id: "evt_1",
             provider: "stripe",
-            webhookEventId: "webhook-first",
+            webhook_event_id: "webhook-first",
           });
           expect(jobs).toHaveLength(1);
-          expect(jobs[0]).toMatchObject({ status: "processed", webhookEventId: "webhook-first" });
+          expect(jobs[0]).toMatchObject({ status: "processed", webhook_event_id: "webhook-first" });
         }),
       closeTestDatabase,
     ),
@@ -67,7 +67,7 @@ describe("Webhook ingestion", () => {
           expect(first._tag).toBe("Failure");
           expect(processingAttempts).toBe(1);
           expect(jobs).toHaveLength(1);
-          expect(jobs[0]).toMatchObject({ status: "pending", webhookEventId: "webhook-failed" });
+          expect(jobs[0]).toMatchObject({ status: "pending", webhook_event_id: "webhook-failed" });
         }),
       closeTestDatabase,
     ),

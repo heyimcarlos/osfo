@@ -1,6 +1,6 @@
 import { Layer, Redacted } from "effect";
 
-import * as Onboarding from "../../services/onboarding";
+import { Onboarding } from "../../services/onboarding";
 
 /** Configuration owned by the public onboarding URL adapter. */
 export interface Options {
@@ -32,3 +32,5 @@ export const layer = (options: Options) =>
       verification: (token) => new URL(`/verify/${Redacted.value(token)}`, options.publicBaseUrl),
     }),
   );
+
+export * as OnboardingLinksAdapter from "./onboarding-links";

@@ -85,7 +85,7 @@ export const makeFileStore = (db: AgentDb) => {
           const existing = transaction
             .select()
             .from(files)
-            .where(eq(files.uploadId, input.uploadId))
+            .where(eq(files.upload_id, input.uploadId))
             .limit(1)
             .get();
           if (existing !== undefined) {
@@ -94,9 +94,9 @@ export const makeFileStore = (db: AgentDb) => {
           }
           const total =
             transaction
-              .select({ value: sql<number>`COALESCE(SUM(${files.byteLength}), 0)` })
+              .select({ value: sql<number>`COALESCE(SUM(${files.byte_length}), 0)` })
               .from(files)
-              .where(and(eq(files.userId, input.userId), ne(files.state, "deleted")))
+              .where(and(eq(files.user_id, input.userId), ne(files.state, "deleted")))
               .get()?.value ?? 0;
           const retainedBytes = BigInt(total);
           if (retainedBytes + input.byteLength > input.retainedByteLimit) {
@@ -105,14 +105,22 @@ export const makeFileStore = (db: AgentDb) => {
           const inserted = transaction
             .insert(files)
             .values({
-              ...input,
-              byteLength: Number(input.byteLength),
-              deletedAt: null,
-              normalizationClaimedAt: null,
-              normalizationError: null,
-              normalizedText: null,
-              provenanceJson: null,
+              accepted_at: input.acceptedAt,
+              allowance_period_id: input.allowancePeriodId,
+              byte_length: Number(input.byteLength),
+              deleted_at: null,
+              file_id: input.fileId,
+              file_name: input.fileName,
+              media_type: input.mediaType,
+              normalization_claimed_at: null,
+              normalization_error: null,
+              normalized_text: null,
+              object_key: input.objectKey,
+              provenance_json: null,
+              sha256: input.sha256,
               state: "pending_storage",
+              upload_id: input.uploadId,
+              user_id: input.userId,
             })
             .returning()
             .get();
@@ -148,9 +156,9 @@ export const makeFileStore = (db: AgentDb) => {
   const retainedBytes = (ownerUserId: UserId): Effect.Effect<bigint, FileStoreUnavailable> =>
     execute("retainedBytes", () =>
       db
-        .select({ value: sql<number>`COALESCE(SUM(${files.byteLength}), 0)` })
+        .select({ value: sql<number>`COALESCE(SUM(${files.byte_length}), 0)` })
         .from(files)
-        .where(and(eq(files.userId, ownerUserId), ne(files.state, "deleted")))
+        .where(and(eq(files.user_id, ownerUserId), ne(files.state, "deleted")))
         .get(),
     ).pipe(Effect.map((row) => BigInt(row?.value ?? 0)));
 
@@ -159,7 +167,7 @@ export const makeFileStore = (db: AgentDb) => {
   ): Effect.Effect<FileRecord, FileNotFound | FileStoreRecordInvalid | FileStoreUnavailable> =>
     Effect.gen(function* () {
       const row = yield* execute("find", () =>
-        db.select().from(files).where(eq(files.fileId, fileId)).limit(1).get(),
+        db.select().from(files).where(eq(files.file_id, fileId)).limit(1).get(),
       );
       if (row === undefined) {
         return yield* new FileNotFound({ fileId, message: "The file does not exist" });
@@ -169,7 +177,7 @@ export const makeFileStore = (db: AgentDb) => {
 
   const findUpload = (uploadId: AcceptFileUpload["uploadId"]) =>
     execute("findUpload", () =>
-      db.select().from(files).where(eq(files.uploadId, uploadId)).limit(1).get(),
+      db.select().from(files).where(eq(files.upload_id, uploadId)).limit(1).get(),
     ).pipe(
       Effect.flatMap((row) =>
         row === undefined ? Effect.succeed(null) : decodeFile(row, "findUpload"),
@@ -178,7 +186,7 @@ export const makeFileStore = (db: AgentDb) => {
 
   const findAnalysis = (analysisId: FileAnalysisId) =>
     execute("findAnalysis", () =>
-      db.select().from(fileAnalyses).where(eq(fileAnalyses.analysisId, analysisId)).limit(1).get(),
+      db.select().from(fileAnalyses).where(eq(fileAnalyses.analysis_id, analysisId)).limit(1).get(),
     ).pipe(
       Effect.flatMap((row) =>
         row === undefined ? Effect.succeed(null) : decodeAnalysis(row, "findAnalysis"),
@@ -188,9 +196,9 @@ export const makeFileStore = (db: AgentDb) => {
   const analysisIds = (fileId: FileId) =>
     execute("analysisIds", () =>
       db
-        .select({ analysisId: fileAnalyses.analysisId })
+        .select({ analysisId: fileAnalyses.analysis_id })
         .from(fileAnalyses)
-        .where(eq(fileAnalyses.fileId, fileId))
+        .where(eq(fileAnalyses.file_id, fileId))
         .all(),
     ).pipe(
       Effect.flatMap((rows) =>
@@ -214,19 +222,19 @@ export const makeFileStore = (db: AgentDb) => {
           const current = transaction
             .select({ state: files.state })
             .from(files)
-            .where(eq(files.fileId, fileId))
+            .where(eq(files.file_id, fileId))
             .get();
           if (current?.state === "pending_storage" || current?.state === "normalization_failed") {
             transaction
               .update(files)
               .set({
-                normalizationClaimedAt: null,
-                normalizationError: null,
-                normalizedText: null,
-                provenanceJson: null,
+                normalization_claimed_at: null,
+                normalization_error: null,
+                normalized_text: null,
+                provenance_json: null,
                 state: "stored",
               })
-              .where(eq(files.fileId, fileId))
+              .where(eq(files.file_id, fileId))
               .run();
             return "stored" as const;
           }
@@ -255,11 +263,11 @@ export const makeFileStore = (db: AgentDb) => {
       db.transaction((transaction) => {
         const current = transaction
           .select({
-            normalizationClaimedAt: files.normalizationClaimedAt,
+            normalizationClaimedAt: files.normalization_claimed_at,
             state: files.state,
           })
           .from(files)
-          .where(eq(files.fileId, input.fileId))
+          .where(eq(files.file_id, input.fileId))
           .get();
         if (
           current === undefined ||
@@ -273,13 +281,13 @@ export const makeFileStore = (db: AgentDb) => {
         transaction
           .update(files)
           .set({
-            normalizationClaimedAt: input.claimedAt,
-            normalizationError: null,
-            normalizedText: null,
-            provenanceJson: null,
+            normalization_claimed_at: input.claimedAt,
+            normalization_error: null,
+            normalized_text: null,
+            provenance_json: null,
             state: "normalizing",
           })
-          .where(eq(files.fileId, input.fileId))
+          .where(eq(files.file_id, input.fileId))
           .run();
         return true;
       }),
@@ -288,23 +296,23 @@ export const makeFileStore = (db: AgentDb) => {
   const completeNormalization = (
     fileId: FileId,
     claimedAt: DbTimestamp,
-    normalizedText: string,
-    provenanceJson: string,
+    normalized_text: string,
+    provenance_json: string,
   ) =>
     finishNormalization(fileId, claimedAt, "completeNormalization", {
-      normalizationClaimedAt: null,
-      normalizationError: null,
-      normalizedText,
-      provenanceJson,
+      normalization_claimed_at: null,
+      normalization_error: null,
+      normalized_text: normalized_text,
+      provenance_json: provenance_json,
       state: "ready",
     });
 
-  const failNormalization = (fileId: FileId, claimedAt: DbTimestamp, normalizationError: string) =>
+  const failNormalization = (fileId: FileId, claimedAt: DbTimestamp, normalization_error: string) =>
     finishNormalization(fileId, claimedAt, "failNormalization", {
-      normalizationClaimedAt: null,
-      normalizationError,
-      normalizedText: null,
-      provenanceJson: null,
+      normalization_claimed_at: null,
+      normalization_error: normalization_error,
+      normalized_text: null,
+      provenance_json: null,
       state: "normalization_failed",
     });
 
@@ -312,12 +320,12 @@ export const makeFileStore = (db: AgentDb) => {
     execute("releaseNormalization", () =>
       db
         .update(files)
-        .set({ normalizationClaimedAt: null, state: "stored" })
+        .set({ normalization_claimed_at: null, state: "stored" })
         .where(
           and(
-            eq(files.fileId, fileId),
+            eq(files.file_id, fileId),
             eq(files.state, "normalizing"),
-            eq(files.normalizationClaimedAt, claimedAt),
+            eq(files.normalization_claimed_at, claimedAt),
           ),
         )
         .run(),
@@ -339,13 +347,13 @@ export const makeFileStore = (db: AgentDb) => {
           const existing = transaction
             .select()
             .from(fileAnalyses)
-            .where(eq(fileAnalyses.analysisId, input.analysisId))
+            .where(eq(fileAnalyses.analysis_id, input.analysisId))
             .limit(1)
             .get();
           if (existing !== undefined) {
             if (
-              existing.allowancePeriodId !== input.allowancePeriodId ||
-              existing.fileId !== input.fileId ||
+              existing.allowance_period_id !== input.allowancePeriodId ||
+              existing.file_id !== input.fileId ||
               existing.prompt !== input.prompt
             ) {
               return { _tag: "Conflict" } as const;
@@ -355,12 +363,16 @@ export const makeFileStore = (db: AgentDb) => {
           const row = transaction
             .insert(fileAnalyses)
             .values({
-              ...input,
+              allowance_period_id: input.allowancePeriodId,
+              analysis_id: input.analysisId,
+              created_at: input.createdAt,
               failure: null,
-              resultText: null,
+              file_id: input.fileId,
+              prompt: input.prompt,
+              result_text: null,
               state: "pending",
-              updatedAt: input.createdAt,
-              vendorUsdMicros: null,
+              updated_at: input.createdAt,
+              vendor_usd_micros: null,
             })
             .returning()
             .get();
@@ -395,18 +407,22 @@ export const makeFileStore = (db: AgentDb) => {
           const current = transaction
             .select()
             .from(fileAnalyses)
-            .where(eq(fileAnalyses.analysisId, input.analysisId))
+            .where(eq(fileAnalyses.analysis_id, input.analysisId))
             .get();
           if (current === undefined) return undefined;
           if (!analysisTransitionAllowed(current.state, input.state)) return current;
           return transaction
             .update(fileAnalyses)
             .set({
-              ...input,
-              vendorUsdMicros:
+              analysis_id: input.analysisId,
+              failure: input.failure,
+              result_text: input.resultText,
+              state: input.state,
+              updated_at: input.updatedAt,
+              vendor_usd_micros:
                 input.vendorUsdMicros === null ? null : Number(input.vendorUsdMicros),
             })
-            .where(eq(fileAnalyses.analysisId, input.analysisId))
+            .where(eq(fileAnalyses.analysis_id, input.analysisId))
             .returning()
             .get();
         }),
@@ -420,20 +436,20 @@ export const makeFileStore = (db: AgentDb) => {
       if (row.state !== input.state) {
         return yield* new FileStateTransitionConflict({
           currentState: row.state,
-          fileId: row.fileId,
+          fileId: row.file_id,
           operation: "updateAnalysis",
         });
       }
       return yield* decodeAnalysis(row, "updateAnalysis");
     });
 
-  const claimAnalysis = (analysisId: FileAnalysisId, updatedAt: DbTimestamp) =>
+  const claimAnalysis = (analysisId: FileAnalysisId, updated_at: DbTimestamp) =>
     execute("claimAnalysis", () =>
       db.transaction((transaction) => {
         const current = transaction
-          .select({ fileId: fileAnalyses.fileId, state: fileAnalyses.state })
+          .select({ fileId: fileAnalyses.file_id, state: fileAnalyses.state })
           .from(fileAnalyses)
-          .where(eq(fileAnalyses.analysisId, analysisId))
+          .where(eq(fileAnalyses.analysis_id, analysisId))
           .get();
         const file =
           current === undefined
@@ -441,7 +457,7 @@ export const makeFileStore = (db: AgentDb) => {
             : transaction
                 .select({ state: files.state })
                 .from(files)
-                .where(eq(files.fileId, current.fileId))
+                .where(eq(files.file_id, current.fileId))
                 .get();
         if (current?.state !== "pending" || file?.state !== "ready") return false;
         transaction
@@ -449,9 +465,9 @@ export const makeFileStore = (db: AgentDb) => {
           .set({
             failure: fileAnalysisExecutionPending,
             state: "ambiguous",
-            updatedAt,
+            updated_at: updated_at,
           })
-          .where(and(eq(fileAnalyses.analysisId, analysisId), eq(fileAnalyses.state, "pending")))
+          .where(and(eq(fileAnalyses.analysis_id, analysisId), eq(fileAnalyses.state, "pending")))
           .run();
         return true;
       }),
@@ -471,7 +487,7 @@ export const makeFileStore = (db: AgentDb) => {
           const file = transaction
             .select()
             .from(files)
-            .where(eq(files.fileId, input.fileId))
+            .where(eq(files.file_id, input.fileId))
             .limit(1)
             .get();
           if (file === undefined) return null;
@@ -480,29 +496,29 @@ export const makeFileStore = (db: AgentDb) => {
             transaction
               .select({ value: sql<number>`COUNT(*)` })
               .from(fileAnalyses)
-              .where(eq(fileAnalyses.fileId, input.fileId))
+              .where(eq(fileAnalyses.file_id, input.fileId))
               .get()?.value ?? 0;
           transaction
             .update(fileAnalyses)
             .set({
               failure: "source file deleted",
-              resultText: null,
+              result_text: null,
               state: "deleted",
-              updatedAt: input.deletedAt,
+              updated_at: input.deletedAt,
             })
-            .where(eq(fileAnalyses.fileId, input.fileId))
+            .where(eq(fileAnalyses.file_id, input.fileId))
             .run();
           transaction
             .update(files)
             .set({
-              deletedAt: input.deletedAt,
-              normalizationClaimedAt: null,
-              normalizationError: null,
-              normalizedText: null,
-              provenanceJson: null,
+              deleted_at: input.deletedAt,
+              normalization_claimed_at: null,
+              normalization_error: null,
+              normalized_text: null,
+              provenance_json: null,
               state: "deleted",
             })
-            .where(eq(files.fileId, input.fileId))
+            .where(eq(files.file_id, input.fileId))
             .run();
           return {
             _tag: "Deleted",
@@ -510,13 +526,13 @@ export const makeFileStore = (db: AgentDb) => {
               transaction
                 .insert(fileDeletions)
                 .values({
-                  actionId: input.actionId,
-                  analysisCount,
-                  deletedAt: input.deletedAt,
-                  fileId: input.fileId,
-                  sourceObjectKey: file.objectKey,
-                  sourceSha256: file.sha256,
-                  userId: file.userId,
+                  action_id: input.actionId,
+                  analysis_count: analysisCount,
+                  deleted_at: input.deletedAt,
+                  file_id: input.fileId,
+                  source_object_key: file.object_key,
+                  source_sha256: file.sha256,
+                  user_id: file.user_id,
                 })
                 .onConflictDoNothing()
                 .returning()
@@ -524,7 +540,7 @@ export const makeFileStore = (db: AgentDb) => {
               transaction
                 .select()
                 .from(fileDeletions)
-                .where(eq(fileDeletions.fileId, input.fileId))
+                .where(eq(fileDeletions.file_id, input.fileId))
                 .get(),
           } as const;
         }),
@@ -553,7 +569,7 @@ export const makeFileStore = (db: AgentDb) => {
   > =>
     Effect.gen(function* () {
       const row = yield* execute("readDeletion", () =>
-        db.select().from(fileDeletions).where(eq(fileDeletions.fileId, fileId)).limit(1).get(),
+        db.select().from(fileDeletions).where(eq(fileDeletions.file_id, fileId)).limit(1).get(),
       );
       if (row === undefined) {
         return yield* new FileNotFound({ fileId, message: "The file has no deletion lineage" });
@@ -569,7 +585,7 @@ export const makeFileStore = (db: AgentDb) => {
   ) {
     return Effect.gen(function* () {
       const current = yield* execute(operation, () =>
-        db.select().from(files).where(eq(files.fileId, fileId)).get(),
+        db.select().from(files).where(eq(files.file_id, fileId)).get(),
       );
       if (current === undefined) {
         return yield* new FileNotFound({ fileId, message: "The file does not exist" });
@@ -582,7 +598,7 @@ export const makeFileStore = (db: AgentDb) => {
         });
       }
       yield* execute(operation, () =>
-        db.update(files).set(changes).where(eq(files.fileId, fileId)).run(),
+        db.update(files).set(changes).where(eq(files.file_id, fileId)).run(),
       );
       return undefined;
     });
@@ -599,16 +615,16 @@ export const makeFileStore = (db: AgentDb) => {
         db.transaction((transaction) => {
           const current = transaction
             .select({
-              normalizationClaimedAt: files.normalizationClaimedAt,
+              normalizationClaimedAt: files.normalization_claimed_at,
               state: files.state,
             })
             .from(files)
-            .where(eq(files.fileId, fileId))
+            .where(eq(files.file_id, fileId))
             .get();
           if (current?.state !== "normalizing" || current.normalizationClaimedAt !== claimedAt) {
             return current?.state ?? null;
           }
-          transaction.update(files).set(changes).where(eq(files.fileId, fileId)).run();
+          transaction.update(files).set(changes).where(eq(files.file_id, fileId)).run();
           return "updated" as const;
         }),
       );
@@ -644,11 +660,11 @@ export const makeFileStore = (db: AgentDb) => {
         "markDeleting",
         ["pending_storage", "stored", "normalizing", "ready", "normalization_failed", "deleting"],
         {
-          deletedAt: null,
-          normalizationClaimedAt: null,
-          normalizationError: null,
-          normalizedText: null,
-          provenanceJson: null,
+          deleted_at: null,
+          normalization_claimed_at: null,
+          normalization_error: null,
+          normalized_text: null,
+          provenance_json: null,
           state: "deleting",
         },
       ),
@@ -663,17 +679,34 @@ export const makeFileStore = (db: AgentDb) => {
 type FileRow = typeof files.$inferSelect;
 
 const sameUpload = (row: FileRow, input: AcceptFileUpload): boolean =>
-  row.allowancePeriodId === input.allowancePeriodId &&
-  BigInt(row.byteLength) === input.byteLength &&
-  row.fileId === input.fileId &&
-  row.fileName === input.fileName &&
-  row.mediaType === input.mediaType &&
-  row.objectKey === input.objectKey &&
+  row.allowance_period_id === input.allowancePeriodId &&
+  BigInt(row.byte_length) === input.byteLength &&
+  row.file_id === input.fileId &&
+  row.file_name === input.fileName &&
+  row.media_type === input.mediaType &&
+  row.object_key === input.objectKey &&
   row.sha256 === input.sha256 &&
-  row.userId === input.userId;
+  row.user_id === input.userId;
 
 const decodeFile = (row: FileRow, operation: string) =>
-  Schema.decodeUnknownEffect(FileRecord)({ ...row, byteLength: BigInt(row.byteLength) }).pipe(
+  Schema.decodeUnknownEffect(FileRecord)({
+    acceptedAt: row.accepted_at,
+    allowancePeriodId: row.allowance_period_id,
+    byteLength: BigInt(row.byte_length),
+    deletedAt: row.deleted_at,
+    fileId: row.file_id,
+    fileName: row.file_name,
+    mediaType: row.media_type,
+    normalizationClaimedAt: row.normalization_claimed_at,
+    normalizationError: row.normalization_error,
+    normalizedText: row.normalized_text,
+    objectKey: row.object_key,
+    provenanceJson: row.provenance_json,
+    sha256: row.sha256,
+    state: row.state,
+    uploadId: row.upload_id,
+    userId: row.user_id,
+  }).pipe(
     Effect.mapError(
       (cause) =>
         new FileStoreRecordInvalid({
@@ -689,8 +722,16 @@ type FileDeletionRow = typeof fileDeletions.$inferSelect;
 
 const decodeAnalysis = (row: FileAnalysisRow, operation: string) =>
   Schema.decodeUnknownEffect(FileAnalysisRecord)({
-    ...row,
-    vendorUsdMicros: row.vendorUsdMicros === null ? null : BigInt(row.vendorUsdMicros),
+    allowancePeriodId: row.allowance_period_id,
+    analysisId: row.analysis_id,
+    createdAt: row.created_at,
+    failure: row.failure,
+    fileId: row.file_id,
+    prompt: row.prompt,
+    resultText: row.result_text,
+    state: row.state,
+    updatedAt: row.updated_at,
+    vendorUsdMicros: row.vendor_usd_micros === null ? null : BigInt(row.vendor_usd_micros),
   }).pipe(
     Effect.mapError(
       (cause) =>
@@ -703,7 +744,15 @@ const decodeAnalysis = (row: FileAnalysisRow, operation: string) =>
   );
 
 const decodeDeletion = (row: FileDeletionRow, operation: string) =>
-  Schema.decodeEffect(FileDeletionRecord)(row).pipe(
+  Schema.decodeEffect(FileDeletionRecord)({
+    actionId: row.action_id,
+    analysisCount: row.analysis_count,
+    deletedAt: row.deleted_at,
+    fileId: row.file_id,
+    sourceObjectKey: row.source_object_key,
+    sourceSha256: row.source_sha256,
+    userId: row.user_id,
+  }).pipe(
     Effect.mapError(
       (cause) =>
         new FileStoreRecordInvalid({

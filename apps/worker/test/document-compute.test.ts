@@ -5,7 +5,7 @@ import { TestClock } from "effect/testing";
 
 import { ContentId } from "../src/domain/client-content";
 import { AllowancePeriodId } from "../src/domain";
-import * as DocumentCompute from "../src/integrations/cloudflare/document-compute";
+import { DocumentCompute } from "../src/integrations/cloudflare/document-compute";
 import { attemptKeyFor } from "../src/integrations/cloudflare/document-storage-keys";
 import { DocumentIntentDigest, DocumentSource } from "../src/services/document-generation";
 
