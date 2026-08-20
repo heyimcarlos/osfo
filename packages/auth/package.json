@@ -14,13 +14,13 @@
   "dependencies": {
     "@better-auth/infra": "0.3.7",
     "@osfo/db": "workspace:*",
-    "better-auth": "1.6.28",
+    "better-auth": "1.6.29",
     "drizzle-orm": "0.45.2",
     "effect": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
-    "auth": "1.6.28",
+    "auth": "1.6.29",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
