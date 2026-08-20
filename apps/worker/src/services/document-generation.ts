@@ -13,7 +13,7 @@ import type {
   Recorded,
   UsageConflict,
 } from "../domain/allowance";
-import * as DocumentArtifact from "../domain/document-artifact";
+import { DocumentArtifact } from "../domain/document-artifact";
 import type { PlanPolicyNotFound } from "../domain/plan-policy";
 import type { AuthorizationContext, Denied, Interface as Authorization } from "./authorization";
 
@@ -605,3 +605,5 @@ export const DocumentOwner = DocumentArtifact.DocumentOwner;
 export type DocumentOwner = DocumentArtifact.DocumentOwner;
 
 export type { AllowanceItem, AllowanceSource } from "../domain/allowance";
+
+export * as DocumentGeneration from "./document-generation";

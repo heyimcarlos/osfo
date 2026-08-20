@@ -39,11 +39,11 @@ export const makeModelCallUsageStore = (db: AgentDb) => {
           const itemsJson = encodeItems(usage.items);
           const existing = transaction
             .select({
-              allowancePeriodId: modelCallUsageEvidence.allowancePeriodId,
-              itemsJson: modelCallUsageEvidence.itemsJson,
+              allowancePeriodId: modelCallUsageEvidence.allowance_period_id,
+              itemsJson: modelCallUsageEvidence.items_json,
             })
             .from(modelCallUsageEvidence)
-            .where(eq(modelCallUsageEvidence.attemptId, usage.attemptId))
+            .where(eq(modelCallUsageEvidence.attempt_id, usage.attemptId))
             .limit(1)
             .get();
           if (existing !== undefined) {
@@ -55,11 +55,11 @@ export const makeModelCallUsageStore = (db: AgentDb) => {
           transaction
             .insert(modelCallUsageEvidence)
             .values({
-              allowancePeriodId: usage.allowancePeriodId,
-              attemptId: usage.attemptId,
-              dispatchedAt: null,
-              itemsJson,
-              recordedAt: timestamp(recordedAt),
+              allowance_period_id: usage.allowancePeriodId,
+              attempt_id: usage.attemptId,
+              dispatched_at: null,
+              items_json: itemsJson,
+              recorded_at: timestamp(recordedAt),
             })
             .run();
           return "inserted";
@@ -77,13 +77,13 @@ export const makeModelCallUsageStore = (db: AgentDb) => {
   const readPending = execute("readPendingModelCallUsage", () =>
     db
       .select({
-        allowancePeriodId: modelCallUsageEvidence.allowancePeriodId,
-        attemptId: modelCallUsageEvidence.attemptId,
-        itemsJson: modelCallUsageEvidence.itemsJson,
+        allowancePeriodId: modelCallUsageEvidence.allowance_period_id,
+        attemptId: modelCallUsageEvidence.attempt_id,
+        itemsJson: modelCallUsageEvidence.items_json,
       })
       .from(modelCallUsageEvidence)
-      .where(isNull(modelCallUsageEvidence.dispatchedAt))
-      .orderBy(modelCallUsageEvidence.recordedAt)
+      .where(isNull(modelCallUsageEvidence.dispatched_at))
+      .orderBy(modelCallUsageEvidence.recorded_at)
       .all(),
   ).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(StoredPendingUsage))),
@@ -105,8 +105,8 @@ export const makeModelCallUsageStore = (db: AgentDb) => {
     execute("markModelCallUsageDispatched", () =>
       db
         .update(modelCallUsageEvidence)
-        .set({ dispatchedAt: timestamp(dispatchedAt) })
-        .where(eq(modelCallUsageEvidence.attemptId, attemptId))
+        .set({ dispatched_at: timestamp(dispatchedAt) })
+        .where(eq(modelCallUsageEvidence.attempt_id, attemptId))
         .run(),
     );
 

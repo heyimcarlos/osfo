@@ -7,9 +7,9 @@ import { AllowancePeriodId, PlanPolicyVersion, UserId } from "../src/domain";
 import { ActionId } from "../src/domain/action-execution";
 import { AuthSessionId } from "../src/domain/auth-session";
 import { retainedCatalog } from "../src/domain/plan-policy";
-import * as ArtifactValidation from "../src/integrations/cloudflare/document-artifact-validation";
-import * as DocumentGeneration from "../src/services/document-generation";
-import { make as makeAuthorization } from "../src/services/authorization";
+import { DocumentArtifactValidation } from "../src/integrations/cloudflare/document-artifact-validation";
+import { DocumentGeneration } from "../src/services/document-generation";
+import { Authorization } from "../src/services/authorization";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Test fixtures use domain discriminators. */
 
@@ -246,7 +246,7 @@ describe("Document Generation", () => {
   it.effect("rechecks current authorization immediately before disposable compute", () =>
     Effect.gen(function* () {
       const pdf = yield* Effect.promise(() => makePdf(1));
-      const base = makeAuthorization(retainedCatalog);
+      const base = Authorization.make(retainedCatalog);
       let currentLoads = 0;
       let rechecked = false;
       const fixture = makeFixture({
@@ -742,7 +742,7 @@ const foreignAuthorization = (actionId: string) => {
 };
 
 const makeFixture = (options: {
-  readonly authorization?: ReturnType<typeof makeAuthorization>;
+  readonly authorization?: ReturnType<typeof Authorization.make>;
   readonly beforeCompute?: () => void;
   readonly cleanupFails?: boolean;
   readonly compute?: DocumentGeneration.DisposableCompute;
@@ -763,7 +763,7 @@ const makeFixture = (options: {
     readonly source: DocumentGeneration.AllowanceSource;
   }> = [];
   const documents = DocumentGeneration.make({
-    artifactValidator: ArtifactValidation,
+    artifactValidator: DocumentArtifactValidation,
     allowances: {
       record: (period, source, items) =>
         Effect.sync(() => {
@@ -817,7 +817,7 @@ const makeFixture = (options: {
           );
         }),
     },
-    authorization: options.authorization ?? makeAuthorization(retainedCatalog),
+    authorization: options.authorization ?? Authorization.make(retainedCatalog),
     currentAuthorization: options.currentAuthorization ?? ((admitted) => Effect.succeed(admitted)),
     compute: options.compute ?? {
       dispose: (contentId) =>
@@ -838,7 +838,7 @@ const makeFixture = (options: {
         ),
       generate: () =>
         options.computeDefects === true
-          ? Effect.die("compute defect")
+          ? Effect.die(new Error("compute defect"))
           : Effect.sync(() => {
               options.beforeCompute?.();
               computeCalls += 1;

@@ -119,7 +119,7 @@ describe("billing return reconciliation", () => {
           { reason: "checkoutReturn", stripeCheckoutSessionId: checkoutId, userId },
           {
             authorize: Effect.void,
-            fetchSubscription: () => Effect.die("must not fetch"),
+            fetchSubscription: () => Effect.die(new Error("must not fetch")),
             findCheckoutSession: () =>
               Effect.succeed({
                 billingCheckoutSessionId,
@@ -129,8 +129,9 @@ describe("billing return reconciliation", () => {
                 stripeCheckoutSessionId: checkoutId,
                 userId,
               }),
-            findStoredSubscription: () => Effect.die("must not prefer stored Subscription"),
-            reconcile: () => Effect.die("must not reconcile a conflict"),
+            findStoredSubscription: () =>
+              Effect.die(new Error("must not prefer stored Subscription")),
+            reconcile: () => Effect.die(new Error("must not reconcile a conflict")),
             retrieveCheckout: () =>
               Effect.succeed({
                 billingCheckoutSessionId,
@@ -189,10 +190,10 @@ describe("billing return reconciliation", () => {
             { reason: "checkoutReturn", stripeCheckoutSessionId: checkoutId, userId },
             {
               authorize: Effect.void,
-              fetchSubscription: () => Effect.die("must not fetch a conflict"),
+              fetchSubscription: () => Effect.die(new Error("must not fetch a conflict")),
               findCheckoutSession: () => Effect.succeed(stored),
-              findStoredSubscription: () => Effect.die("must not use stored fallback"),
-              reconcile: () => Effect.die("must not reconcile a conflict"),
+              findStoredSubscription: () => Effect.die(new Error("must not use stored fallback")),
+              reconcile: () => Effect.die(new Error("must not reconcile a conflict")),
               retrieveCheckout: () => Effect.succeed(conflict),
             },
           ),
@@ -215,13 +216,15 @@ describe("billing return reconciliation", () => {
           },
           {
             authorize: record("authorize"),
-            fetchSubscription: () => record("fetch").pipe(Effect.andThen(Effect.die("unexpected"))),
+            fetchSubscription: () =>
+              record("fetch").pipe(Effect.andThen(Effect.die(new Error("unexpected")))),
             findCheckoutSession: () => record("find-exact").pipe(Effect.as(null)),
             findStoredSubscription: () =>
-              record("stored-fallback").pipe(Effect.andThen(Effect.die("unexpected"))),
-            reconcile: () => record("reconcile").pipe(Effect.andThen(Effect.die("unexpected"))),
+              record("stored-fallback").pipe(Effect.andThen(Effect.die(new Error("unexpected")))),
+            reconcile: () =>
+              record("reconcile").pipe(Effect.andThen(Effect.die(new Error("unexpected")))),
             retrieveCheckout: () =>
-              record("retrieve").pipe(Effect.andThen(Effect.die("unexpected"))),
+              record("retrieve").pipe(Effect.andThen(Effect.die(new Error("unexpected")))),
           },
         ),
       );

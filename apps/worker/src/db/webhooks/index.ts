@@ -33,3 +33,5 @@ export const make = (options: MakeOptions): Interface => ({
     ),
   replay: (webhookEventId) => replay(options.database, webhookEventId),
 });
+
+export * as WebhooksDb from "./index";

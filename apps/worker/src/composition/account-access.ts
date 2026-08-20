@@ -1,9 +1,9 @@
 import { Effect } from "effect";
 
 import type { UserId } from "../domain";
-import * as DeletionCasePostgres from "../integrations/postgres/deletion-case";
-import * as UserSuspensionPostgres from "../integrations/postgres/user-suspension";
-import * as AccountAccess from "../services/account-access";
+import { DeletionCasePostgres } from "../integrations/postgres/deletion-case";
+import { UserSuspensionPostgres } from "../integrations/postgres/user-suspension";
+import { AccountAccess } from "../services/account-access";
 
 /** Request-scoped account access capability shared by authentication checks. */
 export type Check = (userId: UserId) => ReturnType<typeof AccountAccess.canAccess>;
@@ -15,3 +15,5 @@ export const make = Effect.gen(function* () {
 
   return (userId: UserId) => AccountAccess.canAccess(userSuspensions, deletionCases, userId);
 });
+
+export * as AccountAccess from "./account-access";

@@ -46,7 +46,7 @@ describe("Osfo directory topology", () => {
       const webState = yield* Effect.promise(() => webFacet.inspect());
       // oxlint-disable-next-line eslint/no-underscore-dangle -- Effect tagged unions use `_tag`.
       if (webState._tag !== "AgentFound") {
-        return yield* Effect.die("The web facet marker is missing");
+        return yield* Effect.die(new Error("The web facet marker is missing"));
       }
       const registry = yield* Effect.promise(() => directory.listAgents());
       const telegramResolver = makeTelegramConversationResolver({

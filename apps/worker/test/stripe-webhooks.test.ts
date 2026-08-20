@@ -9,9 +9,9 @@ import {
   StripeSubscriptionId,
   UserId,
 } from "../src/domain";
-import * as BillingSubscriptions from "../src/services/billing-subscriptions";
+import { BillingSubscriptions } from "../src/services/billing-subscriptions";
 import { StripeRequestFailed } from "../src/services/stripe-billing";
-import * as StripeWebhooks from "../src/services/stripe-webhooks";
+import { StripeWebhooks } from "../src/services/stripe-webhooks";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/global-date, effecttsgo/global-date-in-effect -- These tests assert typed Effect results with fixed boundary dates. */
 
@@ -41,20 +41,20 @@ describe("StripeWebhooks", () => {
       let receives = 0;
       const service = StripeWebhooks.make({
         billing: {
-          loadRevision: () => Effect.die("unused"),
-          applyStripeSnapshot: () => Effect.die("unused"),
+          loadRevision: () => Effect.die(new Error("unused")),
+          applyStripeSnapshot: () => Effect.die(new Error("unused")),
         },
         persistence: {
           fail: () => Effect.void,
           markProcessed: () => Effect.void,
           receive: () => {
             receives += 1;
-            return Effect.die("must not persist");
+            return Effect.die(new Error("must not persist"));
           },
-          replay: () => Effect.die("unused"),
+          replay: () => Effect.die(new Error("unused")),
         },
         stripe: {
-          fetchCurrentSnapshot: () => Effect.die("unused"),
+          fetchCurrentSnapshot: () => Effect.die(new Error("unused")),
           verify: (rawBody, signature) =>
             rawBody === "exact-body" && signature === "valid-signature"
               ? Effect.succeed({
@@ -81,19 +81,19 @@ describe("StripeWebhooks", () => {
       let fetches = 0;
       const service = StripeWebhooks.make({
         billing: {
-          loadRevision: () => Effect.die("unused"),
-          applyStripeSnapshot: () => Effect.die("unused"),
+          loadRevision: () => Effect.die(new Error("unused")),
+          applyStripeSnapshot: () => Effect.die(new Error("unused")),
         },
         persistence: {
           fail: () => Effect.void,
           markProcessed: () => Effect.void,
           receive: () => Effect.succeed({ _tag: "ProcessedDuplicate" }),
-          replay: () => Effect.die("unused"),
+          replay: () => Effect.die(new Error("unused")),
         },
         stripe: {
           fetchCurrentSnapshot: () => {
             fetches += 1;
-            return Effect.die("must not fetch");
+            return Effect.die(new Error("must not fetch"));
           },
           verify: () =>
             Effect.succeed({
@@ -129,7 +129,7 @@ describe("StripeWebhooks", () => {
             fail: () => Effect.void,
             markProcessed: () => Effect.void,
             receive: () => Effect.succeed({ _tag: "Pending", webhookEventId: `webhook-${type}` }),
-            replay: () => Effect.die("unused"),
+            replay: () => Effect.die(new Error("unused")),
           },
           stripe: {
             fetchCurrentSnapshot: (event) => {
@@ -191,8 +191,8 @@ describe("StripeWebhooks", () => {
       let evidence: BillingSubscriptions.StripeCheckoutEvidence | null = null;
       const service = StripeWebhooks.make({
         billing: {
-          loadRevision: () => Effect.die("unused"),
-          applyStripeSnapshot: () => Effect.die("unused"),
+          loadRevision: () => Effect.die(new Error("unused")),
+          applyStripeSnapshot: () => Effect.die(new Error("unused")),
         },
         persistence: {
           fail: () => Effect.void,
@@ -202,10 +202,10 @@ describe("StripeWebhooks", () => {
             return Effect.void;
           },
           receive: () => Effect.succeed({ _tag: "Pending", webhookEventId: "webhook-unsupported" }),
-          replay: () => Effect.die("unused"),
+          replay: () => Effect.die(new Error("unused")),
         },
         stripe: {
-          fetchCurrentSnapshot: () => Effect.die("must not fetch"),
+          fetchCurrentSnapshot: () => Effect.die(new Error("must not fetch")),
           verify: () =>
             Effect.succeed({
               billingCheckoutSessionId: BillingCheckoutSessionId.make("checkout-expired"),
@@ -253,8 +253,8 @@ describe("StripeWebhooks", () => {
         },
         persistence: {
           fail: () => Effect.void,
-          markProcessed: () => Effect.die("must project a supported dispute"),
-          receive: () => Effect.die("unused"),
+          markProcessed: () => Effect.die(new Error("must project a supported dispute")),
+          receive: () => Effect.die(new Error("unused")),
           replay: () => {
             replayCalls += 1;
             return replayCalls === 1
@@ -277,7 +277,7 @@ describe("StripeWebhooks", () => {
             observations.push(`fetch:${event.externalObjectId}`);
             return Effect.succeed({ _tag: "Snapshot", snapshot });
           },
-          verify: () => Effect.die("unused"),
+          verify: () => Effect.die(new Error("unused")),
         },
       });
 
@@ -302,8 +302,9 @@ describe("StripeWebhooks", () => {
         let processed = 0;
         const service = StripeWebhooks.make({
           billing: {
-            applyStripeSnapshot: () => Effect.die("must not project an unsupported dispute"),
-            loadRevision: () => Effect.die("must not load an unsupported dispute"),
+            applyStripeSnapshot: () =>
+              Effect.die(new Error("must not project an unsupported dispute")),
+            loadRevision: () => Effect.die(new Error("must not load an unsupported dispute")),
           },
           persistence: {
             fail: (_webhookEventId, errorCode) => {
@@ -316,10 +317,11 @@ describe("StripeWebhooks", () => {
             },
             receive: () =>
               Effect.succeed({ _tag: "Pending", webhookEventId: "webhook-unsupported" }),
-            replay: () => Effect.die("unused"),
+            replay: () => Effect.die(new Error("unused")),
           },
           stripe: {
-            fetchCurrentSnapshot: () => Effect.die("must not fetch an unsupported dispute"),
+            fetchCurrentSnapshot: () =>
+              Effect.die(new Error("must not fetch an unsupported dispute")),
             verify: () =>
               Effect.succeed({
                 billingCheckoutSessionId: null,
@@ -348,8 +350,8 @@ describe("StripeWebhooks", () => {
         let failedEvidence: BillingSubscriptions.StripeCheckoutEvidence | null = null;
         const service = StripeWebhooks.make({
           billing: {
-            applyStripeSnapshot: () => Effect.die("unused"),
-            loadRevision: () => Effect.die("unused"),
+            applyStripeSnapshot: () => Effect.die(new Error("unused")),
+            loadRevision: () => Effect.die(new Error("unused")),
           },
           persistence: {
             fail: (_webhookEventId, _errorCode, checkoutEvidence) => {
@@ -357,9 +359,9 @@ describe("StripeWebhooks", () => {
               failedEvidence = checkoutEvidence;
               return Effect.void;
             },
-            markProcessed: () => Effect.die("unused"),
+            markProcessed: () => Effect.die(new Error("unused")),
             receive: () => Effect.succeed({ _tag: "Pending", webhookEventId: "webhook-failure" }),
-            replay: () => Effect.die("unused"),
+            replay: () => Effect.die(new Error("unused")),
           },
           stripe: {
             fetchCurrentSnapshot: () =>

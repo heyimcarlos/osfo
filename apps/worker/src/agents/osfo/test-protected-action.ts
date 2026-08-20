@@ -9,8 +9,8 @@ import {
 } from "../../domain/action-execution";
 import { AuthorizationOperation } from "../../domain/authorization-operation";
 import { retainedCatalog } from "../../domain/plan-policy";
-import * as ActionExecutor from "../../services/action-executor";
-import { AuthorizationContext, make as makeAuthorization } from "../../services/authorization";
+import { ActionExecutor } from "../../services/action-executor";
+import { Authorization, AuthorizationContext } from "../../services/authorization";
 import {
   ActionPresentation,
   ActionPresentationId,
@@ -61,7 +61,7 @@ export const makeTestProtectedAction = (options: TestProtectedActionOptions) =>
     execute: async (input, context) =>
       Effect.runPromise(
         ActionExecutor.make(
-          makeAuthorization(retainedCatalog),
+          Authorization.make(retainedCatalog),
           currentAuthorities(options.readState),
         ).executeThinkApprovedAction(
           stableAuthorizationContext(),

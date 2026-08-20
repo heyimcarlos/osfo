@@ -127,7 +127,7 @@ describe("Osfo Session Recall", () => {
           }),
       }).sessionRecall;
       if (recall === undefined || !("execute" in recall) || recall.execute === undefined) {
-        return yield* Effect.die("Session Recall tool must be exposed");
+        return yield* Effect.die(new Error("Session Recall tool must be exposed"));
       }
       const execute = recall.execute;
 
@@ -202,14 +202,18 @@ describe("Osfo Session Recall", () => {
                 role: "assistant",
               });
             const db = makeAgentDb(state.storage);
-            db.insert(conversationRoutes).values({ isPrimary: false, routeId: otherRouteId }).run();
+            db.insert(conversationRoutes)
+              .values({ is_primary: false, route_id: otherRouteId })
+              .run();
             db.insert(sessionOwnership)
               .values({
-                becameCurrentAt: Schema.decodeUnknownSync(DbTimestamp)("2026-08-15T14:00:00.000Z"),
-                ownershipSequence: 3,
-                replacedAt: null,
-                routeId: otherRouteId,
-                sessionId: otherSessionId,
+                became_current_at: Schema.decodeUnknownSync(DbTimestamp)(
+                  "2026-08-15T14:00:00.000Z",
+                ),
+                ownership_sequence: 3,
+                replaced_at: null,
+                route_id: otherRouteId,
+                session_id: otherSessionId,
               })
               .run();
             await Session.create(instance)
@@ -722,13 +726,13 @@ describe("Osfo Session Recall", () => {
         runInDurableObject(agent, async (_instance, state) => {
           const db = makeAgentDb(state.storage);
           const historicalRows = Array.from({ length: 200 }, (_, index) => ({
-            becameCurrentAt: Schema.decodeUnknownSync(DbTimestamp)(
+            became_current_at: Schema.decodeUnknownSync(DbTimestamp)(
               `2026-08-01T00:00:00.${String(index).padStart(3, "0")}Z`,
             ),
-            ownershipSequence: index + 2,
-            replacedAt: Schema.decodeUnknownSync(DbTimestamp)("2026-08-15T11:00:00.000Z"),
-            routeId,
-            sessionId: Schema.decodeUnknownSync(SessionId)(`session-recall-deep-${index}`),
+            ownership_sequence: index + 2,
+            replaced_at: Schema.decodeUnknownSync(DbTimestamp)("2026-08-15T11:00:00.000Z"),
+            route_id: routeId,
+            session_id: Schema.decodeUnknownSync(SessionId)(`session-recall-deep-${index}`),
           }));
           for (let rowIndex = 0; rowIndex < historicalRows.length; rowIndex += 20) {
             db.insert(sessionOwnership)
@@ -736,14 +740,14 @@ describe("Osfo Session Recall", () => {
               .run();
           }
           const expiredCursorRows = Array.from({ length: 80 }, (_, index) => ({
-            afterOwnershipSequence: null,
+            after_ownership_sequence: null,
             cursor: SessionRecallCursor.make(
               `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
             ),
-            expiresAt: Schema.decodeUnknownSync(DbTimestamp)("2020-01-01T00:00:00.000Z"),
-            routeId,
-            snapshotCurrentSessionId: currentSessionId,
-            snapshotMaxOwnershipSequence: 201,
+            expires_at: Schema.decodeUnknownSync(DbTimestamp)("2020-01-01T00:00:00.000Z"),
+            route_id: routeId,
+            snapshot_current_session_id: currentSessionId,
+            snapshot_max_ownership_sequence: 201,
           }));
           for (let rowIndex = 0; rowIndex < expiredCursorRows.length; rowIndex += 10) {
             db.insert(sessionRecallCursors)
@@ -787,7 +791,7 @@ describe("Osfo Session Recall", () => {
             );
             expiredCursorCounts.push(
               db
-                .select({ expiresAt: sessionRecallCursors.expiresAt })
+                .select({ expiresAt: sessionRecallCursors.expires_at })
                 .from(sessionRecallCursors)
                 .all()
                 .filter(({ expiresAt }) => expiresAt === "2020-01-01T00:00:00.000Z").length,

@@ -15,37 +15,37 @@ import type { Database } from "../index";
 export const applyCheckoutEvidence = (
   database: Pick<Database, "update">,
   evidence: StripeCheckoutEvidence,
-  stripeSubscriptionId: StripeSubscriptionId | null,
+  stripe_subscription_id: StripeSubscriptionId | null,
 ) =>
   database
     .update(billingCheckoutSessions)
     .set(
       evidence._tag === "PaymentFailed"
         ? {
-            completedAt: null,
+            completed_at: null,
             state: "failed",
-            stripePaymentStatus: "unpaid",
-            stripeCheckoutSessionId: evidence.locator.stripeCheckoutSessionId,
-            updatedAt: sql`clock_timestamp()`,
+            stripe_payment_status: "unpaid",
+            stripe_checkout_session_id: evidence.locator.stripeCheckoutSessionId,
+            updated_at: sql`clock_timestamp()`,
           }
         : {
-            completedAt: sql`clock_timestamp()`,
+            completed_at: sql`clock_timestamp()`,
             state: "complete",
-            stripePaymentStatus: evidence.paymentStatus,
-            stripeCheckoutSessionId: evidence.locator.stripeCheckoutSessionId,
-            stripeSubscriptionId,
-            updatedAt: sql`clock_timestamp()`,
+            stripe_payment_status: evidence.paymentStatus,
+            stripe_checkout_session_id: evidence.locator.stripeCheckoutSessionId,
+            stripe_subscription_id: stripe_subscription_id,
+            updated_at: sql`clock_timestamp()`,
           },
     )
     .where(
       and(
         evidence.locator._tag === "LocalAttempt"
           ? eq(
-              billingCheckoutSessions.billingCheckoutSessionId,
+              billingCheckoutSessions.billing_checkout_session_id,
               evidence.locator.billingCheckoutSessionId,
             )
           : eq(
-              billingCheckoutSessions.stripeCheckoutSessionId,
+              billingCheckoutSessions.stripe_checkout_session_id,
               evidence.locator.stripeCheckoutSessionId,
             ),
         or(
@@ -63,29 +63,29 @@ export const checkoutEvidenceMatches = async (
 ): Promise<boolean> => {
   const [stored] = await database
     .select({
-      customerId: billingCustomers.stripeCustomerId,
-      priceId: billingCheckoutSessions.stripePriceId,
-      productId: billingCheckoutSessions.stripeProductId,
+      customerId: billingCustomers.stripe_customer_id,
+      priceId: billingCheckoutSessions.stripe_price_id,
+      productId: billingCheckoutSessions.stripe_product_id,
       state: billingCheckoutSessions.state,
-      stripeCheckoutSessionId: billingCheckoutSessions.stripeCheckoutSessionId,
-      userId: billingCheckoutSessions.userId,
+      stripeCheckoutSessionId: billingCheckoutSessions.stripe_checkout_session_id,
+      userId: billingCheckoutSessions.user_id,
     })
     .from(billingCheckoutSessions)
     .innerJoin(
       billingCustomers,
       and(
-        eq(billingCustomers.billingCustomerId, billingCheckoutSessions.billingCustomerId),
-        eq(billingCustomers.userId, billingCheckoutSessions.userId),
+        eq(billingCustomers.billing_customer_id, billingCheckoutSessions.billing_customer_id),
+        eq(billingCustomers.user_id, billingCheckoutSessions.user_id),
       ),
     )
     .where(
       evidence.locator._tag === "LocalAttempt"
         ? eq(
-            billingCheckoutSessions.billingCheckoutSessionId,
+            billingCheckoutSessions.billing_checkout_session_id,
             evidence.locator.billingCheckoutSessionId,
           )
         : eq(
-            billingCheckoutSessions.stripeCheckoutSessionId,
+            billingCheckoutSessions.stripe_checkout_session_id,
             evidence.locator.stripeCheckoutSessionId,
           ),
     )

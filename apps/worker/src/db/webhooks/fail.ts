@@ -17,28 +17,28 @@ export const fail = (
   database: Pick<Database, "transaction">,
   webhookEventId: string,
   attempt: number,
-  errorCode: string,
+  error_code: string,
   checkoutEvidence: StripeCheckoutEvidence | null,
 ): Effect.Effect<void, PermanentStripeWebhookFailure | WebhookPersistenceUnavailable> =>
   execute("fail", database, webhookEventId, attempt, checkoutEvidence, async (transaction) => {
     const [updated] = await transaction
       .update(webhookJobs)
       .set({
-        errorCode,
-        processedAt: null,
+        error_code: error_code,
+        processed_at: null,
         status: "failed",
-        updatedAt: sql`clock_timestamp()`,
+        updated_at: sql`clock_timestamp()`,
       })
       .where(
         attempt === 0
-          ? eq(webhookJobs.webhookEventId, webhookEventId)
+          ? eq(webhookJobs.webhook_event_id, webhookEventId)
           : and(
-              eq(webhookJobs.webhookEventId, webhookEventId),
+              eq(webhookJobs.webhook_event_id, webhookEventId),
               eq(webhookJobs.attempts, attempt),
               eq(webhookJobs.status, "pending"),
             ),
       )
-      .returning({ webhookEventId: webhookJobs.webhookEventId });
+      .returning({ webhookEventId: webhookJobs.webhook_event_id });
     return updated !== undefined;
   });
 
@@ -59,21 +59,21 @@ export const markProcessed = (
       const [updated] = await transaction
         .update(webhookJobs)
         .set({
-          errorCode: null,
-          processedAt: sql`clock_timestamp()`,
+          error_code: null,
+          processed_at: sql`clock_timestamp()`,
           status: "processed",
-          updatedAt: sql`clock_timestamp()`,
+          updated_at: sql`clock_timestamp()`,
         })
         .where(
           attempt === 0
-            ? eq(webhookJobs.webhookEventId, webhookEventId)
+            ? eq(webhookJobs.webhook_event_id, webhookEventId)
             : and(
-                eq(webhookJobs.webhookEventId, webhookEventId),
+                eq(webhookJobs.webhook_event_id, webhookEventId),
                 eq(webhookJobs.attempts, attempt),
                 eq(webhookJobs.status, "pending"),
               ),
         )
-        .returning({ webhookEventId: webhookJobs.webhookEventId });
+        .returning({ webhookEventId: webhookJobs.webhook_event_id });
       return updated !== undefined;
     },
   );
@@ -92,13 +92,13 @@ const execute = (
     try: () =>
       database.transaction(async (transaction) => {
         const [claim] = await transaction
-          .select({ webhookEventId: webhookJobs.webhookEventId })
+          .select({ webhookEventId: webhookJobs.webhook_event_id })
           .from(webhookJobs)
           .where(
             attempt === 0
-              ? eq(webhookJobs.webhookEventId, webhookEventId)
+              ? eq(webhookJobs.webhook_event_id, webhookEventId)
               : and(
-                  eq(webhookJobs.webhookEventId, webhookEventId),
+                  eq(webhookJobs.webhook_event_id, webhookEventId),
                   eq(webhookJobs.attempts, attempt),
                   eq(webhookJobs.status, "pending"),
                 ),

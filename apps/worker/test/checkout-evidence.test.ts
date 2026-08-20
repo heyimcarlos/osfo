@@ -39,20 +39,20 @@ describe("Checkout evidence ownership", () => {
             );
             yield* Effect.promise(() =>
               fixture.database.insert(billingCustomers).values({
-                billingCustomerId: "customer-checkout-evidence",
-                stripeCustomerId: "cus_checkoutevidence",
-                userId,
+                billing_customer_id: "customer-checkout-evidence",
+                stripe_customer_id: "cus_checkoutevidence",
+                user_id: userId,
               }),
             );
             yield* Effect.promise(() =>
               fixture.database.insert(billingCheckoutSessions).values({
-                billingCheckoutSessionId: "attempt-checkout-evidence",
-                billingCustomerId: "customer-checkout-evidence",
+                billing_checkout_session_id: "attempt-checkout-evidence",
+                billing_customer_id: "customer-checkout-evidence",
                 state: "creating",
-                stripePriceId: "price_adventurer",
-                stripeProductId: "prod_adventurer",
-                targetPlan: "adventurer",
-                userId,
+                stripe_price_id: "price_adventurer",
+                stripe_product_id: "prod_adventurer",
+                target_plan: "adventurer",
+                user_id: userId,
               }),
             );
             const evidence = {
@@ -125,7 +125,7 @@ describe("Checkout evidence ownership", () => {
                 .set({ state: "open" })
                 .where(
                   eq(
-                    billingCheckoutSessions.billingCheckoutSessionId,
+                    billingCheckoutSessions.billing_checkout_session_id,
                     evidence.locator.billingCheckoutSessionId,
                   ),
                 ),

@@ -3,11 +3,7 @@ import { Context, Crypto, Effect, Layer, Schema } from "effect";
 import type { DbUnavailable } from "../db";
 import type { UserId } from "../domain";
 import type { AdminActorId, AdminReason } from "../domain/account-administration";
-import {
-  type UserAccessFact,
-  type UserSuspensionEventId,
-  UserSuspensionEventId as UserSuspensionEventIdSchema,
-} from "../domain/user-suspension";
+import { type UserAccessFact, UserSuspensionEventId } from "../domain/user-suspension";
 
 /** Expected failure when a secure User Suspension identity cannot be generated. */
 export class UserSuspensionIdentityUnavailable extends Schema.TaggedError<UserSuspensionIdentityUnavailable>()(
@@ -92,7 +88,7 @@ export const make = Effect.gen(function* () {
     inspect: persistence.inspect,
     restore: (command) =>
       Effect.gen(function* () {
-        const eventId = UserSuspensionEventIdSchema.make(yield* secureId);
+        const eventId = UserSuspensionEventId.make(yield* secureId);
         const result = yield* persistence.transition(command, eventId, "restored");
         if (result === "missing-user") return { _tag: "UserMissing" } as const;
         return result === "changed"
@@ -101,7 +97,7 @@ export const make = Effect.gen(function* () {
       }),
     suspend: (command) =>
       Effect.gen(function* () {
-        const eventId = UserSuspensionEventIdSchema.make(yield* secureId);
+        const eventId = UserSuspensionEventId.make(yield* secureId);
         const result = yield* persistence.transition(command, eventId, "suspended");
         if (result === "missing-user") return { _tag: "UserMissing" } as const;
         return result === "changed"
@@ -113,3 +109,5 @@ export const make = Effect.gen(function* () {
 
 /** User Suspension Layer that preserves its dependencies. */
 export const layerWithoutDependencies = Layer.effect(Service, make);
+
+export * as UserSuspension from "./user-suspension";

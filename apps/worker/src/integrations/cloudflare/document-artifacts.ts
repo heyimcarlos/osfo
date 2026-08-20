@@ -2,8 +2,8 @@ import { Effect, Schema } from "effect";
 
 import { AllowancePeriodId, UserId } from "../../domain";
 import type { ContentId } from "../../domain/client-content";
-import * as DocumentArtifact from "../../domain/document-artifact";
-import * as DocumentArtifactValidation from "./document-artifact-validation";
+import { DocumentArtifact } from "../../domain/document-artifact";
+import { DocumentArtifactValidation } from "./document-artifact-validation";
 import {
   ArtifactIntegrityFailure,
   ArtifactStoreUnavailable,
@@ -247,3 +247,5 @@ const sameCost = (left: CostEvidence, right: CostEvidence) =>
       left.basis === right.basis &&
       left.providerOperationId === right.providerOperationId &&
       left.usdMicros === right.usdMicros);
+
+export * as DocumentArtifacts from "./document-artifacts";

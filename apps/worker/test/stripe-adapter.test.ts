@@ -9,7 +9,7 @@ import {
   StripeProductId,
   StripeSubscriptionId,
 } from "../src/domain";
-import * as StripeAdapter from "../src/integrations/stripe/billing";
+import { StripeAdapter } from "../src/integrations/stripe/billing";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/prefer-schema-over-json -- These provider-boundary tests assert Effect tags and preserve exact signed JSON bytes. */
 

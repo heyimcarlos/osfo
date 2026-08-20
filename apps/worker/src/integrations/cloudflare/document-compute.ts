@@ -3,7 +3,7 @@ import { Clock, Effect, Random, Schema } from "effect";
 
 import type { ContentId } from "../../domain/client-content";
 import { AllowancePeriodId } from "../../domain";
-import * as DocumentArtifact from "../../domain/document-artifact";
+import { DocumentArtifact } from "../../domain/document-artifact";
 import {
   DocumentSource,
   DocumentCleanupUnavailable,
@@ -511,3 +511,5 @@ export const advanceReconciliation = (bucket: R2Bucket, checkpoint: string | nul
         message: "R2 document attempt reconciliation could not advance its checkpoint",
       }),
   });
+
+export * as DocumentCompute from "./document-compute";

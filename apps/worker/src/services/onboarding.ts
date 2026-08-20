@@ -8,7 +8,7 @@ import {
   RegistrationInvitationId,
   UserId,
 } from "../domain";
-import * as Registration from "./registration";
+import { Registration } from "./registration";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Effect tags and Drizzle transaction callbacks use these required forms. */
 
@@ -405,8 +405,8 @@ export interface ChannelInvitationPersistenceInput {
   readonly tokenDigest: string;
 }
 
-/** Application-owned control-plane persistence operations for onboarding. */
-export interface PersistencePort {
+/** PostgreSQL operations privately required by the onboarding implementation. */
+export interface Persistence {
   readonly complete: (
     input: CompletePersistenceInput,
     decide: (context: CompletePersistenceContext) => CompletePersistenceDecision,
@@ -445,11 +445,6 @@ export interface PersistencePort {
     userId: UserId,
   ) => Effect.Effect<StoredWelcomeRoute | null, OnboardingPersistenceUnavailable>;
 }
-
-/** Control-plane onboarding persistence supplied by a Postgres adapter. */
-export class Persistence extends Context.Service<Persistence, PersistencePort>()(
-  "@osfo/Onboarding/Persistence",
-) {}
 
 /** Onboarding application operations. */
 export interface Interface {
@@ -518,427 +513,432 @@ export type PhoneVerificationTarget =
 /** Complete phone-first onboarding authority. */
 export class Service extends Context.Service<Service, Interface>()("@osfo/Onboarding") {}
 
-/** Construct onboarding from request-scoped application capabilities. */
-export const make = Effect.gen(function* () {
-  const agentOnboarding = yield* AgentOnboarding;
-  const crypto = yield* Crypto.Crypto;
-  const links = yield* OnboardingLinks;
-  const persistence = yield* Persistence;
-  const registration = yield* Registration.Service;
-  const registrationDialogueCleanup = yield* RegistrationDialogueCleanup;
-  const inspectInvitation = Effect.fn("Onboarding.inspectInvitation")(function* (
-    token: Redacted.Redacted<RegistrationToken>,
-  ) {
-    const tokenDigest = yield* digestRegistrationToken(crypto, token);
-    const now = yield* DateTime.now;
-    const nowDate = DateTime.toDateUtc(now);
-    const row = yield* persistence.findByDigest(tokenDigest);
-    if (row === null) return invalidInvitationView;
-    const locale: OnboardingLocale = row.locale === "es" ? "es" : "en";
-    if (row.state === "live" && row.expiresAt.getTime() <= nowDate.getTime()) {
-      yield* persistence.expireByDigest(tokenDigest, nowDate);
-      return {
+/** Construct onboarding from its private PostgreSQL implementation and graph dependencies. */
+export const make = (persistence: Persistence) =>
+  Effect.gen(function* () {
+    const agentOnboarding = yield* AgentOnboarding;
+    const crypto = yield* Crypto.Crypto;
+    const links = yield* OnboardingLinks;
+    const registration = yield* Registration.Service;
+    const registrationDialogueCleanup = yield* RegistrationDialogueCleanup;
+    const inspectInvitation = Effect.fn("Onboarding.inspectInvitation")(function* (
+      token: Redacted.Redacted<RegistrationToken>,
+    ) {
+      const tokenDigest = yield* digestRegistrationToken(crypto, token);
+      const now = yield* DateTime.now;
+      const nowDate = DateTime.toDateUtc(now);
+      const row = yield* persistence.findByDigest(tokenDigest);
+      if (row === null) return invalidInvitationView;
+      const locale: OnboardingLocale = row.locale === "es" ? "es" : "en";
+      if (row.state === "live" && row.expiresAt.getTime() <= nowDate.getTime()) {
+        yield* persistence.expireByDigest(tokenDigest, nowDate);
+        return {
+          locale,
+          maskedPhoneNumber: null,
+          provider: row.provider,
+          state: "expired" as const,
+        };
+      }
+      const state =
+        row.state === "live" || row.state === "expired" || row.state === "consumed"
+          ? row.state
+          : "invalid";
+      const view: InvitationView = {
         locale,
-        maskedPhoneNumber: null,
+        maskedPhoneNumber:
+          row.invitedPhoneNumber === null ? null : maskPhoneNumber(row.invitedPhoneNumber),
         provider: row.provider,
-        state: "expired" as const,
+        state,
       };
-    }
-    const state =
-      row.state === "live" || row.state === "expired" || row.state === "consumed"
-        ? row.state
-        : "invalid";
-    const view: InvitationView = {
-      locale,
-      maskedPhoneNumber:
-        row.invitedPhoneNumber === null ? null : maskPhoneNumber(row.invitedPhoneNumber),
-      provider: row.provider,
-      state,
-    };
-    return view;
-  });
-
-  const phoneVerificationTarget = Effect.fn("Onboarding.phoneVerificationTarget")(function* (
-    token: Redacted.Redacted<RegistrationToken>,
-  ) {
-    const invitation = yield* readUsableInvitation(
-      persistence,
-      crypto,
-      token,
-      yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-    );
-    if (invitation.state !== "live") {
-      return yield* new RegistrationInvitationUnavailable({
-        reason: "invalid",
-      });
-    }
-    if (invitation.kind === "telegram_first" && invitation.invitedPhoneNumber === null) {
-      return { _tag: "EnteredPhoneRequired" } as const;
-    }
-    if (invitation.kind === "whatsapp_first" && invitation.invitedPhoneNumber !== null) {
-      return {
-        _tag: "LockedPhone",
-        phoneNumber: Redacted.make(invitation.invitedPhoneNumber),
-      } as const;
-    }
-    return yield* new RegistrationInvitationUnavailable({
-      reason: "invalid",
+      return view;
     });
-  });
 
-  const issueChannelInvitation = Effect.fn("Onboarding.issueChannelInvitation")(function* (
-    input: ChannelInvitationMessage,
-  ) {
-    const now = yield* DateTime.now;
-    const nowDate = DateTime.toDateUtc(now);
-    yield* persistence.expireLive(nowDate);
-    const existing = yield* persistence.findLiveChannel(input.provider, input.channelIdentity);
-    if (existing !== null) {
-      return {
-        invitationId: existing,
-        verifyUrl: links.registrationHome(),
-      };
-    }
-
-    const generated = yield* generateRegistrationInvitationIdentity(crypto);
-    const invitationId = RegistrationInvitationId.make(`registration-invitation-${generated.id}`);
-    const expiresAt = DateTime.toDateUtc(DateTime.add(now, { hours: 24 }));
-    const inserted = yield* persistence.insertChannelInvitation({
-      channel:
-        input.provider === "telegram"
-          ? { _tag: "TelegramFirst", channelIdentity: input.channelIdentity }
-          : {
-              _tag: "WhatsAppFirst",
-              channelIdentity: input.channelIdentity,
-              invitedPhoneNumber: input.invitedPhoneNumber,
-            },
-      createdAt: nowDate,
-      expiresAt,
-      invitationId,
-      locale: input.locale,
-      providerEventId: input.eventId,
-      tokenDigest: generated.digest,
-    });
-    if (!inserted) {
-      const concurrent = yield* persistence.findLiveChannel(input.provider, input.channelIdentity);
-      if (concurrent === null) {
-        return yield* new OnboardingPersistenceRejected({
-          cause: { channelIdentity: input.channelIdentity },
-          operation: "issueRegistrationInvitation",
-          operationId: invitationId,
+    const phoneVerificationTarget = Effect.fn("Onboarding.phoneVerificationTarget")(function* (
+      token: Redacted.Redacted<RegistrationToken>,
+    ) {
+      const invitation = yield* readUsableInvitation(
+        persistence,
+        crypto,
+        token,
+        yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
+      );
+      if (invitation.state !== "live") {
+        return yield* new RegistrationInvitationUnavailable({
+          reason: "invalid",
         });
       }
-      return {
-        invitationId: concurrent,
-        verifyUrl: links.registrationHome(),
-      };
-    }
-    const verifyUrl = links.verification(generated.token);
-    return {
-      invitationId,
-      verifyUrl,
-    };
-  });
-
-  const complete = Effect.fn("Onboarding.complete")(function* (input: CompleteInput) {
-    const bindingConsent = input.invitationToken === null ? "web-enrollment" : "accepted";
-    const currentTime = yield* DateTime.now;
-    const invitation =
-      input.invitationToken === null
-        ? null
-        : yield* readUsableInvitation(
-            persistence,
-            crypto,
-            input.invitationToken,
-            DateTime.toDateUtc(currentTime),
-          );
-    if (invitation !== null && invitation.kind === "web_enrollment") {
+      if (invitation.kind === "telegram_first" && invitation.invitedPhoneNumber === null) {
+        return { _tag: "EnteredPhoneRequired" } as const;
+      }
+      if (invitation.kind === "whatsapp_first" && invitation.invitedPhoneNumber !== null) {
+        return {
+          _tag: "LockedPhone",
+          phoneNumber: Redacted.make(invitation.invitedPhoneNumber),
+        } as const;
+      }
       return yield* new RegistrationInvitationUnavailable({
         reason: "invalid",
       });
-    }
-    if (invitation?.state === "consumed" && invitation.userId !== input.userId) {
-      return yield* new RegistrationInvitationUnavailable({
-        reason: "consumed",
-      });
-    }
-
-    const profile = normalizeProfile(input.profile);
-    const existingUser = yield* persistence.readUser(input.userId);
-    if (
-      existingUser === null ||
-      existingUser.phoneNumber === null ||
-      !existingUser.phoneNumberVerified
-    ) {
-      return yield* new OnboardingPhoneVerificationRequired({
-        message: "Phone Verification is required before onboarding can complete",
-      });
-    }
-    if (
-      invitation?.state === "live" &&
-      invitation.invitedPhoneNumber !== null &&
-      invitation.invitedPhoneNumber !== existingUser.phoneNumber
-    ) {
-      return yield* new RegistrationInvitationUnavailable({
-        reason: "invalid",
-      });
-    }
-    const wasRegistered = existingUser.registrationCompletedAt !== null;
-    const existingProfile = existingUser.profile;
-    const profileAlreadyApplied =
-      existingProfile.preferredName === profile.preferredName &&
-      existingProfile.locale === profile.locale &&
-      sameHelpAreas(existingProfile.helpAreas, profile.helpAreas);
-    const profileConfirmationRequired =
-      wasRegistered && input.existingProfileChoice === null && !profileAlreadyApplied;
-    const requestDigest = yield* digestJson(crypto, {
-      bindingConsent,
-      existingProfileChoice: input.existingProfileChoice,
-      profile,
-      userId: input.userId,
     });
-    const acceptedProfile =
-      wasRegistered && input.existingProfileChoice === "keep" ? existingProfile : profile;
 
-    if (invitation?.state === "consumed") {
-      if (invitation.consumptionDigest !== requestDigest) {
+    const issueChannelInvitation = Effect.fn("Onboarding.issueChannelInvitation")(function* (
+      input: ChannelInvitationMessage,
+    ) {
+      const now = yield* DateTime.now;
+      const nowDate = DateTime.toDateUtc(now);
+      yield* persistence.expireLive(nowDate);
+      const existing = yield* persistence.findLiveChannel(input.provider, input.channelIdentity);
+      if (existing !== null) {
+        return {
+          invitationId: existing,
+          verifyUrl: links.registrationHome(),
+        };
+      }
+
+      const generated = yield* generateRegistrationInvitationIdentity(crypto);
+      const invitationId = RegistrationInvitationId.make(`registration-invitation-${generated.id}`);
+      const expiresAt = DateTime.toDateUtc(DateTime.add(now, { hours: 24 }));
+      const inserted = yield* persistence.insertChannelInvitation({
+        channel:
+          input.provider === "telegram"
+            ? { _tag: "TelegramFirst", channelIdentity: input.channelIdentity }
+            : {
+                _tag: "WhatsAppFirst",
+                channelIdentity: input.channelIdentity,
+                invitedPhoneNumber: input.invitedPhoneNumber,
+              },
+        createdAt: nowDate,
+        expiresAt,
+        invitationId,
+        locale: input.locale,
+        providerEventId: input.eventId,
+        tokenDigest: generated.digest,
+      });
+      if (!inserted) {
+        const concurrent = yield* persistence.findLiveChannel(
+          input.provider,
+          input.channelIdentity,
+        );
+        if (concurrent === null) {
+          return yield* new OnboardingPersistenceRejected({
+            cause: { channelIdentity: input.channelIdentity },
+            operation: "issueRegistrationInvitation",
+            operationId: invitationId,
+          });
+        }
+        return {
+          invitationId: concurrent,
+          verifyUrl: links.registrationHome(),
+        };
+      }
+      const verifyUrl = links.verification(generated.token);
+      return {
+        invitationId,
+        verifyUrl,
+      };
+    });
+
+    const complete = Effect.fn("Onboarding.complete")(function* (input: CompleteInput) {
+      const bindingConsent = input.invitationToken === null ? "web-enrollment" : "accepted";
+      const currentTime = yield* DateTime.now;
+      const invitation =
+        input.invitationToken === null
+          ? null
+          : yield* readUsableInvitation(
+              persistence,
+              crypto,
+              input.invitationToken,
+              DateTime.toDateUtc(currentTime),
+            );
+      if (invitation !== null && invitation.kind === "web_enrollment") {
+        return yield* new RegistrationInvitationUnavailable({
+          reason: "invalid",
+        });
+      }
+      if (invitation?.state === "consumed" && invitation.userId !== input.userId) {
         return yield* new RegistrationInvitationUnavailable({
           reason: "consumed",
         });
       }
-      const recoveredChannel = yield* readChannelReceipt(invitation);
+
+      const profile = normalizeProfile(input.profile);
+      const existingUser = yield* persistence.readUser(input.userId);
+      if (
+        existingUser === null ||
+        existingUser.phoneNumber === null ||
+        !existingUser.phoneNumberVerified
+      ) {
+        return yield* new OnboardingPhoneVerificationRequired({
+          message: "Phone Verification is required before onboarding can complete",
+        });
+      }
+      if (
+        invitation?.state === "live" &&
+        invitation.invitedPhoneNumber !== null &&
+        invitation.invitedPhoneNumber !== existingUser.phoneNumber
+      ) {
+        return yield* new RegistrationInvitationUnavailable({
+          reason: "invalid",
+        });
+      }
+      const wasRegistered = existingUser.registrationCompletedAt !== null;
+      const existingProfile = existingUser.profile;
+      const profileAlreadyApplied =
+        existingProfile.preferredName === profile.preferredName &&
+        existingProfile.locale === profile.locale &&
+        sameHelpAreas(existingProfile.helpAreas, profile.helpAreas);
+      const profileConfirmationRequired =
+        wasRegistered && input.existingProfileChoice === null && !profileAlreadyApplied;
+      const requestDigest = yield* digestJson(crypto, {
+        bindingConsent,
+        existingProfileChoice: input.existingProfileChoice,
+        profile,
+        userId: input.userId,
+      });
+      const acceptedProfile =
+        wasRegistered && input.existingProfileChoice === "keep" ? existingProfile : profile;
+
+      if (invitation?.state === "consumed") {
+        if (invitation.consumptionDigest !== requestDigest) {
+          return yield* new RegistrationInvitationUnavailable({
+            reason: "consumed",
+          });
+        }
+        const recoveredChannel = yield* readChannelReceipt(invitation);
+        const registrationResult = yield* registration.complete(input.userId);
+        yield* agentOnboarding.initialize(registrationResult);
+        yield* ignorePostCommitFailure(
+          registrationDialogueCleanup.delete(invitation.invitationId),
+          "delete-registration-dialogue",
+        );
+        if (
+          recoveredChannel._tag === "BindingCreated" ||
+          recoveredChannel._tag === "BindingExisting"
+        ) {
+          yield* agentOnboarding.commitWelcome({
+            agentId: registrationResult.agentId,
+            channelBindingId: recoveredChannel.channelBindingId,
+            profile: acceptedProfile,
+          });
+        }
+        return {
+          ...registrationResult,
+          channel: recoveredChannel,
+          profileConfirmationRequired,
+        };
+      }
+      if (profileConfirmationRequired) {
+        const registrationResult = yield* registration.complete(input.userId);
+        return {
+          ...registrationResult,
+          channel: { _tag: "ProfileConfirmationPending" } as const,
+          profileConfirmationRequired: true,
+        };
+      }
+      const now = yield* DateTime.now;
+      const nowDate = DateTime.toDateUtc(now);
+      const bindingId = ChannelBindingId.make(`channel-binding-${yield* secureUuid(crypto)}`);
+
+      const persistenceInput: CompletePersistenceInput = {
+        acceptedProfile,
+        applyProfile: !(wasRegistered && input.existingProfileChoice === "keep"),
+        bindingConsent,
+        bindingId,
+        invitationId: invitation?.invitationId ?? null,
+        now: nowDate,
+        requestDigest,
+        userId: input.userId,
+      };
       const registrationResult = yield* registration.complete(input.userId);
       yield* agentOnboarding.initialize(registrationResult);
-      yield* ignorePostCommitFailure(
-        registrationDialogueCleanup.delete(invitation.invitationId),
-        "delete-registration-dialogue",
+      const channel = yield* persistence.complete(persistenceInput, (context) =>
+        decideCompletion(persistenceInput, context),
       );
-      if (
-        recoveredChannel._tag === "BindingCreated" ||
-        recoveredChannel._tag === "BindingExisting"
-      ) {
+
+      if (channel === "invitation-unavailable") {
+        return yield* new RegistrationInvitationUnavailable({
+          reason: "consumed",
+        });
+      }
+      if (channel === "invitation-expired") {
+        return yield* new RegistrationInvitationUnavailable({
+          reason: "expired",
+        });
+      }
+      if (channel === "invitation-invalid") {
+        return yield* new RegistrationInvitationUnavailable({
+          reason: "invalid",
+        });
+      }
+      if (channel === "binding-conflict") {
+        return yield* new ChannelBindingConflict({
+          message: "The channel identity is already bound to another User",
+        });
+      }
+
+      if (invitation !== null) {
+        yield* ignorePostCommitFailure(
+          registrationDialogueCleanup.delete(invitation.invitationId),
+          "delete-registration-dialogue",
+        );
+      }
+
+      const finalChannel = channel;
+      if (finalChannel._tag === "BindingCreated" || finalChannel._tag === "BindingExisting") {
         yield* agentOnboarding.commitWelcome({
           agentId: registrationResult.agentId,
-          channelBindingId: recoveredChannel.channelBindingId,
+          channelBindingId: finalChannel.channelBindingId,
           profile: acceptedProfile,
         });
       }
       return {
         ...registrationResult,
-        channel: recoveredChannel,
-        profileConfirmationRequired,
+        channel: finalChannel,
+        profileConfirmationRequired: false,
       };
-    }
-    if (profileConfirmationRequired) {
-      const registrationResult = yield* registration.complete(input.userId);
-      return {
-        ...registrationResult,
-        channel: { _tag: "ProfileConfirmationPending" } as const,
-        profileConfirmationRequired: true,
-      };
-    }
-    const now = yield* DateTime.now;
-    const nowDate = DateTime.toDateUtc(now);
-    const bindingId = ChannelBindingId.make(`channel-binding-${yield* secureUuid(crypto)}`);
+    });
 
-    const persistenceInput: CompletePersistenceInput = {
-      acceptedProfile,
-      applyProfile: !(wasRegistered && input.existingProfileChoice === "keep"),
-      bindingConsent,
-      bindingId,
-      invitationId: invitation?.invitationId ?? null,
-      now: nowDate,
-      requestDigest,
-      userId: input.userId,
-    };
-    const registrationResult = yield* registration.complete(input.userId);
-    yield* agentOnboarding.initialize(registrationResult);
-    const channel = yield* persistence.complete(persistenceInput, (context) =>
-      decideCompletion(persistenceInput, context),
-    );
-
-    if (channel === "invitation-unavailable") {
-      return yield* new RegistrationInvitationUnavailable({
-        reason: "consumed",
-      });
-    }
-    if (channel === "invitation-expired") {
-      return yield* new RegistrationInvitationUnavailable({
-        reason: "expired",
-      });
-    }
-    if (channel === "invitation-invalid") {
-      return yield* new RegistrationInvitationUnavailable({
-        reason: "invalid",
-      });
-    }
-    if (channel === "binding-conflict") {
-      return yield* new ChannelBindingConflict({
-        message: "The channel identity is already bound to another User",
-      });
-    }
-
-    if (invitation !== null) {
-      yield* ignorePostCommitFailure(
-        registrationDialogueCleanup.delete(invitation.invitationId),
-        "delete-registration-dialogue",
+    const startChannelEnrollment: Interface["startChannelEnrollment"] = Effect.fn(
+      "Onboarding.startChannelEnrollment",
+    )(function* (input) {
+      const user = yield* persistence.readUser(input.userId);
+      if (
+        user === null ||
+        user.phoneNumber === null ||
+        !user.phoneNumberVerified ||
+        user.registrationCompletedAt === null
+      ) {
+        return yield* new OnboardingPhoneVerificationRequired({
+          message: "Complete Phone Verification and registration before connecting a channel",
+        });
+      }
+      const enrollment = yield* createWebEnrollment(
+        persistence,
+        crypto,
+        input.userId,
+        user.profile.locale,
+        yield* DateTime.now,
+        links,
+        input.provider,
       );
-    }
+      return {
+        enrollmentUrl: enrollment.enrollmentUrl,
+        provider: input.provider,
+      };
+    });
 
-    const finalChannel = channel;
-    if (finalChannel._tag === "BindingCreated" || finalChannel._tag === "BindingExisting") {
+    const enrollChannel = Effect.fn("Onboarding.enrollChannel")(function* (
+      input: ChannelEnrollment,
+    ) {
+      const now = yield* DateTime.now;
+      const invitation = yield* readUsableInvitation(
+        persistence,
+        crypto,
+        input.token,
+        DateTime.toDateUtc(now),
+      );
+      if (
+        invitation.kind !== "web_enrollment" ||
+        invitation.userId === null ||
+        invitation.provider !== input.provider
+      ) {
+        return yield* new RegistrationInvitationUnavailable({
+          reason: "invalid",
+        });
+      }
+      const userId = invitation.userId;
+      const nowDate = DateTime.toDateUtc(now);
+      const bindingId = ChannelBindingId.make(`channel-binding-${yield* secureUuid(crypto)}`);
+      const enrollmentDigest = yield* digestJson(crypto, {
+        channelIdentity: input.channelIdentity,
+        eventId: input.eventId,
+      });
+      const result =
+        invitation.state === "consumed"
+          ? yield* Effect.gen(function* () {
+              if (invitation.consumptionDigest !== enrollmentDigest) {
+                return yield* new RegistrationInvitationUnavailable({
+                  reason: "consumed",
+                });
+              }
+              const recovered = yield* readChannelReceipt(invitation);
+              if (recovered._tag !== "BindingCreated" && recovered._tag !== "BindingExisting") {
+                return yield* new RegistrationInvitationUnavailable({
+                  reason: "consumed",
+                });
+              }
+              const currentBinding = yield* persistence.readCurrentBinding({
+                channelBindingId: recovered.channelBindingId,
+                provider: input.provider,
+                userId,
+              });
+              if (currentBinding?.channelIdentity !== input.channelIdentity) {
+                return yield* new RegistrationInvitationUnavailable({
+                  reason: "consumed",
+                });
+              }
+              return recovered;
+            })
+          : yield* persistence.enroll(
+              {
+                bindingId,
+                channelIdentity: input.channelIdentity,
+                enrollmentDigest,
+                invitationId: invitation.invitationId,
+                now: nowDate,
+                provider: input.provider,
+                userId,
+              },
+              (context) =>
+                decideEnrollment(bindingId, input.channelIdentity, userId, nowDate, context),
+            );
+      if (result === "invitation-unavailable") {
+        return yield* new RegistrationInvitationUnavailable({
+          reason: "consumed",
+        });
+      }
+      if (result === "invitation-expired") {
+        return yield* new RegistrationInvitationUnavailable({
+          reason: "expired",
+        });
+      }
+      if (result === "binding-conflict") {
+        return yield* new ChannelBindingConflict({
+          message: "The channel identity conflicts with an active Channel Binding",
+        });
+      }
+      const route = yield* persistence.readWelcomeRoute(userId);
+      if (route === null) {
+        return yield* new OnboardingPersistenceUnavailable({
+          cause: { userId },
+          operation: "readWelcomeRoute",
+        });
+      }
       yield* agentOnboarding.commitWelcome({
-        agentId: registrationResult.agentId,
-        channelBindingId: finalChannel.channelBindingId,
-        profile: acceptedProfile,
+        agentId: route.agentId,
+        channelBindingId: result.channelBindingId,
+        profile: route.profile,
       });
-    }
-    return {
-      ...registrationResult,
-      channel: finalChannel,
-      profileConfirmationRequired: false,
-    };
-  });
-
-  const startChannelEnrollment: Interface["startChannelEnrollment"] = Effect.fn(
-    "Onboarding.startChannelEnrollment",
-  )(function* (input) {
-    const user = yield* persistence.readUser(input.userId);
-    if (
-      user === null ||
-      user.phoneNumber === null ||
-      !user.phoneNumberVerified ||
-      user.registrationCompletedAt === null
-    ) {
-      return yield* new OnboardingPhoneVerificationRequired({
-        message: "Complete Phone Verification and registration before connecting a channel",
-      });
-    }
-    const enrollment = yield* createWebEnrollment(
-      persistence,
-      crypto,
-      input.userId,
-      user.profile.locale,
-      yield* DateTime.now,
-      links,
-      input.provider,
-    );
-    return {
-      enrollmentUrl: enrollment.enrollmentUrl,
-      provider: input.provider,
-    };
-  });
-
-  const enrollChannel = Effect.fn("Onboarding.enrollChannel")(function* (input: ChannelEnrollment) {
-    const now = yield* DateTime.now;
-    const invitation = yield* readUsableInvitation(
-      persistence,
-      crypto,
-      input.token,
-      DateTime.toDateUtc(now),
-    );
-    if (
-      invitation.kind !== "web_enrollment" ||
-      invitation.userId === null ||
-      invitation.provider !== input.provider
-    ) {
-      return yield* new RegistrationInvitationUnavailable({
-        reason: "invalid",
-      });
-    }
-    const userId = invitation.userId;
-    const nowDate = DateTime.toDateUtc(now);
-    const bindingId = ChannelBindingId.make(`channel-binding-${yield* secureUuid(crypto)}`);
-    const enrollmentDigest = yield* digestJson(crypto, {
-      channelIdentity: input.channelIdentity,
-      eventId: input.eventId,
+      return result;
     });
-    const result =
-      invitation.state === "consumed"
-        ? yield* Effect.gen(function* () {
-            if (invitation.consumptionDigest !== enrollmentDigest) {
-              return yield* new RegistrationInvitationUnavailable({
-                reason: "consumed",
-              });
-            }
-            const recovered = yield* readChannelReceipt(invitation);
-            if (recovered._tag !== "BindingCreated" && recovered._tag !== "BindingExisting") {
-              return yield* new RegistrationInvitationUnavailable({
-                reason: "consumed",
-              });
-            }
-            const currentBinding = yield* persistence.readCurrentBinding({
-              channelBindingId: recovered.channelBindingId,
-              provider: input.provider,
-              userId,
-            });
-            if (currentBinding?.channelIdentity !== input.channelIdentity) {
-              return yield* new RegistrationInvitationUnavailable({
-                reason: "consumed",
-              });
-            }
-            return recovered;
-          })
-        : yield* persistence.enroll(
-            {
-              bindingId,
-              channelIdentity: input.channelIdentity,
-              enrollmentDigest,
-              invitationId: invitation.invitationId,
-              now: nowDate,
-              provider: input.provider,
-              userId,
-            },
-            (context) =>
-              decideEnrollment(bindingId, input.channelIdentity, userId, nowDate, context),
-          );
-    if (result === "invitation-unavailable") {
-      return yield* new RegistrationInvitationUnavailable({
-        reason: "consumed",
-      });
-    }
-    if (result === "invitation-expired") {
-      return yield* new RegistrationInvitationUnavailable({
-        reason: "expired",
-      });
-    }
-    if (result === "binding-conflict") {
-      return yield* new ChannelBindingConflict({
-        message: "The channel identity conflicts with an active Channel Binding",
-      });
-    }
-    const route = yield* persistence.readWelcomeRoute(userId);
-    if (route === null) {
-      return yield* new OnboardingPersistenceUnavailable({
-        cause: { userId },
-        operation: "readWelcomeRoute",
-      });
-    }
-    yield* agentOnboarding.commitWelcome({
-      agentId: route.agentId,
-      channelBindingId: result.channelBindingId,
-      profile: route.profile,
+
+    const expireInvitations = persistence.expireLive(
+      yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
+    );
+
+    return Service.of({
+      complete,
+      enrollChannel,
+      expireInvitations,
+      inspectInvitation,
+      issueChannelInvitation,
+      phoneVerificationTarget,
+      startChannelEnrollment,
     });
-    return result;
   });
 
-  const expireInvitations = persistence.expireLive(
-    yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-  );
-
-  return Service.of({
-    complete,
-    enrollChannel,
-    expireInvitations,
-    inspectInvitation,
-    issueChannelInvitation,
-    phoneVerificationTarget,
-    startChannelEnrollment,
-  });
-});
-
-/** Onboarding Layer that preserves its database and application requirements. */
-export const layerWithoutDependencies = Layer.effect(Service, make);
+/** Onboarding Layer backed by a provided private persistence implementation. */
+export const layer = (persistence: Persistence) => Layer.effect(Service, make(persistence));
 
 const invalidInvitationView: InvitationView = {
   locale: "en",
@@ -1115,7 +1115,7 @@ const decideBinding = (
 };
 
 const readUsableInvitation = Effect.fn("Onboarding.readUsableInvitation")(function* (
-  persistence: PersistencePort,
+  persistence: Persistence,
   crypto: Crypto.Crypto,
   token: Redacted.Redacted<RegistrationToken>,
   now: Date,
@@ -1161,7 +1161,7 @@ const readChannelReceipt = (invitation: {
 };
 
 const createWebEnrollment = Effect.fn("Onboarding.createWebEnrollment")(function* (
-  persistence: PersistencePort,
+  persistence: Persistence,
   crypto: Crypto.Crypto,
   userId: UserId,
   locale: OnboardingLocale,
@@ -1188,3 +1188,5 @@ const createWebEnrollment = Effect.fn("Onboarding.createWebEnrollment")(function
     enrollmentUrl: enrollment.url,
   } as const;
 });
+
+export * as Onboarding from "./onboarding";

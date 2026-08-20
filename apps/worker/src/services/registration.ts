@@ -70,7 +70,7 @@ export class Service extends Context.Service<Service, Interface>()("@osfo/Regist
 /** Construct Registration from request-scoped runtime capabilities. */
 export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
-  const dbService = yield* Db;
+  const dbService = yield* Db.Service;
 
   const complete = Effect.fn("Registration.complete")((userId: UserId) =>
     Effect.scoped(
@@ -118,30 +118,33 @@ const readCompletedRegistration = Effect.fn("Registration.readCompleted")(functi
     try: () =>
       db
         .select({
-          agentCreatedAt: agents.createdAt,
-          agentId: agents.agentId,
-          allowanceEndsAt: allowancePeriods.endsAt,
-          allowancePeriodId: allowancePeriods.allowancePeriodId,
+          agentCreatedAt: agents.created_at,
+          agentId: agents.agent_id,
+          allowanceEndsAt: allowancePeriods.ends_at,
+          allowancePeriodId: allowancePeriods.allowance_period_id,
           allowancePlan: allowancePeriods.plan,
-          allowancePlanPolicyVersion: allowancePeriods.planPolicyVersion,
-          allowanceStartsAt: allowancePeriods.startsAt,
-          billingCreatedAt: billingSubscriptions.createdAt,
+          allowancePlanPolicyVersion: allowancePeriods.plan_policy_version,
+          allowanceStartsAt: allowancePeriods.starts_at,
+          billingCreatedAt: billingSubscriptions.created_at,
           billingPlan: billingSubscriptions.plan,
-          billingPlanPolicyVersion: billingSubscriptions.planPolicyVersion,
-          billingSubscriptionId: billingSubscriptions.billingSubscriptionId,
-          billingUpdatedAt: billingSubscriptions.updatedAt,
+          billingPlanPolicyVersion: billingSubscriptions.plan_policy_version,
+          billingSubscriptionId: billingSubscriptions.billing_subscription_id,
+          billingUpdatedAt: billingSubscriptions.updated_at,
           registrationCompletedAt: users.registrationCompletedAt,
           userId: users.id,
         })
         .from(users)
-        .leftJoin(agents, eq(agents.userId, users.id))
-        .leftJoin(billingSubscriptions, eq(billingSubscriptions.userId, users.id))
+        .leftJoin(agents, eq(agents.user_id, users.id))
+        .leftJoin(billingSubscriptions, eq(billingSubscriptions.user_id, users.id))
         .leftJoin(
           allowancePeriods,
           and(
-            eq(allowancePeriods.userId, users.id),
-            eq(allowancePeriods.billingSubscriptionId, billingSubscriptions.billingSubscriptionId),
-            eq(allowancePeriods.startsAt, billingSubscriptions.createdAt),
+            eq(allowancePeriods.user_id, users.id),
+            eq(
+              allowancePeriods.billing_subscription_id,
+              billingSubscriptions.billing_subscription_id,
+            ),
+            eq(allowancePeriods.starts_at, billingSubscriptions.created_at),
           ),
         )
         .where(eq(users.id, userId))
@@ -222,50 +225,50 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
         if (user.registrationCompletedAt !== null) return "ready" as const;
 
         await transaction.insert(agents).values({
-          agentId: AgentId.make(`agent-${generatedIds.agent}`),
-          createdAt: occurredAtTimestamp,
-          userId,
+          agent_id: AgentId.make(`agent-${generatedIds.agent}`),
+          created_at: occurredAtTimestamp,
+          user_id: userId,
         });
         const billingSubscriptionId = BillingSubscriptionId.make(
           `billing-subscription-${generatedIds.billingSubscription}`,
         );
         await transaction.insert(billingSubscriptions).values({
-          billingSubscriptionId,
-          createdAt: completedAt,
+          billing_subscription_id: billingSubscriptionId,
+          created_at: completedAt,
           plan: "free",
-          planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
-          updatedAt: completedAt,
-          userId,
+          plan_policy_version: PlanPolicyVersion.make("launch-v1"),
+          updated_at: completedAt,
+          user_id: userId,
         });
         await transaction
-          .select({ billingSubscriptionId: billingSubscriptions.billingSubscriptionId })
+          .select({ billingSubscriptionId: billingSubscriptions.billing_subscription_id })
           .from(billingSubscriptions)
-          .where(eq(billingSubscriptions.billingSubscriptionId, billingSubscriptionId))
+          .where(eq(billingSubscriptions.billing_subscription_id, billingSubscriptionId))
           .for("update")
           .limit(1);
         const overlap = await transaction
-          .select({ allowancePeriodId: allowancePeriods.allowancePeriodId })
+          .select({ allowancePeriodId: allowancePeriods.allowance_period_id })
           .from(allowancePeriods)
           .where(
             and(
-              eq(allowancePeriods.userId, userId),
-              lt(allowancePeriods.startsAt, allowancePeriodEndsAt),
-              gt(allowancePeriods.endsAt, completedAt),
+              eq(allowancePeriods.user_id, userId),
+              lt(allowancePeriods.starts_at, allowancePeriodEndsAt),
+              gt(allowancePeriods.ends_at, completedAt),
             ),
           )
           .limit(1);
         if (overlap[0] !== undefined) return "period-overlap" as const;
         await transaction.insert(allowancePeriods).values({
-          allowancePeriodId: AllowancePeriodId.make(
+          allowance_period_id: AllowancePeriodId.make(
             `allowance-period-${generatedIds.allowancePeriod}`,
           ),
-          billingSubscriptionId,
-          createdAt: completedAt,
-          endsAt: allowancePeriodEndsAt,
+          billing_subscription_id: billingSubscriptionId,
+          created_at: completedAt,
+          ends_at: allowancePeriodEndsAt,
           plan: "free",
-          planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
-          startsAt: completedAt,
-          userId,
+          plan_policy_version: PlanPolicyVersion.make("launch-v1"),
+          starts_at: completedAt,
+          user_id: userId,
         });
         await transaction
           .update(users)
@@ -288,3 +291,5 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
   }
   return yield* Effect.void;
 });
+
+export * as Registration from "./registration";

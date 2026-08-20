@@ -1,4 +1,4 @@
-import { createHash, verify as verifySignature } from "node:crypto";
+import { createHash, verify } from "node:crypto";
 
 import type { EvidenceVerdict } from "./statistics";
 import {
@@ -301,7 +301,7 @@ export const baselineApprovalSigningDigest = (
   });
 
 const verifyBaselineApproval = (approval: EvaluationManifestInput["approvedBaseline"]): boolean =>
-  verifySignature(
+  verify(
     null,
     Buffer.from(baselineApprovalSigningDigest(approval)),
     baselineApprovalPublicKey,
@@ -336,7 +336,7 @@ const evaluationManifestInputIsValid = (input: EvaluationManifestInput): boolean
 };
 
 const verifyOutputEvidenceSignature = (input: EvaluationManifestInput): boolean => {
-  return verifySignature(
+  return verify(
     null,
     Buffer.from(evaluationOutputSigningDigest(input)),
     outputEvidencePublicKey,

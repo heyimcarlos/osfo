@@ -4,8 +4,8 @@ import { Effect, Layer, Option, Redacted, Schema } from "effect";
 import { HttpEffect, HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
 import { handleAuthRequest } from "./cors";
-import * as AccountAccess from "./composition/account-access";
-import * as Db from "./db";
+import { AccountAccess } from "./composition/account-access";
+import { Db } from "./db";
 import { UserId } from "./domain";
 import { TwilioVerify } from "./integrations/twilio/verify";
 
@@ -21,7 +21,7 @@ export interface AuthRouteConfig {
 }
 
 /** Request-scoped dependencies used only when an authentication route matches. */
-export type AuthDependencies = Layer.Layer<Db.Db | TwilioVerify>;
+export type AuthDependencies = Layer.Layer<Db.Service | TwilioVerify.Service>;
 
 /** Authentication route construction options. */
 export interface Options {
@@ -71,7 +71,7 @@ export const layer = (options: Options) => {
 export const make = (config: AuthRouteConfig, canAccess: AccountAccess.Check) =>
   Effect.gen(function* () {
     const database = yield* Db.database;
-    const twilio = yield* TwilioVerify;
+    const twilio = yield* TwilioVerify.Service;
     const context = yield* Effect.context();
     const runPromise = Effect.runPromiseWith(context);
     return createAuth({
@@ -162,3 +162,5 @@ const setLoginCredentialsRequest = async (
     );
   }
 };
+
+export * as WorkerAuth from "./auth";

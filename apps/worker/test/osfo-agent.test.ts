@@ -837,59 +837,59 @@ describe("Osfo Agent and Think Session foundation", () => {
             db
               .insert(agentInitialization)
               .values({
-                agentId: otherAgentId,
-                initialRouteId: routeId,
-                initialSessionId: sessionId,
-                initializationId: otherInitializationId,
-                initializedAt,
-                singletonKey: "agent",
+                agent_id: otherAgentId,
+                initial_route_id: routeId,
+                initial_session_id: sessionId,
+                initialization_id: otherInitializationId,
+                initialized_at: initializedAt,
+                singleton_key: "agent",
               })
               .run(),
           ).toThrow(/constraint/i);
           expect(
             db
-              .select({ routeId: conversationRoutes.routeId })
+              .select({ routeId: conversationRoutes.route_id })
               .from(conversationRoutes)
-              .where(eq(conversationRoutes.isPrimary, true))
+              .where(eq(conversationRoutes.is_primary, true))
               .all(),
           ).toHaveLength(1);
           expect(
             db
-              .select({ sessionId: sessionOwnership.sessionId })
+              .select({ sessionId: sessionOwnership.session_id })
               .from(sessionOwnership)
               .where(
-                and(eq(sessionOwnership.routeId, routeId), isNull(sessionOwnership.replacedAt)),
+                and(eq(sessionOwnership.route_id, routeId), isNull(sessionOwnership.replaced_at)),
               )
               .all(),
           ).toHaveLength(1);
           expect(() =>
             db
               .insert(conversationRoutes)
-              .values({ isPrimary: true, routeId: secondaryRouteId })
+              .values({ is_primary: true, route_id: secondaryRouteId })
               .run(),
           ).toThrow(/constraint/i);
 
           db.insert(conversationRoutes)
-            .values({ isPrimary: false, routeId: secondaryRouteId })
+            .values({ is_primary: false, route_id: secondaryRouteId })
             .run();
           db.insert(sessionOwnership)
             .values({
-              becameCurrentAt: initializedAt,
-              ownershipSequence: 2,
-              replacedAt: null,
-              routeId: secondaryRouteId,
-              sessionId: secondarySessionId,
+              became_current_at: initializedAt,
+              ownership_sequence: 2,
+              replaced_at: null,
+              route_id: secondaryRouteId,
+              session_id: secondarySessionId,
             })
             .run();
           expect(() =>
             db
               .insert(sessionOwnership)
               .values({
-                becameCurrentAt: initializedAt,
-                ownershipSequence: 0,
-                replacedAt: initializedAt,
-                routeId: secondaryRouteId,
-                sessionId: invalidSequenceSessionId,
+                became_current_at: initializedAt,
+                ownership_sequence: 0,
+                replaced_at: initializedAt,
+                route_id: secondaryRouteId,
+                session_id: invalidSequenceSessionId,
               })
               .run(),
           ).toThrow(/constraint/i);
@@ -897,11 +897,11 @@ describe("Osfo Agent and Think Session foundation", () => {
             db
               .insert(sessionOwnership)
               .values({
-                becameCurrentAt: initializedAt,
-                ownershipSequence: 2,
-                replacedAt: initializedAt,
-                routeId: secondaryRouteId,
-                sessionId: duplicateSequenceSessionId,
+                became_current_at: initializedAt,
+                ownership_sequence: 2,
+                replaced_at: initializedAt,
+                route_id: secondaryRouteId,
+                session_id: duplicateSequenceSessionId,
               })
               .run(),
           ).toThrow(/constraint/i);
@@ -909,11 +909,11 @@ describe("Osfo Agent and Think Session foundation", () => {
             db
               .insert(sessionOwnership)
               .values({
-                becameCurrentAt: initializedAt,
-                ownershipSequence: 3,
-                replacedAt: null,
-                routeId: secondaryRouteId,
-                sessionId: secondCurrentSessionId,
+                became_current_at: initializedAt,
+                ownership_sequence: 3,
+                replaced_at: null,
+                route_id: secondaryRouteId,
+                session_id: secondCurrentSessionId,
               })
               .run(),
           ).toThrow(/constraint/i);
@@ -921,31 +921,31 @@ describe("Osfo Agent and Think Session foundation", () => {
             db
               .insert(sessionOwnership)
               .values({
-                becameCurrentAt: initializedAt,
-                ownershipSequence: 4,
-                replacedAt: null,
-                routeId: missingRouteId,
-                sessionId: orphanSessionId,
+                became_current_at: initializedAt,
+                ownership_sequence: 4,
+                replaced_at: null,
+                route_id: missingRouteId,
+                session_id: orphanSessionId,
               })
               .run(),
           ).toThrow(/constraint/i);
 
           db.insert(committedTurns)
             .values({
-              assistantMessageId: AssistantMessageId.make("assistant-one"),
-              sessionId,
+              assistant_message_id: AssistantMessageId.make("assistant-one"),
+              session_id: sessionId,
               source: "hook",
-              thinkRequestId: ThinkRequestId.make("stable-think-request"),
+              think_request_id: ThinkRequestId.make("stable-think-request"),
             })
             .run();
           expect(() =>
             db
               .insert(committedTurns)
               .values({
-                assistantMessageId: AssistantMessageId.make("assistant-two"),
-                sessionId,
+                assistant_message_id: AssistantMessageId.make("assistant-two"),
+                session_id: sessionId,
                 source: "hook",
-                thinkRequestId: ThinkRequestId.make("stable-think-request"),
+                think_request_id: ThinkRequestId.make("stable-think-request"),
               })
               .run(),
           ).toThrow(/constraint/i);
@@ -1424,17 +1424,17 @@ describe("Osfo Agent and Think Session foundation", () => {
           const db = makeAgentDb(state.storage);
           db.insert(committedTurns)
             .values({
-              assistantMessageId: AssistantMessageId.make("assistant-invalid-observed-at"),
-              sessionId,
+              assistant_message_id: AssistantMessageId.make("assistant-invalid-observed-at"),
+              session_id: sessionId,
               source: "reconciliation",
-              thinkRequestId: null,
+              think_request_id: null,
             })
             .run();
           db.update(committedTurns)
-            .set({ observedAt: "not-a-sqlite-timestamp" })
+            .set({ observed_at: "not-a-sqlite-timestamp" })
             .where(
               eq(
-                committedTurns.assistantMessageId,
+                committedTurns.assistant_message_id,
                 AssistantMessageId.make("assistant-invalid-observed-at"),
               ),
             )

@@ -2,8 +2,8 @@ import { describe, expect, it } from "@effect/vitest";
 import { DateTime, Effect } from "effect";
 
 import { AgentId, UserId } from "../src/domain";
-import * as OnboardingCloudflare from "../src/integrations/cloudflare/onboarding";
-import * as Onboarding from "../src/services/onboarding";
+import { OnboardingCloudflare } from "../src/integrations/cloudflare/onboarding";
+import { Onboarding } from "../src/services/onboarding";
 
 /* oxlint-disable effecttsgo/strict-effect-provide -- This focused integration test is the Layer entry point. */
 

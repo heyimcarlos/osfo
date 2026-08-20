@@ -1,10 +1,10 @@
 import { Redacted, Schema } from "effect";
 import { getAgentByName } from "agents";
 
-import * as App from "./app";
+import { App } from "./app";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/directory";
 import { loadConfig, WorkerConfigurationError, type CloudflareEnv } from "./config";
-import * as DocumentCostReconciliation from "./document-cost-reconciliation";
+import { DocumentCostReconciliation } from "./document-cost-reconciliation";
 import { makeWhatsAppAdapter } from "./integrations/whatsapp";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Cloudflare RPC tags and adapter boundaries require these forms. */

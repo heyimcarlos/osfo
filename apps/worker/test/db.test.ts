@@ -1,8 +1,8 @@
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
-import { describe, expect, it as effectIt, layer } from "@effect/vitest";
+import { BrowserCrypto } from "@effect/platform-browser";
+import { describe, expect, it, layer } from "@effect/vitest";
 import { agents } from "@osfo/db/schema/agents";
 import { allowancePeriods } from "@osfo/db/schema/allowances";
-import { sessions, users as usersTable } from "@osfo/db/schema/auth";
+import { sessions, users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { applyMigrations, makeTestDatabase } from "@osfo/db/testing";
 import { eq } from "drizzle-orm";
@@ -14,8 +14,8 @@ import { AgentId, PlanPolicyVersion, UserId } from "../src/domain";
 import { AuthSessionId } from "../src/domain/auth-session";
 import { loadCurrentFileAuthorization } from "../src/integrations/postgres/file-authorization";
 import { AuthorizationContext } from "../src/services/authorization";
-import * as AgentDirectory from "../src/services/agent-directory";
-import * as Registration from "../src/services/registration";
+import { AgentDirectory } from "../src/services/agent-directory";
+import { Registration } from "../src/services/registration";
 
 const fixture = Effect.runSync(makeTestDatabase);
 await Effect.runPromise(applyMigrations(fixture.client));
@@ -27,7 +27,7 @@ const serviceLayer = Layer.merge(
 
 describe("PostgreSQL Layer lifetime", () => {
   // oxlint-disable-next-line effecttsgo/async-function -- ManagedRuntime exposes Promise boundaries for independent scopes and disposal.
-  effectIt("keeps one client open across query scopes and closes it with the runtime", async () => {
+  it("keeps one client open across query scopes and closes it with the runtime", async () => {
     let endCalls = 0;
     const client = postgres("postgres://test:test@localhost/test", { max: 1 });
     client.end = () => {
@@ -53,8 +53,8 @@ describe("PostgreSQL Layer lifetime", () => {
   });
 });
 
-layer(serviceLayer)("Control-plane services", (it) => {
-  it.effect("provisions a User and stable Agent route atomically", () =>
+layer(serviceLayer)("Control-plane services", (test) => {
+  test.effect("provisions a User and stable Agent route atomically", () =>
     Effect.gen(function* () {
       const agentDirectory = yield* AgentDirectory.Service;
       const registration = yield* Registration.Service;
@@ -72,7 +72,7 @@ layer(serviceLayer)("Control-plane services", (it) => {
     }),
   );
 
-  it.effect("returns one User when provisioning runs concurrently", () =>
+  test.effect("returns one User when provisioning runs concurrently", () =>
     Effect.gen(function* () {
       const registration = yield* Registration.Service;
       const userId = UserId.make("user-concurrent");
@@ -89,7 +89,7 @@ layer(serviceLayer)("Control-plane services", (it) => {
     }),
   );
 
-  it.effect("returns unavailable when the stored completion time conflicts", () =>
+  test.effect("returns unavailable when the stored completion time conflicts", () =>
     Effect.gen(function* () {
       const db = yield* database;
       const registration = yield* Registration.Service;
@@ -99,13 +99,13 @@ layer(serviceLayer)("Control-plane services", (it) => {
       yield* Effect.tryPromise({
         try: () =>
           db
-            .update(usersTable)
+            .update(users)
             .set({
               registrationCompletedAt: DateTime.toDateUtc(
                 DateTime.makeUnsafe("2026-08-12T15:01:16.000Z"),
               ),
             })
-            .where(eq(usersTable.id, userId))
+            .where(eq(users.id, userId))
             .execute(),
         catch: (cause) => dbUnavailable("completeRegistration", cause),
       });
@@ -119,7 +119,7 @@ layer(serviceLayer)("Control-plane services", (it) => {
     }),
   );
 
-  it.effect("returns unavailable when completed provisioning facts are partial", () =>
+  test.effect("returns unavailable when completed provisioning facts are partial", () =>
     Effect.gen(function* () {
       const db = yield* database;
       const registration = yield* Registration.Service;
@@ -128,13 +128,13 @@ layer(serviceLayer)("Control-plane services", (it) => {
       yield* Effect.tryPromise({
         try: () =>
           db
-            .update(usersTable)
+            .update(users)
             .set({
               registrationCompletedAt: DateTime.toDateUtc(
                 DateTime.makeUnsafe("2026-08-12T15:01:20.000Z"),
               ),
             })
-            .where(eq(usersTable.id, userId))
+            .where(eq(users.id, userId))
             .execute(),
         catch: (cause) => dbUnavailable("completeRegistration", cause),
       });
@@ -148,7 +148,7 @@ layer(serviceLayer)("Control-plane services", (it) => {
     }),
   );
 
-  it.effect("rolls back new provisioning facts when the Agent insert conflicts", () =>
+  test.effect("rolls back new provisioning facts when the Agent insert conflicts", () =>
     Effect.gen(function* () {
       const db = yield* database;
       const registration = yield* Registration.Service;
@@ -157,9 +157,9 @@ layer(serviceLayer)("Control-plane services", (it) => {
       yield* Effect.tryPromise({
         try: () =>
           db.insert(agents).values({
-            agentId: AgentId.make("agent-existing"),
-            createdAt: "2026-08-12T15:01:30.000Z",
-            userId,
+            agent_id: AgentId.make("agent-existing"),
+            created_at: "2026-08-12T15:01:30.000Z",
+            user_id: userId,
           }),
         catch: (cause) => dbUnavailable("completeRegistration", cause),
       });
@@ -167,21 +167,21 @@ layer(serviceLayer)("Control-plane services", (it) => {
       const failed = yield* Effect.flip(registration.complete(userId));
       const storedSubscriptions = yield* Effect.tryPromise({
         try: () =>
-          db.select().from(billingSubscriptions).where(eq(billingSubscriptions.userId, userId)),
+          db.select().from(billingSubscriptions).where(eq(billingSubscriptions.user_id, userId)),
         catch: (cause) => dbUnavailable("completeRegistration", cause),
       });
       const storedPeriods = yield* Effect.tryPromise({
-        try: () => db.select().from(allowancePeriods).where(eq(allowancePeriods.userId, userId)),
+        try: () => db.select().from(allowancePeriods).where(eq(allowancePeriods.user_id, userId)),
         catch: (cause) => dbUnavailable("completeRegistration", cause),
       });
       const [storedUser] = yield* Effect.tryPromise({
         try: () =>
           db
             .select({
-              registrationCompletedAt: usersTable.registrationCompletedAt,
+              registrationCompletedAt: users.registrationCompletedAt,
             })
-            .from(usersTable)
-            .where(eq(usersTable.id, userId)),
+            .from(users)
+            .where(eq(users.id, userId)),
         catch: (cause) => dbUnavailable("completeRegistration", cause),
       });
 
@@ -195,7 +195,7 @@ layer(serviceLayer)("Control-plane services", (it) => {
     }),
   );
 
-  it.effect("loads current file authority and fails closed when persisted facts disappear", () =>
+  test.effect("loads current file authority and fails closed when persisted facts disappear", () =>
     Effect.gen(function* () {
       const db = yield* database;
       const registration = yield* Registration.Service;
@@ -265,7 +265,7 @@ layer(serviceLayer)("Control-plane services", (it) => {
       const otherAgent = yield* registration.complete(otherUserId);
       const wrongAgent = yield* loadCurrentFileAuthorization(db, otherAgent.agentId, context, now);
       yield* Effect.promise(() =>
-        db.delete(billingSubscriptions).where(eq(billingSubscriptions.userId, userId)),
+        db.delete(billingSubscriptions).where(eq(billingSubscriptions.user_id, userId)),
       );
       const missingSubscription = yield* Effect.flip(
         loadCurrentFileAuthorization(db, registered.agentId, context, now),
@@ -286,7 +286,7 @@ const seedUser = (userId: UserId) =>
     const db = yield* database;
     yield* Effect.tryPromise({
       try: () =>
-        db.insert(usersTable).values({
+        db.insert(users).values({
           email: `${userId}@invalid.example`,
           id: userId,
           name: "Test User",

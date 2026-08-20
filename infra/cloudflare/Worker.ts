@@ -1,14 +1,14 @@
-import * as Cloudflare from "alchemy/Cloudflare";
+import { Container, DurableObject, Worker, Workers } from "alchemy/Cloudflare";
 import { Stack } from "alchemy/Stack";
-import * as Config from "effect/Config";
+import { Config } from "effect";
 
-import { Hyperdrive } from "./Db";
+import { DatabaseHyperdrive } from "./Db";
 import { ExecutionUnitWorkflow } from "./ExecutionUnitWorkflow";
 import { Files } from "./Files";
 import { Artifacts } from "./Artifacts";
 
 /** Cloudflare Worker and execution-unit bindings for one Osfo runtime stage. */
-export default Cloudflare.Worker(
+export default Worker(
   "Api",
   Stack.useSync(({ stage }) => {
     const authBaseUrl =
@@ -24,21 +24,21 @@ export default Cloudflare.Worker(
         flags: ["nodejs_compat"],
       },
       env: {
-        AI: Cloudflare.Workers.AI(),
+        AI: Workers.AI(),
         ARTIFACTS: Artifacts,
         BETTER_AUTH_API_KEY: Config.redacted("BETTER_AUTH_API_KEY"),
         BETTER_AUTH_BASE_URL: authBaseUrl,
         BETTER_AUTH_SECRET: Config.redacted("BETTER_AUTH_SECRET"),
         BETTER_AUTH_TRUSTED_ORIGINS: authTrustedOrigins,
-        DB: Hyperdrive,
-        DOCUMENT_SANDBOX: Cloudflare.Container("DocumentSandbox", {
+        DB: DatabaseHyperdrive,
+        DOCUMENT_SANDBOX: Container("DocumentSandbox", {
           className: "Sandbox",
           context: "./apps/worker/document-sandbox",
           instanceType: "lite",
         }),
         EXECUTION_UNIT_WORKFLOW: ExecutionUnitWorkflow,
         FILES: Files,
-        OSFO_DIRECTORY: Cloudflare.DurableObject("OsfoDirectory", {
+        OSFO_DIRECTORY: DurableObject("OsfoDirectory", {
           className: "OsfoDirectory",
         }),
         OSFO_STAGE: stage === "development" || stage === "production" ? stage : "preview",
@@ -47,7 +47,7 @@ export default Cloudflare.Worker(
         STRIPE_PORTAL_CONFIGURATION_ID: Config.string("STRIPE_PORTAL_CONFIGURATION_ID"),
         STRIPE_SECRET_KEY: Config.redacted("STRIPE_SECRET_KEY"),
         STRIPE_WEBHOOK_SECRET: Config.redacted("STRIPE_WEBHOOK_SECRET"),
-        REGISTRATION_DIALOGUE: Cloudflare.DurableObject("RegistrationDialogue", {
+        REGISTRATION_DIALOGUE: DurableObject("RegistrationDialogue", {
           className: "RegistrationDialogue",
         }),
         TELEGRAM_ALLOWED_USER_IDS: Config.redacted("TELEGRAM_ALLOWED_USER_IDS"),

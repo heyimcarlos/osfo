@@ -88,11 +88,11 @@ export const recordUsage = (
         const [period] = await transaction
           .select({
             plan: allowancePeriods.plan,
-            planPolicyVersion: allowancePeriods.planPolicyVersion,
-            userId: allowancePeriods.userId,
+            planPolicyVersion: allowancePeriods.plan_policy_version,
+            userId: allowancePeriods.user_id,
           })
           .from(allowancePeriods)
-          .where(eq(allowancePeriods.allowancePeriodId, allowancePeriodId))
+          .where(eq(allowancePeriods.allowance_period_id, allowancePeriodId))
           .for("update")
           .limit(1);
         if (period === undefined) return { _tag: "PeriodNotFound" } as const;
@@ -100,17 +100,17 @@ export const recordUsage = (
         const kinds = uniqueItems.map((item) => item.allowanceKind);
         const existing = await transaction
           .select({
-            allowanceKind: allowanceUsage.allowanceKind,
+            allowanceKind: allowanceUsage.allowance_kind,
             basis: allowanceUsage.basis,
             quantity: allowanceUsage.quantity,
           })
           .from(allowanceUsage)
           .where(
             and(
-              eq(allowanceUsage.allowancePeriodId, allowancePeriodId),
-              eq(allowanceUsage.sourceType, source.sourceType),
-              eq(allowanceUsage.sourceId, source.sourceId),
-              inArray(allowanceUsage.allowanceKind, kinds),
+              eq(allowanceUsage.allowance_period_id, allowancePeriodId),
+              eq(allowanceUsage.source_type, source.sourceType),
+              eq(allowanceUsage.source_id, source.sourceId),
+              inArray(allowanceUsage.allowance_kind, kinds),
             ),
           );
         const existingByKind = new Map(existing.map((row) => [row.allowanceKind, row]));
@@ -132,45 +132,45 @@ export const recordUsage = (
                 .insert(allowanceUsage)
                 .values(
                   missing.map((item) => ({
-                    allowanceKind: item.allowanceKind,
-                    allowancePeriodId,
+                    allowance_kind: item.allowanceKind,
+                    allowance_period_id: allowancePeriodId,
                     basis: item.basis,
                     quantity: item.quantity,
-                    sourceId: source.sourceId,
-                    sourceType: source.sourceType,
-                    userId: UserId.make(period.userId),
+                    source_id: source.sourceId,
+                    source_type: source.sourceType,
+                    user_id: UserId.make(period.userId),
                   })),
                 )
                 .onConflictDoNothing()
-                .returning({ allowanceKind: allowanceUsage.allowanceKind });
+                .returning({ allowanceKind: allowanceUsage.allowance_kind });
         const stored = await transaction
           .select({
-            allowanceKind: allowanceUsage.allowanceKind,
+            allowanceKind: allowanceUsage.allowance_kind,
             basis: allowanceUsage.basis,
             quantity: allowanceUsage.quantity,
           })
           .from(allowanceUsage)
           .where(
             and(
-              eq(allowanceUsage.allowancePeriodId, allowancePeriodId),
-              eq(allowanceUsage.sourceType, source.sourceType),
-              eq(allowanceUsage.sourceId, source.sourceId),
-              inArray(allowanceUsage.allowanceKind, kinds),
+              eq(allowanceUsage.allowance_period_id, allowancePeriodId),
+              eq(allowanceUsage.source_type, source.sourceType),
+              eq(allowanceUsage.source_id, source.sourceId),
+              inArray(allowanceUsage.allowance_kind, kinds),
             ),
           );
         const aggregate = await transaction
           .select({
-            allowanceKind: allowanceUsage.allowanceKind,
+            allowanceKind: allowanceUsage.allowance_kind,
             quantity: sql<bigint>`sum(${allowanceUsage.quantity})`.mapWith(allowanceUsage.quantity),
           })
           .from(allowanceUsage)
           .where(
             and(
-              eq(allowanceUsage.allowancePeriodId, allowancePeriodId),
-              inArray(allowanceUsage.allowanceKind, kinds),
+              eq(allowanceUsage.allowance_period_id, allowancePeriodId),
+              inArray(allowanceUsage.allowance_kind, kinds),
             ),
           )
-          .groupBy(allowanceUsage.allowanceKind);
+          .groupBy(allowanceUsage.allowance_kind);
         return { _tag: "Stored" as const, aggregate, inserted, period, stored };
       }),
     );

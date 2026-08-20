@@ -1,4 +1,4 @@
-import * as React from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { ArrowUpIcon, LoaderCircleIcon, MessageCircleIcon } from "lucide-react";
 
 import { Bubble, BubbleContent } from "#components/bubble";
@@ -21,24 +21,24 @@ import { cn } from "#lib/utils";
 
 interface ChatMessage {
   readonly content: string;
-  readonly footer?: React.ReactNode;
+  readonly footer?: ReactNode;
   readonly id: string;
   readonly role: "assistant" | "user";
 }
 
-interface ChatProps extends Omit<React.ComponentProps<"section">, "onSubmit" | "title"> {
-  readonly description?: React.ReactNode;
+interface ChatProps extends Omit<ComponentProps<"section">, "onSubmit" | "title"> {
+  readonly description?: ReactNode;
   readonly draft: string;
-  readonly emptyDescription?: React.ReactNode;
-  readonly emptyTitle?: React.ReactNode;
-  readonly error?: React.ReactNode;
+  readonly emptyDescription?: ReactNode;
+  readonly emptyTitle?: ReactNode;
+  readonly error?: ReactNode;
   readonly isSubmitting?: boolean;
   readonly messages: ReadonlyArray<ChatMessage>;
   readonly onDraftChange: (draft: string) => void;
   readonly onSubmit: () => void;
   readonly placeholder?: string;
-  readonly status?: React.ReactNode;
-  readonly title: React.ReactNode;
+  readonly status?: ReactNode;
+  readonly title: ReactNode;
 }
 
 function Chat({

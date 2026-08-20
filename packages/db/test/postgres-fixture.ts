@@ -7,7 +7,8 @@ import { Data, Effect } from "effect";
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-import * as tables from "../src/schema";
+// oxlint-disable-next-line osfo/no-star-import -- Drizzle requires the complete schema module object for relational reflection; adding a self-namespace export makes that namespace part of the reflected schema.
+import * as DbSchema from "../src/schema";
 
 /** One committed migration split into ordered PostgreSQL statements. */
 export interface TestMigration {
@@ -34,7 +35,7 @@ export interface TestDatabase {
 /** Create one isolated PGlite database for a test. */
 export const makeTestDatabase = Effect.sync((): TestDatabase => {
   const client = new PGlite();
-  const database = drizzle(client, { schema: tables });
+  const database = drizzle(client, { schema: DbSchema });
 
   return { client, database };
 });

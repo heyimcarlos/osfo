@@ -164,7 +164,7 @@ describe("managed model access policy", () => {
       expect(Predicate.isTagged(context.allowance, "Metered")).toBe(true);
       const allowance = Predicate.isTagged(context.allowance, "Metered")
         ? context.allowance
-        : yield* Effect.die("The fixture must contain one metered allowance period");
+        : yield* Effect.die(new Error("The fixture must contain one metered allowance period"));
       const routeId = ConversationRouteId.make("route-exhausted");
       const denied = yield* admitManagedConversation(
         {

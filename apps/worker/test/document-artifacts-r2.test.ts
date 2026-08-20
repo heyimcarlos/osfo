@@ -5,8 +5,8 @@ import { Effect } from "effect";
 
 import { AllowancePeriodId, UserId } from "../src/domain";
 import { ContentId } from "../src/domain/client-content";
-import * as DocumentArtifactValidation from "../src/integrations/cloudflare/document-artifact-validation";
-import * as ArtifactR2 from "../src/integrations/cloudflare/document-artifacts";
+import { DocumentArtifactValidation } from "../src/integrations/cloudflare/document-artifact-validation";
+import { DocumentArtifacts } from "../src/integrations/cloudflare/document-artifacts";
 import { attemptKeyFor } from "../src/integrations/cloudflare/document-storage-keys";
 import { DocumentIntentDigest } from "../src/services/document-generation";
 
@@ -16,7 +16,7 @@ describe("generated document R2 artifacts", () => {
       const bytes = yield* Effect.promise(makePdf);
       const contentId = ContentId.make("document:toolCall:r2-artifact-176");
       const artifact = yield* DocumentArtifactValidation.validate(contentId, "pdf", bytes, 1);
-      const store = ArtifactR2.make(env.ARTIFACTS);
+      const store = DocumentArtifacts.make(env.ARTIFACTS);
       const retained = {
         allowancePeriodId: AllowancePeriodId.make("allowance-period-r2-176"),
         artifact,
@@ -49,7 +49,7 @@ describe("generated document R2 artifacts", () => {
       const bytes = yield* Effect.promise(makePdf);
       const contentId = ContentId.make("document:toolCall:r2-digest-176");
       const artifact = yield* DocumentArtifactValidation.validate(contentId, "pdf", bytes, 1);
-      const store = ArtifactR2.make(env.ARTIFACTS);
+      const store = DocumentArtifacts.make(env.ARTIFACTS);
       yield* store.put({
         allowancePeriodId: AllowancePeriodId.make("allowance-period-r2-digest-176"),
         artifact,

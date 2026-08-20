@@ -1,8 +1,8 @@
 import { Context, Effect, Layer, ManagedRuntime, Random, Schema } from "effect";
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { BrowserCrypto } from "@effect/platform-browser";
 
-import * as Db from "./db";
-import { OsfoStage, type OsfoStage as OsfoStageType } from "./config";
+import { Db } from "./db";
+import { OsfoStage } from "./config";
 
 /** Schema for a Cloudflare execution unit that owns an Effect runtime. */
 export const ExecutionUnitKind = Schema.Literals([
@@ -64,14 +64,10 @@ export const probeExecutionUnit: Effect.Effect<RuntimeProbe, never, ExecutionUni
 );
 
 /** Create a request-scoped Worker runtime. */
-export const makeWorkerRuntime = (stage: OsfoStageType) => makeRuntime("worker", "request", stage);
+export const makeWorkerRuntime = (stage: OsfoStage) => makeRuntime("worker", "request", stage);
 
 /** Create an activation-scoped Osfo Agent runtime. */
-export const makeOsfoAgentRuntime = (
-  identity: string,
-  stage: OsfoStageType,
-  database: Db.Options,
-) =>
+export const makeOsfoAgentRuntime = (identity: string, stage: OsfoStage, database: Db.Options) =>
   ManagedRuntime.make(
     Layer.mergeAll(
       makeExecutionUnitLayer("osfo-agent", identity, stage),
@@ -81,20 +77,20 @@ export const makeOsfoAgentRuntime = (
   );
 
 /** Create an activation-scoped registration runtime. */
-export const makeRegistrationDialogueRuntime = (identity: string, stage: OsfoStageType) =>
+export const makeRegistrationDialogueRuntime = (identity: string, stage: OsfoStage) =>
   makeRuntime("registration-dialogue", identity, stage);
 
 /** Create an execution-scoped Workflow runtime. */
-export const makeWorkflowRuntime = (identity: string, stage: OsfoStageType) =>
+export const makeWorkflowRuntime = (identity: string, stage: OsfoStage) =>
   makeRuntime("workflow", identity, stage);
 
-const makeRuntime = (executionUnit: ExecutionUnitKind, identity: string, stage: OsfoStageType) =>
+const makeRuntime = (executionUnit: ExecutionUnitKind, identity: string, stage: OsfoStage) =>
   ManagedRuntime.make(makeExecutionUnitLayer(executionUnit, identity, stage));
 
 const makeExecutionUnitLayer = (
   executionUnit: ExecutionUnitKind,
   identity: string,
-  stage: OsfoStageType,
+  stage: OsfoStage,
 ) =>
   Layer.effect(
     ExecutionUnit,

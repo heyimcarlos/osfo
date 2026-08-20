@@ -3,8 +3,8 @@ import { deletionCases } from "@osfo/db/schema/user-lifecycle";
 import { eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 
-import * as Db from "../../db";
-import * as PhoneAccount from "../../services/phone-account";
+import { Db } from "../../db";
+import { PhoneAccount } from "../../services/phone-account";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Effect tags and the Drizzle transaction fence require these forms. */
 
@@ -14,9 +14,9 @@ export const make = Effect.gen(function* () {
   const authority = createPhoneAccountAuthority(database, {
     replacementBlocked: async (transaction, userId) => {
       const [deletionCase] = await transaction
-        .select({ deletionCaseId: deletionCases.deletionCaseId })
+        .select({ deletionCaseId: deletionCases.deletion_case_id })
         .from(deletionCases)
-        .where(eq(deletionCases.userId, userId))
+        .where(eq(deletionCases.user_id, userId))
         .limit(1);
       return deletionCase !== undefined;
     },
@@ -51,3 +51,5 @@ const unavailable = (operation: string, cause: unknown) =>
     message: `The Phone Account authority could not complete ${operation}`,
     operation,
   });
+
+export * as PhoneAccountAdapter from "./phone-account";

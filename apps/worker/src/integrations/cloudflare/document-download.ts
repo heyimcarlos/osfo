@@ -7,7 +7,7 @@ import type {
   DocumentDownloadAuthorizationUnavailable,
   DocumentDownloadUnauthorized,
 } from "../../middleware/auth";
-import * as ArtifactR2 from "./document-artifacts";
+import { DocumentArtifacts } from "./document-artifacts";
 /** Serve retained bytes only to the current authenticated owner. */
 export const serve = <R>(
   bucket: R2Bucket,
@@ -25,7 +25,7 @@ export const serve = <R>(
         new URL(request.url, "https://worker.invalid").searchParams.get("contentId"),
       ).pipe(Effect.option);
       if (Option.isNone(contentId)) return HttpServerResponse.empty({ status: 404 });
-      const artifacts = ArtifactR2.make(bucket);
+      const artifacts = DocumentArtifacts.make(bucket);
       const metadata = yield* artifacts.inspect(contentId.value).pipe(Effect.option);
       if (Option.isNone(metadata) || metadata.value === null) {
         return HttpServerResponse.empty({ status: 404 });
@@ -55,3 +55,5 @@ export const serve = <R>(
     }),
     Effect.catchCause(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))),
   );
+
+export * as DocumentDownload from "./document-download";

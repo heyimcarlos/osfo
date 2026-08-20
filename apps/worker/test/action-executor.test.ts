@@ -16,8 +16,8 @@ import { ActionId } from "../src/domain/action-execution";
 import { AuthSessionId } from "../src/domain/auth-session";
 import { AuthorizationOperation } from "../src/domain/authorization-operation";
 import { retainedCatalog } from "../src/domain/plan-policy";
-import * as ActionExecutor from "../src/services/action-executor";
-import { AuthorizationContext, make as makeAuthorization } from "../src/services/authorization";
+import { ActionExecutor } from "../src/services/action-executor";
+import { Authorization, AuthorizationContext } from "../src/services/authorization";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Tests assert tagged public outcomes. */
 
@@ -32,7 +32,7 @@ describe("protected-effect executor", () => {
         Effect.gen(function* () {
           const authSessionId = AuthSessionId.make("auth-session-1");
           const actionId = ActionId.make(`protected-${testCase.mutation}`);
-          const authorization = makeAuthorization(retainedCatalog);
+          const authorization = Authorization.make(retainedCatalog);
           const operation = AuthorizationOperation.make({ actionId, kind: "gmail.send" });
           const admitted = authorization.admit(
             yield* currentAuthorizationContext(authorities, authSessionId, actionId),
@@ -73,7 +73,7 @@ describe("protected-effect executor", () => {
       Effect.gen(function* () {
         const authSessionId = AuthSessionId.make("auth-session-1");
         const actionId = ActionId.make("protected-session-expiry");
-        const authorization = makeAuthorization(retainedCatalog);
+        const authorization = Authorization.make(retainedCatalog);
         const operation = AuthorizationOperation.make({ actionId, kind: "gmail.send" });
         const admitted = authorization.admit(
           yield* currentAuthorizationContext(authorities, authSessionId, actionId),
@@ -115,14 +115,14 @@ describe("protected-effect executor", () => {
         const actionId = ActionId.make("protected-channel-binding");
         yield* Effect.promise(() =>
           database.database.insert(channelBindings).values({
-            channelBindingId,
-            channelIdentity: "+14165550100",
+            channel_binding_id: channelBindingId,
+            channel_identity: "+14165550100",
             provider: "whatsapp",
-            userId,
+            user_id: userId,
           }),
         );
         const authority = yield* authorities.channelBindings.inspect(userId, channelBindingId);
-        const authorization = makeAuthorization(retainedCatalog);
+        const authorization = Authorization.make(retainedCatalog);
         const operation = AuthorizationOperation.make({ actionId, kind: "gmail.send" });
         const admitted = authorization.admit(
           AuthorizationContext.make({
@@ -139,8 +139,8 @@ describe("protected-effect executor", () => {
         yield* Effect.promise(() =>
           database.database
             .update(channelBindings)
-            .set({ revokedAt: parseDate("2026-08-16T12:01:00.000Z") })
-            .where(eq(channelBindings.channelBindingId, channelBindingId)),
+            .set({ revoked_at: parseDate("2026-08-16T12:01:00.000Z") })
+            .where(eq(channelBindings.channel_binding_id, channelBindingId)),
         );
         let providerContacts = 0;
         const result = yield* ActionExecutor.make(
@@ -174,7 +174,7 @@ describe("protected-effect executor", () => {
       Effect.gen(function* () {
         const authSessionId = AuthSessionId.make("auth-session-1");
         const actionId = ActionId.make("protected-live-resources");
-        const authorization = makeAuthorization(retainedCatalog);
+        const authorization = Authorization.make(retainedCatalog);
         const operation = AuthorizationOperation.make({ actionId, kind: "support.gmSummon" });
         const authority = yield* authorities.authSessions.inspect(userId, authSessionId);
         const admitted = authorization.admit(

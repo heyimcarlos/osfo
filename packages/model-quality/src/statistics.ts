@@ -1,4 +1,4 @@
-import { verify as verifySignature } from "node:crypto";
+import { verify } from "node:crypto";
 
 import { verifyCorpusManifest, type CorpusLineage, type CorpusManifest } from "./corpus";
 import {
@@ -311,7 +311,7 @@ export const createPairedPowerPlan = (
     input.corpusDigest !== corpusManifest.contentDigest ||
     Date.parse(declaredAt.value) >= Date.parse(candidateStartedAt.value) ||
     !powerPlanAuthorityIds.has(input.authorityId) ||
-    !verifySignature(
+    !verify(
       null,
       Buffer.from(pairedPowerPlanSigningDigest(input)),
       powerPlanAuthorityPublicKey,
@@ -542,7 +542,7 @@ export const parsePairedPowerPlan = (
     plan.caseIds.every((caseId) => sealedIds.has(caseId)) &&
     plan.corpusDigest === corpusManifest.contentDigest &&
     powerPlanAuthorityIds.has(plan.authorityId) &&
-    verifySignature(
+    verify(
       null,
       Buffer.from(
         pairedPowerPlanSigningDigest({

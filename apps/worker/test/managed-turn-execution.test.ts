@@ -14,7 +14,7 @@ import {
   ThinkSubmissionId,
   UserId,
 } from "../src/domain";
-import * as SessionRecallAuthorizationPostgres from "../src/integrations/postgres/session-recall-authorization";
+import { SessionRecallAuthorizationPostgres } from "../src/integrations/postgres/session-recall-authorization";
 import { AuthorizationContext } from "../src/services/authorization";
 import { OsfoAgent } from "../src/agents/osfo/agent";
 

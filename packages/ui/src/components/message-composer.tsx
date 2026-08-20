@@ -1,8 +1,8 @@
-import * as React from "react";
+import type { ComponentProps } from "react";
 import { cn } from "#lib/utils";
 import { Textarea } from "#components/textarea";
 
-function MessageComposer({ className, ...props }: React.ComponentProps<"form">) {
+function MessageComposer({ className, ...props }: ComponentProps<"form">) {
   return (
     <form
       data-slot="message-composer"
@@ -15,7 +15,7 @@ function MessageComposer({ className, ...props }: React.ComponentProps<"form">) 
   );
 }
 
-function MessageComposerTextarea({ className, ...props }: React.ComponentProps<typeof Textarea>) {
+function MessageComposerTextarea({ className, ...props }: ComponentProps<typeof Textarea>) {
   return (
     <Textarea
       data-slot="message-composer-textarea"
@@ -29,7 +29,7 @@ function MessageComposerTextarea({ className, ...props }: React.ComponentProps<t
   );
 }
 
-function MessageComposerFooter({ className, ...props }: React.ComponentProps<"div">) {
+function MessageComposerFooter({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       data-slot="message-composer-footer"

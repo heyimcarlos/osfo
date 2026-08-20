@@ -1,14 +1,14 @@
 import type { CurrentUserValue } from "@osfo/api";
 import { DateTime, Effect, Schema } from "effect";
 
-import * as Db from "../db";
+import { Db } from "../db";
 import { inspectAndRepairBillingAuthorization } from "../db/billing/stripe-inspect";
 import { type AllowancePeriodId, UserId } from "../domain";
 import { AuthSessionId } from "../domain/auth-session";
-import * as DeletionCasePostgres from "../integrations/postgres/deletion-case";
-import * as UserSuspensionPostgres from "../integrations/postgres/user-suspension";
-import * as AuthSessionAdapter from "../integrations/auth/auth-session";
-import * as AuthSession from "../services/auth-session";
+import { DeletionCasePostgres } from "../integrations/postgres/deletion-case";
+import { UserSuspensionPostgres } from "../integrations/postgres/user-suspension";
+import { AuthSessionAdapter } from "../integrations/auth/auth-session";
+import { AuthSession } from "../services/auth-session";
 import { admit, type BillingOperation } from "../services/billing-authorization";
 
 /* oxlint-disable effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- This composition boundary owns concrete PostgreSQL adapters and branches on Effect tags. */
@@ -63,3 +63,5 @@ export const make = (
         );
       });
   });
+
+export * as BillingAuthorization from "./billing-authorization";

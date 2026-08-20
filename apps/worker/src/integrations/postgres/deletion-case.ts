@@ -3,9 +3,9 @@ import { users } from "@osfo/db/schema/auth";
 import { eq } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 
-import * as Db from "../../db";
+import { Db } from "../../db";
 import { DeletionCaseId } from "../../domain/deletion-case";
-import * as DeletionCase from "../../services/deletion-case";
+import { DeletionCase } from "../../services/deletion-case";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transaction boundaries require async functions. */
 
@@ -16,9 +16,9 @@ export const make = Effect.gen(function* () {
     inspect: (userId) =>
       Db.execute("inspectDeletionCase", () =>
         database
-          .select({ deletionCaseId: deletionCases.deletionCaseId })
+          .select({ deletionCaseId: deletionCases.deletion_case_id })
           .from(deletionCases)
-          .where(eq(deletionCases.userId, userId))
+          .where(eq(deletionCases.user_id, userId))
           .limit(1),
       ).pipe(
         Effect.map(([record]) =>
@@ -27,7 +27,7 @@ export const make = Effect.gen(function* () {
             : ({ _tag: "DeletionAccessRevoked" } as const),
         ),
       ),
-    request: (command, deletionCaseId) =>
+    request: (command, deletion_case_id) =>
       Db.execute("requestDeletion", () =>
         database.transaction(async (transaction) => {
           const [user] = await transaction
@@ -38,9 +38,9 @@ export const make = Effect.gen(function* () {
             .limit(1);
           if (user === undefined) return { _tag: "MissingUser" } as const;
           const [existing] = await transaction
-            .select({ deletionCaseId: deletionCases.deletionCaseId })
+            .select({ deletionCaseId: deletionCases.deletion_case_id })
             .from(deletionCases)
-            .where(eq(deletionCases.userId, command.userId))
+            .where(eq(deletionCases.user_id, command.userId))
             .limit(1);
           if (existing !== undefined) {
             return {
@@ -49,10 +49,10 @@ export const make = Effect.gen(function* () {
             } as const;
           }
           await transaction.insert(deletionCases).values({
-            deletionCaseId,
+            deletion_case_id: deletion_case_id,
             reason: command.reason,
-            requestedByAdminId: command.adminActorId,
-            userId: command.userId,
+            requested_by_admin_id: command.adminActorId,
+            user_id: command.userId,
           });
           return { _tag: "Created" } as const;
         }),
@@ -62,3 +62,5 @@ export const make = Effect.gen(function* () {
 
 /** Deletion Case persistence Layer backed by Postgres. */
 export const layerWithoutDependencies = Layer.effect(DeletionCase.Persistence, make);
+
+export * as DeletionCasePostgres from "./deletion-case";

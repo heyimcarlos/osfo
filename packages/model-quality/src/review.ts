@@ -1,4 +1,4 @@
-import { verify as verifySignature } from "node:crypto";
+import { verify } from "node:crypto";
 
 import {
   verifyCorpusManifest,
@@ -237,7 +237,7 @@ export const humanReviewSigningDigest = (
 };
 
 const verifyHumanReviewSignature = (input: HumanReviewInput): boolean =>
-  verifySignature(
+  verify(
     null,
     Buffer.from(humanReviewSigningDigest(input)),
     reviewEvidencePublicKey,

@@ -80,14 +80,14 @@ const fileAnalysisState = customType<{ data: FileAnalysisState; driverData: stri
 export const conversationRoutes = sqliteTable(
   "osfo_conversation_routes",
   {
-    isPrimary: integer("is_primary", { mode: "boolean" }).notNull(),
-    routeId: routeId("route_id").primaryKey(),
+    is_primary: integer({ mode: "boolean" }).notNull(),
+    route_id: routeId().primaryKey(),
   },
   (table) => [
-    check("osfo_conversation_route_primary_boolean", sql`${table.isPrimary} IN (0, 1)`),
+    check("osfo_conversation_route_primary_boolean", sql`${table.is_primary} IN (0, 1)`),
     uniqueIndex("osfo_one_primary_route")
-      .on(table.isPrimary)
-      .where(sql`${table.isPrimary} = 1`),
+      .on(table.is_primary)
+      .where(sql`${table.is_primary} = 1`),
   ],
 );
 
@@ -95,19 +95,22 @@ export const conversationRoutes = sqliteTable(
 export const sessionOwnership = sqliteTable(
   "osfo_session_ownership",
   {
-    becameCurrentAt: timestamp("became_current_at").notNull(),
-    ownershipSequence: integer("ownership_sequence").notNull().unique(),
-    replacedAt: timestamp("replaced_at"),
-    routeId: routeId("route_id")
+    became_current_at: timestamp().notNull(),
+    ownership_sequence: integer().notNull().unique(),
+    replaced_at: timestamp(),
+    route_id: routeId()
       .notNull()
-      .references(() => conversationRoutes.routeId, { onDelete: "restrict", onUpdate: "restrict" }),
-    sessionId: sessionId("session_id").primaryKey(),
+      .references(() => conversationRoutes.route_id, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+    session_id: sessionId().primaryKey(),
   },
   (table) => [
     uniqueIndex("osfo_one_current_session_per_route")
-      .on(table.routeId)
-      .where(sql`${table.replacedAt} IS NULL`),
-    index("osfo_sessions_by_route").on(table.routeId, table.ownershipSequence),
+      .on(table.route_id)
+      .where(sql`${table.replaced_at} IS NULL`),
+    index("osfo_sessions_by_route").on(table.route_id, table.ownership_sequence),
   ],
 );
 
@@ -115,64 +118,73 @@ export const sessionOwnership = sqliteTable(
 export const sessionRecallCursors = sqliteTable(
   "osfo_session_recall_cursors",
   {
-    afterOwnershipSequence: integer("after_ownership_sequence"),
-    cursor: text("cursor").primaryKey(),
-    expiresAt: timestamp("expires_at")
+    after_ownership_sequence: integer(),
+    cursor: text().primaryKey(),
+    expires_at: timestamp()
       .notNull()
       .default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+15 minutes'))`),
-    routeId: routeId("route_id")
+    route_id: routeId()
       .notNull()
-      .references(() => conversationRoutes.routeId, { onDelete: "cascade", onUpdate: "restrict" }),
-    snapshotCurrentSessionId: sessionId("snapshot_current_session_id")
+      .references(() => conversationRoutes.route_id, { onDelete: "cascade", onUpdate: "restrict" }),
+    snapshot_current_session_id: sessionId()
       .notNull()
-      .references(() => sessionOwnership.sessionId, {
+      .references(() => sessionOwnership.session_id, {
         onDelete: "cascade",
         onUpdate: "restrict",
       }),
-    snapshotMaxOwnershipSequence: integer("snapshot_max_ownership_sequence").notNull(),
+    snapshot_max_ownership_sequence: integer().notNull(),
   },
-  (table) => [index("osfo_session_recall_cursors_by_expiry").on(table.expiresAt)],
+  (table) => [index("osfo_session_recall_cursors_by_expiry").on(table.expires_at)],
 );
 
 /** Singleton evidence that the named Durable Object completed Agent initialization. */
 export const agentInitialization = sqliteTable(
   "osfo_agent_initialization",
   {
-    agentId: agentId("agent_id").notNull().unique(),
-    initializationId: initializationId("initialization_id").notNull().unique(),
-    initializedAt: timestamp("initialized_at").notNull(),
-    initialRouteId: routeId("initial_route_id")
+    agent_id: agentId().notNull().unique(),
+    initialization_id: initializationId().notNull().unique(),
+    initialized_at: timestamp().notNull(),
+    initial_route_id: routeId()
       .notNull()
-      .references(() => conversationRoutes.routeId, { onDelete: "restrict", onUpdate: "restrict" }),
-    initialSessionId: sessionId("initial_session_id")
+      .references(() => conversationRoutes.route_id, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+    initial_session_id: sessionId()
       .notNull()
-      .references(() => sessionOwnership.sessionId, { onDelete: "restrict", onUpdate: "restrict" }),
-    singletonKey: text("singleton_key").primaryKey(),
+      .references(() => sessionOwnership.session_id, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+    singleton_key: text().primaryKey(),
   },
-  (table) => [check("osfo_agent_initialization_singleton", sql`${table.singletonKey} = 'agent'`)],
+  (table) => [check("osfo_agent_initialization_singleton", sql`${table.singleton_key} = 'agent'`)],
 );
 
 /** Idempotent Osfo observation receipts for committed Think turns. */
 export const committedTurns = sqliteTable(
   "osfo_committed_turns",
   {
-    assistantMessageId: assistantMessageId("assistant_message_id").notNull().unique(),
-    observationSequence: integer("observation_sequence").primaryKey({ autoIncrement: true }),
-    observedAt: text("observed_at")
+    assistant_message_id: assistantMessageId().notNull().unique(),
+    observation_sequence: integer().primaryKey({ autoIncrement: true }),
+    observed_at: text()
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
-    sessionId: sessionId("session_id")
+    session_id: sessionId()
       .notNull()
-      .references(() => sessionOwnership.sessionId, { onDelete: "restrict", onUpdate: "restrict" }),
-    source: text("source", { enum: ["hook", "reconciliation"] }).notNull(),
-    thinkRequestId: thinkRequestId("think_request_id"),
+      .references(() => sessionOwnership.session_id, {
+        onDelete: "restrict",
+        onUpdate: "restrict",
+      }),
+    source: text({ enum: ["hook", "reconciliation"] }).notNull(),
+    think_request_id: thinkRequestId(),
   },
   (table) => [
     check("osfo_committed_turn_source", sql`${table.source} IN ('hook', 'reconciliation')`),
-    index("osfo_committed_turns_by_session").on(table.sessionId, table.observationSequence),
+    index("osfo_committed_turns_by_session").on(table.session_id, table.observation_sequence),
     uniqueIndex("osfo_committed_turn_think_request_unique")
-      .on(table.thinkRequestId)
-      .where(sql`${table.thinkRequestId} IS NOT NULL`),
+      .on(table.think_request_id)
+      .where(sql`${table.think_request_id} IS NOT NULL`),
   ],
 );
 
@@ -180,16 +192,16 @@ export const committedTurns = sqliteTable(
 export const modelCallUsageEvidence = sqliteTable(
   "osfo_model_call_usage_evidence",
   {
-    allowancePeriodId: allowancePeriodId("allowance_period_id").notNull(),
-    attemptId: modelCallAttemptId("attempt_id").primaryKey(),
-    dispatchedAt: timestamp("dispatched_at"),
-    itemsJson: text("items_json").notNull(),
-    recordedAt: timestamp("recorded_at").notNull(),
+    allowance_period_id: allowancePeriodId().notNull(),
+    attempt_id: modelCallAttemptId().primaryKey(),
+    dispatched_at: timestamp(),
+    items_json: text().notNull(),
+    recorded_at: timestamp().notNull(),
   },
   (table) => [
     index("osfo_model_call_usage_pending")
-      .on(table.recordedAt)
-      .where(sql`${table.dispatchedAt} IS NULL`),
+      .on(table.recorded_at)
+      .where(sql`${table.dispatched_at} IS NULL`),
   ],
 );
 
@@ -197,38 +209,38 @@ export const modelCallUsageEvidence = sqliteTable(
 export const files = sqliteTable(
   "osfo_files",
   {
-    acceptedAt: timestamp("accepted_at").notNull(),
-    allowancePeriodId: allowancePeriodId("allowance_period_id").notNull(),
-    byteLength: integer("byte_length").notNull(),
-    deletedAt: timestamp("deleted_at"),
-    fileId: fileId("file_id").primaryKey(),
-    fileName: fileName("file_name").notNull(),
-    mediaType: fileMediaType("media_type").notNull(),
-    normalizationClaimedAt: timestamp("normalization_claimed_at"),
-    normalizationError: text("normalization_error"),
-    normalizedText: text("normalized_text"),
-    objectKey: text("object_key").notNull().unique(),
-    provenanceJson: text("provenance_json"),
-    sha256: fileDigest("sha256").notNull(),
-    state: fileState("state").notNull(),
-    uploadId: fileUploadId("upload_id").notNull().unique(),
-    userId: userId("user_id").notNull(),
+    accepted_at: timestamp().notNull(),
+    allowance_period_id: allowancePeriodId().notNull(),
+    byte_length: integer().notNull(),
+    deleted_at: timestamp(),
+    file_id: fileId().primaryKey(),
+    file_name: fileName().notNull(),
+    media_type: fileMediaType().notNull(),
+    normalization_claimed_at: timestamp(),
+    normalization_error: text(),
+    normalized_text: text(),
+    object_key: text().notNull().unique(),
+    provenance_json: text(),
+    sha256: fileDigest().notNull(),
+    state: fileState().notNull(),
+    upload_id: fileUploadId().notNull().unique(),
+    user_id: userId().notNull(),
   },
   (table) => [
-    check("osfo_file_byte_length_positive", sql`${table.byteLength} > 0`),
+    check("osfo_file_byte_length_positive", sql`${table.byte_length} > 0`),
     check(
       "osfo_file_state",
       sql`${table.state} IN ('pending_storage', 'stored', 'normalizing', 'ready', 'normalization_failed', 'deleting', 'deleted')`,
     ),
     check(
       "osfo_file_normalizing_state",
-      sql`(${table.state} = 'normalizing' AND ${table.normalizationClaimedAt} IS NOT NULL) OR (${table.state} != 'normalizing' AND ${table.normalizationClaimedAt} IS NULL)`,
+      sql`(${table.state} = 'normalizing' AND ${table.normalization_claimed_at} IS NOT NULL) OR (${table.state} != 'normalizing' AND ${table.normalization_claimed_at} IS NULL)`,
     ),
     check(
       "osfo_file_deleted_state",
-      sql`(${table.state} = 'deleted' AND ${table.deletedAt} IS NOT NULL) OR (${table.state} != 'deleted' AND ${table.deletedAt} IS NULL)`,
+      sql`(${table.state} = 'deleted' AND ${table.deleted_at} IS NOT NULL) OR (${table.state} != 'deleted' AND ${table.deleted_at} IS NULL)`,
     ),
-    index("osfo_files_by_owner_state").on(table.userId, table.state),
+    index("osfo_files_by_owner_state").on(table.user_id, table.state),
   ],
 );
 
@@ -236,37 +248,37 @@ export const files = sqliteTable(
 export const fileAnalyses = sqliteTable(
   "osfo_file_analyses",
   {
-    allowancePeriodId: allowancePeriodId("allowance_period_id").notNull(),
-    analysisId: fileAnalysisId("analysis_id").primaryKey(),
-    createdAt: timestamp("created_at").notNull(),
-    failure: text("failure"),
-    fileId: fileId("file_id")
+    allowance_period_id: allowancePeriodId().notNull(),
+    analysis_id: fileAnalysisId().primaryKey(),
+    created_at: timestamp().notNull(),
+    failure: text(),
+    file_id: fileId()
       .notNull()
-      .references(() => files.fileId, { onDelete: "restrict", onUpdate: "restrict" }),
-    prompt: text("prompt").notNull(),
-    resultText: text("result_text"),
-    state: fileAnalysisState("state").notNull(),
-    updatedAt: timestamp("updated_at").notNull(),
-    vendorUsdMicros: integer("vendor_usd_micros"),
+      .references(() => files.file_id, { onDelete: "restrict", onUpdate: "restrict" }),
+    prompt: text().notNull(),
+    result_text: text(),
+    state: fileAnalysisState().notNull(),
+    updated_at: timestamp().notNull(),
+    vendor_usd_micros: integer(),
   },
   (table) => [
     check(
       "osfo_file_analysis_state",
       sql`${table.state} IN ('pending', 'ambiguous', 'completed_cleanup_pending', 'failed_cleanup_pending', 'completed', 'failed', 'deleted')`,
     ),
-    index("osfo_file_analyses_by_file").on(table.fileId, table.createdAt),
+    index("osfo_file_analyses_by_file").on(table.file_id, table.created_at),
   ],
 );
 
 /** Source and derived-content deletion lineage for one file. */
 export const fileDeletions = sqliteTable("osfo_file_deletions", {
-  actionId: text("action_id").notNull(),
-  analysisCount: integer("analysis_count").notNull(),
-  deletedAt: timestamp("deleted_at").notNull(),
-  fileId: fileId("file_id")
+  action_id: text().notNull(),
+  analysis_count: integer().notNull(),
+  deleted_at: timestamp().notNull(),
+  file_id: fileId()
     .primaryKey()
-    .references(() => files.fileId, { onDelete: "restrict", onUpdate: "restrict" }),
-  sourceObjectKey: text("source_object_key").notNull(),
-  sourceSha256: fileDigest("source_sha256").notNull(),
-  userId: userId("user_id").notNull(),
+    .references(() => files.file_id, { onDelete: "restrict", onUpdate: "restrict" }),
+  source_object_key: text().notNull(),
+  source_sha256: fileDigest().notNull(),
+  user_id: userId().notNull(),
 });

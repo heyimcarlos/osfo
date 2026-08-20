@@ -5,7 +5,6 @@ import { ActionId } from "../../domain/action-execution";
 import type { Denied } from "../../services/authorization";
 import {
   ClearCoreMemoryInput,
-  type ClearCoreMemoryInput as ClearCoreMemory,
   type CoreMemoryCleared,
   type CoreMemoryUnavailable,
   coreMemoryLabelFor,
@@ -26,7 +25,7 @@ import {
 import { effectToolSchema } from "./effect-tool-schema";
 
 type SanitizedPendingApprovalInput =
-  | ClearCoreMemory
+  | ClearCoreMemoryInput
   | ReturnType<typeof sanitizeTestProtectedActionInput>;
 
 /** Name registered with Think for the Core Memory clear Action. */
@@ -35,7 +34,7 @@ export const coreMemoryClearActionName = "osfoClearCoreMemory";
 /** Build Osfo's cohesive Think Action registry. */
 export const makeOsfoActions = (options: {
   readonly clearCoreMemory: (
-    input: ClearCoreMemory,
+    input: ClearCoreMemoryInput,
     actionId: ActionId,
   ) => Promise<CoreMemoryCleared | CoreMemoryUnavailable | Denied>;
   readonly testProtectedActionState?: () => TestProtectedActionState;

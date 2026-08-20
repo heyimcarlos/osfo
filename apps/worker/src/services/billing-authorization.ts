@@ -3,7 +3,7 @@ import { Predicate } from "effect";
 import { Plan, type PlanPolicyVersion, type UserId } from "../domain";
 import type { AuthSessionId } from "../domain/auth-session";
 import { retainedCatalog } from "../domain/plan-policy";
-import { make as makeAuthorization } from "./authorization";
+import { Authorization } from "./authorization";
 
 /** Authenticated and persisted facts required to authorize one billing operation. */
 export interface BillingAuthorizationFacts {
@@ -52,7 +52,7 @@ export const effectivePlanAt = (authority: BillingPlanAuthority, now: Date): Pla
 /** Admit one billing operation from current AuthSession and Subscription facts. */
 export const admit = (facts: BillingAuthorizationFacts, operation: BillingOperation, now: Date) =>
   Predicate.isTagged(
-    makeAuthorization(retainedCatalog).admit(
+    Authorization.make(retainedCatalog).admit(
       {
         allowance: { _tag: "Unavailable" },
         approval: null,

@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 
 import { inspectAndRepairBillingAuthorization } from "../src/db/billing/stripe-inspect";
-import * as BillingAuthorizationComposition from "../src/composition/billing-authorization";
+import { BillingAuthorization } from "../src/composition/billing-authorization";
 import { AllowancePeriodId, Plan, PlanPolicyVersion, UserId } from "../src/domain";
 import { AuthSessionId } from "../src/domain/auth-session";
 import { admit } from "../src/services/billing-authorization";
@@ -95,13 +95,13 @@ describe("billing Authorization", () => {
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingSubscriptions).values({
-              billingSubscriptionId: "subscription-live-billing-authority",
+              billing_subscription_id: "subscription-live-billing-authority",
               plan: "free",
-              planPolicyVersion: "launch-v1",
-              userId,
+              plan_policy_version: "launch-v1",
+              user_id: userId,
             }),
           );
-          const authorize = yield* BillingAuthorizationComposition.make(fixture.database, {
+          const authorize = yield* BillingAuthorization.make(fixture.database, {
             allowancePeriodId: Effect.succeed(
               AllowancePeriodId.make("allowance-live-billing-authority"),
             ),
@@ -117,31 +117,31 @@ describe("billing Authorization", () => {
           yield* Effect.promise(() =>
             fixture.database.insert(userSuspensionEvents).values({
               action: "suspended",
-              adminActorId: "admin-billing-authority",
-              eventId: "suspension-live-billing-authority",
-              occurredAt: new Date("2026-08-16T11:00:00.000Z"),
+              admin_actor_id: "admin-billing-authority",
+              event_id: "suspension-live-billing-authority",
+              occurred_at: new Date("2026-08-16T11:00:00.000Z"),
               reason: "safety review",
-              userId,
+              user_id: userId,
             }),
           );
           expect(yield* authorize(currentUser, "billing.inspect")).toBe(false);
           yield* Effect.promise(() =>
             fixture.database.insert(userSuspensionEvents).values({
               action: "restored",
-              adminActorId: "admin-billing-authority",
-              eventId: "restoration-live-billing-authority",
-              occurredAt: new Date("2026-08-16T11:30:00.000Z"),
+              admin_actor_id: "admin-billing-authority",
+              event_id: "restoration-live-billing-authority",
+              occurred_at: new Date("2026-08-16T11:30:00.000Z"),
               reason: "review complete",
-              userId,
+              user_id: userId,
             }),
           );
           expect(yield* authorize(currentUser, "billing.inspect")).toBe(true);
           yield* Effect.promise(() =>
             fixture.database.insert(deletionCases).values({
-              deletionCaseId: "deletion-live-billing-authority",
+              deletion_case_id: "deletion-live-billing-authority",
               reason: "user request",
-              requestedByAdminId: "admin-billing-authority",
-              userId,
+              requested_by_admin_id: "admin-billing-authority",
+              user_id: userId,
             }),
           );
           expect(yield* authorize(currentUser, "billing.inspect")).toBe(false);
@@ -172,37 +172,37 @@ describe("billing Authorization", () => {
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingCustomers).values({
-              billingCustomerId: "customer-expired-paid-period",
-              stripeCustomerId: "cus_expired_paid_period",
-              userId,
+              billing_customer_id: "customer-expired-paid-period",
+              stripe_customer_id: "cus_expired_paid_period",
+              user_id: userId,
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingSubscriptions).values({
-              billingCustomerId: "customer-expired-paid-period",
-              billingSubscriptionId: "subscription-expired-paid-period",
+              billing_customer_id: "customer-expired-paid-period",
+              billing_subscription_id: "subscription-expired-paid-period",
               plan: "adventurer",
-              planPolicyVersion: "launch-v1",
-              stripeCurrentPeriodEnd: periodEnd,
-              stripeCurrentPeriodStart: new Date("2026-07-16T12:00:00.000Z"),
-              stripeLatestInvoiceId: "in_expired_paid_period",
-              stripePriceId: "price_adventurer",
-              stripeProductId: "prod_adventurer",
-              stripeStatus: "active",
-              stripeSubscriptionId: "sub_expired_paid_period",
-              userId,
+              plan_policy_version: "launch-v1",
+              stripe_current_period_end: periodEnd,
+              stripe_current_period_start: new Date("2026-07-16T12:00:00.000Z"),
+              stripe_latest_invoice_id: "in_expired_paid_period",
+              stripe_price_id: "price_adventurer",
+              stripe_product_id: "prod_adventurer",
+              stripe_status: "active",
+              stripe_subscription_id: "sub_expired_paid_period",
+              user_id: userId,
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(allowancePeriods).values({
-              allowancePeriodId: "allowance-expired-paid-period-adventurer",
-              billingSubscriptionId: "subscription-expired-paid-period",
-              endsAt: periodEnd,
+              allowance_period_id: "allowance-expired-paid-period-adventurer",
+              billing_subscription_id: "subscription-expired-paid-period",
+              ends_at: periodEnd,
               plan: "adventurer",
-              planPolicyVersion: "launch-v1",
-              startsAt: new Date("2026-07-16T12:00:00.000Z"),
-              stripeInvoiceId: "in_expired_paid_period",
-              userId,
+              plan_policy_version: "launch-v1",
+              starts_at: new Date("2026-07-16T12:00:00.000Z"),
+              stripe_invoice_id: "in_expired_paid_period",
+              user_id: userId,
             }),
           );
 
@@ -224,22 +224,22 @@ describe("billing Authorization", () => {
           const [repaired] = yield* Effect.promise(() =>
             fixture.database
               .select({
-                pendingPlan: billingSubscriptions.pendingPlan,
+                pendingPlan: billingSubscriptions.pending_plan,
                 plan: billingSubscriptions.plan,
               })
               .from(billingSubscriptions)
-              .where(eq(billingSubscriptions.userId, userId)),
+              .where(eq(billingSubscriptions.user_id, userId)),
           );
           expect(repaired).toEqual({ pendingPlan: null, plan: "free" });
           const periods = yield* Effect.promise(() =>
             fixture.database
               .select({
-                endsAt: allowancePeriods.endsAt,
+                endsAt: allowancePeriods.ends_at,
                 plan: allowancePeriods.plan,
-                startsAt: allowancePeriods.startsAt,
+                startsAt: allowancePeriods.starts_at,
               })
               .from(allowancePeriods)
-              .where(eq(allowancePeriods.userId, userId)),
+              .where(eq(allowancePeriods.user_id, userId)),
           );
           expect(periods).toContainEqual({
             endsAt: freePeriodEnd,

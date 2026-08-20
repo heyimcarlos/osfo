@@ -1,20 +1,20 @@
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { BrowserCrypto } from "@effect/platform-browser";
 import { describe, expect, it } from "@effect/vitest";
 import { users } from "@osfo/db/schema/auth";
 import { deletionCases } from "@osfo/db/schema/user-lifecycle";
 import { Effect, Exit, Layer, Redacted } from "effect";
 
-import * as Db from "../src/db";
+import { Db } from "../src/db";
 import { UserId } from "../src/domain";
 import { AuthSessionId } from "../src/domain/auth-session";
 import { PhoneNumber } from "../src/domain/phone-account";
-import * as PhoneAccountAdapter from "../src/integrations/auth/phone-account";
+import { PhoneAccountAdapter } from "../src/integrations/auth/phone-account";
 import {
   TwilioVerify,
   phoneAccountVerificationLayerWithoutDependencies,
 } from "../src/integrations/twilio/verify";
-import * as DeletionCase from "../src/services/deletion-case";
-import * as PhoneAccount from "../src/services/phone-account";
+import { DeletionCase } from "../src/services/deletion-case";
+import { PhoneAccount } from "../src/services/phone-account";
 import type { AccountAuthorityFixture } from "./account-authority-fixture";
 import {
   adminActorId,
@@ -129,10 +129,10 @@ describe("Phone Account authority", () => {
       Effect.gen(function* () {
         yield* Effect.promise(() =>
           database.database.insert(deletionCases).values({
-            deletionCaseId: "deletion-fence-1",
+            deletion_case_id: "deletion-fence-1",
             reason,
-            requestedByAdminId: adminActorId,
-            userId,
+            requested_by_admin_id: adminActorId,
+            user_id: userId,
           }),
         );
         const result = yield* phoneStore.replaceAndRevokeSessions(
@@ -175,7 +175,7 @@ const withPhoneAccountFixture = <A, E>(
         const base = Layer.mergeAll(
           BrowserCrypto.layer,
           Db.layerFromDatabase(fixture.database.database),
-          Layer.succeed(TwilioVerify, twilio.service),
+          Layer.succeed(TwilioVerify.Service, twilio.service),
         );
         const phoneStore = yield* PhoneAccountAdapter.make.pipe(Effect.provide(base));
         const verification = yield* PhoneAccount.Verification.pipe(
@@ -199,7 +199,7 @@ const makeTwilio = () => {
   return {
     code,
     sent,
-    service: TwilioVerify.of({
+    service: TwilioVerify.Service.of({
       sendCode: (phoneNumber) =>
         Effect.sync(() => {
           sent.push(phoneNumber);

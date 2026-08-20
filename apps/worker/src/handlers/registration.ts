@@ -3,7 +3,7 @@ import { Effect, Layer } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { UserId } from "../domain";
-import * as Registration from "../services/registration";
+import { Registration } from "../services/registration";
 
 /** Implement the authenticated Registration contract. */
 export const layer = Layer.unwrap(
@@ -27,3 +27,5 @@ const toRegistrationUnavailable = () =>
   new RegistrationUnavailable({
     message: "Registration is temporarily unavailable",
   });
+
+export * as RegistrationHandlers from "./registration";

@@ -1,18 +1,18 @@
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { BrowserCrypto } from "@effect/platform-browser";
 import { Effect, Layer, Schema, type ManagedRuntime } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 
-import type * as Auth from "./auth";
+import type { AuthDependencies } from "./auth";
 import { loadConfig, publicWebBaseUrl, type CloudflareConfig, type CloudflareEnv } from "./config";
-import * as Db from "./db";
-import * as TwilioVerify from "./integrations/twilio/verify";
-import * as OnboardingCloudflare from "./integrations/cloudflare/onboarding";
-import * as OnboardingPostgres from "./integrations/postgres/onboarding";
-import * as OnboardingLinks from "./integrations/public/onboarding-links";
+import { Db } from "./db";
+import { TwilioVerify } from "./integrations/twilio/verify";
+import { OnboardingCloudflare } from "./integrations/cloudflare/onboarding";
+import { OnboardingPostgres } from "./services/onboarding/postgres";
+import { OnboardingLinksAdapter } from "./integrations/public/onboarding-links";
 import { makeWorkerRuntime, type ExecutionUnit, RuntimeProbeResult } from "./layers";
-import * as Routes from "./routes";
-import * as Onboarding from "./services/onboarding";
-import * as Registration from "./services/registration";
+import { Routes } from "./routes";
+import { Onboarding } from "./services/onboarding";
+import { Registration } from "./services/registration";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/identity";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare RPC adapters expose Promise-based interfaces. */
@@ -28,7 +28,7 @@ export interface Bindings {
 
 /** Optional concrete dependency choices for application composition. */
 export interface MakeOptions {
-  readonly authDependencies?: Auth.AuthDependencies;
+  readonly authDependencies?: AuthDependencies;
 }
 
 const AgentRpcTag = Schema.Struct({ _tag: Schema.String });
@@ -83,17 +83,16 @@ const runInvitationExpiry = (env: Bindings, config: CloudflareConfig) => {
   const dependencies = Layer.mergeAll(
     Registration.layerWithoutDependencies,
     OnboardingCloudflare.layer(env),
-    OnboardingLinks.layer({
+    OnboardingLinksAdapter.layer({
       officialWhatsAppNumber: config.whatsApp.publicPhoneNumber,
       publicBaseUrl: publicWebBaseUrl(config.auth),
       telegramBotUsername: config.telegram.botUsername,
     }),
   ).pipe(Layer.provideMerge(base));
-  const onboarding = Onboarding.layerWithoutDependencies.pipe(Layer.provide(dependencies));
-  const persistence = OnboardingPostgres.layerWithoutDependencies.pipe(Layer.provide(base));
+  const onboarding = OnboardingPostgres.layer.pipe(Layer.provide(dependencies));
   return Effect.flatMap(Onboarding.Service, (service) => service.expireInvitations).pipe(
     // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Scheduled maintenance is an application entry point.
-    Effect.provide(onboarding.pipe(Layer.provide(persistence))),
+    Effect.provide(onboarding),
   );
 };
 
@@ -142,3 +141,5 @@ const adaptBindings = (env: CloudflareEnv): Bindings => ({
     },
   },
 });
+
+export * as App from "./app";

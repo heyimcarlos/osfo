@@ -3,13 +3,9 @@ import { Context, Crypto, Effect, Layer, Schema } from "effect";
 import type { DbUnavailable } from "../db";
 import type { UserId } from "../domain";
 import type { AdminActorId, AdminReason } from "../domain/account-administration";
-import {
-  type DeletionAccessFact,
-  type DeletionCaseId,
-  DeletionCaseId as DeletionCaseIdSchema,
-} from "../domain/deletion-case";
+import { type DeletionAccessFact, DeletionCaseId } from "../domain/deletion-case";
 import type { AuthSessionUnavailable } from "./auth-session";
-import { Service as AuthSession } from "./auth-session";
+import { AuthSession } from "./auth-session";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Domain outcomes use the _tag discriminator. */
 
@@ -64,7 +60,7 @@ export class Service extends Context.Service<Service, Interface>()("@osfo/Deleti
 
 /** Construct a durable Deletion Case authority that revokes AuthSessions after the access fence. */
 export const make = Effect.gen(function* () {
-  const authSessions = yield* AuthSession;
+  const authSessions = yield* AuthSession.Service;
   const crypto = yield* Crypto.Crypto;
   const persistence = yield* Persistence;
   const secureId = Effect.mapError(
@@ -79,7 +75,7 @@ export const make = Effect.gen(function* () {
     inspect: persistence.inspect,
     request: (command) =>
       Effect.gen(function* () {
-        const deletionCaseId = DeletionCaseIdSchema.make(yield* secureId);
+        const deletionCaseId = DeletionCaseId.make(yield* secureId);
         const result = yield* persistence.request(command, deletionCaseId);
         if (result._tag === "MissingUser") return { _tag: "UserMissing" } as const;
         yield* authSessions.revokeAllForUser(command.userId);
@@ -93,5 +89,7 @@ export const make = Effect.gen(function* () {
   });
 });
 
-/** Deletion Case Layer that preserves its AuthSession and persistence dependencies. */
+/** Deletion Case Layer that preserves its AuthSession.Service and persistence dependencies. */
 export const layerWithoutDependencies = Layer.effect(Service, make);
+
+export * as DeletionCase from "./deletion-case";

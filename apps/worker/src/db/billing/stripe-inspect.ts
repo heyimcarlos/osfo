@@ -39,34 +39,34 @@ export const inspectStripeBilling = (
       database.transaction(async (transaction) => {
         const [subscription] = await transaction
           .select({
-            pendingPlan: billingSubscriptions.pendingPlan,
-            pendingPlanEffectiveAt: billingSubscriptions.pendingPlanEffectiveAt,
+            pendingPlan: billingSubscriptions.pending_plan,
+            pendingPlanEffectiveAt: billingSubscriptions.pending_plan_effective_at,
             plan: billingSubscriptions.plan,
-            stripeCurrentPeriodEnd: billingSubscriptions.stripeCurrentPeriodEnd,
+            stripeCurrentPeriodEnd: billingSubscriptions.stripe_current_period_end,
           })
           .from(billingSubscriptions)
-          .where(eq(billingSubscriptions.userId, userId))
+          .where(eq(billingSubscriptions.user_id, userId))
           .limit(1);
         if (subscription === undefined) return undefined;
         const [period] = await transaction
-          .select({ endsAt: allowancePeriods.endsAt, startsAt: allowancePeriods.startsAt })
+          .select({ endsAt: allowancePeriods.ends_at, startsAt: allowancePeriods.starts_at })
           .from(allowancePeriods)
           .where(
             and(
-              eq(allowancePeriods.userId, userId),
-              lte(allowancePeriods.startsAt, now),
-              gt(allowancePeriods.endsAt, now),
+              eq(allowancePeriods.user_id, userId),
+              lte(allowancePeriods.starts_at, now),
+              gt(allowancePeriods.ends_at, now),
             ),
           )
           .limit(1);
         const [checkout] = await transaction
           .select({
             state: billingCheckoutSessions.state,
-            stripePaymentStatus: billingCheckoutSessions.stripePaymentStatus,
+            stripePaymentStatus: billingCheckoutSessions.stripe_payment_status,
           })
           .from(billingCheckoutSessions)
-          .where(eq(billingCheckoutSessions.userId, userId))
-          .orderBy(desc(billingCheckoutSessions.createdAt))
+          .where(eq(billingCheckoutSessions.user_id, userId))
+          .orderBy(desc(billingCheckoutSessions.created_at))
           .limit(1);
         return {
           ...subscription,
@@ -102,9 +102,9 @@ export const findStripeSubscription = (database: Pick<Database, "select">, userI
   Effect.tryPromise({
     try: () =>
       database
-        .select({ stripeSubscriptionId: billingSubscriptions.stripeSubscriptionId })
+        .select({ stripeSubscriptionId: billingSubscriptions.stripe_subscription_id })
         .from(billingSubscriptions)
-        .where(eq(billingSubscriptions.userId, userId))
+        .where(eq(billingSubscriptions.user_id, userId))
         .limit(1)
         .then(([stored]) => stored?.stripeSubscriptionId ?? null),
     catch: (cause) =>
@@ -125,24 +125,24 @@ export const findStripeCheckoutSession = (
     try: () =>
       database
         .select({
-          billingCheckoutSessionId: billingCheckoutSessions.billingCheckoutSessionId,
-          customerId: billingCustomers.stripeCustomerId,
-          priceId: billingCheckoutSessions.stripePriceId,
-          productId: billingCheckoutSessions.stripeProductId,
-          stripeCheckoutSessionId: billingCheckoutSessions.stripeCheckoutSessionId,
-          userId: billingCheckoutSessions.userId,
+          billingCheckoutSessionId: billingCheckoutSessions.billing_checkout_session_id,
+          customerId: billingCustomers.stripe_customer_id,
+          priceId: billingCheckoutSessions.stripe_price_id,
+          productId: billingCheckoutSessions.stripe_product_id,
+          stripeCheckoutSessionId: billingCheckoutSessions.stripe_checkout_session_id,
+          userId: billingCheckoutSessions.user_id,
         })
         .from(billingCheckoutSessions)
         .innerJoin(
           billingCustomers,
-          eq(billingCustomers.billingCustomerId, billingCheckoutSessions.billingCustomerId),
+          eq(billingCustomers.billing_customer_id, billingCheckoutSessions.billing_customer_id),
         )
         .where(
           and(
-            eq(billingCheckoutSessions.userId, userId),
-            eq(billingCheckoutSessions.stripeCheckoutSessionId, stripeCheckoutSessionId),
+            eq(billingCheckoutSessions.user_id, userId),
+            eq(billingCheckoutSessions.stripe_checkout_session_id, stripeCheckoutSessionId),
             inArray(billingCheckoutSessions.state, ["creating", "open", "complete"]),
-            isNotNull(billingCheckoutSessions.stripeCheckoutSessionId),
+            isNotNull(billingCheckoutSessions.stripe_checkout_session_id),
           ),
         )
         .limit(1)
@@ -194,15 +194,15 @@ export const inspectAndRepairBillingAuthorization = (
       database.transaction(async (transaction) => {
         const [stored] = await transaction
           .select({
-            billingSubscriptionId: billingSubscriptions.billingSubscriptionId,
-            currentPeriodEnd: billingSubscriptions.stripeCurrentPeriodEnd,
-            pendingPlan: billingSubscriptions.pendingPlan,
-            pendingPlanEffectiveAt: billingSubscriptions.pendingPlanEffectiveAt,
+            billingSubscriptionId: billingSubscriptions.billing_subscription_id,
+            currentPeriodEnd: billingSubscriptions.stripe_current_period_end,
+            pendingPlan: billingSubscriptions.pending_plan,
+            pendingPlanEffectiveAt: billingSubscriptions.pending_plan_effective_at,
             plan: billingSubscriptions.plan,
-            planPolicyVersion: billingSubscriptions.planPolicyVersion,
+            planPolicyVersion: billingSubscriptions.plan_policy_version,
           })
           .from(billingSubscriptions)
-          .where(eq(billingSubscriptions.userId, userId))
+          .where(eq(billingSubscriptions.user_id, userId))
           .for("update", { of: billingSubscriptions })
           .limit(1);
         if (stored === undefined) return null;
@@ -218,16 +218,16 @@ export const inspectAndRepairBillingAuthorization = (
         if (plan !== stored.plan) {
           const [activePeriod] = await transaction
             .select({
-              allowancePeriodId: allowancePeriods.allowancePeriodId,
+              allowancePeriodId: allowancePeriods.allowance_period_id,
               plan: allowancePeriods.plan,
-              startsAt: allowancePeriods.startsAt,
+              startsAt: allowancePeriods.starts_at,
             })
             .from(allowancePeriods)
             .where(
               and(
-                eq(allowancePeriods.userId, userId),
-                lte(allowancePeriods.startsAt, now),
-                gt(allowancePeriods.endsAt, now),
+                eq(allowancePeriods.user_id, userId),
+                lte(allowancePeriods.starts_at, now),
+                gt(allowancePeriods.ends_at, now),
               ),
             )
             .for("update")
@@ -239,50 +239,50 @@ export const inspectAndRepairBillingAuthorization = (
           ) {
             await transaction
               .update(allowancePeriods)
-              .set({ endsAt: now })
-              .where(eq(allowancePeriods.allowancePeriodId, activePeriod.allowancePeriodId));
+              .set({ ends_at: now })
+              .where(eq(allowancePeriods.allowance_period_id, activePeriod.allowancePeriodId));
           }
           await transaction
             .delete(allowancePeriods)
             .where(
               and(
-                eq(allowancePeriods.userId, userId),
+                eq(allowancePeriods.user_id, userId),
                 eq(allowancePeriods.plan, "adventurer"),
-                gte(allowancePeriods.startsAt, now),
+                gte(allowancePeriods.starts_at, now),
               ),
             );
           const [currentFreePeriod] = await transaction
-            .select({ allowancePeriodId: allowancePeriods.allowancePeriodId })
+            .select({ allowancePeriodId: allowancePeriods.allowance_period_id })
             .from(allowancePeriods)
             .where(
               and(
-                eq(allowancePeriods.userId, userId),
+                eq(allowancePeriods.user_id, userId),
                 eq(allowancePeriods.plan, "free"),
-                lte(allowancePeriods.startsAt, now),
-                gt(allowancePeriods.endsAt, now),
+                lte(allowancePeriods.starts_at, now),
+                gt(allowancePeriods.ends_at, now),
               ),
             )
             .limit(1);
           if (currentFreePeriod === undefined) {
             await transaction.insert(allowancePeriods).values({
-              allowancePeriodId: repair.allowancePeriodId,
-              billingSubscriptionId: stored.billingSubscriptionId,
-              endsAt: repair.freePeriodEnd,
+              allowance_period_id: repair.allowancePeriodId,
+              billing_subscription_id: stored.billingSubscriptionId,
+              ends_at: repair.freePeriodEnd,
               plan: "free",
-              planPolicyVersion: stored.planPolicyVersion,
-              startsAt: now,
-              userId,
+              plan_policy_version: stored.planPolicyVersion,
+              starts_at: now,
+              user_id: userId,
             });
           }
           await transaction
             .update(billingSubscriptions)
             .set({
-              pendingPlan: null,
-              pendingPlanEffectiveAt: null,
+              pending_plan: null,
+              pending_plan_effective_at: null,
               plan,
-              updatedAt: sql`greatest(clock_timestamp(), ${billingSubscriptions.updatedAt} + interval '1 microsecond')`,
+              updated_at: sql`greatest(clock_timestamp(), ${billingSubscriptions.updated_at} + interval '1 microsecond')`,
             })
-            .where(eq(billingSubscriptions.userId, userId));
+            .where(eq(billingSubscriptions.user_id, userId));
         }
         return { ...stored, plan };
       }),

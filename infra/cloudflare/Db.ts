@@ -1,14 +1,14 @@
-import * as Alchemy from "alchemy";
-import * as Cloudflare from "alchemy/Cloudflare";
-import * as Neon from "alchemy/Neon";
-import * as RemovalPolicy from "alchemy/RemovalPolicy";
+import { Stack } from "alchemy";
+import { Hyperdrive } from "alchemy/Cloudflare";
+import { Branch, Project } from "alchemy/Neon";
+import { retain } from "alchemy/RemovalPolicy";
 import { Config, ConfigProvider, DateTime, Effect } from "effect";
 
 const migrationsDir = "./packages/db/src/migrations";
 
 /** Shared Neon project and stage-specific database branch used by Osfo. */
 export const Db = Effect.gen(function* () {
-  const { stage } = yield* Alchemy.Stack;
+  const { stage } = yield* Stack;
 
   if (stage !== "development" && stage !== "production" && !/^pr-[1-9]\d*$/.test(stage)) {
     return yield* Effect.fail(
@@ -22,15 +22,15 @@ export const Db = Effect.gen(function* () {
 
   const project =
     stage === "production"
-      ? yield* Neon.Project("OsfoProject", {
+      ? yield* Project("OsfoProject", {
           defaultBranchName: "production",
           migrationsDir,
           name: "osfo.ai",
           orgId: yield* Config.string("NEON_ORG_ID"),
           pgVersion: 18,
           region: "aws-us-east-1",
-        }).pipe(RemovalPolicy.retain())
-      : yield* Neon.Project.ref("OsfoProject", { stage: "production" });
+        }).pipe(retain())
+      : yield* Project.ref("OsfoProject", { stage: "production" });
 
   if (stage === "production") {
     return {
@@ -41,15 +41,15 @@ export const Db = Effect.gen(function* () {
 
   const branch =
     stage === "development"
-      ? yield* Neon.Branch("DevelopmentBranch", {
+      ? yield* Branch("DevelopmentBranch", {
           migrationsDir,
           name: "development",
           parentBranch: { name: "production" },
           project,
-        }).pipe(RemovalPolicy.retain())
+        }).pipe(retain())
       : yield* Effect.gen(function* () {
           const now = yield* DateTime.now;
-          return yield* Neon.Branch("PreviewBranch", {
+          return yield* Branch("PreviewBranch", {
             expiresAt: DateTime.formatIso(DateTime.add(now, { days: 7 })),
             migrationsDir,
             name: `preview/${stage}`,
@@ -65,9 +65,9 @@ export const Db = Effect.gen(function* () {
 });
 
 /** Cloudflare Hyperdrive connection for the active Neon database branch. */
-export const Hyperdrive = Effect.gen(function* () {
+export const DatabaseHyperdrive = Effect.gen(function* () {
   const { database } = yield* Db;
-  return yield* Cloudflare.Hyperdrive.Connection("DatabaseHyperdrive", {
+  return yield* Hyperdrive.Connection("DatabaseHyperdrive", {
     caching: { disabled: true },
     dev: database.pooledOrigin,
     origin: database.origin,

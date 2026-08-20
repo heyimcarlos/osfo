@@ -18,7 +18,6 @@ import {
   ConversationRouteId,
   SessionId,
   ThinkRequestId,
-  type ThinkRequestId as ThinkRequestIdType,
 } from "../../../domain";
 import type { AgentDb } from "./client";
 import {
@@ -53,18 +52,18 @@ const replaceCurrentSessionTransaction = (
   input: ReplaceCurrentSessionRecordInput,
 ) => {
   const current = transaction
-    .select({ sessionId: sessionOwnership.sessionId })
+    .select({ sessionId: sessionOwnership.session_id })
     .from(sessionOwnership)
-    .where(and(eq(sessionOwnership.routeId, input.routeId), isNull(sessionOwnership.replacedAt)))
+    .where(and(eq(sessionOwnership.route_id, input.routeId), isNull(sessionOwnership.replaced_at)))
     .limit(1)
     .get();
   if (current?.sessionId !== input.expectedCurrentSessionId) {
     return { actualCurrentSessionId: current?.sessionId ?? null, kind: "Stale" as const };
   }
   const replacementOwner = transaction
-    .select({ routeId: sessionOwnership.routeId })
+    .select({ routeId: sessionOwnership.route_id })
     .from(sessionOwnership)
-    .where(eq(sessionOwnership.sessionId, input.replacementSessionId))
+    .where(eq(sessionOwnership.session_id, input.replacementSessionId))
     .limit(1)
     .get();
   if (replacementOwner !== undefined) {
@@ -76,20 +75,20 @@ const replaceCurrentSessionTransaction = (
   }
   const maximumOwnershipSequence =
     transaction
-      .select({ value: max(sessionOwnership.ownershipSequence) })
+      .select({ value: max(sessionOwnership.ownership_sequence) })
       .from(sessionOwnership)
       .get()?.value ?? 0;
   const updated = transaction
     .update(sessionOwnership)
-    .set({ replacedAt: input.replacedAt })
+    .set({ replaced_at: input.replacedAt })
     .where(
       and(
-        eq(sessionOwnership.routeId, input.routeId),
-        eq(sessionOwnership.sessionId, input.expectedCurrentSessionId),
-        isNull(sessionOwnership.replacedAt),
+        eq(sessionOwnership.route_id, input.routeId),
+        eq(sessionOwnership.session_id, input.expectedCurrentSessionId),
+        isNull(sessionOwnership.replaced_at),
       ),
     )
-    .returning({ sessionId: sessionOwnership.sessionId })
+    .returning({ sessionId: sessionOwnership.session_id })
     .all();
   if (updated.length !== 1) {
     return { actualCurrentSessionId: current.sessionId, kind: "Stale" as const };
@@ -97,11 +96,11 @@ const replaceCurrentSessionTransaction = (
   transaction
     .insert(sessionOwnership)
     .values({
-      becameCurrentAt: input.replacedAt,
-      ownershipSequence: maximumOwnershipSequence + 1,
-      replacedAt: null,
-      routeId: input.routeId,
-      sessionId: input.replacementSessionId,
+      became_current_at: input.replacedAt,
+      ownership_sequence: maximumOwnershipSequence + 1,
+      replaced_at: null,
+      route_id: input.routeId,
+      session_id: input.replacementSessionId,
     })
     .run();
   return { kind: "Replaced" as const };
@@ -314,27 +313,27 @@ export const makeAgentStore = (db: AgentDb) => {
         db.transaction((transaction) => {
           transaction
             .insert(conversationRoutes)
-            .values({ isPrimary: true, routeId: input.routeId })
+            .values({ is_primary: true, route_id: input.routeId })
             .run();
           transaction
             .insert(sessionOwnership)
             .values({
-              becameCurrentAt: input.initializedAt,
-              ownershipSequence: 1,
-              replacedAt: null,
-              routeId: input.routeId,
-              sessionId: input.sessionId,
+              became_current_at: input.initializedAt,
+              ownership_sequence: 1,
+              replaced_at: null,
+              route_id: input.routeId,
+              session_id: input.sessionId,
             })
             .run();
           transaction
             .insert(agentInitialization)
             .values({
-              agentId: input.agentId,
-              initializationId: input.initializationId,
-              initializedAt: input.initializedAt,
-              initialRouteId: input.routeId,
-              initialSessionId: input.sessionId,
-              singletonKey: "agent",
+              agent_id: input.agentId,
+              initialization_id: input.initializationId,
+              initialized_at: input.initializedAt,
+              initial_route_id: input.routeId,
+              initial_session_id: input.sessionId,
+              singleton_key: "agent",
             })
             .run();
         }),
@@ -388,10 +387,10 @@ export const makeAgentStore = (db: AgentDb) => {
         const expiredCursors = transaction
           .select({
             cursor: sessionRecallCursors.cursor,
-            expired: sql<number>`${sessionRecallCursors.expiresAt} <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+            expired: sql<number>`${sessionRecallCursors.expires_at} <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
           })
           .from(sessionRecallCursors)
-          .orderBy(asc(sessionRecallCursors.expiresAt))
+          .orderBy(asc(sessionRecallCursors.expires_at))
           .limit(40)
           .all()
           .filter(({ expired }) => expired === 1);
@@ -411,21 +410,24 @@ export const makeAgentStore = (db: AgentDb) => {
             ? (() => {
                 const current = transaction
                   .select({
-                    ownershipSequence: sessionOwnership.ownershipSequence,
-                    sessionId: sessionOwnership.sessionId,
+                    ownershipSequence: sessionOwnership.ownership_sequence,
+                    sessionId: sessionOwnership.session_id,
                   })
                   .from(sessionOwnership)
                   .where(
-                    and(eq(sessionOwnership.routeId, routeId), isNull(sessionOwnership.replacedAt)),
+                    and(
+                      eq(sessionOwnership.route_id, routeId),
+                      isNull(sessionOwnership.replaced_at),
+                    ),
                   )
                   .limit(1)
                   .get();
                 const maximum = transaction
                   .select({
-                    snapshotMaxOwnershipSequence: max(sessionOwnership.ownershipSequence),
+                    snapshotMaxOwnershipSequence: max(sessionOwnership.ownership_sequence),
                   })
                   .from(sessionOwnership)
-                  .where(eq(sessionOwnership.routeId, routeId))
+                  .where(eq(sessionOwnership.route_id, routeId))
                   .get();
                 return current === undefined || maximum?.snapshotMaxOwnershipSequence == null
                   ? undefined
@@ -437,16 +439,17 @@ export const makeAgentStore = (db: AgentDb) => {
               })()
             : transaction
                 .select({
-                  afterOwnershipSequence: sessionRecallCursors.afterOwnershipSequence,
-                  snapshotCurrentSessionId: sessionRecallCursors.snapshotCurrentSessionId,
-                  snapshotMaxOwnershipSequence: sessionRecallCursors.snapshotMaxOwnershipSequence,
+                  afterOwnershipSequence: sessionRecallCursors.after_ownership_sequence,
+                  snapshotCurrentSessionId: sessionRecallCursors.snapshot_current_session_id,
+                  snapshotMaxOwnershipSequence:
+                    sessionRecallCursors.snapshot_max_ownership_sequence,
                 })
                 .from(sessionRecallCursors)
                 .where(
                   and(
                     eq(sessionRecallCursors.cursor, cursor),
-                    eq(sessionRecallCursors.routeId, routeId),
-                    gt(sessionRecallCursors.expiresAt, sql`strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`),
+                    eq(sessionRecallCursors.route_id, routeId),
+                    gt(sessionRecallCursors.expires_at, sql`strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`),
                   ),
                 )
                 .limit(1)
@@ -456,24 +459,24 @@ export const makeAgentStore = (db: AgentDb) => {
         const historicalLimit = cursor === null ? Math.max(0, limit - 1) : limit;
         const historicalRows = transaction
           .select({
-            ownershipSequence: sessionOwnership.ownershipSequence,
-            sessionId: sessionOwnership.sessionId,
+            ownershipSequence: sessionOwnership.ownership_sequence,
+            sessionId: sessionOwnership.session_id,
           })
           .from(sessionOwnership)
           .where(
             and(
-              eq(sessionOwnership.routeId, routeId),
-              isNotNull(sessionOwnership.replacedAt),
-              ne(sessionOwnership.sessionId, rawState.snapshotCurrentSessionId),
+              eq(sessionOwnership.route_id, routeId),
+              isNotNull(sessionOwnership.replaced_at),
+              ne(sessionOwnership.session_id, rawState.snapshotCurrentSessionId),
               lte(
-                sessionOwnership.ownershipSequence,
+                sessionOwnership.ownership_sequence,
                 rawState.afterOwnershipSequence === null
                   ? (rawState.snapshotMaxOwnershipSequence ?? 0)
                   : rawState.afterOwnershipSequence - 1,
               ),
             ),
           )
-          .orderBy(desc(sessionOwnership.ownershipSequence))
+          .orderBy(desc(sessionOwnership.ownership_sequence))
           .limit(historicalLimit + 1)
           .all();
         return { historicalLimit, historicalRows, rawState };
@@ -526,11 +529,11 @@ export const makeAgentStore = (db: AgentDb) => {
         .insert(sessionRecallCursors)
         .values(
           candidates.map((candidate) => ({
-            afterOwnershipSequence: candidate.afterOwnershipSequence,
+            after_ownership_sequence: candidate.afterOwnershipSequence,
             cursor: candidate.cursor,
-            routeId,
-            snapshotCurrentSessionId: state.snapshotCurrentSessionId,
-            snapshotMaxOwnershipSequence: state.snapshotMaxOwnershipSequence,
+            route_id: routeId,
+            snapshot_current_session_id: state.snapshotCurrentSessionId,
+            snapshot_max_ownership_sequence: state.snapshotMaxOwnershipSequence,
           })),
         )
         .run();
@@ -553,21 +556,21 @@ export const makeAgentStore = (db: AgentDb) => {
       // The Durable SQLite driver implements this exact compare-and-replace with transactionSync.
       db.transaction((transaction) => {
         const current = transaction
-          .select({ sessionId: sessionOwnership.sessionId })
+          .select({ sessionId: sessionOwnership.session_id })
           .from(sessionOwnership)
           .where(
-            and(eq(sessionOwnership.routeId, input.routeId), isNull(sessionOwnership.replacedAt)),
+            and(eq(sessionOwnership.route_id, input.routeId), isNull(sessionOwnership.replaced_at)),
           )
           .limit(1)
           .get();
         const historical = transaction
-          .select({ replacedAt: sessionOwnership.replacedAt })
+          .select({ replacedAt: sessionOwnership.replaced_at })
           .from(sessionOwnership)
           .where(
             and(
-              eq(sessionOwnership.routeId, input.routeId),
-              eq(sessionOwnership.sessionId, input.expectedCurrentSessionId),
-              isNotNull(sessionOwnership.replacedAt),
+              eq(sessionOwnership.route_id, input.routeId),
+              eq(sessionOwnership.session_id, input.expectedCurrentSessionId),
+              isNotNull(sessionOwnership.replaced_at),
             ),
           )
           .limit(1)
@@ -592,9 +595,9 @@ export const makeAgentStore = (db: AgentDb) => {
   const ownsSession = (sessionId: SessionId) =>
     execute("readSessionOwnership", () =>
       db
-        .select({ sessionId: sessionOwnership.sessionId })
+        .select({ sessionId: sessionOwnership.session_id })
         .from(sessionOwnership)
-        .where(eq(sessionOwnership.sessionId, sessionId))
+        .where(eq(sessionOwnership.session_id, sessionId))
         .limit(1)
         .get(),
     ).pipe(
@@ -607,12 +610,12 @@ export const makeAgentStore = (db: AgentDb) => {
 
   const readSessionIds = execute("readSessionOwnership", () =>
     db
-      .select({ sessionId: sessionOwnership.sessionId })
+      .select({ sessionId: sessionOwnership.session_id })
       .from(sessionOwnership)
       // julianday keeps valid ISO timestamps chronological across fractional precision variants.
       .orderBy(
-        asc(sql`julianday(${sessionOwnership.becameCurrentAt})`),
-        asc(sessionOwnership.sessionId),
+        asc(sql`julianday(${sessionOwnership.became_current_at})`),
+        asc(sessionOwnership.session_id),
       )
       .all(),
   ).pipe(
@@ -627,12 +630,12 @@ export const makeAgentStore = (db: AgentDb) => {
       const outcome = yield* execute("recordCommittedTurn", () =>
         // The Durable SQLite driver implements this exact local transaction with transactionSync.
         db.transaction((transaction) => {
-          const findByThinkRequestId = (thinkRequestId: ThinkRequestIdType) =>
+          const findByThinkRequestId = (thinkRequestId: ThinkRequestId) =>
             decodeCommittedTurnRecord(
               transaction
                 .select(committedTurnReceiptFields)
                 .from(committedTurns)
-                .where(eq(committedTurns.thinkRequestId, thinkRequestId))
+                .where(eq(committedTurns.think_request_id, thinkRequestId))
                 .limit(1)
                 .get(),
             );
@@ -640,7 +643,7 @@ export const makeAgentStore = (db: AgentDb) => {
             transaction
               .select(committedTurnReceiptFields)
               .from(committedTurns)
-              .where(eq(committedTurns.assistantMessageId, reference.assistantMessageId))
+              .where(eq(committedTurns.assistant_message_id, reference.assistantMessageId))
               .limit(1)
               .get(),
           );
@@ -680,8 +683,8 @@ export const makeAgentStore = (db: AgentDb) => {
               }
               const enriched = transaction
                 .update(committedTurns)
-                .set({ source: reference.source, thinkRequestId: reference.thinkRequestId })
-                .where(eq(committedTurns.observationSequence, matchingMessage.observationSequence))
+                .set({ source: reference.source, think_request_id: reference.thinkRequestId })
+                .where(eq(committedTurns.observation_sequence, matchingMessage.observationSequence))
                 .returning(committedTurnReceiptFields)
                 .get();
               return { _tag: "Receipt", receipt: enriched } as const;
@@ -704,7 +707,12 @@ export const makeAgentStore = (db: AgentDb) => {
           }
           const inserted = transaction
             .insert(committedTurns)
-            .values(reference)
+            .values({
+              assistant_message_id: reference.assistantMessageId,
+              session_id: reference.sessionId,
+              source: reference.source,
+              think_request_id: reference.thinkRequestId,
+            })
             .returning(committedTurnReceiptFields)
             .get();
           return { _tag: "Receipt", receipt: inserted } as const;
@@ -731,7 +739,7 @@ export const makeAgentStore = (db: AgentDb) => {
     db
       .select(committedTurnReceiptFields)
       .from(committedTurns)
-      .orderBy(asc(committedTurns.observationSequence))
+      .orderBy(asc(committedTurns.observation_sequence))
       .all(),
   ).pipe(
     Effect.flatMap((rows) =>
@@ -744,17 +752,17 @@ export const makeAgentStore = (db: AgentDb) => {
       const facts = yield* execute(operation, () =>
         db
           .select({
-            agentId: agentInitialization.agentId,
-            routeId: conversationRoutes.routeId,
-            sessionId: sessionOwnership.sessionId,
+            agentId: agentInitialization.agent_id,
+            routeId: conversationRoutes.route_id,
+            sessionId: sessionOwnership.session_id,
           })
           .from(agentInitialization)
-          .innerJoin(conversationRoutes, eq(conversationRoutes.isPrimary, true))
+          .innerJoin(conversationRoutes, eq(conversationRoutes.is_primary, true))
           .innerJoin(
             sessionOwnership,
             and(
-              eq(sessionOwnership.routeId, conversationRoutes.routeId),
-              isNull(sessionOwnership.replacedAt),
+              eq(sessionOwnership.route_id, conversationRoutes.route_id),
+              isNull(sessionOwnership.replaced_at),
             ),
           )
           .limit(1)
@@ -774,12 +782,12 @@ export const makeAgentStore = (db: AgentDb) => {
       const rows = yield* execute(operation, () =>
         db
           .select({
-            replacedAt: sessionOwnership.replacedAt,
-            sessionId: sessionOwnership.sessionId,
+            replacedAt: sessionOwnership.replaced_at,
+            sessionId: sessionOwnership.session_id,
           })
           .from(sessionOwnership)
-          .where(eq(sessionOwnership.routeId, routeId))
-          .orderBy(asc(sessionOwnership.ownershipSequence))
+          .where(eq(sessionOwnership.route_id, routeId))
+          .orderBy(asc(sessionOwnership.ownership_sequence))
           .all(),
       );
       if (rows.length === 0) {
@@ -806,23 +814,30 @@ export const makeAgentStore = (db: AgentDb) => {
 };
 
 const committedTurnReceiptFields = {
-  assistantMessageId: committedTurns.assistantMessageId,
-  observationSequence: committedTurns.observationSequence,
-  observedAt: committedTurns.observedAt,
-  sessionId: committedTurns.sessionId,
+  assistantMessageId: committedTurns.assistant_message_id,
+  observationSequence: committedTurns.observation_sequence,
+  observedAt: committedTurns.observed_at,
+  sessionId: committedTurns.session_id,
   source: committedTurns.source,
-  thinkRequestId: committedTurns.thinkRequestId,
+  thinkRequestId: committedTurns.think_request_id,
 };
 
 const agentInitializationRecordFields = {
-  agentId: agentInitialization.agentId,
-  initializationId: agentInitialization.initializationId,
-  initializedAt: agentInitialization.initializedAt,
-  initialRouteId: agentInitialization.initialRouteId,
-  initialSessionId: agentInitialization.initialSessionId,
+  agentId: agentInitialization.agent_id,
+  initializationId: agentInitialization.initialization_id,
+  initializedAt: agentInitialization.initialized_at,
+  initialRouteId: agentInitialization.initial_route_id,
+  initialSessionId: agentInitialization.initial_session_id,
 };
 
-type CommittedTurnRecord = typeof committedTurns.$inferSelect;
+interface CommittedTurnRecord {
+  readonly assistantMessageId: AssistantMessageId;
+  readonly observationSequence: number;
+  readonly observedAt: string;
+  readonly sessionId: SessionId;
+  readonly source: "hook" | "reconciliation";
+  readonly thinkRequestId: ThinkRequestId | null;
+}
 
 const invalidCommittedTurnRecord: unique symbol = Symbol("invalidCommittedTurnRecord");
 

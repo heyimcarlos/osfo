@@ -17,7 +17,7 @@ import {
   AuthorizationContext,
   AuthorizationDenialReason,
   type AuthorizationResult,
-  make as makeAuthorization,
+  Authorization,
   snapshotCoreMemoryAuthorization,
 } from "./authorization";
 import { CoreMemoryAuthorizationSnapshot } from "../domain/core-memory-authorization";
@@ -85,7 +85,7 @@ export const admitManagedConversation = (
       } as const;
     }
     if (input.message.trim() === "/new") {
-      const admission = makeAuthorization(retainedCatalog).admit(input.authorization, {
+      const admission = Authorization.make(retainedCatalog).admit(input.authorization, {
         actionId: input.submissionId,
         kind: "session.replace",
       });
@@ -103,7 +103,7 @@ export const admitManagedConversation = (
     const operationLimits = policyFor(planPolicy, plan).operationLimits;
     const maxSteps = Number(operationLimits.modelStepsPerRequest);
     const maxVendorUsdMicros = operationLimits.vendorUsdMicrosPerRequest;
-    const admission = makeAuthorization(retainedCatalog).admit(
+    const admission = Authorization.make(retainedCatalog).admit(
       { ...input.authorization, requestVendorUsdMicros: maxVendorUsdMicros },
       {
         actionId: input.submissionId,

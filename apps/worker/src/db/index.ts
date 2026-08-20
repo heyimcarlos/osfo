@@ -58,34 +58,34 @@ export interface Options {
 
 export type { Database } from "@osfo/db";
 
-interface DbService {
+export interface Interface {
   readonly database: Effect.Effect<Database, never, Scope.Scope>;
 }
 
 /** Worker-local access to the shared Postgres database. */
-export class Db extends Context.Service<Db, DbService>()("@osfo/worker/Db") {}
+export class Service extends Context.Service<Service, Interface>()("@osfo/worker/Db") {}
 
 /** Acquire the shared Drizzle database from the current Effect context. */
-export const database: Effect.Effect<Database, never, Db | Scope.Scope> = Effect.map(
-  Db,
+export const database: Effect.Effect<Database, never, Service | Scope.Scope> = Effect.map(
+  Service,
   (service) => service.database,
 ).pipe(Effect.flatten);
 
 /** Construct the Worker database from one request-scoped Postgres client. */
-export const make = (client: Sql): DbService => ({
+export const make = (client: Sql): Interface => ({
   database: Effect.succeed(createDb(client)),
 });
 
 /** Database Layer backed by one provided Postgres client. */
-export const layerFromClient = (client: Sql) => Layer.succeed(Db, make(client));
+export const layerFromClient = (client: Sql) => Layer.succeed(Service, make(client));
 
 /** Database Layer backed by one provided Drizzle PostgreSQL database. */
 export const layerFromDatabase = (provided: Database) =>
-  Layer.succeed(Db, { database: Effect.succeed(provided) });
+  Layer.succeed(Service, { database: Effect.succeed(provided) });
 
 /** Keep one PostgreSQL client alive for the full owning Layer scope. */
 export const layerFromClientAcquisition = (acquire: Effect.Effect<Sql, never, Scope.Scope>) =>
-  Layer.effect(Db, acquire.pipe(Effect.map(make)));
+  Layer.effect(Service, acquire.pipe(Effect.map(make)));
 
 /** Production database Layer backed by one Cloudflare Hyperdrive binding. */
 export const layer = (options: Options) =>
@@ -147,3 +147,5 @@ export const decodeOptionalRow = <A, Encoded extends object>(
   Effect.gen(function* () {
     return row === undefined ? undefined : yield* decodeRow(schema, row, operation);
   });
+
+export * as Db from "./index";

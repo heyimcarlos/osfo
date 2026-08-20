@@ -38,3 +38,5 @@ export const make = (database: BillingDatabase): Interface => ({
   recordUsage: (allowancePeriodId, source, items) =>
     recordUsage(database, allowancePeriodId, source, items),
 });
+
+export * as BillingDb from "./index";

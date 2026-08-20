@@ -30,10 +30,10 @@ export const makeStripePersistence = (database: Database): Persistence => ({
     execute("failCheckout", () =>
       database
         .update(billingCheckoutSessions)
-        .set({ state: "failed", updatedAt: sql`clock_timestamp()` })
+        .set({ state: "failed", updated_at: sql`clock_timestamp()` })
         .where(
           and(
-            eq(billingCheckoutSessions.billingCheckoutSessionId, billingCheckoutSessionId),
+            eq(billingCheckoutSessions.billing_checkout_session_id, billingCheckoutSessionId),
             inArray(billingCheckoutSessions.state, ["creating", "open"]),
           ),
         )
@@ -43,15 +43,15 @@ export const makeStripePersistence = (database: Database): Persistence => ({
     execute("inspectCheckoutEligibility", () =>
       database
         .select({
-          currentPeriodEnd: billingSubscriptions.stripeCurrentPeriodEnd,
-          pendingPlan: billingSubscriptions.pendingPlan,
-          pendingPlanEffectiveAt: billingSubscriptions.pendingPlanEffectiveAt,
+          currentPeriodEnd: billingSubscriptions.stripe_current_period_end,
+          pendingPlan: billingSubscriptions.pending_plan,
+          pendingPlanEffectiveAt: billingSubscriptions.pending_plan_effective_at,
           plan: billingSubscriptions.plan,
-          stripeStatus: billingSubscriptions.stripeStatus,
-          stripeSubscriptionId: billingSubscriptions.stripeSubscriptionId,
+          stripeStatus: billingSubscriptions.stripe_status,
+          stripeSubscriptionId: billingSubscriptions.stripe_subscription_id,
         })
         .from(billingSubscriptions)
-        .where(eq(billingSubscriptions.userId, userId))
+        .where(eq(billingSubscriptions.user_id, userId))
         .limit(1)
         .then(([subscription]) =>
           subscription === undefined
@@ -73,15 +73,15 @@ export const makeStripePersistence = (database: Database): Persistence => ({
       database.transaction(async (transaction) => {
         const [subscription] = await transaction
           .select({
-            currentPeriodEnd: billingSubscriptions.stripeCurrentPeriodEnd,
-            pendingPlan: billingSubscriptions.pendingPlan,
-            pendingPlanEffectiveAt: billingSubscriptions.pendingPlanEffectiveAt,
+            currentPeriodEnd: billingSubscriptions.stripe_current_period_end,
+            pendingPlan: billingSubscriptions.pending_plan,
+            pendingPlanEffectiveAt: billingSubscriptions.pending_plan_effective_at,
             plan: billingSubscriptions.plan,
-            stripeStatus: billingSubscriptions.stripeStatus,
-            stripeSubscriptionId: billingSubscriptions.stripeSubscriptionId,
+            stripeStatus: billingSubscriptions.stripe_status,
+            stripeSubscriptionId: billingSubscriptions.stripe_subscription_id,
           })
           .from(billingSubscriptions)
-          .where(eq(billingSubscriptions.userId, input.userId))
+          .where(eq(billingSubscriptions.user_id, input.userId))
           .limit(1)
           .for("update");
         if (subscription === undefined) return undefined;
@@ -93,43 +93,43 @@ export const makeStripePersistence = (database: Database): Persistence => ({
           return { ineligibleReason: eligibility.reason } as const;
         }
         const [customer] = await transaction
-          .select({ billingCustomerId: billingCustomers.billingCustomerId })
+          .select({ billingCustomerId: billingCustomers.billing_customer_id })
           .from(billingCustomers)
           .where(
             and(
-              eq(billingCustomers.userId, input.userId),
-              eq(billingCustomers.billingCustomerId, input.billingCustomerId),
+              eq(billingCustomers.user_id, input.userId),
+              eq(billingCustomers.billing_customer_id, input.billingCustomerId),
             ),
           )
           .limit(1);
         if (customer === undefined) return undefined;
         const [existing] = await transaction
           .select({
-            billingCheckoutSessionId: billingCheckoutSessions.billingCheckoutSessionId,
-            claimExpired: sql<boolean>`${billingCheckoutSessions.updatedAt} <= clock_timestamp() - interval '30 seconds'`,
+            billingCheckoutSessionId: billingCheckoutSessions.billing_checkout_session_id,
+            claimExpired: sql<boolean>`${billingCheckoutSessions.updated_at} <= clock_timestamp() - interval '30 seconds'`,
             state: billingCheckoutSessions.state,
-            stripeCheckoutSessionId: billingCheckoutSessions.stripeCheckoutSessionId,
+            stripeCheckoutSessionId: billingCheckoutSessions.stripe_checkout_session_id,
           })
           .from(billingCheckoutSessions)
           .where(
             and(
-              eq(billingCheckoutSessions.userId, input.userId),
-              eq(billingCheckoutSessions.billingCustomerId, input.billingCustomerId),
-              eq(billingCheckoutSessions.stripeProductId, input.productId),
-              eq(billingCheckoutSessions.stripePriceId, input.priceId),
+              eq(billingCheckoutSessions.user_id, input.userId),
+              eq(billingCheckoutSessions.billing_customer_id, input.billingCustomerId),
+              eq(billingCheckoutSessions.stripe_product_id, input.productId),
+              eq(billingCheckoutSessions.stripe_price_id, input.priceId),
               inArray(billingCheckoutSessions.state, ["creating", "open"]),
             ),
           )
-          .orderBy(desc(billingCheckoutSessions.createdAt))
+          .orderBy(desc(billingCheckoutSessions.created_at))
           .limit(1);
         if (existing !== undefined) {
           if (existing.state === "creating" && existing.claimExpired) {
             await transaction
               .update(billingCheckoutSessions)
-              .set({ updatedAt: sql`clock_timestamp()` })
+              .set({ updated_at: sql`clock_timestamp()` })
               .where(
                 eq(
-                  billingCheckoutSessions.billingCheckoutSessionId,
+                  billingCheckoutSessions.billing_checkout_session_id,
                   existing.billingCheckoutSessionId,
                 ),
               );
@@ -140,18 +140,18 @@ export const makeStripePersistence = (database: Database): Persistence => ({
         const [created] = await transaction
           .insert(billingCheckoutSessions)
           .values({
-            billingCheckoutSessionId: input.billingCheckoutSessionId,
-            billingCustomerId: input.billingCustomerId,
+            billing_checkout_session_id: input.billingCheckoutSessionId,
+            billing_customer_id: input.billingCustomerId,
             state: "creating",
-            stripePriceId: input.priceId,
-            stripeProductId: input.productId,
-            targetPlan: "adventurer",
-            userId: input.userId,
+            stripe_price_id: input.priceId,
+            stripe_product_id: input.productId,
+            target_plan: "adventurer",
+            user_id: input.userId,
           })
           .returning({
-            billingCheckoutSessionId: billingCheckoutSessions.billingCheckoutSessionId,
+            billingCheckoutSessionId: billingCheckoutSessions.billing_checkout_session_id,
             state: billingCheckoutSessions.state,
-            stripeCheckoutSessionId: billingCheckoutSessions.stripeCheckoutSessionId,
+            stripeCheckoutSessionId: billingCheckoutSessions.stripe_checkout_session_id,
           });
         return created === undefined ? undefined : decodeCheckout(created, "Acquired");
       }),
@@ -161,15 +161,15 @@ export const makeStripePersistence = (database: Database): Persistence => ({
       database.transaction(async (transaction) => {
         await transaction
           .insert(billingCustomers)
-          .values({ billingCustomerId, userId })
-          .onConflictDoNothing({ target: billingCustomers.userId });
+          .values({ billing_customer_id: billingCustomerId, user_id: userId })
+          .onConflictDoNothing({ target: billingCustomers.user_id });
         const [stored] = await transaction
           .select({
-            billingCustomerId: billingCustomers.billingCustomerId,
-            stripeCustomerId: billingCustomers.stripeCustomerId,
+            billingCustomerId: billingCustomers.billing_customer_id,
+            stripeCustomerId: billingCustomers.stripe_customer_id,
           })
           .from(billingCustomers)
-          .where(eq(billingCustomers.userId, userId))
+          .where(eq(billingCustomers.user_id, userId))
           .limit(1);
         return stored === undefined
           ? undefined
@@ -192,10 +192,10 @@ export const makeStripePersistence = (database: Database): Persistence => ({
     execute("releaseCheckoutClaim", () =>
       database
         .update(billingCheckoutSessions)
-        .set({ updatedAt: sql`clock_timestamp() - interval '31 seconds'` })
+        .set({ updated_at: sql`clock_timestamp() - interval '31 seconds'` })
         .where(
           and(
-            eq(billingCheckoutSessions.billingCheckoutSessionId, billingCheckoutSessionId),
+            eq(billingCheckoutSessions.billing_checkout_session_id, billingCheckoutSessionId),
             eq(billingCheckoutSessions.state, "creating"),
           ),
         )
@@ -206,16 +206,16 @@ export const makeStripePersistence = (database: Database): Persistence => ({
       database
         .update(billingCheckoutSessions)
         .set({
-          expiresAt: session.expiresAt,
+          expires_at: session.expiresAt,
           state: "open",
-          stripeCheckoutSessionId: session.stripeCheckoutSessionId,
-          updatedAt: sql`clock_timestamp()`,
+          stripe_checkout_session_id: session.stripeCheckoutSessionId,
+          updated_at: sql`clock_timestamp()`,
         })
         .where(
           and(
-            eq(billingCheckoutSessions.billingCheckoutSessionId, billingCheckoutSessionId),
+            eq(billingCheckoutSessions.billing_checkout_session_id, billingCheckoutSessionId),
             eq(billingCheckoutSessions.state, "creating"),
-            sql`${billingCheckoutSessions.stripeCheckoutSessionId} is null`,
+            sql`${billingCheckoutSessions.stripe_checkout_session_id} is null`,
           ),
         )
         .then(() => undefined),
@@ -225,15 +225,15 @@ export const makeStripePersistence = (database: Database): Persistence => ({
       database
         .update(billingCheckoutSessions)
         .set({
-          completedAt: session.state === "complete" ? sql`clock_timestamp()` : null,
-          expiresAt: session.expiresAt,
+          completed_at: session.state === "complete" ? sql`clock_timestamp()` : null,
+          expires_at: session.expiresAt,
           state: session.state,
-          stripeSubscriptionId: session.stripeSubscriptionId,
-          updatedAt: sql`clock_timestamp()`,
+          stripe_subscription_id: session.stripeSubscriptionId,
+          updated_at: sql`clock_timestamp()`,
         })
         .where(
           and(
-            eq(billingCheckoutSessions.billingCheckoutSessionId, billingCheckoutSessionId),
+            eq(billingCheckoutSessions.billing_checkout_session_id, billingCheckoutSessionId),
             eq(billingCheckoutSessions.state, "open"),
           ),
         )
@@ -244,20 +244,20 @@ export const makeStripePersistence = (database: Database): Persistence => ({
       database.transaction(async (transaction) => {
         await transaction
           .update(billingCustomers)
-          .set({ stripeCustomerId, updatedAt: sql`clock_timestamp()` })
+          .set({ stripe_customer_id: stripeCustomerId, updated_at: sql`clock_timestamp()` })
           .where(
             and(
-              eq(billingCustomers.billingCustomerId, billingCustomerId),
+              eq(billingCustomers.billing_customer_id, billingCustomerId),
               or(
-                eq(billingCustomers.stripeCustomerId, stripeCustomerId),
-                sql`${billingCustomers.stripeCustomerId} is null`,
+                eq(billingCustomers.stripe_customer_id, stripeCustomerId),
+                sql`${billingCustomers.stripe_customer_id} is null`,
               ),
             ),
           );
         const [stored] = await transaction
-          .select({ stripeCustomerId: billingCustomers.stripeCustomerId })
+          .select({ stripeCustomerId: billingCustomers.stripe_customer_id })
           .from(billingCustomers)
-          .where(eq(billingCustomers.billingCustomerId, billingCustomerId))
+          .where(eq(billingCustomers.billing_customer_id, billingCustomerId))
           .limit(1);
         return stored?.stripeCustomerId === stripeCustomerId;
       }),

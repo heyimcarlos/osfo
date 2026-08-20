@@ -91,3 +91,5 @@ const response = (result: RuntimeProbeResult): HttpServerResponse.HttpServerResp
       );
 
 const notFound = HttpServerResponse.jsonUnsafe({ error: "Not found" }, { status: 404 });
+
+export * as RuntimeProbeHandlers from "./runtime-probes";

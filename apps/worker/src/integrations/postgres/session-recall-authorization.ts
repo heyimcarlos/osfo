@@ -2,11 +2,11 @@ import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { eq } from "drizzle-orm";
 import { DateTime, Effect, Predicate, Schema } from "effect";
 
-import * as AccountAuthorities from "../../composition/account-authorities";
-import * as Db from "../../db";
+import { AccountAuthorities } from "../../composition/account-authorities";
+import { Db } from "../../db";
 import type { AgentId } from "../../domain";
 import type { ManagedTurnAuthorityIdentity } from "../../domain/managed-conversation";
-import * as AgentDirectory from "../../services/agent-directory";
+import { AgentDirectory } from "../../services/agent-directory";
 import { SessionRecallCurrentAuthorizationFacts } from "../../services/session-recall-authorization";
 import { SessionRecallAuthorizationUnavailable } from "../../services/session-recall";
 
@@ -29,10 +29,10 @@ export const inspect = (agentId: AgentId, identity: ManagedTurnAuthorityIdentity
         database
           .select({
             plan: billingSubscriptions.plan,
-            planPolicyVersion: billingSubscriptions.planPolicyVersion,
+            planPolicyVersion: billingSubscriptions.plan_policy_version,
           })
           .from(billingSubscriptions)
-          .where(eq(billingSubscriptions.userId, identity.userId))
+          .where(eq(billingSubscriptions.user_id, identity.userId))
           .limit(1),
       ),
       DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
@@ -62,3 +62,5 @@ export const inspect = (agentId: AgentId, identity: ManagedTurnAuthorityIdentity
           }),
     ),
   );
+
+export * as SessionRecallAuthorizationPostgres from "./session-recall-authorization";

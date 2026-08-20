@@ -1,4 +1,4 @@
-import { verify as verifySignature } from "node:crypto";
+import { verify } from "node:crypto";
 
 import {
   parseApprovalId,
@@ -141,7 +141,7 @@ export const createModelGraderQualification = (
     authorityId.kind === "error" ||
     assessedAt.kind === "error" ||
     !modelGraderAuthorityIds.has(input.authorityId) ||
-    !verifySignature(
+    !verify(
       null,
       Buffer.from(modelGraderQualificationSigningDigest(input)),
       modelGraderQualificationPublicKey,

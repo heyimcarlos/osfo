@@ -1,11 +1,11 @@
 import { Effect, Redacted, Schema } from "effect";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 
-import * as Auth from "../auth";
-import * as AccountAccess from "../composition/account-access";
+import { WorkerAuth } from "../auth";
+import { AccountAccess } from "../composition/account-access";
 import { handleAuthRequest } from "../cors";
 import { PhoneNumber } from "../domain/phone-account";
-import * as Onboarding from "../services/onboarding";
+import { Onboarding } from "../services/onboarding";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Fetch control flow and Effect tags require these forms. */
 
@@ -23,14 +23,14 @@ const InvitationVerificationRequest = Schema.Struct({
 
 /** Options for invitation-scoped Better Auth proxy routes. */
 export interface Options {
-  readonly config: Auth.AuthRouteConfig;
+  readonly config: WorkerAuth.AuthRouteConfig;
 }
 
 /** Keep the invited phone number server-side while reusing Better Auth SMS policy. */
 export const layer = (options: Options) => {
   const handler = Effect.gen(function* () {
     const canAccess = yield* AccountAccess.make;
-    const auth = yield* Auth.make(options.config, canAccess);
+    const auth = yield* WorkerAuth.make(options.config, canAccess);
     const onboarding = yield* Onboarding.Service;
 
     return yield* HttpEffect.fromWebHandler((request) =>
@@ -118,3 +118,5 @@ const jsonResponse = (body: { readonly error: string }, status: number) =>
     headers: { "content-type": "application/json" },
     status,
   });
+
+export * as InvitationAuth from "./invitation-auth";

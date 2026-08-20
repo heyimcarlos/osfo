@@ -98,3 +98,5 @@ export const invalid = (
   reason: "byteLimit" | "invalidDocument" | "pageLimit",
   message: string,
 ) => Effect.fail(new InvalidGeneratedArtifact({ contentId, message, reason }));
+
+export * as DocumentArtifact from "./document-artifact";

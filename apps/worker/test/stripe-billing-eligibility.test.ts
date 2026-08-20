@@ -15,7 +15,7 @@ import {
   UserId,
 } from "../src/domain";
 import { makeStripePersistence } from "../src/db/billing/stripe-persistence";
-import * as StripeBilling from "../src/services/stripe-billing";
+import { StripeBilling } from "../src/services/stripe-billing";
 
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/global-date -- These deterministic provider tests assert Effect tags and fixed Date values. */
 
@@ -75,27 +75,27 @@ describe("StripeBilling eligibility and claims", () => {
             },
           },
           persistence: {
-            failCheckout: () => Effect.die("must not prepare Checkout"),
-            releaseCheckoutClaim: () => Effect.die("must not release Checkout"),
+            failCheckout: () => Effect.die(new Error("must not prepare Checkout")),
+            releaseCheckoutClaim: () => Effect.die(new Error("must not release Checkout")),
             inspectCheckoutEligibility: () => Effect.succeed(eligibility),
-            prepareCheckout: () => Effect.die("must not prepare Checkout"),
-            prepareCustomer: () => Effect.die("must not prepare Customer"),
-            storeCheckout: () => Effect.die("must not store Checkout"),
-            storeCustomer: () => Effect.die("must not store Customer"),
-            storeRetrievedCheckout: () => Effect.die("must not store Checkout"),
+            prepareCheckout: () => Effect.die(new Error("must not prepare Checkout")),
+            prepareCustomer: () => Effect.die(new Error("must not prepare Customer")),
+            storeCheckout: () => Effect.die(new Error("must not store Checkout")),
+            storeCustomer: () => Effect.die(new Error("must not store Customer")),
+            storeRetrievedCheckout: () => Effect.die(new Error("must not store Checkout")),
           },
           portal,
           stripe: {
             createCheckout: () => {
               checkoutRequests += 1;
-              return Effect.die("must not create Checkout");
+              return Effect.die(new Error("must not create Checkout"));
             },
             createCustomer: () => {
               customerRequests += 1;
-              return Effect.die("must not create Customer");
+              return Effect.die(new Error("must not create Customer"));
             },
-            createPortal: () => Effect.die("unused"),
-            retrieveCheckout: () => Effect.die("unused"),
+            createPortal: () => Effect.die(new Error("unused")),
+            retrieveCheckout: () => Effect.die(new Error("unused")),
           },
           urls: {
             cancel: new URL("https://osfo.test/billing"),
@@ -124,8 +124,8 @@ describe("StripeBilling eligibility and claims", () => {
           },
         },
         persistence: {
-          failCheckout: () => Effect.die("unused"),
-          releaseCheckoutClaim: () => Effect.die("unused"),
+          failCheckout: () => Effect.die(new Error("unused")),
+          releaseCheckoutClaim: () => Effect.die(new Error("unused")),
           inspectCheckoutEligibility: () => Effect.succeed({ _tag: "Eligible" }),
           prepareCheckout: () =>
             Effect.fail(new StripeBilling.CheckoutIneligible({ reason: "activePlan" })),
@@ -134,19 +134,19 @@ describe("StripeBilling eligibility and claims", () => {
               billingCustomerId: customerId,
               stripeCustomerId: StripeCustomerId.make("cus_race"),
             }),
-          storeCheckout: () => Effect.die("unused"),
-          storeCustomer: () => Effect.die("unused"),
-          storeRetrievedCheckout: () => Effect.die("unused"),
+          storeCheckout: () => Effect.die(new Error("unused")),
+          storeCustomer: () => Effect.die(new Error("unused")),
+          storeRetrievedCheckout: () => Effect.die(new Error("unused")),
         },
         portal,
         stripe: {
           createCheckout: () => {
             checkoutRequests += 1;
-            return Effect.die("must not create Checkout");
+            return Effect.die(new Error("must not create Checkout"));
           },
-          createCustomer: () => Effect.die("must reuse Customer"),
-          createPortal: () => Effect.die("unused"),
-          retrieveCheckout: () => Effect.die("unused"),
+          createCustomer: () => Effect.die(new Error("must reuse Customer")),
+          createPortal: () => Effect.die(new Error("unused")),
+          retrieveCheckout: () => Effect.die(new Error("unused")),
         },
         urls: {
           cancel: new URL("https://osfo.test/billing"),
@@ -176,18 +176,18 @@ describe("StripeBilling eligibility and claims", () => {
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingCustomers).values({
-              billingCustomerId: customerId,
-              stripeCustomerId: "cus_concurrent",
-              userId,
+              billing_customer_id: customerId,
+              stripe_customer_id: "cus_concurrent",
+              user_id: userId,
             }),
           );
           yield* Effect.promise(() =>
             fixture.database.insert(billingSubscriptions).values({
-              billingSubscriptionId: "billing-subscription-concurrent",
-              billingCustomerId: customerId,
+              billing_subscription_id: "billing-subscription-concurrent",
+              billing_customer_id: customerId,
               plan: "free",
-              planPolicyVersion: "launch-v1",
-              userId,
+              plan_policy_version: "launch-v1",
+              user_id: userId,
             }),
           );
 
@@ -219,8 +219,8 @@ describe("StripeBilling eligibility and claims", () => {
                   url: new URL(`https://checkout.stripe.test/${input.idempotencyKey}`),
                 });
               },
-              createCustomer: () => Effect.die("must reuse Customer"),
-              createPortal: () => Effect.die("unused"),
+              createCustomer: () => Effect.die(new Error("must reuse Customer")),
+              createPortal: () => Effect.die(new Error("unused")),
               retrieveCheckout: (stripeCheckoutSessionId) =>
                 Effect.succeed({
                   expiresAt: expiredCheckoutAt,
@@ -316,8 +316,8 @@ describe("StripeBilling eligibility and claims", () => {
               }),
             );
           },
-          createCustomer: () => Effect.die("must reuse Customer"),
-          createPortal: () => Effect.die("unused"),
+          createCustomer: () => Effect.die(new Error("must reuse Customer")),
+          createPortal: () => Effect.die(new Error("unused")),
           retrieveCheckout: () =>
             Effect.succeed({
               expiresAt: expiredCheckoutAt,

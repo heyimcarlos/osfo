@@ -32,33 +32,33 @@ export const admit = (database: BillingDatabase, userId: UserId, now: Date) =>
         database.transaction(async (transaction) => {
           const [periodRow] = await transaction
             .select({
-              allowancePeriodId: allowancePeriods.allowancePeriodId,
-              endsAt: allowancePeriods.endsAt,
+              allowancePeriodId: allowancePeriods.allowance_period_id,
+              endsAt: allowancePeriods.ends_at,
               plan: allowancePeriods.plan,
-              planPolicyVersion: allowancePeriods.planPolicyVersion,
-              startsAt: allowancePeriods.startsAt,
-              userId: allowancePeriods.userId,
+              planPolicyVersion: allowancePeriods.plan_policy_version,
+              startsAt: allowancePeriods.starts_at,
+              userId: allowancePeriods.user_id,
             })
             .from(allowancePeriods)
             .where(
               and(
-                eq(allowancePeriods.userId, userId),
-                lte(allowancePeriods.startsAt, now),
-                gt(allowancePeriods.endsAt, now),
+                eq(allowancePeriods.user_id, userId),
+                lte(allowancePeriods.starts_at, now),
+                gt(allowancePeriods.ends_at, now),
               ),
             )
             .limit(1);
           if (periodRow === undefined) return { period: null, usage: [] };
           const usageRows = await transaction
             .select({
-              allowanceKind: allowanceUsage.allowanceKind,
+              allowanceKind: allowanceUsage.allowance_kind,
               quantity: sql<bigint>`sum(${allowanceUsage.quantity})`.mapWith(
                 allowanceUsage.quantity,
               ),
             })
             .from(allowanceUsage)
-            .where(eq(allowanceUsage.allowancePeriodId, periodRow.allowancePeriodId))
-            .groupBy(allowanceUsage.allowanceKind);
+            .where(eq(allowanceUsage.allowance_period_id, periodRow.allowancePeriodId))
+            .groupBy(allowanceUsage.allowance_kind);
           return { period: periodRow, usage: usageRows };
         }),
     );

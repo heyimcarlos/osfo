@@ -6,7 +6,7 @@ import type {
   ManagedTurnAuthorityIdentity,
   ManagedTurnMetadata,
 } from "../domain/managed-conversation";
-import { AuthorizationContext, make as makeAuthorization } from "./authorization";
+import { Authorization, AuthorizationContext } from "./authorization";
 import {
   SessionRecallAuthorizationDenied,
   type SessionRecallAuthorizationUnavailable,
@@ -63,7 +63,7 @@ export const makeSessionRecallAuthorization = (
       }
       const facts = yield* dependencies.inspectAuthorization(metadata.authorityIdentity);
       const { userId: _userId, ...originatingAuthority } = metadata.authorityIdentity;
-      const result = makeAuthorization(retainedCatalog).recheck(
+      const result = Authorization.make(retainedCatalog).recheck(
         AuthorizationContext.make({
           allowance: { _tag: "Unavailable" },
           approval: null,

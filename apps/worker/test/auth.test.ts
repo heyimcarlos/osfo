@@ -6,11 +6,11 @@ import { count, eq } from "drizzle-orm";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { HttpRouter } from "effect/unstable/http";
 
-import * as App from "../src/app";
-import * as AuthRoutes from "../src/auth";
-import * as Db from "../src/db";
+import { App } from "../src/app";
+import { WorkerAuth } from "../src/auth";
+import { Db } from "../src/db";
 import type { CloudflareConfig } from "../src/config";
-import * as TwilioVerify from "../src/integrations/twilio/verify";
+import { TwilioVerify } from "../src/integrations/twilio/verify";
 
 const authConfig = {
   baseURL: "https://osfo.test/",
@@ -29,7 +29,7 @@ describe("launch authentication policy", () => {
           yield* applyMigrations(fixture.client);
           const app = makeAuthApp(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
+            Layer.succeed(TwilioVerify.Service, makeTestTwilio().service),
           );
 
           const response = yield* request(app.handler, "/auth/sign-up/email", {
@@ -56,7 +56,7 @@ describe("launch authentication policy", () => {
           yield* applyMigrations(fixture.client);
           const app = makeAuthApp(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
+            Layer.succeed(TwilioVerify.Service, makeTestTwilio().service),
             { ...authConfig, credentialAuthentication: "enabled" },
           );
 
@@ -86,7 +86,7 @@ describe("authentication CORS", () => {
           yield* applyMigrations(fixture.client);
           const app = makeAuthApp(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
+            Layer.succeed(TwilioVerify.Service, makeTestTwilio().service),
             { ...authConfig, trustedOrigins: ["https://osfo.ai"] },
           );
 
@@ -118,7 +118,7 @@ describe("authentication CORS", () => {
           yield* applyMigrations(fixture.client);
           const app = makeAuthApp(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
+            Layer.succeed(TwilioVerify.Service, makeTestTwilio().service),
             { ...authConfig, trustedOrigins: ["http://localhost:5173"] },
           );
 
@@ -143,7 +143,7 @@ describe("authentication CORS", () => {
           yield* applyMigrations(fixture.client);
           const app = makeAuthApp(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, makeTestTwilio().service),
+            Layer.succeed(TwilioVerify.Service, makeTestTwilio().service),
           );
 
           const response = yield* preflight(app.handler, "/auth/dash/config", {
@@ -174,7 +174,7 @@ describe("phone authentication", () => {
           const twilio = makeTestTwilio();
           const app = makeAuthApp(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, twilio.service),
+            Layer.succeed(TwilioVerify.Service, twilio.service),
           );
 
           const sent = yield* request(app.handler, "/auth/phone-number/send-otp", {
@@ -220,7 +220,7 @@ describe("phone authentication", () => {
           const twilio = makeTestTwilio();
           const app = makeAuthApp(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, twilio.service),
+            Layer.succeed(TwilioVerify.Service, twilio.service),
             { ...authConfig, credentialAuthentication: "enabled" },
           );
           const phoneNumber = "+14165550108";
@@ -298,7 +298,7 @@ describe("phone authentication", () => {
           const twilio = makeTestTwilio();
           const app = makeAuthApp(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, twilio.service),
+            Layer.succeed(TwilioVerify.Service, twilio.service),
           );
 
           yield* request(app.handler, "/auth/phone-number/send-otp", {
@@ -345,7 +345,7 @@ describe("phone authentication", () => {
           const twilio = makeTestTwilio();
           const app = makeAuthApp(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, twilio.service),
+            Layer.succeed(TwilioVerify.Service, twilio.service),
           );
           const phoneNumber = "+14165550109";
 
@@ -360,10 +360,10 @@ describe("phone authentication", () => {
           yield* Effect.promise(() =>
             fixture.database.insert(userSuspensionEvents).values({
               action: "suspended",
-              adminActorId: "admin-test",
-              eventId: "suspension-test",
+              admin_actor_id: "admin-test",
+              event_id: "suspension-test",
               reason: "Test suspension",
-              userId: firstBody.user.id,
+              user_id: firstBody.user.id,
             }),
           );
           twilio.advanceBy(30 * 1_000);
@@ -393,7 +393,7 @@ describe("phone authentication", () => {
           const twilio = makeTestTwilio();
           const app = makeAuthApp(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, twilio.service),
+            Layer.succeed(TwilioVerify.Service, twilio.service),
           );
 
           yield* request(app.handler, "/auth/phone-number/send-otp", {
@@ -425,7 +425,7 @@ describe("phone authentication", () => {
           const twilio = makeTestTwilio();
           const app = makeAuthApp(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, twilio.service),
+            Layer.succeed(TwilioVerify.Service, twilio.service),
           );
 
           yield* request(app.handler, "/auth/phone-number/send-otp", {
@@ -458,7 +458,7 @@ describe("phone authentication", () => {
           const twilio = makeTestTwilio();
           const app = makeAuthApp(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, twilio.service),
+            Layer.succeed(TwilioVerify.Service, twilio.service),
           );
           const phoneNumber = "+14165550105";
 
@@ -524,7 +524,7 @@ describe("phone authentication", () => {
           const twilio = makeTestTwilio({ unavailable: true });
           const app = makeAuthApp(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, twilio.service),
+            Layer.succeed(TwilioVerify.Service, twilio.service),
           );
 
           const response = yield* request(app.handler, "/auth/phone-number/send-otp", {
@@ -555,7 +555,7 @@ describe("authentication dependency scope", () => {
           let releases = 0;
           const trackedDependencies = Layer.mergeAll(
             Db.layerFromDatabase(fixture.database),
-            Layer.succeed(TwilioVerify.TwilioVerify, twilio.service),
+            Layer.succeed(TwilioVerify.Service, twilio.service),
             Layer.effectDiscard(
               Effect.acquireRelease(
                 Effect.sync(() => {
@@ -602,11 +602,11 @@ describe("authentication dependency scope", () => {
 
 const makeAuthApp = (
   dbLayer: ReturnType<typeof Db.layerFromDatabase>,
-  twilioLayer: Layer.Layer<TwilioVerify.TwilioVerify>,
-  config: AuthRoutes.AuthRouteConfig = authConfig,
+  twilioLayer: Layer.Layer<TwilioVerify.Service>,
+  config: WorkerAuth.AuthRouteConfig = authConfig,
 ) =>
   HttpRouter.toWebHandler(
-    AuthRoutes.layer({
+    WorkerAuth.layer({
       config,
       dependencies: Layer.merge(dbLayer, twilioLayer),
     }),
@@ -621,7 +621,7 @@ const makeTestTwilio = (options?: { readonly unavailable?: boolean }) => {
     string,
     { readonly expiresAt: number; readonly code: string; attempts: number }
   >();
-  const service = TwilioVerify.TwilioVerify.of({
+  const service = TwilioVerify.Service.of({
     sendCode: (phoneNumber) =>
       options?.unavailable
         ? Effect.fail(
