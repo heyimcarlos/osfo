@@ -17,13 +17,15 @@ The conversation runs on a fixed model route inside a bounded envelope: a capped
 transcript window and an optional per-address daily turn ceiling. Its only
 capability is a presentation request for the current invite. The model judges
 when presenting the Channel Link Invite serves the person; deterministic code
-asks ChannelLinks whether a live pending invite exists, mints one only when none
-lives, and appends the verification URL after the model turn. Tokens and URLs
-never enter model input, transcript, model output, logs, or errors. Duplicate
-presentation requests collapse into one, and live-invite reuse bounds minting
-while an invite remains valid. Group contexts stay deterministic and receive no
-conversation or invite. Any private sender on a supported transport reaches the
-conversation; provider allowlists do not gate it.
+appends the verification URL after the model turn, calling ChannelLinks.ensure
+only when the linking attempt holds no unexpired invitation. Invite tokens
+persist only as hashes, so a delivered URL cannot be reconstructed later; the
+presenting layer holds the URL transiently for the life of the attempt instead.
+Tokens and URLs never enter model input, transcript, model output, logs, or
+errors. Duplicate presentation requests collapse into one. Group contexts stay
+deterministic and receive no conversation or invite. Any private sender on a
+supported transport reaches the conversation; provider allowlists do not gate
+it.
 
 Conversation state stays address-keyed for the life of one linking attempt, so
 fresh invite reissue spans one continuous conversation. Cleanup stays

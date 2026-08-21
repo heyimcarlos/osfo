@@ -40,8 +40,9 @@ never company-conversation state.
 - Deterministic code attaches the verification URL after the model turn, on its
   own line. The token and URL never enter model input, transcript, output, logs,
   or errors.
-- Repeat offers reuse the live pending invite, so the same URL stays valid until
-  it expires. No keyword backstops, no forced pitch, no link in the greeting.
+- Repeat offers resend the URL this attempt already delivered; the presenting
+  layer holds it transiently because invite tokens persist only as hashes. No
+  keyword backstops, no forced pitch, no link in the greeting.
 - Group contexts receive only fixed copy, never a conversation.
 
 ## Voice samples

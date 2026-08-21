@@ -171,10 +171,12 @@ bounded envelope: a capped transcript window, an optional per-address daily
 turn ceiling, and no memory, entitlements, tools, or external authority except
 one presentation capability for the current Channel Link Invite. The model
 judges when presenting the invite serves the person; deterministic code
-resolves invite state through the ChannelLinks authority, mints an invite only
-when none is live, and appends the verification URL after the model turn.
-Tokens and URLs never enter model input, transcript, model output, logs, or
-errors. Group contexts stay deterministic, receive no conversation, and never
+appends the verification URL after the model turn, calling ChannelLinks.ensure
+only when the linking attempt holds no unexpired invitation. Invite tokens
+persist only as hashes, so the presenting layer remembers the URL it delivered
+instead of reconstructing one. Tokens and URLs never enter model input,
+transcript, model output, logs, or errors. Group contexts stay deterministic,
+receive no conversation, and never
 receive an invite. Any private sender on a supported transport reaches the
 conversation; provider allowlists do not gate it.
 
