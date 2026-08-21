@@ -7,12 +7,12 @@ import {
 } from "@osfo/db/schema/channel-links";
 import { users } from "@osfo/db/schema/auth";
 import { applyMigrations, makeTestDatabase } from "@osfo/db/testing";
-import { Crypto, DateTime, Effect, Layer, Redacted } from "effect";
+import { and, eq } from "drizzle-orm";
+import { DateTime, Effect, Layer, Redacted, Result } from "effect";
 
 import { Db } from "../src/db";
 import { UserId } from "../src/domain";
 import { ChannelLinks } from "../src/services/channel-links";
-import { signInviteToken } from "../src/services/channel-links/token";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect results use the standard _tag discriminator. */
 /* oxlint-disable eslint/no-shadow -- The canonical channelLinks table and service variable intentionally share the domain name. */
@@ -23,12 +23,6 @@ await Effect.runPromise(applyMigrations(fixture.client));
 
 const serviceLayer = ChannelLinks.layer({
   invitationLifetime: { hours: 24 },
-  signingKeys: [
-    {
-      id: "test-current",
-      secret: Redacted.make("test-only-channel-link-key-with-32-characters"),
-    },
-  ],
   verificationBaseUrl: new URL("https://osfo.test/verify/"),
 }).pipe(
   Layer.provideMerge(Db.layerFromDatabase(fixture.database)),
@@ -66,17 +60,16 @@ layer(serviceLayer)("ChannelLinks", (test) => {
       if (result._tag !== "Invited")
         return yield* Effect.die(new Error("Expected a fresh Channel Link Invite"));
       expect(result.verificationUrl.origin).toBe("https://osfo.test");
-      expect(result.verificationUrl.pathname).toMatch(
-        /^\/verify\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u,
-      );
+      expect(result.verificationUrl.pathname).toMatch(/^\/verify\/[A-Za-z0-9]{8}$/u);
       expect(result.verificationUrl.href).not.toContain(address.authorId);
       expect(result.verificationUrl.href).not.toContain(address.channelId);
       expect(rows).toHaveLength(1);
       expect(Object.keys(rows[0] ?? {})).not.toContain("token");
+      expect(rows[0]?.token_hash).toMatch(/^[0-9a-f]{64}$/u);
     }),
   );
 
-  test.effect("inspects a signed invitation through a client-safe view", () =>
+  test.effect("inspects an invitation through a client-safe view", () =>
     Effect.gen(function* () {
       const channelLinks = yield* ChannelLinks.Service;
       const result = yield* channelLinks.ensure(
@@ -171,7 +164,46 @@ layer(serviceLayer)("ChannelLinks", (test) => {
     }),
   );
 
-  test.effect("reconstructs the same usable invitation for sequential and concurrent retries", () =>
+  test.effect("reissues a fresh invitation on repeat requests and retires the old link", () =>
+    Effect.gen(function* () {
+      const channelLinks = yield* ChannelLinks.Service;
+      const address = ChannelLinks.ChannelAddress.make({
+        authorId: ChannelLinks.ChannelAuthorId.make("reissue-author"),
+        channelId: ChannelLinks.ChannelId.make("telegram-secondary"),
+      });
+
+      const first = yield* channelLinks.ensure(address);
+      const repeated = yield* channelLinks.ensure(address);
+      if (first._tag !== "Invited" || repeated._tag !== "Invited")
+        return yield* Effect.die(new Error("Expected fresh Channel Link Invites"));
+
+      expect(repeated.verificationUrl.href).not.toBe(first.verificationUrl.href);
+
+      const retiredView = yield* Effect.flip(
+        channelLinks.inspect(Redacted.make(inviteToken(first.verificationUrl))),
+      );
+      const activeView = yield* channelLinks.inspect(
+        Redacted.make(inviteToken(repeated.verificationUrl)),
+      );
+      expect(retiredView).toMatchObject({ reason: "superseded" });
+      expect(activeView).toEqual({ expiresAt: repeated.expiresAt, state: "pending" });
+
+      const rows = yield* Effect.promise(() =>
+        fixture.database
+          .select()
+          .from(channelLinkInvites)
+          .where(
+            and(
+              eq(channelLinkInvites.channel_id, address.channelId),
+              eq(channelLinkInvites.author_id, address.authorId),
+            ),
+          ),
+      );
+      expect(new Set(rows.map((row) => row.state))).toEqual(new Set(["superseded", "pending"]));
+    }),
+  );
+
+  test.effect("converges concurrent reissues on one usable invitation", () =>
     Effect.gen(function* () {
       const channelLinks = yield* ChannelLinks.Service;
       const address = ChannelLinks.ChannelAddress.make({
@@ -179,16 +211,20 @@ layer(serviceLayer)("ChannelLinks", (test) => {
         channelId: ChannelLinks.ChannelId.make("telegram-secondary"),
       });
 
-      const first = yield* channelLinks.ensure(address);
-      const repeated = yield* channelLinks.ensure(address);
-      const concurrent = yield* Effect.all(
+      const results = yield* Effect.all(
         [channelLinks.ensure(address), channelLinks.ensure(address)],
         { concurrency: "unbounded" },
       );
 
-      expect(first._tag).toBe("Invited");
-      expect(repeated).toEqual(first);
-      expect(concurrent).toEqual([first, first]);
+      expect(results.map((result) => result._tag)).toEqual(["Invited", "Invited"]);
+      const views = yield* Effect.forEach(
+        results.filter((result) => result._tag === "Invited"),
+        (result) =>
+          Effect.result(channelLinks.inspect(Redacted.make(inviteToken(result.verificationUrl)))),
+        { concurrency: "unbounded" },
+      );
+      expect(views.filter((view) => Result.isSuccess(view))).toHaveLength(1);
+      expect(views.filter((view) => Result.isFailure(view))).toHaveLength(1);
     }),
   );
 
@@ -270,7 +306,7 @@ layer(serviceLayer)("ChannelLinks", (test) => {
     }),
   );
 
-  test.effect("rejects forged tokens and keeps bearer and author data out of audit evidence", () =>
+  test.effect("rejects unknown tokens and keeps bearer and author data out of audit evidence", () =>
     Effect.gen(function* () {
       const channelLinks = yield* ChannelLinks.Service;
       const address = ChannelLinks.ChannelAddress.make({
@@ -281,50 +317,20 @@ layer(serviceLayer)("ChannelLinks", (test) => {
       if (ensured._tag !== "Invited")
         return yield* Effect.die(new Error("Expected a fresh Channel Link Invite"));
       const token = inviteToken(ensured.verificationUrl);
-      const separatorIndex = token.indexOf(".");
-      const claims = token.slice(0, separatorIndex + 1);
-      const signature = token.slice(separatorIndex + 1);
+      const firstCharacter = token.charAt(0);
       const forged = ChannelLinks.ChannelLinkInviteToken.make(
-        `${claims}${signature.startsWith("A") ? "B" : "A"}${signature.slice(1)}`,
+        `${firstCharacter === "A" ? "B" : "A"}${token.slice(1)}`,
       );
 
       const failure = yield* Effect.flip(channelLinks.inspect(Redacted.make(forged)));
       const audit = yield* Effect.promise(() =>
         fixture.database.select().from(channelLinkAuditEvents),
       );
-      expect(failure).toMatchObject({ _tag: "ChannelLinkInviteUnavailable", reason: "forged" });
+      expect(failure).toMatchObject({ _tag: "ChannelLinkInviteUnavailable", reason: "invalid" });
       expect(audit.every((event) => !Object.values(event.metadata).includes(token))).toBe(true);
       expect(
         audit.every((event) => !Object.values(event.metadata).includes(address.authorId)),
       ).toBe(true);
-    }),
-  );
-
-  test.effect("rejects a correctly signed token protocol version it does not implement", () =>
-    Effect.gen(function* () {
-      const channelLinks = yield* ChannelLinks.Service;
-      const crypto = yield* Crypto.Crypto;
-      const now = DateTime.toDateUtc(yield* DateTime.now);
-      const token = yield* signInviteToken(
-        crypto,
-        {
-          id: "test-current",
-          secret: Redacted.make("test-only-channel-link-key-with-32-characters"),
-        },
-        {
-          e: Math.floor(now.getTime() / 1_000) + 3600,
-          i: "unsupported-version-invite",
-          k: "test-current",
-          v: 2,
-        },
-      );
-
-      const failure = yield* Effect.flip(channelLinks.inspect(Redacted.make(token)));
-
-      expect(failure).toMatchObject({
-        _tag: "ChannelLinkInviteUnavailable",
-        reason: "wrong-version",
-      });
     }),
   );
 });

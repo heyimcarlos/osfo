@@ -34,10 +34,14 @@ describe("ChannelLinks with native PostgreSQL", () => {
           [channelLinks.ensure(address), channelLinks.ensure(address)],
           { concurrency: "unbounded" },
         );
-        const pending = yield* Effect.promise(() => database.select().from(channelLinkInvites));
+        const urls = results.flatMap((result) =>
+          result._tag === "Invited" ? [result.verificationUrl.href] : [],
+        );
+        const invites = yield* Effect.promise(() => database.select().from(channelLinkInvites));
 
-        expect(results[0]).toEqual(results[1]);
-        expect(pending).toHaveLength(1);
+        expect(results.map((result) => result._tag)).toEqual(["Invited", "Invited"]);
+        expect(new Set(urls).size).toBe(2);
+        expect(invites.filter((invite) => invite.state === "pending")).toHaveLength(1);
       }),
     ),
   );
@@ -173,40 +177,6 @@ describe("ChannelLinks with native PostgreSQL", () => {
     ),
   );
 
-  it.effect("keeps pending invitations usable during signing-key rotation", () =>
-    withRealPostgresFixture(({ database }) =>
-      Effect.gen(function* () {
-        const oldKey = {
-          id: "native-old",
-          secret: Redacted.make("native-old-channel-link-signing-key-32-characters"),
-        } satisfies ChannelLinks.SigningKey;
-        const currentKey = {
-          id: "native-current",
-          secret: Redacted.make("native-current-channel-link-signing-key-32-characters"),
-        } satisfies ChannelLinks.SigningKey;
-        const issuingService = yield* makeChannelLinks(database, { signingKeys: [oldKey] });
-        const ensured = yield* issuingService.ensure(
-          makeAddress("native-rotation-author", "telegram-native"),
-        );
-        if (ensured._tag !== "Invited")
-          return yield* Effect.die(new Error("Expected a rotation invitation"));
-        const token = Redacted.make(inviteToken(ensured.verificationUrl));
-
-        const rotatingService = yield* makeChannelLinks(database, {
-          signingKeys: [currentKey, oldKey],
-        });
-        expect(yield* rotatingService.inspect(token)).toEqual({
-          expiresAt: ensured.expiresAt,
-          state: "pending",
-        });
-
-        const retiredService = yield* makeChannelLinks(database, { signingKeys: [currentKey] });
-        const retired = yield* Effect.flip(retiredService.inspect(token));
-        expect(retired).toMatchObject({ reason: "retired-key" });
-      }),
-    ),
-  );
-
   it.effect("rolls acceptance back when link creation cannot commit", () =>
     withRealPostgresFixture(({ client, database }) =>
       Effect.gen(function* () {
@@ -317,10 +287,6 @@ const makeChannelLinks = (
   database: Database,
   options: {
     readonly invitationLifetime?: Parameters<typeof ChannelLinks.layer>[0]["invitationLifetime"];
-    readonly signingKeys?: readonly [
-      ChannelLinks.SigningKey,
-      ...ReadonlyArray<ChannelLinks.SigningKey>,
-    ];
   } = {},
 ) =>
   Effect.scoped(
@@ -328,12 +294,6 @@ const makeChannelLinks = (
       Effect.provide(
         ChannelLinks.layer({
           invitationLifetime: options.invitationLifetime ?? { hours: 24 },
-          signingKeys: options.signingKeys ?? [
-            {
-              id: "native-current",
-              secret: Redacted.make("native-channel-link-signing-key-with-32-characters"),
-            },
-          ],
           verificationBaseUrl: new URL("https://osfo.test/verify/"),
         }).pipe(
           Layer.provideMerge(Db.layerFromDatabase(database)),

@@ -31,7 +31,7 @@ describe("Channel Link Invite page", () => {
                 state: "pending" as const,
               }),
           }}
-          token="private.claims"
+          token="k7Xm2pRq"
         />
       </AuthStateProvider>,
     );
@@ -58,19 +58,19 @@ describe("Channel Link Invite page", () => {
                 state: "pending" as const,
               }),
           }}
-          token="private.claims"
+          token="k7Xm2pRq"
         />
       </AuthStateProvider>,
     );
 
     expect(await screen.findByText("Link a messaging channel")).toBeDefined();
     expect(screen.getByRole("button", { name: "SMS code" })).toBeDefined();
-    expect(screen.queryByText("private.claims")).toBeNull();
+    expect(screen.queryByText("k7Xm2pRq")).toBeNull();
   });
 
   it("shows a safe invitation before accepting it for the current User", async () => {
     const accepted: Array<string> = [];
-    const token = "private.claims";
+    const token = "k7Xm2pRq";
     renderWithTestRouter(
       <AuthStateProvider
         value={{

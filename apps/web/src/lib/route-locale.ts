@@ -15,8 +15,7 @@ export type RegistrationSearch = {
 const ChannelLinkReturnPath = Schema.String.check(
   Schema.makeFilter(
     (value) =>
-      /^\/verify\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value) ||
-      "must be a local signed Channel Link path",
+      /^\/verify\/[A-Za-z0-9]{8}$/u.test(value) || "must be a local Channel Link invite path",
   ),
 );
 

@@ -149,17 +149,17 @@ describe("Osfo route tree", () => {
   });
 
   it("returns completed registration to the same private Channel Link", async () => {
-    const { router } = renderAt("/get-started?returnTo=%2Fverify%2Fprivate.claims", signedIn);
+    const { router } = renderAt("/get-started?returnTo=%2Fverify%2Fk7Xm2pRq", signedIn);
 
-    await waitFor(() => expect(router.state.location.pathname).toBe("/verify/private.claims"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/verify/k7Xm2pRq"));
   });
 
-  it("accepts only a local signed Channel Link as a registration return", () => {
-    expect(parseRegistrationSearch({ returnTo: "/verify/private.claims" })).toEqual({
-      returnTo: "/verify/private.claims",
+  it("accepts only a local Channel Link invite as a registration return", () => {
+    expect(parseRegistrationSearch({ returnTo: "/verify/k7Xm2pRq" })).toEqual({
+      returnTo: "/verify/k7Xm2pRq",
     });
     expect(
-      parseRegistrationSearch({ returnTo: "https://attacker.example/verify/private.claims" }),
+      parseRegistrationSearch({ returnTo: "https://attacker.example/verify/k7Xm2pRq" }),
     ).toEqual({});
   });
 

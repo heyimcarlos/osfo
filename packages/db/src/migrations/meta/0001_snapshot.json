@@ -1264,14 +1264,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "token_version": {
-          "name": "token_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "signing_key_id": {
-          "name": "signing_key_id",
+        "token_hash": {
+          "name": "token_hash",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -1356,6 +1350,21 @@
           "method": "btree",
           "with": {}
         },
+        "channel_link_invites_token_hash_unique": {
+          "name": "channel_link_invites_token_hash_unique",
+          "columns": [
+            {
+              "expression": "token_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "channel_link_invites_expiry_index": {
           "name": "channel_link_invites_expiry_index",
           "columns": [
@@ -1402,9 +1411,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "channel_link_invites_token_version_check": {
-          "name": "channel_link_invites_token_version_check",
-          "value": "\"channel_link_invites\".\"token_version\" > 0"
+        "channel_link_invites_token_hash_check": {
+          "name": "channel_link_invites_token_hash_check",
+          "value": "\"channel_link_invites\".\"token_hash\" ~ '^[0-9a-f]{64}$'"
         },
         "channel_link_invites_expiry_check": {
           "name": "channel_link_invites_expiry_check",

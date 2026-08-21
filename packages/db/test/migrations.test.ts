@@ -70,9 +70,9 @@ describe("Postgres migrations", () => {
               VALUES ('channel-user-1', 'Channel User 1', 'channel-1@example.test', now(), now()),
                      ('channel-user-2', 'Channel User 2', 'channel-2@example.test', now(), now());
               INSERT INTO channel_link_invites (
-                invite_id, channel_id, author_id, token_version, signing_key_id, expires_at
+                invite_id, channel_id, author_id, token_hash, expires_at
               ) VALUES (
-                'invite-1', 'telegram:bot-1', 'author-1', 1, 'current', now() + interval '1 day'
+                'invite-1', 'telegram:bot-1', 'author-1', repeat('a', 64), now() + interval '1 day'
               );
               INSERT INTO channel_links (channel_link_id, channel_id, author_id, user_id)
               VALUES ('link-1', 'telegram:bot-1', 'author-2', 'channel-user-1');
@@ -81,11 +81,14 @@ describe("Postgres migrations", () => {
 
           const rejectedStatements = [
             `INSERT INTO channel_link_invites
-               (invite_id, channel_id, author_id, token_version, signing_key_id, expires_at)
-             VALUES ('invite-duplicate', 'telegram:bot-1', 'author-1', 1, 'current', now() + interval '1 day')`,
+               (invite_id, channel_id, author_id, token_hash, expires_at)
+             VALUES ('invite-duplicate', 'telegram:bot-1', 'author-1', repeat('b', 64), now() + interval '1 day')`,
             `INSERT INTO channel_link_invites
-               (invite_id, channel_id, author_id, token_version, signing_key_id, expires_at)
-             VALUES ('invite-version', 'telegram:bot-1', 'author-3', 0, 'current', now() + interval '1 day')`,
+               (invite_id, channel_id, author_id, token_hash, expires_at)
+             VALUES ('invite-hash-collision', 'telegram:bot-2', 'author-3', repeat('a', 64), now() + interval '1 day')`,
+            `INSERT INTO channel_link_invites
+               (invite_id, channel_id, author_id, token_hash, expires_at)
+             VALUES ('invite-hash-format', 'telegram:bot-2', 'author-3', 'not-a-sha256', now() + interval '1 day')`,
             `UPDATE channel_link_invites
              SET state = 'accepted', accepted_at = now(), accepted_user_id = 'channel-user-1'
              WHERE invite_id = 'invite-1'`,

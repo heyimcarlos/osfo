@@ -3,11 +3,10 @@ import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 
 import { Auth } from "../middleware/auth";
 
-/** Signed bearer value containing only reconstructible invitation claims. */
+/** Opaque 8-character alphanumeric bearer value naming one Channel Link Invite. */
 export const ChannelLinkInviteToken = Schema.String.check(
   Schema.makeFilter(
-    (value) =>
-      /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value) || "must be a signed invitation token",
+    (value) => /^[A-Za-z0-9]{8}$/u.test(value) || "must be an 8-character alphanumeric token",
   ),
 ).pipe(Schema.brand("ChannelLinkInviteToken"));
 

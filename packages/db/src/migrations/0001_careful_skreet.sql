@@ -15,8 +15,7 @@ CREATE TABLE "channel_link_invites" (
 	"invite_id" text PRIMARY KEY NOT NULL,
 	"channel_id" text NOT NULL,
 	"author_id" text NOT NULL,
-	"token_version" integer NOT NULL,
-	"signing_key_id" text NOT NULL,
+	"token_hash" text NOT NULL,
 	"state" text DEFAULT 'pending' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
@@ -26,7 +25,7 @@ CREATE TABLE "channel_link_invites" (
 	"expired_at" timestamp with time zone,
 	"cancelled_at" timestamp with time zone,
 	"superseded_at" timestamp with time zone,
-	CONSTRAINT "channel_link_invites_token_version_check" CHECK ("channel_link_invites"."token_version" > 0),
+	CONSTRAINT "channel_link_invites_token_hash_check" CHECK ("channel_link_invites"."token_hash" ~ '^[0-9a-f]{64}$'),
 	CONSTRAINT "channel_link_invites_expiry_check" CHECK ("channel_link_invites"."created_at" < "channel_link_invites"."expires_at"),
 	CONSTRAINT "channel_link_invites_state_check" CHECK ("channel_link_invites"."state" in ('pending', 'accepted', 'expired', 'cancelled', 'superseded')),
 	CONSTRAINT "channel_link_invites_lifecycle_check" CHECK (("channel_link_invites"."state" = 'pending' and "channel_link_invites"."accepted_at" is null and "channel_link_invites"."accepted_user_id" is null and "channel_link_invites"."accepted_channel_link_id" is null and "channel_link_invites"."expired_at" is null and "channel_link_invites"."cancelled_at" is null and "channel_link_invites"."superseded_at" is null)
@@ -60,6 +59,7 @@ ALTER TABLE "channel_links" ADD CONSTRAINT "channel_links_user_id_users_id_fk" F
 CREATE INDEX "channel_link_audit_events_invite_index" ON "channel_link_audit_events" USING btree ("invite_id");--> statement-breakpoint
 CREATE INDEX "channel_link_audit_events_link_index" ON "channel_link_audit_events" USING btree ("channel_link_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "channel_link_invites_pending_address_unique" ON "channel_link_invites" USING btree ("channel_id","author_id") WHERE "channel_link_invites"."state" = 'pending';--> statement-breakpoint
+CREATE UNIQUE INDEX "channel_link_invites_token_hash_unique" ON "channel_link_invites" USING btree ("token_hash");--> statement-breakpoint
 CREATE INDEX "channel_link_invites_expiry_index" ON "channel_link_invites" USING btree ("state","expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "channel_links_active_address_unique" ON "channel_links" USING btree ("channel_id","author_id") WHERE "channel_links"."revoked_at" is null;--> statement-breakpoint
 CREATE INDEX "channel_links_user_index" ON "channel_links" USING btree ("user_id");

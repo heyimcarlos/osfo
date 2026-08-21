@@ -562,7 +562,6 @@ describe("Channel Link HTTP authentication", () => {
           const app = App.make(testBindings, runtimeConfig, { authDependencies });
           const channelLinksLayer = ChannelLinks.layer({
             invitationLifetime: { hours: 24 },
-            signingKeys: runtimeConfig.channelLinks.signingKeys,
             verificationBaseUrl: new URL("https://osfo.test/verify/"),
           }).pipe(Layer.provideMerge(dbLayer), Layer.provide(BrowserCrypto.layer));
 
@@ -607,7 +606,7 @@ describe("Channel Link HTTP authentication", () => {
           const [storedLink] = yield* Effect.promise(() =>
             fixture.database.select().from(channelLinks),
           );
-          expect(registeredInvite).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u);
+          expect(registeredInvite).toMatch(/^[A-Za-z0-9]{8}$/u);
           expect(inspection.status).toBe(200);
           expect(yield* Effect.promise(() => inspection.json())).toMatchObject({
             state: "pending",
@@ -960,14 +959,6 @@ const responseJson = (response: Response) =>
 
 const runtimeConfig: CloudflareConfig = {
   auth: authConfig,
-  channelLinks: {
-    signingKeys: [
-      {
-        id: "test-current",
-        secret: Redacted.make("test-only-channel-link-key-with-32-characters"),
-      },
-    ],
-  },
   stage: "test",
   telegram: {
     allowedUserIds: ["12345"],

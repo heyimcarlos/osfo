@@ -1,4 +1,4 @@
-import { type Redacted, Schema } from "effect";
+import { Schema } from "effect";
 
 /** Expected failure at the Channel Links persistence or cryptography boundary. */
 export class ChannelLinksUnavailable extends Schema.TaggedError<ChannelLinksUnavailable>()(
@@ -10,21 +10,6 @@ export class ChannelLinksUnavailable extends Schema.TaggedError<ChannelLinksUnav
 export class ChannelLinkInviteUnavailable extends Schema.TaggedError<ChannelLinkInviteUnavailable>()(
   "ChannelLinkInviteUnavailable",
   {
-    reason: Schema.Literals([
-      "accepted",
-      "cancelled",
-      "expired",
-      "forged",
-      "invalid",
-      "retired-key",
-      "superseded",
-      "wrong-version",
-    ]),
+    reason: Schema.Literals(["accepted", "cancelled", "expired", "invalid", "superseded"]),
   },
 ) {}
-
-/** One rotation-capable Channel Link Invite signing key. */
-export interface SigningKey {
-  readonly id: string;
-  readonly secret: Redacted.Redacted;
-}

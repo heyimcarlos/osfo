@@ -6,13 +6,14 @@ import {
 import type { ChannelLinkInviteToken } from "@osfo/api";
 import { users } from "@osfo/db/schema/auth";
 import { and, eq, isNull, lte } from "drizzle-orm";
-import { Context, Crypto, DateTime, Duration, Effect, Layer, type Redacted, Schema } from "effect";
+import { Context, Crypto, DateTime, Duration, Effect, Layer, Redacted, Schema } from "effect";
 
 import { Db } from "../../db";
+import { publicWebBaseUrl, type CloudflareConfig } from "../../config";
 import { ChannelLinkId, UserId } from "../../domain";
 import { ChannelAddress, ChannelAuthorId, ChannelId } from "../../domain/channel-link";
-import { ChannelLinkInviteUnavailable, ChannelLinksUnavailable, type SigningKey } from "./model";
-import { signInviteToken, verifyInviteToken } from "./token";
+import { ChannelLinkInviteUnavailable, ChannelLinksUnavailable } from "./model";
+import { generateInviteToken, hashInviteToken } from "./token";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transaction callbacks are Promise boundaries. */
 /* oxlint-disable eslint/no-underscore-dangle -- Effect and service results use the standard _tag discriminator. */
@@ -20,7 +21,7 @@ import { signInviteToken, verifyInviteToken } from "./token";
 export { ChannelAddress, ChannelAuthorId, ChannelId } from "../../domain/channel-link";
 
 export { ChannelLinkId } from "../../domain";
-export { ChannelLinkInviteUnavailable, ChannelLinksUnavailable, type SigningKey } from "./model";
+export { ChannelLinkInviteUnavailable, ChannelLinksUnavailable } from "./model";
 
 /** Trusted internal actor responsible for ending Channel Link authority. */
 export const ChannelLinkActorId = Schema.String.check(Schema.isNonEmpty()).pipe(
@@ -56,7 +57,6 @@ export const ChannelLinkInvite = Schema.Struct({
   expiresAt: Schema.Date,
   inviteId: ChannelLinkInviteId,
   state: Schema.Literals(["pending", "accepted", "expired", "cancelled", "superseded"]),
-  tokenVersion: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 
 /** Client-safe projection of one invitation. */
@@ -86,7 +86,6 @@ export class ChannelLinkNotFound extends Schema.TaggedError<ChannelLinkNotFound>
 /** Concrete policy captured when constructing the Channel Links authority. */
 export interface Options {
   readonly invitationLifetime: Duration.Input;
-  readonly signingKeys: readonly [SigningKey, ...ReadonlyArray<SigningKey>];
   readonly verificationBaseUrl: URL;
 }
 
@@ -94,6 +93,17 @@ export interface Options {
 export type EnsureResult =
   | { readonly _tag: "Linked"; readonly link: typeof ChannelLink.Type }
   | { readonly _tag: "Invited"; readonly expiresAt: Date; readonly verificationUrl: URL };
+
+/** Fresh bearer material drawn for one invitation attempt. */
+interface InviteDraw {
+  readonly auditUuid: string;
+  readonly candidate: {
+    readonly expiresAt: Date;
+    readonly inviteId: typeof ChannelLinkInviteId.Type;
+    readonly tokenHash: string;
+  };
+  readonly token: typeof ChannelLinkInviteToken.Type;
+}
 
 /** Trusted actor facts required to revoke Channel Link authority. */
 export interface RevokeInput {
@@ -133,6 +143,19 @@ export interface Interface {
 
 /** Complete owner of Channel Address, Channel Link Invite, and Channel Link lifecycles. */
 export class Service extends Context.Service<Service, Interface>()("@osfo/ChannelLinks") {}
+
+/**
+ * Construct the authority from parsed Worker configuration under product-default
+ * policy: 30-minute invitations delivered as `/verify/<token>` on the public web origin.
+ */
+export const layerFromConfig = (
+  config: Pick<CloudflareConfig, "auth">,
+  policy: Partial<Pick<Options, "invitationLifetime">> = {},
+) =>
+  layer({
+    invitationLifetime: policy.invitationLifetime ?? { minutes: 30 },
+    verificationBaseUrl: new URL("/verify/", publicWebBaseUrl(config.auth)),
+  });
 
 /** Construct the Channel Links authority and capture all implementation dependencies. */
 export const layer = (options: Options) =>
@@ -182,123 +205,118 @@ export const layer = (options: Options) =>
         const expiresAt = DateTime.toDateUtc(
           DateTime.makeUnsafe(Math.floor((now.getTime() + lifetimeMillis) / 1_000) * 1_000),
         );
-        const [inviteUuid, auditUuid] = yield* Effect.all([
-          crypto.randomUUIDv7,
-          crypto.randomUUIDv7,
-        ]).pipe(
-          Effect.mapError(
-            (cause) => new ChannelLinksUnavailable({ cause, operation: "ensure.identity" }),
-          ),
-        );
-        const currentKey = options.signingKeys[0];
-        const candidate = {
-          expiresAt,
-          inviteId: ChannelLinkInviteId.make(`channel-link-invite-${inviteUuid}`),
-          keyId: currentKey.id,
-          tokenVersion: 1,
-        };
 
-        const result = yield* Effect.tryPromise({
-          try: () =>
-            db.transaction(async (transaction) => {
-              const [active] = await transaction
-                .select({
-                  authorId: channelLinks.author_id,
-                  channelId: channelLinks.channel_id,
-                  channelLinkId: channelLinks.channel_link_id,
-                  createdAt: channelLinks.created_at,
-                  revokedAt: channelLinks.revoked_at,
-                  userId: channelLinks.user_id,
-                })
-                .from(channelLinks)
-                .where(
-                  and(
-                    eq(channelLinks.channel_id, address.channelId),
-                    eq(channelLinks.author_id, address.authorId),
-                    isNull(channelLinks.revoked_at),
-                  ),
-                )
-                .for("update")
-                .limit(1);
-              if (active !== undefined) return { _tag: "Linked" as const, row: active };
+        const mintInviteDraw = Effect.fn("ChannelLinks.ensure.draw")(function* () {
+          const [inviteUuid, auditUuid] = yield* Effect.all([
+            crypto.randomUUIDv7,
+            crypto.randomUUIDv7,
+          ]).pipe(
+            Effect.mapError(
+              (cause) => new ChannelLinksUnavailable({ cause, operation: "ensure.identity" }),
+            ),
+          );
+          const token = yield* generateInviteToken(crypto);
+          const tokenHash = yield* hashInviteToken(crypto, Redacted.make(token));
+          return {
+            auditUuid,
+            candidate: {
+              expiresAt,
+              inviteId: ChannelLinkInviteId.make(`channel-link-invite-${inviteUuid}`),
+              tokenHash,
+            },
+            token,
+          };
+        });
 
-              await transaction
-                .update(channelLinkInvites)
-                .set({ expired_at: now, state: "expired" })
-                .where(
-                  and(
-                    eq(channelLinkInvites.channel_id, address.channelId),
-                    eq(channelLinkInvites.author_id, address.authorId),
-                    eq(channelLinkInvites.state, "pending"),
-                    lte(channelLinkInvites.expires_at, now),
-                  ),
-                );
+        const runEnsureTransaction = (drawn: InviteDraw) =>
+          Effect.tryPromise({
+            try: () =>
+              db.transaction(async (transaction) => {
+                const [active] = await transaction
+                  .select({
+                    authorId: channelLinks.author_id,
+                    channelId: channelLinks.channel_id,
+                    channelLinkId: channelLinks.channel_link_id,
+                    createdAt: channelLinks.created_at,
+                    revokedAt: channelLinks.revoked_at,
+                    userId: channelLinks.user_id,
+                  })
+                  .from(channelLinks)
+                  .where(
+                    and(
+                      eq(channelLinks.channel_id, address.channelId),
+                      eq(channelLinks.author_id, address.authorId),
+                      isNull(channelLinks.revoked_at),
+                    ),
+                  )
+                  .for("update")
+                  .limit(1);
+                if (active !== undefined) return { _tag: "Linked" as const, row: active };
 
-              const [pending] = await transaction
-                .select({
-                  expiresAt: channelLinkInvites.expires_at,
-                  inviteId: channelLinkInvites.invite_id,
-                  keyId: channelLinkInvites.signing_key_id,
-                  tokenVersion: channelLinkInvites.token_version,
-                })
-                .from(channelLinkInvites)
-                .where(
-                  and(
-                    eq(channelLinkInvites.channel_id, address.channelId),
-                    eq(channelLinkInvites.author_id, address.authorId),
-                    eq(channelLinkInvites.state, "pending"),
-                  ),
-                )
-                .for("update")
-                .limit(1);
-              if (pending !== undefined) return { _tag: "Invited" as const, row: pending };
+                await transaction
+                  .update(channelLinkInvites)
+                  .set({ expired_at: now, state: "expired" })
+                  .where(
+                    and(
+                      eq(channelLinkInvites.channel_id, address.channelId),
+                      eq(channelLinkInvites.author_id, address.authorId),
+                      eq(channelLinkInvites.state, "pending"),
+                      lte(channelLinkInvites.expires_at, now),
+                    ),
+                  );
 
-              const [inserted] = await transaction
-                .insert(channelLinkInvites)
-                .values({
-                  author_id: address.authorId,
-                  channel_id: address.channelId,
-                  created_at: now,
-                  expires_at: candidate.expiresAt,
-                  invite_id: candidate.inviteId,
-                  signing_key_id: candidate.keyId,
-                  token_version: candidate.tokenVersion,
-                })
-                .onConflictDoNothing()
-                .returning({ inviteId: channelLinkInvites.invite_id });
-              if (inserted !== undefined) {
+                // Every request mints fresh bearer material: supersede any surviving
+                // pending invite so delivered URLs reset the clock and old links die.
+                await transaction
+                  .update(channelLinkInvites)
+                  .set({ superseded_at: now, state: "superseded" })
+                  .where(
+                    and(
+                      eq(channelLinkInvites.channel_id, address.channelId),
+                      eq(channelLinkInvites.author_id, address.authorId),
+                      eq(channelLinkInvites.state, "pending"),
+                    ),
+                  );
+
+                const [inserted] = await transaction
+                  .insert(channelLinkInvites)
+                  .values({
+                    author_id: address.authorId,
+                    channel_id: address.channelId,
+                    created_at: now,
+                    expires_at: drawn.candidate.expiresAt,
+                    invite_id: drawn.candidate.inviteId,
+                    token_hash: drawn.candidate.tokenHash,
+                  })
+                  .onConflictDoNothing()
+                  .returning({ inviteId: channelLinkInvites.invite_id });
+                if (inserted === undefined) return { _tag: "Conflict" as const };
+
                 await transaction.insert(channelLinkAuditEvents).values({
                   actor_id: "system:channel-links",
-                  event_id: `channel-link-audit-${auditUuid}`,
+                  event_id: `channel-link-audit-${drawn.auditUuid}`,
                   event_type: "invite_issued",
                   invite_id: inserted.inviteId,
                   metadata: {},
                   occurred_at: now,
                 });
-                return { _tag: "Invited" as const, row: candidate };
-              }
+                return { _tag: "Invited" as const, token: drawn.token };
+              }),
+            catch: (cause) => new ChannelLinksUnavailable({ cause, operation: "ensure" }),
+          });
 
-              const [concurrent] = await transaction
-                .select({
-                  expiresAt: channelLinkInvites.expires_at,
-                  inviteId: channelLinkInvites.invite_id,
-                  keyId: channelLinkInvites.signing_key_id,
-                  tokenVersion: channelLinkInvites.token_version,
-                })
-                .from(channelLinkInvites)
-                .where(
-                  and(
-                    eq(channelLinkInvites.channel_id, address.channelId),
-                    eq(channelLinkInvites.author_id, address.authorId),
-                    eq(channelLinkInvites.state, "pending"),
-                  ),
-                )
-                .limit(1);
-              if (concurrent === undefined) throw new Error("Pending invitation conflict");
-              return { _tag: "Invited" as const, row: concurrent };
-            }),
-          catch: (cause) => new ChannelLinksUnavailable({ cause, operation: "ensure" }),
-        });
+        let result = yield* Effect.flatMap(mintInviteDraw(), runEnsureTransaction);
+        // A simultaneous ensure for the same address can win the one-pending slot;
+        // redrawing supersedes the winner and converges on our own fresh invitation.
+        for (let attempt = 0; result._tag === "Conflict" && attempt < 2; attempt += 1) {
+          result = yield* Effect.flatMap(mintInviteDraw(), runEnsureTransaction);
+        }
+        if (result._tag === "Conflict") {
+          return yield* new ChannelLinksUnavailable({
+            cause: { address },
+            operation: "ensure.conflict",
+          });
+        }
 
         if (result._tag === "Linked") {
           return {
@@ -306,55 +324,31 @@ export const layer = (options: Options) =>
             link: yield* decodeChannelLinkRow(result.row),
           };
         }
-        const key = options.signingKeys.find(
-          (candidateKey) => candidateKey.id === result.row.keyId,
-        );
-        if (key === undefined) {
-          return yield* new ChannelLinksUnavailable({
-            cause: { keyId: result.row.keyId },
-            operation: "ensure.signingKey",
-          });
-        }
-        const token = yield* signInviteToken(crypto, key, {
-          e: Math.floor(result.row.expiresAt.getTime() / 1_000),
-          i: result.row.inviteId,
-          k: result.row.keyId,
-          v: result.row.tokenVersion,
-        });
         return {
           _tag: "Invited" as const,
-          expiresAt: result.row.expiresAt,
-          verificationUrl: new URL(token, options.verificationBaseUrl),
+          expiresAt,
+          verificationUrl: new URL(result.token, options.verificationBaseUrl),
         };
       });
 
       const inspect = Effect.fn("ChannelLinks.inspect")(function* (
         token: Redacted.Redacted<typeof ChannelLinkInviteToken.Type>,
       ) {
-        const claims = yield* verifyInviteToken(crypto, options.signingKeys, token);
+        const tokenHash = yield* hashInviteToken(crypto, token);
         const now = DateTime.toDateUtc(yield* DateTime.now);
         const row = yield* Effect.tryPromise({
           try: () =>
             db
               .select({
                 expiresAt: channelLinkInvites.expires_at,
-                keyId: channelLinkInvites.signing_key_id,
                 state: channelLinkInvites.state,
-                tokenVersion: channelLinkInvites.token_version,
               })
               .from(channelLinkInvites)
-              .where(eq(channelLinkInvites.invite_id, claims.i))
+              .where(eq(channelLinkInvites.token_hash, tokenHash))
               .limit(1),
           catch: (cause) => new ChannelLinksUnavailable({ cause, operation: "inspect" }),
         }).pipe(Effect.map((rows) => rows[0]));
         if (row === undefined) {
-          return yield* new ChannelLinkInviteUnavailable({ reason: "invalid" });
-        }
-        if (
-          row.keyId !== claims.k ||
-          row.tokenVersion !== claims.v ||
-          Math.floor(row.expiresAt.getTime() / 1_000) !== claims.e
-        ) {
           return yield* new ChannelLinkInviteUnavailable({ reason: "invalid" });
         }
         if (row.state === "pending" && row.expiresAt.getTime() <= now.getTime()) {
@@ -365,7 +359,7 @@ export const layer = (options: Options) =>
                 .set({ expired_at: now, state: "expired" })
                 .where(
                   and(
-                    eq(channelLinkInvites.invite_id, claims.i),
+                    eq(channelLinkInvites.token_hash, tokenHash),
                     eq(channelLinkInvites.state, "pending"),
                   ),
                 ),
@@ -390,7 +384,7 @@ export const layer = (options: Options) =>
         token: Redacted.Redacted<typeof ChannelLinkInviteToken.Type>,
         userId: UserId,
       ) {
-        const claims = yield* verifyInviteToken(crypto, options.signingKeys, token);
+        const tokenHash = yield* hashInviteToken(crypto, token);
         const now = DateTime.toDateUtc(yield* DateTime.now);
         const [linkUuid, auditUuid] = yield* Effect.all([
           crypto.randomUUIDv7,
@@ -412,28 +406,20 @@ export const layer = (options: Options) =>
                   authorId: channelLinkInvites.author_id,
                   channelId: channelLinkInvites.channel_id,
                   expiresAt: channelLinkInvites.expires_at,
-                  keyId: channelLinkInvites.signing_key_id,
+                  inviteId: channelLinkInvites.invite_id,
                   state: channelLinkInvites.state,
-                  tokenVersion: channelLinkInvites.token_version,
                 })
                 .from(channelLinkInvites)
-                .where(eq(channelLinkInvites.invite_id, claims.i))
+                .where(eq(channelLinkInvites.token_hash, tokenHash))
                 .for("update")
                 .limit(1);
               if (invite === undefined)
                 return { _tag: "Unavailable" as const, reason: "invalid" as const };
-              if (
-                invite.keyId !== claims.k ||
-                invite.tokenVersion !== claims.v ||
-                Math.floor(invite.expiresAt.getTime() / 1_000) !== claims.e
-              ) {
-                return { _tag: "Unavailable" as const, reason: "invalid" as const };
-              }
               if (invite.state === "pending" && invite.expiresAt.getTime() <= now.getTime()) {
                 await transaction
                   .update(channelLinkInvites)
                   .set({ expired_at: now, state: "expired" })
-                  .where(eq(channelLinkInvites.invite_id, claims.i));
+                  .where(eq(channelLinkInvites.invite_id, invite.inviteId));
                 return { _tag: "Unavailable" as const, reason: "expired" as const };
               }
               if (invite.state === "accepted") {
@@ -506,7 +492,7 @@ export const layer = (options: Options) =>
                   channel_link_id: active.channelLinkId,
                   event_id: `channel-link-audit-${auditUuid}`,
                   event_type: "accept_conflict",
-                  invite_id: claims.i,
+                  invite_id: invite.inviteId,
                   metadata: {},
                   occurred_at: now,
                   user_id: userId,
@@ -545,13 +531,13 @@ export const layer = (options: Options) =>
                   accepted_user_id: userId,
                   state: "accepted",
                 })
-                .where(eq(channelLinkInvites.invite_id, claims.i));
+                .where(eq(channelLinkInvites.invite_id, invite.inviteId));
               await transaction.insert(channelLinkAuditEvents).values({
                 actor_id: `user:${userId}`,
                 channel_link_id: accepted.channelLinkId,
                 event_id: `channel-link-audit-${auditUuid}`,
                 event_type: "link_accepted",
-                invite_id: claims.i,
+                invite_id: invite.inviteId,
                 metadata: {},
                 occurred_at: now,
                 user_id: userId,

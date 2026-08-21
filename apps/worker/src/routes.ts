@@ -5,7 +5,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { WorkerAuth } from "./auth";
 import { productApiLayer } from "./cors";
-import { publicWebBaseUrl, type CloudflareConfig } from "./config";
+import type { CloudflareConfig } from "./config";
 import { Handlers } from "./handlers";
 import { RuntimeProbeHandlers } from "./handlers/runtime-probes";
 import { WebhookHandlers } from "./handlers/webhooks";
@@ -42,13 +42,7 @@ export interface Options {
 export const layer = (options: Options) => {
   const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
     Layer.provide(Handlers.layer(options.runtime, options.config)),
-    Layer.provide(
-      ChannelLinks.layer({
-        invitationLifetime: { hours: 24 },
-        signingKeys: options.config.channelLinks.signingKeys,
-        verificationBaseUrl: new URL("/verify/", publicWebBaseUrl(options.config.auth)),
-      }),
-    ),
+    Layer.provide(ChannelLinks.layerFromConfig(options.config)),
     Layer.provide(Registration.layerWithoutDependencies),
     Layer.provide(RegistrationCloudflare.layer(options.env)),
     Layer.provide(AuthMiddleware.layer(options.config.auth)),

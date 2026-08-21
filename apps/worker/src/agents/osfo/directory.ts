@@ -4,7 +4,7 @@ import type { MessengerContext } from "@cloudflare/think/messengers";
 import type { UIMessage } from "ai";
 import { Effect, Exit, Layer } from "effect";
 
-import { loadConfig, publicWebBaseUrl } from "../../config";
+import { loadConfig } from "../../config";
 import { Db } from "../../db";
 import { makeTelegramChannel, makeTelegramConversationResolver } from "../../integrations/telegram";
 import { makeWhatsAppChannel, makeWhatsAppConversationResolver } from "../../integrations/whatsapp";
@@ -167,11 +167,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     const config = loadConfig(this.env);
     const base = Layer.merge(Db.layer({ db: this.env.DB }), BrowserCrypto.layer);
     const services = Layer.merge(
-      ChannelLinks.layer({
-        invitationLifetime: { hours: 24 },
-        signingKeys: config.channelLinks.signingKeys,
-        verificationBaseUrl: new URL("/verify/", publicWebBaseUrl(config.auth)),
-      }),
+      ChannelLinks.layerFromConfig(config),
       AgentDirectory.layerWithoutDependencies,
     ).pipe(Layer.provide(base));
     return Effect.scoped(
@@ -197,7 +193,9 @@ export const replyToChannelLinkMessenger = async (
   context: MessengerContext,
   dependencies: ChannelLinkMessengerDependencies,
 ): Promise<void> => {
-  const authorId = context.author?.userId;
+  // Think hands messenger turns its serializable event snapshot, which carries
+  // the author inside the message rather than at the context top level.
+  const authorId = context.message?.author.userId ?? context.author?.userId;
   const message = context.message;
   if (authorId === undefined || message === undefined) {
     await streamReply(

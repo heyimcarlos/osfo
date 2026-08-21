@@ -30,7 +30,6 @@ export default Worker(
         BETTER_AUTH_BASE_URL: authBaseUrl,
         BETTER_AUTH_SECRET: Config.redacted("BETTER_AUTH_SECRET"),
         BETTER_AUTH_TRUSTED_ORIGINS: authTrustedOrigins,
-        CHANNEL_LINK_SIGNING_KEYS: Config.redacted("CHANNEL_LINK_SIGNING_KEYS"),
         DB: DatabaseHyperdrive,
         DOCUMENT_SANDBOX: Container("DocumentSandbox", {
           className: "Sandbox",

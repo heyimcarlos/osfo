@@ -38,7 +38,7 @@ import { DocumentArtifact } from "../../domain/document-artifact";
 import { DocumentGenerationComposition } from "../../composition/document-generation";
 import { Db } from "../../db";
 import { BillingDb } from "../../db/billing";
-import { decodeOsfoStage, loadConfig, publicWebBaseUrl } from "../../config";
+import { decodeOsfoStage, loadConfig } from "../../config";
 import { ChannelLinkAuthorizationPostgres } from "../../integrations/postgres/channel-link-authorization";
 import { SessionRecallAuthorizationPostgres } from "../../integrations/postgres/session-recall-authorization";
 import {
@@ -1764,13 +1764,7 @@ export class OsfoAgent extends Think<Env> {
               );
             }).pipe(
               // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The captured runtime supplies Db and Crypto while this layer supplies request configuration.
-              Effect.provide(
-                ChannelLinks.layer({
-                  invitationLifetime: { hours: 24 },
-                  signingKeys: config.channelLinks.signingKeys,
-                  verificationBaseUrl: new URL("/verify/", publicWebBaseUrl(config.auth)),
-                }),
-              ),
+              Effect.provide(ChannelLinks.layerFromConfig(config)),
             ),
           ),
         ),
@@ -1916,13 +1910,7 @@ export class OsfoAgent extends Think<Env> {
               ),
               // The messenger Agent method is the request entry point that owns this scoped authority layer.
               // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The captured runtime supplies Db and Crypto while this layer supplies request configuration.
-              Effect.provide(
-                ChannelLinks.layer({
-                  invitationLifetime: { hours: 24 },
-                  signingKeys: config.channelLinks.signingKeys,
-                  verificationBaseUrl: new URL("/verify/", publicWebBaseUrl(config.auth)),
-                }),
-              ),
+              Effect.provide(ChannelLinks.layerFromConfig(config)),
             ),
           ),
         );
@@ -1958,13 +1946,7 @@ export class OsfoAgent extends Think<Env> {
                 currentAuthorization.admit({ agentId: AgentId.make(this.name), ...link }),
               ),
               // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This messenger request entry point supplies Channel Links policy to the captured runtime.
-              Effect.provide(
-                ChannelLinks.layer({
-                  invitationLifetime: { hours: 24 },
-                  signingKeys: config.channelLinks.signingKeys,
-                  verificationBaseUrl: new URL("/verify/", publicWebBaseUrl(config.auth)),
-                }),
-              ),
+              Effect.provide(ChannelLinks.layerFromConfig(config)),
             ),
           ),
         ),
@@ -2055,13 +2037,7 @@ export class OsfoAgent extends Think<Env> {
           Effect.scoped(
             SessionRecallAuthorizationPostgres.inspect(AgentId.make(this.name), identity).pipe(
               // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This Recall request entry point supplies Channel Links policy to the captured runtime.
-              Effect.provide(
-                ChannelLinks.layer({
-                  invitationLifetime: { hours: 24 },
-                  signingKeys: config.channelLinks.signingKeys,
-                  verificationBaseUrl: new URL("/verify/", publicWebBaseUrl(config.auth)),
-                }),
-              ),
+              Effect.provide(ChannelLinks.layerFromConfig(config)),
             ),
           ),
           { signal },

@@ -1,14 +1,5 @@
 import { sql } from "drizzle-orm";
-import {
-  check,
-  index,
-  integer,
-  jsonb,
-  pgTable,
-  text,
-  timestamp,
-  uniqueIndex,
-} from "drizzle-orm/pg-core";
+import { check, index, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 import { users } from "./auth";
 
@@ -47,8 +38,7 @@ export const channelLinkInvites = pgTable(
     invite_id: text().primaryKey(),
     channel_id: text().notNull(),
     author_id: text().notNull(),
-    token_version: integer().notNull(),
-    signing_key_id: text().notNull(),
+    token_hash: text().notNull(),
     state: text().default("pending").notNull(),
     created_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
     expires_at: timestamp({ withTimezone: true }).notNull(),
@@ -60,7 +50,7 @@ export const channelLinkInvites = pgTable(
     superseded_at: timestamp({ withTimezone: true }),
   },
   (table) => [
-    check("channel_link_invites_token_version_check", sql`${table.token_version} > 0`),
+    check("channel_link_invites_token_hash_check", sql`${table.token_hash} ~ '^[0-9a-f]{64}$'`),
     check("channel_link_invites_expiry_check", sql`${table.created_at} < ${table.expires_at}`),
     check(
       "channel_link_invites_state_check",
@@ -77,6 +67,7 @@ export const channelLinkInvites = pgTable(
     uniqueIndex("channel_link_invites_pending_address_unique")
       .on(table.channel_id, table.author_id)
       .where(sql`${table.state} = 'pending'`),
+    uniqueIndex("channel_link_invites_token_hash_unique").on(table.token_hash),
     index("channel_link_invites_expiry_index").on(table.state, table.expires_at),
   ],
 );
