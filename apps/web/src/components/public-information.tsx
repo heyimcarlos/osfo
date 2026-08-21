@@ -36,8 +36,8 @@ export function PrivacyNotice({ locale = publicLocale() }: { readonly locale?: L
         <p>
           Osfo guarda los datos verificados de tu cuenta, los datos de perfil que aceptes, los
           mensajes, los archivos, la configuración, el uso del plan y los registros técnicos
-          necesarios para ofrecer y proteger el servicio. El diálogo temporal de registro se elimina
-          cuando termina el registro o caduca la invitación.
+          necesarios para ofrecer y proteger el servicio. Las invitaciones para conectar un canal no
+          contienen la dirección externa ni datos de la cuenta.
         </p>
         <h2>WhatsApp y proveedores de servicio</h2>
         <p>
@@ -76,13 +76,13 @@ export function PrivacyNotice({ locale = publicLocale() }: { readonly locale?: L
       <p>
         Osfo stores your verified account details, accepted profile facts, messages, files, account
         settings, plan use, and the technical records needed to deliver and secure the service.
-        Temporary registration dialogue is deleted when registration or its invitation ends.
+        Channel Link invitations contain no external address or account details.
       </p>
       <h2>WhatsApp and service providers</h2>
       <p>
         WhatsApp processes channel messages. Osfo also uses managed infrastructure, AI, memory,
-        storage, and SMS providers to operate the service. A Channel Binding routes an authenticated
-        WhatsApp sender to the correct Osfo user.
+        storage, and SMS providers to operate the service. A Channel Link routes an authenticated
+        messaging address to the correct Osfo user.
       </p>
       <h2>Your choices and rights</h2>
       <p>
@@ -104,7 +104,7 @@ export function PrivacyNotice({ locale = publicLocale() }: { readonly locale?: L
   );
 }
 
-/** Public launch Plan details linked from onboarding. */
+/** Public launch Plan details linked from registration. */
 export function PlanDetails({ locale = publicLocale() }: { readonly locale?: Locale }) {
   const spanish = locale === "es";
   return (

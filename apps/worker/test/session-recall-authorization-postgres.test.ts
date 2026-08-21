@@ -8,9 +8,22 @@ import { Db } from "../src/db";
 import { AgentId } from "../src/domain";
 import { AuthSessionId } from "../src/domain/auth-session";
 import { inspect } from "../src/integrations/postgres/session-recall-authorization";
+import { ChannelLinks } from "../src/services/channel-links";
 import { userId, withAccountAuthorityFixture } from "./account-authority-fixture";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide -- This integration fixture owns its PGlite and Layer entry points. */
+
+const unused = () => Effect.die(new Error("Unused Channel Links operation"));
+const channelLinksLayer = Layer.succeed(
+  ChannelLinks.Service,
+  ChannelLinks.Service.of({
+    accept: unused,
+    ensure: unused,
+    inspect: unused,
+    resolve: () => Effect.succeed(null),
+    revoke: unused,
+  }),
+);
 
 describe("PostgreSQL Session Recall authorization", () => {
   it.effect("joins the current authority, ownership, and subscription facts", () =>
@@ -50,7 +63,11 @@ describe("PostgreSQL Session Recall authorization", () => {
             userId,
           }).pipe(
             Effect.provide(
-              Layer.mergeAll(BrowserCrypto.layer, Db.layerFromDatabase(database.database)),
+              Layer.mergeAll(
+                BrowserCrypto.layer,
+                channelLinksLayer,
+                Db.layerFromDatabase(database.database),
+              ),
             ),
           ),
         );

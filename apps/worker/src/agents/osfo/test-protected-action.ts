@@ -1,13 +1,14 @@
 import { action } from "@cloudflare/think";
 import { DateTime, Effect, Option, Schema } from "effect";
 
-import { ChannelBindingId, PlanPolicyVersion, UserId } from "../../domain";
+import { ChannelLinkId, PlanPolicyVersion, UserId } from "../../domain";
 import {
   ActionId,
   ambiguousActionResult,
   type ActionExecutionResult,
 } from "../../domain/action-execution";
 import { AuthorizationOperation } from "../../domain/authorization-operation";
+import { ChannelAddress, ChannelAuthorId, ChannelId } from "../../domain/channel-link";
 import { retainedCatalog } from "../../domain/plan-policy";
 import { ActionExecutor } from "../../services/action-executor";
 import { Authorization, AuthorizationContext } from "../../services/authorization";
@@ -21,7 +22,11 @@ import { effectToolSchema } from "./effect-tool-schema";
 
 const actionName = "osfoTestGmailSend";
 const testUserId = UserId.make("test-protected-action-user");
-const testChannelBindingId = ChannelBindingId.make("test-protected-action-binding");
+const testChannelLinkId = ChannelLinkId.make("test-protected-action-link");
+const testChannelAddress = ChannelAddress.make({
+  authorId: ChannelAuthorId.make("test-protected-action-author"),
+  channelId: ChannelId.make("test-protected-action-channel"),
+});
 const TestActionInput = Schema.Struct({
   recipient: Schema.String.check(
     Schema.isMinLength(3),
@@ -65,7 +70,12 @@ export const makeTestProtectedAction = (options: TestProtectedActionOptions) =>
           currentAuthorities(options.readState),
         ).executeThinkApprovedAction(
           stableAuthorizationContext(),
-          { _tag: "ChannelBinding", channelBindingId: testChannelBindingId, userId: testUserId },
+          {
+            _tag: "ChannelLink",
+            address: testChannelAddress,
+            channelLinkId: testChannelLinkId,
+            userId: testUserId,
+          },
           AuthorizationOperation.make({
             actionId: ActionId.make(context.toolCallId),
             kind: "gmail.send",
@@ -141,13 +151,15 @@ export const currentTestAuthorization = (state: TestProtectedActionState): Autho
     authority:
       state.authority === "active"
         ? {
-            _tag: "ChannelBinding",
-            channelBindingId: testChannelBindingId,
+            _tag: "ChannelLink",
+            address: testChannelAddress,
+            channelLinkId: testChannelLinkId,
             userId: testUserId,
           }
         : {
-            _tag: "RevokedChannelBinding",
-            channelBindingId: testChannelBindingId,
+            _tag: "RevokedChannelLink",
+            address: testChannelAddress,
+            channelLinkId: testChannelLinkId,
             userId: testUserId,
           },
     deletionAccess: { _tag: "DeletionAccessAvailable" },
@@ -160,8 +172,8 @@ export const currentTestAuthorization = (state: TestProtectedActionState): Autho
     },
     now: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z")),
     originatingAuthority: {
-      _tag: "ChannelBinding",
-      channelBindingId: testChannelBindingId,
+      _tag: "ChannelLink",
+      channelLinkId: testChannelLinkId,
     },
     requestVendorUsdMicros: 0n,
     resourceOwnerUserId: testUserId,
@@ -191,12 +203,12 @@ const currentAuthorities = (
     inspect: (_userId, authSessionId) =>
       Effect.succeed({ _tag: "RevokedAuthSession" as const, authSessionId, userId: testUserId }),
   },
-  channelBindings: {
-    inspect: (_userId, channelBindingId) =>
+  channelLinks: {
+    inspect: (address, _userId, channelLinkId) =>
       Effect.succeed(
         readState().authority === "active"
-          ? { _tag: "ChannelBinding" as const, channelBindingId, userId: testUserId }
-          : { _tag: "RevokedChannelBinding" as const, channelBindingId, userId: testUserId },
+          ? { _tag: "ChannelLink" as const, address, channelLinkId, userId: testUserId }
+          : { _tag: "RevokedChannelLink" as const, address, channelLinkId, userId: testUserId },
       ),
   },
   deletionCases: {

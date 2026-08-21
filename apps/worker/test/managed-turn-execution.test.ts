@@ -7,7 +7,7 @@ import { DateTime, Effect, Schema } from "effect";
 import {
   AgentId,
   AgentInitializationId,
-  ChannelBindingId,
+  ChannelLinkId,
   ConversationRouteId,
   PlanPolicyVersion,
   SessionId,
@@ -15,6 +15,7 @@ import {
   UserId,
 } from "../src/domain";
 import { SessionRecallAuthorizationPostgres } from "../src/integrations/postgres/session-recall-authorization";
+import { ChannelAddress, ChannelAuthorId, ChannelId } from "../src/domain/channel-link";
 import { AuthorizationContext } from "../src/services/authorization";
 import { OsfoAgent } from "../src/agents/osfo/agent";
 
@@ -24,6 +25,10 @@ const emptyUsage = {
   inputTokens: { cacheRead: 0, cacheWrite: 0, noCache: 1, total: 1 },
   outputTokens: { reasoning: 0, text: 1, total: 1 },
 };
+const channelAddress = ChannelAddress.make({
+  authorId: ChannelAuthorId.make("managed-author"),
+  channelId: ChannelId.make("managed-channel"),
+});
 
 describe("managed Think Submission execution", () => {
   it.effect(
@@ -35,7 +40,7 @@ describe("managed Think Submission execution", () => {
         const sessionId = SessionId.make("session-managed-drain");
         const submissionId = ThinkSubmissionId.make("submission-managed-drain");
         const replacementId = ThinkSubmissionId.make("submission-managed-new");
-        const channelBindingId = ChannelBindingId.make("binding-managed-drain");
+        const channelLinkId = ChannelLinkId.make("link-managed-drain");
         const userId = UserId.make("user-managed-drain");
         const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
         yield* Effect.promise(async () => {
@@ -131,8 +136,9 @@ describe("managed Think Submission execution", () => {
               .mockReturnValue(
                 Effect.succeed({
                   authority: {
-                    _tag: "ChannelBinding",
-                    channelBindingId,
+                    _tag: "ChannelLink",
+                    address: channelAddress,
+                    channelLinkId,
                     userId,
                   },
                   deletionAccess: { _tag: "DeletionAccessAvailable" },
@@ -147,7 +153,7 @@ describe("managed Think Submission execution", () => {
               );
             await instance.onStart();
 
-            const authorization = managedAuthorization(channelBindingId, userId);
+            const authorization = managedAuthorization(channelLinkId, userId);
             const accepted = await instance.submitManagedConversation({
               authorization,
               idempotencyKey: "managed-drain",
@@ -242,9 +248,9 @@ describe("managed Think Submission execution", () => {
       const sessionId = SessionId.make("session-managed-eviction");
       const submissionId = ThinkSubmissionId.make("submission-managed-eviction");
       const replacementId = ThinkSubmissionId.make("submission-managed-eviction-new");
-      const channelBindingId = ChannelBindingId.make("binding-managed-eviction");
+      const channelLinkId = ChannelLinkId.make("link-managed-eviction");
       const userId = UserId.make("user-managed-eviction");
-      const authorization = managedAuthorization(channelBindingId, userId);
+      const authorization = managedAuthorization(channelLinkId, userId);
       const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
       let releaseModel: () => void = () => {};
       let markModelStarted: () => void = () => {};
@@ -378,9 +384,9 @@ describe("managed Think Submission execution", () => {
       const sessionId = SessionId.make("session-managed-interruption");
       const submissionId = ThinkSubmissionId.make("submission-managed-interruption");
       const replacementId = ThinkSubmissionId.make("submission-managed-interruption-new");
-      const channelBindingId = ChannelBindingId.make("binding-managed-interruption");
+      const channelLinkId = ChannelLinkId.make("link-managed-interruption");
       const userId = UserId.make("user-managed-interruption");
-      const authorization = managedAuthorization(channelBindingId, userId);
+      const authorization = managedAuthorization(channelLinkId, userId);
       const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
 
       yield* Effect.promise(async () => {
@@ -484,9 +490,9 @@ describe("managed Think Submission execution", () => {
     Effect.gen(function* () {
       const agentId = AgentId.make("agent-invalid-running-wakeup");
       const routeId = ConversationRouteId.make("route-invalid-running-wakeup");
-      const channelBindingId = ChannelBindingId.make("binding-invalid-running-wakeup");
+      const channelLinkId = ChannelLinkId.make("link-invalid-running-wakeup");
       const userId = UserId.make("user-invalid-running-wakeup");
-      const authorization = managedAuthorization(channelBindingId, userId);
+      const authorization = managedAuthorization(channelLinkId, userId);
       const submissionId = ThinkSubmissionId.make("submission-invalid-running-wakeup");
       const replacementId = ThinkSubmissionId.make("submission-invalid-running-new");
       const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
@@ -546,7 +552,7 @@ describe("managed Think Submission execution", () => {
   );
 });
 
-const managedAuthorization = (channelBindingId: ChannelBindingId, userId: UserId) =>
+const managedAuthorization = (channelLinkId: ChannelLinkId, userId: UserId) =>
   Schema.decodeSync(AuthorizationContext)({
     allowance: {
       _tag: "Metered" as const,
@@ -558,7 +564,7 @@ const managedAuthorization = (channelBindingId: ChannelBindingId, userId: UserId
       usage: [],
     },
     approval: null,
-    authority: { _tag: "ChannelBinding" as const, channelBindingId, userId },
+    authority: { _tag: "ChannelLink" as const, address: channelAddress, channelLinkId, userId },
     deletionAccess: { _tag: "DeletionAccessAvailable" as const },
     gmailConnection: null,
     liveFacts: {
@@ -568,7 +574,7 @@ const managedAuthorization = (channelBindingId: ChannelBindingId, userId: UserId
       retainedFileBytes: 0n,
     },
     now: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-17T12:00:00.000Z")),
-    originatingAuthority: { _tag: "ChannelBinding" as const, channelBindingId },
+    originatingAuthority: { _tag: "ChannelLink" as const, channelLinkId },
     requestVendorUsdMicros: 0n,
     resourceOwnerUserId: userId,
     subscription: { plan: "free" as const, planPolicyVersion: "launch-v1" },

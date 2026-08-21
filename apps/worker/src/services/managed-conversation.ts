@@ -12,7 +12,7 @@ import {
   type ManagedRouteUnavailable,
   selectManagedRoute,
 } from "../domain/model-access-policy";
-import { ManagedTurnMetadata } from "../domain/managed-conversation";
+import { ManagedTurnAuthorityIdentity, ManagedTurnMetadata } from "../domain/managed-conversation";
 import {
   AuthorizationContext,
   AuthorizationDenialReason,
@@ -21,6 +21,8 @@ import {
   snapshotCoreMemoryAuthorization,
 } from "./authorization";
 import { CoreMemoryAuthorizationSnapshot } from "../domain/core-memory-authorization";
+
+/* oxlint-disable eslint/no-underscore-dangle -- Authority identities use the _tag discriminator. */
 
 const boundedIdentity = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
 const boundedMessage = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64_000));
@@ -124,6 +126,22 @@ export const admitManagedConversation = (
     const coreMemoryAuthorization = yield* Schema.encodeEffect(CoreMemoryAuthorizationSnapshot)(
       snapshotCoreMemoryAuthorization(input.authorization),
     ).pipe(Effect.orDie);
+    const origin = input.authorization.originatingAuthority;
+    const authorityIdentity =
+      origin._tag !== "ChannelLink"
+        ? ManagedTurnAuthorityIdentity.make({
+            ...origin,
+            userId: input.authorization.user.userId,
+          })
+        : Predicate.isTagged(input.authorization.authority, "ChannelLink")
+          ? ManagedTurnAuthorityIdentity.make({
+              ...origin,
+              address: input.authorization.authority.address,
+              userId: input.authorization.user.userId,
+            })
+          : yield* Effect.die(
+              new Error("A Channel Link turn was admitted without current Channel Link authority"),
+            );
     return {
       _tag: "ManagedConversationAdmitted",
       idempotencyKey: input.idempotencyKey,
@@ -131,10 +149,7 @@ export const admitManagedConversation = (
       metadata: ManagedTurnMetadata.make({
         _tag: "OsfoManagedTurn",
         allowancePeriodId: admission.allowancePeriod.allowancePeriodId,
-        authorityIdentity: {
-          ...input.authorization.originatingAuthority,
-          userId: input.authorization.user.userId,
-        },
+        authorityIdentity,
         conservativeVendorUsdMicros: Number(maxVendorUsdMicros),
         coreMemoryAuthorization,
         maxInputTokens: profile.context.maxInputTokens,

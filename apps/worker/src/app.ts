@@ -3,16 +3,12 @@ import { Effect, Layer, Schema, type ManagedRuntime } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 
 import type { AuthDependencies } from "./auth";
-import { loadConfig, publicWebBaseUrl, type CloudflareConfig, type CloudflareEnv } from "./config";
+import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "./config";
 import { Db } from "./db";
 import { TwilioVerify } from "./integrations/twilio/verify";
-import { OnboardingCloudflare } from "./integrations/cloudflare/onboarding";
-import { OnboardingPostgres } from "./services/onboarding/postgres";
-import { OnboardingLinksAdapter } from "./integrations/public/onboarding-links";
 import { makeWorkerRuntime, type ExecutionUnit, RuntimeProbeResult } from "./layers";
 import { Routes } from "./routes";
-import { Onboarding } from "./services/onboarding";
-import { Registration } from "./services/registration";
+import { ChannelLinks } from "./services/channel-links";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/identity";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare RPC adapters expose Promise-based interfaces. */
@@ -23,7 +19,6 @@ export interface Bindings {
   readonly DB: Pick<Hyperdrive, "connectionString">;
   readonly OSFO_DIRECTORY: Routes.Bindings["OSFO_DIRECTORY"];
   readonly routeOsfoAgentRequest: Routes.Bindings["routeOsfoAgentRequest"];
-  readonly REGISTRATION_DIALOGUE: Routes.Bindings["REGISTRATION_DIALOGUE"];
 }
 
 /** Optional concrete dependency choices for application composition. */
@@ -71,28 +66,23 @@ const makeWebHandler = (
     env,
     runtime,
   }).pipe(Layer.provide(BrowserCrypto.layer), Layer.provide(HttpServer.layerServices));
-  return HttpRouter.toWebHandler(appLayer, { disableLogger: true });
+  return HttpRouter.toWebHandler(appLayer, {
+    disableLogger: true,
+    // Signed Channel Link Invite claims are intentionally larger than the router's 100-byte default.
+    routerConfig: { maxParamLength: 512 },
+  });
 };
 
-/** Delete expired Registration Invitation data from the scheduled Worker event. */
-export const expireRegistrationInvitations = (env: CloudflareEnv, config: CloudflareConfig) =>
-  Effect.runPromise(Effect.scoped(runInvitationExpiry(adaptBindings(env), config)));
-
-const runInvitationExpiry = (env: Bindings, config: CloudflareConfig) => {
+/** Delete expired Channel Link Invite data from the scheduled Worker event. */
+export const expireChannelLinkInvites = (env: CloudflareEnv) => {
   const base = Layer.merge(Db.layer({ db: env.DB }), BrowserCrypto.layer);
-  const dependencies = Layer.mergeAll(
-    Registration.layerWithoutDependencies,
-    OnboardingCloudflare.layer(env),
-    OnboardingLinksAdapter.layer({
-      officialWhatsAppNumber: config.whatsApp.publicPhoneNumber,
-      publicBaseUrl: publicWebBaseUrl(config.auth),
-      telegramBotUsername: config.telegram.botUsername,
-    }),
-  ).pipe(Layer.provideMerge(base));
-  const onboarding = OnboardingPostgres.layer.pipe(Layer.provide(dependencies));
-  return Effect.flatMap(Onboarding.Service, (service) => service.expireInvitations).pipe(
-    // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Scheduled maintenance is an application entry point.
-    Effect.provide(onboarding),
+  return Effect.runPromise(
+    Effect.scoped(
+      ChannelLinks.expirePending().pipe(
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Scheduled maintenance is an application entry point.
+        Effect.provide(base),
+      ),
+    ),
   );
 };
 
@@ -103,8 +93,6 @@ const adaptBindings = (env: CloudflareEnv): Bindings => ({
     getByName: () => {
       const directory = env.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME);
       return {
-        commitAgentWelcome: async (agentId, input) =>
-          Schema.decodePromise(AgentRpcTag)(await directory.commitAgentWelcome(agentId, input)),
         ensureAgent: async (agentId) => {
           const identity = await directory.ensureAgent(agentId);
           return { className: identity.className, name: identity.name };
@@ -124,21 +112,6 @@ const adaptBindings = (env: CloudflareEnv): Bindings => ({
     return routeSubAgentRequest(request, directory, {
       fromPath: `/sub/${segment}/${agentId}${childPath}`,
     });
-  },
-  REGISTRATION_DIALOGUE: {
-    getByName: (identity) => {
-      const dialogue = async () => env.REGISTRATION_DIALOGUE.getByName(identity);
-      return {
-        deleteDialogue: async () => {
-          const agent = await dialogue();
-          await agent.deleteDialogue();
-        },
-        probeRuntime: async () => {
-          const agent = await dialogue();
-          return Schema.decodePromise(RuntimeProbeResult)(await agent.probeRuntime());
-        },
-      };
-    },
   },
 });
 

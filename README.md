@@ -96,7 +96,7 @@ for five sends per hour. The Worker supplies this key on every SMS request.
 
 ### Telegram configuration
 
-Telegram is a required onboarding and acceptance transport. Create a bot with
+Telegram is a required messaging and Channel Link transport. Create a bot with
 BotFather, then set the four `TELEGRAM_*` values shown in
 `apps/worker/.env.example`. `TELEGRAM_ALLOWED_USER_IDS` is a comma-separated
 list of numeric Telegram User IDs. The Worker rejects missing configuration,
@@ -110,14 +110,13 @@ https://<development-worker>/webhooks/telegram
 
 Supply `TELEGRAM_WEBHOOK_SECRET_TOKEN` as the `secret_token` for that request.
 The same value must arrive in Telegram's
-`X-Telegram-Bot-Api-Secret-Token` header. Web-first enrollment opens the bot with
-a single-use `start` token. Only the token digest is stored.
+`X-Telegram-Bot-Api-Secret-Token` header.
 
 Cloudflare Think and Chat SDK verify and decode Telegram updates. They also own
 update deduplication, reply recovery, streaming, message edits, splitting, and
 delivery. The shared webhook enters `OsfoDirectory("main")`. The directory
-resolves the provider-neutral channel binding and routes a bound conversation
-to the registered `OsfoAgent[agentId]` facet. Web chat uses the same facet.
+resolves the Channel Address to an active Channel Link and routes the message to
+the registered `OsfoAgent[agentId]` facet.
 
 ## Verification
 

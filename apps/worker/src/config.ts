@@ -18,6 +18,7 @@ type RawConfigBinding =
   | "BETTER_AUTH_BASE_URL"
   | "BETTER_AUTH_SECRET"
   | "BETTER_AUTH_TRUSTED_ORIGINS"
+  | "CHANNEL_LINK_SIGNING_KEYS"
   | "OSFO_STAGE"
   | "STRIPE_ADVENTURER_PRICE_ID"
   | "STRIPE_ADVENTURER_PRODUCT_ID"
@@ -35,7 +36,6 @@ type RawConfigBinding =
   | "WHATSAPP_APP_SECRET"
   | "WHATSAPP_BOT_USERNAME"
   | "WHATSAPP_PHONE_NUMBER_ID"
-  | "WHATSAPP_PUBLIC_PHONE_NUMBER"
   | "WHATSAPP_VERIFY_TOKEN";
 
 type GeneratedCloudflareBindings = Omit<Env, RawConfigBinding>;
@@ -46,6 +46,7 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly BETTER_AUTH_BASE_URL?: string;
   readonly BETTER_AUTH_SECRET?: string;
   readonly BETTER_AUTH_TRUSTED_ORIGINS?: string;
+  readonly CHANNEL_LINK_SIGNING_KEYS?: string;
   readonly OSFO_STAGE?: string;
   readonly STRIPE_ADVENTURER_PRICE_ID?: string;
   readonly STRIPE_ADVENTURER_PRODUCT_ID?: string;
@@ -63,7 +64,6 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly WHATSAPP_APP_SECRET?: string;
   readonly WHATSAPP_BOT_USERNAME?: string;
   readonly WHATSAPP_PHONE_NUMBER_ID?: string;
-  readonly WHATSAPP_PUBLIC_PHONE_NUMBER?: string;
   readonly WHATSAPP_VERIFY_TOKEN?: string;
 }
 
@@ -81,6 +81,14 @@ export interface AuthConfig {
   readonly trustedOrigins: ReadonlyArray<string>;
 }
 
+/** Rotation-capable signing material for reconstructible Channel Link Invite URLs. */
+export interface ChannelLinksConfig {
+  readonly signingKeys: readonly [
+    { readonly id: string; readonly secret: Redacted.Redacted },
+    ...ReadonlyArray<{ readonly id: string; readonly secret: Redacted.Redacted }>,
+  ];
+}
+
 /** Resolve the first trusted web origin used for public Osfo links. */
 export const publicWebBaseUrl = (config: AuthConfig): URL =>
   new URL(config.trustedOrigins[0] ?? config.baseURL);
@@ -91,7 +99,6 @@ export interface WhatsAppConfig {
   readonly appSecret: Redacted.Redacted;
   readonly botUsername: string;
   readonly phoneNumberId: string;
-  readonly publicPhoneNumber: string;
   readonly verifyToken: Redacted.Redacted;
 }
 
@@ -104,7 +111,7 @@ export interface StripeConfig {
   readonly webhookSecret: Redacted.Redacted;
 }
 
-/** Telegram onboarding and delivery configuration. */
+/** Telegram linking and delivery configuration. */
 export interface TelegramConfig {
   readonly allowedUserIds: ReadonlyArray<string>;
   readonly botToken: Redacted.Redacted;
@@ -122,6 +129,7 @@ export interface TwilioVerifyConfig {
 /** Parsed configuration used by one request application. */
 export interface CloudflareConfig {
   readonly auth: AuthConfig;
+  readonly channelLinks: ChannelLinksConfig;
   readonly stage: OsfoStage;
   readonly stripe: StripeConfig;
   readonly telegram: TelegramConfig;
@@ -154,6 +162,7 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
   if (allowedUserIds.length === 0) invalid("TELEGRAM_ALLOWED_USER_IDS is required");
+  const signingKeys = parseChannelLinkSigningKeys(required(env, "CHANNEL_LINK_SIGNING_KEYS"));
 
   return {
     auth: {
@@ -166,6 +175,7 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
       secret: Redacted.make(secret),
       trustedOrigins,
     },
+    channelLinks: { signingKeys },
     stage,
     stripe: {
       adventurerPriceId: required(env, "STRIPE_ADVENTURER_PRICE_ID").trim(),
@@ -190,7 +200,6 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
       appSecret: Redacted.make(required(env, "WHATSAPP_APP_SECRET")),
       botUsername: required(env, "WHATSAPP_BOT_USERNAME").trim(),
       phoneNumberId: required(env, "WHATSAPP_PHONE_NUMBER_ID").trim(),
-      publicPhoneNumber: required(env, "WHATSAPP_PUBLIC_PHONE_NUMBER").trim(),
       verifyToken: Redacted.make(required(env, "WHATSAPP_VERIFY_TOKEN")),
     },
   };
@@ -233,6 +242,34 @@ const selectTrustedOrigins = (
   stage === "production" && baseURL.origin === productionApiOrigin
     ? [productionWebOrigin]
     : configuredOrigins;
+
+const SigningKeys = Schema.fromJsonString(
+  Schema.Array(Schema.Struct({ id: Schema.String, secret: Schema.String })),
+);
+
+const parseChannelLinkSigningKeys = (value: string): ChannelLinksConfig["signingKeys"] => {
+  const decoded = Schema.decodeOption(SigningKeys)(value);
+  if (Option.isNone(decoded) || decoded.value.length === 0) {
+    return invalid("CHANNEL_LINK_SIGNING_KEYS must contain at least one signing key");
+  }
+  const ids = new Set<string>();
+  const keys = decoded.value.map((key) => {
+    const id = key.id.trim();
+    if (id.length === 0 || ids.has(id)) {
+      return invalid("CHANNEL_LINK_SIGNING_KEYS must contain unique non-empty key ids");
+    }
+    if (key.secret.length < 32) {
+      return invalid("CHANNEL_LINK_SIGNING_KEYS secrets must contain at least 32 characters");
+    }
+    ids.add(id);
+    return { id, secret: Redacted.make(key.secret) };
+  });
+  const current = keys[0];
+  if (current === undefined) {
+    return invalid("CHANNEL_LINK_SIGNING_KEYS must contain at least one signing key");
+  }
+  return [current, ...keys.slice(1)];
+};
 
 const invalid = (message: string): never => {
   throw new WorkerConfigurationError({

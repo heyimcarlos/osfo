@@ -12,7 +12,6 @@ import { makeWhatsAppAdapter } from "./integrations/whatsapp";
 export { OsfoAgent } from "./agents/osfo/agent";
 export { OsfoDirectory } from "./agents/osfo/directory";
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
-export { RegistrationDialogue } from "./agents/registration/registration";
 export { ExecutionUnitWorkflow } from "./workflows/runtime";
 export { Sandbox } from "@cloudflare/sandbox";
 
@@ -60,12 +59,11 @@ const worker = {
   },
   scheduled(_controller: ScheduledController, env: CloudflareEnv, context: ExecutionContext): void {
     try {
-      const config = loadConfig(env);
+      loadConfig(env);
       context.waitUntil(
-        Promise.all([
-          App.expireRegistrationInvitations(env, config),
-          DocumentCostReconciliation.run(env),
-        ]).then(() => undefined),
+        Promise.all([App.expireChannelLinkInvites(env), DocumentCostReconciliation.run(env)]).then(
+          () => undefined,
+        ),
       );
     } catch (error) {
       if (Schema.is(WorkerConfigurationError)(error)) logConfigurationError(error);

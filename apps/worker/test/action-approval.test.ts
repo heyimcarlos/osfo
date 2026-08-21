@@ -8,7 +8,7 @@ import { DateTime, Effect, Schema } from "effect";
 import {
   AgentId,
   AgentInitializationId,
-  ChannelBindingId,
+  ChannelLinkId,
   ConversationRouteId,
   SessionId,
   UserId,
@@ -214,8 +214,8 @@ describe("Think Action and exact Approval", () => {
         present: presentTestProtectedAction,
       });
       const actor = {
-        _tag: "ChannelBinding" as const,
-        channelBindingId: ChannelBindingId.make("binding-owner"),
+        _tag: "ChannelLink" as const,
+        channelLinkId: ChannelLinkId.make("link-owner"),
         userId: UserId.make("user-owner"),
       };
 

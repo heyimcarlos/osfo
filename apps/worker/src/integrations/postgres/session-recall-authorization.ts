@@ -9,18 +9,20 @@ import type { ManagedTurnAuthorityIdentity } from "../../domain/managed-conversa
 import { AgentDirectory } from "../../services/agent-directory";
 import { SessionRecallCurrentAuthorizationFacts } from "../../services/session-recall-authorization";
 import { SessionRecallAuthorizationUnavailable } from "../../services/session-recall";
+import { ChannelLinks } from "../../services/channel-links";
 
 /** Read current Session Recall authorization facts from their authoritative PostgreSQL owners. */
 export const inspect = (agentId: AgentId, identity: ManagedTurnAuthorityIdentity) =>
   Effect.gen(function* () {
     const database = yield* Db.database;
     const authorities = yield* AccountAuthorities.make;
+    const channelLinks = yield* ChannelLinks.Service;
     const directory = yield* AgentDirectory.make;
     const owner = yield* directory.resolveAgent(agentId);
     const authority = Predicate.isTagged(identity, "AuthSession")
       ? yield* authorities.authSessions.inspect(identity.userId, identity.authSessionId)
-      : Predicate.isTagged(identity, "ChannelBinding")
-        ? yield* authorities.channelBindings.inspect(identity.userId, identity.channelBindingId)
+      : Predicate.isTagged(identity, "ChannelLink")
+        ? yield* inspectChannelLink(channelLinks, identity)
         : identity;
     const [deletionAccess, user, subscriptionRows, now] = yield* Effect.all([
       authorities.deletionCases.inspect(identity.userId),
@@ -60,6 +62,30 @@ export const inspect = (agentId: AgentId, identity: ManagedTurnAuthorityIdentity
             cause,
             message: "Current Session Recall authorization facts are unavailable",
           }),
+    ),
+  );
+
+const inspectChannelLink = (
+  channelLinks: Pick<ChannelLinks.Interface, "resolve">,
+  identity: Extract<ManagedTurnAuthorityIdentity, { readonly _tag: "ChannelLink" }>,
+) =>
+  channelLinks.resolve(identity.address).pipe(
+    Effect.map((link) =>
+      link !== null &&
+      link.channelLinkId === identity.channelLinkId &&
+      link.userId === identity.userId
+        ? ({
+            _tag: "ChannelLink",
+            address: identity.address,
+            channelLinkId: identity.channelLinkId,
+            userId: identity.userId,
+          } as const)
+        : ({
+            _tag: "RevokedChannelLink",
+            address: identity.address,
+            channelLinkId: identity.channelLinkId,
+            userId: identity.userId,
+          } as const),
     ),
   );
 

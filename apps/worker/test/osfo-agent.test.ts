@@ -11,7 +11,7 @@ import {
   AgentInitializationId,
   AllowancePeriodId,
   AssistantMessageId,
-  ChannelBindingId,
+  ChannelLinkId,
   ConversationRouteId,
   PlanPolicyVersion,
   SessionId,
@@ -20,6 +20,7 @@ import {
   UserId,
 } from "../src/domain";
 import { ManagedTurnMetadata } from "../src/domain/managed-conversation";
+import { ChannelAddress, ChannelAuthorId, ChannelId } from "../src/domain/channel-link";
 import { ModelCallAttemptId } from "../src/domain/model-call-attempt";
 import { DbTimestamp } from "../src/db";
 import { makeAgentDb } from "../src/agents/osfo/db/client";
@@ -53,6 +54,11 @@ import {
 import { replaceOwnedSession } from "./support/session-store";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/prefer-typed-schema-decoder, effecttsgo/run-effect-inside-effect, effecttsgo/schema-sync-in-effect, eslint/no-await-in-loop, eslint/no-underscore-dangle, osfo/no-chained-type-assertions, osfo/no-unknown-parameters, osfo/no-unknown-returns, typescript/await-thenable, typescript/no-unsafe-type-assertion -- Worker integration tests cross Promise, RPC, Effect, Think's private Action compiler, and raw SQLite test boundaries. */
+
+const coreMemoryChannelAddress = ChannelAddress.make({
+  authorId: ChannelAuthorId.make("core-memory-author"),
+  channelId: ChannelId.make("core-memory-channel"),
+});
 
 describe("Osfo Agent and Think Session foundation", () => {
   it.effect("starts the first turn with empty independently bounded Core Memory blocks", () =>
@@ -170,8 +176,8 @@ describe("Osfo Agent and Think Session foundation", () => {
         async () => await getAgentByName(env.OSFO_AGENT_TEST_FACET, "agent-core-memory-clear"),
       );
       const actor = {
-        _tag: "ChannelBinding" as const,
-        channelBindingId: "test-protected-action-binding",
+        _tag: "ChannelLink" as const,
+        channelLinkId: "test-protected-action-link",
         userId: testProtectedActionUserId,
       };
       const presentationId = ActionPresentationId.make(parked.executionId);
@@ -269,8 +275,8 @@ describe("Osfo Agent and Think Session foundation", () => {
         async () =>
           await agent.decideActionApproval({
             actor: {
-              _tag: "ChannelBinding",
-              channelBindingId: "test-protected-action-binding",
+              _tag: "ChannelLink",
+              channelLinkId: "test-protected-action-link",
               userId: testProtectedActionUserId,
             },
             authorization: approvalAuthorization("revoked"),
@@ -556,63 +562,6 @@ describe("Osfo Agent and Think Session foundation", () => {
       expect(registered.actions).toContain("generateDocument");
       expect(registered.actions).toContain("deleteDocument");
       expect(registered.tools).toContain("exportDocument");
-    }),
-  );
-
-  it.effect("commits one localized welcome from accepted setup facts only", () =>
-    Effect.gen(function* () {
-      const agentId = Schema.decodeUnknownSync(AgentId)("agent-personal-welcome");
-      const initializationId =
-        Schema.decodeUnknownSync(AgentInitializationId)("init-personal-welcome");
-      const routeId = Schema.decodeUnknownSync(ConversationRouteId)("route-personal-welcome");
-      const sessionId = Schema.decodeUnknownSync(SessionId)("session-personal-welcome");
-      const agent = env.OSFO_AGENT_TEST_FACET.getByName(agentId);
-      yield* Effect.promise(
-        async () =>
-          await agent.initialize({
-            agentId,
-            initializationId,
-            initializedAt: "2026-08-15T12:00:00.000Z",
-            routeId,
-            sessionId,
-          }),
-      );
-
-      const input = {
-        channelBindingId: "channel-binding-welcome",
-        helpAreas: ["scheduling-reminders", "writing-email"],
-        locale: "es",
-        preferredName: "Sol",
-      } as const;
-      const committed = yield* Effect.promise(async () => await agent.commitWelcome(input));
-      const repeated = yield* Effect.promise(async () => await agent.commitWelcome(input));
-      const history = yield* Effect.promise(async () => await agent.readSession(sessionId));
-      const receipts = yield* Effect.promise(async () => await agent.readCommittedTurns());
-
-      expect(repeated).toEqual(committed);
-      expect(committed).toEqual({
-        _tag: "PersonalWelcomeCommitted",
-        messageId: "welcome-channel-binding-welcome",
-        sessionId,
-        text: "Hola Sol, estoy listo. Elegiste agenda y recordatorios y redacción y correo. ¿En qué trabajamos primero?",
-      });
-      expect(history).toEqual({
-        _tag: "SessionHistoryFound",
-        messages: [
-          {
-            id: "welcome-channel-binding-welcome",
-            parts: [
-              {
-                text: "Hola Sol, estoy listo. Elegiste agenda y recordatorios y redacción y correo. ¿En qué trabajamos primero?",
-                type: "text",
-              },
-            ],
-            role: "assistant",
-          },
-        ],
-        sessionId,
-      });
-      expect(receipts).toHaveLength(1);
     }),
   );
 
@@ -1771,8 +1720,9 @@ const coreMemoryAuthorization = () =>
     },
     approval: null,
     authority: {
-      _tag: "ChannelBinding",
-      channelBindingId: ChannelBindingId.make("binding-core-memory"),
+      _tag: "ChannelLink",
+      address: coreMemoryChannelAddress,
+      channelLinkId: ChannelLinkId.make("link-core-memory"),
       userId: UserId.make("user-core-memory"),
     },
     deletionAccess: { _tag: "DeletionAccessAvailable" },
@@ -1785,8 +1735,8 @@ const coreMemoryAuthorization = () =>
     },
     now: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z")),
     originatingAuthority: {
-      _tag: "ChannelBinding",
-      channelBindingId: ChannelBindingId.make("binding-core-memory"),
+      _tag: "ChannelLink",
+      channelLinkId: ChannelLinkId.make("link-core-memory"),
     },
     requestVendorUsdMicros: 0n,
     resourceOwnerUserId: UserId.make("user-core-memory"),
@@ -1801,8 +1751,9 @@ const revokedCoreMemoryAuthorization = () =>
   AuthorizationContext.make({
     ...coreMemoryAuthorization(),
     authority: {
-      _tag: "RevokedChannelBinding",
-      channelBindingId: ChannelBindingId.make("binding-core-memory"),
+      _tag: "RevokedChannelLink",
+      address: coreMemoryChannelAddress,
+      channelLinkId: ChannelLinkId.make("link-core-memory"),
       userId: UserId.make("user-core-memory"),
     },
   });
@@ -1823,8 +1774,9 @@ const managedTurnMetadata = (name: string) => {
     _tag: "OsfoManagedTurn",
     allowancePeriodId: AllowancePeriodId.make(`period-${name}`),
     authorityIdentity: {
-      _tag: "ChannelBinding",
-      channelBindingId: ChannelBindingId.make("binding-core-memory"),
+      _tag: "ChannelLink",
+      address: coreMemoryChannelAddress,
+      channelLinkId: ChannelLinkId.make("link-core-memory"),
       userId: UserId.make("user-core-memory"),
     },
     conservativeVendorUsdMicros: 1,
@@ -1836,8 +1788,8 @@ const managedTurnMetadata = (name: string) => {
     maxRetries: profile.maxRetries,
     maxSteps: Number(currentPolicy.plans.free.operationLimits.modelStepsPerRequest),
     originatingAuthority: {
-      _tag: "ChannelBinding",
-      channelBindingId: "binding-core-memory",
+      _tag: "ChannelLink",
+      channelLinkId: "link-core-memory",
     },
     plan: "free",
     planPolicyVersion: PlanPolicyVersion.make("launch-v1"),

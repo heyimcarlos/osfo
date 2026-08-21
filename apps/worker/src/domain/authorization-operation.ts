@@ -27,7 +27,7 @@ const simpleOperations = [
   "billing.inspect",
   "subscription.manage",
   "authSession.revoke",
-  "channelBinding.revoke",
+  "channelLink.revoke",
   "phoneAccount.replace",
   "account.delete",
   "dataRights.request",

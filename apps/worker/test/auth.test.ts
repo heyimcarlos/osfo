@@ -1,9 +1,11 @@
+import { BrowserCrypto } from "@effect/platform-browser";
 import { describe, expect, it } from "@effect/vitest";
 import { applyMigrations, closeTestDatabase, makeTestDatabase } from "@osfo/db/testing";
 import { accounts, sessions, users, verifications } from "@osfo/db/schema/auth";
+import { channelLinks } from "@osfo/db/schema/channel-links";
 import { userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { count, eq } from "drizzle-orm";
-import { Effect, Layer, Redacted, Schema } from "effect";
+import { DateTime, Effect, Layer, Redacted, Schema } from "effect";
 import { HttpRouter } from "effect/unstable/http";
 
 import { App } from "../src/app";
@@ -11,6 +13,7 @@ import { WorkerAuth } from "../src/auth";
 import { Db } from "../src/db";
 import type { CloudflareConfig } from "../src/config";
 import { TwilioVerify } from "../src/integrations/twilio/verify";
+import { ChannelLinks } from "../src/services/channel-links";
 
 const authConfig = {
   baseURL: "https://osfo.test/",
@@ -543,6 +546,107 @@ describe("phone authentication", () => {
   );
 });
 
+describe("Channel Link HTTP authentication", () => {
+  it.live("accepts only for the session User and rejects incomplete registration", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(fixture.client);
+          const twilio = makeTestTwilio();
+          const dbLayer = Db.layerFromDatabase(fixture.database);
+          const authDependencies = Layer.merge(
+            dbLayer,
+            Layer.succeed(TwilioVerify.Service, twilio.service),
+          );
+          const app = App.make(testBindings, runtimeConfig, { authDependencies });
+          const channelLinksLayer = ChannelLinks.layer({
+            invitationLifetime: { hours: 24 },
+            signingKeys: runtimeConfig.channelLinks.signingKeys,
+            verificationBaseUrl: new URL("https://osfo.test/verify/"),
+          }).pipe(Layer.provideMerge(dbLayer), Layer.provide(BrowserCrypto.layer));
+
+          const registeredSession = yield* authenticatePhone(app.handler, twilio, "+14165550120");
+          const storedRegisteredUsers = yield* Effect.promise(() =>
+            fixture.database.select().from(users).where(eq(users.phoneNumber, "+14165550120")),
+          );
+          const registeredUser = yield* Effect.suspend(() => {
+            const user = storedRegisteredUsers[0];
+            return user === undefined
+              ? Effect.die(new Error("Registered HTTP test User was not created"))
+              : Effect.succeed(user);
+          });
+          yield* Effect.promise(() =>
+            fixture.database
+              .update(users)
+              .set({
+                registrationCompletedAt: DateTime.toDateUtc(
+                  DateTime.makeUnsafe("2026-08-21T12:00:00.000Z"),
+                ),
+              })
+              .where(eq(users.id, registeredUser.id)),
+          );
+          const registeredInvite = yield* ensureHttpInvite(
+            channelLinksLayer,
+            "http-registered-author",
+          );
+          const inspection = yield* apiRequest(
+            app.handler,
+            `/v1/channel-link-invites/${registeredInvite}`,
+            { method: "GET" },
+          );
+          const accepted = yield* apiRequest(
+            app.handler,
+            `/v1/channel-link-invites/${registeredInvite}/accept`,
+            {
+              body: { userId: "browser-selected-attacker" },
+              cookie: registeredSession,
+              method: "POST",
+            },
+          );
+          const [storedLink] = yield* Effect.promise(() =>
+            fixture.database.select().from(channelLinks),
+          );
+          expect(registeredInvite).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u);
+          expect(inspection.status).toBe(200);
+          expect(yield* Effect.promise(() => inspection.json())).toMatchObject({
+            state: "pending",
+          });
+          expect(accepted.status).toBe(200);
+          expect(yield* Effect.promise(() => accepted.json())).toEqual({ state: "linked" });
+          expect(storedLink?.user_id).toBe(registeredUser.id);
+          expect(storedLink?.user_id).not.toBe("browser-selected-attacker");
+
+          const incompleteSession = yield* authenticatePhone(app.handler, twilio, "+14165550121");
+          const incompleteInvite = yield* ensureHttpInvite(
+            channelLinksLayer,
+            "http-incomplete-author",
+          );
+          const rejected = yield* apiRequest(
+            app.handler,
+            `/v1/channel-link-invites/${incompleteInvite}/accept`,
+            {
+              body: { userId: registeredUser.id },
+              cookie: incompleteSession,
+              method: "POST",
+            },
+          );
+
+          expect(rejected.status).toBe(403);
+          expect(yield* Effect.promise(() => rejected.json())).toMatchObject({
+            _tag: "ChannelLinkRegistrationRequired",
+          });
+          expect(
+            yield* Effect.promise(() => fixture.database.select().from(channelLinks)),
+          ).toHaveLength(1);
+
+          yield* Effect.promise(app.dispose);
+        }),
+      closeTestDatabase,
+    ),
+  );
+});
+
 describe("authentication dependency scope", () => {
   it.effect("shares one dependency graph across typed and raw routes", () =>
     Effect.acquireUseRelease(
@@ -705,6 +809,64 @@ const request = (
     ),
   );
 
+const authenticatePhone = (
+  handler: (request: Request) => Promise<Response>,
+  twilio: ReturnType<typeof makeTestTwilio>,
+  phoneNumber: string,
+) =>
+  Effect.gen(function* () {
+    yield* request(handler, "/auth/phone-number/send-otp", { phoneNumber });
+    const verified = yield* request(handler, "/auth/phone-number/verify", {
+      code: twilio.code,
+      phoneNumber,
+    });
+    const cookie = verified.headers.get("set-cookie")?.split(";", 1)[0];
+    if (cookie === undefined) return yield* Effect.die(new Error("Authentication cookie missing"));
+    return cookie;
+  });
+
+const ensureHttpInvite = (layer: Layer.Layer<ChannelLinks.Service>, authorId: string) =>
+  Effect.scoped(
+    ChannelLinks.Service.pipe(
+      Effect.flatMap((channelLinksService) =>
+        channelLinksService.ensure(
+          ChannelLinks.ChannelAddress.make({
+            authorId: ChannelLinks.ChannelAuthorId.make(authorId),
+            channelId: ChannelLinks.ChannelId.make("telegram-http"),
+          }),
+        ),
+      ),
+      // oxlint-disable-next-line effecttsgo/strict-effect-provide -- HTTP integration test constructs the production authority at its application boundary.
+      Effect.provide(layer),
+      Effect.flatMap((ensured) =>
+        // oxlint-disable-next-line eslint/no-underscore-dangle -- Effect tagged unions use the canonical `_tag` discriminator.
+        ensured._tag === "Invited"
+          ? Effect.succeed(ensured.verificationUrl.pathname.split("/").at(-1) ?? "")
+          : Effect.die(new Error("Expected a fresh HTTP Channel Link Invite")),
+      ),
+    ),
+  );
+
+const apiRequest = (
+  handler: (request: Request) => Promise<Response>,
+  path: string,
+  options: {
+    readonly body?: Readonly<Record<string, string>>;
+    readonly cookie?: string;
+    readonly method: "GET" | "POST";
+  },
+) =>
+  Effect.promise(() => {
+    const headers = new Headers({ origin: "https://osfo.test" });
+    if (options.body !== undefined) headers.set("content-type", "application/json");
+    if (options.cookie !== undefined) headers.set("cookie", options.cookie);
+    const init =
+      options.body === undefined
+        ? { headers, method: options.method }
+        : { body: encodeJsonText(options.body), headers, method: options.method };
+    return handler(new Request(`https://osfo.test${path}`, init));
+  });
+
 const requestWithSession = (
   handler: (request: Request) => Promise<Response>,
   path: string,
@@ -798,6 +960,14 @@ const responseJson = (response: Response) =>
 
 const runtimeConfig: CloudflareConfig = {
   auth: authConfig,
+  channelLinks: {
+    signingKeys: [
+      {
+        id: "test-current",
+        secret: Redacted.make("test-only-channel-link-key-with-32-characters"),
+      },
+    ],
+  },
   stage: "test",
   telegram: {
     allowedUserIds: ["12345"],
@@ -817,7 +987,6 @@ const runtimeConfig: CloudflareConfig = {
     appSecret: Redacted.make("test-only-whatsapp-app-secret"),
     botUsername: "osfo_test_whatsapp",
     phoneNumberId: "123456789",
-    publicPhoneNumber: "14165550100",
     verifyToken: Redacted.make("test-only-whatsapp-verify-token"),
   },
   twilioVerify: {
@@ -831,11 +1000,6 @@ const testBindings: App.Bindings = {
   DB: { connectionString: "postgres://unused.invalid/osfo" },
   OSFO_DIRECTORY: {
     getByName: (identity) => ({
-      commitAgentWelcome: () =>
-        Promise.resolve({
-          _tag: "PersonalWelcomeCommitted",
-          messageId: "welcome-test",
-        }),
       ensureAgent: (agentId) => Promise.resolve({ className: "OsfoAgent", name: agentId }),
       initializeAgent: () => Promise.resolve({ _tag: "AgentInitialized" }),
       probeAgent: () =>
@@ -849,17 +1013,4 @@ const testBindings: App.Bindings = {
     }),
   },
   routeOsfoAgentRequest: () => Promise.resolve(new Response(null, { status: 404 })),
-  REGISTRATION_DIALOGUE: {
-    getByName: (identity) => ({
-      deleteDialogue: () => Promise.resolve(),
-      probeRuntime: () =>
-        Promise.resolve({
-          activationId: "test-registration-activation",
-          executionUnit: "registration-dialogue" as const,
-          identity,
-          kind: "RuntimeProbe" as const,
-          stage: "test" as const,
-        }),
-    }),
-  },
 };

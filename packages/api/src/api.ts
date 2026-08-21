@@ -2,14 +2,14 @@ import { HttpApi, OpenApi } from "effect/unstable/httpapi";
 
 import { HealthGroup } from "./groups/health";
 import { BillingGroup } from "./groups/billing";
-import { OnboardingGroup } from "./groups/onboarding";
+import { ChannelLinksGroup } from "./groups/channel-links";
 import { RegistrationGroup } from "./groups/registration";
 
 /** Shared HTTP contract implemented by the Worker and consumed by clients. */
 export const Api = HttpApi.make("osfo")
   .add(BillingGroup)
+  .add(ChannelLinksGroup)
   .add(HealthGroup)
-  .add(OnboardingGroup)
   .add(RegistrationGroup)
   .annotateMerge(
     OpenApi.annotations({
@@ -21,6 +21,16 @@ export const Api = HttpApi.make("osfo")
 
 export { HealthGroup, HealthResponse } from "./groups/health";
 export {
+  ChannelLinkAcceptanceResponse,
+  ChannelLinkConflict,
+  ChannelLinkInviteResponse,
+  ChannelLinkInviteToken,
+  ChannelLinkInviteUnavailable,
+  ChannelLinkRegistrationRequired,
+  ChannelLinksGroup,
+  ChannelLinksUnavailable,
+} from "./groups/channel-links";
+export {
   BillingGroup,
   BillingForbidden,
   BillingReconciliation,
@@ -30,24 +40,11 @@ export {
   BillingUnavailable,
 } from "./groups/billing";
 export {
-  ChannelBindingId,
-  ChannelBindingNeedsSupport,
-  ChannelEnrollmentResponse,
-  ChannelOnboardingResponse,
-  ChannelProvider,
-  HelpArea,
-  InvitationResponse,
-  InvitationUnavailable,
-  OnboardingGroup,
-  OnboardingLocale,
-  OnboardingResponse,
-  OnboardingUnavailable,
-  PhoneVerificationRequired,
-  RegistrationToken,
-  StartChannelEnrollmentRequest,
-} from "./groups/onboarding";
-export {
   AgentId,
+  HelpArea,
+  RegistrationLocale,
+  RegistrationPhoneVerificationRequired,
+  RegistrationProfile,
   RegistrationGroup,
   RegistrationResponse,
   RegistrationUnavailable,

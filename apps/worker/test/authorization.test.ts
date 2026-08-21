@@ -177,7 +177,7 @@ describe("Authorization", () => {
       operation("billing.inspect"),
       operation("subscription.manage"),
       operation("authSession.revoke"),
-      operation("channelBinding.revoke"),
+      operation("channelLink.revoke"),
       operation("phoneAccount.replace"),
       operation("account.delete"),
       operation("dataRights.request"),
@@ -339,28 +339,30 @@ describe("Authorization", () => {
     const authorityCases = [
       {
         authority: {
-          _tag: "ChannelBinding" as const,
-          channelBindingId: "channel-binding-001",
+          _tag: "ChannelLink" as const,
+          address: { authorId: "author-001", channelId: "channel-001" },
+          channelLinkId: "channel-link-001",
           userId: context.user.userId,
         },
         expected: { _tag: "Admitted" },
         operation: fileRead,
         originatingAuthority: {
-          _tag: "ChannelBinding" as const,
-          channelBindingId: "channel-binding-001",
+          _tag: "ChannelLink" as const,
+          channelLinkId: "channel-link-001",
         },
       },
       {
         authority: {
-          _tag: "RevokedChannelBinding" as const,
-          channelBindingId: "channel-binding-001",
+          _tag: "RevokedChannelLink" as const,
+          address: { authorId: "author-001", channelId: "channel-001" },
+          channelLinkId: "channel-link-001",
           userId: context.user.userId,
         },
         expected: { _tag: "Denied", reason: "authorityRevoked" },
         operation: fileRead,
         originatingAuthority: {
-          _tag: "ChannelBinding" as const,
-          channelBindingId: "channel-binding-001",
+          _tag: "ChannelLink" as const,
+          channelLinkId: "channel-link-001",
         },
       },
       {
@@ -640,7 +642,7 @@ const operationCases: ReadonlyArray<OperationCase> = [
   both(operation("billing.inspect")),
   both(operation("subscription.manage")),
   both(operation("authSession.revoke")),
-  both(operation("channelBinding.revoke")),
+  both(operation("channelLink.revoke")),
   both(operation("phoneAccount.replace")),
   both(operation("account.delete"), true),
   both(operation("dataRights.request")),

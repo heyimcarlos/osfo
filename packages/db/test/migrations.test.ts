@@ -40,11 +40,12 @@ describe("Postgres migrations", () => {
             "billing_checkout_sessions",
             "billing_customers",
             "billing_subscriptions",
-            "channel_bindings",
+            "channel_link_audit_events",
+            "channel_link_invites",
+            "channel_links",
             "deletion_cases",
             "migrations",
             "rate_limits",
-            "registration_invitations",
             "sessions",
             "user_suspension_events",
             "users",
@@ -52,6 +53,82 @@ describe("Postgres migrations", () => {
             "webhook_events",
             "webhook_jobs",
           ]);
+        }),
+      closeTestDatabase,
+    ),
+  );
+
+  it.effect("enforces Channel Link lifecycle and active-address invariants", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(client);
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO users (id, name, email, updated_at, registration_completed_at)
+              VALUES ('channel-user-1', 'Channel User 1', 'channel-1@example.test', now(), now()),
+                     ('channel-user-2', 'Channel User 2', 'channel-2@example.test', now(), now());
+              INSERT INTO channel_link_invites (
+                invite_id, channel_id, author_id, token_version, signing_key_id, expires_at
+              ) VALUES (
+                'invite-1', 'telegram:bot-1', 'author-1', 1, 'current', now() + interval '1 day'
+              );
+              INSERT INTO channel_links (channel_link_id, channel_id, author_id, user_id)
+              VALUES ('link-1', 'telegram:bot-1', 'author-2', 'channel-user-1');
+            `),
+          );
+
+          const rejectedStatements = [
+            `INSERT INTO channel_link_invites
+               (invite_id, channel_id, author_id, token_version, signing_key_id, expires_at)
+             VALUES ('invite-duplicate', 'telegram:bot-1', 'author-1', 1, 'current', now() + interval '1 day')`,
+            `INSERT INTO channel_link_invites
+               (invite_id, channel_id, author_id, token_version, signing_key_id, expires_at)
+             VALUES ('invite-version', 'telegram:bot-1', 'author-3', 0, 'current', now() + interval '1 day')`,
+            `UPDATE channel_link_invites
+             SET state = 'accepted', accepted_at = now(), accepted_user_id = 'channel-user-1'
+             WHERE invite_id = 'invite-1'`,
+            `INSERT INTO channel_links (channel_link_id, channel_id, author_id, user_id)
+             VALUES ('link-duplicate', 'telegram:bot-1', 'author-2', 'channel-user-2')`,
+            `UPDATE channel_links SET revoked_at = now() WHERE channel_link_id = 'link-1'`,
+            `UPDATE channel_links
+             SET revoked_at = now(), revoked_by = 'user:channel-user-1',
+                 revocation_reason = repeat('x', 201)
+             WHERE channel_link_id = 'link-1'`,
+            `UPDATE channel_link_invites
+             SET state = 'accepted', accepted_at = now(), accepted_user_id = 'channel-user-1',
+                 accepted_channel_link_id = 'link-missing'
+             WHERE invite_id = 'invite-1'`,
+            `INSERT INTO channel_link_audit_events (event_id, event_type, actor_id)
+             VALUES ('event-type', 'unknown', 'actor-1')`,
+            `INSERT INTO channel_link_audit_events (event_id, event_type, actor_id)
+             VALUES ('event-actor', 'invite_issued', '   ')`,
+          ];
+
+          for (const statement of rejectedStatements) {
+            const result = yield* Effect.tryPromise({
+              try: () => client.exec(statement),
+              catch: (cause) => new MigrationConstraintRejected({ cause }),
+            }).pipe(Effect.exit);
+            expect(Exit.isFailure(result)).toBe(true);
+          }
+
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO channel_links (channel_link_id, channel_id, author_id, user_id)
+              VALUES ('link-accepted', 'telegram:bot-1', 'author-accepted', 'channel-user-1');
+              UPDATE channel_link_invites
+              SET state = 'accepted', accepted_at = now(), accepted_user_id = 'channel-user-1',
+                  accepted_channel_link_id = 'link-accepted'
+              WHERE invite_id = 'invite-1';
+              UPDATE channel_links
+              SET revoked_at = now(), revoked_by = 'channel-user-1', revocation_reason = 'user-request'
+              WHERE channel_link_id = 'link-1';
+              INSERT INTO channel_links (channel_link_id, channel_id, author_id, user_id)
+              VALUES ('link-2', 'telegram:bot-1', 'author-2', 'channel-user-2');
+            `),
+          );
         }),
       closeTestDatabase,
     ),

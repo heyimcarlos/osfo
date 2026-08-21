@@ -23,7 +23,6 @@ const workerBindings = {
   WHATSAPP_APP_SECRET: "test-only-whatsapp-app-secret",
   WHATSAPP_BOT_USERNAME: "osfo_test_whatsapp",
   WHATSAPP_PHONE_NUMBER_ID: "123456789",
-  WHATSAPP_PUBLIC_PHONE_NUMBER: "14165550100",
   WHATSAPP_VERIFY_TOKEN: "test-only-whatsapp-verify-token",
 };
 
@@ -40,6 +39,7 @@ export default defineConfig({
     include: [
       "test/action-approval.test.ts",
       "test/config.test.ts",
+      "test/cloudflare-registration.test.ts",
       "test/file-ingestion.test.ts",
       "test/document-artifacts-r2.test.ts",
       "test/document-compute.test.ts",
@@ -48,7 +48,6 @@ export default defineConfig({
       "test/model-access-policy.test.ts",
       "test/osfo-agent.test.ts",
       "test/osfo-directory-topology.test.ts",
-      "test/registration-dialogue.test.ts",
       "test/session-execution.test.ts",
       "test/session-lifecycle.test.ts",
       "test/session-recall.test.ts",

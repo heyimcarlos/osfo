@@ -8,7 +8,7 @@ import axe from "axe-core";
 import { DateTime, Effect } from "effect";
 
 import { AuthStateProvider, type AuthState } from "../auth-state";
-import type { CompleteOnboardingPayload } from "../lib/api-client";
+import type { CompleteRegistrationPayload } from "../lib/api-client";
 import { withTestRouter } from "../testing/router";
 import { GetStartedPage, type GetStartedPageDependencies } from "./get-started-page";
 
@@ -19,7 +19,7 @@ afterEach(cleanup);
 describe("GetStartedPage", () => {
   it("keeps name, phone verification, and help areas in the website-first order", async () => {
     const user = userEvent.setup();
-    const completeCalls: Array<CompleteOnboardingPayload> = [];
+    const completeCalls: Array<CompleteRegistrationPayload> = [];
     const sentNumbers: Array<string> = [];
     const verifiedNumbers: Array<string> = [];
     let completed = false;
@@ -74,9 +74,7 @@ describe("GetStartedPage", () => {
     expect(verifiedNumbers).toEqual(["+14165550186"]);
     expect(completeCalls).toEqual([
       {
-        existingProfileChoice: "apply",
         helpAreas: ["research"],
-        invitationToken: null,
         locale: "en",
         preferredName: "Ari",
       },
@@ -131,8 +129,6 @@ const renderPage = (page: React.ReactNode, authState: AuthState = signedOut) =>
 
 const webCompletion = {
   agentId: AgentId.make("agent-web-complete"),
-  channel: { _tag: "NotConnected" as const },
   completedAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z")),
-  profileConfirmationRequired: false,
   userId: UserId.make("user-web-complete"),
 };

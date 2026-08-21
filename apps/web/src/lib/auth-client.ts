@@ -1,12 +1,7 @@
 import { phoneNumberClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
-import { Effect, Exit, Layer, Schema } from "effect";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http";
+import { Effect, Layer, Schema } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import { apiBaseURL } from "../config";
 
@@ -38,25 +33,9 @@ export const setLoginCredentials = (
   }).pipe(
     Effect.orElseSucceed(() => ({ error: "The password could not be configured." })),
     // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The browser auth adapter owns its Fetch runtime.
-    Effect.provide(invitationHttpClient),
+    Effect.provide(authHttpClient),
     Effect.runPromise,
   );
-
-/** Send SMS for a channel-first invitation without exposing provider-owned identity facts. */
-export const sendInvitationOtp = (token: string, phoneNumber?: string) =>
-  phoneNumber === undefined
-    ? invitationAuthRequest("send-otp", { token })
-    : invitationAuthRequest("send-otp", { phoneNumber, token });
-
-/** Verify SMS for an invitation-owned phone number and retain the Better Auth session cookie. */
-export const verifyInvitationOtp = (token: string, code: string, phoneNumber?: string) =>
-  phoneNumber === undefined
-    ? invitationAuthRequest("verify", { code, token })
-    : invitationAuthRequest("verify", { code, phoneNumber, token });
-
-type InvitationAuthBody =
-  | { readonly phoneNumber?: string; readonly token: string }
-  | { readonly code: string; readonly phoneNumber?: string; readonly token: string };
 
 interface AuthErrorBody {
   readonly error?: string;
@@ -65,24 +44,10 @@ interface AuthErrorBody {
 const AuthErrorResponse = Schema.Struct({ error: Schema.optionalKey(Schema.String) });
 const emptyAuthErrorBody = {} satisfies AuthErrorBody;
 
-const invitationHttpClient = FetchHttpClient.layer.pipe(
+const authHttpClient = FetchHttpClient.layer.pipe(
   Layer.provideMerge(
     Layer.succeed(FetchHttpClient.RequestInit, {
       credentials: "include",
     }),
   ),
 );
-
-const invitationAuthRequest = (action: "send-otp" | "verify", body: InvitationAuthBody) =>
-  Effect.gen(function* () {
-    const client = yield* HttpClient.HttpClient;
-    const request = yield* HttpClientRequest.post(`${authBaseURL}/onboarding/${action}`).pipe(
-      HttpClientRequest.bodyJson(body),
-    );
-    yield* client.execute(request).pipe(Effect.flatMap(HttpClientResponse.filterStatusOk));
-  }).pipe(
-    // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The browser auth adapter owns its Fetch runtime.
-    Effect.provide(invitationHttpClient),
-    Effect.runPromiseExit,
-    (promise) => promise.then((exit) => ({ error: Exit.isFailure(exit) ? exit : null })),
-  );

@@ -7,8 +7,31 @@ export const parseLocaleSearch = (search: { readonly lang?: unknown }): LocaleSe
 });
 
 /** Optional explicit setup locale, absent when browser language must decide. */
-export type OnboardingSearch = { readonly lang?: "en" | "es" };
+export type RegistrationSearch = {
+  readonly lang?: "en" | "es";
+  readonly returnTo?: string;
+};
+
+const ChannelLinkReturnPath = Schema.String.check(
+  Schema.makeFilter(
+    (value) =>
+      /^\/verify\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value) ||
+      "must be a local signed Channel Link path",
+  ),
+);
 
 /** Parse an explicit setup locale while preserving the browser-language fallback when absent. */
-export const parseOnboardingSearch = (search: { readonly lang?: unknown }): OnboardingSearch =>
-  search.lang === "en" || search.lang === "es" ? { lang: search.lang } : {};
+export const parseRegistrationSearch = (search: {
+  readonly lang?: unknown;
+  readonly returnTo?: unknown;
+}): RegistrationSearch => {
+  const lang = search.lang === "en" || search.lang === "es" ? search.lang : undefined;
+  const returnTo = Option.getOrUndefined(
+    Schema.decodeUnknownOption(ChannelLinkReturnPath)(search.returnTo),
+  );
+  if (lang !== undefined && returnTo !== undefined) return { lang, returnTo };
+  if (lang !== undefined) return { lang };
+  if (returnTo !== undefined) return { returnTo };
+  return {};
+};
+import { Option, Schema } from "effect";

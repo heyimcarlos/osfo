@@ -116,8 +116,41 @@ describe("Osfo Cloudflare host", () => {
           "/v1/registration": {
             put: { operationId: "registration.complete" },
           },
+          "/v1/channel-link-invites/{token}": {
+            get: { operationId: "channelLinks.inspect" },
+          },
+          "/v1/channel-link-invites/{token}/accept": {
+            post: { operationId: "channelLinks.accept" },
+          },
         },
       });
+      expect(document).not.toHaveProperty("paths./v1/onboarding");
+      expect(document).not.toHaveProperty("paths./v1/onboarding/invitations/:token");
+    }),
+  );
+
+  it.effect("maps malformed Channel Link Invite tokens to the stable public error", () =>
+    Effect.gen(function* () {
+      const response = yield* Effect.promise(() =>
+        exports.default.fetch(
+          new Request("https://osfo.test/v1/channel-link-invites/not-a-signed-token"),
+        ),
+      );
+
+      expect(response.status).toBe(410);
+      expect(yield* Effect.promise(() => response.json())).toMatchObject({
+        _tag: "ChannelLinkInviteUnavailable",
+      });
+    }),
+  );
+
+  it.effect("does not expose the legacy onboarding API route", () =>
+    Effect.gen(function* () {
+      const response = yield* Effect.promise(() =>
+        exports.default.fetch(new Request("https://osfo.test/v1/onboarding")),
+      );
+
+      expect(response.status).toBe(404);
     }),
   );
 
@@ -248,24 +281,6 @@ describe("Osfo Cloudflare host", () => {
       expect(otherProbe.identity).not.toBe(firstProbe.identity);
       expect(secondProbe.activationId).toBe(firstProbe.activationId);
       expect(otherProbe.activationId).not.toBe(firstProbe.activationId);
-    }),
-  );
-
-  it.effect("creates a restricted runtime for each registration dialogue", () =>
-    Effect.gen(function* () {
-      const response = yield* Effect.promise(() =>
-        exports.default.fetch(
-          new Request("https://osfo.test/registration-dialogues/invitation-1/health"),
-        ),
-      );
-
-      expect(response.status).toBe(200);
-      const probe = yield* decodeRuntimeProbe(response);
-      expect(probe).toMatchObject({
-        executionUnit: "registration-dialogue",
-        identity: "invitation-1",
-        stage: "test",
-      });
     }),
   );
 

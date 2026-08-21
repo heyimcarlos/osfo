@@ -2,6 +2,7 @@ import { agents } from "@osfo/db/schema/agents";
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
+import { HelpArea, RegistrationLocale } from "@osfo/api";
 import { and, eq, gt, lt } from "drizzle-orm";
 import { Context, Crypto, DateTime, Effect, Layer, Schema } from "effect";
 
@@ -34,6 +35,21 @@ export const RegistrationCompleted = Schema.Struct({
 /** Completed registration returned to an authenticated User. */
 export type RegistrationCompleted = typeof RegistrationCompleted.Type;
 
+/** Profile choices committed atomically with first registration. */
+export const RegistrationProfile = Schema.Struct({
+  helpAreas: Schema.Array(HelpArea),
+  locale: RegistrationLocale,
+  preferredName: Schema.NullOr(Schema.String),
+});
+
+export type RegistrationProfile = typeof RegistrationProfile.Type;
+
+/** Complete authenticated registration input. */
+export interface CompleteInput {
+  readonly profile: RegistrationProfile;
+  readonly userId: UserId;
+}
+
 /** Expected failure when Better Auth has not created the User. */
 export class RegistrationUserNotFound extends Schema.TaggedError<RegistrationUserNotFound>()(
   "RegistrationUserNotFound",
@@ -52,16 +68,41 @@ export class RegistrationIdUnavailable extends Schema.TaggedError<RegistrationId
   },
 ) {}
 
+/** Expected denial when Better Auth has not verified the User's phone number. */
+export class RegistrationPhoneVerificationRequired extends Schema.TaggedError<RegistrationPhoneVerificationRequired>()(
+  "RegistrationPhoneVerificationRequired",
+  { message: Schema.String, userId: UserId },
+) {}
+
 /** Expected failures from the Registration authority. */
 export type RegistrationError =
   | DbUnavailable
   | DbWriteRejected
   | RegistrationIdUnavailable
+  | RegistrationPhoneVerificationRequired
   | RegistrationUserNotFound;
+
+/** Agent facet initialization owned by the registration composition boundary. */
+export interface AgentRegistrationPort {
+  readonly initialize: (
+    registration: RegistrationCompleted,
+  ) => Effect.Effect<void, RegistrationAgentUnavailable>;
+}
+
+export class AgentRegistration extends Context.Service<AgentRegistration, AgentRegistrationPort>()(
+  "@osfo/AgentRegistration",
+) {}
+
+export class RegistrationAgentUnavailable extends Schema.TaggedError<RegistrationAgentUnavailable>()(
+  "RegistrationAgentUnavailable",
+  { cause: Schema.Defect(), message: Schema.String },
+) {}
 
 /** Registration authority operations. */
 export interface Interface {
-  readonly complete: (userId: UserId) => Effect.Effect<RegistrationCompleted, RegistrationError>;
+  readonly complete: (
+    input: CompleteInput,
+  ) => Effect.Effect<RegistrationCompleted, RegistrationAgentUnavailable | RegistrationError>;
 }
 
 /** Authority that provisions every resource required by a new User. */
@@ -69,17 +110,19 @@ export class Service extends Context.Service<Service, Interface>()("@osfo/Regist
 
 /** Construct Registration from request-scoped runtime capabilities. */
 export const make = Effect.gen(function* () {
+  const agentRegistration = yield* AgentRegistration;
   const crypto = yield* Crypto.Crypto;
   const dbService = yield* Db.Service;
 
-  const complete = Effect.fn("Registration.complete")((userId: UserId) =>
+  const complete = Effect.fn("Registration.complete")((input: CompleteInput) =>
     Effect.scoped(
       dbService.database.pipe(
         Effect.flatMap((db) =>
-          completeRegistration(db, crypto, userId).pipe(
-            Effect.andThen(readCompletedRegistration(db, userId)),
+          completeRegistration(db, crypto, input).pipe(
+            Effect.andThen(readCompletedRegistration(db, input.userId)),
           ),
         ),
+        Effect.tap((registration) => agentRegistration.initialize(registration)),
       ),
     ),
   );
@@ -191,8 +234,9 @@ const readCompletedRegistration = Effect.fn("Registration.readCompleted")(functi
 const completeRegistration = Effect.fn("Registration.completeRegistration")(function* (
   db: Database,
   crypto: Crypto.Crypto,
-  userId: UserId,
+  input: CompleteInput,
 ) {
+  const userId = input.userId;
   const occurredAt = yield* DateTime.now;
   const generatedIds = yield* Effect.all({
     agent: crypto.randomUUIDv7,
@@ -216,13 +260,20 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
       // oxlint-disable-next-line effecttsgo/async-function -- Drizzle owns this Promise transaction boundary.
       db.transaction(async (transaction) => {
         const [user] = await transaction
-          .select({ registrationCompletedAt: users.registrationCompletedAt })
+          .select({
+            phoneNumber: users.phoneNumber,
+            phoneNumberVerified: users.phoneNumberVerified,
+            registrationCompletedAt: users.registrationCompletedAt,
+          })
           .from(users)
           .where(eq(users.id, userId))
           .for("update")
           .limit(1);
         if (user === undefined) return "user-not-found" as const;
         if (user.registrationCompletedAt !== null) return "ready" as const;
+        if (user.phoneNumber === null || user.phoneNumberVerified !== true) {
+          return "phone-verification-required" as const;
+        }
 
         await transaction.insert(agents).values({
           agent_id: AgentId.make(`agent-${generatedIds.agent}`),
@@ -270,9 +321,20 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
           starts_at: completedAt,
           user_id: userId,
         });
+        const profile = {
+          helpAreas: input.profile.helpAreas,
+          locale: input.profile.locale,
+          preferredName: input.profile.preferredName,
+          registrationCompletedAt: completedAt,
+          updatedAt: completedAt,
+        };
         await transaction
           .update(users)
-          .set({ registrationCompletedAt: completedAt, updatedAt: completedAt })
+          .set(
+            input.profile.preferredName === null
+              ? profile
+              : { ...profile, name: input.profile.preferredName },
+          )
           .where(eq(users.id, userId));
 
         return "ready" as const;
@@ -288,6 +350,12 @@ const completeRegistration = Effect.fn("Registration.completeRegistration")(func
   }
   if (result === "period-overlap") {
     return yield* dbWriteRejected("completeRegistration", userId, result);
+  }
+  if (result === "phone-verification-required") {
+    return yield* new RegistrationPhoneVerificationRequired({
+      message: "Verify a phone number before completing registration",
+      userId,
+    });
   }
   return yield* Effect.void;
 });

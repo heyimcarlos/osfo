@@ -7,6 +7,7 @@ import { DateTime } from "effect";
 
 import { AuthStateProvider, type AuthState } from "./auth-state";
 import { parseBillingReturnSearch } from "./lib/billing-return";
+import { parseRegistrationSearch } from "./lib/route-locale";
 import { createAppRouter } from "./router";
 
 /* oxlint-disable effecttsgo/async-function -- Router navigation and Testing Library own browser Promises. */
@@ -65,13 +66,6 @@ describe("Osfo route tree", () => {
     expect(screen.queryByText("Create account")).toBeNull();
   });
 
-  it("matches public direct links and parameters", async () => {
-    const { router } = renderAt("/verify/invitation-token");
-
-    await waitFor(() => expect(screen.getByText("This link is unavailable")).toBeTruthy());
-    expect(router.state.location.pathname).toBe("/verify/invitation-token");
-  });
-
   it.each([
     ["/get-started", "What should Osfo call you?"],
     ["/get-started?lang=es", "¿Cómo quieres que te llame Osfo?"],
@@ -117,7 +111,7 @@ describe("Osfo route tree", () => {
     expect(document.documentElement.lang).toBe("en");
   });
 
-  it("waits for Better Auth before it renders onboarding", async () => {
+  it("waits for Better Auth before it renders registration", async () => {
     const { router, view } = renderAt("/get-started", pending);
 
     await waitFor(() => expect(screen.getByText("Loading Osfo...")).toBeTruthy());
@@ -147,11 +141,26 @@ describe("Osfo route tree", () => {
     expect(router.state.location.pathname).toBe("/settings/profile");
   });
 
-  it("routes an authenticated account without an Agent back through onboarding", async () => {
+  it("routes an authenticated account without an Agent back through registration", async () => {
     const { router } = renderAt("/settings", registrationIncomplete);
 
     await waitFor(() => expect(screen.getByText("What should Osfo call you?")).toBeTruthy());
     expect(router.state.location.pathname).toBe("/get-started");
+  });
+
+  it("returns completed registration to the same private Channel Link", async () => {
+    const { router } = renderAt("/get-started?returnTo=%2Fverify%2Fprivate.claims", signedIn);
+
+    await waitFor(() => expect(router.state.location.pathname).toBe("/verify/private.claims"));
+  });
+
+  it("accepts only a local signed Channel Link as a registration return", () => {
+    expect(parseRegistrationSearch({ returnTo: "/verify/private.claims" })).toEqual({
+      returnTo: "/verify/private.claims",
+    });
+    expect(
+      parseRegistrationSearch({ returnTo: "https://attacker.example/verify/private.claims" }),
+    ).toEqual({});
   });
 
   it("does not expose a web chat route", async () => {

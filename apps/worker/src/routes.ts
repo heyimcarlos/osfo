@@ -8,21 +8,19 @@ import { productApiLayer } from "./cors";
 import { publicWebBaseUrl, type CloudflareConfig } from "./config";
 import { Handlers } from "./handlers";
 import { RuntimeProbeHandlers } from "./handlers/runtime-probes";
-import { InvitationAuth } from "./handlers/invitation-auth";
 import { WebhookHandlers } from "./handlers/webhooks";
 import type { ExecutionUnit } from "./layers";
 import { AuthMiddleware } from "./middleware/auth";
-import { OnboardingCloudflare } from "./integrations/cloudflare/onboarding";
-import { OnboardingPostgres } from "./services/onboarding/postgres";
-import { OnboardingLinksAdapter } from "./integrations/public/onboarding-links";
+import { RegistrationCloudflare } from "./integrations/cloudflare/registration";
 import { Registration } from "./services/registration";
 import { DocumentDownload } from "./integrations/cloudflare/document-download";
 import { AgentDirectory } from "./services/agent-directory";
 import { UserId } from "./domain";
+import { ChannelLinks } from "./services/channel-links";
 
 /** Cloudflare bindings used by the Worker route tree. */
 export type Bindings = RuntimeProbeHandlers.Bindings &
-  OnboardingCloudflare.Bindings &
+  RegistrationCloudflare.Bindings &
   WebhookHandlers.Bindings & {
     readonly ARTIFACTS?: R2Bucket;
     readonly routeOsfoAgentRequest: (
@@ -42,30 +40,21 @@ export interface Options {
 
 /** Assemble typed product routes, Better Auth, and Cloudflare host probes. */
 export const layer = (options: Options) => {
-  const onboardingLinks = OnboardingLinksAdapter.layer({
-    officialWhatsAppNumber: options.config.whatsApp.publicPhoneNumber,
-    publicBaseUrl: publicWebBaseUrl(options.config.auth),
-    telegramBotUsername: options.config.telegram.botUsername,
-  });
   const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
     Layer.provide(Handlers.layer(options.runtime, options.config)),
-    Layer.provide(OnboardingPostgres.layer),
-    Layer.provide(onboardingLinks),
+    Layer.provide(
+      ChannelLinks.layer({
+        invitationLifetime: { hours: 24 },
+        signingKeys: options.config.channelLinks.signingKeys,
+        verificationBaseUrl: new URL("/verify/", publicWebBaseUrl(options.config.auth)),
+      }),
+    ),
     Layer.provide(Registration.layerWithoutDependencies),
-    Layer.provide(OnboardingCloudflare.layer(options.env)),
+    Layer.provide(RegistrationCloudflare.layer(options.env)),
     Layer.provide(AuthMiddleware.layer(options.config.auth)),
     Layer.provide(productApiLayer(options.config.auth.trustedOrigins)),
     Layer.provide(options.authDependencies),
   );
-  const onboardingRequest = OnboardingPostgres.layer.pipe(
-    Layer.provide(Registration.layerWithoutDependencies),
-    Layer.provide(OnboardingCloudflare.layer(options.env)),
-    Layer.provide(onboardingLinks),
-    Layer.provide(options.authDependencies),
-  );
-  const invitationAuth = InvitationAuth.layer({
-    config: options.config.auth,
-  }).pipe(HttpRouter.provideRequest(Layer.merge(onboardingRequest, options.authDependencies)));
   const documentDownload =
     options.env.ARTIFACTS === undefined
       ? Layer.empty
@@ -77,11 +66,10 @@ export const layer = (options: Options) => {
             AuthMiddleware.currentDownloadUser(options.config.auth),
           ),
         ).pipe(HttpRouter.provideRequest(options.authDependencies));
-  const webhookRequest = Layer.mergeAll(onboardingRequest, options.authDependencies);
   const webhooks = WebhookHandlers.layer({
     config: options.config,
     env: options.env,
-  }).pipe(HttpRouter.provideRequest(webhookRequest));
+  }).pipe(HttpRouter.provideRequest(options.authDependencies));
   const webAgent = HttpRouter.add(
     "*",
     "/agent/*",
@@ -109,7 +97,6 @@ export const layer = (options: Options) => {
 
   return Layer.mergeAll(
     api,
-    invitationAuth,
     webhooks,
     webAgent,
     documentDownload,
@@ -118,11 +105,6 @@ export const layer = (options: Options) => {
       dependencies: options.authDependencies,
     }),
     HttpRouter.add("GET", "/agents/:identity/health", RuntimeProbeHandlers.agent(options.env)),
-    HttpRouter.add(
-      "GET",
-      "/registration-dialogues/:identity/health",
-      RuntimeProbeHandlers.registrationDialogue(options.env),
-    ),
     HttpRouter.add("*", "*", notFound),
   );
 };

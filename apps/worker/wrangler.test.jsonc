@@ -10,8 +10,8 @@
     "WHATSAPP_APP_SECRET": "test-only-whatsapp-app-secret",
     "WHATSAPP_BOT_USERNAME": "osfo_test_whatsapp",
     "WHATSAPP_PHONE_NUMBER_ID": "123456789",
-    "WHATSAPP_PUBLIC_PHONE_NUMBER": "14165550100",
     "WHATSAPP_VERIFY_TOKEN": "test-only-whatsapp-verify-token",
+    "CHANNEL_LINK_SIGNING_KEYS": "[{\"id\":\"test-current\",\"secret\":\"test-only-channel-link-key-with-32-characters\"}]",
     "OSFO_STAGE": "test",
     "STRIPE_ADVENTURER_PRICE_ID": "price_adventurer",
     "STRIPE_ADVENTURER_PRODUCT_ID": "prod_adventurer",
@@ -36,7 +36,6 @@
       { "name": "OSFO_DIRECTORY", "class_name": "OsfoDirectory" },
       // Direct OsfoAgent binding for isolated behavior tests. Topology tests use OSFO_DIRECTORY.
       { "name": "OSFO_AGENT_TEST_FACET", "class_name": "OsfoAgent" },
-      { "name": "REGISTRATION_DIALOGUE", "class_name": "RegistrationDialogue" },
       {
         "name": "THINK_MESSENGER_STATE_TEST",
         "class_name": "ThinkMessengerStateAgent",
@@ -50,6 +49,7 @@
     },
     { "tag": "v2", "new_sqlite_classes": ["Sandbox"] },
     { "tag": "v3", "new_sqlite_classes": ["OsfoDirectory"] },
+    { "tag": "v4", "deleted_classes": ["RegistrationDialogue"] },
   ],
   "containers": [
     {

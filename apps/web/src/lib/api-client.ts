@@ -1,10 +1,9 @@
 import {
   Api,
   type BillingReconciliationRequest,
-  type ChannelProvider,
+  ChannelLinkInviteToken,
   type HelpArea,
-  type OnboardingLocale,
-  RegistrationToken,
+  type RegistrationLocale,
 } from "@osfo/api";
 import { Effect, Layer, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
@@ -24,43 +23,34 @@ const apiClient = HttpApiClient.make(Api, { baseUrl: apiBaseURL }).pipe(
   Effect.provide(httpClientLayer),
 );
 
-/** Inspect one resumable Registration Invitation without revealing account existence. */
-export const inspectRegistrationInvitation = (token: string) =>
+/** Inspect a Channel Link Invite without exposing its represented external address. */
+export const inspectChannelLinkInvite = (token: string) =>
   Effect.gen(function* () {
-    const parsedToken = yield* Schema.decodeEffect(RegistrationToken)(token);
+    const parsedToken = yield* Schema.decodeEffect(ChannelLinkInviteToken)(token);
     const client = yield* apiClient;
-    return yield* client.onboarding.inspectInvitation({
-      params: { token: parsedToken },
-    });
+    return yield* client.channelLinks.inspect({ params: { token: parsedToken } });
   });
 
-/** Complete authenticated onboarding through the shared typed contract. */
-export interface CompleteOnboardingPayload {
-  readonly existingProfileChoice: "apply" | "keep" | null;
+/** Accept a Channel Link Invite for the server-authenticated User. */
+export const acceptChannelLinkInvite = (token: string) =>
+  Effect.gen(function* () {
+    const parsedToken = yield* Schema.decodeEffect(ChannelLinkInviteToken)(token);
+    const client = yield* apiClient;
+    return yield* client.channelLinks.accept({ params: { token: parsedToken } });
+  });
+
+/** Complete authenticated registration through the shared typed contract. */
+export interface CompleteRegistrationPayload {
   readonly helpAreas: ReadonlyArray<HelpArea>;
-  readonly invitationToken: string | null;
-  readonly locale: OnboardingLocale;
+  readonly locale: RegistrationLocale;
   readonly preferredName: string | null;
 }
 
-/** Complete authenticated onboarding through the shared typed API contract. */
-export const completeOnboarding = (payload: CompleteOnboardingPayload) =>
+/** Complete authenticated registration through the shared typed API contract. */
+export const completeRegistration = (payload: CompleteRegistrationPayload) =>
   Effect.gen(function* () {
     const client = yield* apiClient;
-    const invitationToken =
-      payload.invitationToken === null
-        ? null
-        : yield* Schema.decodeEffect(RegistrationToken)(payload.invitationToken);
-    return yield* client.onboarding.complete({
-      payload: { ...payload, invitationToken },
-    });
-  });
-
-/** Start an explicit messaging channel connection for the authenticated User. */
-export const startChannelEnrollment = (provider: ChannelProvider) =>
-  Effect.gen(function* () {
-    const client = yield* apiClient;
-    return yield* client.onboarding.startChannelEnrollment({ payload: { provider } });
+    return yield* client.registration.complete({ payload });
   });
 
 /** Inspect the authenticated User's current safe billing state. */

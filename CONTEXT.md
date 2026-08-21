@@ -19,15 +19,6 @@ loops, context behavior, delegation, and any native execution semantics Osfo
 adopts. Osfo extends or translates it without rebuilding the same machinery.
 _Avoid_: Model provider, Osfo runtime, Messaging Adapter
 
-**Registration Turn**:
-An ephemeral pre-registration interaction that presents the same visible Osfo
-persona to an unregistered visitor and conducts the natural part of a
-Registration Dialogue. It has no stable AgentId, Session, User memory,
-entitlements, or external authority. It may use registration-scoped tools and
-skills, and is deleted after registration or expiry.
-_Avoid_: Company Osfo Agent, anonymous personal Agent, registration authority,
-Agent handoff
-
 **Production Workload Envelope**:
 The topology-neutral demand model that relates incoming messages to derived
 Osfo work, traffic shape, sustained capacity, and stress characterization.
@@ -122,71 +113,59 @@ Workflow Milestone, or terminal outcome committed after message acceptance.
 Delivery timing remains a separate measurement.
 _Avoid_: Heartbeat, non-durable model token, transport notification
 
-**Channel Identity**:
-A messaging-provider-asserted identifier for one sender, such as a WhatsApp
-sender ID. It authenticates the channel interaction but is not the user's
-durable Osfo ownership identity or sole recovery credential; an equal phone
-number in a Phone Account remains separate verified evidence.
-_Avoid_: User, Account, Phone Account
+**Channel Address**:
+The opaque transport address formed from Think's `MessengerContext.messengerId`
+and normalized `author.userId`. It identifies one provider-authenticated sender
+without encoding provider, thread, phone, or conversation semantics and is not
+the User's durable Osfo identity or recovery credential.
+_Avoid_: User, Account, Phone Account, phone-number address, thread identity
 
 **User**:
 The durable Osfo identity for one registered person, created only after User
 Registration verifies its first Phone Account. A User owns one Osfo Agent in v1
 and scopes ownership, admission, fairness, allowances, entitlements, and memory.
-_Avoid_: Account, Channel Identity, Principal
+_Avoid_: Account, Channel Address, Principal
 
 **Account**:
 A reusable authentication method linked to a User, such as SMS-verified phone,
 passwordless email, federated identity, or passkey. Osfo v1 implements exactly one
 Phone Account per User. Other Account types are later product decisions; none
 is the User or a messaging identity.
-_Avoid_: User, Channel Binding, subscription, Stripe customer
+_Avoid_: User, Channel Link, subscription, Stripe customer
 
 **Phone Account**:
 An Account established by verifying control of one E.164 phone number through
 an SMS challenge. Osfo v1 requires exactly one active Phone Account, which may be
 replaced but not removed without a Deletion Case.
-_Avoid_: User, Channel Identity, WhatsApp account, phone-number primary key
+_Avoid_: User, Channel Address, WhatsApp account, phone-number primary key
 
 **User Registration**:
 The transition that creates a User after an SMS challenge verifies its first
 Phone Account. It also establishes its AuthSession, Osfo Agent, primary
 conversation route, primary Session, and Free Plan without deriving their
 identities from the phone number.
-_Avoid_: Provisional User, Channel Binding, paid subscription
+_Avoid_: Provisional User, Channel Link, paid subscription
 
-**Registration Invitation**:
-A finite-lived invitation issued to an unbound Channel Identity or web
-onboarding flow. It owns a Registration Token digest, expiry, and consumption
-state and ends only as Consumed or Expired, but creates no User, Osfo Agent,
-Session, memory, or allowance.
-_Avoid_: Provisional User, Registration Token, anonymous conversation
-
-**Registration Dialogue**:
-The temporary pre-registration exchange presented as Osfo to an unbound Channel
-Identity under one Registration Invitation. It may continue naturally until the
-invitation is consumed or expires, is not a User Session, User memory, or
-authority source, and is deleted after registration or expiry.
-_Avoid_: Anonymous Session, Provisional User, Agent handoff
-
-**Registration Token**:
-The high-entropy secret carried in `https://osfo.ai/verify/<token>` that continues
-one Registration Invitation. Osfo stores only its digest; it is not an Account,
-AuthSession, or reusable authentication credential.
-_Avoid_: UserId, OTP, permanent bearer token
+**Channel Link Invite**:
+A finite-lived invitation to link exactly one Channel Address after a
+server-authenticated registered User accepts it. Its signed token reconstructs
+only invite identity, version, expiry, and signing-key identity; the URL, token,
+database, and audit evidence reveal no address or user PII. Direct-message
+delivery is the only supported issuance path.
+_Avoid_: Account link, anonymous authority, group invite
 
 **Phone Verification**:
 The finite-lived SMS challenge that proves current control of one E.164 phone
 number for registration or replacement. A successful challenge is consumed
-exactly once without creating a Channel Binding or making the phone number a
+exactly once without creating a Channel Link or making the phone number a
 UserId.
-_Avoid_: Phone Account, Channel Identity, AuthSession
+_Avoid_: Phone Account, Channel Address, AuthSession
 
-**Channel Binding**:
-A revocable association between a Channel Identity and a User. It lets messages
-from that provider identity act as the User without making the provider identity
-a reusable Account or recovery authority. A User has at most one active binding
-for each supported messaging provider. Conflicts fail closed to manual support.
+**Channel Link**:
+A revocable association between one Channel Address and one registered User. It
+lets messages from that address act as the User without making the external
+address a reusable Account or recovery authority. One address has at most one
+active link; acceptance conflicts fail closed.
 _Avoid_: AuthSession, permanent phone login, conversation ownership
 
 **Free Plan**:
@@ -232,8 +211,8 @@ _Avoid_: Model Adapter, provider credential, hard-coded model
 **AuthSession**:
 Short-lived, renewable authentication state through which a web client acts as
 one User. It is Active until it ends as Expired or Revoked; rotating renewal
-credentials cannot own Session identity, Channel identity, or device identity.
-_Avoid_: Channel Binding, Account, permanent bearer token
+credentials cannot own Session identity, Channel Address, or device identity.
+_Avoid_: Channel Link, Account, permanent bearer token
 
 **User Suspension**:
 A durable administrative fact that blocks a User's protected operations without
@@ -241,9 +220,9 @@ changing or replacing the User. Recovery and deletion remain separate manual
 policies.
 _Avoid_: User lifecycle status, AuthSession revocation, allowance exhaustion
 
-**Channel Binding Revocation**:
-The durable end of one Channel Binding's authority to act as or deliver to a
-User. It does not revoke the Phone Account or another Channel Binding.
+**Channel Link Revocation**:
+The durable end of one Channel Link's authority to act as or deliver to a User.
+It does not revoke the Phone Account or another Channel Link.
 _Avoid_: AuthSession revocation, User Suspension, channel delivery failure
 
 **Plan Entitlement**:
@@ -255,12 +234,12 @@ _Avoid_: Usage Allowance, Approval, paid User status
 The small deterministic default-deny table that decides whether one v1 launch
 action is allowed for a User, resource, and current context. It uses exact Plan,
 allowance, ownership, Integration Connection, Approval, User Suspension,
-AuthSession revocation, Channel Binding revocation, and deletion-access facts.
+AuthSession revocation, Channel Link revocation, and deletion-access facts.
 _Avoid_: Agent judgment, generic permission framework, tool visibility
 
 **Subscription**:
 The User's commercial state that controls paid entitlements without changing
-User Registration, Accounts, Channel Bindings, or AuthSessions.
+User Registration, Accounts, Channel Links, or AuthSessions.
 _Avoid_: Account, registration state, identity revocation
 
 **Problem**:
@@ -294,7 +273,7 @@ _Avoid_: User, Agent Harness, Durable Object instance
 
 **AgentId**:
 The stable internal identity of one Osfo Agent, minted when the Agent is created
-during User Registration. It is not derived from an Account or Channel Identity.
+during User Registration. It is not derived from an Account or Channel Address.
 _Avoid_: UserId, SessionId, provider account ID
 
 **Conversation Route**:
@@ -314,7 +293,7 @@ Osfo-owned UserMessageId. Its identity is distinct from its Channel Message Key,
 Think Submission, and Acceptance Receipt.
 
 **Channel Message Key**:
-The transport-scoped identity formed from one Channel Binding and the messaging
+The transport-scoped identity formed from one Channel Address and the messaging
 provider's message identifier. It deduplicates provider delivery without
 becoming the UserMessageId.
 _Avoid_: UserMessageId, Think SubmissionId, global provider message ID

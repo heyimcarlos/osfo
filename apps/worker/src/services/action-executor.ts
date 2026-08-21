@@ -1,13 +1,13 @@
 import { Clock, DateTime, Effect, Predicate, Schema } from "effect";
 
-import type { ChannelBindingId, UserId } from "../domain";
+import type { ChannelLinkId, UserId } from "../domain";
 import type { DbUnavailable } from "../db";
 import { ActionId } from "../domain/action-execution";
 import type { ActionExecutionResult } from "../domain/action-execution";
 import type { AuthSessionId } from "../domain/auth-session";
 import type { AuthorizationOperation as AuthorizationOperationType } from "../domain/authorization-operation";
 import type { AuthSession } from "./auth-session";
-import type { ChannelBinding } from "./channel-binding";
+import type { ChannelAddress, ChannelLinkAuthorityFact } from "../domain/channel-link";
 import type { DeletionCase } from "./deletion-case";
 import type { UserSuspension } from "./user-suspension";
 import type { AuthorizationContext, Denied, Interface as Authorization } from "./authorization";
@@ -28,8 +28,9 @@ export type ProtectedEffectIdentities =
       readonly userId: UserId;
     }
   | {
-      readonly _tag: "ChannelBinding";
-      readonly channelBindingId: ChannelBindingId;
+      readonly _tag: "ChannelLink";
+      readonly address: typeof ChannelAddress.Type;
+      readonly channelLinkId: ChannelLinkId;
       readonly userId: UserId;
     };
 
@@ -78,7 +79,13 @@ export interface SubscriptionOwner {
 export interface AuthorityOwners {
   readonly approvals: ApprovalOwner;
   readonly authSessions: Pick<AuthSession.Interface, "inspect">;
-  readonly channelBindings: Pick<ChannelBinding.Interface, "inspect">;
+  readonly channelLinks: {
+    readonly inspect: (
+      address: typeof ChannelAddress.Type,
+      userId: UserId,
+      channelLinkId: ChannelLinkId,
+    ) => CurrentFact<ChannelLinkAuthorityFact>;
+  };
   readonly deletionCases: Pick<DeletionCase.Interface, "inspect">;
   readonly integrationConnections: IntegrationConnectionOwner;
   readonly liveResources: LiveResourceOwner;
@@ -137,7 +144,7 @@ export const make = (authorization: Authorization, owners: AuthorityOwners): Int
           originatingAuthority:
             identities._tag === "AuthSession"
               ? { _tag: "AuthSession", authSessionId: identities.authSessionId }
-              : { _tag: "ChannelBinding", channelBindingId: identities.channelBindingId },
+              : { _tag: "ChannelLink", channelLinkId: identities.channelLinkId },
           requestVendorUsdMicros: context.requestVendorUsdMicros,
           resourceOwnerUserId,
           subscription,
@@ -154,6 +161,6 @@ export const make = (authorization: Authorization, owners: AuthorityOwners): Int
 const inspectAuthority = (owners: AuthorityOwners, identities: ProtectedEffectIdentities) =>
   identities._tag === "AuthSession"
     ? owners.authSessions.inspect(identities.userId, identities.authSessionId)
-    : owners.channelBindings.inspect(identities.userId, identities.channelBindingId);
+    : owners.channelLinks.inspect(identities.address, identities.userId, identities.channelLinkId);
 
 export * as ActionExecutor from "./action-executor";

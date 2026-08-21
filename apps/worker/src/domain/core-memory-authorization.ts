@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { Plan, PlanPolicyVersion, UserId } from "../domain";
+import { ChannelAddress } from "./channel-link";
 
 const ActingAuthority = Schema.Union([
   Schema.TaggedStruct("AuthSession", {
@@ -12,12 +13,14 @@ const ActingAuthority = Schema.Union([
     authSessionId: Schema.String,
     userId: UserId,
   }),
-  Schema.TaggedStruct("ChannelBinding", {
-    channelBindingId: Schema.String,
+  Schema.TaggedStruct("ChannelLink", {
+    address: ChannelAddress,
+    channelLinkId: Schema.String,
     userId: UserId,
   }),
-  Schema.TaggedStruct("RevokedChannelBinding", {
-    channelBindingId: Schema.String,
+  Schema.TaggedStruct("RevokedChannelLink", {
+    address: ChannelAddress,
+    channelLinkId: Schema.String,
     userId: UserId,
   }),
   Schema.TaggedStruct("DurableTrigger", {
@@ -28,7 +31,7 @@ const ActingAuthority = Schema.Union([
 ]);
 const OriginatingAuthority = Schema.Union([
   Schema.TaggedStruct("AuthSession", { authSessionId: Schema.String }),
-  Schema.TaggedStruct("ChannelBinding", { channelBindingId: Schema.String }),
+  Schema.TaggedStruct("ChannelLink", { channelLinkId: Schema.String }),
   Schema.TaggedStruct("DurableTrigger", {
     triggerId: Schema.String,
     triggerType: Schema.Literals(["scheduledTask", "workflow"]),

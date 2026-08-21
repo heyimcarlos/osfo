@@ -1,7 +1,6 @@
 import { agents } from "@osfo/db/schema/agents";
 import { sessions, users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
-import { channelBindings } from "@osfo/db/schema/onboarding";
 import { and, eq } from "drizzle-orm";
 import { Effect, Predicate, Schema } from "effect";
 
@@ -9,6 +8,7 @@ import type { Database } from "../../db";
 import type { AgentId } from "../../domain";
 import { PlanPolicyVersion, UserId } from "../../domain";
 import { AuthorizationContext } from "../../services/authorization";
+import type { ChannelLinks } from "../../services/channel-links";
 
 /** Expected failure when current persisted file-authorization facts cannot be loaded. */
 export class CurrentFileAuthorizationUnavailable extends Schema.TaggedError<CurrentFileAuthorizationUnavailable>()(
@@ -19,6 +19,7 @@ export class CurrentFileAuthorizationUnavailable extends Schema.TaggedError<Curr
 /** Load current persisted authority, User, subscription, and named-Agent ownership facts. */
 export const loadCurrentFileAuthorization = (
   database: Database,
+  channelLinks: Pick<ChannelLinks.Interface, "resolve">,
   agentId: AgentId,
   context: AuthorizationContext,
   now: Date,
@@ -58,7 +59,7 @@ export const loadCurrentFileAuthorization = (
     const userId = yield* Schema.decodeEffect(UserId)(user.userId).pipe(
       Effect.mapError(unavailable),
     );
-    const authority = yield* loadCurrentAuthority(database, context.authority, now);
+    const authority = yield* loadCurrentAuthority(channelLinks, database, context.authority, now);
     return yield* Schema.decodeEffect(AuthorizationContext)({
       ...context,
       authority: agent.userId === userId ? authority : null,
@@ -78,6 +79,7 @@ export const loadCurrentFileAuthorization = (
   });
 
 const loadCurrentAuthority = (
+  channelLinks: Pick<ChannelLinks.Interface, "resolve">,
   database: Database,
   authority: AuthorizationContext["authority"],
   now: Date,
@@ -116,29 +118,32 @@ const loadCurrentAuthority = (
       ),
     );
   }
-  return Effect.tryPromise({
-    try: () =>
-      database
-        .select({ revokedAt: channelBindings.revoked_at, userId: channelBindings.user_id })
-        .from(channelBindings)
-        .where(eq(channelBindings.channel_binding_id, authority.channelBindingId))
-        .limit(1),
-    catch: (cause) => unavailable(cause),
-  }).pipe(
-    Effect.map(([binding]) =>
-      binding !== undefined && binding.revokedAt === null && binding.userId === authority.userId
-        ? ({
-            _tag: "ChannelBinding",
-            channelBindingId: authority.channelBindingId,
-            userId: authority.userId,
-          } as const)
-        : ({
-            _tag: "RevokedChannelBinding",
-            channelBindingId: authority.channelBindingId,
-            userId: authority.userId,
-          } as const),
-    ),
-  );
+  if (
+    Predicate.isTagged(authority, "ChannelLink") ||
+    Predicate.isTagged(authority, "RevokedChannelLink")
+  ) {
+    return channelLinks.resolve(authority.address).pipe(
+      Effect.mapError(unavailable),
+      Effect.map((link) =>
+        link !== null &&
+        link.channelLinkId === authority.channelLinkId &&
+        link.userId === authority.userId
+          ? ({
+              _tag: "ChannelLink",
+              address: authority.address,
+              channelLinkId: authority.channelLinkId,
+              userId: authority.userId,
+            } as const)
+          : ({
+              _tag: "RevokedChannelLink",
+              address: authority.address,
+              channelLinkId: authority.channelLinkId,
+              userId: authority.userId,
+            } as const),
+      ),
+    );
+  }
+  return Effect.succeed(authority);
 };
 
 const unavailable = (cause: unknown) =>

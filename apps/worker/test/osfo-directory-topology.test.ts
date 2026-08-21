@@ -1,10 +1,12 @@
 import { env } from "cloudflare:workers";
+import type { StreamCallback } from "@cloudflare/think";
 import { describe, expect, it } from "@effect/vitest";
 import { getAgentByName, getSubAgentByName } from "agents";
-import { Effect } from "effect";
+import { DateTime, Effect, Exit } from "effect";
 
 import { OsfoAgent } from "../src/agents/osfo/agent";
-import { OSFO_DIRECTORY_NAME } from "../src/agents/osfo/directory";
+import { OSFO_DIRECTORY_NAME, replyToChannelLinkMessenger } from "../src/agents/osfo/directory";
+import { ChannelLinks } from "../src/services/channel-links";
 import { makeTelegramConversationResolver } from "../src/integrations/telegram";
 import { makeWhatsAppConversationResolver } from "../src/integrations/whatsapp";
 
@@ -139,14 +141,117 @@ describe("Osfo directory topology", () => {
       expect(bindingLookups).toBe(1);
     }),
   );
+
+  it.effect("uses only the normalized Messenger Context address", () =>
+    Effect.gen(function* () {
+      const resolved: Array<readonly [string, string]> = [];
+      const resolver = makeTelegramConversationResolver({
+        agentClass: OsfoAgent,
+        hasAgent: () => true,
+        isAllowed: () => true,
+        resolveAgentId: (authorId, messengerId) => {
+          resolved.push([authorId, messengerId]);
+          return Promise.resolve(null);
+        },
+      });
+
+      const { author: omittedAuthor, ...withoutNormalizedAuthor } = telegramEvent;
+      expect(omittedAuthor.userId).toBe("telegram-user-1");
+      expect(
+        yield* Effect.promise(() => Promise.resolve(resolver(withoutNormalizedAuthor))),
+      ).toEqual({ target: "self" });
+      expect(yield* Effect.promise(() => Promise.resolve(resolver(telegramEvent)))).toEqual({
+        target: "self",
+      });
+      expect(resolved).toEqual([["telegram-user-1", "telegram"]]);
+    }),
+  );
+
+  it.effect("delivers a private invite without beginning a privileged model turn", () =>
+    Effect.gen(function* () {
+      const ensuredAddresses: Array<typeof ChannelLinks.ChannelAddress.Type> = [];
+      const reply = makeStreamRecorder();
+
+      yield* Effect.promise(() =>
+        replyToChannelLinkMessenger(reply.callback, telegramEvent, {
+          ensure: (address) => {
+            ensuredAddresses.push(address);
+            return Promise.resolve(
+              Exit.succeed({
+                _tag: "Invited" as const,
+                expiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-22T12:00:00.000Z")),
+                verificationUrl: new URL("https://osfo.test/verify/private.claims"),
+              }),
+            );
+          },
+          telegramAllowedUserIds: new Set(["telegram-user-1"]),
+        }),
+      );
+
+      expect(ensuredAddresses).toEqual([
+        ChannelLinks.ChannelAddress.make({
+          authorId: ChannelLinks.ChannelAuthorId.make("telegram-user-1"),
+          channelId: ChannelLinks.ChannelId.make("telegram"),
+        }),
+      ]);
+      expect(reply.text()).toContain("https://osfo.test/verify/private.claims");
+    }),
+  );
+
+  it.effect("refuses group linking without creating or exposing an invitation", () =>
+    Effect.gen(function* () {
+      let ensureCalls = 0;
+      const reply = makeStreamRecorder();
+
+      yield* Effect.promise(() =>
+        replyToChannelLinkMessenger(
+          reply.callback,
+          {
+            ...telegramEvent,
+            kind: "mention",
+            thread: { ...telegramEvent.thread, isDirectMessage: false },
+          },
+          {
+            ensure: () => {
+              ensureCalls += 1;
+              return Promise.resolve(Exit.die(new Error("Group linking must remain gated")));
+            },
+            telegramAllowedUserIds: new Set(["telegram-user-1"]),
+          },
+        ),
+      );
+
+      expect(ensureCalls).toBe(0);
+      expect(reply.text()).toContain("Message Osfo privately");
+      expect(reply.text()).not.toContain("/verify/");
+    }),
+  );
 });
+
+const makeStreamRecorder = () => {
+  const events: Array<string> = [];
+  const callback = {
+    onDone: () => undefined,
+    onError: () => undefined,
+    onEvent: (event: string) => {
+      events.push(event);
+    },
+    onStart: () => undefined,
+  } satisfies StreamCallback;
+  return {
+    callback,
+    text: () => events.join("\n"),
+  };
+};
 
 const withTelegramAuthor = (event: typeof telegramEvent, userId: string) => ({
   ...event,
+  author: { userId },
   message: { ...event.message, author: { userId } },
 });
 
 const telegramEvent = {
+  author: { userId: "telegram-user-1" },
   capabilities: {},
   kind: "direct-message" as const,
   message: {
@@ -167,6 +272,7 @@ const telegramEvent = {
 
 const whatsAppEvent = {
   ...telegramEvent,
+  author: { userId: "15551234567" },
   message: {
     ...telegramEvent.message,
     author: { userId: "15551234567" },
