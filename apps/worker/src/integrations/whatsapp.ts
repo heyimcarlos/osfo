@@ -31,7 +31,7 @@ export interface WhatsAppChannelOptions extends WhatsAppAdapterOptions {
 export interface WhatsAppConversationOptions {
   readonly agentClass: typeof OsfoAgent;
   readonly hasAgent: (agentId: string) => boolean;
-  readonly resolveAgentId: (authorId: string) => Promise<string | null>;
+  readonly resolveAgentId: (authorId: string, messengerId: string) => Promise<string | null>;
 }
 
 /** Construct the official Chat SDK adapter used by both webhook methods. */
@@ -55,9 +55,9 @@ const makeThinkWhatsAppAdapter = (options: WhatsAppAdapterOptions) => {
 export const makeWhatsAppConversationResolver =
   (options: WhatsAppConversationOptions): MessengerConversationResolver =>
   async (event: MessengerEvent) => {
-    const authorId = event.message?.author.userId ?? event.author?.userId;
-    if (authorId === undefined) return { target: "self" };
-    const agentId = await options.resolveAgentId(authorId);
+    const authorId = event.author?.userId;
+    if (authorId === undefined || !event.thread.isDirectMessage) return { target: "self" };
+    const agentId = await options.resolveAgentId(authorId, event.messengerId);
     return agentId !== null && options.hasAgent(agentId)
       ? { agentClass: options.agentClass, name: agentId, target: "subagent" }
       : { target: "self" };
@@ -76,7 +76,7 @@ export const makeWhatsAppChannel = (options: WhatsAppChannelOptions): ChannelDef
       },
       path: "/webhooks/whatsapp",
       provider: "whatsapp",
-      respondTo: ["direct-message", "action"],
+      respondTo: ["direct-message", "mention", "subscribed-thread", "action"],
       userName: options.userName,
       // The official adapter still verifies the POST signature. This disables only Think's second verifier.
       verifyWebhook: false,

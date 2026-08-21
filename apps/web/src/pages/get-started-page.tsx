@@ -1,4 +1,4 @@
-import type { HelpArea, OnboardingLocale } from "@osfo/api";
+import type { HelpArea, RegistrationLocale } from "@osfo/api";
 import { Button } from "@osfo/ui/components/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@osfo/ui/components/card";
 import { Input } from "@osfo/ui/components/input";
@@ -11,27 +11,28 @@ import { useEffect, useRef, useState } from "react";
 
 import { useAuthState } from "../auth-state";
 import { LoadingScreen } from "../components/loading-screen";
-import { browserOnboardingLocale, OnboardingLayout } from "../components/onboarding-layout";
+import { browserRegistrationLocale, RegistrationLayout } from "../components/registration-layout";
 import {
   defaultPhoneAuthDependencies,
   PhoneAuthForm,
   type PhoneAuthDependencies,
 } from "../components/phone-auth-form";
-import { completeOnboarding } from "../lib/api-client";
+import { completeRegistration } from "../lib/api-client";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Typed page states use the standard _tag discriminator. */
 
-/** Browser operations used by website-first onboarding. */
+/** Browser operations used by website-first registration. */
 export interface GetStartedPageDependencies {
-  readonly complete: typeof completeOnboarding;
+  readonly complete: typeof completeRegistration;
   readonly phoneAuth: PhoneAuthDependencies;
 }
 
-/** Optional dependency overrides for website-first onboarding tests. */
+/** Optional dependency overrides for website-first registration tests. */
 export interface GetStartedPageProps {
   readonly dependencies?: GetStartedPageDependencies;
-  readonly initialLocale?: OnboardingLocale;
+  readonly initialLocale?: RegistrationLocale;
   readonly onComplete?: () => void;
+  readonly returnTo?: string;
 }
 
 type GetStartedState =
@@ -41,16 +42,17 @@ type GetStartedState =
   | { readonly _tag: "Submitting" }
   | { readonly _tag: "SubmissionFailed" };
 
-/** Website-first onboarding page. */
+/** Website-first registration page. */
 export function GetStartedPage({
   dependencies = defaultDependencies,
   initialLocale,
   onComplete,
+  returnTo,
 }: GetStartedPageProps = {}) {
   const navigate = useNavigate();
   const session = useAuthState();
-  const [locale, setLocale] = useState<OnboardingLocale>(
-    () => initialLocale ?? browserOnboardingLocale(),
+  const [locale, setLocale] = useState<RegistrationLocale>(
+    () => initialLocale ?? browserRegistrationLocale(),
   );
   const [preferredName, setPreferredName] = useState("");
   const [helpAreas, setHelpAreas] = useState<ReadonlyArray<HelpArea>>([]);
@@ -64,15 +66,17 @@ export function GetStartedPage({
 
   if (session.isPending) return <LoadingScreen />;
   if (session.data?.user.registrationCompletedAt != null)
-    return <Navigate replace to="/settings" />;
+    return returnTo === undefined ? (
+      <Navigate replace to="/settings" />
+    ) : (
+      <Navigate replace params={{ token: returnTo.slice("/verify/".length) }} to="/verify/$token" />
+    );
 
   const finish = () => {
     setState({ _tag: "Submitting" });
     void Effect.runPromiseExit(
       dependencies.complete({
-        existingProfileChoice: "apply",
         helpAreas,
-        invitationToken: null,
         locale,
         preferredName: preferredName.trim(),
       }),
@@ -83,13 +87,18 @@ export function GetStartedPage({
       }
       void session.refreshFromAuthority().then(() => {
         if (onComplete !== undefined) onComplete();
-        else void navigate({ to: "/settings" });
+        else if (returnTo === undefined) void navigate({ to: "/settings" });
+        else
+          void navigate({
+            params: { token: returnTo.slice("/verify/".length) },
+            to: "/verify/$token",
+          });
       });
     });
   };
 
   return (
-    <OnboardingLayout locale={locale} onLocaleChange={setLocale}>
+    <RegistrationLayout locale={locale} onLocaleChange={setLocale}>
       {state._tag === "Name" ? (
         <Card className="w-full max-w-[34rem] bg-background shadow-[8px_8px_0_var(--foreground)]">
           <CardHeader className="gap-3 border-b-2 border-border pb-5">
@@ -210,18 +219,23 @@ export function GetStartedPage({
           </CardContent>
         </Card>
       ) : null}
-    </OnboardingLayout>
+    </RegistrationLayout>
   );
 }
 
-/** TanStack Router adapter for the website-first onboarding page. */
+/** TanStack Router adapter for the website-first registration page. */
 export function GetStartedRoute() {
-  const { lang } = useSearch({ from: "/get-started" });
-  return <GetStartedPage {...(lang === undefined ? {} : { initialLocale: lang })} />;
+  const { lang, returnTo } = useSearch({ from: "/get-started" });
+  return (
+    <GetStartedPage
+      {...(lang === undefined ? {} : { initialLocale: lang })}
+      {...(returnTo === undefined ? {} : { returnTo })}
+    />
+  );
 }
 
 const defaultDependencies: GetStartedPageDependencies = {
-  complete: completeOnboarding,
+  complete: completeRegistration,
   phoneAuth: defaultPhoneAuthDependencies,
 };
 

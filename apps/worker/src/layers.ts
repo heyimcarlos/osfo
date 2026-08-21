@@ -5,12 +5,7 @@ import { Db } from "./db";
 import { OsfoStage } from "./config";
 
 /** Schema for a Cloudflare execution unit that owns an Effect runtime. */
-export const ExecutionUnitKind = Schema.Literals([
-  "worker",
-  "osfo-agent",
-  "registration-dialogue",
-  "workflow",
-]);
+export const ExecutionUnitKind = Schema.Literals(["worker", "osfo-agent", "workflow"]);
 
 /** The Cloudflare execution unit that owns an Effect runtime. */
 export type ExecutionUnitKind = typeof ExecutionUnitKind.Type;
@@ -75,10 +70,6 @@ export const makeOsfoAgentRuntime = (identity: string, stage: OsfoStage, databas
       BrowserCrypto.layer,
     ),
   );
-
-/** Create an activation-scoped registration runtime. */
-export const makeRegistrationDialogueRuntime = (identity: string, stage: OsfoStage) =>
-  makeRuntime("registration-dialogue", identity, stage);
 
 /** Create an execution-scoped Workflow runtime. */
 export const makeWorkflowRuntime = (identity: string, stage: OsfoStage) =>

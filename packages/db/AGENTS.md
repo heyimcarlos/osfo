@@ -8,8 +8,8 @@ their owning feature in `apps/worker`.
   SQL column names match. Omit the column-name string when Drizzle can infer it.
 
   ```ts
-  const table = pgTable("registration_invitations", {
-    invitation_id: text().primaryKey(),
+  const table = pgTable("channel_link_invites", {
+    invite_id: text().primaryKey(),
     created_at: timestamp({ withTimezone: true }).notNull(),
   });
   ```

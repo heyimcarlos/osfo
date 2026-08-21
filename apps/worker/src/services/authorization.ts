@@ -1,6 +1,6 @@
 import { Predicate, Result, Schema } from "effect";
 
-import { AllowancePeriodId, ChannelBindingId, Plan, PlanPolicyVersion, UserId } from "../domain";
+import { AllowancePeriodId, ChannelLinkId, Plan, PlanPolicyVersion, UserId } from "../domain";
 import { type AllowanceKind, RecordedAllowanceUse } from "../domain/allowance";
 import {
   AuthorizationOperation,
@@ -10,13 +10,13 @@ import {
 import { type Capability, type PlanPolicyCatalog, policyFor } from "../domain/plan-policy";
 import { CoreMemoryAuthorizationSnapshot } from "../domain/core-memory-authorization";
 import { AuthSessionAuthorityFact, AuthSessionId } from "../domain/auth-session";
-import { ChannelBindingAuthorityFact } from "../domain/channel-binding";
+import { ChannelLinkAuthorityFact } from "../domain/channel-link";
 import { DeletionAccessFact } from "../domain/deletion-case";
 import { UserAccessFact } from "../domain/user-suspension";
 
 const ActingAuthority = Schema.Union([
   AuthSessionAuthorityFact,
-  ChannelBindingAuthorityFact,
+  ChannelLinkAuthorityFact,
   Schema.TaggedStruct("DurableTrigger", {
     triggerId: Schema.String,
     triggerType: Schema.Literals(["scheduledTask", "workflow"]),
@@ -27,7 +27,7 @@ const ActingAuthority = Schema.Union([
 /** Stable authority identity that originated one protected operation. */
 export const OriginatingAuthority = Schema.Union([
   Schema.TaggedStruct("AuthSession", { authSessionId: AuthSessionId }),
-  Schema.TaggedStruct("ChannelBinding", { channelBindingId: ChannelBindingId }),
+  Schema.TaggedStruct("ChannelLink", { channelLinkId: ChannelLinkId }),
   Schema.TaggedStruct("DurableTrigger", {
     triggerId: Schema.String,
     triggerType: Schema.Literals(["scheduledTask", "workflow"]),
@@ -141,10 +141,10 @@ const restoreActingAuthority = (
     return { ...authority, authSessionId: AuthSessionId.make(authority.authSessionId) };
   if (Predicate.isTagged(authority, "RevokedAuthSession"))
     return { ...authority, authSessionId: AuthSessionId.make(authority.authSessionId) };
-  if (Predicate.isTagged(authority, "ChannelBinding"))
-    return { ...authority, channelBindingId: ChannelBindingId.make(authority.channelBindingId) };
-  if (Predicate.isTagged(authority, "RevokedChannelBinding"))
-    return { ...authority, channelBindingId: ChannelBindingId.make(authority.channelBindingId) };
+  if (Predicate.isTagged(authority, "ChannelLink"))
+    return { ...authority, channelLinkId: ChannelLinkId.make(authority.channelLinkId) };
+  if (Predicate.isTagged(authority, "RevokedChannelLink"))
+    return { ...authority, channelLinkId: ChannelLinkId.make(authority.channelLinkId) };
   return authority;
 };
 
@@ -153,8 +153,8 @@ const restoreOriginatingAuthority = (
 ): AuthorizationContext["originatingAuthority"] => {
   if (Predicate.isTagged(authority, "AuthSession"))
     return { ...authority, authSessionId: AuthSessionId.make(authority.authSessionId) };
-  if (Predicate.isTagged(authority, "ChannelBinding"))
-    return { ...authority, channelBindingId: ChannelBindingId.make(authority.channelBindingId) };
+  if (Predicate.isTagged(authority, "ChannelLink"))
+    return { ...authority, channelLinkId: ChannelLinkId.make(authority.channelLinkId) };
   return authority;
 };
 
@@ -257,7 +257,7 @@ const authorize = (
   if (authority === null) return denied("authenticationRequired");
   if (
     Predicate.isTagged(authority, "RevokedAuthSession") ||
-    Predicate.isTagged(authority, "RevokedChannelBinding")
+    Predicate.isTagged(authority, "RevokedChannelLink")
   ) {
     return denied("authorityRevoked");
   }
@@ -380,11 +380,11 @@ const authorityMatchesOrigin = (
       authority.authSessionId === origin.authSessionId
     );
   }
-  if (Predicate.isTagged(origin, "ChannelBinding")) {
+  if (Predicate.isTagged(origin, "ChannelLink")) {
     return (
-      (Predicate.isTagged(authority, "ChannelBinding") ||
-        Predicate.isTagged(authority, "RevokedChannelBinding")) &&
-      authority.channelBindingId === origin.channelBindingId
+      (Predicate.isTagged(authority, "ChannelLink") ||
+        Predicate.isTagged(authority, "RevokedChannelLink")) &&
+      authority.channelLinkId === origin.channelLinkId
     );
   }
   return (
@@ -498,7 +498,7 @@ const isUnmetered = (operation: AuthorizationOperation) => {
     case "billing.inspect":
     case "subscription.manage":
     case "authSession.revoke":
-    case "channelBinding.revoke":
+    case "channelLink.revoke":
     case "phoneAccount.replace":
     case "account.delete":
     case "dataRights.request":
@@ -586,7 +586,7 @@ const entitlementFor = (operation: AuthorizationOperation): Capability | null =>
     case "billing.inspect":
     case "subscription.manage":
     case "authSession.revoke":
-    case "channelBinding.revoke":
+    case "channelLink.revoke":
     case "phoneAccount.replace":
     case "account.delete":
     case "dataRights.request":

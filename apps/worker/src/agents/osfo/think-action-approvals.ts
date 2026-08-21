@@ -1,7 +1,7 @@
 import type { PendingApproval } from "@cloudflare/think";
 import { Effect, Option, Schema } from "effect";
 
-import { ChannelBindingId, UserId } from "../../domain";
+import { ChannelLinkId, UserId } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
 import { AuthorizationContext } from "../../services/authorization";
 import { AuthSessionId } from "../../domain/auth-session";
@@ -44,8 +44,8 @@ export const ApprovalActor = Schema.Union([
     expiresAt: Schema.DateFromString,
     userId: UserId,
   }),
-  Schema.TaggedStruct("ChannelBinding", {
-    channelBindingId: ChannelBindingId,
+  Schema.TaggedStruct("ChannelLink", {
+    channelLinkId: ChannelLinkId,
     userId: UserId,
   }),
 ]);

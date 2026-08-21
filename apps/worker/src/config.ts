@@ -35,7 +35,6 @@ type RawConfigBinding =
   | "WHATSAPP_APP_SECRET"
   | "WHATSAPP_BOT_USERNAME"
   | "WHATSAPP_PHONE_NUMBER_ID"
-  | "WHATSAPP_PUBLIC_PHONE_NUMBER"
   | "WHATSAPP_VERIFY_TOKEN";
 
 type GeneratedCloudflareBindings = Omit<Env, RawConfigBinding>;
@@ -63,7 +62,6 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly WHATSAPP_APP_SECRET?: string;
   readonly WHATSAPP_BOT_USERNAME?: string;
   readonly WHATSAPP_PHONE_NUMBER_ID?: string;
-  readonly WHATSAPP_PUBLIC_PHONE_NUMBER?: string;
   readonly WHATSAPP_VERIFY_TOKEN?: string;
 }
 
@@ -91,7 +89,6 @@ export interface WhatsAppConfig {
   readonly appSecret: Redacted.Redacted;
   readonly botUsername: string;
   readonly phoneNumberId: string;
-  readonly publicPhoneNumber: string;
   readonly verifyToken: Redacted.Redacted;
 }
 
@@ -104,7 +101,7 @@ export interface StripeConfig {
   readonly webhookSecret: Redacted.Redacted;
 }
 
-/** Telegram onboarding and delivery configuration. */
+/** Telegram linking and delivery configuration. */
 export interface TelegramConfig {
   readonly allowedUserIds: ReadonlyArray<string>;
   readonly botToken: Redacted.Redacted;
@@ -190,7 +187,6 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
       appSecret: Redacted.make(required(env, "WHATSAPP_APP_SECRET")),
       botUsername: required(env, "WHATSAPP_BOT_USERNAME").trim(),
       phoneNumberId: required(env, "WHATSAPP_PHONE_NUMBER_ID").trim(),
-      publicPhoneNumber: required(env, "WHATSAPP_PUBLIC_PHONE_NUMBER").trim(),
       verifyToken: Redacted.make(required(env, "WHATSAPP_VERIFY_TOKEN")),
     },
   };

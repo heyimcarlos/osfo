@@ -25,16 +25,18 @@ export interface TelegramConversationOptions {
   readonly agentClass: typeof OsfoAgent;
   readonly hasAgent: (agentId: string) => boolean;
   readonly isAllowed: (authorId: string) => boolean;
-  readonly resolveAgentId: (authorId: string) => Promise<string | null>;
+  readonly resolveAgentId: (authorId: string, messengerId: string) => Promise<string | null>;
 }
 
 /** Resolve one Telegram conversation without taking ownership of transport state. */
 export const makeTelegramConversationResolver =
   (options: TelegramConversationOptions): MessengerConversationResolver =>
   async (event: MessengerEvent) => {
-    const authorId = event.message?.author.userId ?? event.author?.userId;
-    if (authorId === undefined || !options.isAllowed(authorId)) return { target: "self" };
-    const agentId = await options.resolveAgentId(authorId);
+    const authorId = event.author?.userId;
+    if (authorId === undefined || !event.thread.isDirectMessage || !options.isAllowed(authorId)) {
+      return { target: "self" };
+    }
+    const agentId = await options.resolveAgentId(authorId, event.messengerId);
     return agentId !== null && options.hasAgent(agentId)
       ? { agentClass: options.agentClass, name: agentId, target: "subagent" }
       : { target: "self" };
@@ -52,7 +54,7 @@ export const makeTelegramChannel = (options: TelegramChannelOptions): ChannelDef
       },
       mode: "webhook",
       path: "/webhooks/telegram",
-      respondTo: ["direct-message"],
+      respondTo: ["direct-message", "mention", "subscribed-thread", "action"],
       secretToken: options.secretToken,
       token: options.token,
       userName: options.userName,

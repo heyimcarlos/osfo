@@ -19,19 +19,17 @@ import {
 import { ArrowRight } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { authClient, sendInvitationOtp, verifyInvitationOtp } from "../lib/auth-client";
+import { authClient } from "../lib/auth-client";
 
 /* oxlint-disable effecttsgo/global-timers -- React owns this visible resend countdown lifecycle. */
 
 /** Browser authentication operations used by the Phone Verification form. */
 export interface PhoneAuthDependencies {
   readonly sendCode: (input: {
-    readonly invitationToken?: string;
     readonly phoneNumber: string;
   }) => Promise<{ readonly error: unknown }>;
   readonly verifyCode: (input: {
     readonly code: string;
-    readonly invitationToken?: string;
     readonly phoneNumber: string;
   }) => Promise<{ readonly error: unknown }>;
 }
@@ -39,10 +37,7 @@ export interface PhoneAuthDependencies {
 interface PhoneAuthFormProps {
   readonly dependencies?: PhoneAuthDependencies;
   readonly initialPhoneNumber?: string;
-  readonly invitationToken?: string;
   readonly locale?: "en" | "es";
-  readonly lockedPhoneNumber?: boolean;
-  readonly maskedPhoneNumber?: string;
   readonly onAuthenticated: () => Promise<string | undefined> | string | undefined | void;
 }
 
@@ -50,10 +45,7 @@ interface PhoneAuthFormProps {
 export function PhoneAuthForm({
   dependencies = defaultPhoneAuthDependencies,
   initialPhoneNumber = "",
-  invitationToken,
   locale = "en",
-  lockedPhoneNumber = false,
-  maskedPhoneNumber,
   onAuthenticated,
 }: PhoneAuthFormProps) {
   const [code, setCode] = useState("");
@@ -76,19 +68,13 @@ export function PhoneAuthForm({
   const submitPhoneNumber = () => {
     setRequestError(undefined);
     const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber, country);
-    if (!lockedPhoneNumber && normalizedPhoneNumber === null) {
+    if (normalizedPhoneNumber === null) {
       setRequestError(text.invalidPhone);
       return Promise.resolve();
     }
     setIsSubmitting(true);
-    const submittedPhoneNumber = lockedPhoneNumber
-      ? phoneNumber
-      : (normalizedPhoneNumber ?? phoneNumber);
-    const input =
-      invitationToken === undefined
-        ? { phoneNumber: submittedPhoneNumber }
-        : { invitationToken, phoneNumber: submittedPhoneNumber };
-    return dependencies.sendCode(input).then((result) => {
+    const submittedPhoneNumber = normalizedPhoneNumber ?? phoneNumber;
+    return dependencies.sendCode({ phoneNumber: submittedPhoneNumber }).then((result) => {
       if (result.error) {
         setRequestError(text.sendError);
         setIsSubmitting(false);
@@ -105,14 +91,8 @@ export function PhoneAuthForm({
     setRequestError(undefined);
     setIsSubmitting(true);
     const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber, country);
-    const submittedPhoneNumber = lockedPhoneNumber
-      ? phoneNumber
-      : (normalizedPhoneNumber ?? phoneNumber);
-    const input =
-      invitationToken === undefined
-        ? { code, phoneNumber: submittedPhoneNumber }
-        : { code, invitationToken, phoneNumber: submittedPhoneNumber };
-    return dependencies.verifyCode(input).then((result) => {
+    const submittedPhoneNumber = normalizedPhoneNumber ?? phoneNumber;
+    return dependencies.verifyCode({ code, phoneNumber: submittedPhoneNumber }).then((result) => {
       if (result.error) {
         setRequestError(text.verifyError);
         setIsSubmitting(false);
@@ -137,11 +117,7 @@ export function PhoneAuthForm({
           {codeWasSent ? text.enterCode : text.continueSms}
         </CardTitle>
         <CardDescription className="max-w-sm text-base font-medium leading-snug text-foreground/75">
-          {codeWasSent
-            ? `${text.codeSent} ${maskedPhoneNumber ?? phoneNumber}.`
-            : lockedPhoneNumber
-              ? `${text.invitedNumber} ${maskedPhoneNumber ?? phoneNumber}.`
-              : text.phoneHelp}
+          {codeWasSent ? `${text.codeSent} ${phoneNumber}.` : text.phoneHelp}
         </CardDescription>
       </CardHeader>
 
@@ -158,48 +134,44 @@ export function PhoneAuthForm({
             <Label className="font-black uppercase" htmlFor="phone-number">
               {text.phoneLabel}
             </Label>
-            {lockedPhoneNumber ? (
-              <Input disabled id="phone-number" value={maskedPhoneNumber ?? phoneNumber} />
-            ) : (
-              <div className="grid gap-2 sm:grid-cols-[minmax(9rem,0.8fr)_1.2fr]">
-                <div className="space-y-2">
-                  <Label className="sr-only" htmlFor="phone-country">
-                    {text.countryLabel}
-                  </Label>
-                  <select
-                    className="min-h-10 w-full rounded-md border-2 border-border bg-background px-3"
-                    disabled={codeWasSent || isSubmitting}
-                    id="phone-country"
-                    value={country}
-                    onChange={(event) => {
-                      if (!isCountryCode(event.target.value)) return;
-                      setCountry(event.target.value);
-                      setPhoneNumber("");
-                    }}
-                  >
-                    {countryOptions(locale).map((option) => (
-                      <option key={option.code} value={option.code}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <Input
-                  autoComplete="tel-national"
+            <div className="grid gap-2 sm:grid-cols-[minmax(9rem,0.8fr)_1.2fr]">
+              <div className="space-y-2">
+                <Label className="sr-only" htmlFor="phone-country">
+                  {text.countryLabel}
+                </Label>
+                <select
+                  className="min-h-10 w-full rounded-md border-2 border-border bg-background px-3"
                   disabled={codeWasSent || isSubmitting}
-                  id="phone-number"
-                  inputMode="tel"
-                  name="phoneNumber"
-                  placeholder={text.phonePlaceholder}
-                  required
-                  type="tel"
-                  value={phoneNumber}
-                  onChange={(event) =>
-                    setPhoneNumber(new AsYouType(country).input(event.target.value))
-                  }
-                />
+                  id="phone-country"
+                  value={country}
+                  onChange={(event) => {
+                    if (!isCountryCode(event.target.value)) return;
+                    setCountry(event.target.value);
+                    setPhoneNumber("");
+                  }}
+                >
+                  {countryOptions(locale).map((option) => (
+                    <option key={option.code} value={option.code}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
               </div>
-            )}
+              <Input
+                autoComplete="tel-national"
+                disabled={codeWasSent || isSubmitting}
+                id="phone-number"
+                inputMode="tel"
+                name="phoneNumber"
+                placeholder={text.phonePlaceholder}
+                required
+                type="tel"
+                value={phoneNumber}
+                onChange={(event) =>
+                  setPhoneNumber(new AsYouType(country).input(event.target.value))
+                }
+              />
+            </div>
           </div>
 
           {codeWasSent ? (
@@ -249,19 +221,17 @@ export function PhoneAuthForm({
           >
             {resendSeconds > 0 ? `${text.resendIn} ${resendSeconds}s` : text.resend}
           </Button>
-          {!lockedPhoneNumber ? (
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => {
-                setCode("");
-                setRequestError(undefined);
-                setStage("phone");
-              }}
-            >
-              {text.otherNumber}
-            </Button>
-          ) : null}
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              setCode("");
+              setRequestError(undefined);
+              setStage("phone");
+            }}
+          >
+            {text.otherNumber}
+          </Button>
         </CardFooter>
       ) : null}
     </Card>
@@ -270,14 +240,8 @@ export function PhoneAuthForm({
 
 /** Production Phone Verification operations backed by Better Auth. */
 export const defaultPhoneAuthDependencies: PhoneAuthDependencies = {
-  sendCode: ({ invitationToken, phoneNumber }) =>
-    invitationToken === undefined
-      ? authClient.phoneNumber.sendOtp({ phoneNumber })
-      : sendInvitationOtp(invitationToken, phoneNumber === "" ? undefined : phoneNumber),
-  verifyCode: ({ code, invitationToken, phoneNumber }) =>
-    invitationToken === undefined
-      ? authClient.phoneNumber.verify({ code, phoneNumber })
-      : verifyInvitationOtp(invitationToken, code, phoneNumber === "" ? undefined : phoneNumber),
+  sendCode: ({ phoneNumber }) => authClient.phoneNumber.sendOtp({ phoneNumber }),
+  verifyCode: ({ code, phoneNumber }) => authClient.phoneNumber.verify({ code, phoneNumber }),
 };
 
 const phoneText = {

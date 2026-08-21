@@ -2,7 +2,7 @@ import { Schema } from "effect";
 
 import {
   AllowancePeriodId,
-  ChannelBindingId,
+  ChannelLinkId,
   ConversationRouteId,
   Plan,
   PlanPolicyVersion,
@@ -11,6 +11,7 @@ import {
   UserId,
 } from "../domain";
 import { AuthSessionId } from "./auth-session";
+import { ChannelAddress } from "./channel-link";
 import { OriginatingAuthority } from "./authority";
 import { CoreMemoryAuthorizationSnapshotEncoded } from "./core-memory-authorization";
 import { ManagedModelRoute } from "./model-access-policy";
@@ -20,7 +21,11 @@ const positiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan
 /** Stable authority identity retained for current protected-effect rechecks. */
 export const ManagedTurnAuthorityIdentity = Schema.Union([
   Schema.TaggedStruct("AuthSession", { authSessionId: AuthSessionId, userId: UserId }),
-  Schema.TaggedStruct("ChannelBinding", { channelBindingId: ChannelBindingId, userId: UserId }),
+  Schema.TaggedStruct("ChannelLink", {
+    address: ChannelAddress,
+    channelLinkId: ChannelLinkId,
+    userId: UserId,
+  }),
   Schema.TaggedStruct("DurableTrigger", {
     triggerId: Schema.String,
     triggerType: Schema.Literals(["scheduledTask", "workflow"]),

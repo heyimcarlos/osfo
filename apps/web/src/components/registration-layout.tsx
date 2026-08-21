@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 
 import { useDocumentLanguage } from "../lib/document-language";
 
-/** Shared visual frame for the separate website and channel onboarding pages. */
-export function OnboardingLayout({
+/** Shared visual frame for public registration. */
+export function RegistrationLayout({
   children,
   locale,
   onLocaleChange,
@@ -25,12 +25,12 @@ export function OnboardingLayout({
             </span>
             <span className="text-3xl font-black tracking-tight">Osfo</span>
           </div>
-          <Label className="sr-only" htmlFor="onboarding-language">
+          <Label className="sr-only" htmlFor="registration-language">
             Language
           </Label>
           <select
             className="min-h-11 rounded-md border-2 border-border bg-background px-3 font-bold"
-            id="onboarding-language"
+            id="registration-language"
             value={locale}
             onChange={(event) => onLocaleChange(event.target.value === "es" ? "es" : "en")}
           >
@@ -44,6 +44,6 @@ export function OnboardingLayout({
   );
 }
 
-/** Choose the initial onboarding language from the browser. */
-export const browserOnboardingLocale = (): "en" | "es" =>
+/** Choose the initial registration language from the browser. */
+export const browserRegistrationLocale = (): "en" | "es" =>
   globalThis.navigator?.language.toLowerCase().startsWith("es") ? "es" : "en";

@@ -10,7 +10,6 @@
     "OSFO_STAGE": "test",
     "WHATSAPP_BOT_USERNAME": "osfo_test_whatsapp",
     "WHATSAPP_PHONE_NUMBER_ID": "123456789",
-    "WHATSAPP_PUBLIC_PHONE_NUMBER": "14165550100",
   },
   "secrets": {
     "required": [
@@ -41,10 +40,6 @@
     "bindings": [
       { "name": "DOCUMENT_SANDBOX", "class_name": "Sandbox" },
       { "name": "OSFO_DIRECTORY", "class_name": "OsfoDirectory" },
-      {
-        "name": "REGISTRATION_DIALOGUE",
-        "class_name": "RegistrationDialogue",
-      },
     ],
   },
   "migrations": [
@@ -54,6 +49,7 @@
     },
     { "tag": "v2", "new_sqlite_classes": ["Sandbox"] },
     { "tag": "v3", "new_sqlite_classes": ["OsfoDirectory"] },
+    { "tag": "v4", "deleted_classes": ["RegistrationDialogue"] },
   ],
   "containers": [
     {

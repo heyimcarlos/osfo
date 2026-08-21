@@ -20,16 +20,13 @@ import type { MessengerContext } from "@cloudflare/think/messengers";
 import { tool, type ToolSet, type UIMessage } from "ai";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import { Cause, DateTime, Effect, Exit, Option, Predicate, Result, Schema } from "effect";
-import { HelpArea, OnboardingLocale } from "@osfo/api";
 
-import type { UserId } from "../../domain";
+import type { ChannelLinkId, UserId } from "../../domain";
 import type { AllowanceItem, AllowanceSource } from "../../domain/allowance";
 import {
   AgentId,
   AllowancePeriodId,
   AssistantMessageId,
-  ChannelBindingId,
-  ChannelIdentity,
   ConversationRouteId,
   SessionId,
   ThinkSubmissionId,
@@ -41,9 +38,8 @@ import { DocumentArtifact } from "../../domain/document-artifact";
 import { DocumentGenerationComposition } from "../../composition/document-generation";
 import { Db } from "../../db";
 import { BillingDb } from "../../db/billing";
-import { decodeOsfoStage } from "../../config";
-import { ProviderAuthorizationPostgres } from "../../integrations/postgres/provider-authorization";
-import { ChannelBindingPostgres } from "../../integrations/postgres/channel-binding";
+import { decodeOsfoStage, loadConfig } from "../../config";
+import { ChannelLinkAuthorizationPostgres } from "../../integrations/postgres/channel-link-authorization";
 import { SessionRecallAuthorizationPostgres } from "../../integrations/postgres/session-recall-authorization";
 import {
   CancelManagedConversationInput,
@@ -66,7 +62,6 @@ import {
   type ManagedSessionReplacementAdmitted,
   SubmitManagedConversationInput,
 } from "../../services/managed-conversation";
-import type { ChannelProvider } from "../../services/onboarding";
 import {
   launchModelAccessPolicy,
   type ManagedRouteUnavailable,
@@ -81,6 +76,7 @@ import {
 } from "../../integrations/cloudflare/file-objects";
 import { loadCurrentFileAuthorization } from "../../integrations/postgres/file-authorization";
 import { AgentDirectory } from "../../services/agent-directory";
+import { ChannelLinks } from "../../services/channel-links";
 import {
   invalidOsfoEnvironment,
   makeOsfoAgentRuntime,
@@ -88,6 +84,8 @@ import {
   type RuntimeProbeResult,
 } from "../../layers";
 import { makeAgentDb } from "./db/client";
+
+type ChannelProvider = "telegram" | "whatsapp";
 import {
   type FileAnalysisConflict,
   type FileNotFound,
@@ -155,7 +153,6 @@ import {
   CommittedTurnConflict,
   ThinkSessionReadUnavailable,
   ThinkSessionRecordInvalid,
-  ThinkSessionWriteUnavailable,
 } from "./db/errors";
 import { applyAgentMigrations } from "./db/migrate";
 import { makeModelCallUsageStore } from "./db/model-call-usage";
@@ -335,22 +332,6 @@ export interface SessionHistoryNotFound {
 /** Observable result of reading Think Session history. */
 export type SessionHistoryRead = SessionHistoryFound | SessionHistoryNotFound;
 
-const PersonalWelcomeInput = Schema.Struct({
-  channelBindingId: ChannelBindingId,
-  helpAreas: Schema.Array(HelpArea),
-  locale: OnboardingLocale,
-  preferredName: Schema.NullOr(Schema.String),
-});
-type PersonalWelcomeEncoded = typeof PersonalWelcomeInput.Encoded;
-
-/** Durable result for the deterministic first personal response. */
-export interface PersonalWelcomeCommitted {
-  readonly _tag: "PersonalWelcomeCommitted";
-  readonly messageId: AssistantMessageId;
-  readonly sessionId: SessionId;
-  readonly text: string;
-}
-
 /** User-scoped Think Durable Object with stable Osfo Agent and Session identity. */
 export class OsfoAgent extends Think<Env> {
   /** Keep shell execution unavailable until a concrete Osfo tool contract enables it. */
@@ -519,7 +500,7 @@ export class OsfoAgent extends Think<Env> {
     context: MessengerContext,
   ): Promise<void> {
     await this.#migrationsReady;
-    const authorId = context.message?.author.userId ?? context.author?.userId;
+    const authorId = context.author?.userId;
     const message = context.message;
     const provider = context.provider;
     if (
@@ -535,8 +516,8 @@ export class OsfoAgent extends Think<Env> {
       return;
     }
 
-    const bindingResolution = await this.#resolveMessengerBinding(provider, authorId);
-    if (bindingResolution._tag === "Unavailable") {
+    const linkResolution = await this.#resolveMessengerLink(context.messengerId, authorId);
+    if (linkResolution._tag === "Unavailable") {
       await this.#completeMessengerPolicyReply(
         callback,
         context,
@@ -544,12 +525,14 @@ export class OsfoAgent extends Think<Env> {
       );
       return;
     }
-    const binding = bindingResolution.binding;
-    if (binding === null || binding.agentId !== this.name) {
+    const link = linkResolution.link;
+    if (link === null) {
       await Effect.runPromise(
-        Effect.logWarning("Messenger binding could not authorize the current Agent facet").pipe(
+        Effect.logWarning(
+          "Messenger Channel Link could not authorize the current Agent facet",
+        ).pipe(
           Effect.annotateLogs({
-            bindingResolution: binding === null ? "missing" : "agentMismatch",
+            linkResolution: "missing",
             runtimeAvailable: Option.isSome(this.#runtime),
           }),
         ),
@@ -568,14 +551,13 @@ export class OsfoAgent extends Think<Env> {
       message.providerMessageId,
     );
     const store = this.#store;
-    const inspectAuthorization = (channelBindingId: ChannelBindingId) =>
-      this.#inspectCurrentProviderAuthorization(provider, channelBindingId);
+    const inspectAuthorization = () => this.#inspectCurrentChannelLinkAuthorization(link);
     const replaceCurrent = (admission: ManagedSessionReplacementAdmitted) =>
       this.#agentSessionLifecycle.replaceCurrent(admission);
     const operation = Effect.gen(function* () {
       const [agent, currentAuthorization] = yield* Effect.all([
         store.inspect(),
-        inspectAuthorization(binding.channelBindingId),
+        inspectAuthorization(),
       ]);
       const admission = yield* admitManagedConversation(
         {
@@ -1396,66 +1378,6 @@ export class OsfoAgent extends Think<Env> {
     return runRpc(this.#store.inspect());
   }
 
-  /** Commit the first localized personal response without running a model turn. */
-  async commitWelcome(
-    input: PersonalWelcomeEncoded,
-  ): Promise<
-    | AgentRequestInvalid
-    | AgentStateNotFound
-    | AgentStoreRecordInvalid
-    | AgentStoreUnavailable
-    | CommittedTurnConflict
-    | PersonalWelcomeCommitted
-    | ThinkSessionWriteUnavailable
-  > {
-    await this.#migrationsReady;
-    const activateCurrentSession = () => this.#activateCurrentSession();
-    const addWelcome = (message: {
-      readonly id: string;
-      readonly parts: Array<{ readonly text: string; readonly type: "text" }>;
-      readonly role: "assistant";
-    }) => this.addMessages([message]);
-    const store = this.#store;
-    return runRpc(
-      Effect.gen(function* () {
-        const parsed = yield* Schema.decodeEffect(PersonalWelcomeInput)(input).pipe(
-          Effect.mapError(() => invalidRequest("commitWelcome")),
-        );
-        const agent = yield* store.inspect();
-        const messageId = AssistantMessageId.make(`welcome-${parsed.channelBindingId}`);
-        const text = personalWelcome(parsed);
-        yield* Effect.tryPromise({
-          try: async () => {
-            await activateCurrentSession();
-            await addWelcome({
-              id: messageId,
-              parts: [{ text, type: "text" }],
-              role: "assistant",
-            });
-          },
-          catch: (cause) =>
-            new ThinkSessionWriteUnavailable({
-              cause,
-              message: "The personal welcome could not be persisted",
-              sessionId: agent.currentSessionId,
-            }),
-        });
-        yield* store.recordCommittedTurn({
-          assistantMessageId: messageId,
-          sessionId: agent.currentSessionId,
-          source: "reconciliation",
-          thinkRequestId: null,
-        });
-        return {
-          _tag: "PersonalWelcomeCommitted",
-          messageId,
-          sessionId: agent.currentSessionId,
-          text,
-        } as const;
-      }),
-    );
-  }
-
   /** Read the current and historical Session identities for one route. */
   async readRoute(
     routeId: string,
@@ -1636,24 +1558,23 @@ export class OsfoAgent extends Think<Env> {
           }),
       ),
       Effect.flatMap((metadata) => {
-        const authority =
-          metadata.authorityIdentity._tag === "ChannelBinding" ? metadata.authorityIdentity : null;
-        if (authority === null) {
-          return Effect.fail(
-            new DocumentGeneration.DocumentAuthorizationUnavailable({
-              cause: { authority: metadata.authorityIdentity._tag },
-              message: "The active ToolCall has no channel binding authority",
-            }),
+        const authority = metadata.authorityIdentity;
+        if (authority._tag === "ChannelLink") {
+          return this.#inspectCurrentChannelLinkAuthorization(authority).pipe(
+            Effect.mapError(
+              (cause) =>
+                new DocumentGeneration.DocumentAuthorizationUnavailable({
+                  cause,
+                  message: "Current document authorization facts could not be loaded",
+                }),
+            ),
           );
         }
-        return this.#inspectCurrentChannelBindingAuthorization(authority.channelBindingId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new DocumentGeneration.DocumentAuthorizationUnavailable({
-                cause,
-                message: "Current document authorization facts could not be loaded",
-              }),
-          ),
+        return Effect.fail(
+          new DocumentGeneration.DocumentAuthorizationUnavailable({
+            cause: { authority: authority._tag },
+            message: "The active ToolCall has no channel authority",
+          }),
         );
       }),
       Effect.map((currentContext) =>
@@ -1825,6 +1746,7 @@ export class OsfoAgent extends Think<Env> {
       );
     }
     const agentId = AgentId.make(this.name);
+    const config = loadConfig(this.env);
     return Effect.tryPromise({
       try: () =>
         runtime.runPromise(
@@ -1832,8 +1754,18 @@ export class OsfoAgent extends Think<Env> {
             Effect.gen(function* () {
               const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
               const database = yield* Db.database;
-              return yield* loadCurrentFileAuthorization(database, agentId, context, now);
-            }),
+              const channelLinks = yield* ChannelLinks.Service;
+              return yield* loadCurrentFileAuthorization(
+                database,
+                channelLinks,
+                agentId,
+                context,
+                now,
+              );
+            }).pipe(
+              // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The captured runtime supplies Db and Crypto while this layer supplies request configuration.
+              Effect.provide(ChannelLinks.layerFromConfig(config)),
+            ),
           ),
         ),
       catch: (cause) =>
@@ -1957,120 +1889,75 @@ export class OsfoAgent extends Think<Env> {
     });
   }
 
-  #inspectCurrentProviderAuthorization(
-    provider: "telegram" | "whatsapp",
-    channelBindingId: ChannelBindingId,
-  ) {
-    const runtime = Option.getOrUndefined(this.#runtime);
-    if (runtime === undefined) {
-      return Effect.fail(
-        new ProviderAuthorizationPostgres.ProviderAuthorizationPersistenceUnavailable({
-          cause: invalidOsfoEnvironment,
-          message: "Current provider authorization could not be checked",
-          provider,
-        }),
-      );
-    }
-    return Effect.tryPromise({
-      try: () =>
-        runtime.runPromise(
-          Effect.scoped(
-            ProviderAuthorizationPostgres.make({ provider }).pipe(
-              Effect.flatMap((providerAuthorization) =>
-                providerAuthorization.admit({
-                  _tag: "Bound",
-                  agentId: AgentId.make(this.name),
-                  channelBindingId,
-                }),
-              ),
-            ),
-          ),
-        ),
-      catch: (cause) =>
-        Predicate.isTagged(cause, "ProviderAuthorizationPersistenceUnavailable")
-          ? cause
-          : new ProviderAuthorizationPostgres.ProviderAuthorizationPersistenceUnavailable({
-              cause,
-              message: "Current provider authorization could not be checked",
-              provider,
-            }),
-    });
-  }
-
-  #inspectCurrentChannelBindingAuthorization(channelBindingId: ChannelBindingId) {
-    const runtime = Option.getOrUndefined(this.#runtime);
-    if (runtime === undefined) {
-      return Effect.fail(
-        new DocumentGeneration.DocumentAuthorizationUnavailable({
-          cause: invalidOsfoEnvironment,
-          message: "Current document authorization facts could not be loaded",
-        }),
-      );
-    }
-    return Effect.tryPromise({
-      try: async () => {
-        const binding = await runtime.runPromise(
-          Effect.scoped(
-            Db.database.pipe(
-              Effect.flatMap((database) =>
-                Effect.promise(() =>
-                  ChannelBindingPostgres.readBindingById(database, channelBindingId),
-                ),
-              ),
-            ),
-          ),
-        );
-        if (binding === null) throw new Error("Channel binding was not found");
-        return runtime.runPromise(
-          Effect.scoped(
-            ProviderAuthorizationPostgres.make({
-              provider: binding.provider,
-            }).pipe(
-              Effect.flatMap((providerAuthorization) =>
-                providerAuthorization.admit({
-                  _tag: "Bound",
-                  agentId: AgentId.make(this.name),
-                  channelBindingId,
-                }),
-              ),
-            ),
-          ),
-        );
-      },
-      catch: (cause) =>
-        new DocumentGeneration.DocumentAuthorizationUnavailable({
-          cause,
-          message: "Current document authorization facts could not be loaded",
-        }),
-    });
-  }
-
-  async #resolveMessengerBinding(provider: ChannelProvider, authorId: string) {
+  async #resolveMessengerLink(messengerId: string, authorId: string) {
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) {
       return { _tag: "Unavailable" } as const;
     }
     const result = await Effect.runPromiseExit(
-      Effect.promise(() =>
-        runtime.runPromise(
+      Effect.promise(() => {
+        const config = loadConfig(this.env);
+        return runtime.runPromise(
           Effect.scoped(
-            Db.database.pipe(
-              Effect.flatMap((database) =>
-                ChannelBindingPostgres.resolveActiveAgentBinding(
-                  database,
-                  provider,
-                  ChannelIdentity.make(provider === "telegram" ? `telegram:${authorId}` : authorId),
+            ChannelLinks.Service.pipe(
+              Effect.flatMap((channelLinks) =>
+                channelLinks.resolve(
+                  ChannelLinks.ChannelAddress.make({
+                    authorId: ChannelLinks.ChannelAuthorId.make(authorId),
+                    channelId: ChannelLinks.ChannelId.make(messengerId),
+                  }),
                 ),
               ),
+              // The messenger Agent method is the request entry point that owns this scoped authority layer.
+              // oxlint-disable-next-line effecttsgo/strict-effect-provide -- The captured runtime supplies Db and Crypto while this layer supplies request configuration.
+              Effect.provide(ChannelLinks.layerFromConfig(config)),
+            ),
+          ),
+        );
+      }),
+    );
+    if (Exit.isSuccess(result)) {
+      return { _tag: "Resolved", link: result.value } as const;
+    }
+    return { _tag: "Unavailable" } as const;
+  }
+
+  #inspectCurrentChannelLinkAuthorization(link: {
+    readonly address: typeof ChannelLinks.ChannelAddress.Type;
+    readonly channelLinkId: ChannelLinkId;
+    readonly userId: UserId;
+  }) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new ChannelLinkAuthorizationPostgres.ChannelLinkAuthorizationUnavailable({
+          cause: invalidOsfoEnvironment,
+          message: "Current Channel Link authorization could not be checked",
+        }),
+      );
+    }
+    const config = loadConfig(this.env);
+    return Effect.tryPromise({
+      try: () =>
+        runtime.runPromise(
+          Effect.scoped(
+            ChannelLinkAuthorizationPostgres.make.pipe(
+              Effect.flatMap((currentAuthorization) =>
+                currentAuthorization.admit({ agentId: AgentId.make(this.name), ...link }),
+              ),
+              // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This messenger request entry point supplies Channel Links policy to the captured runtime.
+              Effect.provide(ChannelLinks.layerFromConfig(config)),
             ),
           ),
         ),
-      ),
-    );
-    if (Exit.isSuccess(result)) {
-      return { _tag: "Resolved", binding: result.value } as const;
-    }
-    return { _tag: "Unavailable" } as const;
+      catch: (cause) =>
+        Predicate.isTagged(cause, "ChannelLinkAuthorizationUnavailable")
+          ? cause
+          : new ChannelLinkAuthorizationPostgres.ChannelLinkAuthorizationUnavailable({
+              cause,
+              message: "Current Channel Link authorization could not be checked",
+            }),
+    });
   }
 
   async #recordMessengerAcceptedMessage(
@@ -2143,11 +2030,15 @@ export class OsfoAgent extends Think<Env> {
         }),
       );
     }
+    const config = loadConfig(this.env);
     return Effect.tryPromise({
       try: (signal) =>
         runtime.runPromise(
           Effect.scoped(
-            SessionRecallAuthorizationPostgres.inspect(AgentId.make(this.name), identity),
+            SessionRecallAuthorizationPostgres.inspect(AgentId.make(this.name), identity).pipe(
+              // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This Recall request entry point supplies Channel Links policy to the captured runtime.
+              Effect.provide(ChannelLinks.layerFromConfig(config)),
+            ),
           ),
           { signal },
         ),
@@ -2270,45 +2161,9 @@ const invalidRequest = (operation: AgentRequestOperation): AgentRequestInvalid =
     operation,
   });
 
-const personalWelcome = (profile: typeof PersonalWelcomeInput.Type): string => {
-  const preferredName = profile.preferredName?.trim();
-  const name = preferredName === undefined || preferredName.length === 0 ? "" : ` ${preferredName}`;
-  const areas = profile.helpAreas.map((area) => helpAreaLabels[profile.locale][area]);
-  if (profile.locale === "es") {
-    const selected = areas.length === 0 ? "" : ` Elegiste ${formatList(areas, "y")}.`;
-    return `Hola${name}, estoy listo.${selected} ¿En qué trabajamos primero?`;
-  }
-  const selected = areas.length === 0 ? "" : ` You selected ${formatList(areas, "and")}.`;
-  return `Hi${name}, I'm ready.${selected} What should we work on first?`;
-};
-
-const helpAreaLabels = {
-  en: {
-    "files-documents": "files and documents",
-    "money-planning": "money and planning",
-    research: "research",
-    "scheduling-reminders": "scheduling and reminders",
-    "something-else": "something else",
-    "writing-email": "writing and email",
-  },
-  es: {
-    "files-documents": "archivos y documentos",
-    "money-planning": "dinero y planificación",
-    research: "investigación",
-    "scheduling-reminders": "agenda y recordatorios",
-    "something-else": "algo más",
-    "writing-email": "redacción y correo",
-  },
-} as const;
-
-const formatList = (values: ReadonlyArray<string>, conjunction: string): string => {
-  if (values.length < 2) return values[0] ?? "";
-  return `${values.slice(0, -1).join(", ")} ${conjunction} ${values.at(-1)}`;
-};
-
 /** Derive one stable, schema-valid Think submission identity from provider message identity. */
 export const messengerSubmissionId = async (
-  provider: ChannelProvider,
+  provider: "telegram" | "whatsapp",
   threadId: string,
   providerMessageId: string,
 ): Promise<ThinkSubmissionId> => {
@@ -2389,9 +2244,9 @@ const authorizationMatchesActor = (
     );
   }
   return (
-    (Predicate.isTagged(authority, "ChannelBinding") ||
-      Predicate.isTagged(authority, "RevokedChannelBinding")) &&
-    authority.channelBindingId === actor.channelBindingId
+    (Predicate.isTagged(authority, "ChannelLink") ||
+      Predicate.isTagged(authority, "RevokedChannelLink")) &&
+    authority.channelLinkId === actor.channelLinkId
   );
 };
 

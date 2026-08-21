@@ -9,7 +9,7 @@ class CloudflareHostUnavailable extends Schema.TaggedError<CloudflareHostUnavail
   "CloudflareHostUnavailable",
   {
     cause: Schema.Defect(),
-    executionUnit: Schema.Literals(["osfo-agent", "registration-dialogue"]),
+    executionUnit: Schema.Literal("osfo-agent"),
     message: Schema.String,
   },
 ) {}
@@ -18,20 +18,11 @@ interface DirectoryProbeStub {
   readonly probeAgent: (agentId: string) => Promise<RuntimeProbeResult>;
 }
 
-interface RuntimeProbeStub {
-  readonly probeRuntime: () => Promise<RuntimeProbeResult>;
-}
-
-interface RuntimeProbeNamespace {
-  readonly getByName: (identity: string) => RuntimeProbeStub;
-}
-
 /** Cloudflare bindings used only by temporary runtime probes. */
 export interface Bindings {
   readonly OSFO_DIRECTORY: {
     readonly getByName: (identity: string) => DirectoryProbeStub;
   };
-  readonly REGISTRATION_DIALOGUE: RuntimeProbeNamespace;
 }
 
 /** Temporary route that probes one named Osfo Agent runtime. */
@@ -46,22 +37,7 @@ export const agent = (env: Bindings) =>
     ),
   );
 
-/** Temporary route that probes one named Registration Dialogue runtime. */
-export const registrationDialogue = (env: Bindings) =>
-  HttpRouter.params.pipe(
-    Effect.flatMap(({ identity }) =>
-      identity === undefined
-        ? Effect.succeed(notFound)
-        : call("registration-dialogue", () =>
-            env.REGISTRATION_DIALOGUE.getByName(identity).probeRuntime(),
-          ),
-    ),
-  );
-
-const call = (
-  executionUnit: "osfo-agent" | "registration-dialogue",
-  invoke: () => Promise<RuntimeProbeResult>,
-) =>
+const call = (executionUnit: "osfo-agent", invoke: () => Promise<RuntimeProbeResult>) =>
   Effect.tryPromise({
     try: invoke,
     catch: (cause) =>

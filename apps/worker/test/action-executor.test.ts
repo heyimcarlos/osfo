@@ -1,6 +1,4 @@
 import { describe, expect, it } from "@effect/vitest";
-import { channelBindings } from "@osfo/db/schema/onboarding";
-import { eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { TestClock } from "effect/testing";
 
@@ -11,15 +9,21 @@ import {
   userId,
   withAccountAuthorityFixture,
 } from "./account-authority-fixture";
-import { AllowancePeriodId, ChannelBindingId, PlanPolicyVersion } from "../src/domain";
+import { AllowancePeriodId, ChannelLinkId, PlanPolicyVersion } from "../src/domain";
 import { ActionId } from "../src/domain/action-execution";
 import { AuthSessionId } from "../src/domain/auth-session";
+import { ChannelAddress, ChannelAuthorId, ChannelId } from "../src/domain/channel-link";
 import { AuthorizationOperation } from "../src/domain/authorization-operation";
 import { retainedCatalog } from "../src/domain/plan-policy";
 import { ActionExecutor } from "../src/services/action-executor";
 import { Authorization, AuthorizationContext } from "../src/services/authorization";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Tests assert tagged public outcomes. */
+
+const channelAddress = ChannelAddress.make({
+  authorId: ChannelAuthorId.make("protected-author"),
+  channelId: ChannelId.make("protected-channel"),
+});
 
 describe("protected-effect executor", () => {
   for (const testCase of [
@@ -108,20 +112,17 @@ describe("protected-effect executor", () => {
     ),
   );
 
-  it.effect("rechecks the current Channel Binding before provider contact", () =>
-    withAccountAuthorityFixture(({ authorities, database }) =>
+  it.effect("rechecks the current Channel Link before provider contact", () =>
+    withAccountAuthorityFixture(({ authorities }) =>
       Effect.gen(function* () {
-        const channelBindingId = ChannelBindingId.make("channel-binding-protected");
-        const actionId = ActionId.make("protected-channel-binding");
-        yield* Effect.promise(() =>
-          database.database.insert(channelBindings).values({
-            channel_binding_id: channelBindingId,
-            channel_identity: "+14165550100",
-            provider: "whatsapp",
-            user_id: userId,
-          }),
-        );
-        const authority = yield* authorities.channelBindings.inspect(userId, channelBindingId);
+        const channelLinkId = ChannelLinkId.make("channel-link-protected");
+        const actionId = ActionId.make("protected-channel-link");
+        const authority = {
+          _tag: "ChannelLink" as const,
+          address: channelAddress,
+          channelLinkId,
+          userId,
+        };
         const authorization = Authorization.make(retainedCatalog);
         const operation = AuthorizationOperation.make({ actionId, kind: "gmail.send" });
         const admitted = authorization.admit(
@@ -131,24 +132,26 @@ describe("protected-effect executor", () => {
             authority,
             deletionAccess: { _tag: "DeletionAccessAvailable" },
             now: parseDate("2026-08-16T12:00:00.000Z"),
-            originatingAuthority: { _tag: "ChannelBinding", channelBindingId },
+            originatingAuthority: { _tag: "ChannelLink", channelLinkId },
             user: { _tag: "ActiveUser", userId },
           }),
           operation,
         );
-        yield* Effect.promise(() =>
-          database.database
-            .update(channelBindings)
-            .set({ revoked_at: parseDate("2026-08-16T12:01:00.000Z") })
-            .where(eq(channelBindings.channel_binding_id, channelBindingId)),
-        );
         let providerContacts = 0;
-        const result = yield* ActionExecutor.make(
-          authorization,
-          protectedEffectOwners(authorities),
-        ).executeThinkApprovedAction(
+        const result = yield* ActionExecutor.make(authorization, {
+          ...protectedEffectOwners(authorities),
+          channelLinks: {
+            inspect: () =>
+              Effect.succeed({
+                _tag: "RevokedChannelLink" as const,
+                address: channelAddress,
+                channelLinkId,
+                userId,
+              }),
+          },
+        }).executeThinkApprovedAction(
           { requestVendorUsdMicros: 0n },
-          { _tag: "ChannelBinding", channelBindingId, userId },
+          { _tag: "ChannelLink", address: channelAddress, channelLinkId, userId },
           operation,
           () =>
             Effect.sync(() => {
@@ -300,6 +303,10 @@ const protectedEffectOwners = (authorities: Authorities): ActionExecutor.Authori
   approvals: {
     inspect: (_userId, operation) =>
       Effect.succeed({ actionId: operation.actionId, operation: operation.kind, userId }),
+  },
+  channelLinks: {
+    inspect: (address, _userId, channelLinkId) =>
+      Effect.succeed({ _tag: "ChannelLink" as const, address, channelLinkId, userId }),
   },
   integrationConnections: {
     inspectGmail: () => Effect.succeed({ _tag: "Connected", userId }),

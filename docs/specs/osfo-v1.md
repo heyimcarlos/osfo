@@ -87,7 +87,7 @@ never become product authority.
   historical Sessions.
 - V1 has one WhatsApp direct-message route with one current primary Session.
 - UserId, AgentId, route identity, and SessionId are stable internal values. They
-  are not derived from a phone number, Account, Channel Identity, or provider
+  are not derived from a phone number, Account, Channel Address, or provider
   identifier.
 - A Durable Object activation identity is disposable. It is not an AgentId.
 
@@ -98,10 +98,11 @@ identities. They do not replace a route's current Session.
 
 ### Separate authentication facts
 
-A Channel Identity is provider-asserted messaging identity. A Phone Account is
-SMS-verified authentication evidence. An AuthSession lets a web client act as a
-User. A Channel Binding lets one provider identity act as and receive messages
-for one User. These facts remain separate. Better Auth owns authentication. Its
+A Channel Address is the opaque pair of Think's `MessengerContext.messengerId`
+and normalized `author.userId`. A Phone Account is SMS-verified authentication
+evidence. An AuthSession lets a web client act as a User. A Channel Link lets one
+provider-authenticated address act as and receive messages for one User. These
+facts remain separate. Better Auth owns authentication. Its
 `users` table is the Osfo control-plane User table, not a separate auth copy.
 Better Auth also owns `sessions`, `accounts`, `verifications`, and
 `rate_limits`. The phone-number plugin and Twilio Verify provide the selected
@@ -120,15 +121,15 @@ Osfo v1 supports:
 
 - exactly one active Phone Account for a User;
 - short-lived renewable AuthSessions with rotating renewal credentials;
-- at most one active WhatsApp Channel Binding for a User;
+- at most one active Channel Link for each Channel Address;
 - administrative User suspension;
-- AuthSession and Channel Binding revocation;
+- AuthSession and Channel Link revocation;
 - a deletion request that immediately revokes access.
 
 Phone loss, suspected compromise, phone replacement, Account collision, and a
-conflicting Channel Binding fail closed to manual support. V1 does not implement
-general Account Linking, User Merge, multiple conversational channels, Preferred
-Channel selection, automated recovery, or a general User lifecycle framework.
+conflicting Channel Link fail closed. V1 does not implement general Account
+Linking, User Merge, Preferred Channel selection, automated recovery, or a
+general User lifecycle framework.
 
 ### Launch authorization
 
@@ -141,13 +142,14 @@ registered User
   + current Usage Allowance
   + exact resource ownership or Integration Connection
   + exact Approval when required
-  - User Suspension, revoked AuthSession or Channel Binding, or deletion access revocation
+  - User Suspension, revoked AuthSession or Channel Link, or deletion access revocation
   = launch authorization result
 ```
 
-Ingress checks the Channel Binding, User suspension, Plan access, and allowance.
+Ingress resolves the Channel Link before any privileged model execution, then
+checks User suspension, Plan access, and allowance.
 Every protected external effect checks the exact User, action, resource,
-Integration Connection, Approval, User Suspension, binding and session
+Integration Connection, Approval, User Suspension, Channel Link and session
 revocation, and deletion access revocation again. Missing ownership, Plan
 entitlement, allowance, Integration Connection, or Approval also denies the
 operation. Model output, tool visibility, earlier acceptance, and an earlier
@@ -160,54 +162,51 @@ support early operational debugging. A future security workflow adds its own
 purpose-built history, such as User suspension and restoration events. Osfo can
 extract a shared audit model only after several concrete workflows need it.
 
-## Channel-first registration and onboarding
+## Direct Channel Linking
 
-Osfo presents one visible persona. An unregistered sender from a supported
-messaging provider may converse naturally with the temporary Registration
-Dialogue until its Registration Invitation is consumed or expires. The dialogue
-can identify language, ask what help the person wants, and issue the invitation,
-but it has no tools, stable AgentId, User Session, memory, entitlements, or
-external authority.
+Osfo presents one visible persona. An unlinked direct-message sender receives a
+deterministic Channel Link Invite and no model-backed conversation, tools,
+memory, entitlements, or external authority. Group contexts receive only an
+instruction to contact Osfo directly and never receive an invite.
 
-The Registration Dialogue and its temporary transcript are deleted after
-registration or invitation expiry. Osfo creates no handoff summary. Only a
-preferred name and help areas that the person explicitly enters as registration
-fields can enter the new User profile.
+The signed invite token carries only invite identity, version, expiry, and
+signing-key identity. Address and User PII appear in neither the URL nor audit
+metadata. Active and retained signing keys support rotation; unknown, retired,
+forged, expired, cancelled, superseded, or consumed invites fail closed.
 
 ### Web entry
 
 ```text
-/get-started
+/link/<token>
+  -> authenticate, or continue through /get-started
   -> optional preferred name and help areas
   -> phone-number entry
   -> SMS Phone Verification
   -> User Registration or existing-User sign-in
-  -> explicit messaging-provider enrollment when the journey started on the web
+  -> explicit acceptance of the same Channel Link Invite
   -> personal Osfo welcome
 ```
 
-A messaging-provider-first path uses a high-entropy, single-use Registration
-Token at `https://osfo.ai/verify/<token>`. Osfo stores only its digest. WhatsApp
-can lock the invited phone number. Telegram requires the person to enter the
-Phone Account number before an explicit `Send code` action.
+A messaging-provider-first path uses a signed, reconstructible invitation at
+`https://osfo.ai/link/<token>`. The token is not stored. Acceptance trusts only
+the server-authenticated User and requires completed registration; it never
+accepts a UserId from the client.
 
 Phone Verification uses a six-digit, single-use code, a ten-minute lifetime, at
 most five entry attempts, resend after 30 seconds, and at most five sends per
-hour. A Registration Invitation is resumable for 24 hours. Public failures do
-not disclose whether an Account exists.
+hour. A Channel Link Invite is resumable for 24 hours. Public failures do not
+disclose address or Account existence.
 
 A new verified phone causes one idempotent registration operation to establish:
 
 - the User and Phone Account;
 - an AuthSession and Free Plan;
 - the personal Osfo Agent, AgentId, primary conversation route, and primary Session;
-- the invited provider Channel Binding only after explicit consent.
+- the Channel Link only after explicit acceptance.
 
 A verified phone that already belongs to a User signs in to that User. It does
-not create or merge another User. A conflicting provider binding fails closed.
-A web-first provider enrollment completes binding only after a provider-authenticated
-inbound enrollment event. The enrollment control message is not a conversational
-UserMessage.
+not create or merge another User. Acceptance is atomic, an exact retry by the
+same User is idempotent, and competing Users or active links fail closed.
 
 The first personal response is a normal committed response in the new primary
 Session. It uses the chosen language and only accepted setup facts. It asks for
@@ -287,8 +286,8 @@ The Worker:
 2. verifies `X-Hub-Signature-256` over the exact raw body before parsing;
 3. decodes valid bodies with Effect Schema into closed event types;
 4. records `InboundWhatsAppEventKey = (phone_number_id, provider_message_id)`
-   before Channel Binding resolution;
-5. fixes the first resolved Channel Binding for that event;
+   before Channel Link resolution;
+5. fixes the first resolved Channel Link for that event;
 6. routes accepted direct messages to the named Osfo Agent.
 
 V1 accepts one-to-one text and supported button replies. It rejects group and
@@ -690,7 +689,7 @@ packages/db/
 `apps/worker` is the sole Cloudflare composition root. It owns Cloudflare class
 exports, binding conversion, environment decoding, concrete provider adapters,
 Effect Layer assembly, Alchemy binding, host Promise-to-Effect conversion, and
-product behavior. Its internal modules cover identity, registration, onboarding,
+product behavior. Its internal modules cover identity, registration, channel linking,
 recovery, authorization, memory, messaging, Delivery, allowances, integrations,
 background work, and semantic evidence. These remain cohesive behind deep Effect
 Interfaces:
@@ -758,8 +757,6 @@ Osfo Worker
 ├── WorkerRuntime, one request or safe invocation scope
 ├── OsfoAgent Durable Object
 │   └── OsfoAgentRuntime, one AgentId activation
-├── RegistrationDialogue Durable Object
-│   └── restricted runtime, one invitation activation
 └── Workflow classes
     └── WorkflowRuntime, one execution or resumed step
 ```
@@ -1008,8 +1005,8 @@ this specification. Report each required result as PASS, FAIL, or MISSING.
 
 Implementation evidence must include at least:
 
-- every web and WhatsApp onboarding path, recovery, consent, expiry, and
-  idempotent partial-failure case in the onboarding decision;
+- every web registration and Channel Link path, recovery, consent, expiry, and
+  idempotent partial-failure case;
 - webhook signature and schema rejection, duplicate inbound events, exact-byte
   Delivery recovery, status disorder, ambiguity, wake-up coalescing, suspension,
   support, and GM Summon;

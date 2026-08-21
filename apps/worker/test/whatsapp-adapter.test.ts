@@ -102,6 +102,7 @@ const verificationRequest = (token: string, challenge: string) =>
   );
 
 const event = (authorId: string) => ({
+  author: { userId: authorId },
   capabilities: {},
   kind: "direct-message" as const,
   message: {

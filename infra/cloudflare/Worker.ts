@@ -47,9 +47,6 @@ export default Worker(
         STRIPE_PORTAL_CONFIGURATION_ID: Config.string("STRIPE_PORTAL_CONFIGURATION_ID"),
         STRIPE_SECRET_KEY: Config.redacted("STRIPE_SECRET_KEY"),
         STRIPE_WEBHOOK_SECRET: Config.redacted("STRIPE_WEBHOOK_SECRET"),
-        REGISTRATION_DIALOGUE: DurableObject("RegistrationDialogue", {
-          className: "RegistrationDialogue",
-        }),
         TELEGRAM_ALLOWED_USER_IDS: Config.redacted("TELEGRAM_ALLOWED_USER_IDS"),
         TELEGRAM_BOT_TOKEN: Config.redacted("TELEGRAM_BOT_TOKEN"),
         TELEGRAM_BOT_USERNAME: Config.string("TELEGRAM_BOT_USERNAME"),
@@ -61,7 +58,6 @@ export default Worker(
         WHATSAPP_APP_SECRET: Config.redacted("WHATSAPP_APP_SECRET"),
         WHATSAPP_BOT_USERNAME: Config.string("WHATSAPP_BOT_USERNAME"),
         WHATSAPP_PHONE_NUMBER_ID: Config.string("WHATSAPP_PHONE_NUMBER_ID"),
-        WHATSAPP_PUBLIC_PHONE_NUMBER: Config.string("WHATSAPP_PUBLIC_PHONE_NUMBER"),
         WHATSAPP_VERIFY_TOKEN: Config.redacted("WHATSAPP_VERIFY_TOKEN"),
       },
       crons: ["0 * * * *"],

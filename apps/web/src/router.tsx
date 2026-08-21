@@ -14,7 +14,7 @@ import { NotFoundScreen } from "./components/not-found-screen";
 import { SettingsShell } from "./components/settings-shell";
 import { parseBillingReturnSearch } from "./lib/billing-return";
 import { useDocumentLanguage } from "./lib/document-language";
-import { parseLocaleSearch, parseOnboardingSearch } from "./lib/route-locale";
+import { parseLocaleSearch, parseRegistrationSearch } from "./lib/route-locale";
 
 const RootLayout = () => {
   const location = useRouterState({ select: (state) => state.location });
@@ -41,13 +41,13 @@ const loginRoute = createRoute({
 const getStartedRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "get-started",
-  validateSearch: parseOnboardingSearch,
+  validateSearch: parseRegistrationSearch,
   component: lazyRouteComponent(() => import("./pages/get-started-page"), "GetStartedRoute"),
 });
-const verifyRoute = createRoute({
+const channelLinkRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "verify/$token",
-  component: lazyRouteComponent(() => import("./pages/verify-page"), "VerifyRoute"),
+  component: lazyRouteComponent(() => import("./pages/channel-link-page"), "ChannelLinkRoute"),
 });
 const privacyRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -140,7 +140,7 @@ const routeTree = rootRoute.addChildren([
   homeRoute,
   loginRoute,
   getStartedRoute,
-  verifyRoute,
+  channelLinkRoute,
   privacyRoute,
   plansRoute,
   authenticatedRoute.addChildren([

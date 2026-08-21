@@ -19,11 +19,21 @@ import { Registration } from "../src/services/registration";
 
 const fixture = Effect.runSync(makeTestDatabase);
 await Effect.runPromise(applyMigrations(fixture.client));
+let phoneSequence = 100;
 const dbLayer = layerFromDatabase(fixture.database);
+const agentRegistrationLayer = Layer.succeed(
+  Registration.AgentRegistration,
+  Registration.AgentRegistration.of({ initialize: () => Effect.void }),
+);
+const noChannelLinks = { resolve: () => Effect.succeed(null) };
 const serviceLayer = Layer.merge(
   Registration.layerWithoutDependencies,
   AgentDirectory.layerWithoutDependencies,
-).pipe(Layer.provideMerge(dbLayer), Layer.provide(BrowserCrypto.layer));
+).pipe(
+  Layer.provideMerge(dbLayer),
+  Layer.provide(BrowserCrypto.layer),
+  Layer.provide(agentRegistrationLayer),
+);
 
 describe("PostgreSQL Layer lifetime", () => {
   // oxlint-disable-next-line effecttsgo/async-function -- ManagedRuntime exposes Promise boundaries for independent scopes and disposal.
@@ -61,7 +71,7 @@ layer(serviceLayer)("Control-plane services", (test) => {
       const userId = UserId.make("user-001");
       yield* seedUser(userId);
 
-      const completed = yield* registration.complete(userId);
+      const completed = yield* completeRegistration(registration, userId);
       const route = yield* agentDirectory.resolve(userId);
 
       expect(completed).toMatchObject({ userId: "user-001" });
@@ -79,10 +89,10 @@ layer(serviceLayer)("Control-plane services", (test) => {
       yield* seedUser(userId);
 
       const [first, concurrent] = yield* Effect.all(
-        [registration.complete(userId), registration.complete(userId)],
+        [completeRegistration(registration, userId), completeRegistration(registration, userId)],
         { concurrency: "unbounded" },
       );
-      const repeated = yield* registration.complete(userId);
+      const repeated = yield* completeRegistration(registration, userId);
 
       expect(concurrent).toEqual(first);
       expect(repeated).toEqual(first);
@@ -95,7 +105,7 @@ layer(serviceLayer)("Control-plane services", (test) => {
       const registration = yield* Registration.Service;
       const userId = UserId.make("user-completion-conflict");
       yield* seedUser(userId);
-      yield* registration.complete(userId);
+      yield* completeRegistration(registration, userId);
       yield* Effect.tryPromise({
         try: () =>
           db
@@ -110,7 +120,7 @@ layer(serviceLayer)("Control-plane services", (test) => {
         catch: (cause) => dbUnavailable("completeRegistration", cause),
       });
 
-      const unavailable = yield* Effect.flip(registration.complete(userId));
+      const unavailable = yield* Effect.flip(completeRegistration(registration, userId));
 
       expect(unavailable).toMatchObject({
         _tag: "DbUnavailable",
@@ -139,7 +149,7 @@ layer(serviceLayer)("Control-plane services", (test) => {
         catch: (cause) => dbUnavailable("completeRegistration", cause),
       });
 
-      const unavailable = yield* Effect.flip(registration.complete(userId));
+      const unavailable = yield* Effect.flip(completeRegistration(registration, userId));
 
       expect(unavailable).toMatchObject({
         _tag: "DbUnavailable",
@@ -164,7 +174,7 @@ layer(serviceLayer)("Control-plane services", (test) => {
         catch: (cause) => dbUnavailable("completeRegistration", cause),
       });
 
-      const failed = yield* Effect.flip(registration.complete(userId));
+      const failed = yield* Effect.flip(completeRegistration(registration, userId));
       const storedSubscriptions = yield* Effect.tryPromise({
         try: () =>
           db.select().from(billingSubscriptions).where(eq(billingSubscriptions.user_id, userId)),
@@ -201,7 +211,7 @@ layer(serviceLayer)("Control-plane services", (test) => {
       const registration = yield* Registration.Service;
       const userId = UserId.make("user-file-authority");
       yield* seedUser(userId);
-      const registered = yield* registration.complete(userId);
+      const registered = yield* completeRegistration(registration, userId);
       const now = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-16T12:00:00.000Z"));
       yield* Effect.promise(() =>
         db.insert(sessions).values({
@@ -239,9 +249,16 @@ layer(serviceLayer)("Control-plane services", (test) => {
         user: { _tag: "ActiveUser", userId },
       });
 
-      const current = yield* loadCurrentFileAuthorization(db, registered.agentId, context, now);
+      const current = yield* loadCurrentFileAuthorization(
+        db,
+        noChannelLinks,
+        registered.agentId,
+        context,
+        now,
+      );
       const suspended = yield* loadCurrentFileAuthorization(
         db,
+        noChannelLinks,
         registered.agentId,
         {
           ...context,
@@ -251,6 +268,7 @@ layer(serviceLayer)("Control-plane services", (test) => {
       );
       const deletionRevoked = yield* loadCurrentFileAuthorization(
         db,
+        noChannelLinks,
         registered.agentId,
         {
           ...context,
@@ -259,16 +277,28 @@ layer(serviceLayer)("Control-plane services", (test) => {
         now,
       );
       yield* Effect.promise(() => db.delete(sessions).where(eq(sessions.id, "file-session")));
-      const revoked = yield* loadCurrentFileAuthorization(db, registered.agentId, context, now);
+      const revoked = yield* loadCurrentFileAuthorization(
+        db,
+        noChannelLinks,
+        registered.agentId,
+        context,
+        now,
+      );
       const otherUserId = UserId.make("user-file-authority-other");
       yield* seedUser(otherUserId);
-      const otherAgent = yield* registration.complete(otherUserId);
-      const wrongAgent = yield* loadCurrentFileAuthorization(db, otherAgent.agentId, context, now);
+      const otherAgent = yield* completeRegistration(registration, otherUserId);
+      const wrongAgent = yield* loadCurrentFileAuthorization(
+        db,
+        noChannelLinks,
+        otherAgent.agentId,
+        context,
+        now,
+      );
       yield* Effect.promise(() =>
         db.delete(billingSubscriptions).where(eq(billingSubscriptions.user_id, userId)),
       );
       const missingSubscription = yield* Effect.flip(
-        loadCurrentFileAuthorization(db, registered.agentId, context, now),
+        loadCurrentFileAuthorization(db, noChannelLinks, registered.agentId, context, now),
       );
 
       expect(current.authority).toMatchObject({ _tag: "AuthSession" });
@@ -284,13 +314,22 @@ layer(serviceLayer)("Control-plane services", (test) => {
 const seedUser = (userId: UserId) =>
   Effect.gen(function* () {
     const db = yield* database;
+    phoneSequence += 1;
     yield* Effect.tryPromise({
       try: () =>
         db.insert(users).values({
           email: `${userId}@invalid.example`,
           id: userId,
           name: "Test User",
+          phoneNumber: `+1416555${phoneSequence.toString().padStart(4, "0")}`,
+          phoneNumberVerified: true,
         }),
       catch: (cause) => dbUnavailable("completeRegistration", cause),
     });
+  });
+
+const completeRegistration = (registration: Registration.Interface, userId: UserId) =>
+  registration.complete({
+    profile: { helpAreas: [], locale: "en", preferredName: "Test User" },
+    userId,
   });
