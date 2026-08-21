@@ -7,6 +7,7 @@ in `docs/adr/`, and active work in GitHub Issues.
 
 - The user uses speech-to-text; infer likely intent from odd wording, ask only when
   needed.
+- You always use the `unslop` skill to reply
 
 ## Reference repositories
 
