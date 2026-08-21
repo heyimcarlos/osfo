@@ -164,15 +164,25 @@ extract a shared audit model only after several concrete workflows need it.
 
 ## Direct Channel Linking
 
-Osfo presents one visible persona. An unlinked direct-message sender receives a
-deterministic Channel Link Invite and no model-backed conversation, tools,
-memory, entitlements, or external authority. Group contexts receive only an
-instruction to contact Osfo directly and never receive an invite.
+Osfo presents one visible persona. An unlinked direct-message sender talks to
+Osfo itself in a temporary Company Conversation instead of receiving only a
+deterministic invite. The conversation runs on a fixed model route inside a
+bounded envelope: a capped transcript window, an optional per-address daily
+turn ceiling, and no memory, entitlements, tools, or external authority except
+one presentation capability for the current Channel Link Invite. The model
+judges when presenting the invite serves the person; deterministic code
+resolves invite state through the ChannelLinks authority, mints an invite only
+when none is live, and appends the verification URL after the model turn.
+Tokens and URLs never enter model input, transcript, model output, logs, or
+errors. Group contexts stay deterministic, receive no conversation, and never
+receive an invite. Any private sender on a supported transport reaches the
+conversation; provider allowlists do not gate it.
 
-The signed invite token carries only invite identity, version, expiry, and
-signing-key identity. Address and User PII appear in neither the URL nor audit
-metadata. Active and retained signing keys support rotation; unknown, retired,
-forged, expired, cancelled, superseded, or consumed invites fail closed.
+The invite token is opaque random material resolved by hashed lookup; it
+carries no address, User, key, or signature semantics. Address and User PII
+appear in neither the URL nor audit metadata. Unknown, forged, expired,
+cancelled, superseded, or consumed invites fail closed, and each repeated
+message supersedes the previous pending invite within the same linking attempt.
 
 ### Web entry
 
@@ -187,8 +197,8 @@ forged, expired, cancelled, superseded, or consumed invites fail closed.
   -> personal Osfo welcome
 ```
 
-A messaging-provider-first path uses a signed, reconstructible invitation at
-`https://osfo.ai/link/<token>`. The token is not stored. Acceptance trusts only
+A messaging-provider-first path uses an opaque invitation at
+`https://osfo.ai/link/<token>`. Only a hash of the token is stored. Acceptance trusts only
 the server-authenticated User and requires completed registration; it never
 accepts a UserId from the client.
 

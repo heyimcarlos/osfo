@@ -6,10 +6,10 @@ product rules, application behavior, and public identity described here.
 ## Language
 
 **Osfo**:
-The WhatsApp-only v1 personal agent product. Each User has one durable, private
-Osfo Agent with memory, files, skills, triggers, and connected accounts, while
-task compute is temporary and isolated. Later messaging channels are separate
-product efforts.
+The v1 personal agent product. Before registration, a person talks to Osfo
+itself through a temporary Company Conversation. After registration, each User
+has one durable, private Osfo Agent with memory, files, skills, triggers, and
+connected accounts, while task compute is temporary and isolated.
 _Avoid_: Integration library, agent builder, universal harness abstraction,
 reference application
 
@@ -148,11 +148,19 @@ _Avoid_: Provisional User, Channel Link, paid subscription
 
 **Channel Link Invite**:
 A finite-lived invitation to link exactly one Channel Address after a
-server-authenticated registered User accepts it. Its signed token reconstructs
-only invite identity, version, expiry, and signing-key identity; the URL, token,
-database, and audit evidence reveal no address or user PII. Direct-message
+server-authenticated registered User accepts it. Its opaque token carries no
+address, User, key, or signature semantics; the URL, token, database, and audit
+evidence reveal no address or user PII. Direct-message
 delivery is the only supported issuance path.
 _Avoid_: Account link, anonymous authority, group invite
+
+**Company Conversation**:
+The temporary pre-registration conversation between one unlinked Channel
+Address and Osfo itself. It presents a Channel Link Invite only when offering
+serves the person, keeps a bounded transient transcript scoped to one linking
+attempt, and holds no User authority, memory, entitlements, or external
+effects. It is destroyed when its linking attempt ends.
+_Avoid_: Channel Link Dialogue, Registration Dialogue, public bot, demo mode
 
 **Phone Verification**:
 The finite-lived SMS challenge that proves current control of one E.164 phone
@@ -330,7 +338,7 @@ _Avoid_: Agent Queue Task, Think Submission, Session event
 
 **Delivery**:
 The durable obligation to send one committed Think response through a Channel
-Binding. It owns one or more ordered Delivery Parts, and its ledger remains
+Link. It owns one or more ordered Delivery Parts, and its ledger remains
 authoritative after delivery work completes; a Delivery problem never changes
 the committed response in the Session.
 _Avoid_: Think Submission, provider message, managed Fiber
