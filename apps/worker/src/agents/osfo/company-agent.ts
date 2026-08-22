@@ -25,7 +25,7 @@ import {
 import { effectToolSchema } from "./effect-tool-schema";
 import { channelAddressOf, messengerAuthorId } from "./channel-address";
 import {
-  finishStream,
+  makeMessengerStream,
   type MessengerDeliveryUnavailable,
   streamTextReply,
 } from "./messenger-stream";
@@ -73,6 +73,7 @@ const CompanyConversationOperation = Schema.Literals([
 class CompanyConversationUnavailable extends Schema.TaggedError<CompanyConversationUnavailable>()(
   "CompanyConversationUnavailable",
   {
+    cause: Schema.Defect(),
     message: Schema.String,
     operation: CompanyConversationOperation,
   },
@@ -236,7 +237,12 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
       yield* this.#runManagedTurn(sanitizedMessage, managedCallback, context, presenter).pipe(
         Effect.catchIf(
           () => presenter.wasRequested(),
-          () => presenter.flush(callback, true).pipe(Effect.andThen(finishStream(callback))),
+          () =>
+            presenter
+              .flush(callback, true)
+              .pipe(
+                Effect.andThen(makeMessengerStream(callback).use("done", (raw) => raw.onDone())),
+              ),
         ),
       );
       if (presenter.wasRequested()) yield* presenter.flush(callback, true);
@@ -358,18 +364,20 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
 
 const dailyTurnKey = (date: Date) => `osfo-company-turns:${date.toISOString().slice(0, 10)}`;
 
-const companyPromise = <A>(
+const companyPromise = Effect.fn("CompanyAgent.hostOperation")(function* <A>(
   operation: typeof CompanyConversationOperation.Type,
   run: () => A | PromiseLike<A>,
-): Effect.Effect<A, CompanyConversationUnavailable> =>
-  Effect.tryPromise({
+): Effect.fn.Return<A, CompanyConversationUnavailable> {
+  return yield* Effect.tryPromise({
     try: () => Promise.resolve(run()),
-    catch: () =>
+    catch: (cause) =>
       new CompanyConversationUnavailable({
+        cause,
         message: `Company Conversation ${operation} failed`,
         operation,
       }),
-  }).pipe(Effect.withSpan(`CompanyAgent.${operation}`));
+  }).pipe(Effect.annotateSpans("operation", operation));
+});
 
 const companyConversationLayer = (env: Env & RuntimeSecrets) => {
   const base = Layer.merge(Db.layer({ db: env.DB }), BrowserCrypto.layer);

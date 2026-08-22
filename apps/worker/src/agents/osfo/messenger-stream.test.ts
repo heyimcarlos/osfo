@@ -1,8 +1,8 @@
 import type { StreamCallback } from "@cloudflare/think";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 
-import { emitTextDelta } from "./messenger-stream";
+import { emitTextDelta, makeMessengerStream } from "./messenger-stream";
 
 /* oxlint-disable vitest/no-standalone-expect -- Oxlint does not recognize assertions inside @effect/vitest's it.effect callback here. */
 
@@ -19,9 +19,14 @@ describe("Messenger stream", () => {
         onStart: () => undefined,
       } satisfies StreamCallback;
 
-      const failure = yield* emitTextDelta(callback, invite).pipe(Effect.flip);
+      const failure = yield* emitTextDelta(makeMessengerStream(callback), invite).pipe(Effect.flip);
 
-      expect(failure).not.toHaveProperty("cause");
+      expect(failure).toHaveProperty("cause");
+      expect(Predicate.isError(failure.cause)).toBe(true);
+      if (!Predicate.isError(failure.cause)) return;
+      expect(failure.cause.message).toContain("delivery rejected");
+      expect(failure.cause.message).not.toContain(invite);
+      expect(failure.cause.message).not.toContain("aB12cD34");
       expect(failure.message).not.toContain(invite);
       expect(failure.message).not.toContain("aB12cD34");
     }),

@@ -75,5 +75,6 @@ export const planTeardown = (input: {
   return { _tag: "Wait", at: new Date(Math.min(acceptanceCheckAt, idleDeadline)) };
 };
 
-const redactInviteUrls = (text: string): string =>
+/** Redact invitation URLs from text that may cross a diagnostic boundary. */
+export const redactInviteUrls = (text: string): string =>
   text.replace(INVITE_URL_PATTERN, INVITE_REDACTION);

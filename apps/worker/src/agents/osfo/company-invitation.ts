@@ -3,13 +3,9 @@ import { Clock, type Context, Effect, Option } from "effect";
 
 import type { ChannelLinks } from "../../services/channel-links";
 import {
-  emitStreamEvent,
   emitTextDelta,
-  failStream,
-  finishStream,
-  interruptStream,
+  makeMessengerStream,
   type MessengerDeliveryUnavailable,
-  startStream,
 } from "./messenger-stream";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Channel Links results use Effect tagged unions. */
@@ -89,8 +85,10 @@ export const makeInvitePresenter = (options: {
     if (!requested) return;
     requested = false;
     const line = yield* resolveLine();
-    if (ensureStart) yield* startStream(callback, options.requestId);
-    yield* emitTextDelta(callback, `\n${line}`);
+    const stream = makeMessengerStream(callback);
+    if (ensureStart)
+      yield* stream.use("start", (raw) => raw.onStart({ requestId: options.requestId }));
+    yield* emitTextDelta(stream, `\n${line}`);
   });
 
   return {
@@ -109,22 +107,31 @@ export const presentationAwareCallback = Effect.fn("CompanyInvitation.callback")
 ): Effect.fn.Return<StreamCallback, MessengerDeliveryUnavailable> {
   const context: Context.Context<never> = yield* Effect.context();
   const runPromise = Effect.runPromiseWith(context);
+  const stream = makeMessengerStream(real);
   let started = false;
   const flushIfRequested = () => presenter.flush(real, !started);
 
   return {
     onStart: (event) => {
       started = true;
-      return runPromise(startStream(real, event.requestId));
+      return runPromise(stream.use("start", (raw) => raw.onStart(event)));
     },
-    onEvent: (event) => runPromise(emitStreamEvent(real, event)),
-    onDone: () => runPromise(flushIfRequested().pipe(Effect.andThen(finishStream(real)))),
+    onEvent: (event) => runPromise(stream.use("event", (raw) => raw.onEvent(event))),
+    onDone: () =>
+      runPromise(
+        flushIfRequested().pipe(Effect.andThen(stream.use("done", (raw) => raw.onDone()))),
+      ),
     onError: (error) =>
       runPromise(
         presenter.wasRequested()
-          ? flushIfRequested().pipe(Effect.andThen(finishStream(real)))
-          : failStream(real, error),
+          ? flushIfRequested().pipe(Effect.andThen(stream.use("done", (raw) => raw.onDone())))
+          : stream.use("error", (raw) => raw.onError(error)),
       ),
-    onInterrupted: () => runPromise(flushIfRequested().pipe(Effect.andThen(interruptStream(real)))),
+    onInterrupted: () =>
+      runPromise(
+        flushIfRequested().pipe(
+          Effect.andThen(stream.use("interrupted", (raw) => raw.onInterrupted?.())),
+        ),
+      ),
   } satisfies StreamCallback;
 });
