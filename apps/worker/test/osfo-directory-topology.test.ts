@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import type { StreamCallback } from "@cloudflare/think";
 import { describe, expect, it } from "@effect/vitest";
 import { getAgentByName, getSubAgentByName } from "agents";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 
 import { OsfoAgent } from "../src/agents/osfo/agent";
 import { CompanyAgent, companyAddressKey } from "../src/agents/osfo/company-agent";
@@ -11,8 +11,10 @@ import {
   makeOsfoMessengerRouter,
   type OsfoMessengerRoutingOptions,
 } from "../src/agents/osfo/messenger-routing";
+import { UserId } from "../src/domain";
+import { ChannelLinks } from "../src/services/channel-links";
 
-/* oxlint-disable effecttsgo/async-function, typescript/consistent-return -- Cloudflare Agent test helpers expose Promise boundaries, and Effect generators use typed early failure. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/strict-effect-provide, typescript/consistent-return -- Cloudflare Agent test helpers expose Promise boundaries, tests are Effect entry points with local Layers, Channel Link fixtures use JavaScript Dates, and Effect generators use typed early failure. */
 
 describe("Osfo directory topology", () => {
   it.effect("keeps stable and isolated user-owned Osfo Agent facets", () =>
@@ -116,12 +118,8 @@ describe("Osfo directory topology", () => {
       const otherAuthor = yield* Effect.promise(() =>
         Promise.resolve(routing(withTelegramAuthor(telegramEvent, "telegram-user-2"))),
       );
-      const expectedKey = yield* Effect.promise(() =>
-        companyAddressKey(telegramEvent.messengerId, "telegram-user-1"),
-      );
-      const otherKey = yield* Effect.promise(() =>
-        companyAddressKey(telegramEvent.messengerId, "telegram-user-2"),
-      );
+      const expectedKey = yield* companyAddressKey(telegramEvent.messengerId, "telegram-user-1");
+      const otherKey = yield* companyAddressKey(telegramEvent.messengerId, "telegram-user-2");
 
       expect(first).toEqual({ agentClass: CompanyAgent, name: expectedKey, target: "subagent" });
       expect(repeat).toEqual(first);
@@ -142,7 +140,7 @@ describe("Osfo directory topology", () => {
         ...unboundRouting,
         resolveAddress: () => {
           bindingLookups += 1;
-          return Promise.resolve({ _tag: "Unlinked" });
+          return Effect.succeed({ _tag: "Unlinked" });
         },
       });
 
@@ -161,16 +159,15 @@ describe("Osfo directory topology", () => {
       Effect.gen(function* () {
         const missingFacetRouting = makeOsfoMessengerRouter({
           hasAgent: () => false,
-          resolveAddress: () =>
-            Promise.resolve({ _tag: "Linked", agentId: "agent-topology-first" }),
+          resolveAddress: () => Effect.succeed({ _tag: "Linked", agentId: "agent-topology-first" }),
         });
         const unavailableRouting = makeOsfoMessengerRouter({
           hasAgent: () => true,
-          resolveAddress: () => Promise.resolve({ _tag: "Unavailable" }),
+          resolveAddress: () => Effect.succeed({ _tag: "Unavailable" }),
         });
         const whatsappRouting = makeOsfoMessengerRouter({
           hasAgent: () => false,
-          resolveAddress: () => Promise.resolve({ _tag: "Unlinked" }),
+          resolveAddress: () => Effect.succeed({ _tag: "Unlinked" }),
         });
 
         const telegramUnreachable = yield* Effect.promise(() =>
@@ -194,13 +191,15 @@ describe("Osfo directory topology", () => {
       let linkReads = 0;
       const reply = makeStreamRecorder();
 
-      yield* Effect.promise(() =>
-        replyToDirectoryGate(reply.callback, groupEvent(telegramEvent), {
-          resolveLinked: () => {
-            linkReads += 1;
-            return Promise.resolve(null);
-          },
-        }),
+      yield* replyToDirectoryGate(reply.callback, groupEvent(telegramEvent)).pipe(
+        Effect.provide(
+          channelLinksLayer(() =>
+            Effect.sync(() => {
+              linkReads += 1;
+              return null;
+            }),
+          ),
+        ),
       );
 
       expect(linkReads).toBe(0);
@@ -214,10 +213,8 @@ describe("Osfo directory topology", () => {
     Effect.gen(function* () {
       const reply = makeStreamRecorder();
 
-      yield* Effect.promise(() =>
-        replyToDirectoryGate(reply.callback, telegramEvent, {
-          resolveLinked: () => Promise.resolve(true),
-        }),
+      yield* replyToDirectoryGate(reply.callback, telegramEvent).pipe(
+        Effect.provide(channelLinksLayer(() => Effect.succeed(linkedChannel))),
       );
 
       expect(reply.text()).toContain("This channel is linked");
@@ -227,14 +224,28 @@ describe("Osfo directory topology", () => {
 
 const unboundRouting: OsfoMessengerRoutingOptions = {
   hasAgent: () => false,
-  resolveAddress: () => Promise.resolve({ _tag: "Unlinked" }),
+  resolveAddress: () => Effect.succeed({ _tag: "Unlinked" }),
 };
 
 const routingForRegistry = (registry: ReadonlyArray<{ readonly name: string }>) =>
   makeOsfoMessengerRouter({
     hasAgent: (name) => registry.some((entry) => entry.name === name),
-    resolveAddress: () => Promise.resolve({ _tag: "Linked", agentId: "agent-topology-first" }),
+    resolveAddress: () => Effect.succeed({ _tag: "Linked", agentId: "agent-topology-first" }),
   });
+
+const channelLinksLayer = (resolve: ChannelLinks.Interface["resolve"]) =>
+  Layer.mock(ChannelLinks.Service, { resolve });
+
+const linkedChannel = ChannelLinks.ChannelLink.make({
+  address: ChannelLinks.ChannelAddress.make({
+    authorId: ChannelLinks.ChannelAuthorId.make("telegram-user-1"),
+    channelId: ChannelLinks.ChannelId.make("telegram"),
+  }),
+  channelLinkId: ChannelLinks.ChannelLinkId.make("channel-link-topology"),
+  createdAt: new Date("2026-08-21T12:00:00.000Z"),
+  revokedAt: null,
+  userId: UserId.make("user-topology"),
+});
 
 const groupEvent = (event: typeof telegramEvent) => ({
   ...event,

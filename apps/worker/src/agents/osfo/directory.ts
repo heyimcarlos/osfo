@@ -2,7 +2,7 @@ import { BrowserCrypto } from "@effect/platform-browser";
 import { Think, type StreamCallback, type ThinkChannels } from "@cloudflare/think";
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import type { UIMessage } from "ai";
-import { Effect, Exit, Layer } from "effect";
+import { Effect, Exit, Layer, Schema } from "effect";
 
 import { loadConfig } from "../../config";
 import { Db } from "../../db";
@@ -19,9 +19,13 @@ import { makeOsfoMessengerRouter, type MessengerAddressResolution } from "./mess
 import type { AgentInitializationEncoded } from "./db/store";
 import { GroupRefusalCopy } from "./persona";
 
-/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Think hooks and RPC use Promise boundaries, messenger turns are application entry points, and Effect results use _tag. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Think RPC methods use Promise contracts, this class is the messenger Layer composition root, and Effect results use _tag. */
 
 export { OSFO_DIRECTORY_NAME } from "./identity";
+
+const StreamTextDelta = Schema.fromJsonString(
+  Schema.Struct({ delta: Schema.String, type: Schema.Literals(["text-delta"]) }),
+);
 
 /** Root Agent that owns the registry of user-scoped Osfo Agent facets. */
 export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
@@ -35,7 +39,11 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     const conversation = makeOsfoMessengerRouter({
       hasAgent: (agentId) => this.hasSubAgent(OsfoAgent, agentId),
       resolveAddress: (authorId, messengerId) =>
-        this.#resolveMessengerAddress(messengerId, authorId),
+        Effect.scoped(
+          this.#resolveMessengerAddress(messengerId, authorId).pipe(
+            Effect.provide(directoryMessengerLayer(this.env)),
+          ),
+        ),
     });
     return {
       telegram: makeTelegramChannel({
@@ -56,20 +64,18 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   }
 
   /** Deterministically answer the messenger turns that never reach a facet. */
-  override async chatWithMessengerContext(
+  override chatWithMessengerContext(
     _userMessage: string | UIMessage,
     callback: StreamCallback,
     context: MessengerContext,
   ): Promise<void> {
-    await replyToDirectoryGate(callback, context, {
-      resolveLinked: async (address) => {
-        const resolved = await Effect.runPromiseExit(
-          this.#withChannelLinks((channelLinks) => channelLinks.resolve(address)),
-        );
-        if (Exit.isFailure(resolved)) return null;
-        return resolved.value !== null;
-      },
-    });
+    return Effect.runPromise(
+      Effect.scoped(
+        replyToDirectoryGate(callback, context).pipe(
+          Effect.provide(directoryMessengerLayer(this.env)),
+        ),
+      ),
+    );
   }
 
   /** Reject an HTTP route to a facet that is absent from the directory registry. */
@@ -136,12 +142,12 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     await this.deleteSubAgent(OsfoAgent, agentId);
   }
 
-  async #resolveMessengerAddress(
-    messengerId: string,
-    authorId: string,
-  ): Promise<MessengerAddressResolution> {
-    const resolved = await Effect.runPromiseExit(
-      this.#withChannelLinks((channelLinks, agentDirectory) =>
+  #resolveMessengerAddress = Effect.fn("OsfoDirectory.resolveMessengerAddress")(
+    { self: this },
+    function* (this: OsfoDirectory, messengerId: string, authorId: string) {
+      const channelLinks = yield* ChannelLinks.Service;
+      const agentDirectory = yield* AgentDirectory.Service;
+      const resolved = yield* Effect.exit(
         Effect.gen(function* () {
           const link = yield* channelLinks.resolve(channelAddressOf(messengerId, authorId));
           if (link === null) return { _tag: "Unlinked" as const };
@@ -152,42 +158,17 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
             ? { _tag: "Unavailable" as const }
             : { _tag: "Linked" as const, agentId: route.agentId };
         }),
-      ),
-    );
-    if (Exit.isFailure(resolved)) return { _tag: "Unavailable" };
-    if (resolved.value._tag === "Linked" && !this.hasSubAgent(OsfoAgent, resolved.value.agentId)) {
-      return { _tag: "Unavailable" };
-    }
-    return resolved.value;
-  }
-
-  #withChannelLinks<A, E>(
-    operation: (
-      channelLinks: ChannelLinks.Interface,
-      agentDirectory: AgentDirectory.Interface,
-    ) => Effect.Effect<A, E>,
-  ) {
-    const config = loadConfig(this.env);
-    const base = Layer.merge(Db.layer({ db: this.env.DB }), BrowserCrypto.layer);
-    const services = Layer.merge(
-      ChannelLinks.layerFromConfig(config),
-      AgentDirectory.layerWithoutDependencies,
-    ).pipe(Layer.provide(base));
-    return Effect.scoped(
-      Effect.gen(function* () {
-        const channelLinks = yield* ChannelLinks.Service;
-        const agentDirectory = yield* AgentDirectory.Service;
-        return yield* operation(channelLinks, agentDirectory);
-      }).pipe(Effect.provide(services)),
-    );
-  }
-}
-
-interface DirectoryGateDependencies {
-  /** Read current Channel Link authority; null means the authority is unreadable. */
-  readonly resolveLinked: (
-    address: typeof ChannelLinks.ChannelAddress.Type,
-  ) => Promise<boolean | null>;
+      );
+      if (Exit.isFailure(resolved)) return { _tag: "Unavailable" as const };
+      if (
+        resolved.value._tag === "Linked" &&
+        !this.hasSubAgent(OsfoAgent, resolved.value.agentId)
+      ) {
+        return { _tag: "Unavailable" as const };
+      }
+      return resolved.value satisfies MessengerAddressResolution;
+    },
+  );
 }
 
 /**
@@ -195,17 +176,16 @@ interface DirectoryGateDependencies {
  * authority exists. Unlinked direct-message senders never land here: the
  * conversation resolver routes them to their Company Conversation facet.
  */
-export const replyToDirectoryGate = async (
+export const replyToDirectoryGate = Effect.fn("OsfoDirectory.replyToMessenger")(function* (
   callback: StreamCallback,
   context: MessengerContext,
-  dependencies: DirectoryGateDependencies,
-): Promise<void> => {
+) {
   // Think hands messenger turns its serializable event snapshot, which carries
   // the author inside the message rather than at the context top level.
   const authorId = messengerAuthorId(context);
   const message = context.message;
   if (authorId === undefined || message === undefined) {
-    await streamReply(
+    yield* streamReply(
       callback,
       "channel-address-unreadable",
       "I could not read that message. Please try again.",
@@ -213,23 +193,43 @@ export const replyToDirectoryGate = async (
     return;
   }
   if (!context.thread.isDirectMessage) {
-    await streamReply(callback, message.id, `${GroupRefusalCopy.en}\n${GroupRefusalCopy.es}`);
+    yield* streamReply(callback, message.id, `${GroupRefusalCopy.en}\n${GroupRefusalCopy.es}`);
     return;
   }
-  const linked = await dependencies.resolveLinked(channelAddressOf(context.messengerId, authorId));
+  const channelLinks = yield* ChannelLinks.Service;
+  const resolved = yield* Effect.exit(
+    channelLinks.resolve(channelAddressOf(context.messengerId, authorId)),
+  );
+  const linked = Exit.isSuccess(resolved) && resolved.value !== null;
   if (linked) {
-    await streamReply(
+    yield* streamReply(
       callback,
       message.id,
       "This channel is linked, but I could not reach your Osfo Agent. Please try again.",
     );
     return;
   }
-  await streamReply(callback, message.id, "Please send that message again.");
+  yield* streamReply(callback, message.id, "Please send that message again.");
+});
+
+const streamReply = Effect.fn("OsfoDirectory.streamReply")(function* (
+  callback: StreamCallback,
+  requestId: string,
+  text: string,
+) {
+  yield* Effect.tryPromise(() => Promise.resolve(callback.onStart({ requestId })));
+  yield* Effect.tryPromise(() => Promise.resolve(callback.onEvent(encodeTextDelta(text))));
+  yield* Effect.tryPromise(() => Promise.resolve(callback.onDone()));
+});
+
+const directoryMessengerLayer = (env: Env & RuntimeSecrets) => {
+  const config = loadConfig(env);
+  const base = Layer.merge(Db.layer({ db: env.DB }), BrowserCrypto.layer);
+  return Layer.merge(
+    ChannelLinks.layerFromConfig(config),
+    AgentDirectory.layerWithoutDependencies,
+  ).pipe(Layer.provide(base));
 };
 
-const streamReply = async (callback: StreamCallback, requestId: string, text: string) => {
-  await callback.onStart({ requestId });
-  await callback.onEvent(JSON.stringify({ delta: text, type: "text-delta" }));
-  await callback.onDone();
-};
+const encodeTextDelta = (delta: string) =>
+  Schema.encodeSync(StreamTextDelta)({ delta, type: "text-delta" });

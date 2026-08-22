@@ -4,13 +4,15 @@ import type { StreamCallback, TurnContext } from "@cloudflare/think";
 import { describe, expect, it, vi } from "@effect/vitest";
 import { getAgentByName, getSubAgentByName } from "agents";
 import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
-import { Effect, Exit, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
+import { TestClock } from "effect/testing";
 
 import {
   PRESENT_LINK_TOOL_NAME,
   boundedTranscriptWindow,
   companyAddressKey,
   CompanyAgent,
+  CompanyConversationUnavailable,
   makeInvitePresenter,
   planTeardown,
   presentationAwareCallback,
@@ -22,7 +24,7 @@ import { UserId } from "../src/domain";
 import { launchModelAccessPolicy } from "../src/domain/model-access-policy";
 import { ChannelLinks } from "../src/services/channel-links";
 
-/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/global-date-in-effect, effecttsgo/global-random, eslint/no-underscore-dangle, typescript/no-unsafe-type-assertion -- Think delivery callbacks and Agent RPC are Promise boundaries, the tested contracts use JavaScript Dates, Effect tagged unions use `_tag`, and tests fabricate framework contexts. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/global-date-in-effect, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle, typescript/no-unsafe-type-assertion -- Think delivery callbacks and Agent RPC are Promise boundaries, tests are Effect entry points with local Layers, the tested contracts use JavaScript Dates, Effect tagged unions use `_tag`, and tests fabricate framework contexts. */
 
 const address = ChannelLinks.ChannelAddress.make({
   authorId: ChannelLinks.ChannelAuthorId.make("company-author"),
@@ -90,8 +92,8 @@ describe("Company Conversation envelope", () => {
         readHold: () => hold.current,
       });
 
+      const stream = yield* presentationAwareCallback(reply.callback, presenter);
       yield* Effect.promise(async () => {
-        const stream = presentationAwareCallback(reply.callback, presenter);
         await stream.onStart({ requestId: "turn" });
         await stream.onEvent(delta("Want the link?"));
         presenter.request();
@@ -111,26 +113,23 @@ describe("Company Conversation envelope", () => {
       const hold: HoldCell = { current: null };
       const reply = makeStreamRecorder();
 
-      yield* Effect.promise(() =>
-        replyToCompanyMessenger(
-          reply.callback,
-          messengerContext(),
-          userMessage(),
-          turnDependencies({
-            ensure: () => {
-              ensureCalls += 1;
-              return invited();
-            },
-            readHeld: () => hold.current,
-            runModelTurn: async (turn) => {
-              turn.presenter.request();
-              throw new Error("provider exploded mid-turn");
-            },
-            writeHeld: (next) => {
-              hold.current = next;
-            },
+      yield* runCompanyTurn(
+        reply,
+        turnDependencies({
+          readHeld: () => hold.current,
+          runModelTurn: (turn) =>
+            Effect.sync(() => turn.presenter.request()).pipe(
+              Effect.andThen(Effect.fail(modelTurnFailure())),
+            ),
+          writeHeld: (next) => {
+            hold.current = next;
+          },
+        }),
+        () =>
+          Effect.sync(() => {
+            ensureCalls += 1;
+            return invitedResult();
           }),
-        ),
       );
 
       expect(ensureCalls).toBe(1);
@@ -145,29 +144,25 @@ describe("Company Conversation envelope", () => {
       let ensureCalls = 0;
       const reply = makeStreamRecorder();
 
-      let rejected = false;
-      yield* Effect.promise(() =>
-        replyToCompanyMessenger(
-          reply.callback,
-          messengerContext(),
-          userMessage(),
-          turnDependencies({
-            ensure: () => {
-              ensureCalls += 1;
-              return invited();
-            },
-            recordActivity: () => {
-              activityWrites += 1;
-              return Promise.resolve();
-            },
-            runModelTurn: () => Promise.reject(new Error("provider exploded")),
+      const failure = yield* runCompanyTurn(
+        reply,
+        turnDependencies({
+          recordActivity: Effect.sync(() => {
+            activityWrites += 1;
           }),
-        ).catch(() => {
-          rejected = true;
+          runModelTurn: () => Effect.fail(modelTurnFailure()),
         }),
-      );
+        () =>
+          Effect.sync(() => {
+            ensureCalls += 1;
+            return invitedResult();
+          }),
+      ).pipe(Effect.flip);
 
-      expect(rejected).toBe(true);
+      expect(failure).toMatchObject({
+        _tag: "CompanyConversationUnavailable",
+        operation: "modelTurn",
+      });
       expect(activityWrites).toBe(1);
       expect(ensureCalls).toBe(0);
       expect(reply.events).toHaveLength(0);
@@ -177,20 +172,22 @@ describe("Company Conversation envelope", () => {
   it.effect("resends the held unexpired invite without minting again", () =>
     Effect.gen(function* () {
       let ensureCalls = 0;
+      const now = new Date("2026-08-21T12:00:00.000Z");
+      yield* TestClock.setTime(now.getTime());
       const held = {
-        expiresAtMs: Date.now() + 60_000,
+        expiresAtMs: now.getTime() + 60_000,
         url: new URL("https://osfo.test/verify/held-token"),
       };
       const reply = makeStreamRecorder();
 
+      const presenter = presenterOver({
+        countEnsure: () => {
+          ensureCalls += 1;
+        },
+        readHold: () => held,
+      });
+      const stream = yield* presentationAwareCallback(reply.callback, presenter);
       yield* Effect.promise(async () => {
-        const presenter = presenterOver({
-          countEnsure: () => {
-            ensureCalls += 1;
-          },
-          readHold: () => held,
-        });
-        const stream = presentationAwareCallback(reply.callback, presenter);
         await stream.onStart({ requestId: "turn" });
         await stream.onEvent(delta("Here you go:"));
         presenter.request();
@@ -206,7 +203,7 @@ describe("Company Conversation envelope", () => {
     Effect.gen(function* () {
       const reply = makeStreamRecorder();
 
-      const linkedOutcome: Exit.Exit<ChannelLinks.EnsureResult, unknown> = Exit.succeed({
+      const linkedOutcome: ChannelLinks.EnsureResult = {
         _tag: "Linked",
         link: ChannelLinks.ChannelLink.make({
           address,
@@ -215,8 +212,8 @@ describe("Company Conversation envelope", () => {
           revokedAt: null,
           userId: raceTestUserId(),
         }),
-      });
-      yield* presentOnce(reply, () => Promise.resolve(linkedOutcome));
+      };
+      yield* presentOnce(reply, () => Effect.succeed(linkedOutcome));
 
       expect(reply.text()).toContain("This channel is linked");
       expect(reply.text()).not.toContain("/verify/");
@@ -227,7 +224,7 @@ describe("Company Conversation envelope", () => {
     Effect.gen(function* () {
       const reply = makeStreamRecorder();
 
-      yield* presentOnce(reply, () => Promise.resolve(Exit.die(new Error("pg down"))));
+      yield* presentOnce(reply, () => Effect.die(new Error("pg down")));
 
       expect(reply.text()).toContain("could not prepare");
       expect(reply.text()).not.toContain("/verify/");
@@ -240,23 +237,18 @@ describe("Company Conversation envelope", () => {
       let modelTurns = 0;
       const reply = makeStreamRecorder();
 
-      yield* Effect.promise(() =>
-        replyToCompanyMessenger(
-          reply.callback,
-          messengerContext(),
-          userMessage(),
-          turnDependencies({
-            readReceipt: () => Promise.resolve("completed"),
-            recordActivity: () => {
-              activityWrites += 1;
-              return Promise.resolve();
-            },
-            runModelTurn: () => {
-              modelTurns += 1;
-              return Promise.resolve();
-            },
+      yield* runCompanyTurn(
+        reply,
+        turnDependencies({
+          readReceipt: () => Effect.succeed("completed"),
+          recordActivity: Effect.sync(() => {
+            activityWrites += 1;
           }),
-        ),
+          runModelTurn: () =>
+            Effect.sync(() => {
+              modelTurns += 1;
+            }),
+        }),
       );
 
       expect(activityWrites).toBe(0);
@@ -271,24 +263,20 @@ describe("Company Conversation envelope", () => {
       const receipts: Array<string> = [];
       const reply = makeStreamRecorder();
 
-      yield* Effect.promise(() =>
-        replyToCompanyMessenger(
-          reply.callback,
-          messengerContext(),
-          userMessage(),
-          turnDependencies({
-            dailyTurnLimit: 5,
-            runModelTurn: () => {
+      yield* runCompanyTurn(
+        reply,
+        turnDependencies({
+          dailyTurnLimit: 5,
+          runModelTurn: () =>
+            Effect.sync(() => {
               modelTurns += 1;
-              return Promise.resolve();
-            },
-            turnsToday: () => Promise.resolve(5),
-            writeReceipt: (_eventId, status) => {
+            }),
+          turnsToday: Effect.succeed(5),
+          writeReceipt: (_eventId, status) =>
+            Effect.sync(() => {
               receipts.push(status);
-              return Promise.resolve();
-            },
-          }),
-        ),
+            }),
+        }),
       );
 
       expect(modelTurns).toBe(0);
@@ -345,7 +333,7 @@ describe("Company Conversation facet surface", () => {
       const directory = yield* Effect.promise(() =>
         getAgentByName(env.OSFO_DIRECTORY, OSFO_DIRECTORY_NAME),
       );
-      const key = yield* Effect.promise(() => companyAddressKey("telegram", "teardown-author"));
+      const key = yield* companyAddressKey("telegram", "teardown-author");
       yield* Effect.promise(() => directory.ensureCompanyConversation(key));
       const facet = yield* Effect.promise(() => getSubAgentByName(directory, CompanyAgent, key));
 
@@ -455,12 +443,11 @@ interface HoldCell {
   current: HeldSnapshot | null;
 }
 
-const invited = async (): Promise<Exit.Exit<ChannelLinks.EnsureResult, unknown>> =>
-  Exit.succeed({
-    _tag: "Invited",
-    expiresAt: new Date(Date.now() + 600_000),
-    verificationUrl: new URL(`https://osfo.test/verify/presented-${Math.random()}`),
-  });
+const invitedResult = (): ChannelLinks.EnsureResult => ({
+  _tag: "Invited",
+  expiresAt: new Date("2026-08-21T12:10:00.000Z"),
+  verificationUrl: new URL("https://osfo.test/verify/presented-token"),
+});
 
 type CompanyTurnDependencies = Parameters<typeof replyToCompanyMessenger>[3];
 
@@ -468,17 +455,32 @@ const turnDependencies = (
   overrides: Partial<CompanyTurnDependencies> = {},
 ): CompanyTurnDependencies => ({
   dailyTurnLimit: null,
-  ensure: () => invited(),
   readHeld: () => null,
-  readReceipt: () => Promise.resolve(null),
-  recordActivity: () => Promise.resolve(),
-  recordTurn: () => Promise.resolve(),
-  runModelTurn: () => Promise.resolve(),
-  turnsToday: () => Promise.resolve(0),
+  readReceipt: () => Effect.succeed(null),
+  recordActivity: Effect.void,
+  recordTurn: Effect.void,
+  runModelTurn: () => Effect.void,
+  turnsToday: Effect.succeed(0),
   writeHeld: () => undefined,
-  writeReceipt: () => Promise.resolve(),
+  writeReceipt: () => Effect.void,
   ...overrides,
 });
+
+const runCompanyTurn = (
+  reply: ReturnType<typeof makeStreamRecorder>,
+  dependencies: CompanyTurnDependencies,
+  ensure: ChannelLinks.Interface["ensure"] = () => Effect.succeed(invitedResult()),
+) =>
+  replyToCompanyMessenger(reply.callback, messengerContext(), userMessage(), dependencies).pipe(
+    Effect.provide(Layer.mock(ChannelLinks.Service, { ensure })),
+  );
+
+const modelTurnFailure = () =>
+  new CompanyConversationUnavailable({
+    cause: new Error("provider exploded"),
+    message: "The company model turn failed",
+    operation: "modelTurn",
+  });
 
 const presenterOver = (options: {
   readonly applyHold?: (held: HeldSnapshot | null) => void;
@@ -489,7 +491,7 @@ const presenterOver = (options: {
     address,
     ensure: () => {
       options.countEnsure?.();
-      return invited();
+      return Effect.succeed(invitedResult());
     },
     readHeld: options.readHold,
     requestId: "presenter-request",
@@ -498,9 +500,12 @@ const presenterOver = (options: {
 
 const presentOnce = (
   reply: ReturnType<typeof makeStreamRecorder>,
-  customEnsure: () => Promise<Exit.Exit<ChannelLinks.EnsureResult, unknown>>,
+  customEnsure: () => Effect.Effect<
+    ChannelLinks.EnsureResult,
+    ChannelLinks.ChannelLinksUnavailable
+  >,
 ) =>
-  Effect.promise(async () => {
+  Effect.gen(function* () {
     let held: HeldSnapshot | null = null;
     const presenter = makeInvitePresenter({
       address,
@@ -511,11 +516,11 @@ const presentOnce = (
         held = next;
       },
     });
-    const stream = presentationAwareCallback(reply.callback, presenter);
-    await stream.onStart({ requestId: "turn" });
-    await stream.onEvent(delta("One sec:"));
+    const stream = yield* presentationAwareCallback(reply.callback, presenter);
+    yield* Effect.promise(() => Promise.resolve(stream.onStart({ requestId: "turn" })));
+    yield* Effect.promise(() => Promise.resolve(stream.onEvent(delta("One sec:"))));
     presenter.request();
-    await stream.onDone();
+    yield* Effect.promise(() => Promise.resolve(stream.onDone()));
   });
 
 const makeStreamRecorder = () => {

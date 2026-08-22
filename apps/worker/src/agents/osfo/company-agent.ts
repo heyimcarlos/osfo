@@ -2,7 +2,7 @@ import { BrowserCrypto } from "@effect/platform-browser";
 import { Think, type StreamCallback, type TurnConfig, type TurnContext } from "@cloudflare/think";
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import { tool, type ToolSet, type UIMessage } from "ai";
-import { Effect, Exit, Layer, Option, Schema } from "effect";
+import { Clock, type Context, DateTime, Effect, Exit, Layer, Option, Schema } from "effect";
 
 import { loadConfig } from "../../config";
 import { Db } from "../../db";
@@ -12,7 +12,7 @@ import { effectToolSchema } from "./effect-tool-schema";
 import { channelAddressOf, messengerAuthorId } from "./channel-address";
 import { companyConversationSystemPrompt } from "./persona";
 
-/* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Cloudflare Agent RPC and messenger turns are Promise boundaries, the Agents SDK schedule and storage contracts use JavaScript Dates, and Effect results use _tag. */
+/* oxlint-disable effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- The Company Agent is the Layer composition root, and Effect results use _tag. */
 
 /** Maximum delay between checks for Channel Link acceptance. */
 const ACCEPTANCE_TEARDOWN_MS = 6 * 60 * 60 * 1_000;
@@ -36,6 +36,9 @@ const COMPANY_TEARDOWN_PAYLOAD = "company-conversation-expiry";
 export const PRESENT_LINK_TOOL_NAME = "present_link";
 
 const PresentLinkInput = Schema.Struct({});
+const StreamTextDelta = Schema.fromJsonString(
+  Schema.Struct({ delta: Schema.String, type: Schema.Literals(["text-delta"]) }),
+);
 
 const UNREADABLE_REPLY = "I could not read that message. Please try again.";
 const LINKED_RACE_REPLY =
@@ -54,6 +57,31 @@ const CompanyConversationState = Schema.Struct({
   lastActivityAt: Schema.DateFromString,
 });
 
+const CompanyConversationOperation = Schema.Literals([
+  "addressKey",
+  "modelTurn",
+  "readDailyTurns",
+  "readReceipt",
+  "scheduleExpiry",
+  "streamDone",
+  "streamError",
+  "streamEvent",
+  "streamInterrupted",
+  "streamStart",
+  "writeDailyTurns",
+  "writeReceipt",
+]);
+
+/** Safe failure raised by a Promise-only Company Conversation host operation. */
+export class CompanyConversationUnavailable extends Schema.TaggedError<CompanyConversationUnavailable>()(
+  "CompanyConversationUnavailable",
+  {
+    cause: Schema.Defect(),
+    message: Schema.String,
+    operation: CompanyConversationOperation,
+  },
+) {}
+
 type TeardownDecision = { readonly _tag: "Destroy" } | { readonly _tag: "Wait"; readonly at: Date };
 
 /**
@@ -68,6 +96,7 @@ export const planTeardown = (input: {
 }): TeardownDecision => {
   if (input.linked === true) return { _tag: "Destroy" };
   if (input.linked === null || isNaN(input.lastActivityAt.getTime())) {
+    // oxlint-disable-next-line effecttsgo/global-date -- Think schedules use JavaScript Date values.
     return { _tag: "Wait", at: new Date(input.now.getTime() + TEARDOWN_UNCERTAIN_RETRY_MS) };
   }
   const idleMs = input.now.getTime() - input.lastActivityAt.getTime();
@@ -79,6 +108,7 @@ export const planTeardown = (input: {
   const acceptanceCheckAt =
     input.lastActivityAt.getTime() + acceptanceCheckNumber * ACCEPTANCE_TEARDOWN_MS;
   const idleDeadline = input.lastActivityAt.getTime() + IDLE_TEARDOWN_MS;
+  // oxlint-disable-next-line effecttsgo/global-date -- Think schedules use JavaScript Date values.
   const at = new Date(Math.min(acceptanceCheckAt, idleDeadline));
   return { _tag: "Wait", at };
 };
@@ -103,22 +133,27 @@ export const boundedTranscriptWindow = <T extends { readonly role: string }>(
  * Opaque deterministic routing identity for one Channel Address. The key is
  * routing identity only; it grants no authority and reverses to no address.
  */
-export const companyAddressKey = async (messengerId: string, authorId: string): Promise<string> => {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(`${messengerId}:${authorId}`),
+export const companyAddressKey = Effect.fn("CompanyAgent.addressKey")(function* (
+  messengerId: string,
+  authorId: string,
+) {
+  const digest = yield* companyPromise("addressKey", () =>
+    crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${messengerId}:${authorId}`)),
   );
   const hex = Array.from(new Uint8Array(digest).slice(0, 16))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
   return `company-${hex}`;
-};
+});
 
 /** Transient holder of the invite presentation capability for one turn. */
 export interface InvitePresenter {
   readonly request: () => void;
   readonly wasRequested: () => boolean;
-  readonly flush: (callback: StreamCallback, ensureStart: boolean) => Promise<void>;
+  readonly flush: (
+    callback: StreamCallback,
+    ensureStart: boolean,
+  ) => Effect.Effect<void, CompanyConversationUnavailable>;
 }
 
 interface HeldInvite {
@@ -135,18 +170,18 @@ interface HeldInvite {
 export const makeInvitePresenter = (dependencies: {
   readonly ensure: (
     address: typeof ChannelLinks.ChannelAddress.Type,
-  ) => Promise<Exit.Exit<ChannelLinks.EnsureResult, unknown>>;
+  ) => Effect.Effect<ChannelLinks.EnsureResult, ChannelLinks.ChannelLinksUnavailable>;
   readonly requestId: string;
   readonly address: typeof ChannelLinks.ChannelAddress.Type;
   readonly readHeld: () => HeldInvite | null;
   readonly writeHeld: (held: HeldInvite | null) => void;
 }): InvitePresenter => {
   let requested = false;
-  const resolveLine = async (): Promise<string> => {
-    const nowMs = Date.now();
+  const resolveLine = Effect.fn("CompanyAgent.resolveInviteLine")(function* () {
+    const nowMs = yield* Clock.currentTimeMillis;
     const existing = dependencies.readHeld();
     if (existing !== null && existing.expiresAtMs > nowMs) return existing.url.href;
-    const ensured = await dependencies.ensure(dependencies.address);
+    const ensured = yield* Effect.exit(dependencies.ensure(dependencies.address));
     if (Exit.isSuccess(ensured)) {
       if (ensured.value._tag === "Invited") {
         dependencies.writeHeld({
@@ -159,19 +194,27 @@ export const makeInvitePresenter = (dependencies: {
       return LINKED_RACE_REPLY;
     }
     return INVITE_PREPARATION_REPLY;
-  };
+  });
+  const flush = Effect.fn("CompanyAgent.flushInvite")(function* (
+    callback: StreamCallback,
+    ensureStart: boolean,
+  ) {
+    if (!requested) return;
+    requested = false;
+    const line = yield* resolveLine();
+    if (ensureStart) {
+      yield* companyPromise("streamStart", () =>
+        callback.onStart({ requestId: dependencies.requestId }),
+      );
+    }
+    yield* companyPromise("streamEvent", () => callback.onEvent(encodeTextDelta(`\n${line}`)));
+  });
   return {
     request: () => {
       requested = true;
     },
     wasRequested: () => requested,
-    flush: async (callback, ensureStart) => {
-      if (!requested) return;
-      requested = false;
-      const line = await resolveLine();
-      if (ensureStart) await callback.onStart({ requestId: dependencies.requestId });
-      await callback.onEvent(JSON.stringify({ delta: `\n${line}`, type: "text-delta" }));
-    },
+    flush,
   };
 };
 
@@ -181,36 +224,45 @@ export const makeInvitePresenter = (dependencies: {
  * or stalls. A swallowed error keeps the streamed reply plus the link instead
  * of an apology; without a pending request every signal forwards unchanged.
  */
-export const presentationAwareCallback = (
-  real: StreamCallback,
-  presenter: InvitePresenter,
-): StreamCallback => {
-  let started = false;
-  const flushIfRequested = () => presenter.flush(real, !started);
-  return {
-    onStart: (event) => {
-      started = true;
-      return real.onStart(event);
-    },
-    onEvent: (json) => real.onEvent(json),
-    onDone: async () => {
-      await flushIfRequested();
-      await real.onDone();
-    },
-    onError: async (error) => {
-      if (presenter.wasRequested()) {
-        await flushIfRequested();
-        await real.onDone();
-        return;
-      }
-      await real.onError(error);
-    },
-    onInterrupted: async () => {
-      await flushIfRequested();
-      await real.onInterrupted?.();
-    },
-  };
-};
+export const presentationAwareCallback = Effect.fn("CompanyAgent.presentationAwareCallback")(
+  function* (real: StreamCallback, presenter: InvitePresenter): Effect.fn.Return<StreamCallback> {
+    const context: Context.Context<never> = yield* Effect.context();
+    const runPromise = Effect.runPromiseWith(context);
+    let started = false;
+    const flushIfRequested = () => presenter.flush(real, !started);
+    return {
+      onStart: (event) => {
+        started = true;
+        return runPromise(companyPromise("streamStart", () => real.onStart(event)));
+      },
+      onEvent: (json) => runPromise(companyPromise("streamEvent", () => real.onEvent(json))),
+      onDone: () =>
+        runPromise(
+          flushIfRequested().pipe(
+            Effect.andThen(companyPromise("streamDone", () => real.onDone())),
+          ),
+        ),
+      onError: (error) =>
+        runPromise(
+          presenter.wasRequested()
+            ? flushIfRequested().pipe(
+                Effect.andThen(companyPromise("streamDone", () => real.onDone())),
+              )
+            : companyPromise("streamError", () => real.onError(error)),
+        ),
+      onInterrupted: () =>
+        runPromise(
+          flushIfRequested().pipe(
+            Effect.andThen(
+              real.onInterrupted === undefined
+                ? Effect.void
+                : companyPromise("streamInterrupted", () => real.onInterrupted?.()),
+            ),
+          ),
+        ),
+    };
+  },
+);
 
 /** One delegated managed turn on the Company Conversation facet. */
 export interface CompanyModelTurn {
@@ -222,17 +274,21 @@ export interface CompanyModelTurn {
 /** Dependencies for one unlinked-sender messenger turn on a company facet. */
 export interface CompanyMessengerTurnDependencies {
   readonly dailyTurnLimit: number | null;
-  readonly ensure: (
-    address: typeof ChannelLinks.ChannelAddress.Type,
-  ) => Promise<Exit.Exit<ChannelLinks.EnsureResult, unknown>>;
-  readonly recordActivity: () => Promise<void>;
+  readonly recordActivity: Effect.Effect<void, CompanyConversationUnavailable>;
   readonly readHeld: () => HeldInvite | null;
-  readonly readReceipt: (eventId: string) => Promise<ReceiptStatus | null>;
-  readonly recordTurn: () => Promise<void>;
-  readonly runModelTurn: (turn: CompanyModelTurn) => Promise<void>;
-  readonly turnsToday: () => Promise<number>;
+  readonly readReceipt: (
+    eventId: string,
+  ) => Effect.Effect<ReceiptStatus | null, CompanyConversationUnavailable>;
+  readonly recordTurn: Effect.Effect<void, CompanyConversationUnavailable>;
+  readonly runModelTurn: (
+    turn: CompanyModelTurn,
+  ) => Effect.Effect<void, CompanyConversationUnavailable>;
+  readonly turnsToday: Effect.Effect<number, CompanyConversationUnavailable>;
   readonly writeHeld: (held: HeldInvite | null) => void;
-  readonly writeReceipt: (eventId: string, status: ReceiptStatus) => Promise<void>;
+  readonly writeReceipt: (
+    eventId: string,
+    status: ReceiptStatus,
+  ) => Effect.Effect<void, CompanyConversationUnavailable>;
 }
 
 /**
@@ -240,62 +296,62 @@ export interface CompanyMessengerTurnDependencies {
  * events, enforce the optional daily ceiling, run exactly one bounded model
  * turn, append the deterministic link line after it, and settle receipts.
  */
-export const replyToCompanyMessenger = async (
+export const replyToCompanyMessenger = Effect.fn("CompanyAgent.replyToMessenger")(function* (
   callback: StreamCallback,
   context: MessengerContext,
   userMessage: string | UIMessage,
   dependencies: CompanyMessengerTurnDependencies,
-): Promise<void> => {
+) {
   const authorId = messengerAuthorId(context);
   const message = context.message;
   if (authorId === undefined || message === undefined) {
-    await streamReply(callback, "channel-address-unreadable", UNREADABLE_REPLY);
+    yield* streamReply(callback, "channel-address-unreadable", UNREADABLE_REPLY);
     return;
   }
   const eventId = message.providerMessageId ?? message.id;
-  if ((await dependencies.readReceipt(eventId)) !== null) return;
-  await dependencies.recordActivity();
+  if ((yield* dependencies.readReceipt(eventId)) !== null) return;
+  yield* dependencies.recordActivity;
 
   if (
     dependencies.dailyTurnLimit !== null &&
-    (await dependencies.turnsToday()) >= dependencies.dailyTurnLimit
+    (yield* dependencies.turnsToday) >= dependencies.dailyTurnLimit
   ) {
-    await dependencies.writeReceipt(eventId, "completed");
-    await streamReply(callback, eventId, DAILY_LIMIT_REPLY);
+    yield* dependencies.writeReceipt(eventId, "completed");
+    yield* streamReply(callback, eventId, DAILY_LIMIT_REPLY);
     return;
   }
 
+  const channelLinks = yield* ChannelLinks.Service;
   const address = channelAddressOf(context.messengerId, authorId);
   const presenter = makeInvitePresenter({
     address,
-    ensure: dependencies.ensure,
+    ensure: (presentedAddress) => channelLinks.ensure(presentedAddress),
     readHeld: dependencies.readHeld,
     requestId: eventId,
     writeHeld: dependencies.writeHeld,
   });
+  const managedCallback = yield* presentationAwareCallback(callback, presenter);
 
-  await dependencies.writeReceipt(eventId, "pending");
-  try {
-    await dependencies.runModelTurn({
-      callback: presentationAwareCallback(callback, presenter),
-      presenter,
-      userMessage,
-    });
-    if (presenter.wasRequested()) await presenter.flush(callback, true);
-  } catch (error) {
-    // The turn died below the terminal callbacks. If the model already asked
-    // for the link, the promised line still ships and the delivery completes;
-    // otherwise the failure propagates to the channel's error policy.
-    if (!presenter.wasRequested()) {
-      await dependencies.writeReceipt(eventId, "completed");
-      throw error;
-    }
-    await presenter.flush(callback, true);
-    await callback.onDone();
-  }
-  await dependencies.writeReceipt(eventId, "completed");
-  await dependencies.recordTurn();
-};
+  yield* dependencies.writeReceipt(eventId, "pending");
+  yield* dependencies.runModelTurn({ callback: managedCallback, presenter, userMessage }).pipe(
+    Effect.catch((failure) => {
+      // The turn died below the terminal callbacks. If the model already
+      // asked for the link, the promised line still ships and delivery
+      // completes. Otherwise the failure reaches the channel error policy.
+      if (!presenter.wasRequested()) {
+        return dependencies
+          .writeReceipt(eventId, "completed")
+          .pipe(Effect.andThen(Effect.fail(failure)));
+      }
+      return presenter
+        .flush(callback, true)
+        .pipe(Effect.andThen(companyPromise("streamDone", () => callback.onDone())));
+    }),
+  );
+  if (presenter.wasRequested()) yield* presenter.flush(callback, true);
+  yield* dependencies.writeReceipt(eventId, "completed");
+  yield* dependencies.recordTurn;
+});
 
 /** Temporary, address-keyed Osfo conversation served before registration. */
 export class CompanyAgent extends Think<Env & RuntimeSecrets> {
@@ -365,30 +421,36 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
   }
 
   /** Run one unlinked sender turn under the Company Conversation envelope. */
-  override async chatWithMessengerContext(
+  override chatWithMessengerContext(
     userMessage: string | UIMessage,
     callback: StreamCallback,
     context: MessengerContext,
   ): Promise<void> {
     const config = loadConfig(this.env);
-    await replyToCompanyMessenger(callback, context, userMessage, {
-      dailyTurnLimit: config.companyConversation.dailyTurnLimit,
-      ensure: (address) =>
-        Effect.runPromiseExit(
-          this.#withChannelLinks((channelLinks) => channelLinks.ensure(address)),
-        ),
-      recordActivity: () => this.#recordActivity(context),
-      readHeld: () => this.#heldInvite,
-      readReceipt: async (eventId) =>
-        (await this.ctx.storage.get<ReceiptStatus>(receiptKey(eventId))) ?? null,
-      recordTurn: () => this.#recordDailyTurn(),
-      runModelTurn: (turn) => this.#runManagedTurn(turn, context),
-      turnsToday: () => this.#dailyTurnCount(),
-      writeHeld: (held) => {
-        this.#heldInvite = held;
-      },
-      writeReceipt: (eventId, status) => this.ctx.storage.put(receiptKey(eventId), status),
-    });
+    return Effect.runPromise(
+      Effect.scoped(
+        replyToCompanyMessenger(callback, context, userMessage, {
+          dailyTurnLimit: config.companyConversation.dailyTurnLimit,
+          recordActivity: this.#recordActivity(context),
+          readHeld: () => this.#heldInvite,
+          readReceipt: (eventId) =>
+            companyPromise("readReceipt", () =>
+              this.ctx.storage
+                .get<ReceiptStatus>(receiptKey(eventId))
+                .then((receipt) => receipt ?? null),
+            ),
+          recordTurn: this.#recordDailyTurn(),
+          runModelTurn: (turn) =>
+            companyPromise("modelTurn", () => this.#runManagedTurn(turn, context)),
+          turnsToday: this.#dailyTurnCount(),
+          writeHeld: (held) => {
+            this.#heldInvite = held;
+          },
+          writeReceipt: (eventId, status) =>
+            companyPromise("writeReceipt", () => this.ctx.storage.put(receiptKey(eventId), status)),
+        }).pipe(Effect.provide(companyConversationLayer(this.env))),
+      ),
+    );
   }
 
   /**
@@ -398,101 +460,145 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
    * redundant lifecycle callbacks; an earlier callback simply re-reads the
    * latest activity and schedules the next required check.
    */
-  async expireCompanyConversation(): Promise<void> {
-    const stored = this.getConfig<unknown>();
-    const state =
-      stored === undefined || stored === null
-        ? Option.none()
-        : Schema.decodeUnknownOption(CompanyConversationState)(stored);
-    if (Option.isNone(state)) {
-      this.#destroy();
-      return;
-    }
-    const linked = await this.#addressLinked(
-      channelAddressOf(state.value.addressChannelId, state.value.addressAuthorId),
+  expireCompanyConversation(): Promise<void> {
+    return Effect.runPromise(
+      Effect.scoped(
+        this.#expireCompanyConversation().pipe(Effect.provide(companyConversationLayer(this.env))),
+      ),
     );
-    const decision = planTeardown({
-      lastActivityAt: state.value.lastActivityAt,
-      linked,
-      now: new Date(),
-    });
-    if (decision._tag === "Destroy") {
-      this.#destroy();
-      return;
-    }
-    await this.schedule(decision.at, "expireCompanyConversation", COMPANY_TEARDOWN_PAYLOAD, {
-      idempotent: true,
-    });
   }
 
-  async #runManagedTurn(turn: CompanyModelTurn, context: MessengerContext): Promise<void> {
+  #runManagedTurn(turn: CompanyModelTurn, context: MessengerContext): Promise<void> {
     this.#activePresenter = turn.presenter;
-    try {
-      await super.chatWithMessengerContext(turn.userMessage, turn.callback, context, {});
-    } finally {
-      this.#activePresenter = null;
-    }
+    return super
+      .chatWithMessengerContext(turn.userMessage, turn.callback, context, {})
+      .finally(() => {
+        this.#activePresenter = null;
+      });
   }
 
-  async #recordActivity(context: MessengerContext): Promise<void> {
-    const authorId = messengerAuthorId(context);
-    if (authorId === undefined) return;
-    const lastActivityAt = new Date();
-    this.configure({
-      addressAuthorId: authorId,
-      addressChannelId: context.messengerId,
-      lastActivityAt: lastActivityAt.toISOString(),
-    });
-    const acceptanceDeadline = new Date(lastActivityAt.getTime() + ACCEPTANCE_TEARDOWN_MS);
-    await this.schedule(acceptanceDeadline, "expireCompanyConversation", COMPANY_TEARDOWN_PAYLOAD, {
-      idempotent: true,
-    });
-  }
+  #recordActivity = Effect.fn("CompanyAgent.recordActivity")(
+    { self: this },
+    function* (this: CompanyAgent, context: MessengerContext) {
+      const authorId = messengerAuthorId(context);
+      if (authorId === undefined) return;
+      const now = yield* DateTime.now;
+      const lastActivityAt = DateTime.toDateUtc(now);
+      this.configure({
+        addressAuthorId: authorId,
+        addressChannelId: context.messengerId,
+        lastActivityAt: lastActivityAt.toISOString(),
+      });
+      const acceptanceDeadline = DateTime.toDateUtc(
+        DateTime.add(now, { milliseconds: ACCEPTANCE_TEARDOWN_MS }),
+      );
+      yield* companyPromise("scheduleExpiry", () =>
+        this.schedule(acceptanceDeadline, "expireCompanyConversation", COMPANY_TEARDOWN_PAYLOAD, {
+          idempotent: true,
+        }),
+      );
+    },
+  );
 
-  async #dailyTurnCount(): Promise<number> {
-    return (await this.ctx.storage.get<number>(dailyTurnKey())) ?? 0;
-  }
+  #dailyTurnCount = Effect.fn("CompanyAgent.dailyTurnCount")(
+    { self: this },
+    function* (this: CompanyAgent) {
+      const today = DateTime.toDateUtc(yield* DateTime.now);
+      const count = yield* companyPromise("readDailyTurns", () =>
+        this.ctx.storage.get<number>(dailyTurnKey(today)),
+      );
+      return count ?? 0;
+    },
+  );
 
-  async #recordDailyTurn(): Promise<void> {
-    const key = dailyTurnKey();
-    const current = (await this.ctx.storage.get<number>(key)) ?? 0;
-    await this.ctx.storage.put(key, current + 1);
-  }
+  #recordDailyTurn = Effect.fn("CompanyAgent.recordDailyTurn")(
+    { self: this },
+    function* (this: CompanyAgent) {
+      const today = DateTime.toDateUtc(yield* DateTime.now);
+      const key = dailyTurnKey(today);
+      const current = yield* companyPromise("readDailyTurns", () =>
+        this.ctx.storage.get<number>(key),
+      );
+      yield* companyPromise("writeDailyTurns", () => this.ctx.storage.put(key, (current ?? 0) + 1));
+    },
+  );
 
-  async #addressLinked(address: typeof ChannelLinks.ChannelAddress.Type): Promise<boolean | null> {
-    const resolved = await Effect.runPromiseExit(
-      this.#withChannelLinks((channelLinks) => channelLinks.resolve(address)),
-    );
-    if (Exit.isFailure(resolved)) return null;
-    return resolved.value !== null;
-  }
+  #expireCompanyConversation = Effect.fn("CompanyAgent.expireConversation")(
+    { self: this },
+    function* (this: CompanyAgent) {
+      const stored = this.getConfig<unknown>();
+      const state =
+        stored === undefined || stored === null
+          ? Option.none()
+          : Schema.decodeUnknownOption(CompanyConversationState)(stored);
+      if (Option.isNone(state)) {
+        this.#destroy();
+        return;
+      }
+
+      const channelLinks = yield* ChannelLinks.Service;
+      const resolved = yield* Effect.exit(
+        channelLinks.resolve(
+          channelAddressOf(state.value.addressChannelId, state.value.addressAuthorId),
+        ),
+      );
+      const linked = Exit.isSuccess(resolved) ? resolved.value !== null : null;
+      const decision = planTeardown({
+        lastActivityAt: state.value.lastActivityAt,
+        linked,
+        now: DateTime.toDateUtc(yield* DateTime.now),
+      });
+      if (decision._tag === "Destroy") {
+        this.#destroy();
+        return;
+      }
+      yield* companyPromise("scheduleExpiry", () =>
+        this.schedule(decision.at, "expireCompanyConversation", COMPANY_TEARDOWN_PAYLOAD, {
+          idempotent: true,
+        }),
+      );
+    },
+  );
 
   #destroy(): void {
     // Facet destruction delegates to the parent and aborts this isolate; the
     // durable condemned marker finishes teardown on a later wake if needed.
     this.destroy().catch(() => undefined);
   }
-
-  #withChannelLinks<A, E>(
-    operation: (channelLinks: ChannelLinks.Interface) => Effect.Effect<A, E>,
-  ) {
-    const base = Layer.merge(Db.layer({ db: this.env.DB }), BrowserCrypto.layer);
-    const services = ChannelLinks.layerFromConfig(loadConfig(this.env)).pipe(Layer.provide(base));
-    return Effect.scoped(
-      Effect.gen(function* () {
-        const channelLinks = yield* ChannelLinks.Service;
-        return yield* operation(channelLinks);
-      }).pipe(Effect.provide(services)),
-    );
-  }
 }
 
 const receiptKey = (eventId: string) => `osfo-company-receipt:${eventId}`;
 
-const dailyTurnKey = () => `osfo-company-turns:${new Date().toISOString().slice(0, 10)}`;
+const dailyTurnKey = (date: Date) => `osfo-company-turns:${date.toISOString().slice(0, 10)}`;
 
-const streamReply = async (callback: StreamCallback, requestId: string, text: string) => {
-  await callback.onStart({ requestId });
-  await callback.onEvent(JSON.stringify({ delta: text, type: "text-delta" }));
-  await callback.onDone();
+const streamReply = Effect.fn("CompanyAgent.streamReply")(function* (
+  callback: StreamCallback,
+  requestId: string,
+  text: string,
+) {
+  yield* companyPromise("streamStart", () => callback.onStart({ requestId }));
+  yield* companyPromise("streamEvent", () => callback.onEvent(encodeTextDelta(text)));
+  yield* companyPromise("streamDone", () => callback.onDone());
+});
+
+const companyPromise = <A>(
+  operation: typeof CompanyConversationOperation.Type,
+  run: () => A | PromiseLike<A>,
+): Effect.Effect<A, CompanyConversationUnavailable> =>
+  Effect.tryPromise({
+    try: () => Promise.resolve(run()),
+    catch: (cause) =>
+      new CompanyConversationUnavailable({
+        cause,
+        message: `Company Conversation ${operation} failed`,
+        operation,
+      }),
+  }).pipe(Effect.withSpan(`CompanyAgent.${operation}`));
+
+const encodeTextDelta = (delta: string) =>
+  Schema.encodeSync(StreamTextDelta)({ delta, type: "text-delta" });
+
+const companyConversationLayer = (env: Env & RuntimeSecrets) => {
+  const base = Layer.merge(Db.layer({ db: env.DB }), BrowserCrypto.layer);
+  return ChannelLinks.layerFromConfig(loadConfig(env)).pipe(Layer.provide(base));
 };

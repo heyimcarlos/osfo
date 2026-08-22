@@ -1,6 +1,7 @@
 import { splitMessage } from "@chat-adapter/whatsapp";
 import { deliverMessengerReply } from "@cloudflare/think/messengers";
 import { describe, expect, it } from "@effect/vitest";
+import { Effect } from "effect";
 
 import { makeOsfoMessengerRouter } from "../src/agents/osfo/messenger-routing";
 import { makeWhatsAppAdapter, makeWhatsAppChannel } from "../src/integrations/whatsapp";
@@ -30,12 +31,13 @@ describe("Official WhatsApp adapter boundary", () => {
     const resolved: Array<string> = [];
     const resolver = makeOsfoMessengerRouter({
       hasAgent: (agentId) => agentId === "agent-bound",
-      resolveAddress: async (authorId) => {
-        resolved.push(authorId);
-        return authorId === "15550000001"
-          ? { _tag: "Linked", agentId: "agent-bound" }
-          : { _tag: "Linked", agentId: "agent-missing" };
-      },
+      resolveAddress: (authorId) =>
+        Effect.sync(() => {
+          resolved.push(authorId);
+          return authorId === "15550000001"
+            ? { _tag: "Linked", agentId: "agent-bound" }
+            : { _tag: "Linked", agentId: "agent-missing" };
+        }),
     });
 
     await expect(resolver(event("15550000001"))).resolves.toMatchObject({
