@@ -12,15 +12,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@better-auth/infra": "0.3.7",
+    "@better-auth/infra": "0.4.0",
     "@osfo/db": "workspace:*",
-    "better-auth": "1.6.28",
+    "better-auth": "1.7.1",
     "drizzle-orm": "0.45.2",
     "effect": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
-    "auth": "1.6.28",
+    "auth": "1.7.1",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
