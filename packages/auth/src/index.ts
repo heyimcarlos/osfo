@@ -2,6 +2,7 @@ import type { Database } from "@osfo/db";
 // oxlint-disable-next-line osfo/no-star-import -- Better Auth's Drizzle adapter requires the complete generated schema module object.
 import * as AuthSchema from "@osfo/db/schema/auth";
 import { dash } from "@better-auth/infra";
+import type { DashOptions as InfraDashOptions } from "@better-auth/infra";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
@@ -34,7 +35,7 @@ export interface AuthOptions {
 /** Better Auth Dashboard policy for one auth instance. */
 export type DashboardOptions =
   | { readonly kind: "disabled" }
-  | { readonly apiKey: string; readonly kind: "enabled" };
+  | { readonly apiKey: string; readonly apiUrl?: string | undefined; readonly kind: "enabled" };
 
 /** Create Better Auth for one request-scoped PostgreSQL connection. */
 export const createAuth = (options: AuthOptions): ReturnType<typeof betterAuth> =>
@@ -147,7 +148,15 @@ const makeOptions = (options: AuthOptions): BetterAuthOptions => ({
 });
 
 const dashboardPlugins = (options: DashboardOptions) =>
-  options.kind === "enabled" ? [dash({ apiKey: options.apiKey })] : [];
+  options.kind === "enabled" ? [dash(dashboardPluginOptions(options))] : [];
+
+const dashboardPluginOptions = (
+  options: Extract<DashboardOptions, { readonly kind: "enabled" }>,
+): InfraDashOptions => {
+  const pluginOptions: InfraDashOptions = { apiKey: options.apiKey };
+  if (options.apiUrl !== undefined) pluginOptions.apiUrl = options.apiUrl;
+  return pluginOptions;
+};
 
 const isE164PhoneNumber = (value: string) => /^\+[1-9]\d{7,14}$/.test(value);
 

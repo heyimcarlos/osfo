@@ -7,7 +7,6 @@ import { WorkerAuth } from "./auth";
 import { productApiLayer } from "./cors";
 import type { CloudflareConfig } from "./config";
 import { Handlers } from "./handlers";
-import { RuntimeProbeHandlers } from "./handlers/runtime-probes";
 import { WebhookHandlers } from "./handlers/webhooks";
 import type { ExecutionUnit } from "./layers";
 import { AuthMiddleware } from "./middleware/auth";
@@ -19,8 +18,7 @@ import { UserId } from "./domain";
 import { ChannelLinks } from "./services/channel-links";
 
 /** Cloudflare bindings used by the Worker route tree. */
-export type Bindings = RuntimeProbeHandlers.Bindings &
-  RegistrationCloudflare.Bindings &
+export type Bindings = RegistrationCloudflare.Bindings &
   WebhookHandlers.Bindings & {
     readonly ARTIFACTS?: R2Bucket;
     readonly routeOsfoAgentRequest: (
@@ -98,7 +96,6 @@ export const layer = (options: Options) => {
       config: options.config.auth,
       dependencies: options.authDependencies,
     }),
-    HttpRouter.add("GET", "/agents/:identity/health", RuntimeProbeHandlers.agent(options.env)),
     HttpRouter.add("*", "*", notFound),
   );
 };

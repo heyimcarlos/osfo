@@ -6,7 +6,7 @@ import type { AuthDependencies } from "./auth";
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "./config";
 import { Db } from "./db";
 import { TwilioVerify } from "./integrations/twilio/verify";
-import { makeWorkerRuntime, type ExecutionUnit, RuntimeProbeResult } from "./layers";
+import { makeWorkerRuntime, type ExecutionUnit } from "./layers";
 import { Routes } from "./routes";
 import { ChannelLinks } from "./services/channel-links";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/identity";
@@ -99,8 +99,6 @@ const adaptBindings = (env: CloudflareEnv): Bindings => ({
         },
         initializeAgent: async (agentId, input) =>
           Schema.decodePromise(AgentRpcTag)(await directory.initializeAgent(agentId, input)),
-        probeAgent: async (agentId) =>
-          Schema.decodeSync(RuntimeProbeResult)(await directory.probeAgent(agentId)),
       };
     },
   },
