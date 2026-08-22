@@ -35,6 +35,7 @@
       { "name": "OSFO_DIRECTORY", "class_name": "OsfoDirectory" },
       // Direct OsfoAgent binding for isolated behavior tests. Topology tests use OSFO_DIRECTORY.
       { "name": "OSFO_AGENT_TEST_FACET", "class_name": "OsfoAgent" },
+      { "name": "COMPANY_AGENT_TEST_FACET", "class_name": "CompanyAgent" },
       {
         "name": "THINK_MESSENGER_STATE_TEST",
         "class_name": "ThinkMessengerStateAgent",
@@ -49,6 +50,7 @@
     { "tag": "v2", "new_sqlite_classes": ["Sandbox"] },
     { "tag": "v3", "new_sqlite_classes": ["OsfoDirectory"] },
     { "tag": "v4", "deleted_classes": ["RegistrationDialogue"] },
+    { "tag": "v5", "new_sqlite_classes": ["CompanyAgent"] },
   ],
   "containers": [
     {

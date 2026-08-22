@@ -6,14 +6,17 @@ import { Effect, Exit, Layer } from "effect";
 
 import { loadConfig } from "../../config";
 import { Db } from "../../db";
-import { makeTelegramChannel, makeTelegramConversationResolver } from "../../integrations/telegram";
-import { makeWhatsAppChannel, makeWhatsAppConversationResolver } from "../../integrations/whatsapp";
+import { makeTelegramChannel } from "../../integrations/telegram";
+import { makeWhatsAppChannel } from "../../integrations/whatsapp";
 import { invalidOsfoEnvironment, type RuntimeProbeResult } from "../../layers";
 import type { RuntimeSecrets } from "../../runtime-secrets";
 import { AgentDirectory } from "../../services/agent-directory";
 import { ChannelLinks } from "../../services/channel-links";
 import { OsfoAgent } from "./agent";
+import { CompanyAgent, channelAddressOf } from "./company-agent";
+import { makeOsfoMessengerRouter } from "./messenger-routing";
 import type { AgentInitializationEncoded } from "./db/store";
+import { GroupRefusalCopy } from "./persona";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Think hooks and RPC use Promise boundaries, messenger turns are application entry points, and Effect results use _tag. */
 
@@ -26,22 +29,15 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     return "@cf/openai/gpt-oss-120b";
   }
 
-  /** Configure the shared messenger webhooks and their user-facet resolvers. */
+  /** Configure the shared messenger webhooks and their conversation resolvers. */
   override configureChannels(): ThinkChannels {
-    const telegramConversation = makeTelegramConversationResolver({
-      agentClass: OsfoAgent,
-      hasAgent: (agentId) => this.hasSubAgent(OsfoAgent, agentId),
-      isAllowed: (authorId) => this.#telegramAllowedUserIds().has(authorId),
-      resolveAgentId: (authorId, messengerId) => this.#resolveAgentId(messengerId, authorId),
-    });
-    const whatsAppConversation = makeWhatsAppConversationResolver({
-      agentClass: OsfoAgent,
+    const conversation = makeOsfoMessengerRouter({
       hasAgent: (agentId) => this.hasSubAgent(OsfoAgent, agentId),
       resolveAgentId: (authorId, messengerId) => this.#resolveAgentId(messengerId, authorId),
     });
     return {
       telegram: makeTelegramChannel({
-        conversation: telegramConversation,
+        conversation,
         secretToken: this.env.TELEGRAM_WEBHOOK_SECRET_TOKEN,
         token: this.env.TELEGRAM_BOT_TOKEN,
         userName: this.env.TELEGRAM_BOT_USERNAME,
@@ -49,7 +45,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       whatsapp: makeWhatsAppChannel({
         accessToken: this.env.WHATSAPP_ACCESS_TOKEN,
         appSecret: this.env.WHATSAPP_APP_SECRET,
-        conversation: whatsAppConversation,
+        conversation,
         phoneNumberId: this.env.WHATSAPP_PHONE_NUMBER_ID,
         userName: this.env.WHATSAPP_BOT_USERNAME,
         verifyToken: this.env.WHATSAPP_VERIFY_TOKEN,
@@ -57,18 +53,20 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     };
   }
 
-  /** Gate unlinked senders before a privileged model turn can begin. */
+  /** Deterministically answer the messenger turns that never reach a facet. */
   override async chatWithMessengerContext(
     _userMessage: string | UIMessage,
     callback: StreamCallback,
     context: MessengerContext,
   ): Promise<void> {
-    await replyToChannelLinkMessenger(callback, context, {
-      ensure: (address) =>
-        Effect.runPromiseExit(
-          this.#withChannelLinks((channelLinks) => channelLinks.ensure(address)),
-        ),
-      telegramAllowedUserIds: this.#telegramAllowedUserIds(),
+    await replyToDirectoryGate(callback, context, {
+      resolveLinked: async (address) => {
+        const resolved = await Effect.runPromiseExit(
+          this.#withChannelLinks((channelLinks) => channelLinks.resolve(address)),
+        );
+        if (Exit.isFailure(resolved)) return null;
+        return resolved.value !== null;
+      },
     });
   }
 
@@ -88,6 +86,14 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   ): Promise<{ readonly className: string; readonly name: string }> {
     await this.subAgent(OsfoAgent, agentId);
     return { className: OsfoAgent.name, name: agentId };
+  }
+
+  /** Create the company conversation facet when necessary and return its registry identity. */
+  async ensureCompanyConversation(
+    addressKey: string,
+  ): Promise<{ readonly className: string; readonly name: string }> {
+    await this.subAgent(CompanyAgent, addressKey);
+    return { className: CompanyAgent.name, name: addressKey };
   }
 
   /** Initialize one registered user-owned facet. */
@@ -132,7 +138,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     const resolved = await Effect.runPromiseExit(
       this.#withChannelLinks((channelLinks, agentDirectory) =>
         Effect.gen(function* () {
-          const link = yield* channelLinks.resolve(channelAddress(messengerId, authorId));
+          const link = yield* channelLinks.resolve(channelAddressOf(messengerId, authorId));
           if (link === null) return null;
           return yield* agentDirectory
             .resolve(link.userId)
@@ -148,14 +154,6 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       return null;
     }
     return resolved.value.agentId;
-  }
-
-  #telegramAllowedUserIds(): ReadonlySet<string> {
-    return new Set(
-      this.env.TELEGRAM_ALLOWED_USER_IDS.split(",")
-        .map((value) => value.trim())
-        .filter((value) => value.length > 0),
-    );
   }
 
   #withChannelLinks<A, E>(
@@ -180,18 +178,22 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   }
 }
 
-interface ChannelLinkMessengerDependencies {
-  readonly ensure: (
+interface DirectoryGateDependencies {
+  /** Read current Channel Link authority; null means the authority is unreadable. */
+  readonly resolveLinked: (
     address: typeof ChannelLinks.ChannelAddress.Type,
-  ) => Promise<Exit.Exit<ChannelLinks.EnsureResult, unknown>>;
-  readonly telegramAllowedUserIds: ReadonlySet<string>;
+  ) => Promise<boolean | null>;
 }
 
-/** Deterministically gate a directory messenger turn before any model or User authority exists. */
-export const replyToChannelLinkMessenger = async (
+/**
+ * Deterministically gate a directory messenger turn before any model or User
+ * authority exists. Unlinked direct-message senders never land here: the
+ * conversation resolver routes them to their Company Conversation facet.
+ */
+export const replyToDirectoryGate = async (
   callback: StreamCallback,
   context: MessengerContext,
-  dependencies: ChannelLinkMessengerDependencies,
+  dependencies: DirectoryGateDependencies,
 ): Promise<void> => {
   // Think hands messenger turns its serializable event snapshot, which carries
   // the author inside the message rather than at the context top level.
@@ -205,28 +207,20 @@ export const replyToChannelLinkMessenger = async (
     );
     return;
   }
-  if (context.provider === "telegram" && !dependencies.telegramAllowedUserIds.has(authorId)) {
-    await streamReply(callback, message.id, "This Telegram account is not authorized.");
+  if (!context.thread.isDirectMessage) {
+    await streamReply(callback, message.id, GroupRefusalCopy.en);
     return;
   }
-  if (!context.thread.isDirectMessage) {
+  const linked = await dependencies.resolveLinked(channelAddressOf(context.messengerId, authorId));
+  if (linked) {
     await streamReply(
       callback,
       message.id,
-      "Message Osfo privately to link this account. I will never post a linking URL in a group.",
+      "This channel is linked, but I could not reach your Osfo Agent. Please try again.",
     );
     return;
   }
-  const ensured = await dependencies.ensure(channelAddress(context.messengerId, authorId));
-  if (Exit.isFailure(ensured)) {
-    await streamReply(callback, message.id, "I could not create a linking invitation. Try again.");
-    return;
-  }
-  const text =
-    ensured.value._tag === "Linked"
-      ? "This channel is linked, but I could not reach your Osfo Agent. Please try again."
-      : `Open this private link to connect the channel to your Osfo User: ${ensured.value.verificationUrl.href}`;
-  await streamReply(callback, message.id, text);
+  await streamReply(callback, message.id, "Please send that message again.");
 };
 
 const streamReply = async (callback: StreamCallback, requestId: string, text: string) => {
@@ -234,9 +228,3 @@ const streamReply = async (callback: StreamCallback, requestId: string, text: st
   await callback.onEvent(JSON.stringify({ delta: text, type: "text-delta" }));
   await callback.onDone();
 };
-
-const channelAddress = (messengerId: string, authorId: string) =>
-  ChannelLinks.ChannelAddress.make({
-    authorId: ChannelLinks.ChannelAuthorId.make(authorId),
-    channelId: ChannelLinks.ChannelId.make(messengerId),
-  });

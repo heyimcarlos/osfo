@@ -12,6 +12,7 @@ import { App } from "../src/app";
 import { WorkerAuth } from "../src/auth";
 import { Db } from "../src/db";
 import type { CloudflareConfig } from "../src/config";
+import { launchModelAccessPolicy } from "../src/domain/model-access-policy";
 import { TwilioVerify } from "../src/integrations/twilio/verify";
 import { ChannelLinks } from "../src/services/channel-links";
 
@@ -959,9 +960,12 @@ const responseJson = (response: Response) =>
 
 const runtimeConfig: CloudflareConfig = {
   auth: authConfig,
+  companyConversation: {
+    dailyTurnLimit: null,
+    modelRoute: launchModelAccessPolicy.plans.free.route,
+  },
   stage: "test",
   telegram: {
-    allowedUserIds: ["12345"],
     botToken: Redacted.make("telegram-test-bot-token"),
     botUsername: "osfo_test_bot",
     webhookSecret: Redacted.make("telegram-test-webhook-secret"),

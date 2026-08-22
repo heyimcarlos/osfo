@@ -13,7 +13,6 @@ const workerBindings = {
   STRIPE_PORTAL_CONFIGURATION_ID: "bpc_approved",
   STRIPE_SECRET_KEY: "sk_test_osfo",
   STRIPE_WEBHOOK_SECRET: "whsec_test_osfo",
-  TELEGRAM_ALLOWED_USER_IDS: "12345,67890",
   TELEGRAM_BOT_TOKEN: "telegram-test-bot-token",
   TELEGRAM_BOT_USERNAME: "osfo_test_bot",
   TELEGRAM_WEBHOOK_SECRET_TOKEN: "telegram-test-webhook-secret",
@@ -39,6 +38,7 @@ export default defineConfig({
     include: [
       "test/action-approval.test.ts",
       "test/config.test.ts",
+      "test/company-conversation.test.ts",
       "test/cloudflare-registration.test.ts",
       "test/file-ingestion.test.ts",
       "test/document-artifacts-r2.test.ts",

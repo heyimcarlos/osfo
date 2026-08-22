@@ -1,5 +1,7 @@
 import { Option, Redacted, Schema } from "effect";
 
+import { launchModelAccessPolicy, ManagedModelRoute } from "./domain/model-access-policy";
+
 /** Runtime environments that select Osfo behavior and configuration. */
 export const OsfoStage = Schema.Literals(["development", "preview", "test", "production"]);
 
@@ -18,13 +20,14 @@ type RawConfigBinding =
   | "BETTER_AUTH_BASE_URL"
   | "BETTER_AUTH_SECRET"
   | "BETTER_AUTH_TRUSTED_ORIGINS"
+  | "COMPANY_CONVERSATION_DAILY_TURN_LIMIT"
+  | "COMPANY_CONVERSATION_MODEL"
   | "OSFO_STAGE"
   | "STRIPE_ADVENTURER_PRICE_ID"
   | "STRIPE_ADVENTURER_PRODUCT_ID"
   | "STRIPE_PORTAL_CONFIGURATION_ID"
   | "STRIPE_SECRET_KEY"
   | "STRIPE_WEBHOOK_SECRET"
-  | "TELEGRAM_ALLOWED_USER_IDS"
   | "TELEGRAM_BOT_TOKEN"
   | "TELEGRAM_BOT_USERNAME"
   | "TELEGRAM_WEBHOOK_SECRET_TOKEN"
@@ -45,13 +48,14 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly BETTER_AUTH_BASE_URL?: string;
   readonly BETTER_AUTH_SECRET?: string;
   readonly BETTER_AUTH_TRUSTED_ORIGINS?: string;
+  readonly COMPANY_CONVERSATION_DAILY_TURN_LIMIT?: string;
+  readonly COMPANY_CONVERSATION_MODEL?: string;
   readonly OSFO_STAGE?: string;
   readonly STRIPE_ADVENTURER_PRICE_ID?: string;
   readonly STRIPE_ADVENTURER_PRODUCT_ID?: string;
   readonly STRIPE_PORTAL_CONFIGURATION_ID?: string;
   readonly STRIPE_SECRET_KEY?: string;
   readonly STRIPE_WEBHOOK_SECRET?: string;
-  readonly TELEGRAM_ALLOWED_USER_IDS?: string;
   readonly TELEGRAM_BOT_TOKEN?: string;
   readonly TELEGRAM_BOT_USERNAME?: string;
   readonly TELEGRAM_WEBHOOK_SECRET_TOKEN?: string;
@@ -103,7 +107,6 @@ export interface StripeConfig {
 
 /** Telegram linking and delivery configuration. */
 export interface TelegramConfig {
-  readonly allowedUserIds: ReadonlyArray<string>;
   readonly botToken: Redacted.Redacted;
   readonly botUsername: string;
   readonly webhookSecret: Redacted.Redacted;
@@ -116,9 +119,18 @@ export interface TwilioVerifyConfig {
   readonly serviceSid: string;
 }
 
+/** Bounded envelope configuration for the pre-registration Company Conversation. */
+export interface CompanyConversationConfig {
+  /** Optional per-address daily model-turn ceiling; null disables the ceiling. */
+  readonly dailyTurnLimit: number | null;
+  /** Fixed Workers AI route served by every company conversation facet. */
+  readonly modelRoute: ManagedModelRoute;
+}
+
 /** Parsed configuration used by one request application. */
 export interface CloudflareConfig {
   readonly auth: AuthConfig;
+  readonly companyConversation: CompanyConversationConfig;
   readonly stage: OsfoStage;
   readonly stripe: StripeConfig;
   readonly telegram: TelegramConfig;
@@ -146,12 +158,6 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
   const secret = required(env, "BETTER_AUTH_SECRET");
   if (secret.length < 32) invalid("BETTER_AUTH_SECRET must contain at least 32 characters");
 
-  const allowedUserIds = required(env, "TELEGRAM_ALLOWED_USER_IDS")
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-  if (allowedUserIds.length === 0) invalid("TELEGRAM_ALLOWED_USER_IDS is required");
-
   return {
     auth: {
       baseURL: baseURL.href,
@@ -163,6 +169,15 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
       secret: Redacted.make(secret),
       trustedOrigins,
     },
+    companyConversation: {
+      dailyTurnLimit: parseOptionalPositiveInt(env.COMPANY_CONVERSATION_DAILY_TURN_LIMIT),
+      modelRoute: Option.getOrElse(
+        Schema.decodeOption(ManagedModelRoute)(
+          env.COMPANY_CONVERSATION_MODEL ?? launchModelAccessPolicy.plans.free.route,
+        ),
+        () => launchModelAccessPolicy.plans.free.route,
+      ),
+    },
     stage,
     stripe: {
       adventurerPriceId: required(env, "STRIPE_ADVENTURER_PRICE_ID").trim(),
@@ -172,7 +187,6 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
       webhookSecret: Redacted.make(required(env, "STRIPE_WEBHOOK_SECRET")),
     },
     telegram: {
-      allowedUserIds,
       botToken: Redacted.make(required(env, "TELEGRAM_BOT_TOKEN")),
       botUsername: required(env, "TELEGRAM_BOT_USERNAME").trim(),
       webhookSecret: Redacted.make(required(env, "TELEGRAM_WEBHOOK_SECRET_TOKEN")),
@@ -208,6 +222,12 @@ const parseUrl = (binding: string, value: string): URL => {
     invalid(`${binding} must contain a URL`);
   }
   return url;
+};
+
+const parseOptionalPositiveInt = (value: string | undefined): number | null => {
+  if (value === undefined || value.trim().length === 0) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
 const parseTrustedOrigins = (value: string): ReadonlyArray<string> => {

@@ -2,12 +2,8 @@ import { splitMessage } from "@chat-adapter/whatsapp";
 import { deliverMessengerReply } from "@cloudflare/think/messengers";
 import { describe, expect, it } from "@effect/vitest";
 
-import { OsfoAgent } from "../src/agents/osfo/agent";
-import {
-  makeWhatsAppAdapter,
-  makeWhatsAppConversationResolver,
-  makeWhatsAppChannel,
-} from "../src/integrations/whatsapp";
+import { makeOsfoMessengerRouter } from "../src/agents/osfo/messenger-routing";
+import { makeWhatsAppAdapter, makeWhatsAppChannel } from "../src/integrations/whatsapp";
 
 /* oxlint-disable effecttsgo/async-function, osfo/no-runtime-typeof -- Official Chat SDK tests implement Promise-based callbacks and distinguish the documented delivery union. */
 
@@ -32,8 +28,7 @@ describe("Official WhatsApp adapter boundary", () => {
 
   it("uses the product binding resolver and never invents an Agent facet", async () => {
     const resolved: Array<string> = [];
-    const resolver = makeWhatsAppConversationResolver({
-      agentClass: OsfoAgent,
+    const resolver = makeOsfoMessengerRouter({
       hasAgent: (agentId) => agentId === "agent-bound",
       resolveAgentId: async (authorId) => {
         resolved.push(authorId);

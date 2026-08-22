@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Option } from "effect";
 
 import { decodeOsfoStage, loadConfig, publicWebBaseUrl } from "../src/config";
+import { launchModelAccessPolicy } from "../src/domain/model-access-policy";
 
 describe("Worker configuration", () => {
   it("loads the complete deployment configuration", () => {
@@ -14,9 +15,12 @@ describe("Worker configuration", () => {
         credentialAuthentication: "enabled",
         trustedOrigins: ["https://osfo.test"],
       },
+      companyConversation: {
+        dailyTurnLimit: null,
+        modelRoute: launchModelAccessPolicy.plans.free.route,
+      },
       stage: "test",
       telegram: {
-        allowedUserIds: ["12345", "67890"],
         botUsername: "osfo_test_bot",
       },
     });
@@ -59,14 +63,12 @@ describe("Worker configuration", () => {
     const webhookSecret = "telegram-test-webhook-secret";
     const config = loadConfig({
       ...env,
-      TELEGRAM_ALLOWED_USER_IDS: " 12345, ,67890 ",
       TELEGRAM_BOT_TOKEN: botToken,
       TELEGRAM_BOT_USERNAME: " osfo_test_bot ",
       TELEGRAM_WEBHOOK_SECRET_TOKEN: webhookSecret,
     });
 
     expect(config.telegram).toMatchObject({
-      allowedUserIds: ["12345", "67890"],
       botUsername: "osfo_test_bot",
     });
     expect(JSON.stringify(config)).not.toContain(botToken);
@@ -81,10 +83,35 @@ describe("Worker configuration", () => {
     expect(loadConfig({ ...env, OSFO_STAGE: "production" })).toMatchObject({
       stage: "production",
       telegram: {
-        allowedUserIds: ["12345", "67890"],
         botUsername: "osfo_test_bot",
       },
     });
+  });
+
+  it("keeps the company conversation ceiling off and the route fixed by default", () => {
+    expect(loadConfig(env).companyConversation.dailyTurnLimit).toBeNull();
+  });
+
+  it("accepts a bounded company conversation envelope from raw configuration", () => {
+    const config = loadConfig({
+      ...env,
+      COMPANY_CONVERSATION_DAILY_TURN_LIMIT: "50",
+      COMPANY_CONVERSATION_MODEL: "@cf/openai/gpt-oss-120b",
+    });
+    const ignoringInvalidOverride = loadConfig({
+      ...env,
+      COMPANY_CONVERSATION_DAILY_TURN_LIMIT: "not-a-number",
+      COMPANY_CONVERSATION_MODEL: "totally-invalid-slug",
+    });
+
+    expect(config.companyConversation).toMatchObject({
+      dailyTurnLimit: 50,
+      modelRoute: "@cf/openai/gpt-oss-120b",
+    });
+    expect(ignoringInvalidOverride.companyConversation.modelRoute).toBe(
+      launchModelAccessPolicy.plans.free.route,
+    );
+    expect(ignoringInvalidOverride.companyConversation.dailyTurnLimit).toBeNull();
   });
 
   it("rejects invalid Better Auth URLs with safe messages", () => {

@@ -2,13 +2,15 @@ import { env } from "cloudflare:workers";
 import type { StreamCallback } from "@cloudflare/think";
 import { describe, expect, it } from "@effect/vitest";
 import { getAgentByName, getSubAgentByName } from "agents";
-import { DateTime, Effect, Exit } from "effect";
+import { Effect } from "effect";
 
 import { OsfoAgent } from "../src/agents/osfo/agent";
-import { OSFO_DIRECTORY_NAME, replyToChannelLinkMessenger } from "../src/agents/osfo/directory";
-import { ChannelLinks } from "../src/services/channel-links";
-import { makeTelegramConversationResolver } from "../src/integrations/telegram";
-import { makeWhatsAppConversationResolver } from "../src/integrations/whatsapp";
+import { CompanyAgent, companyAddressKey } from "../src/agents/osfo/company-agent";
+import { OSFO_DIRECTORY_NAME, replyToDirectoryGate } from "../src/agents/osfo/directory";
+import {
+  makeOsfoMessengerRouter,
+  type OsfoMessengerRoutingOptions,
+} from "../src/agents/osfo/messenger-routing";
 
 /* oxlint-disable effecttsgo/async-function, typescript/consistent-return -- Cloudflare Agent test helpers expose Promise boundaries, and Effect generators use typed early failure. */
 
@@ -51,23 +53,13 @@ describe("Osfo directory topology", () => {
         return yield* Effect.die(new Error("The web facet marker is missing"));
       }
       const registry = yield* Effect.promise(() => directory.listAgents());
-      const telegramResolver = makeTelegramConversationResolver({
-        agentClass: OsfoAgent,
-        hasAgent: (agentId) => registry.some(({ name }) => name === agentId),
-        isAllowed: (authorId) => authorId === "telegram-user-1",
-        resolveAgentId: () => Promise.resolve(firstAgentId),
-      });
+      const boundRouting = routingForRegistry(registry);
       const telegramTarget = yield* Effect.promise(() =>
-        Promise.resolve(telegramResolver(telegramEvent)),
+        Promise.resolve(boundRouting(telegramEvent)),
       );
       const telegramTargetState = yield* Effect.promise(() => directory.inspectAgent(firstAgentId));
-      const whatsAppResolver = makeWhatsAppConversationResolver({
-        agentClass: OsfoAgent,
-        hasAgent: (agentId) => registry.some(({ name }) => name === agentId),
-        resolveAgentId: () => Promise.resolve(firstAgentId),
-      });
       const whatsAppTarget = yield* Effect.promise(() =>
-        Promise.resolve(whatsAppResolver(whatsAppEvent)),
+        Promise.resolve(boundRouting(whatsAppEvent)),
       );
       const whatsAppTargetState = yield* Effect.promise(() => directory.inspectAgent(firstAgentId));
       const secondState = yield* Effect.promise(() => directory.inspectAgent(secondAgentId));
@@ -79,8 +71,8 @@ describe("Osfo directory topology", () => {
         agentId: firstAgentId,
         currentSessionId: "session-topology-first",
       });
-      expect(telegramTarget).toMatchObject({ name: firstAgentId, target: "subagent" });
-      expect(whatsAppTarget).toMatchObject({ name: firstAgentId, target: "subagent" });
+      expect(telegramTarget).toMatchObject({ agentClass: OsfoAgent, target: "subagent" });
+      expect(whatsAppTarget).toMatchObject({ agentClass: OsfoAgent, target: "subagent" });
       expect(telegramTargetState).toMatchObject({
         agentId: webState.agentId,
         currentSessionId: webState.currentSessionId,
@@ -116,116 +108,126 @@ describe("Osfo directory topology", () => {
     }),
   );
 
-  it.effect("keeps unauthorized and unbound Telegram authors on the dormant directory", () =>
+  it.effect("routes unlinked direct-message senders to opaque address-keyed facets", () =>
+    Effect.gen(function* () {
+      const routing = makeOsfoMessengerRouter(unboundRouting);
+      const first = yield* Effect.promise(() => Promise.resolve(routing(telegramEvent)));
+      const repeat = yield* Effect.promise(() => Promise.resolve(routing(telegramEvent)));
+      const otherAuthor = yield* Effect.promise(() =>
+        Promise.resolve(routing(withTelegramAuthor(telegramEvent, "telegram-user-2"))),
+      );
+      const expectedKey = yield* Effect.promise(() =>
+        companyAddressKey(telegramEvent.messengerId, "telegram-user-1"),
+      );
+      const otherKey = yield* Effect.promise(() =>
+        companyAddressKey(telegramEvent.messengerId, "telegram-user-2"),
+      );
+
+      expect(first).toEqual({ agentClass: CompanyAgent, name: expectedKey, target: "subagent" });
+      expect(repeat).toEqual(first);
+      expect(otherAuthor).toEqual({
+        agentClass: CompanyAgent,
+        name: otherKey,
+        target: "subagent",
+      });
+      expect(expectedKey).not.toContain("telegram-user-1");
+      expect(expectedKey).toMatch(/^company-[0-9a-f]{32}$/);
+    }),
+  );
+
+  it.effect("keeps group events on the dormant directory without any binding lookup", () =>
     Effect.gen(function* () {
       let bindingLookups = 0;
-      const resolver = makeTelegramConversationResolver({
-        agentClass: OsfoAgent,
-        hasAgent: () => true,
-        isAllowed: (authorId) => authorId !== "telegram-blocked",
+      const routing = makeOsfoMessengerRouter({
+        ...unboundRouting,
         resolveAgentId: () => {
           bindingLookups += 1;
           return Promise.resolve(null);
         },
       });
 
-      const blocked = yield* Effect.promise(() =>
-        Promise.resolve(resolver(withTelegramAuthor(telegramEvent, "telegram-blocked"))),
-      );
-      const unbound = yield* Effect.promise(() =>
-        Promise.resolve(resolver(withTelegramAuthor(telegramEvent, "telegram-unbound"))),
+      const group = yield* Effect.promise(() =>
+        Promise.resolve(routing(groupEvent(telegramEvent))),
       );
 
-      expect(blocked).toEqual({ target: "self" });
-      expect(unbound).toEqual({ target: "self" });
-      expect(bindingLookups).toBe(1);
+      expect(group).toEqual({ target: "self" });
+      expect(bindingLookups).toBe(0);
     }),
   );
 
-  it.effect("uses only the normalized Messenger Context address", () =>
+  it.effect("keeps linked senders whose personal facet is missing on the dormant directory", () =>
     Effect.gen(function* () {
-      const resolved: Array<readonly [string, string]> = [];
-      const resolver = makeTelegramConversationResolver({
-        agentClass: OsfoAgent,
-        hasAgent: () => true,
-        isAllowed: () => true,
-        resolveAgentId: (authorId, messengerId) => {
-          resolved.push([authorId, messengerId]);
-          return Promise.resolve(null);
-        },
+      const routing = makeOsfoMessengerRouter({
+        hasAgent: () => false,
+        resolveAgentId: () => Promise.resolve("agent-topology-first"),
+      });
+      const whatsappRouting = makeOsfoMessengerRouter({
+        hasAgent: () => false,
+        resolveAgentId: () => Promise.resolve(null),
       });
 
-      const { author: omittedAuthor, ...withoutNormalizedAuthor } = telegramEvent;
-      expect(omittedAuthor.userId).toBe("telegram-user-1");
-      expect(
-        yield* Effect.promise(() => Promise.resolve(resolver(withoutNormalizedAuthor))),
-      ).toEqual({ target: "self" });
-      expect(yield* Effect.promise(() => Promise.resolve(resolver(telegramEvent)))).toEqual({
-        target: "self",
-      });
-      expect(resolved).toEqual([["telegram-user-1", "telegram"]]);
+      const telegramUnreachable = yield* Effect.promise(() =>
+        Promise.resolve(routing(telegramEvent)),
+      );
+      const whatsappUnlinked = yield* Effect.promise(() =>
+        Promise.resolve(whatsappRouting(whatsAppEvent)),
+      );
+
+      expect(telegramUnreachable).toEqual({ target: "self" });
+      expect(whatsappUnlinked).toMatchObject({ target: "subagent" });
     }),
   );
 
-  it.effect("delivers a private invite without beginning a privileged model turn", () =>
+  it.effect("refuses group linking deterministically at the directory gate", () =>
     Effect.gen(function* () {
-      const ensuredAddresses: Array<typeof ChannelLinks.ChannelAddress.Type> = [];
+      let linkReads = 0;
       const reply = makeStreamRecorder();
 
       yield* Effect.promise(() =>
-        replyToChannelLinkMessenger(reply.callback, telegramEvent, {
-          ensure: (address) => {
-            ensuredAddresses.push(address);
-            return Promise.resolve(
-              Exit.succeed({
-                _tag: "Invited" as const,
-                expiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-22T12:00:00.000Z")),
-                verificationUrl: new URL("https://osfo.test/verify/private.claims"),
-              }),
-            );
+        replyToDirectoryGate(reply.callback, groupEvent(telegramEvent), {
+          resolveLinked: () => {
+            linkReads += 1;
+            return Promise.resolve(null);
           },
-          telegramAllowedUserIds: new Set(["telegram-user-1"]),
         }),
       );
 
-      expect(ensuredAddresses).toEqual([
-        ChannelLinks.ChannelAddress.make({
-          authorId: ChannelLinks.ChannelAuthorId.make("telegram-user-1"),
-          channelId: ChannelLinks.ChannelId.make("telegram"),
-        }),
-      ]);
-      expect(reply.text()).toContain("https://osfo.test/verify/private.claims");
-    }),
-  );
-
-  it.effect("refuses group linking without creating or exposing an invitation", () =>
-    Effect.gen(function* () {
-      let ensureCalls = 0;
-      const reply = makeStreamRecorder();
-
-      yield* Effect.promise(() =>
-        replyToChannelLinkMessenger(
-          reply.callback,
-          {
-            ...telegramEvent,
-            kind: "mention",
-            thread: { ...telegramEvent.thread, isDirectMessage: false },
-          },
-          {
-            ensure: () => {
-              ensureCalls += 1;
-              return Promise.resolve(Exit.die(new Error("Group linking must remain gated")));
-            },
-            telegramAllowedUserIds: new Set(["telegram-user-1"]),
-          },
-        ),
-      );
-
-      expect(ensureCalls).toBe(0);
+      expect(linkReads).toBe(0);
       expect(reply.text()).toContain("Message Osfo privately");
       expect(reply.text()).not.toContain("/verify/");
     }),
   );
+
+  it.effect("answers a linked but unreachable channel without a model turn", () =>
+    Effect.gen(function* () {
+      const reply = makeStreamRecorder();
+
+      yield* Effect.promise(() =>
+        replyToDirectoryGate(reply.callback, telegramEvent, {
+          resolveLinked: () => Promise.resolve(true),
+        }),
+      );
+
+      expect(reply.text()).toContain("This channel is linked");
+    }),
+  );
+});
+
+const unboundRouting: OsfoMessengerRoutingOptions = {
+  hasAgent: () => false,
+  resolveAgentId: () => Promise.resolve(null),
+};
+
+const routingForRegistry = (registry: ReadonlyArray<{ readonly name: string }>) =>
+  makeOsfoMessengerRouter({
+    hasAgent: (name) => registry.some((entry) => entry.name === name),
+    resolveAgentId: () => Promise.resolve("agent-topology-first"),
+  });
+
+const groupEvent = (event: typeof telegramEvent) => ({
+  ...event,
+  kind: "mention" as const,
+  thread: { ...event.thread, isDirectMessage: false },
 });
 
 const makeStreamRecorder = () => {

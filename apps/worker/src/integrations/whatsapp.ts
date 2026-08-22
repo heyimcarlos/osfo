@@ -1,12 +1,6 @@
 import { createWhatsAppAdapter, type WhatsAppAdapter } from "@chat-adapter/whatsapp";
 import { messengerChannel, type ChannelDefinition } from "@cloudflare/think";
-import {
-  chatSdkMessenger,
-  type MessengerConversationResolver,
-  type MessengerEvent,
-} from "@cloudflare/think/messengers";
-
-import type { OsfoAgent } from "../agents/osfo/agent";
+import { chatSdkMessenger, type MessengerConversationResolver } from "@cloudflare/think/messengers";
 
 /* oxlint-disable effecttsgo/async-function -- Think conversation and delivery boundaries are Promise-based. */
 
@@ -27,13 +21,6 @@ export interface WhatsAppChannelOptions extends WhatsAppAdapterOptions {
   readonly conversation: MessengerConversationResolver;
 }
 
-/** Product dependencies used to map one WhatsApp author to a registered Agent facet. */
-export interface WhatsAppConversationOptions {
-  readonly agentClass: typeof OsfoAgent;
-  readonly hasAgent: (agentId: string) => boolean;
-  readonly resolveAgentId: (authorId: string, messengerId: string) => Promise<string | null>;
-}
-
 /** Construct the official Chat SDK adapter used by both webhook methods. */
 export const makeWhatsAppAdapter = (options: WhatsAppAdapterOptions): WhatsAppAdapter =>
   createWhatsAppAdapter({
@@ -50,18 +37,6 @@ const makeThinkWhatsAppAdapter = (options: WhatsAppAdapterOptions) => {
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Compatibility boundary between two upstream package declarations.
   return adapter as Parameters<typeof chatSdkMessenger>[0]["adapter"];
 };
-
-/** Resolve one WhatsApp conversation without taking ownership of transport state. */
-export const makeWhatsAppConversationResolver =
-  (options: WhatsAppConversationOptions): MessengerConversationResolver =>
-  async (event: MessengerEvent) => {
-    const authorId = event.author?.userId;
-    if (authorId === undefined || !event.thread.isDirectMessage) return { target: "self" };
-    const agentId = await options.resolveAgentId(authorId, event.messengerId);
-    return agentId !== null && options.hasAgent(agentId)
-      ? { agentClass: options.agentClass, name: agentId, target: "subagent" }
-      : { target: "self" };
-  };
 
 /** Build the only WhatsApp transport configuration used by Osfo. */
 export const makeWhatsAppChannel = (options: WhatsAppChannelOptions): ChannelDefinition => ({
