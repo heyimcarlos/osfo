@@ -1,4 +1,4 @@
-import { createAuth } from "@osfo/auth";
+import { createAuth, type DashboardOptions } from "@osfo/auth";
 import { APIError } from "better-auth/api";
 import { Effect, Layer, Option, Redacted, Schema } from "effect";
 import { HttpEffect, HttpRouter, HttpServerResponse } from "effect/unstable/http";
@@ -15,7 +15,11 @@ export interface AuthRouteConfig {
   readonly credentialAuthentication: "disabled" | "enabled";
   readonly dashboard:
     | { readonly kind: "disabled" }
-    | { readonly apiKey: Redacted.Redacted; readonly kind: "enabled" };
+    | {
+        readonly apiKey: Redacted.Redacted;
+        readonly apiUrl?: string | undefined;
+        readonly kind: "enabled";
+      };
   readonly secret: Redacted.Redacted;
   readonly trustedOrigins: ReadonlyArray<string>;
 }
@@ -79,13 +83,7 @@ export const make = (config: AuthRouteConfig, canAccess: AccountAccess.Check) =>
       canCreateSession: (userId) => runPromise(canAccess(UserId.make(userId))),
       credentialAuthentication: config.credentialAuthentication,
       database,
-      dashboard:
-        config.dashboard.kind === "enabled"
-          ? {
-              apiKey: Redacted.value(config.dashboard.apiKey),
-              kind: "enabled",
-            }
-          : { kind: "disabled" },
+      dashboard: dashboardOptions(config.dashboard),
       secret: Redacted.value(config.secret),
       sendOTP: ({ phoneNumber }) => runPromise(twilio.sendCode(phoneNumber)),
       trustedOrigins: config.trustedOrigins,
@@ -93,6 +91,21 @@ export const make = (config: AuthRouteConfig, canAccess: AccountAccess.Check) =>
         runPromise(twilio.verifyCode(phoneNumber, Redacted.make(code))),
     });
   });
+
+const dashboardOptions = (config: AuthRouteConfig["dashboard"]): DashboardOptions => {
+  if (config.kind === "disabled") return { kind: "disabled" };
+  if (config.apiUrl === undefined) {
+    return {
+      apiKey: Redacted.value(config.apiKey),
+      kind: "enabled",
+    };
+  }
+  return {
+    apiKey: Redacted.value(config.apiKey),
+    apiUrl: config.apiUrl,
+    kind: "enabled",
+  };
+};
 
 const SetLoginCredentialsRequest = Schema.Struct({
   email: Schema.String.check(

@@ -1,0 +1,11 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "osfo-s0-spike",
+  "main": "./worker.ts",
+  "compatibility_date": "2026-08-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "PROBE", "class_name": "Probe" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Probe"] }],
+}

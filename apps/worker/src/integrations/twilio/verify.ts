@@ -50,7 +50,7 @@ export class TwilioVerifyUnavailable extends Schema.TaggedError<TwilioVerifyUnav
 /** Runtime configuration for the Twilio Verify HTTP adapter. */
 export interface Options {
   readonly accountSid: Redacted.Redacted;
-  readonly apiBaseURL?: string;
+  readonly apiBaseURL?: string | undefined;
   readonly authToken: Redacted.Redacted;
   readonly serviceSid: string;
 }
@@ -74,7 +74,8 @@ export const make = (
 ): Effect.Effect<Service["Service"], never, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
-    const serviceURL = `${options.apiBaseURL ?? "https://verify.twilio.com"}/v2/Services/${options.serviceSid}`;
+    const apiBaseURL = (options.apiBaseURL ?? "https://verify.twilio.com").replace(/\/+$/u, "");
+    const serviceURL = `${apiBaseURL}/v2/Services/${options.serviceSid}`;
 
     const sendCode = Effect.fn("TwilioVerify.sendCode")(function* (phoneNumber: string) {
       const request = HttpClientRequest.post(`${serviceURL}/Verifications`).pipe(

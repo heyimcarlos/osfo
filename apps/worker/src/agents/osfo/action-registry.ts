@@ -15,18 +15,9 @@ import {
   ActionPresentationUnavailable,
   type PendingThinkAction,
 } from "./think-action-approvals";
-import {
-  makeTestProtectedAction,
-  presentTestProtectedAction,
-  sanitizeTestProtectedActionInput,
-  testProtectedActionName,
-  type TestProtectedActionState,
-} from "./test-protected-action";
 import { effectToolSchema } from "./effect-tool-schema";
 
-type SanitizedPendingApprovalInput =
-  | ClearCoreMemoryInput
-  | ReturnType<typeof sanitizeTestProtectedActionInput>;
+type SanitizedPendingApprovalInput = Partial<ClearCoreMemoryInput>;
 
 /** Name registered with Think for the Core Memory clear Action. */
 export const coreMemoryClearActionName = "osfoClearCoreMemory";
@@ -37,7 +28,6 @@ export const makeOsfoActions = (options: {
     input: ClearCoreMemoryInput,
     actionId: ActionId,
   ) => Promise<CoreMemoryCleared | CoreMemoryUnavailable | Denied>;
-  readonly testProtectedActionState?: () => TestProtectedActionState;
 }) => {
   const actions = {
     [coreMemoryClearActionName]: action({
@@ -54,20 +44,8 @@ export const makeOsfoActions = (options: {
       permissions: ["memory:clear"],
     }),
   };
-  return options.testProtectedActionState === undefined
-    ? actions
-    : Object.assign(actions, {
-        [testProtectedActionName]: makeTestProtectedAction({
-          readState: options.testProtectedActionState,
-        }),
-      });
+  return actions;
 };
-
-/** Project one registered Action into its definition-owned safe presentation. */
-export const presentOsfoAction = (pending: PendingThinkAction) =>
-  pending.descriptor.action === coreMemoryClearActionName
-    ? presentCoreMemoryClearAction(pending)
-    : presentTestProtectedAction(pending);
 
 /** Keep only definition-owned input fields on every pending Approval. */
 export const sanitizePendingApproval = (approval: PendingApproval): PendingApproval => {
@@ -79,9 +57,6 @@ export const sanitizePendingApproval = (approval: PendingApproval): PendingAppro
         Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
       ),
     );
-  }
-  if (approval.descriptor.action === testProtectedActionName) {
-    return withInput(approval, sanitizeTestProtectedActionInput(approval.descriptor.input));
   }
   return withoutInput(approval);
 };
@@ -121,3 +96,6 @@ const withInput = (
   });
 
 const withoutInput = (approval: PendingApproval): PendingApproval => withInput(approval, {});
+
+/** Project one registered Action into its definition-owned safe presentation. */
+export const presentOsfoAction = presentCoreMemoryClearAction;

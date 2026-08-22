@@ -30,10 +30,10 @@ export const makeBillingServices = (database: Database, config: CloudflareConfig
     priceId: StripePriceId.make(config.stripe.adventurerPriceId),
     productId: StripeProductId.make(config.stripe.adventurerProductId),
   };
-  const client = new Stripe(Redacted.value(config.stripe.secretKey), {
-    apiVersion: "2026-07-29.dahlia",
-    httpClient: Stripe.createFetchHttpClient(),
-  });
+  const client = new Stripe(
+    Redacted.value(config.stripe.secretKey),
+    stripeClientOptions(config.stripe.apiBaseURL),
+  );
   const stripe = StripeAdapter.make({
     client,
     offer,
@@ -86,4 +86,17 @@ export const makeBillingServices = (database: Database, config: CloudflareConfig
       stripe,
     }),
   };
+};
+
+const stripeClientOptions = (apiBaseURL: string | undefined): Stripe.StripeConfig => {
+  const options: Stripe.StripeConfig = {
+    apiVersion: "2026-07-29.dahlia",
+    httpClient: Stripe.createFetchHttpClient(),
+  };
+  if (apiBaseURL === undefined) return options;
+  const url = new URL(apiBaseURL);
+  options.host = url.hostname;
+  options.protocol = url.protocol === "https:" ? "https" : "http";
+  if (url.port !== "") options.port = url.port;
+  return options;
 };
