@@ -2,20 +2,24 @@ import { BrowserCrypto } from "@effect/platform-browser";
 import { Think, type StreamCallback, type ThinkChannels } from "@cloudflare/think";
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import type { UIMessage } from "ai";
-import { Effect, Exit, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 
 import { loadConfig } from "../../config";
 import { Db } from "../../db";
-import { makeTelegramChannel, makeTelegramConversationResolver } from "../../integrations/telegram";
-import { makeWhatsAppChannel, makeWhatsAppConversationResolver } from "../../integrations/whatsapp";
+import { makeTelegramChannel } from "../../integrations/telegram";
+import { makeWhatsAppChannel } from "../../integrations/whatsapp";
 import { invalidOsfoEnvironment, type RuntimeProbeResult } from "../../layers";
 import type { RuntimeSecrets } from "../../runtime-secrets";
 import { AgentDirectory } from "../../services/agent-directory";
 import { ChannelLinks } from "../../services/channel-links";
 import { OsfoAgent } from "./agent";
+import { channelAddressOf, messengerAuthorId } from "./channel-address";
+import { streamTextReply } from "./messenger-stream";
+import { makeOsfoMessengerRouter, type MessengerAddressResolution } from "./messenger-routing";
 import type { AgentInitializationEncoded } from "./db/store";
+import { GroupRefusalCopy } from "./persona";
 
-/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Think hooks and RPC use Promise boundaries, messenger turns are application entry points, and Effect results use _tag. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Think RPC methods use Promise contracts, this class is the messenger Layer composition root, and Effect results use _tag. */
 
 export { OSFO_DIRECTORY_NAME } from "./identity";
 
@@ -26,22 +30,20 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     return "@cf/openai/gpt-oss-120b";
   }
 
-  /** Configure the shared messenger webhooks and their user-facet resolvers. */
+  /** Configure the shared messenger webhooks and their conversation resolvers. */
   override configureChannels(): ThinkChannels {
-    const telegramConversation = makeTelegramConversationResolver({
-      agentClass: OsfoAgent,
+    const conversation = makeOsfoMessengerRouter({
       hasAgent: (agentId) => this.hasSubAgent(OsfoAgent, agentId),
-      isAllowed: (authorId) => this.#telegramAllowedUserIds().has(authorId),
-      resolveAgentId: (authorId, messengerId) => this.#resolveAgentId(messengerId, authorId),
-    });
-    const whatsAppConversation = makeWhatsAppConversationResolver({
-      agentClass: OsfoAgent,
-      hasAgent: (agentId) => this.hasSubAgent(OsfoAgent, agentId),
-      resolveAgentId: (authorId, messengerId) => this.#resolveAgentId(messengerId, authorId),
+      resolveAddress: (address) =>
+        Effect.scoped(
+          this.#resolveMessengerAddress(address).pipe(
+            Effect.provide(directoryMessengerLayer(this.env)),
+          ),
+        ),
     });
     return {
       telegram: makeTelegramChannel({
-        conversation: telegramConversation,
+        conversation,
         secretToken: this.env.TELEGRAM_WEBHOOK_SECRET_TOKEN,
         token: this.env.TELEGRAM_BOT_TOKEN,
         userName: this.env.TELEGRAM_BOT_USERNAME,
@@ -49,7 +51,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
       whatsapp: makeWhatsAppChannel({
         accessToken: this.env.WHATSAPP_ACCESS_TOKEN,
         appSecret: this.env.WHATSAPP_APP_SECRET,
-        conversation: whatsAppConversation,
+        conversation,
         phoneNumberId: this.env.WHATSAPP_PHONE_NUMBER_ID,
         userName: this.env.WHATSAPP_BOT_USERNAME,
         verifyToken: this.env.WHATSAPP_VERIFY_TOKEN,
@@ -57,19 +59,19 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     };
   }
 
-  /** Gate unlinked senders before a privileged model turn can begin. */
-  override async chatWithMessengerContext(
+  /** Deterministically answer the messenger turns that never reach a facet. */
+  override chatWithMessengerContext(
     _userMessage: string | UIMessage,
     callback: StreamCallback,
     context: MessengerContext,
   ): Promise<void> {
-    await replyToChannelLinkMessenger(callback, context, {
-      ensure: (address) =>
-        Effect.runPromiseExit(
-          this.#withChannelLinks((channelLinks) => channelLinks.ensure(address)),
+    return Effect.runPromise(
+      Effect.scoped(
+        replyToDirectoryGate(callback, context).pipe(
+          Effect.provide(directoryMessengerLayer(this.env)),
         ),
-      telegramAllowedUserIds: this.#telegramAllowedUserIds(),
-    });
+      ),
+    );
   }
 
   /** Reject an HTTP route to a facet that is absent from the directory registry. */
@@ -128,115 +130,84 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     await this.deleteSubAgent(OsfoAgent, agentId);
   }
 
-  async #resolveAgentId(messengerId: string, authorId: string): Promise<string | null> {
-    const resolved = await Effect.runPromiseExit(
-      this.#withChannelLinks((channelLinks, agentDirectory) =>
-        Effect.gen(function* () {
-          const link = yield* channelLinks.resolve(channelAddress(messengerId, authorId));
-          if (link === null) return null;
-          return yield* agentDirectory
-            .resolve(link.userId)
-            .pipe(Effect.catchTag("AgentRouteNotFound", () => Effect.succeed(null)));
+  #resolveMessengerAddress = Effect.fn("OsfoDirectory.resolveMessengerAddress")(
+    { self: this },
+    function* (this: OsfoDirectory, address: typeof ChannelLinks.ChannelAddress.Type) {
+      const channelLinks = yield* ChannelLinks.Service;
+      const agentDirectory = yield* AgentDirectory.Service;
+      const resolution = yield* channelLinks.resolveConversation(address).pipe(
+        Effect.map(Option.some),
+        Effect.catchTag("ChannelLinksUnavailable", () => Effect.succeed(Option.none())),
+      );
+      if (Option.isNone(resolution)) return { _tag: "Unavailable" as const };
+      if (resolution.value._tag === "Unlinked") return resolution.value;
+      const route = yield* agentDirectory.resolve(resolution.value.link.userId).pipe(
+        Effect.map(Option.some),
+        Effect.catchTags({
+          AgentRouteNotFound: () => Effect.succeed(Option.none()),
+          DbUnavailable: () => Effect.succeed(Option.none()),
         }),
-      ),
-    );
-    if (
-      Exit.isFailure(resolved) ||
-      resolved.value === null ||
-      !this.hasSubAgent(OsfoAgent, resolved.value.agentId)
-    ) {
-      return null;
-    }
-    return resolved.value.agentId;
-  }
-
-  #telegramAllowedUserIds(): ReadonlySet<string> {
-    return new Set(
-      this.env.TELEGRAM_ALLOWED_USER_IDS.split(",")
-        .map((value) => value.trim())
-        .filter((value) => value.length > 0),
-    );
-  }
-
-  #withChannelLinks<A, E>(
-    operation: (
-      channelLinks: ChannelLinks.Interface,
-      agentDirectory: AgentDirectory.Interface,
-    ) => Effect.Effect<A, E>,
-  ) {
-    const config = loadConfig(this.env);
-    const base = Layer.merge(Db.layer({ db: this.env.DB }), BrowserCrypto.layer);
-    const services = Layer.merge(
-      ChannelLinks.layerFromConfig(config),
-      AgentDirectory.layerWithoutDependencies,
-    ).pipe(Layer.provide(base));
-    return Effect.scoped(
-      Effect.gen(function* () {
-        const channelLinks = yield* ChannelLinks.Service;
-        const agentDirectory = yield* AgentDirectory.Service;
-        return yield* operation(channelLinks, agentDirectory);
-      }).pipe(Effect.provide(services)),
-    );
-  }
+      );
+      if (Option.isNone(route) || !this.hasSubAgent(OsfoAgent, route.value.agentId)) {
+        return { _tag: "Unavailable" as const };
+      }
+      return {
+        _tag: "Linked" as const,
+        agentId: route.value.agentId,
+      } satisfies MessengerAddressResolution;
+    },
+  );
 }
 
-interface ChannelLinkMessengerDependencies {
-  readonly ensure: (
-    address: typeof ChannelLinks.ChannelAddress.Type,
-  ) => Promise<Exit.Exit<ChannelLinks.EnsureResult, unknown>>;
-  readonly telegramAllowedUserIds: ReadonlySet<string>;
-}
-
-/** Deterministically gate a directory messenger turn before any model or User authority exists. */
-export const replyToChannelLinkMessenger = async (
+/**
+ * Deterministically gate a directory messenger turn before any model or User
+ * authority exists. Unlinked direct-message senders never land here: the
+ * conversation resolver routes them to their Company Conversation facet.
+ */
+const replyToDirectoryGate = Effect.fn("OsfoDirectory.replyToMessenger")(function* (
   callback: StreamCallback,
   context: MessengerContext,
-  dependencies: ChannelLinkMessengerDependencies,
-): Promise<void> => {
+) {
   // Think hands messenger turns its serializable event snapshot, which carries
   // the author inside the message rather than at the context top level.
-  const authorId = context.message?.author.userId ?? context.author?.userId;
+  const authorId = messengerAuthorId(context);
   const message = context.message;
   if (authorId === undefined || message === undefined) {
-    await streamReply(
+    yield* streamTextReply(
       callback,
       "channel-address-unreadable",
       "I could not read that message. Please try again.",
     );
     return;
   }
-  if (context.provider === "telegram" && !dependencies.telegramAllowedUserIds.has(authorId)) {
-    await streamReply(callback, message.id, "This Telegram account is not authorized.");
+  if (!context.thread.isDirectMessage) {
+    yield* streamTextReply(callback, message.id, `${GroupRefusalCopy.en}\n${GroupRefusalCopy.es}`);
     return;
   }
-  if (!context.thread.isDirectMessage) {
-    await streamReply(
+  const channelLinks = yield* ChannelLinks.Service;
+  const resolved = yield* channelLinks
+    .resolve(channelAddressOf(context.messengerId, authorId))
+    .pipe(
+      Effect.map(Option.some),
+      Effect.catchTag("ChannelLinksUnavailable", () => Effect.succeed(Option.none())),
+    );
+  const linked = Option.isSome(resolved) && resolved.value !== null;
+  if (linked) {
+    yield* streamTextReply(
       callback,
       message.id,
-      "Message Osfo privately to link this account. I will never post a linking URL in a group.",
+      "This channel is linked, but I could not reach your Osfo Agent. Please try again.",
     );
     return;
   }
-  const ensured = await dependencies.ensure(channelAddress(context.messengerId, authorId));
-  if (Exit.isFailure(ensured)) {
-    await streamReply(callback, message.id, "I could not create a linking invitation. Try again.");
-    return;
-  }
-  const text =
-    ensured.value._tag === "Linked"
-      ? "This channel is linked, but I could not reach your Osfo Agent. Please try again."
-      : `Open this private link to connect the channel to your Osfo User: ${ensured.value.verificationUrl.href}`;
-  await streamReply(callback, message.id, text);
-};
+  yield* streamTextReply(callback, message.id, "Please send that message again.");
+});
 
-const streamReply = async (callback: StreamCallback, requestId: string, text: string) => {
-  await callback.onStart({ requestId });
-  await callback.onEvent(JSON.stringify({ delta: text, type: "text-delta" }));
-  await callback.onDone();
+const directoryMessengerLayer = (env: Env & RuntimeSecrets) => {
+  const config = loadConfig(env);
+  const base = Layer.merge(Db.layer({ db: env.DB }), BrowserCrypto.layer);
+  return Layer.merge(
+    ChannelLinks.layerFromConfig(config),
+    AgentDirectory.layerWithoutDependencies,
+  ).pipe(Layer.provide(base));
 };
-
-const channelAddress = (messengerId: string, authorId: string) =>
-  ChannelLinks.ChannelAddress.make({
-    authorId: ChannelLinks.ChannelAuthorId.make(authorId),
-    channelId: ChannelLinks.ChannelId.make(messengerId),
-  });

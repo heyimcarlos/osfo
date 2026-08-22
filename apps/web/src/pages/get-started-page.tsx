@@ -32,7 +32,6 @@ export interface GetStartedPageProps {
   readonly dependencies?: GetStartedPageDependencies;
   readonly initialLocale?: RegistrationLocale;
   readonly onComplete?: () => void;
-  readonly returnTo?: string;
 }
 
 type GetStartedState =
@@ -47,7 +46,6 @@ export function GetStartedPage({
   dependencies = defaultDependencies,
   initialLocale,
   onComplete,
-  returnTo,
 }: GetStartedPageProps = {}) {
   const navigate = useNavigate();
   const session = useAuthState();
@@ -66,11 +64,7 @@ export function GetStartedPage({
 
   if (session.isPending) return <LoadingScreen />;
   if (session.data?.user.registrationCompletedAt != null)
-    return returnTo === undefined ? (
-      <Navigate replace to="/settings" />
-    ) : (
-      <Navigate replace params={{ token: returnTo.slice("/verify/".length) }} to="/verify/$token" />
-    );
+    return <Navigate replace to="/settings" />;
 
   const finish = () => {
     setState({ _tag: "Submitting" });
@@ -78,7 +72,7 @@ export function GetStartedPage({
       dependencies.complete({
         helpAreas,
         locale,
-        preferredName: preferredName.trim(),
+        preferredName: preferredName.trim() || null,
       }),
     ).then((exit) => {
       if (Exit.isFailure(exit)) {
@@ -87,12 +81,7 @@ export function GetStartedPage({
       }
       void session.refreshFromAuthority().then(() => {
         if (onComplete !== undefined) onComplete();
-        else if (returnTo === undefined) void navigate({ to: "/settings" });
-        else
-          void navigate({
-            params: { token: returnTo.slice("/verify/".length) },
-            to: "/verify/$token",
-          });
+        else void navigate({ to: "/settings" });
       });
     });
   };
@@ -127,7 +116,6 @@ export function GetStartedPage({
                   id="preferred-name"
                   maxLength={80}
                   name="name"
-                  required
                   value={preferredName}
                   onChange={(event) => setPreferredName(event.target.value)}
                 />
@@ -225,13 +213,8 @@ export function GetStartedPage({
 
 /** TanStack Router adapter for the website-first registration page. */
 export function GetStartedRoute() {
-  const { lang, returnTo } = useSearch({ from: "/get-started" });
-  return (
-    <GetStartedPage
-      {...(lang === undefined ? {} : { initialLocale: lang })}
-      {...(returnTo === undefined ? {} : { returnTo })}
-    />
-  );
+  const { lang } = useSearch({ from: "/get-started" });
+  return <GetStartedPage {...(lang === undefined ? {} : { initialLocale: lang })} />;
 }
 
 const defaultDependencies: GetStartedPageDependencies = {
@@ -278,7 +261,7 @@ const copy = {
     helpBody: "Choose any areas that you want your agent to know about. You can change them later.",
     helpTitle: "What would you like help with?",
     lastStep: "Last step",
-    nameBody: "Enter the name that you want Osfo to use.",
+    nameBody: "Enter the name that you want Osfo to use, or skip this for now.",
     nameLabel: "Your name",
     nameTitle: "What should Osfo call you?",
     retry: "Try again",
@@ -302,7 +285,7 @@ const copy = {
     helpBody: "Elige las áreas que quieres que conozca tu agente. Puedes cambiarlas más tarde.",
     helpTitle: "¿Con qué quieres ayuda?",
     lastStep: "Último paso",
-    nameBody: "Escribe el nombre que quieres que use Osfo.",
+    nameBody: "Escribe el nombre que quieres que use Osfo, o sáltate este paso por ahora.",
     nameLabel: "Tu nombre",
     nameTitle: "¿Cómo quieres que te llame Osfo?",
     retry: "Intentar de nuevo",

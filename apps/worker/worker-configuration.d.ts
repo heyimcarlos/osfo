@@ -10,7 +10,6 @@ interface __BaseEnv_Env {
   WHATSAPP_BOT_USERNAME: "osfo_test_whatsapp";
   WHATSAPP_PHONE_NUMBER_ID: "123456789";
   BETTER_AUTH_API_KEY: string;
-  BETTER_AUTH_API_URL?: string;
   BETTER_AUTH_BASE_URL: string;
   BETTER_AUTH_SECRET: string;
   BETTER_AUTH_TRUSTED_ORIGINS: string;
@@ -20,8 +19,6 @@ interface __BaseEnv_Env {
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
   TWILIO_VERIFY_SERVICE_SID: string;
-  TWILIO_VERIFY_API_BASE_URL?: string;
-  STRIPE_API_BASE_URL?: string;
   DOCUMENT_SANDBOX: DurableObjectNamespace<import("./src/worker").Sandbox>;
   OSFO_DIRECTORY: DurableObjectNamespace<import("./src/worker").OsfoDirectory>;
   EXECUTION_UNIT_WORKFLOW: Workflow<

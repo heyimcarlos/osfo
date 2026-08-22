@@ -183,26 +183,32 @@ conversation; provider allowlists do not gate it.
 The invite token is opaque random material resolved by hashed lookup; it
 carries no address, User, key, or signature semantics. Address and User PII
 appear in neither the URL nor audit metadata. Unknown, forged, expired,
-cancelled, superseded, or consumed invites fail closed, and each repeated
-message supersedes the previous pending invite within the same linking attempt.
+cancelled, superseded, or consumed invites fail closed.
 
 ### Web entry
 
 ```text
-/link/<token>
-  -> authenticate, or continue through /get-started
-  -> optional preferred name and help areas
+/get-started
+  -> optional preferred name
   -> phone-number entry
   -> SMS Phone Verification
-  -> User Registration or existing-User sign-in
+  -> optional help areas
+  -> User Registration
+  -> profile and Channel Link management
+
+/verify/<token>
+  -> phone-number entry
+  -> SMS Phone Verification
+  -> User Registration with an empty profile, or existing-User sign-in
   -> explicit acceptance of the same Channel Link Invite
   -> personal Osfo welcome
 ```
 
 A messaging-provider-first path uses an opaque invitation at
-`https://osfo.ai/link/<token>`. Only a hash of the token is stored. Acceptance trusts only
-the server-authenticated User and requires completed registration; it never
-accepts a UserId from the client.
+`https://osfo.ai/verify/<token>`. It does not enter the website-first `/get-started`
+flow. Only a hash of the token is stored. Acceptance trusts only the
+server-authenticated User and requires completed registration; it never accepts
+a UserId from the client.
 
 Phone Verification uses a six-digit, single-use code, a ten-minute lifetime, at
 most five entry attempts, resend after 30 seconds, and at most five sends per

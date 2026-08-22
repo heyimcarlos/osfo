@@ -10,6 +10,7 @@ import { makeWhatsAppAdapter } from "./integrations/whatsapp";
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/async-function -- Cloudflare RPC tags and adapter boundaries require these forms. */
 
 export { OsfoAgent } from "./agents/osfo/agent";
+export { CompanyAgent } from "./agents/osfo/company-agent";
 export { OsfoDirectory } from "./agents/osfo/directory";
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 export { ExecutionUnitWorkflow } from "./workflows/runtime";

@@ -5,7 +5,7 @@ import {
 } from "@osfo/db/schema/channel-links";
 import type { ChannelLinkInviteToken } from "@osfo/api";
 import { users } from "@osfo/db/schema/auth";
-import { and, eq, isNull, lte } from "drizzle-orm";
+import { and, desc, eq, isNull, lte } from "drizzle-orm";
 import { Context, Crypto, DateTime, Duration, Effect, Layer, Redacted, Schema } from "effect";
 
 import { Db } from "../../db";
@@ -94,6 +94,14 @@ export type EnsureResult =
   | { readonly _tag: "Linked"; readonly link: typeof ChannelLink.Type }
   | { readonly _tag: "Invited"; readonly expiresAt: Date; readonly verificationUrl: URL };
 
+/** Current routing boundary for one address-scoped Company Conversation attempt. */
+export type ConversationResolution =
+  | { readonly _tag: "Linked"; readonly link: typeof ChannelLink.Type }
+  | {
+      readonly _tag: "Unlinked";
+      readonly previousChannelLinkId: ChannelLinkId | null;
+    };
+
 /** Fresh bearer material drawn for one invitation attempt. */
 interface InviteDraw {
   readonly auditUuid: string;
@@ -114,6 +122,9 @@ export interface RevokeInput {
 
 /** Public Channel Links authority. */
 export interface Interface {
+  readonly resolveConversation: (
+    address: typeof ChannelAddress.Type,
+  ) => Effect.Effect<ConversationResolution, ChannelLinksUnavailable>;
   readonly resolve: (
     address: typeof ChannelAddress.Type,
   ) => Effect.Effect<typeof ChannelLink.Type | null, ChannelLinksUnavailable>;
@@ -194,6 +205,43 @@ export const layer = (options: Options) =>
           }),
         ),
       );
+
+      const resolveConversation = Effect.fn("ChannelLinks.resolveConversation")(function* (
+        address: typeof ChannelAddress.Type,
+      ) {
+        const rows = yield* Effect.tryPromise({
+          try: () =>
+            db
+              .select({
+                authorId: channelLinks.author_id,
+                channelId: channelLinks.channel_id,
+                channelLinkId: channelLinks.channel_link_id,
+                createdAt: channelLinks.created_at,
+                revokedAt: channelLinks.revoked_at,
+                userId: channelLinks.user_id,
+              })
+              .from(channelLinks)
+              .where(
+                and(
+                  eq(channelLinks.channel_id, address.channelId),
+                  eq(channelLinks.author_id, address.authorId),
+                ),
+              )
+              .orderBy(desc(channelLinks.created_at), desc(channelLinks.channel_link_id))
+              .limit(1),
+          catch: (cause) =>
+            new ChannelLinksUnavailable({ cause, operation: "resolveConversation" }),
+        });
+        const row = rows[0];
+        if (row === undefined) return { _tag: "Unlinked" as const, previousChannelLinkId: null };
+        const link = yield* decodeChannelLinkRow(row);
+        return link.revokedAt === null
+          ? { _tag: "Linked" as const, link }
+          : {
+              _tag: "Unlinked" as const,
+              previousChannelLinkId: link.channelLinkId,
+            };
+      });
 
       const ensure = Effect.fn("ChannelLinks.ensure")(function* (
         address: typeof ChannelAddress.Type,
@@ -639,6 +687,7 @@ export const layer = (options: Options) =>
         ensure,
         inspect,
         resolve,
+        resolveConversation,
         revoke,
       });
     }),

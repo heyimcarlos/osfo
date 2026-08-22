@@ -46,7 +46,7 @@ describe("App", () => {
     );
 
     expect(html).toContain("What should Osfo call you?");
-    expect(html).toContain("Enter the name that you want Osfo to use.");
+    expect(html).toContain("Enter the name that you want Osfo to use, or skip this for now.");
     expect(html).not.toContain("Writing and email");
     expect(html).toContain("English");
     expect(html).toContain("Español");

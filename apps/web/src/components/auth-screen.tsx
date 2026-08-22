@@ -6,10 +6,11 @@ import { PhoneAuthForm } from "./phone-auth-form";
 
 interface AuthScreenProps {
   readonly onAuthenticated: () => void;
+  readonly smsOnly?: boolean;
 }
 
 /** Osfo phone-first sign-in surface. */
-export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
+export function AuthScreen({ onAuthenticated, smsOnly = false }: AuthScreenProps) {
   const [method, setMethod] = useState<"email" | "sms">("sms");
 
   return (
@@ -22,29 +23,31 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
           <span className="text-3xl font-black tracking-tight">Osfo</span>
         </div>
 
-        <div
-          className="grid w-full max-w-[31rem] grid-cols-2 gap-2 rounded-xl border bg-background/90 p-1.5 shadow-sm"
-          aria-label="Authentication method"
-        >
-          <Button
-            aria-pressed={method === "sms"}
-            type="button"
-            variant={method === "sms" ? "default" : "ghost"}
-            onClick={() => setMethod("sms")}
+        {smsOnly ? null : (
+          <div
+            className="grid w-full max-w-[31rem] grid-cols-2 gap-2 rounded-xl border bg-background/90 p-1.5 shadow-sm"
+            aria-label="Authentication method"
           >
-            SMS code
-          </Button>
-          <Button
-            aria-pressed={method === "email"}
-            type="button"
-            variant={method === "email" ? "default" : "ghost"}
-            onClick={() => setMethod("email")}
-          >
-            Email and password
-          </Button>
-        </div>
+            <Button
+              aria-pressed={method === "sms"}
+              type="button"
+              variant={method === "sms" ? "default" : "ghost"}
+              onClick={() => setMethod("sms")}
+            >
+              SMS code
+            </Button>
+            <Button
+              aria-pressed={method === "email"}
+              type="button"
+              variant={method === "email" ? "default" : "ghost"}
+              onClick={() => setMethod("email")}
+            >
+              Email and password
+            </Button>
+          </div>
+        )}
 
-        {method === "email" ? (
+        {!smsOnly && method === "email" ? (
           <CredentialAuthForm onAuthenticated={onAuthenticated} />
         ) : (
           <PhoneAuthForm onAuthenticated={onAuthenticated} />

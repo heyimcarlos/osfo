@@ -7,17 +7,23 @@ import {
   CardTitle,
 } from "@osfo/ui/components/card";
 import { PageStatusCard } from "@osfo/ui/components/page-status-card";
-import { useParams, useRouter } from "@tanstack/react-router";
+import { useParams } from "@tanstack/react-router";
 import { Effect, Exit } from "effect";
 import { useEffect, useState } from "react";
 
 import { useAuthState } from "../auth-state";
 import { AuthScreen } from "../components/auth-screen";
-import { acceptChannelLinkInvite, inspectChannelLinkInvite } from "../lib/api-client";
+import { browserRegistrationLocale } from "../components/registration-layout";
+import {
+  acceptChannelLinkInvite,
+  completeRegistration,
+  inspectChannelLinkInvite,
+} from "../lib/api-client";
 
 /** Browser operations used by the Channel Link Invite page. */
 export interface ChannelLinkPageDependencies {
   readonly accept: typeof acceptChannelLinkInvite;
+  readonly completeRegistration: typeof completeRegistration;
   readonly inspect: typeof inspectChannelLinkInvite;
 }
 
@@ -26,7 +32,15 @@ interface ChannelLinkPageProps {
   readonly token: string;
 }
 
-type PageState = "accepting" | "checking" | "complete" | "failed" | "ready" | "unavailable";
+type PageState =
+  | "accepting"
+  | "checking"
+  | "complete"
+  | "failed"
+  | "ready"
+  | "registering"
+  | "registration-failed"
+  | "unavailable";
 
 /** Inspect and accept one private Channel Link Invite without displaying provider identifiers. */
 export function ChannelLinkPage({
@@ -34,7 +48,7 @@ export function ChannelLinkPage({
   token,
 }: ChannelLinkPageProps) {
   const auth = useAuthState();
-  const router = useRouter();
+  const [registrationCompleted, setRegistrationCompleted] = useState(false);
   const [state, setState] = useState<PageState>("checking");
 
   useEffect(() => {
@@ -47,6 +61,43 @@ export function ChannelLinkPage({
       active = false;
     };
   }, [dependencies, token]);
+
+  useEffect(() => {
+    if (
+      state !== "ready" ||
+      auth.data === null ||
+      auth.data.user.registrationCompletedAt != null ||
+      registrationCompleted
+    ) {
+      return undefined;
+    }
+    setState("registering");
+    return undefined;
+  }, [auth.data, registrationCompleted, state]);
+
+  useEffect(() => {
+    if (state !== "registering") return undefined;
+    let active = true;
+    void Effect.runPromiseExit(
+      dependencies.completeRegistration({
+        helpAreas: [],
+        locale: browserRegistrationLocale(),
+        preferredName: null,
+      }),
+    ).then((exit) => {
+      if (!active) return;
+      if (Exit.isFailure(exit)) {
+        setState("registration-failed");
+        return;
+      }
+      setRegistrationCompleted(true);
+      setState("ready");
+      void auth.refreshFromAuthority().catch(() => undefined);
+    });
+    return () => {
+      active = false;
+    };
+  }, [auth, dependencies, state]);
 
   if (state === "checking" || auth.isPending) {
     return (
@@ -75,34 +126,32 @@ export function ChannelLinkPage({
       />
     );
   }
-  if (auth.data === null) {
+  if (
+    state === "registering" ||
+    (state === "ready" &&
+      auth.data !== null &&
+      auth.data.user.registrationCompletedAt == null &&
+      !registrationCompleted)
+  ) {
     return (
-      <div className="space-y-8">
-        <InvitationCard />
-        <AuthScreen onAuthenticated={() => void auth.refreshFromAuthority()} />
-      </div>
+      <PageStatusCard
+        description="Preparing your Osfo account after phone verification."
+        role="status"
+        title="Finishing registration"
+      />
     );
   }
-  if (auth.data.user.registrationCompletedAt == null) {
+  if (state === "registration-failed") {
     return (
-      <InvitationCard>
-        <Button
-          className="w-full"
-          type="button"
-          onClick={() =>
-            void router.navigate({
-              search: { returnTo: `/verify/${token}` },
-              to: "/get-started",
-            })
-          }
-        >
-          Complete User Registration
-        </Button>
-        <p className="text-sm text-foreground/70">
-          This invitation remains available while you finish registration.
-        </p>
-      </InvitationCard>
+      <PageStatusCard
+        description="Registration could not be completed. Refresh this page to try again."
+        role="alert"
+        title="Registration unavailable"
+      />
     );
+  }
+  if (auth.data === null) {
+    return <AuthScreen smsOnly onAuthenticated={() => void auth.refreshFromAuthority()} />;
   }
   if (state === "failed") {
     return (
@@ -115,7 +164,7 @@ export function ChannelLinkPage({
   }
 
   return (
-    <InvitationCard>
+    <ChannelLinkConfirmation>
       <Button
         className="w-full"
         disabled={state === "accepting"}
@@ -129,24 +178,21 @@ export function ChannelLinkPage({
       >
         {state === "accepting" ? "Linking channel..." : "Link this channel"}
       </Button>
-    </InvitationCard>
+    </ChannelLinkConfirmation>
   );
 }
 
-function InvitationCard({ children }: { readonly children?: React.ReactNode }) {
+function ChannelLinkConfirmation({ children }: { readonly children: React.ReactNode }) {
   return (
     <main className="grid min-h-dvh place-items-center bg-background p-6">
       <Card className="w-full max-w-lg">
         <CardHeader>
-          <CardTitle>Link a messaging channel</CardTitle>
+          <CardTitle>Connect this chat</CardTitle>
           <CardDescription>
-            This private invitation will let messages from one external address act with your Osfo
-            User identity. It will not merge conversation history.
+            Confirm that this private chat can use your Osfo identity.
           </CardDescription>
         </CardHeader>
-        {children === undefined ? null : (
-          <CardContent className="space-y-4">{children}</CardContent>
-        )}
+        <CardContent className="space-y-4">{children}</CardContent>
       </Card>
     </main>
   );
@@ -160,5 +206,6 @@ export function ChannelLinkRoute() {
 
 const defaultDependencies: ChannelLinkPageDependencies = {
   accept: acceptChannelLinkInvite,
+  completeRegistration,
   inspect: inspectChannelLinkInvite,
 };
