@@ -27,11 +27,13 @@ describe("Osfo messenger routing", () => {
         },
       } satisfies MessengerEvent;
       const route = yield* Effect.promise(() =>
-        makeOsfoMessengerRouter({
-          hasAgent: () => false,
-          resolveAddress: () =>
-            Effect.succeed({ _tag: "Unlinked" as const, previousChannelLinkId: null }),
-        })(event),
+        Promise.resolve(
+          makeOsfoMessengerRouter({
+            hasAgent: () => false,
+            resolveAddress: () =>
+              Effect.succeed({ _tag: "Unlinked" as const, previousChannelLinkId: null }),
+          })(event),
+        ),
       );
 
       expect(route).toMatchObject({
