@@ -3,7 +3,7 @@ import { Effect } from "effect";
 
 import type { ChannelLinks } from "../../services/channel-links";
 import { OsfoAgent } from "./agent";
-import { channelAddressOf } from "./channel-address";
+import { channelAddressOf, messengerAuthorId } from "./channel-address";
 import { CompanyAgent, companyAddressKey } from "./company-agent";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect-style tagged unions use `_tag`. */
@@ -40,7 +40,7 @@ const routeMessengerEvent = Effect.fn("OsfoMessenger.route")(function* (
   event: MessengerEvent,
   options: OsfoMessengerRoutingOptions,
 ) {
-  const authorId = event.author?.userId;
+  const authorId = messengerAuthorId(event);
   if (authorId === undefined || !event.thread.isDirectMessage) return { target: "self" as const };
   const address = channelAddressOf(event.messengerId, authorId);
   const resolution = yield* options.resolveAddress(address);
