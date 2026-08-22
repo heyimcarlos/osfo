@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { AgentId, UserId } from "@osfo/api";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { DateTime, Effect } from "effect";
@@ -25,6 +26,8 @@ describe("Channel Link Invite page", () => {
         <ChannelLinkPage
           dependencies={{
             accept: () => Effect.die(new Error("Acceptance requires authentication")),
+            completeRegistration: () =>
+              Effect.die(new Error("Registration requires authentication")),
             inspect: () =>
               Effect.succeed({
                 expiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-21T20:00:00.000Z")),
@@ -52,6 +55,8 @@ describe("Channel Link Invite page", () => {
         <ChannelLinkPage
           dependencies={{
             accept: () => Effect.die(new Error("Acceptance requires authentication")),
+            completeRegistration: () =>
+              Effect.die(new Error("Registration requires authentication")),
             inspect: () =>
               Effect.succeed({
                 expiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-21T20:00:00.000Z")),
@@ -63,8 +68,10 @@ describe("Channel Link Invite page", () => {
       </AuthStateProvider>,
     );
 
-    expect(await screen.findByText("Link a messaging channel")).toBeDefined();
-    expect(screen.getByRole("button", { name: "SMS code" })).toBeDefined();
+    expect(await screen.findByText("Continue by SMS")).toBeDefined();
+    expect(screen.queryByText("Link a messaging channel")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Email and password" })).toBeNull();
+    expect(screen.getAllByRole("main")).toHaveLength(1);
     expect(screen.queryByText("k7Xm2pRq")).toBeNull();
   });
 
@@ -92,6 +99,7 @@ describe("Channel Link Invite page", () => {
               accepted.push(submitted);
               return Effect.succeed({ state: "linked" as const });
             },
+            completeRegistration: () => Effect.die(new Error("Registration is already complete")),
             inspect: () =>
               Effect.succeed({
                 expiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-21T20:00:00.000Z")),
@@ -103,12 +111,71 @@ describe("Channel Link Invite page", () => {
       </AuthStateProvider>,
     );
 
-    expect(await screen.findByText("Link a messaging channel")).toBeDefined();
+    expect(await screen.findByText("Connect this chat")).toBeDefined();
+    expect(screen.queryByText("Link a messaging channel")).toBeNull();
     expect(screen.queryByText(token)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Link this channel" }));
 
     await waitFor(() => expect(accepted).toEqual([token]));
     expect(await screen.findByText("Channel linked")).toBeDefined();
+  });
+
+  it("provisions an SMS-verified User without entering website onboarding", async () => {
+    const token = "k7Xm2pRq";
+    const completed: Array<{
+      readonly helpAreas: ReadonlyArray<string>;
+      readonly locale: string;
+      readonly preferredName: string | null;
+    }> = [];
+    let refreshed = 0;
+    renderWithTestRouter(
+      <AuthStateProvider
+        value={{
+          data: {
+            user: {
+              name: "New User",
+              registrationCompletedAt: null,
+            },
+          },
+          isPending: false,
+          refreshFromAuthority: () => {
+            refreshed += 1;
+            return Promise.resolve();
+          },
+        }}
+      >
+        <ChannelLinkPage
+          dependencies={{
+            accept: () => Effect.die(new Error("Registration must complete first")),
+            completeRegistration: (profile) => {
+              completed.push(profile);
+              return Effect.succeed({
+                agentId: AgentId.make("agent-new-user"),
+                completedAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-21T19:00:00.000Z")),
+                userId: UserId.make("user-new-user"),
+              });
+            },
+            inspect: () =>
+              Effect.succeed({
+                expiresAt: DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-21T20:00:00.000Z")),
+                state: "pending" as const,
+              }),
+          }}
+          token={token}
+        />
+      </AuthStateProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText("Connect this chat")).toBeDefined());
+    expect(completed).toEqual([
+      {
+        helpAreas: [],
+        locale: "en",
+        preferredName: null,
+      },
+    ]);
+    expect(refreshed).toBe(1);
+    expect(screen.queryByText("What should Osfo call you?")).toBeNull();
   });
 });

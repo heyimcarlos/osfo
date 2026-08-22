@@ -104,6 +104,40 @@ describe("GetStartedPage", () => {
     ).toBeTruthy();
     expect(screen.queryByLabelText("Phone number")).toBeNull();
   });
+
+  it("lets the User skip a preferred name", async () => {
+    const user = userEvent.setup();
+    const completeCalls: Array<CompleteRegistrationPayload> = [];
+    renderPage(
+      <GetStartedPage
+        dependencies={{
+          complete: (input) => {
+            completeCalls.push(input);
+            return Effect.succeed(webCompletion);
+          },
+          phoneAuth: {
+            sendCode: () => Promise.resolve({ error: null }),
+            verifyCode: () => Promise.resolve({ error: null }),
+          },
+        }}
+        onComplete={() => undefined}
+      />,
+      signedInIncomplete,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(screen.getByRole("button", { name: "Finish setup" }));
+
+    await waitFor(() =>
+      expect(completeCalls).toEqual([
+        {
+          helpAreas: [],
+          locale: "en",
+          preferredName: null,
+        },
+      ]),
+    );
+  });
 });
 
 const signedOut: AuthState = {
