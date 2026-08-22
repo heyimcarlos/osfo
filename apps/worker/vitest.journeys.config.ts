@@ -14,7 +14,6 @@ const workerBindings = {
   STRIPE_PORTAL_CONFIGURATION_ID: "bpc_approved",
   STRIPE_SECRET_KEY: "sk_test_osfo",
   STRIPE_WEBHOOK_SECRET: "whsec_test_osfo",
-  TELEGRAM_ALLOWED_USER_IDS: "12345,67890",
   TELEGRAM_BOT_TOKEN: "telegram-test-bot-token",
   TELEGRAM_BOT_USERNAME: "osfo_test_bot",
   TELEGRAM_WEBHOOK_SECRET_TOKEN: "telegram-test-webhook-secret",
@@ -58,7 +57,7 @@ export default defineConfig({
   test: {
     fileParallelism: false,
     globalSetup: ["./test/support/journey.globalsetup.ts"],
-    include: ["test/journeys/**/*.test.ts"],
+    include: ["test/{contracts,journeys,postgres}/**/*.test.ts"],
     // postgres.js may cancel its Cloudflare socket stream after the request has
     // completed. Ignore only that known teardown message from its polyfill.
     onUnhandledError: (error) =>

@@ -50,7 +50,6 @@
     { "tag": "v2", "new_sqlite_classes": ["Sandbox"] },
     { "tag": "v3", "new_sqlite_classes": ["OsfoDirectory"] },
     { "tag": "v4", "deleted_classes": ["RegistrationDialogue"] },
-    { "tag": "v5", "new_sqlite_classes": ["CompanyAgent"] },
   ],
   "containers": [
     {

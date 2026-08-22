@@ -11,7 +11,7 @@
     "agent-db:generate": "drizzle-kit generate --config drizzle.agent.config.ts",
     "build": "wrangler deploy --dry-run --outdir dist",
     "dev": "bun --cwd ../..  alchemy dev --stage development --env-file apps/worker/.env",
-    "test": "vitest run --config vitest.file-task.config.ts && bun run test:renderer",
+    "test": "vitest run --config vitest.modules.config.ts && vitest run --config vitest.file-task.config.ts && bun run test:renderer",
     "test:journeys": "vitest run --config vitest.journeys.config.ts",
     "test:renderer": "docker build --file document-sandbox/Dockerfile --tag osfo-document-renderer-test document-sandbox",
     "typecheck": "wrangler types --check && tsc --noEmit"

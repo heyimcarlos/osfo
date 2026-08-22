@@ -244,7 +244,9 @@ const parseUrl = (binding: string, value: string): URL => {
 const parseOptionalPositiveInt = (value: string | undefined): number | null => {
   if (value === undefined || value.trim().length === 0) return null;
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : invalid("COMPANY_CONVERSATION_DAILY_TURN_LIMIT must contain a positive integer");
 };
 
 const optionalUrl = (

@@ -1,12 +1,10 @@
 import type { MessengerConversationResolver, MessengerEvent } from "@cloudflare/think/messengers";
 import { Effect } from "effect";
 
+import type { ChannelLinks } from "../../services/channel-links";
 import { OsfoAgent } from "./agent";
-import {
-  CompanyAgent,
-  type CompanyConversationUnavailable,
-  companyAddressKey,
-} from "./company-agent";
+import { channelAddressOf } from "./channel-address";
+import { CompanyAgent, companyAddressKey } from "./company-agent";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect-style tagged unions use `_tag`. */
 
@@ -14,15 +12,17 @@ import {
 export type MessengerAddressResolution =
   | { readonly _tag: "Linked"; readonly agentId: string }
   | { readonly _tag: "Unavailable" }
-  | { readonly _tag: "Unlinked" };
+  | {
+      readonly _tag: "Unlinked";
+      readonly previousChannelLinkId: ChannelLinks.ChannelLinkId | null;
+    };
 
 /** Product dependencies that map one messenger author to an Agent facet. */
 export interface OsfoMessengerRoutingOptions {
   readonly hasAgent: (agentId: string) => boolean;
   readonly resolveAddress: (
-    authorId: string,
-    messengerId: string,
-  ) => Effect.Effect<MessengerAddressResolution, CompanyConversationUnavailable>;
+    address: typeof ChannelLinks.ChannelAddress.Type,
+  ) => Effect.Effect<MessengerAddressResolution>;
 }
 
 /**
@@ -42,7 +42,8 @@ const routeMessengerEvent = Effect.fn("OsfoMessenger.route")(function* (
 ) {
   const authorId = event.author?.userId;
   if (authorId === undefined || !event.thread.isDirectMessage) return { target: "self" as const };
-  const resolution = yield* options.resolveAddress(authorId, event.messengerId);
+  const address = channelAddressOf(event.messengerId, authorId);
+  const resolution = yield* options.resolveAddress(address);
   if (resolution._tag === "Linked") {
     return options.hasAgent(resolution.agentId)
       ? { agentClass: OsfoAgent, name: resolution.agentId, target: "subagent" as const }
@@ -51,7 +52,7 @@ const routeMessengerEvent = Effect.fn("OsfoMessenger.route")(function* (
   if (resolution._tag === "Unavailable") return { target: "self" as const };
   return {
     agentClass: CompanyAgent,
-    name: yield* companyAddressKey(event.messengerId, authorId),
+    name: yield* companyAddressKey(address, resolution.previousChannelLinkId),
     target: "subagent" as const,
   };
 });

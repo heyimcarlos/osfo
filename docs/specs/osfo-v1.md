@@ -183,8 +183,7 @@ conversation; provider allowlists do not gate it.
 The invite token is opaque random material resolved by hashed lookup; it
 carries no address, User, key, or signature semantics. Address and User PII
 appear in neither the URL nor audit metadata. Unknown, forged, expired,
-cancelled, superseded, or consumed invites fail closed, and each repeated
-message supersedes the previous pending invite within the same linking attempt.
+cancelled, superseded, or consumed invites fail closed.
 
 ### Web entry
 
