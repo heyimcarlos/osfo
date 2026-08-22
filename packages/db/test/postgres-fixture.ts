@@ -3,18 +3,11 @@ import type { Database } from "@osfo/db";
 import { drizzle } from "drizzle-orm/pglite";
 import { Data, Effect } from "effect";
 
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- The Postgres test fixture reads committed migrations.
-import { readdir, readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-
 // oxlint-disable-next-line osfo/no-star-import -- Drizzle requires the complete schema module object for relational reflection; adding a self-namespace export makes that namespace part of the reflected schema.
 import * as DbSchema from "../src/schema";
+import { readMigrations, type TestMigration } from "./migration-files";
 
-/** One committed migration split into ordered PostgreSQL statements. */
-export interface TestMigration {
-  readonly name: string;
-  readonly statements: ReadonlyArray<string>;
-}
+export { readMigrations, type TestMigration } from "./migration-files";
 
 type TestRowValue = boolean | Date | number | string | null;
 type TestRow = Readonly<Record<string, TestRowValue>>;
@@ -23,8 +16,6 @@ class TestPostgresError extends Data.TaggedError("TestPostgresError")<{
   readonly cause: unknown;
   readonly message: string;
 }> {}
-
-const migrationsDirectory = fileURLToPath(new URL("../src/migrations", import.meta.url));
 
 /** Isolated PGlite database and Drizzle client used by integration tests. */
 export interface TestDatabase {
@@ -38,29 +29,6 @@ export const makeTestDatabase = Effect.sync((): TestDatabase => {
   const database = drizzle(client, { schema: DbSchema });
 
   return { client, database };
-});
-
-/** Read the committed Postgres migrations in deployment order. */
-export const readMigrations = Effect.tryPromise({
-  try: async () => {
-    const names = (await readdir(migrationsDirectory)).filter((name) => name.endsWith(".sql"));
-    // oxlint-disable-next-line unicorn/no-array-sort -- ES2022 has no toSorted, and this local array must follow deployment order.
-    names.sort((left, right) => left.localeCompare(right));
-    return Promise.all(
-      names.map(async (name): Promise<TestMigration> => {
-        const sql = await readFile(`${migrationsDirectory}/${name}`, "utf8");
-        return {
-          name,
-          statements: sql
-            .split("--> statement-breakpoint")
-            .map((statement) => statement.trim())
-            .filter((statement) => statement.length > 0),
-        };
-      }),
-    );
-  },
-  catch: (cause) =>
-    new TestPostgresError({ cause, message: "Could not read the Postgres migrations" }),
 });
 
 /** Apply each unapplied migration in its own Postgres transaction. */

@@ -17,6 +17,7 @@ const productionWebOrigin = "https://osfo.ai";
 
 type RawConfigBinding =
   | "BETTER_AUTH_API_KEY"
+  | "BETTER_AUTH_API_URL"
   | "BETTER_AUTH_BASE_URL"
   | "BETTER_AUTH_SECRET"
   | "BETTER_AUTH_TRUSTED_ORIGINS"
@@ -25,6 +26,7 @@ type RawConfigBinding =
   | "OSFO_STAGE"
   | "STRIPE_ADVENTURER_PRICE_ID"
   | "STRIPE_ADVENTURER_PRODUCT_ID"
+  | "STRIPE_API_BASE_URL"
   | "STRIPE_PORTAL_CONFIGURATION_ID"
   | "STRIPE_SECRET_KEY"
   | "STRIPE_WEBHOOK_SECRET"
@@ -33,6 +35,7 @@ type RawConfigBinding =
   | "TELEGRAM_WEBHOOK_SECRET_TOKEN"
   | "TWILIO_ACCOUNT_SID"
   | "TWILIO_AUTH_TOKEN"
+  | "TWILIO_VERIFY_API_BASE_URL"
   | "TWILIO_VERIFY_SERVICE_SID"
   | "WHATSAPP_ACCESS_TOKEN"
   | "WHATSAPP_APP_SECRET"
@@ -45,6 +48,7 @@ type GeneratedCloudflareBindings = Omit<Env, RawConfigBinding>;
 /** Generated Cloudflare bindings and raw Worker configuration values. */
 export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly BETTER_AUTH_API_KEY?: string;
+  readonly BETTER_AUTH_API_URL?: string;
   readonly BETTER_AUTH_BASE_URL?: string;
   readonly BETTER_AUTH_SECRET?: string;
   readonly BETTER_AUTH_TRUSTED_ORIGINS?: string;
@@ -53,6 +57,7 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly OSFO_STAGE?: string;
   readonly STRIPE_ADVENTURER_PRICE_ID?: string;
   readonly STRIPE_ADVENTURER_PRODUCT_ID?: string;
+  readonly STRIPE_API_BASE_URL?: string;
   readonly STRIPE_PORTAL_CONFIGURATION_ID?: string;
   readonly STRIPE_SECRET_KEY?: string;
   readonly STRIPE_WEBHOOK_SECRET?: string;
@@ -61,6 +66,7 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly TELEGRAM_WEBHOOK_SECRET_TOKEN?: string;
   readonly TWILIO_ACCOUNT_SID?: string;
   readonly TWILIO_AUTH_TOKEN?: string;
+  readonly TWILIO_VERIFY_API_BASE_URL?: string;
   readonly TWILIO_VERIFY_SERVICE_SID?: string;
   readonly WHATSAPP_ACCESS_TOKEN?: string;
   readonly WHATSAPP_APP_SECRET?: string;
@@ -77,6 +83,7 @@ export interface AuthConfig {
     | { readonly kind: "disabled" }
     | {
         readonly apiKey: Redacted.Redacted;
+        readonly apiUrl?: string | undefined;
         readonly kind: "enabled";
       };
   readonly secret: Redacted.Redacted;
@@ -100,6 +107,8 @@ export interface WhatsAppConfig {
 export interface StripeConfig {
   readonly adventurerPriceId: string;
   readonly adventurerProductId: string;
+  /** API origin override for emulated or proxied Stripe deployments. */
+  readonly apiBaseURL?: string | undefined;
   readonly portalConfigurationId: string;
   readonly secretKey: Redacted.Redacted;
   readonly webhookSecret: Redacted.Redacted;
@@ -116,6 +125,8 @@ export interface TelegramConfig {
 export interface TwilioVerifyConfig {
   readonly accountSid: Redacted.Redacted;
   readonly authToken: Redacted.Redacted;
+  /** API origin override for emulated or proxied Verify deployments. */
+  readonly apiBaseURL?: string | undefined;
   readonly serviceSid: string;
 }
 
@@ -164,6 +175,7 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
       credentialAuthentication: "enabled",
       dashboard: {
         apiKey: Redacted.make(required(env, "BETTER_AUTH_API_KEY")),
+        apiUrl: optionalUrl(env, "BETTER_AUTH_API_URL"),
         kind: "enabled",
       },
       secret: Redacted.make(secret),
@@ -182,6 +194,7 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
     stripe: {
       adventurerPriceId: required(env, "STRIPE_ADVENTURER_PRICE_ID").trim(),
       adventurerProductId: required(env, "STRIPE_ADVENTURER_PRODUCT_ID").trim(),
+      apiBaseURL: optionalUrl(env, "STRIPE_API_BASE_URL"),
       portalConfigurationId: required(env, "STRIPE_PORTAL_CONFIGURATION_ID").trim(),
       secretKey: Redacted.make(required(env, "STRIPE_SECRET_KEY")),
       webhookSecret: Redacted.make(required(env, "STRIPE_WEBHOOK_SECRET")),
@@ -193,6 +206,7 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
     },
     twilioVerify: {
       accountSid: Redacted.make(required(env, "TWILIO_ACCOUNT_SID")),
+      apiBaseURL: optionalUrl(env, "TWILIO_VERIFY_API_BASE_URL"),
       authToken: Redacted.make(required(env, "TWILIO_AUTH_TOKEN")),
       serviceSid: required(env, "TWILIO_VERIFY_SERVICE_SID").trim(),
     },
@@ -206,7 +220,10 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
   };
 };
 
-type RequiredBinding = Exclude<RawConfigBinding, "OSFO_STAGE">;
+type RequiredBinding = Exclude<
+  RawConfigBinding,
+  "BETTER_AUTH_API_URL" | "OSFO_STAGE" | "STRIPE_API_BASE_URL" | "TWILIO_VERIFY_API_BASE_URL"
+>;
 
 const required = (env: CloudflareEnv, binding: RequiredBinding): string => {
   const value = env[binding];
@@ -228,6 +245,16 @@ const parseOptionalPositiveInt = (value: string | undefined): number | null => {
   if (value === undefined || value.trim().length === 0) return null;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
+
+const optionalUrl = (
+  env: CloudflareEnv,
+  binding: "BETTER_AUTH_API_URL" | "STRIPE_API_BASE_URL" | "TWILIO_VERIFY_API_BASE_URL",
+): string | undefined => {
+  const value = env[binding];
+  return value === undefined || value.trim().length === 0
+    ? undefined
+    : parseUrl(binding, value).href;
 };
 
 const parseTrustedOrigins = (value: string): ReadonlyArray<string> => {

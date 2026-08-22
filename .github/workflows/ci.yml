@@ -17,6 +17,77 @@ permissions:
   contents: read
 
 jobs:
+  journeys:
+    name: Worker journeys
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Pull journey images
+        run: |
+          docker pull node:24.18.0-bookworm
+          docker pull postgres:17
+
+      - name: Start isolated PostgreSQL
+        run: |
+          docker network create --internal osfo-journeys
+          docker run --detach \
+            --env POSTGRES_DB=postgres \
+            --env POSTGRES_PASSWORD=osfo \
+            --env POSTGRES_USER=osfo \
+            --name osfo-journeys-postgres \
+            --network osfo-journeys \
+            postgres:17
+          for attempt in {1..30}; do
+            if docker exec osfo-journeys-postgres pg_isready --dbname postgres --username osfo; then
+              exit 0
+            fi
+            if [[ "$attempt" == "30" ]]; then
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Run network-isolated PostgreSQL controls and Worker journeys
+        shell: bash
+        run: |
+          docker run --rm \
+            --env OSFO_TEST_POSTGRES_URL=postgres://osfo:osfo@osfo-journeys-postgres:5432/postgres \
+            --network osfo-journeys \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /workspace/packages/db \
+            node:24.18.0-bookworm \
+            node_modules/.bin/vitest run --config vitest.postgres.config.ts
+          docker run --rm \
+            --env OSFO_TEST_POSTGRES_URL=postgres://osfo:osfo@osfo-journeys-postgres:5432/postgres \
+            --network osfo-journeys \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /workspace/apps/worker \
+            node:24.18.0-bookworm \
+            node_modules/.bin/vitest run --config vitest.journeys.config.ts \
+            2>&1 | tee "$RUNNER_TEMP/worker-journeys.log"
+          if grep --extended-regexp \
+            "DNS lookup failed|uncaught exception|dash\.better-auth\.com" \
+            "$RUNNER_TEMP/worker-journeys.log"; then
+            exit 1
+          fi
+
+      - name: Stop journey services
+        if: always()
+        run: |
+          docker rm --force osfo-journeys-postgres || true
+          docker network rm osfo-journeys || true
+
   verify:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest

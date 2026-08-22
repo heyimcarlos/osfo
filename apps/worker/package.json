@@ -11,9 +11,9 @@
     "agent-db:generate": "drizzle-kit generate --config drizzle.agent.config.ts",
     "build": "wrangler deploy --dry-run --outdir dist",
     "dev": "bun --cwd ../..  alchemy dev --stage development --env-file apps/worker/.env",
-    "test": "vitest run --config vitest.config.ts && vitest run --config vitest.db.config.ts && vitest run --config vitest.file-task.config.ts && bun run test:renderer",
+    "test": "vitest run --config vitest.file-task.config.ts && bun run test:renderer",
+    "test:journeys": "vitest run --config vitest.journeys.config.ts",
     "test:renderer": "docker build --file document-sandbox/Dockerfile --tag osfo-document-renderer-test document-sandbox",
-    "test:postgres": "vitest run --config vitest.real-db.config.ts",
     "typecheck": "wrangler types --check && tsc --noEmit"
   },
   "dependencies": {
@@ -36,10 +36,9 @@
     "stripe": "22.5.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@effect/vitest": "catalog:",
-    "@electric-sql/pglite": "0.5.5",
     "drizzle-kit": "0.31.10",
     "typescript": "catalog:",
     "vitest": "catalog:",

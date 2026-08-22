@@ -192,11 +192,6 @@ import {
   presentOsfoAction,
   sanitizePendingApproval,
 } from "./action-registry";
-import {
-  currentTestAuthorization,
-  testProtectedActionUserId,
-  type TestProtectedActionState,
-} from "./test-protected-action";
 import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-authorization";
 import { makeAgentSessionLifecycle } from "./session-lifecycle";
 import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
@@ -208,11 +203,6 @@ const pendingSessionId = "__osfo_uninitialized__";
 const gatewayId = "default";
 const modelCallUsageRetryDelaySeconds = 60;
 const gatewayCostMaximumLookups = 3;
-const defaultTestProtectedActionState: TestProtectedActionState = {
-  authority: "active",
-  currentFact: "current",
-  providerOutcome: "applied",
-};
 const authorization = Authorization.make(retainedCatalog);
 
 type AgentFilePersistenceError =
@@ -668,17 +658,9 @@ export class OsfoAgent extends Think<Env> {
         timeoutMs: 90_000,
       }),
     };
-    const stage = decodeOsfoStage(this.env.OSFO_STAGE);
     const executeClear = (input: Parameters<typeof clearCoreMemory>[1], actionId: ActionId) =>
       this.#clearCoreMemory(input, actionId);
-    const osfoActions =
-      Option.isSome(stage) && stage.value === "test"
-        ? makeOsfoActions({
-            clearCoreMemory: executeClear,
-            testProtectedActionState: () =>
-              this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
-          })
-        : makeOsfoActions({ clearCoreMemory: executeClear });
+    const osfoActions = makeOsfoActions({ clearCoreMemory: executeClear });
     return {
       ...documentActions,
       ...osfoActions,
@@ -1025,20 +1007,13 @@ export class OsfoAgent extends Think<Env> {
         ),
       );
     }
-    const stage = decodeOsfoStage(this.env.OSFO_STAGE);
-    return Option.isSome(stage) && stage.value === "test"
-      ? Effect.succeed(
-          currentTestAuthorization(
-            this.getConfig<TestProtectedActionState>() ?? defaultTestProtectedActionState,
-          ),
-        )
-      : Effect.fail(
-          new CoreMemoryUnavailable({
-            cause: this.activeTurnMetadata,
-            message: "Core Memory authority is unavailable outside an admitted turn",
-            operation: "clear",
-          }),
-        );
+    return Effect.fail(
+      new CoreMemoryUnavailable({
+        cause: this.activeTurnMetadata,
+        message: "Core Memory authority is unavailable outside an admitted turn",
+        operation: "clear",
+      }),
+    );
   }
 
   /** Reconcile committed Think messages when a new Agent activation starts. */
@@ -1870,10 +1845,6 @@ export class OsfoAgent extends Think<Env> {
   }
 
   #userOwnsAgent(userId: UserId) {
-    const stage = decodeOsfoStage(this.env.OSFO_STAGE);
-    if (Option.isSome(stage) && stage.value === "test") {
-      return Effect.succeed(userId === testProtectedActionUserId);
-    }
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) {
       return Effect.fail(approvalActorAuthorizationUnavailable(userId, invalidOsfoEnvironment));
