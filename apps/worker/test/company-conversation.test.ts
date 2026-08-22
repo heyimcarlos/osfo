@@ -1,8 +1,9 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { StreamCallback, TurnContext } from "@cloudflare/think";
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, vi } from "@effect/vitest";
 import { getAgentByName, getSubAgentByName } from "agents";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { Effect, Exit, Schema } from "effect";
 
 import {
@@ -15,6 +16,7 @@ import {
   presentationAwareCallback,
   replyToCompanyMessenger,
 } from "../src/agents/osfo/company-agent";
+import { OsfoAgent } from "../src/agents/osfo/agent";
 import { OSFO_DIRECTORY_NAME } from "../src/agents/osfo/directory";
 import { UserId } from "../src/domain";
 import { launchModelAccessPolicy } from "../src/domain/model-access-policy";
@@ -26,6 +28,11 @@ const address = ChannelLinks.ChannelAddress.make({
   authorId: ChannelLinks.ChannelAuthorId.make("company-author"),
   channelId: ChannelLinks.ChannelId.make("telegram"),
 });
+
+const emptyUsage = {
+  inputTokens: { cacheRead: 0, cacheWrite: 0, noCache: 1, total: 1 },
+  outputTokens: { reasoning: 0, text: 1, total: 1 },
+};
 
 describe("Company Conversation envelope", () => {
   it("keeps teardown expiry-only with acceptance before idle deadlines", () => {
@@ -44,6 +51,10 @@ describe("Company Conversation envelope", () => {
       at: at(6),
     });
     expect(planTeardown({ lastActivityAt, linked: false, now: at(7) })).toEqual({
+      _tag: "Wait",
+      at: at(12),
+    });
+    expect(planTeardown({ lastActivityAt, linked: false, now: at(19) })).toEqual({
       _tag: "Wait",
       at: at(24),
     });
@@ -130,6 +141,7 @@ describe("Company Conversation envelope", () => {
 
   it.effect("never invents a link when inference fails without a request", () =>
     Effect.gen(function* () {
+      let activityWrites = 0;
       let ensureCalls = 0;
       const reply = makeStreamRecorder();
 
@@ -144,6 +156,10 @@ describe("Company Conversation envelope", () => {
               ensureCalls += 1;
               return invited();
             },
+            recordActivity: () => {
+              activityWrites += 1;
+              return Promise.resolve();
+            },
             runModelTurn: () => Promise.reject(new Error("provider exploded")),
           }),
         ).catch(() => {
@@ -152,6 +168,7 @@ describe("Company Conversation envelope", () => {
       );
 
       expect(rejected).toBe(true);
+      expect(activityWrites).toBe(1);
       expect(ensureCalls).toBe(0);
       expect(reply.events).toHaveLength(0);
     }),
@@ -219,6 +236,7 @@ describe("Company Conversation envelope", () => {
 
   it.effect("skips inference entirely for already received provider events", () =>
     Effect.gen(function* () {
+      let activityWrites = 0;
       let modelTurns = 0;
       const reply = makeStreamRecorder();
 
@@ -229,6 +247,10 @@ describe("Company Conversation envelope", () => {
           userMessage(),
           turnDependencies({
             readReceipt: () => Promise.resolve("completed"),
+            recordActivity: () => {
+              activityWrites += 1;
+              return Promise.resolve();
+            },
             runModelTurn: () => {
               modelTurns += 1;
               return Promise.resolve();
@@ -237,6 +259,7 @@ describe("Company Conversation envelope", () => {
         ),
       );
 
+      expect(activityWrites).toBe(0);
       expect(modelTurns).toBe(0);
       expect(reply.events).toHaveLength(0);
     }),
@@ -276,6 +299,16 @@ describe("Company Conversation envelope", () => {
 });
 
 describe("Company Conversation facet surface", () => {
+  it("shares Osfo identity across the company and personal partitions", () => {
+    const companyPrompt = CompanyAgent.prototype.getSystemPrompt();
+    const personalPrompt = OsfoAgent.prototype.getSystemPrompt();
+
+    expect(companyPrompt).toContain("You are Osfo, a personal AI agent");
+    expect(personalPrompt).toContain("You are Osfo, a personal AI agent");
+    expect(companyPrompt).toContain("before someone registers");
+    expect(personalPrompt).toContain("registered, private Osfo Agent");
+  });
+
   it.effect("exposes only the presentation capability to its model", () =>
     Effect.gen(function* () {
       const agent = env.COMPANY_AGENT_TEST_FACET.getByName("company-surface-check");
@@ -300,7 +333,7 @@ describe("Company Conversation facet surface", () => {
       expect(turnConfig.activeTools).toEqual([PRESENT_LINK_TOOL_NAME]);
       expect(turnConfig.messages).toHaveLength(2);
       expect(systemPrompt).toContain(PRESENT_LINK_TOOL_NAME);
-      expect(systemPrompt).toContain("Never claim a person is registered or linked.");
+      expect(systemPrompt).toContain("Never claim this person is registered or linked.");
       expect(systemPrompt).not.toContain("/verify/");
       expect(modelRoute).toBe(launchModelAccessPolicy.plans.free.route);
     }),
@@ -335,6 +368,81 @@ describe("Company Conversation facet surface", () => {
       expect(removed).toBe(true);
     }),
   );
+
+  it.effect("records activity from a serialized messenger snapshot", () =>
+    Effect.gen(function* () {
+      const agent = env.COMPANY_AGENT_TEST_FACET.getByName("company-snapshot-activity");
+      const reply = makeStreamRecorder();
+      const observed = yield* Effect.promise(() =>
+        runInDurableObject(agent, async (instance) => {
+          const model = new MockLanguageModelV3({
+            provider: "osfo-test",
+            modelId: "company-snapshot-activity",
+            doGenerate: async () => ({
+              content: [{ text: "Hello", type: "text" }],
+              finishReason: { raw: "stop", unified: "stop" },
+              usage: emptyUsage,
+              warnings: [],
+            }),
+            doStream: async () => ({
+              stream: simulateReadableStream({
+                chunks: [
+                  { type: "stream-start", warnings: [] },
+                  { id: "answer", type: "text-start" },
+                  { delta: "Hello", id: "answer", type: "text-delta" },
+                  { id: "answer", type: "text-end" },
+                  {
+                    finishReason: { raw: "stop", unified: "stop" },
+                    type: "finish",
+                    usage: emptyUsage,
+                  },
+                ],
+                chunkDelayInMs: null,
+                initialDelayInMs: null,
+              }),
+            }),
+          });
+          vi.spyOn(instance, "resolveModel").mockReturnValue(model);
+          await instance.onStart();
+          await instance.chatWithMessengerContext(
+            "hello",
+            reply.callback,
+            serializedMessengerContext(),
+          );
+          await instance.chatWithMessengerContext(
+            "hello again",
+            reply.callback,
+            serializedMessengerContext("company-message-2"),
+          );
+          return {
+            config: instance.getConfig<unknown>(),
+            messages: instance.messages,
+            schedules: (await instance.listSchedules()).map(({ callback, type }) => ({
+              callback,
+              type,
+            })),
+          };
+        }),
+      );
+
+      expect(observed.config).toMatchObject({
+        addressAuthorId: "company-author",
+        addressChannelId: "telegram",
+      });
+      expect(observed.schedules).toContainEqual({
+        callback: "expireCompanyConversation",
+        type: "scheduled",
+      });
+      expect(
+        observed.schedules.filter(({ callback }) => callback === "expireCompanyConversation"),
+      ).toHaveLength(1);
+      const transcript = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+        observed.messages,
+      );
+      expect(transcript).toContain("hello");
+      expect(transcript).not.toContain("/verify/");
+    }),
+  );
 });
 
 interface HeldSnapshot {
@@ -361,9 +469,9 @@ const turnDependencies = (
 ): CompanyTurnDependencies => ({
   dailyTurnLimit: null,
   ensure: () => invited(),
-  onTurnSettled: () => Promise.resolve(),
   readHeld: () => null,
   readReceipt: () => Promise.resolve(null),
+  recordActivity: () => Promise.resolve(),
   recordTurn: () => Promise.resolve(),
   runModelTurn: () => Promise.resolve(),
   turnsToday: () => Promise.resolve(0),
@@ -467,6 +575,18 @@ const messengerContext = (): Parameters<typeof replyToCompanyMessenger>[1] =>
       providerThreadId: "company-thread-1",
     },
   }) as never;
+
+const serializedMessengerContext = (
+  eventId = "company-message-1",
+): Parameters<typeof replyToCompanyMessenger>[1] => {
+  const context = messengerContext();
+  const { author: _author, ...serialized } = context;
+  if (serialized.message === undefined) return serialized;
+  return {
+    ...serialized,
+    message: { ...serialized.message, id: eventId, providerMessageId: eventId },
+  };
+};
 
 const userMessage = (): string => "hello";
 

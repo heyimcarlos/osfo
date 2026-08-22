@@ -30,9 +30,11 @@ describe("Official WhatsApp adapter boundary", () => {
     const resolved: Array<string> = [];
     const resolver = makeOsfoMessengerRouter({
       hasAgent: (agentId) => agentId === "agent-bound",
-      resolveAgentId: async (authorId) => {
+      resolveAddress: async (authorId) => {
         resolved.push(authorId);
-        return authorId === "15550000001" ? "agent-bound" : "agent-missing";
+        return authorId === "15550000001"
+          ? { _tag: "Linked", agentId: "agent-bound" }
+          : { _tag: "Linked", agentId: "agent-missing" };
       },
     });
 

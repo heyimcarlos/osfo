@@ -3,12 +3,21 @@ import type { MessengerConversationResolver, MessengerEvent } from "@cloudflare/
 import { OsfoAgent } from "./agent";
 import { CompanyAgent, companyAddressKey } from "./company-agent";
 
-/* oxlint-disable effecttsgo/async-function -- The Think conversation resolver is Promise-based. */
+/* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- The Think conversation resolver is Promise-based, and Effect-style tagged unions use `_tag`. */
+
+/** Current authority resolution for one normalized messenger address. */
+export type MessengerAddressResolution =
+  | { readonly _tag: "Linked"; readonly agentId: string }
+  | { readonly _tag: "Unavailable" }
+  | { readonly _tag: "Unlinked" };
 
 /** Product dependencies that map one messenger author to an Agent facet. */
 export interface OsfoMessengerRoutingOptions {
   readonly hasAgent: (agentId: string) => boolean;
-  readonly resolveAgentId: (authorId: string, messengerId: string) => Promise<string | null>;
+  readonly resolveAddress: (
+    authorId: string,
+    messengerId: string,
+  ) => Promise<MessengerAddressResolution>;
 }
 
 /**
@@ -22,12 +31,13 @@ export const makeOsfoMessengerRouter =
   async (event: MessengerEvent) => {
     const authorId = event.author?.userId;
     if (authorId === undefined || !event.thread.isDirectMessage) return { target: "self" };
-    const agentId = await options.resolveAgentId(authorId, event.messengerId);
-    if (agentId !== null) {
-      return options.hasAgent(agentId)
-        ? { agentClass: OsfoAgent, name: agentId, target: "subagent" as const }
+    const resolution = await options.resolveAddress(authorId, event.messengerId);
+    if (resolution._tag === "Linked") {
+      return options.hasAgent(resolution.agentId)
+        ? { agentClass: OsfoAgent, name: resolution.agentId, target: "subagent" as const }
         : { target: "self" as const };
     }
+    if (resolution._tag === "Unavailable") return { target: "self" };
     return {
       agentClass: CompanyAgent,
       name: await companyAddressKey(event.messengerId, authorId),

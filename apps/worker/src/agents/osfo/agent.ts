@@ -143,6 +143,7 @@ import type {
   CurrentSessionReplaced,
   CurrentSessionReplacementConflict,
 } from "../../services/session-replacement";
+import { messengerAuthorId } from "./channel-address";
 import {
   type AgentInitializationConflict,
   AgentRequestInvalid,
@@ -157,6 +158,7 @@ import {
 import { applyAgentMigrations } from "./db/migrate";
 import { makeModelCallUsageStore } from "./db/model-call-usage";
 import { makeSessionExecution } from "./session-execution";
+import { personalAgentSystemPrompt } from "./persona";
 import {
   AgentInitializationInput,
   type AgentInitializationEncoded,
@@ -493,6 +495,11 @@ export class OsfoAgent extends Think<Env> {
     return launchModelAccessPolicy.plans.free.route;
   }
 
+  /** Speak with the shared Osfo persona from the registered personal partition. */
+  override getSystemPrompt() {
+    return personalAgentSystemPrompt();
+  }
+
   /** Apply Osfo policy before a Think messenger turn starts on this user-owned facet. */
   override async chatWithMessengerContext(
     userMessage: string | UIMessage,
@@ -500,7 +507,7 @@ export class OsfoAgent extends Think<Env> {
     context: MessengerContext,
   ): Promise<void> {
     await this.#migrationsReady;
-    const authorId = context.author?.userId;
+    const authorId = messengerAuthorId(context);
     const message = context.message;
     const provider = context.provider;
     if (

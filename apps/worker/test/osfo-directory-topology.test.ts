@@ -140,9 +140,9 @@ describe("Osfo directory topology", () => {
       let bindingLookups = 0;
       const routing = makeOsfoMessengerRouter({
         ...unboundRouting,
-        resolveAgentId: () => {
+        resolveAddress: () => {
           bindingLookups += 1;
-          return Promise.resolve(null);
+          return Promise.resolve({ _tag: "Unlinked" });
         },
       });
 
@@ -155,27 +155,38 @@ describe("Osfo directory topology", () => {
     }),
   );
 
-  it.effect("keeps linked senders whose personal facet is missing on the dormant directory", () =>
-    Effect.gen(function* () {
-      const routing = makeOsfoMessengerRouter({
-        hasAgent: () => false,
-        resolveAgentId: () => Promise.resolve("agent-topology-first"),
-      });
-      const whatsappRouting = makeOsfoMessengerRouter({
-        hasAgent: () => false,
-        resolveAgentId: () => Promise.resolve(null),
-      });
+  it.effect(
+    "keeps unavailable authority and missing personal facets on the dormant directory",
+    () =>
+      Effect.gen(function* () {
+        const missingFacetRouting = makeOsfoMessengerRouter({
+          hasAgent: () => false,
+          resolveAddress: () =>
+            Promise.resolve({ _tag: "Linked", agentId: "agent-topology-first" }),
+        });
+        const unavailableRouting = makeOsfoMessengerRouter({
+          hasAgent: () => true,
+          resolveAddress: () => Promise.resolve({ _tag: "Unavailable" }),
+        });
+        const whatsappRouting = makeOsfoMessengerRouter({
+          hasAgent: () => false,
+          resolveAddress: () => Promise.resolve({ _tag: "Unlinked" }),
+        });
 
-      const telegramUnreachable = yield* Effect.promise(() =>
-        Promise.resolve(routing(telegramEvent)),
-      );
-      const whatsappUnlinked = yield* Effect.promise(() =>
-        Promise.resolve(whatsappRouting(whatsAppEvent)),
-      );
+        const telegramUnreachable = yield* Effect.promise(() =>
+          Promise.resolve(missingFacetRouting(telegramEvent)),
+        );
+        const authorityUnavailable = yield* Effect.promise(() =>
+          Promise.resolve(unavailableRouting(telegramEvent)),
+        );
+        const whatsappUnlinked = yield* Effect.promise(() =>
+          Promise.resolve(whatsappRouting(whatsAppEvent)),
+        );
 
-      expect(telegramUnreachable).toEqual({ target: "self" });
-      expect(whatsappUnlinked).toMatchObject({ target: "subagent" });
-    }),
+        expect(telegramUnreachable).toEqual({ target: "self" });
+        expect(authorityUnavailable).toEqual({ target: "self" });
+        expect(whatsappUnlinked).toMatchObject({ target: "subagent" });
+      }),
   );
 
   it.effect("refuses group linking deterministically at the directory gate", () =>
@@ -194,6 +205,7 @@ describe("Osfo directory topology", () => {
 
       expect(linkReads).toBe(0);
       expect(reply.text()).toContain("Message Osfo privately");
+      expect(reply.text()).toContain("Escríbele a Osfo por privado");
       expect(reply.text()).not.toContain("/verify/");
     }),
   );
@@ -215,13 +227,13 @@ describe("Osfo directory topology", () => {
 
 const unboundRouting: OsfoMessengerRoutingOptions = {
   hasAgent: () => false,
-  resolveAgentId: () => Promise.resolve(null),
+  resolveAddress: () => Promise.resolve({ _tag: "Unlinked" }),
 };
 
 const routingForRegistry = (registry: ReadonlyArray<{ readonly name: string }>) =>
   makeOsfoMessengerRouter({
     hasAgent: (name) => registry.some((entry) => entry.name === name),
-    resolveAgentId: () => Promise.resolve("agent-topology-first"),
+    resolveAddress: () => Promise.resolve({ _tag: "Linked", agentId: "agent-topology-first" }),
   });
 
 const groupEvent = (event: typeof telegramEvent) => ({

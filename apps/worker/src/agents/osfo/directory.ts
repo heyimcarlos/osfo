@@ -13,8 +13,9 @@ import type { RuntimeSecrets } from "../../runtime-secrets";
 import { AgentDirectory } from "../../services/agent-directory";
 import { ChannelLinks } from "../../services/channel-links";
 import { OsfoAgent } from "./agent";
-import { CompanyAgent, channelAddressOf } from "./company-agent";
-import { makeOsfoMessengerRouter } from "./messenger-routing";
+import { channelAddressOf, messengerAuthorId } from "./channel-address";
+import { CompanyAgent } from "./company-agent";
+import { makeOsfoMessengerRouter, type MessengerAddressResolution } from "./messenger-routing";
 import type { AgentInitializationEncoded } from "./db/store";
 import { GroupRefusalCopy } from "./persona";
 
@@ -33,7 +34,8 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   override configureChannels(): ThinkChannels {
     const conversation = makeOsfoMessengerRouter({
       hasAgent: (agentId) => this.hasSubAgent(OsfoAgent, agentId),
-      resolveAgentId: (authorId, messengerId) => this.#resolveAgentId(messengerId, authorId),
+      resolveAddress: (authorId, messengerId) =>
+        this.#resolveMessengerAddress(messengerId, authorId),
     });
     return {
       telegram: makeTelegramChannel({
@@ -134,26 +136,29 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     await this.deleteSubAgent(OsfoAgent, agentId);
   }
 
-  async #resolveAgentId(messengerId: string, authorId: string): Promise<string | null> {
+  async #resolveMessengerAddress(
+    messengerId: string,
+    authorId: string,
+  ): Promise<MessengerAddressResolution> {
     const resolved = await Effect.runPromiseExit(
       this.#withChannelLinks((channelLinks, agentDirectory) =>
         Effect.gen(function* () {
           const link = yield* channelLinks.resolve(channelAddressOf(messengerId, authorId));
-          if (link === null) return null;
-          return yield* agentDirectory
+          if (link === null) return { _tag: "Unlinked" as const };
+          const route = yield* agentDirectory
             .resolve(link.userId)
             .pipe(Effect.catchTag("AgentRouteNotFound", () => Effect.succeed(null)));
+          return route === null
+            ? { _tag: "Unavailable" as const }
+            : { _tag: "Linked" as const, agentId: route.agentId };
         }),
       ),
     );
-    if (
-      Exit.isFailure(resolved) ||
-      resolved.value === null ||
-      !this.hasSubAgent(OsfoAgent, resolved.value.agentId)
-    ) {
-      return null;
+    if (Exit.isFailure(resolved)) return { _tag: "Unavailable" };
+    if (resolved.value._tag === "Linked" && !this.hasSubAgent(OsfoAgent, resolved.value.agentId)) {
+      return { _tag: "Unavailable" };
     }
-    return resolved.value.agentId;
+    return resolved.value;
   }
 
   #withChannelLinks<A, E>(
@@ -197,7 +202,7 @@ export const replyToDirectoryGate = async (
 ): Promise<void> => {
   // Think hands messenger turns its serializable event snapshot, which carries
   // the author inside the message rather than at the context top level.
-  const authorId = context.message?.author.userId ?? context.author?.userId;
+  const authorId = messengerAuthorId(context);
   const message = context.message;
   if (authorId === undefined || message === undefined) {
     await streamReply(
@@ -208,7 +213,7 @@ export const replyToDirectoryGate = async (
     return;
   }
   if (!context.thread.isDirectMessage) {
-    await streamReply(callback, message.id, GroupRefusalCopy.en);
+    await streamReply(callback, message.id, `${GroupRefusalCopy.en}\n${GroupRefusalCopy.es}`);
     return;
   }
   const linked = await dependencies.resolveLinked(channelAddressOf(context.messengerId, authorId));

@@ -9,11 +9,12 @@ import { Db } from "../../db";
 import type { RuntimeSecrets } from "../../runtime-secrets";
 import { ChannelLinks } from "../../services/channel-links";
 import { effectToolSchema } from "./effect-tool-schema";
+import { channelAddressOf, messengerAuthorId } from "./channel-address";
 import { companyConversationSystemPrompt } from "./persona";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Cloudflare Agent RPC and messenger turns are Promise boundaries, the Agents SDK schedule and storage contracts use JavaScript Dates, and Effect results use _tag. */
 
-/** Hours a conversation survives after its last activity before acceptance is checked. */
+/** Maximum delay between checks for Channel Link acceptance. */
 const ACCEPTANCE_TEARDOWN_MS = 6 * 60 * 60 * 1_000;
 
 /** Maximum idle lifetime of one Company Conversation. */
@@ -27,6 +28,9 @@ const TRANSCRIPT_WINDOW_MESSAGES = 12;
 
 /** Upper bound on model steps inside one company turn. */
 const COMPANY_MAX_STEPS = 4;
+
+/** Stable scheduler identity for the single teardown callback per conversation. */
+const COMPANY_TEARDOWN_PAYLOAD = "company-conversation-expiry";
 
 /** Name of the only capability the Company Conversation exposes to its model. */
 export const PRESENT_LINK_TOOL_NAME = "present_link";
@@ -68,10 +72,14 @@ export const planTeardown = (input: {
   }
   const idleMs = input.now.getTime() - input.lastActivityAt.getTime();
   if (idleMs >= IDLE_TEARDOWN_MS) return { _tag: "Destroy" };
-  const at =
-    idleMs < ACCEPTANCE_TEARDOWN_MS
-      ? new Date(input.lastActivityAt.getTime() + ACCEPTANCE_TEARDOWN_MS)
-      : new Date(input.lastActivityAt.getTime() + IDLE_TEARDOWN_MS);
+  const acceptanceCheckNumber = Math.max(
+    1,
+    Math.floor(Math.max(0, idleMs) / ACCEPTANCE_TEARDOWN_MS) + 1,
+  );
+  const acceptanceCheckAt =
+    input.lastActivityAt.getTime() + acceptanceCheckNumber * ACCEPTANCE_TEARDOWN_MS;
+  const idleDeadline = input.lastActivityAt.getTime() + IDLE_TEARDOWN_MS;
+  const at = new Date(Math.min(acceptanceCheckAt, idleDeadline));
   return { _tag: "Wait", at };
 };
 
@@ -106,12 +114,6 @@ export const companyAddressKey = async (messengerId: string, authorId: string): 
   return `company-${hex}`;
 };
 
-export const channelAddressOf = (messengerId: string, authorId: string) =>
-  ChannelLinks.ChannelAddress.make({
-    authorId: ChannelLinks.ChannelAuthorId.make(authorId),
-    channelId: ChannelLinks.ChannelId.make(messengerId),
-  });
-
 /** Transient holder of the invite presentation capability for one turn. */
 export interface InvitePresenter {
   readonly request: () => void;
@@ -127,8 +129,8 @@ interface HeldInvite {
 /**
  * Hold-and-present rule for the current linking attempt. The verification URL
  * lives only in activation memory through `readHeld`/`writeHeld`: resend while
- * unexpired, mint once through ensure otherwise, and never expose it to prompt,
- * transcript, output, logs, or errors.
+ * unexpired, mint once through ensure otherwise, and expose it only through the
+ * delivery callback, never the prompt, transcript, logs, or errors.
  */
 export const makeInvitePresenter = (dependencies: {
   readonly ensure: (
@@ -223,7 +225,7 @@ export interface CompanyMessengerTurnDependencies {
   readonly ensure: (
     address: typeof ChannelLinks.ChannelAddress.Type,
   ) => Promise<Exit.Exit<ChannelLinks.EnsureResult, unknown>>;
-  readonly onTurnSettled: () => Promise<void>;
+  readonly recordActivity: () => Promise<void>;
   readonly readHeld: () => HeldInvite | null;
   readonly readReceipt: (eventId: string) => Promise<ReceiptStatus | null>;
   readonly recordTurn: () => Promise<void>;
@@ -244,7 +246,7 @@ export const replyToCompanyMessenger = async (
   userMessage: string | UIMessage,
   dependencies: CompanyMessengerTurnDependencies,
 ): Promise<void> => {
-  const authorId = context.message?.author.userId ?? context.author?.userId;
+  const authorId = messengerAuthorId(context);
   const message = context.message;
   if (authorId === undefined || message === undefined) {
     await streamReply(callback, "channel-address-unreadable", UNREADABLE_REPLY);
@@ -252,6 +254,7 @@ export const replyToCompanyMessenger = async (
   }
   const eventId = message.providerMessageId ?? message.id;
   if ((await dependencies.readReceipt(eventId)) !== null) return;
+  await dependencies.recordActivity();
 
   if (
     dependencies.dailyTurnLimit !== null &&
@@ -292,7 +295,6 @@ export const replyToCompanyMessenger = async (
   }
   await dependencies.writeReceipt(eventId, "completed");
   await dependencies.recordTurn();
-  await dependencies.onTurnSettled();
 };
 
 /** Temporary, address-keyed Osfo conversation served before registration. */
@@ -375,7 +377,7 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
         Effect.runPromiseExit(
           this.#withChannelLinks((channelLinks) => channelLinks.ensure(address)),
         ),
-      onTurnSettled: () => this.#settleTurn(context),
+      recordActivity: () => this.#recordActivity(context),
       readHeld: () => this.#heldInvite,
       readReceipt: async (eventId) =>
         (await this.ctx.storage.get<ReceiptStatus>(receiptKey(eventId))) ?? null,
@@ -392,7 +394,9 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
   /**
    * Teardown wakeup scheduled after every turn. Destroys the facet once its
    * address is linked or its idle lifetime elapsed; otherwise chains the next
-   * deadline. Idempotent payloads keep repeated schedules deduplicated.
+   * deadline. One stable idempotency payload prevents turns from accumulating
+   * redundant lifecycle callbacks; an earlier callback simply re-reads the
+   * latest activity and schedules the next required check.
    */
   async expireCompanyConversation(): Promise<void> {
     const stored = this.getConfig<unknown>();
@@ -416,7 +420,7 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
       this.#destroy();
       return;
     }
-    await this.schedule(decision.at, "expireCompanyConversation", decision.at.toISOString(), {
+    await this.schedule(decision.at, "expireCompanyConversation", COMPANY_TEARDOWN_PAYLOAD, {
       idempotent: true,
     });
   }
@@ -430,8 +434,8 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
     }
   }
 
-  async #settleTurn(context: MessengerContext): Promise<void> {
-    const authorId = context.author?.userId;
+  async #recordActivity(context: MessengerContext): Promise<void> {
+    const authorId = messengerAuthorId(context);
     if (authorId === undefined) return;
     const lastActivityAt = new Date();
     this.configure({
@@ -440,14 +444,9 @@ export class CompanyAgent extends Think<Env & RuntimeSecrets> {
       lastActivityAt: lastActivityAt.toISOString(),
     });
     const acceptanceDeadline = new Date(lastActivityAt.getTime() + ACCEPTANCE_TEARDOWN_MS);
-    await this.schedule(
-      acceptanceDeadline,
-      "expireCompanyConversation",
-      acceptanceDeadline.toISOString(),
-      {
-        idempotent: true,
-      },
-    );
+    await this.schedule(acceptanceDeadline, "expireCompanyConversation", COMPANY_TEARDOWN_PAYLOAD, {
+      idempotent: true,
+    });
   }
 
   async #dailyTurnCount(): Promise<number> {
