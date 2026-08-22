@@ -59,6 +59,7 @@ jobs:
           done
 
       - name: Run network-isolated PostgreSQL controls and Worker journeys
+        shell: bash
         run: |
           docker run --rm \
             --env OSFO_TEST_POSTGRES_URL=postgres://osfo:osfo@osfo-journeys-postgres:5432/postgres \

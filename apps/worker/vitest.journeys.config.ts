@@ -59,6 +59,8 @@ export default defineConfig({
     fileParallelism: false,
     globalSetup: ["./test/support/journey.globalsetup.ts"],
     include: ["test/journeys/**/*.test.ts"],
+    // postgres.js may cancel its Cloudflare socket stream after the request has
+    // completed. Ignore only that known teardown message from its polyfill.
     onUnhandledError: (error) =>
       error.message === "Stream was cancelled." &&
       error.stack?.includes("/postgres/cf/polyfills.js")
