@@ -37,6 +37,21 @@ const past = DbTimestamp.make("1960-01-01T00:00:00.000Z");
 const liveLease = DbTimestamp.make("2026-08-23T12:01:00.000Z");
 const extendedLease = DbTimestamp.make("2026-08-23T12:02:00.000Z");
 
+it("includes every generated Agent migration in the runtime manifest", () => {
+  const migrations = new URL("./migrations/", import.meta.url);
+  const migrationFiles = readdirSync(migrations).filter((name) => name.endsWith(".sql"));
+  // oxlint-disable-next-line unicorn/no-array-sort -- Generated filenames define migration order.
+  migrationFiles.sort();
+  const manifest = readFileSync(new URL("./migrate.ts", import.meta.url), "utf8");
+  const imports = [
+    ...manifest.matchAll(/import (\w+) from "\.\/migrations\/(\d{4}_[^"]+\.sql)";/gu),
+  ];
+  const referencedSql = new Set([...manifest.matchAll(/\bsql: (\w+),/gu)].map((match) => match[1]));
+
+  expect(imports.map((match) => match[2])).toEqual(migrationFiles);
+  expect(imports.every((match) => referencedSql.has(match[1] ?? ""))).toBe(true);
+});
+
 it.effect("atomically records a committed turn and its provider conversation snapshot", () =>
   withDatabase(({ database, storage }) =>
     Effect.gen(function* () {

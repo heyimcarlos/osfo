@@ -18,3 +18,6 @@ short, specific, and actionable.
 - Reconciliation must preserve the first immutable outbox payload when later
   history changes. Exact payload equality on an existing committed-turn identity
   can prevent an Agent from activating.
+- Adding a generated Agent SQLite migration is incomplete until the runtime
+  manifest imports it. Keep a test that compares generated SQL files with the
+  manifest imports so package tests exercise the production migration chain.
