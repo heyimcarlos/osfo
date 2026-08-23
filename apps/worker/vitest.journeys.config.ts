@@ -14,6 +14,7 @@ const workerBindings = {
   STRIPE_PORTAL_CONFIGURATION_ID: "bpc_approved",
   STRIPE_SECRET_KEY: "sk_test_osfo",
   STRIPE_WEBHOOK_SECRET: "whsec_test_osfo",
+  SUPERMEMORY_API_KEY: "test-only-supermemory-api-key",
   TELEGRAM_BOT_TOKEN: "telegram-test-bot-token",
   TELEGRAM_BOT_USERNAME: "osfo_test_bot",
   TELEGRAM_WEBHOOK_SECRET_TOKEN: "telegram-test-webhook-secret",

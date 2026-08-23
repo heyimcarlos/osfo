@@ -1,0 +1,329 @@
+import { BrowserCrypto } from "@effect/platform-browser";
+import Supermemory, { APIError } from "supermemory";
+import { Crypto, Effect, Encoding, Layer, Redacted, Schema } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+
+import type { SupermemoryConfig } from "../../config";
+import { MemoryProvider } from "../../services/memory-provider";
+
+/* oxlint-disable eslint/no-underscore-dangle -- Application-owned outcomes use the _tag discriminator. */
+
+const NonEmptyString = Schema.String.check(Schema.isMinLength(1));
+const AddResponse = Schema.Struct({
+  id: NonEmptyString,
+  status: Schema.Literal("queued"),
+});
+const ForgetResponse = Schema.Struct({
+  forgotten: Schema.Literal(true),
+  id: NonEmptyString,
+});
+const ProfileResponse = Schema.Struct({
+  profile: Schema.Struct({
+    dynamic: Schema.optionalKey(Schema.Array(Schema.String)),
+    static: Schema.optionalKey(Schema.Array(Schema.String)),
+  }),
+  searchResults: Schema.Struct({
+    results: Schema.Array(
+      Schema.Struct({
+        id: NonEmptyString,
+        memory: NonEmptyString,
+        similarity: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
+      }),
+    ),
+    timing: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+    total: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
+});
+
+/** Versioned Supermemory public prices used when per-call evidence is unavailable. */
+export interface RateCard {
+  readonly ingestionTokenUsdMicros: bigint;
+  readonly retrievalUsdMicros: bigint;
+  readonly version: string;
+}
+
+/** Published Supermemory text-ingestion and retrieval prices pinned for usage evidence. */
+export const publicRateCard: RateCard = {
+  ingestionTokenUsdMicros: 5n,
+  retrievalUsdMicros: 5n,
+  version: "supermemory-public-2026-08-22",
+};
+
+/** Runtime configuration for the Supermemory MemoryProvider adapter. */
+export interface Options {
+  readonly apiBaseURL?: string | undefined;
+  readonly apiKey: Redacted.Redacted;
+  readonly rateCard: RateCard;
+}
+
+const make = (options: Options) =>
+  Effect.gen(function* () {
+    const crypto = yield* Crypto.Crypto;
+    const httpClient = yield* HttpClient.HttpClient;
+    const apiBaseURL = (options.apiBaseURL ?? "https://api.supermemory.ai").replace(/\/+$/u, "");
+    const client = new Supermemory({
+      apiKey: Redacted.value(options.apiKey),
+      baseURL: apiBaseURL,
+      maxRetries: 0,
+    });
+
+    const recall = Effect.fn("SupermemoryMemoryProvider.recall")(function* (
+      input: MemoryProvider.RecallInput,
+    ) {
+      const containerTag = yield* providerIdentity(crypto, "u", input.userId, "recall");
+      const response = yield* sdkCall("recall", (signal) =>
+        client.profile({ containerTag, q: input.query }, { signal }),
+      );
+      const decoded = yield* decodeResponse("recall", ProfileResponse, response);
+      return {
+        profile: {
+          dynamic: decoded.profile.dynamic ?? [],
+          static: decoded.profile.static ?? [],
+        },
+        relevantMemories: decoded.searchResults.results.map((memory) => ({
+          content: memory.memory,
+          id: MemoryProvider.KnowledgeMemoryId.make(memory.id),
+          similarity: memory.similarity,
+        })),
+        usage: {
+          items: [
+            {
+              allowanceKind: "supermemoryRetrievals",
+              basis: "known_at_start",
+              quantity: 1n,
+            },
+            {
+              allowanceKind: "vendorUsdMicros",
+              basis: "known_at_start",
+              quantity: options.rateCard.retrievalUsdMicros,
+            },
+          ],
+          rateCardVersion: options.rateCard.version,
+        },
+      } satisfies MemoryProvider.RecallResult;
+    });
+
+    const appendConversationDelta = Effect.fn("SupermemoryMemoryProvider.appendConversationDelta")(
+      function* (input: MemoryProvider.AppendConversationDeltaInput) {
+        const [containerTag, customId] = yield* Effect.all([
+          providerIdentity(crypto, "u", input.userId, "appendConversationDelta"),
+          providerIdentity(crypto, "s", input.sessionId, "appendConversationDelta"),
+        ]);
+        const content = input.messages
+          .map((message) => `${message.role}: ${message.content}`)
+          .join("\n");
+        const response = yield* sdkCall("appendConversationDelta", (signal) =>
+          client.add({ content, containerTag, customId, taskType: "memory" }, { signal }),
+        );
+        yield* decodeResponse("appendConversationDelta", AddResponse, response);
+        const ingestionTokens = BigInt(new TextEncoder().encode(content).byteLength);
+        return {
+          usage: {
+            items: [
+              {
+                allowanceKind: "supermemoryIngestionTokens",
+                basis: "conservative",
+                quantity: ingestionTokens,
+              },
+              {
+                allowanceKind: "vendorUsdMicros",
+                basis: "conservative",
+                quantity: ingestionTokens * options.rateCard.ingestionTokenUsdMicros,
+              },
+            ],
+            rateCardVersion: options.rateCard.version,
+          },
+        } satisfies MemoryProvider.AppendConversationDeltaResult;
+      },
+    );
+
+    const forgetKnowledge = Effect.fn("SupermemoryMemoryProvider.forgetKnowledge")(function* (
+      input: MemoryProvider.ForgetKnowledgeInput,
+    ) {
+      const containerTag = yield* providerIdentity(crypto, "u", input.userId, "forgetKnowledge");
+      const results = yield* Effect.forEach(
+        input.memoryIds,
+        (id) =>
+          sdkDeletionCall("forgetKnowledge", [404, 409], (signal) =>
+            client.memories.forget({ containerTag, id }, { signal }),
+          ).pipe(
+            Effect.flatMap(
+              (
+                result,
+              ): Effect.Effect<
+                MemoryProvider.DeletionResult,
+                MemoryProvider.MemoryProviderUnavailable
+              > => {
+                if (result._tag === "AlreadyAbsent") return Effect.succeed(result);
+                return decodeResponse("forgetKnowledge", ForgetResponse, result.response).pipe(
+                  Effect.as({ _tag: "Deleted" } as const),
+                );
+              },
+            ),
+          ),
+        { concurrency: 1 },
+      );
+      return results.some((result) => result._tag === "Deleted")
+        ? ({ _tag: "Deleted" } as const)
+        : ({ _tag: "AlreadyAbsent" } as const);
+    });
+
+    const deleteSessionConversation = Effect.fn(
+      "SupermemoryMemoryProvider.deleteSessionConversation",
+    )(function* (input: MemoryProvider.DeleteSessionConversationInput) {
+      const customId = yield* providerIdentity(
+        crypto,
+        "s",
+        input.sessionId,
+        "deleteSessionConversation",
+      );
+      const result = yield* sdkDeletionCall("deleteSessionConversation", [404], (signal) =>
+        client.documents.delete(customId, { signal }),
+      );
+      return result._tag === "AlreadyAbsent" ? result : ({ _tag: "Deleted" } as const);
+    });
+
+    const deleteUserKnowledge = Effect.fn("SupermemoryMemoryProvider.deleteUserKnowledge")(
+      function* (input: MemoryProvider.DeleteUserKnowledgeInput) {
+        const containerTag = yield* providerIdentity(
+          crypto,
+          "u",
+          input.userId,
+          "deleteUserKnowledge",
+        );
+        const request = HttpClientRequest.delete(
+          `${apiBaseURL}/v3/container-tags/${encodeURIComponent(containerTag)}`,
+        ).pipe(HttpClientRequest.bearerToken(options.apiKey));
+        const response = yield* httpClient.execute(request).pipe(
+          Effect.mapError(
+            () =>
+              new MemoryProvider.MemoryProviderUnavailable({
+                message: "The MemoryProvider is unavailable",
+                operation: "deleteUserKnowledge",
+              }),
+          ),
+        );
+        if (response.status === 404) return { _tag: "AlreadyAbsent" } as const;
+        if (response.status >= 200 && response.status < 300) return { _tag: "Deleted" } as const;
+        return yield* providerStatusFailure("deleteUserKnowledge", response.status);
+      },
+    );
+
+    return MemoryProvider.Service.of({
+      appendConversationDelta,
+      deleteSessionConversation,
+      deleteUserKnowledge,
+      forgetKnowledge,
+      recall,
+    });
+  });
+
+/** Supermemory adapter Layer that preserves HTTP and cryptography dependencies. */
+export const layerWithoutDependencies = (options: Options) =>
+  Layer.effect(MemoryProvider.Service, make(options));
+
+/** Supermemory adapter Layer backed by Worker fetch and browser cryptography. */
+export const layer = (options: Options) =>
+  layerWithoutDependencies(options).pipe(
+    Layer.provide(Layer.merge(BrowserCrypto.layer, FetchHttpClient.layer)),
+  );
+
+/** Production Supermemory MemoryProvider Layer from parsed Worker configuration. */
+export const layerFromConfig = (config: SupermemoryConfig) =>
+  layer({
+    apiBaseURL: config.apiBaseURL,
+    apiKey: config.apiKey,
+    rateCard: publicRateCard,
+  });
+
+const providerIdentity = (
+  crypto: Crypto.Crypto,
+  prefix: "s" | "u",
+  identity: string,
+  operation: MemoryProvider.MemoryProviderOperation,
+) =>
+  crypto.digest("SHA-256", new TextEncoder().encode(identity)).pipe(
+    Effect.map((digest) => `${prefix}_${Encoding.encodeBase64Url(digest)}`),
+    Effect.mapError(
+      () =>
+        new MemoryProvider.MemoryProviderUnavailable({
+          message: "A provider-safe MemoryProvider identity could not be derived",
+          operation,
+        }),
+    ),
+  );
+
+const sdkCall = <A>(
+  operation: MemoryProvider.MemoryProviderOperation,
+  request: (signal: AbortSignal) => Promise<A>,
+) =>
+  Effect.tryPromise({
+    try: request,
+    catch: (cause) => providerFailure(operation, cause),
+  });
+
+const sdkDeletionCall = <A>(
+  operation: MemoryProvider.MemoryProviderOperation,
+  absentStatuses: ReadonlyArray<number>,
+  request: (signal: AbortSignal) => Promise<A>,
+) =>
+  Effect.tryPromise({
+    try: request,
+    catch: (cause) => ({ cause, status: cause instanceof APIError ? cause.status : undefined }),
+  }).pipe(
+    Effect.matchEffect({
+      onFailure: ({ cause, status }) =>
+        status !== undefined && absentStatuses.includes(status)
+          ? Effect.succeed({ _tag: "AlreadyAbsent" } as const)
+          : Effect.fail(providerFailure(operation, cause)),
+      onSuccess: (response) => Effect.succeed({ _tag: "Response", response } as const),
+    }),
+  );
+
+const decodeResponse = <S extends Schema.Top>(
+  operation: MemoryProvider.MemoryProviderOperation,
+  schema: S,
+  // oxlint-disable-next-line osfo/no-unknown-parameters -- The adapter owns decoding of every untrusted provider response.
+  response: unknown,
+) =>
+  Schema.decodeUnknownEffect(schema)(response).pipe(
+    Effect.mapError(
+      () =>
+        new MemoryProvider.MemoryProviderUnavailable({
+          message: "The MemoryProvider returned an invalid response",
+          operation,
+        }),
+    ),
+  );
+
+const providerFailure = (
+  operation: MemoryProvider.MemoryProviderOperation,
+  cause: unknown,
+): MemoryProvider.MemoryProviderRejected | MemoryProvider.MemoryProviderUnavailable => {
+  const status = cause instanceof APIError ? cause.status : undefined;
+  return status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429
+    ? new MemoryProvider.MemoryProviderRejected({
+        message: "The MemoryProvider rejected the operation",
+        operation,
+      })
+    : new MemoryProvider.MemoryProviderUnavailable({
+        message: "The MemoryProvider is unavailable",
+        operation,
+      });
+};
+
+const providerStatusFailure = (
+  operation: MemoryProvider.MemoryProviderOperation,
+  status: number,
+): MemoryProvider.MemoryProviderRejected | MemoryProvider.MemoryProviderUnavailable =>
+  status >= 400 && status < 500 && status !== 408 && status !== 429
+    ? new MemoryProvider.MemoryProviderRejected({
+        message: "The MemoryProvider rejected the operation",
+        operation,
+      })
+    : new MemoryProvider.MemoryProviderUnavailable({
+        message: "The MemoryProvider is unavailable",
+        operation,
+      });
+
+export * as SupermemoryMemoryProvider from "./memory-provider";

@@ -33,7 +33,8 @@
     "fflate": "0.8.2",
     "pdf-lib": "1.17.1",
     "postgres": "3.4.9",
-    "stripe": "22.5.0"
+    "stripe": "22.5.0",
+    "supermemory": "4.25.4"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "catalog:",

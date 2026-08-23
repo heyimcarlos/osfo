@@ -30,6 +30,8 @@ type RawConfigBinding =
   | "STRIPE_PORTAL_CONFIGURATION_ID"
   | "STRIPE_SECRET_KEY"
   | "STRIPE_WEBHOOK_SECRET"
+  | "SUPERMEMORY_API_BASE_URL"
+  | "SUPERMEMORY_API_KEY"
   | "TELEGRAM_BOT_TOKEN"
   | "TELEGRAM_BOT_USERNAME"
   | "TELEGRAM_WEBHOOK_SECRET_TOKEN"
@@ -61,6 +63,8 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly STRIPE_PORTAL_CONFIGURATION_ID?: string;
   readonly STRIPE_SECRET_KEY?: string;
   readonly STRIPE_WEBHOOK_SECRET?: string;
+  readonly SUPERMEMORY_API_BASE_URL?: string;
+  readonly SUPERMEMORY_API_KEY?: string;
   readonly TELEGRAM_BOT_TOKEN?: string;
   readonly TELEGRAM_BOT_USERNAME?: string;
   readonly TELEGRAM_WEBHOOK_SECRET_TOKEN?: string;
@@ -114,6 +118,13 @@ export interface StripeConfig {
   readonly webhookSecret: Redacted.Redacted;
 }
 
+/** Supermemory Knowledge Base configuration. */
+export interface SupermemoryConfig {
+  /** API origin override for emulated or proxied Supermemory deployments. */
+  readonly apiBaseURL?: string | undefined;
+  readonly apiKey: Redacted.Redacted;
+}
+
 /** Telegram linking and delivery configuration. */
 export interface TelegramConfig {
   readonly botToken: Redacted.Redacted;
@@ -144,6 +155,7 @@ export interface CloudflareConfig {
   readonly companyConversation: CompanyConversationConfig;
   readonly stage: OsfoStage;
   readonly stripe: StripeConfig;
+  readonly supermemory: SupermemoryConfig;
   readonly telegram: TelegramConfig;
   readonly twilioVerify: TwilioVerifyConfig;
   readonly whatsApp: WhatsAppConfig;
@@ -199,6 +211,10 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
       secretKey: Redacted.make(required(env, "STRIPE_SECRET_KEY")),
       webhookSecret: Redacted.make(required(env, "STRIPE_WEBHOOK_SECRET")),
     },
+    supermemory: {
+      apiBaseURL: optionalUrl(env, "SUPERMEMORY_API_BASE_URL"),
+      apiKey: Redacted.make(required(env, "SUPERMEMORY_API_KEY")),
+    },
     telegram: {
       botToken: Redacted.make(required(env, "TELEGRAM_BOT_TOKEN")),
       botUsername: required(env, "TELEGRAM_BOT_USERNAME").trim(),
@@ -222,7 +238,11 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
 
 type RequiredBinding = Exclude<
   RawConfigBinding,
-  "BETTER_AUTH_API_URL" | "OSFO_STAGE" | "STRIPE_API_BASE_URL" | "TWILIO_VERIFY_API_BASE_URL"
+  | "BETTER_AUTH_API_URL"
+  | "OSFO_STAGE"
+  | "STRIPE_API_BASE_URL"
+  | "SUPERMEMORY_API_BASE_URL"
+  | "TWILIO_VERIFY_API_BASE_URL"
 >;
 
 const required = (env: CloudflareEnv, binding: RequiredBinding): string => {
@@ -251,7 +271,11 @@ const parseOptionalPositiveInt = (value: string | undefined): number | null => {
 
 const optionalUrl = (
   env: CloudflareEnv,
-  binding: "BETTER_AUTH_API_URL" | "STRIPE_API_BASE_URL" | "TWILIO_VERIFY_API_BASE_URL",
+  binding:
+    | "BETTER_AUTH_API_URL"
+    | "STRIPE_API_BASE_URL"
+    | "SUPERMEMORY_API_BASE_URL"
+    | "TWILIO_VERIFY_API_BASE_URL",
 ): string | undefined => {
   const value = env[binding];
   return value === undefined || value.trim().length === 0
