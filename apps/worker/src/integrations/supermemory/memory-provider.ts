@@ -56,22 +56,59 @@ export interface Options {
   readonly rateCard: RateCard;
 }
 
+/** Keep raw SDK access, cancellation, retry policy, and failure translation inside the adapter. */
+const makeSdkClient = (options: {
+  readonly apiBaseURL: string;
+  readonly apiKey: Redacted.Redacted;
+}) => {
+  const client = new Supermemory({
+    apiKey: Redacted.value(options.apiKey),
+    baseURL: options.apiBaseURL,
+    maxRetries: 0,
+  });
+
+  const use = <A>(
+    operation: MemoryProvider.MemoryProviderOperation,
+    request: (client: Supermemory, signal: AbortSignal) => Promise<A>,
+  ) =>
+    Effect.tryPromise({
+      try: (signal) => request(client, signal),
+      catch: (cause) => providerFailure(operation, cause),
+    });
+
+  const useDeletion = <A>(
+    operation: MemoryProvider.MemoryProviderOperation,
+    absentStatuses: ReadonlyArray<number>,
+    request: (client: Supermemory, signal: AbortSignal) => Promise<A>,
+  ) =>
+    Effect.tryPromise({
+      try: (signal) => request(client, signal),
+      catch: (cause) => ({ cause, status: cause instanceof APIError ? cause.status : undefined }),
+    }).pipe(
+      Effect.matchEffect({
+        onFailure: ({ cause, status }) =>
+          status !== undefined && absentStatuses.includes(status)
+            ? Effect.succeed({ _tag: "AlreadyAbsent" } as const)
+            : Effect.fail(providerFailure(operation, cause)),
+        onSuccess: (response) => Effect.succeed({ _tag: "Response", response } as const),
+      }),
+    );
+
+  return { use, useDeletion };
+};
+
 const make = (options: Options) =>
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto;
     const httpClient = yield* HttpClient.HttpClient;
     const apiBaseURL = (options.apiBaseURL ?? "https://api.supermemory.ai").replace(/\/+$/u, "");
-    const client = new Supermemory({
-      apiKey: Redacted.value(options.apiKey),
-      baseURL: apiBaseURL,
-      maxRetries: 0,
-    });
+    const sdk = makeSdkClient({ apiBaseURL, apiKey: options.apiKey });
 
     const recall = Effect.fn("SupermemoryMemoryProvider.recall")(function* (
       input: MemoryProvider.RecallInput,
     ) {
       const containerTag = yield* providerIdentity(crypto, "u", input.userId, "recall");
-      const response = yield* sdkCall("recall", (signal) =>
+      const response = yield* sdk.use("recall", (client, signal) =>
         client.profile({ containerTag, q: input.query }, { signal }),
       );
       const decoded = yield* decodeResponse("recall", ProfileResponse, response);
@@ -112,7 +149,7 @@ const make = (options: Options) =>
         const content = input.messages
           .map((message) => `${message.role}: ${message.content}`)
           .join("\n");
-        const response = yield* sdkCall("appendConversationDelta", (signal) =>
+        const response = yield* sdk.use("appendConversationDelta", (client, signal) =>
           client.add({ content, containerTag, customId, taskType: "memory" }, { signal }),
         );
         yield* decodeResponse("appendConversationDelta", AddResponse, response);
@@ -144,23 +181,25 @@ const make = (options: Options) =>
       const results = yield* Effect.forEach(
         input.memoryIds,
         (id) =>
-          sdkDeletionCall("forgetKnowledge", [404, 409], (signal) =>
-            client.memories.forget({ containerTag, id }, { signal }),
-          ).pipe(
-            Effect.flatMap(
-              (
-                result,
-              ): Effect.Effect<
-                MemoryProvider.DeletionResult,
-                MemoryProvider.MemoryProviderUnavailable
-              > => {
-                if (result._tag === "AlreadyAbsent") return Effect.succeed(result);
-                return decodeResponse("forgetKnowledge", ForgetResponse, result.response).pipe(
-                  Effect.as({ _tag: "Deleted" } as const),
-                );
-              },
+          sdk
+            .useDeletion("forgetKnowledge", [404, 409], (client, signal) =>
+              client.memories.forget({ containerTag, id }, { signal }),
+            )
+            .pipe(
+              Effect.flatMap(
+                (
+                  result,
+                ): Effect.Effect<
+                  MemoryProvider.DeletionResult,
+                  MemoryProvider.MemoryProviderUnavailable
+                > => {
+                  if (result._tag === "AlreadyAbsent") return Effect.succeed(result);
+                  return decodeResponse("forgetKnowledge", ForgetResponse, result.response).pipe(
+                    Effect.as({ _tag: "Deleted" } as const),
+                  );
+                },
+              ),
             ),
-          ),
         { concurrency: 1 },
       );
       return results.some((result) => result._tag === "Deleted")
@@ -177,7 +216,7 @@ const make = (options: Options) =>
         input.sessionId,
         "deleteSessionConversation",
       );
-      const result = yield* sdkDeletionCall("deleteSessionConversation", [404], (signal) =>
+      const result = yield* sdk.useDeletion("deleteSessionConversation", [404], (client, signal) =>
         client.documents.delete(customId, { signal }),
       );
       return result._tag === "AlreadyAbsent" ? result : ({ _tag: "Deleted" } as const);
@@ -251,33 +290,6 @@ const providerIdentity = (
           operation,
         }),
     ),
-  );
-
-const sdkCall = <A>(
-  operation: MemoryProvider.MemoryProviderOperation,
-  request: (signal: AbortSignal) => Promise<A>,
-) =>
-  Effect.tryPromise({
-    try: request,
-    catch: (cause) => providerFailure(operation, cause),
-  });
-
-const sdkDeletionCall = <A>(
-  operation: MemoryProvider.MemoryProviderOperation,
-  absentStatuses: ReadonlyArray<number>,
-  request: (signal: AbortSignal) => Promise<A>,
-) =>
-  Effect.tryPromise({
-    try: request,
-    catch: (cause) => ({ cause, status: cause instanceof APIError ? cause.status : undefined }),
-  }).pipe(
-    Effect.matchEffect({
-      onFailure: ({ cause, status }) =>
-        status !== undefined && absentStatuses.includes(status)
-          ? Effect.succeed({ _tag: "AlreadyAbsent" } as const)
-          : Effect.fail(providerFailure(operation, cause)),
-      onSuccess: (response) => Effect.succeed({ _tag: "Response", response } as const),
-    }),
   );
 
 const decodeResponse = <S extends Schema.Top>(
