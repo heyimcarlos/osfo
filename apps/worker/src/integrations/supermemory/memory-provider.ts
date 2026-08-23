@@ -1,7 +1,12 @@
 import { BrowserCrypto } from "@effect/platform-browser";
 import Supermemory, { APIError } from "supermemory";
 import { Crypto, Effect, Encoding, Layer, Redacted, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/unstable/http";
 
 import type { SupermemoryConfig } from "../../config";
 import { MemoryProvider } from "../../services/memory-provider";
@@ -9,9 +14,15 @@ import { MemoryProvider } from "../../services/memory-provider";
 /* oxlint-disable eslint/no-underscore-dangle -- Application-owned outcomes use the _tag discriminator. */
 
 const NonEmptyString = Schema.String.check(Schema.isMinLength(1));
-const AddResponse = Schema.Struct({
+const SaveConversationRequest = Schema.Struct({
+  containerTags: Schema.NonEmptyArray(NonEmptyString),
+  conversationId: NonEmptyString,
+  messages: Schema.NonEmptyArray(MemoryProvider.ConversationMessage),
+});
+const SaveConversationResponse = Schema.Struct({
+  conversationId: NonEmptyString,
   id: NonEmptyString,
-  status: Schema.Literal("queued"),
+  status: NonEmptyString,
 });
 const ForgetResponse = Schema.Struct({
   forgotten: Schema.Literal(true),
@@ -140,39 +151,61 @@ const make = (options: Options) =>
       } satisfies MemoryProvider.RecallResult;
     });
 
-    const appendConversationDelta = Effect.fn("SupermemoryMemoryProvider.appendConversationDelta")(
-      function* (input: MemoryProvider.AppendConversationDeltaInput) {
-        const [containerTag, customId] = yield* Effect.all([
-          providerIdentity(crypto, "u", input.userId, "appendConversationDelta"),
-          providerIdentity(crypto, "s", input.sessionId, "appendConversationDelta"),
-        ]);
-        const content = input.messages
-          .map((message) => `${message.role}: ${message.content}`)
-          .join("\n");
-        const response = yield* sdk.use("appendConversationDelta", (client, signal) =>
-          client.add({ content, containerTag, customId, taskType: "memory" }, { signal }),
-        );
-        yield* decodeResponse("appendConversationDelta", AddResponse, response);
-        const ingestionTokens = BigInt(new TextEncoder().encode(content).byteLength);
-        return {
-          usage: {
-            items: [
-              {
-                allowanceKind: "supermemoryIngestionTokens",
-                basis: "conservative",
-                quantity: ingestionTokens,
-              },
-              {
-                allowanceKind: "vendorUsdMicros",
-                basis: "conservative",
-                quantity: ingestionTokens * options.rateCard.ingestionTokenUsdMicros,
-              },
-            ],
-            rateCardVersion: options.rateCard.version,
-          },
-        } satisfies MemoryProvider.AppendConversationDeltaResult;
-      },
-    );
+    const saveConversation = Effect.fn("SupermemoryMemoryProvider.saveConversation")(function* (
+      input: MemoryProvider.SaveConversationInput,
+    ) {
+      const [containerTag, conversationId] = yield* Effect.all([
+        providerIdentity(crypto, "u", input.userId, "saveConversation"),
+        providerIdentity(crypto, "s", input.sessionId, "saveConversation"),
+      ]);
+      const request = yield* HttpClientRequest.post(`${apiBaseURL}/v4/conversations`).pipe(
+        HttpClientRequest.bearerToken(options.apiKey),
+        HttpClientRequest.schemaBodyJson(SaveConversationRequest)({
+          containerTags: [containerTag],
+          conversationId,
+          messages: input.conversation.messages,
+        }),
+        Effect.mapError(() => providerUnavailable("saveConversation", "requestEncoding")),
+      );
+      const response = yield* httpClient
+        .execute(request)
+        .pipe(Effect.mapError(() => providerUnavailable("saveConversation", "transport")));
+      if (response.status < 200 || response.status >= 300) {
+        return yield* providerStatusFailure("saveConversation", response.status);
+      }
+      const decoded = yield* HttpClientResponse.schemaBodyJson(SaveConversationResponse)(
+        response,
+      ).pipe(Effect.mapError(() => providerUnavailable("saveConversation", "responseDecoding")));
+      if (decoded.conversationId !== conversationId) {
+        return yield* providerUnavailable("saveConversation", "identityMismatch");
+      }
+      const ingestionTokens = BigInt(
+        input.conversation.messages
+          .slice(input.conversation.usageStartIndex)
+          .reduce(
+            (total, message) =>
+              total + new TextEncoder().encode(`${message.role}\n${message.content}`).byteLength,
+            0,
+          ),
+      );
+      return {
+        usage: {
+          items: [
+            {
+              allowanceKind: "supermemoryIngestionTokens",
+              basis: "conservative",
+              quantity: ingestionTokens,
+            },
+            {
+              allowanceKind: "vendorUsdMicros",
+              basis: "conservative",
+              quantity: ingestionTokens * options.rateCard.ingestionTokenUsdMicros,
+            },
+          ],
+          rateCardVersion: options.rateCard.version,
+        },
+      } satisfies MemoryProvider.SaveConversationResult;
+    });
 
     const forgetKnowledge = Effect.fn("SupermemoryMemoryProvider.forgetKnowledge")(function* (
       input: MemoryProvider.ForgetKnowledgeInput,
@@ -249,11 +282,11 @@ const make = (options: Options) =>
     );
 
     return MemoryProvider.Service.of({
-      appendConversationDelta,
       deleteSessionConversation,
       deleteUserKnowledge,
       forgetKnowledge,
       recall,
+      saveConversation,
     });
   });
 
@@ -302,6 +335,7 @@ const decodeResponse = <S extends Schema.Top>(
     Effect.mapError(
       () =>
         new MemoryProvider.MemoryProviderUnavailable({
+          diagnostic: "responseDecoding",
           message: "The MemoryProvider returned an invalid response",
           operation,
         }),
@@ -313,15 +347,12 @@ const providerFailure = (
   cause: unknown,
 ): MemoryProvider.MemoryProviderRejected | MemoryProvider.MemoryProviderUnavailable => {
   const status = cause instanceof APIError ? cause.status : undefined;
-  return status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429
-    ? new MemoryProvider.MemoryProviderRejected({
-        message: "The MemoryProvider rejected the operation",
-        operation,
-      })
-    : new MemoryProvider.MemoryProviderUnavailable({
-        message: "The MemoryProvider is unavailable",
-        operation,
-      });
+  if (status !== undefined) return providerStatusFailure(operation, status);
+  return new MemoryProvider.MemoryProviderUnavailable({
+    diagnostic: "transport",
+    message: "The MemoryProvider is unavailable",
+    operation,
+  });
 };
 
 const providerStatusFailure = (
@@ -332,10 +363,25 @@ const providerStatusFailure = (
     ? new MemoryProvider.MemoryProviderRejected({
         message: "The MemoryProvider rejected the operation",
         operation,
+        status,
       })
     : new MemoryProvider.MemoryProviderUnavailable({
         message: "The MemoryProvider is unavailable",
         operation,
+        status,
       });
+
+const providerUnavailable = (
+  operation: MemoryProvider.MemoryProviderOperation,
+  diagnostic: MemoryProvider.MemoryProviderDiagnostic,
+) =>
+  new MemoryProvider.MemoryProviderUnavailable({
+    diagnostic,
+    message:
+      diagnostic === "identityMismatch" || diagnostic === "responseDecoding"
+        ? "The MemoryProvider returned an invalid response"
+        : "The MemoryProvider is unavailable",
+    operation,
+  });
 
 export * as SupermemoryMemoryProvider from "./memory-provider";

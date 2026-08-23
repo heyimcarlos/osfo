@@ -89,16 +89,28 @@ it.effect("recalls User-scoped profile and relevant Knowledge Base evidence", ()
   ),
 );
 
-it.effect("appends only one ordered Session delta with conservative usage evidence", () =>
+it.effect("saves one structured Session conversation with conservative usage evidence", () =>
   withProvider(({ requests, origin, respondWith }) =>
     Effect.gen(function* () {
-      respondWith({ body: { id: "document-1", status: "queued" }, status: 200 });
+      respondWith({
+        body: {
+          conversationId: "s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
+          id: "document-1",
+          status: "queued",
+        },
+        status: 200,
+      });
       const memory = yield* MemoryProvider.Service;
-      const result = yield* memory.appendConversationDelta({
-        messages: [
-          { content: "Hello 👋", role: "user" },
-          { content: "Hi", role: "assistant" },
-        ],
+      const result = yield* memory.saveConversation({
+        conversation: MemoryProvider.ConversationSnapshot.make({
+          messages: [
+            { content: "Earlier question", role: "user" },
+            { content: "Earlier answer", role: "assistant" },
+            { content: "Hello 👋", role: "user" },
+            { content: "Hi", role: "assistant" },
+          ],
+          usageStartIndex: 2,
+        }),
         sessionId: SessionId.make("session:with/provider-invalid characters"),
         userId: UserId.make("user:with/provider-invalid characters"),
       });
@@ -109,12 +121,12 @@ it.effect("appends only one ordered Session delta with conservative usage eviden
             {
               allowanceKind: "supermemoryIngestionTokens",
               basis: "conservative",
-              quantity: 30n,
+              quantity: 27n,
             },
             {
               allowanceKind: "vendorUsdMicros",
               basis: "conservative",
-              quantity: 150n,
+              quantity: 135n,
             },
           ],
           rateCardVersion: "supermemory-public-2026-08-22",
@@ -124,13 +136,17 @@ it.effect("appends only one ordered Session delta with conservative usage eviden
         {
           authorization: "Bearer test-api-key",
           body: {
-            containerTag: "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY",
-            content: "user: Hello 👋\nassistant: Hi",
-            customId: "s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
-            taskType: "memory",
+            containerTags: ["u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
+            conversationId: "s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
+            messages: [
+              { content: "Earlier question", role: "user" },
+              { content: "Earlier answer", role: "assistant" },
+              { content: "Hello 👋", role: "user" },
+              { content: "Hi", role: "assistant" },
+            ],
           },
           method: "POST",
-          path: "/v3/documents",
+          path: "/v4/conversations",
         },
       ]);
     }).pipe(Effect.provide(providerLayer(origin))),
@@ -267,10 +283,12 @@ it.effect("keeps authorization and transient provider failures distinct", () =>
       expect(rejected).toMatchObject({
         _tag: "MemoryProviderRejected",
         operation: "deleteUserKnowledge",
+        status: 403,
       });
       expect(unavailable).toMatchObject({
         _tag: "MemoryProviderUnavailable",
         operation: "recall",
+        status: 429,
       });
     }).pipe(Effect.provide(providerLayer(origin))),
   ),
@@ -287,8 +305,41 @@ it.effect("rejects malformed provider payloads at the adapter boundary", () =>
 
       expect(failure).toMatchObject({
         _tag: "MemoryProviderUnavailable",
+        diagnostic: "responseDecoding",
         message: "The MemoryProvider returned an invalid response",
         operation: "recall",
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("rejects a conversation response for a different provider identity", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: { conversationId: "another-session", id: "document-1", status: "queued" },
+        status: 200,
+      });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .saveConversation({
+          conversation: MemoryProvider.ConversationSnapshot.make({
+            messages: [
+              { content: "Hello", role: "user" },
+              { content: "Hi", role: "assistant" },
+            ],
+            usageStartIndex: 0,
+          }),
+          sessionId: SessionId.make("session-1"),
+          userId: UserId.make("user-1"),
+        })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "identityMismatch",
+        message: "The MemoryProvider returned an invalid response",
+        operation: "saveConversation",
       });
     }).pipe(Effect.provide(providerLayer(origin))),
   ),

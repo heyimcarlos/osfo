@@ -35,10 +35,10 @@ import {
   sessionRecallCursors,
   sessionOwnership,
 } from "./schema";
-import type { ConversationDeltaProjection } from "../memory-provider-projection";
+import type { ConversationSnapshotProjection } from "../memory-provider-projection";
 import {
-  conversationDeltaIsCompatibleTransaction,
-  enqueueConversationDeltaTransaction,
+  conversationSnapshotIsCompatibleTransaction,
+  enqueueConversationSnapshotTransaction,
 } from "./memory-provider-outbox";
 
 const sqliteCurrentTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u;
@@ -632,7 +632,7 @@ export const makeAgentStore = (db: AgentDb) => {
 
   const recordCommittedTurn = Effect.fn("AgentStore.recordCommittedTurn")(function* (
     reference: CommittedTurnObservation,
-    projection?: ConversationDeltaProjection,
+    projection?: ConversationSnapshotProjection,
   ) {
     const enqueuedAt = yield* DateTime.now.pipe(
       Effect.map((time) => DbTimestamp.make(DateTime.toDateUtc(time).toISOString())),
@@ -644,14 +644,14 @@ export const makeAgentStore = (db: AgentDb) => {
           projection !== undefined &&
           (projection.lastMessageId !== reference.assistantMessageId ||
             projection.sessionId !== reference.sessionId ||
-            !conversationDeltaIsCompatibleTransaction(transaction, projection))
+            !conversationSnapshotIsCompatibleTransaction(transaction, projection))
         ) {
           return { _tag: "InvalidRecord" } as const;
         }
         const receipt = <T>(value: T) => {
           if (
             projection !== undefined &&
-            !enqueueConversationDeltaTransaction(transaction, projection, enqueuedAt)
+            !enqueueConversationSnapshotTransaction(transaction, projection, enqueuedAt)
           ) {
             // The compatibility check above makes this unreachable within one SQLite transaction.
             throw new Error("The MemoryProvider outbox identity changed during insertion");

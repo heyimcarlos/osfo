@@ -115,10 +115,10 @@ const executeProviderClaim = Effect.fn("MemoryProviderOutbox.executeProviderClai
   const provider = yield* MemoryProvider.Service;
   const payload = claim.payload;
   switch (payload._tag) {
-    case "AppendConversationDelta":
+    case "SaveConversation":
       return yield* provider
-        .appendConversationDelta({
-          messages: payload.projection.messages,
+        .saveConversation({
+          conversation: payload.projection.conversation,
           sessionId: payload.projection.sessionId,
           userId: payload.projection.userId,
         })

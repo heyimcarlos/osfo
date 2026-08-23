@@ -8,3 +8,7 @@ short, specific, and actionable.
   preserve stale worktree or GitHub assumptions as constraints.
 - Quote shell search patterns that contain Markdown backticks. Unquoted backticks
   cause the shell to execute the enclosed text instead of searching for it.
+- Run Worker Vitest configs from `apps/worker`; their include patterns are relative
+  to that package directory, even when the config path resolves from the repo root.
+- Build Git-derived formatter paths and run the formatter from the same repository
+  root; package-relative working directories make those paths invalid.

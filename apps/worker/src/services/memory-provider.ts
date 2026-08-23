@@ -17,14 +17,30 @@ export const ConversationRole = Schema.Literals(["user", "assistant"]);
 /** Human-visible conversation roles accepted by the Knowledge Base. */
 export type ConversationRole = typeof ConversationRole.Type;
 
-/** One newly committed human-visible message sent in a Session delta. */
+/** One committed human-visible message sent in a Session conversation. */
 export const ConversationMessage = Schema.Struct({
   content: Schema.String.check(Schema.isMinLength(1)),
   role: ConversationRole,
 });
 
-/** One newly committed human-visible message sent in a Session delta. */
+/** One committed human-visible message sent in a Session conversation. */
 export type ConversationMessage = typeof ConversationMessage.Type;
+
+/** Full conversation plus the first message included in conservative usage for this turn. */
+export const ConversationSnapshot = Schema.Struct({
+  messages: Schema.NonEmptyArray(ConversationMessage),
+  usageStartIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+})
+  .check(
+    Schema.makeFilter(
+      ({ messages, usageStartIndex }) =>
+        usageStartIndex < messages.length || "must identify a message in the snapshot",
+    ),
+  )
+  .pipe(Schema.brand("MemoryProviderConversationSnapshot"));
+
+/** Full conversation plus the first message included in conservative usage for this turn. */
+export type ConversationSnapshot = typeof ConversationSnapshot.Type;
 
 /** Normalized allowance evidence returned without provider billing objects. */
 export const UsageEvidence = Schema.Struct({
@@ -58,15 +74,15 @@ export interface RecallResult {
   readonly usage: UsageEvidence;
 }
 
-/** One ordered, delta-only append for a committed Session turn. */
-export interface AppendConversationDeltaInput {
-  readonly messages: readonly [ConversationMessage, ...Array<ConversationMessage>];
+/** One ordered conversation snapshot ending at a committed Session turn. */
+export interface SaveConversationInput {
+  readonly conversation: ConversationSnapshot;
   readonly sessionId: SessionId;
   readonly userId: UserId;
 }
 
-/** Successful provider acceptance of one Session conversation delta. */
-export interface AppendConversationDeltaResult {
+/** Successful provider acceptance of one Session conversation snapshot. */
+export interface SaveConversationResult {
   readonly usage: UsageEvidence;
 }
 
@@ -93,7 +109,7 @@ export type DeletionResult = { readonly _tag: "AlreadyAbsent" } | { readonly _ta
 /** MemoryProvider operations used in safe failures and telemetry. */
 export const MemoryProviderOperation = Schema.Literals([
   "recall",
-  "appendConversationDelta",
+  "saveConversation",
   "forgetKnowledge",
   "deleteSessionConversation",
   "deleteUserKnowledge",
@@ -102,12 +118,24 @@ export const MemoryProviderOperation = Schema.Literals([
 /** MemoryProvider operations used in safe failures and telemetry. */
 export type MemoryProviderOperation = typeof MemoryProviderOperation.Type;
 
+/** Safe adapter diagnostic that excludes provider payloads and credentials. */
+export const MemoryProviderDiagnostic = Schema.Literals([
+  "identityMismatch",
+  "requestEncoding",
+  "responseDecoding",
+  "transport",
+]);
+
+/** Safe adapter diagnostic that excludes provider payloads and credentials. */
+export type MemoryProviderDiagnostic = typeof MemoryProviderDiagnostic.Type;
+
 /** Non-retryable rejection from the selected MemoryProvider. */
 export class MemoryProviderRejected extends Schema.TaggedError<MemoryProviderRejected>()(
   "MemoryProviderRejected",
   {
     message: Schema.String,
     operation: MemoryProviderOperation,
+    status: Schema.optionalKey(Schema.Int),
   },
 ) {}
 
@@ -115,19 +143,18 @@ export class MemoryProviderRejected extends Schema.TaggedError<MemoryProviderRej
 export class MemoryProviderUnavailable extends Schema.TaggedError<MemoryProviderUnavailable>()(
   "MemoryProviderUnavailable",
   {
+    diagnostic: Schema.optionalKey(MemoryProviderDiagnostic),
     message: Schema.String,
     operation: MemoryProviderOperation,
+    status: Schema.optionalKey(Schema.Int),
   },
 ) {}
 
 /** Application-owned Knowledge Base operations independent of provider SDK types. */
 export interface Interface {
-  readonly appendConversationDelta: (
-    input: AppendConversationDeltaInput,
-  ) => Effect.Effect<
-    AppendConversationDeltaResult,
-    MemoryProviderRejected | MemoryProviderUnavailable
-  >;
+  readonly saveConversation: (
+    input: SaveConversationInput,
+  ) => Effect.Effect<SaveConversationResult, MemoryProviderRejected | MemoryProviderUnavailable>;
   readonly deleteSessionConversation: (
     input: DeleteSessionConversationInput,
   ) => Effect.Effect<DeletionResult, MemoryProviderRejected | MemoryProviderUnavailable>;

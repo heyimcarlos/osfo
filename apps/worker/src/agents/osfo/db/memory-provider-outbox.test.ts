@@ -3,7 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { DbTimestamp } from "../../../db";
 import { AssistantMessageId, SessionId } from "../../../domain";
 import {
-  conversationDeltaOutboxId,
+  conversationSnapshotOutboxId,
   selectMemoryProviderClaimCandidate,
 } from "./memory-provider-outbox";
 
@@ -12,7 +12,7 @@ const now = DbTimestamp.make("2026-08-23T12:00:00.000Z");
 describe("MemoryProvider outbox identity", () => {
   it("derives the exact durable retry identity from the committed boundary", () => {
     expect(
-      conversationDeltaOutboxId(
+      conversationSnapshotOutboxId(
         SessionId.make("session-1"),
         AssistantMessageId.make("assistant-2"),
       ),
@@ -20,9 +20,9 @@ describe("MemoryProvider outbox identity", () => {
   });
 
   it("keeps opaque Session and message boundaries unambiguous", () => {
-    expect(conversationDeltaOutboxId(SessionId.make("a:b"), AssistantMessageId.make("c"))).not.toBe(
-      conversationDeltaOutboxId(SessionId.make("a"), AssistantMessageId.make("b:c")),
-    );
+    expect(
+      conversationSnapshotOutboxId(SessionId.make("a:b"), AssistantMessageId.make("c")),
+    ).not.toBe(conversationSnapshotOutboxId(SessionId.make("a"), AssistantMessageId.make("b:c")));
   });
 });
 

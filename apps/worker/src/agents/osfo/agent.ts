@@ -70,7 +70,7 @@ import {
 import { currentPolicy, retainedCatalog, type PlanPolicyNotFound } from "../../domain/plan-policy";
 import {
   CommittedTurnTerminal,
-  readCommittedTurnTerminal,
+  persistThinkTerminalBeforeCapture,
   withCommittedTurnTerminal,
 } from "./committed-turn-terminal";
 import { FileAnalysisId, FileId, FileName, FileUploadId } from "../../domain/file";
@@ -203,7 +203,10 @@ import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-author
 import { makeAgentSessionLifecycle } from "./session-lifecycle";
 import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
 import { effectToolSchema } from "./effect-tool-schema";
-import { projectCommittedConversationDelta } from "./memory-provider-projection";
+import {
+  projectCommittedConversationSnapshot,
+  projectTerminalMarkedCommittedTurns,
+} from "./memory-provider-projection";
 import { makeMemoryProviderOutboxStore } from "./db/memory-provider-outbox";
 import { reconcileMemoryProviderOutbox } from "./memory-provider-reconciliation";
 
@@ -1672,31 +1675,46 @@ export class OsfoAgent extends Think<Env> {
     await this.#migrationsReady;
     const assistantMessageId = AssistantMessageId.make(result.message.id);
     const thinkRequestId = ThinkRequestId.make(result.requestId);
-    const terminal = CommittedTurnTerminal.make({
-      requestId: thinkRequestId,
-      status: result.status,
-    });
-    await this.updateMessageInHistory({
-      ...result.message,
-      metadata: withCommittedTurnTerminal(result.message.metadata, terminal),
-    });
+    const activeTurn = Schema.decodeUnknownOption(ManagedTurnMetadata)(this.activeTurnMetadata);
+    const terminal = Option.isNone(activeTurn)
+      ? CommittedTurnTerminal.make({ requestId: thinkRequestId, status: result.status })
+      : CommittedTurnTerminal.make({
+          attribution: {
+            allowancePeriodId: activeTurn.value.allowancePeriodId,
+            sessionId: activeTurn.value.sessionId,
+            userId: activeTurn.value.authorityIdentity.userId,
+          },
+          requestId: thinkRequestId,
+          status: result.status,
+        });
     await Effect.runPromise(
-      this.#findThinkMessageOwner(assistantMessageId, thinkRequestId).pipe(
-        Effect.tap((sessionId) =>
-          readThinkHistory(Session.create(this), sessionId).pipe(
-            Effect.flatMap((history) =>
-              this.#store.recordCommittedTurn(
-                {
-                  assistantMessageId,
-                  sessionId,
-                  source: "hook",
-                  thinkRequestId,
-                },
-                result.status === "completed"
-                  ? Option.getOrUndefined(
-                      projectCommittedConversationDelta(history, assistantMessageId, sessionId),
-                    )
-                  : undefined,
+      persistThinkTerminalBeforeCapture(
+        () =>
+          this.updateMessageInHistory({
+            ...result.message,
+            metadata: withCommittedTurnTerminal(result.message.metadata, terminal),
+          }),
+        this.#findThinkMessageOwner(assistantMessageId, thinkRequestId).pipe(
+          Effect.tap((sessionId) =>
+            readThinkHistory(Session.create(this), sessionId).pipe(
+              Effect.flatMap((history) =>
+                this.#store.recordCommittedTurn(
+                  {
+                    assistantMessageId,
+                    sessionId,
+                    source: "hook",
+                    thinkRequestId,
+                  },
+                  result.status === "completed"
+                    ? Option.getOrUndefined(
+                        projectCommittedConversationSnapshot(
+                          history,
+                          assistantMessageId,
+                          sessionId,
+                        ),
+                      )
+                    : undefined,
+                ),
               ),
             ),
           ),
@@ -2225,29 +2243,17 @@ export class OsfoAgent extends Think<Env> {
             readThinkHistory(Session.create(this), sessionId).pipe(
               Effect.flatMap((messages) =>
                 Effect.forEach(
-                  messages.filter(({ role }) => role === "assistant"),
-                  (message) => {
-                    const terminal = readCommittedTurnTerminal(message.metadata);
-                    if (Option.isNone(terminal)) return Effect.void;
-                    const assistantMessageId = AssistantMessageId.make(message.id);
-                    return this.#store.recordCommittedTurn(
+                  projectTerminalMarkedCommittedTurns(messages, sessionId),
+                  ({ assistantMessageId, projection, terminal }) =>
+                    this.#store.recordCommittedTurn(
                       {
                         assistantMessageId,
                         sessionId,
                         source: "reconciliation",
-                        thinkRequestId: terminal.value.requestId,
+                        thinkRequestId: terminal.requestId,
                       },
-                      terminal.value.status === "completed"
-                        ? Option.getOrUndefined(
-                            projectCommittedConversationDelta(
-                              messages,
-                              assistantMessageId,
-                              sessionId,
-                            ),
-                          )
-                        : undefined,
-                    );
-                  },
+                      projection,
+                    ),
                   { concurrency: 1, discard: true },
                 ),
               ),

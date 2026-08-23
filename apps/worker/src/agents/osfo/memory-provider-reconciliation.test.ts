@@ -70,17 +70,17 @@ it.effect("completes deletion work only after provider confirmation", () => {
   );
 });
 
-it.effect("retries the exact append identity and payload during a provider outage", () => {
-  const claim = appendClaim();
-  const observed: Array<MemoryProvider.AppendConversationDeltaInput> = [];
+it.effect("retries the exact conversation snapshot during a provider outage", () => {
+  const claim = conversationClaim();
+  const observed: Array<MemoryProvider.SaveConversationInput> = [];
   const { completed, retried, store } = testStore(claim);
   const provider = providerStub({
-    appendConversationDelta: (input) => {
+    saveConversation: (input) => {
       observed.push(input);
       return Effect.fail(
         new MemoryProvider.MemoryProviderUnavailable({
           message: "Provider is unavailable",
-          operation: "appendConversationDelta",
+          operation: "saveConversation",
         }),
       );
     },
@@ -94,10 +94,13 @@ it.effect("retries the exact append identity and payload during a provider outag
       Effect.sync(() => {
         expect(observed).toEqual([
           {
-            messages: [
-              { content: "Remember this", role: "user" },
-              { content: "I will remember it", role: "assistant" },
-            ],
+            conversation: MemoryProvider.ConversationSnapshot.make({
+              messages: [
+                { content: "Remember this", role: "user" },
+                { content: "I will remember it", role: "assistant" },
+              ],
+              usageStartIndex: 0,
+            }),
             sessionId: "session-1",
             userId: "user-1",
           },
@@ -109,11 +112,11 @@ it.effect("retries the exact append identity and payload during a provider outag
   );
 });
 
-it.effect("stops when a stale append claim loses settlement ownership", () => {
-  const claim = appendClaim();
+it.effect("stops when a stale conversation claim loses settlement ownership", () => {
+  const claim = conversationClaim();
   const { completed, retried, store } = testStore(claim, { providerApplied: false });
   const provider = providerStub({
-    appendConversationDelta: () =>
+    saveConversation: () =>
       Effect.succeed({
         usage: {
           items: [
@@ -156,21 +159,23 @@ const deletionClaim = (): ClaimedMemoryProviderWork => ({
   usage: null,
 });
 
-const appendClaim = (): ClaimedMemoryProviderWork => ({
+const conversationClaim = (): ClaimedMemoryProviderWork => ({
   allowancePeriodId: AllowancePeriodId.make("allowance-1"),
   attemptCount: 1,
   claimToken: "claim-append-1",
   outboxId: MemoryProviderOutboxId.make("conversation:9:session-1:assistant-1"),
   payload: {
-    _tag: "AppendConversationDelta",
+    _tag: "SaveConversation",
     projection: {
       allowancePeriodId: AllowancePeriodId.make("allowance-1"),
-      firstMessageId: "user-1",
+      conversation: MemoryProvider.ConversationSnapshot.make({
+        messages: [
+          { content: "Remember this", role: "user" },
+          { content: "I will remember it", role: "assistant" },
+        ],
+        usageStartIndex: 0,
+      }),
       lastMessageId: AssistantMessageId.make("assistant-1"),
-      messages: [
-        { content: "Remember this", role: "user" },
-        { content: "I will remember it", role: "assistant" },
-      ],
       sessionId: SessionId.make("session-1"),
       userId: UserId.make("user-1"),
     },
@@ -213,11 +218,11 @@ const testStore = (
 };
 
 const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvider.Interface => ({
-  appendConversationDelta: () => Effect.die(new Error("Unexpected append")),
   deleteSessionConversation: () => Effect.die(new Error("Unexpected Session deletion")),
   deleteUserKnowledge: () => Effect.die(new Error("Unexpected User deletion")),
   forgetKnowledge: () => Effect.die(new Error("Unexpected forget")),
   recall: () => Effect.die(new Error("Unexpected recall")),
+  saveConversation: () => Effect.die(new Error("Unexpected conversation save")),
   ...overrides,
 });
 

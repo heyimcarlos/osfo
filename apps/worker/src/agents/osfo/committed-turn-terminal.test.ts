@@ -1,10 +1,13 @@
+/* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
 import { describe, expect, it } from "@effect/vitest";
-import { Option } from "effect";
+import { Effect, Option, Result } from "effect";
 
 import { ThinkRequestId } from "../../domain";
 import {
   CommittedTurnTerminal,
+  persistThinkTerminalBeforeCapture,
   readCommittedTurnTerminal,
+  ThinkTerminalPersistenceUnavailable,
   withCommittedTurnTerminal,
 } from "./committed-turn-terminal";
 
@@ -30,4 +33,48 @@ describe("committed turn terminal metadata", () => {
       }),
     ).toEqual(Option.none());
   });
+
+  it.effect("keeps the committed Think terminal when provider capture fails", () =>
+    Effect.gen(function* () {
+      let persistedTerminal = false;
+      const outcome = yield* persistThinkTerminalBeforeCapture(
+        () => {
+          persistedTerminal = true;
+          return Promise.resolve();
+        },
+        Effect.gen(function* () {
+          expect(persistedTerminal).toBe(true);
+          return yield* Effect.fail({ _tag: "CaptureUnavailable" as const });
+        }),
+      ).pipe(Effect.result);
+
+      expect(Result.isFailure(outcome)).toBe(true);
+      expect(persistedTerminal).toBe(true);
+    }),
+  );
+
+  it.effect("returns a typed failure when Think terminal persistence fails", () =>
+    Effect.gen(function* () {
+      let captureStarted = false;
+      const outcome = yield* persistThinkTerminalBeforeCapture(
+        () => Promise.reject(new Error("storage offline")),
+        Effect.sync(() => {
+          captureStarted = true;
+        }),
+      ).pipe(Effect.result);
+
+      expect(outcome).toEqual(
+        Result.fail(
+          expect.objectContaining({
+            _tag: "ThinkTerminalPersistenceUnavailable",
+            message: "Think terminal persistence is unavailable",
+          }),
+        ),
+      );
+      expect(captureStarted).toBe(false);
+      if (Result.isFailure(outcome)) {
+        expect(outcome.failure).toBeInstanceOf(ThinkTerminalPersistenceUnavailable);
+      }
+    }),
+  );
 });

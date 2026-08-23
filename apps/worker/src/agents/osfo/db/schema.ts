@@ -90,7 +90,7 @@ export const memoryProviderOutbox = sqliteTable(
     last_error: text(),
     operation_type: text({
       enum: [
-        "appendConversationDelta",
+        "saveConversation",
         "deleteSessionConversation",
         "deleteUserKnowledge",
         "forgetKnowledge",
@@ -107,7 +107,7 @@ export const memoryProviderOutbox = sqliteTable(
   (table) => [
     check(
       "osfo_memory_provider_outbox_operation",
-      sql`${table.operation_type} IN ('appendConversationDelta', 'deleteSessionConversation', 'deleteUserKnowledge', 'forgetKnowledge')`,
+      sql`${table.operation_type} IN ('saveConversation', 'deleteSessionConversation', 'deleteUserKnowledge', 'forgetKnowledge')`,
     ),
     check(
       "osfo_memory_provider_outbox_status",

@@ -1,15 +1,55 @@
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 
-import { ThinkRequestId } from "../../domain";
+import { AllowancePeriodId, SessionId, ThinkRequestId, UserId } from "../../domain";
+
+/** Minimal trusted authority retained for post-commit conversation projection. */
+export const CommittedTurnAttribution = Schema.Struct({
+  allowancePeriodId: AllowancePeriodId,
+  sessionId: SessionId,
+  userId: UserId,
+});
+
+/** Minimal trusted authority retained for post-commit conversation projection. */
+export interface CommittedTurnAttribution extends Schema.Schema.Type<
+  typeof CommittedTurnAttribution
+> {}
 
 /** Durable Think terminal evidence used to recover capture after a Worker restart. */
 export const CommittedTurnTerminal = Schema.Struct({
+  attribution: Schema.optionalKey(CommittedTurnAttribution),
   requestId: ThinkRequestId,
   status: Schema.Literals(["completed", "error", "aborted"]),
 });
 
 /** Durable Think terminal evidence used to recover capture after a Worker restart. */
 export interface CommittedTurnTerminal extends Schema.Schema.Type<typeof CommittedTurnTerminal> {}
+
+/** Expected dependency failure while persisting Think's terminal message. */
+export class ThinkTerminalPersistenceUnavailable extends Schema.TaggedError<ThinkTerminalPersistenceUnavailable>()(
+  "ThinkTerminalPersistenceUnavailable",
+  {
+    cause: Schema.Defect(),
+    message: Schema.String,
+  },
+) {}
+
+/** Persist Think's terminal message before fallible provider capture begins. */
+export const persistThinkTerminalBeforeCapture = Effect.fn(
+  "CommittedTurnTerminal.persistBeforeCapture",
+)(function* <A, E, R, Persisted>(
+  persistTerminal: () => Promise<Persisted>,
+  capture: Effect.Effect<A, E, R>,
+): Effect.fn.Return<A, E | ThinkTerminalPersistenceUnavailable, R> {
+  yield* Effect.tryPromise({
+    try: persistTerminal,
+    catch: (cause) =>
+      new ThinkTerminalPersistenceUnavailable({
+        cause,
+        message: "Think terminal persistence is unavailable",
+      }),
+  });
+  return yield* capture;
+});
 
 const MessageMetadata = Schema.StructWithRest(
   Schema.Struct({ osfoCommittedTurn: CommittedTurnTerminal }),

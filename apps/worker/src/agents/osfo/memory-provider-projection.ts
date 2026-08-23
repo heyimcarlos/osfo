@@ -3,8 +3,10 @@ import { Option, Schema } from "effect";
 import { AllowancePeriodId, AssistantMessageId, SessionId, UserId } from "../../domain";
 import { ManagedTurnMetadata } from "../../domain/managed-conversation";
 import { MemoryProvider } from "../../services/memory-provider";
+import { CommittedTurnTerminal, readCommittedTurnTerminal } from "./committed-turn-terminal";
 
 const MessageMetadata = Schema.Struct({
+  osfoCommittedTurn: Schema.optional(CommittedTurnTerminal),
   turnMetadata: Schema.optional(ManagedTurnMetadata),
 });
 const TextPart = Schema.Struct({
@@ -65,18 +67,17 @@ const infrastructureKeys = new Set([
 const secretValue =
   /(?:-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~+/=-]{8,}|\bsk-[A-Za-z0-9_-]{12,}|\bAKIA[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bxox[a-z]-[A-Za-z0-9-]{10,}\b|\bAIza[0-9A-Za-z_-]{30,}\b|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|\b(?:authorization|credential|password|secret|token|api[-_ ]?key)\s*[:=]\s*\S+)/giu;
 
-/** Exact immutable append payload derived from one committed Think turn. */
-export const ConversationDeltaProjection = Schema.Struct({
+/** Exact immutable conversation snapshot ending at one committed Think turn. */
+export const ConversationSnapshotProjection = Schema.Struct({
   allowancePeriodId: AllowancePeriodId,
-  firstMessageId: Schema.String.check(Schema.isMinLength(1)),
+  conversation: MemoryProvider.ConversationSnapshot,
   lastMessageId: AssistantMessageId,
-  messages: Schema.NonEmptyArray(MemoryProvider.ConversationMessage),
   sessionId: SessionId,
   userId: UserId,
 });
 
-/** Exact immutable append payload derived from one committed Think turn. */
-export type ConversationDeltaProjection = typeof ConversationDeltaProjection.Type;
+/** Exact immutable conversation snapshot ending at one committed Think turn. */
+export type ConversationSnapshotProjection = typeof ConversationSnapshotProjection.Type;
 
 interface ProjectableMessage {
   readonly id: string;
@@ -85,15 +86,45 @@ interface ProjectableMessage {
   readonly role: string;
 }
 
+export interface TerminalMarkedCommittedTurn {
+  readonly assistantMessageId: AssistantMessageId;
+  readonly projection: ConversationSnapshotProjection | undefined;
+  readonly terminal: CommittedTurnTerminal;
+}
+
+/** Recover only persisted assistant boundaries whose terminal status is unambiguous. */
+export const projectTerminalMarkedCommittedTurns = (
+  history: ReadonlyArray<ProjectableMessage>,
+  sessionId: SessionId,
+): ReadonlyArray<TerminalMarkedCommittedTurn> =>
+  history.flatMap((message) => {
+    if (message.role !== "assistant") return [];
+    const terminal = readCommittedTurnTerminal(message.metadata);
+    const assistantMessageId = Schema.decodeOption(AssistantMessageId)(message.id);
+    if (Option.isNone(terminal) || Option.isNone(assistantMessageId)) return [];
+    return [
+      {
+        assistantMessageId: assistantMessageId.value,
+        projection:
+          terminal.value.status === "completed"
+            ? Option.getOrUndefined(
+                projectCommittedConversationSnapshot(history, assistantMessageId.value, sessionId),
+              )
+            : undefined,
+        terminal: terminal.value,
+      },
+    ];
+  });
+
 /**
- * Capture only the human-visible delta ending at one committed assistant message.
+ * Capture the human-visible conversation ending at one committed assistant message.
  * Unknown and in-progress UI parts stay out of provider memory by default.
  */
-export const projectCommittedConversationDelta = (
+export const projectCommittedConversationSnapshot = (
   history: ReadonlyArray<ProjectableMessage>,
   assistantMessageId: AssistantMessageId,
   sessionId: SessionId,
-): Option.Option<ConversationDeltaProjection> => {
+): Option.Option<ConversationSnapshotProjection> => {
   const assistantIndex = history.findIndex(({ id }) => id === assistantMessageId);
   if (assistantIndex < 0 || history[assistantIndex]?.role !== "assistant") return Option.none();
 
@@ -104,13 +135,90 @@ export const projectCommittedConversationDelta = (
       break;
     }
   }
-  const deltaStart = previousAssistantIndex + 1;
-  const delta = history.slice(deltaStart, assistantIndex + 1);
-  const metadata = findManagedTurnMetadata(history, deltaStart, assistantIndex, sessionId);
-  if (Option.isNone(metadata)) return Option.none();
+  const currentTurnStart = previousAssistantIndex + 1;
+  const conversation = history.slice(0, assistantIndex + 1);
+  const attribution = findCommittedTurnAttribution(
+    history,
+    currentTurnStart,
+    assistantIndex,
+    sessionId,
+  );
+  if (Option.isNone(attribution)) return Option.none();
 
-  const messages = delta.flatMap((message) => {
+  const messages = projectConversationMessages(conversation);
+  const currentTurn = history.slice(currentTurnStart, assistantIndex + 1);
+  const currentTurnHasUser = currentTurn.some(({ role }) => role === "user");
+  const previousAssistant = history[previousAssistantIndex];
+  const usageHistoryStart =
+    !currentTurnHasUser ||
+    (previousAssistant !== undefined && hasHumanReadableToolOutcome(previousAssistant))
+      ? Math.max(previousAssistantIndex, 0)
+      : currentTurnStart;
+  const usageStartIndex = projectConversationMessages(history.slice(0, usageHistoryStart)).length;
+  const [firstProjectedMessage, ...remainingProjectedMessages] = messages;
+  if (firstProjectedMessage === undefined || usageStartIndex >= messages.length)
+    return Option.none();
+  const snapshot = MemoryProvider.ConversationSnapshot.make({
+    messages: [firstProjectedMessage, ...remainingProjectedMessages],
+    usageStartIndex,
+  });
+
+  return Option.some(
+    ConversationSnapshotProjection.make({
+      allowancePeriodId: attribution.value.allowancePeriodId,
+      conversation: snapshot,
+      lastMessageId: assistantMessageId,
+      sessionId,
+      userId: attribution.value.userId,
+    }),
+  );
+};
+
+const findCommittedTurnAttribution = (
+  history: ReadonlyArray<ProjectableMessage>,
+  currentTurnStart: number,
+  assistantIndex: number,
+  sessionId: SessionId,
+): Option.Option<{
+  readonly allowancePeriodId: AllowancePeriodId;
+  readonly userId: UserId;
+}> => {
+  for (let index = assistantIndex; index >= currentTurnStart; index -= 1) {
+    const message = history[index];
+    if (message === undefined) continue;
+    const envelope = Schema.decodeUnknownOption(MessageMetadata)(message.metadata);
+    if (Option.isNone(envelope)) continue;
+    const terminal = envelope.value.osfoCommittedTurn?.attribution;
+    if (terminal?.sessionId === sessionId) {
+      return Option.some({
+        allowancePeriodId: terminal.allowancePeriodId,
+        userId: terminal.userId,
+      });
+    }
+    const turn = envelope.value.turnMetadata;
+    if (message.role === "user" && turn?.sessionId === sessionId) {
+      return Option.some({
+        allowancePeriodId: turn.allowancePeriodId,
+        userId: turn.authorityIdentity.userId,
+      });
+    }
+  }
+  return Option.none();
+};
+
+const projectConversationMessages = (
+  messages: ReadonlyArray<ProjectableMessage>,
+): Array<MemoryProvider.ConversationMessage> =>
+  messages.flatMap((message) => {
     if (message.role !== "user" && message.role !== "assistant") return [];
+    if (
+      message.role === "assistant" &&
+      Option.exists(
+        readCommittedTurnTerminal(message.metadata),
+        ({ status }) => status === "aborted" || status === "error",
+      )
+    )
+      return [];
     const role = message.role === "user" ? ("user" as const) : ("assistant" as const);
     const content = message.parts
       .flatMap((part) => visiblePartText(part))
@@ -118,38 +226,6 @@ export const projectCommittedConversationDelta = (
       .join("\n");
     return content.length === 0 ? [] : [{ content, role }];
   });
-  const first = delta[0];
-  const [firstProjectedMessage, ...remainingProjectedMessages] = messages;
-  if (first === undefined || firstProjectedMessage === undefined) return Option.none();
-
-  return Option.some(
-    ConversationDeltaProjection.make({
-      allowancePeriodId: metadata.value.allowancePeriodId,
-      firstMessageId: first.id,
-      lastMessageId: assistantMessageId,
-      messages: [firstProjectedMessage, ...remainingProjectedMessages],
-      sessionId,
-      userId: metadata.value.authorityIdentity.userId,
-    }),
-  );
-};
-
-const findManagedTurnMetadata = (
-  history: ReadonlyArray<ProjectableMessage>,
-  deltaStart: number,
-  assistantIndex: number,
-  sessionId: SessionId,
-): Option.Option<ManagedTurnMetadata> => {
-  for (let index = assistantIndex; index >= deltaStart; index -= 1) {
-    const message = history[index];
-    if (message?.role !== "user") continue;
-    const envelope = Schema.decodeUnknownOption(MessageMetadata)(message.metadata);
-    if (Option.isSome(envelope) && envelope.value.turnMetadata?.sessionId === sessionId) {
-      return Option.some(envelope.value.turnMetadata);
-    }
-  }
-  return Option.none();
-};
 
 const visiblePartText = (part: ProjectableMessage["parts"][number]): ReadonlyArray<string> => {
   const text = Schema.decodeUnknownOption(TextPart)(part);
@@ -162,7 +238,7 @@ const visiblePartText = (part: ProjectableMessage["parts"][number]): ReadonlyArr
   if (Option.isSome(sourceUrl)) {
     const safeUrl = sanitizeSourceUrl(sourceUrl.value.url);
     if (Option.isNone(safeUrl)) return [];
-    const title = sourceUrl.value.title?.trim();
+    const title = sanitizeOptionalLabel(sourceUrl.value.title);
     return [
       title === undefined || title.length === 0 ? safeUrl.value : `${title}: ${safeUrl.value}`,
     ];
@@ -170,8 +246,8 @@ const visiblePartText = (part: ProjectableMessage["parts"][number]): ReadonlyArr
 
   const sourceDocument = Schema.decodeUnknownOption(SourceDocumentPart)(part);
   if (Option.isSome(sourceDocument)) {
-    const title = sourceDocument.value.title.trim();
-    const filename = sourceDocument.value.filename?.trim();
+    const title = sanitizeVisibleText(sourceDocument.value.title);
+    const filename = sanitizeOptionalLabel(sourceDocument.value.filename);
     return [
       filename === undefined || filename.length === 0 ? title : `${title} (${filename})`,
     ].filter((value) => value.length > 0);
@@ -182,9 +258,19 @@ const visiblePartText = (part: ProjectableMessage["parts"][number]): ReadonlyArr
   if (Option.isNone(tool)) return [];
   const outcome = humanReadableOutcome(tool.value.output);
   if (Option.isNone(outcome)) return [];
-  const title = tool.value.title?.trim();
+  const title = sanitizeOptionalLabel(tool.value.title);
   return [title === undefined || title.length === 0 ? outcome.value : `${title}: ${outcome.value}`];
 };
+
+const sanitizeOptionalLabel = (value: string | undefined): string | undefined =>
+  value === undefined ? undefined : sanitizeVisibleText(value);
+
+const hasHumanReadableToolOutcome = (message: ProjectableMessage): boolean =>
+  message.parts.some((part) => {
+    if (part.type !== "dynamic-tool" && !part.type.startsWith("tool-")) return false;
+    const tool = Schema.decodeUnknownOption(ToolOutcomePart)(part);
+    return Option.isSome(tool) && Option.isSome(humanReadableOutcome(tool.value.output));
+  });
 
 const sanitizeSourceUrl = (value: string): Option.Option<string> => {
   try {
@@ -195,7 +281,7 @@ const sanitizeSourceUrl = (value: string): Option.Option<string> => {
     url.password = "";
     url.search = "";
     url.hash = "";
-    return Option.some(url.href);
+    return Option.some(redactSecrets(url.href));
   } catch {
     return Option.none();
   }

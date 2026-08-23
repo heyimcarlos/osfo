@@ -23,7 +23,7 @@ import {
 import { makeAgentDb } from "./client";
 import { makeMemoryProviderOutboxStore, MemoryProviderOutboxId } from "./memory-provider-outbox";
 import { makeAgentStore } from "./store";
-import { ConversationDeltaProjection } from "../memory-provider-projection";
+import { ConversationSnapshotProjection } from "../memory-provider-projection";
 import { MemoryProvider } from "../../../services/memory-provider";
 import { reconcileMemoryProviderOutbox } from "../memory-provider-reconciliation";
 
@@ -37,7 +37,7 @@ const past = DbTimestamp.make("1960-01-01T00:00:00.000Z");
 const liveLease = DbTimestamp.make("2026-08-23T12:01:00.000Z");
 const extendedLease = DbTimestamp.make("2026-08-23T12:02:00.000Z");
 
-it.effect("atomically records a committed turn and its provider delta", () =>
+it.effect("atomically records a committed turn and its provider conversation snapshot", () =>
   withDatabase(({ database, storage }) =>
     Effect.gen(function* () {
       seedSession(database);
@@ -57,7 +57,7 @@ it.effect("atomically records a committed turn and its provider delta", () =>
       expect(persisted).toEqual({
         outbox_id: "conversation:9:session-1:assistant-1",
         // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This asserts the exact stored encoding of an already typed payload.
-        payload_json: JSON.stringify({ _tag: "AppendConversationDelta", projection }),
+        payload_json: JSON.stringify({ _tag: "SaveConversation", projection }),
       });
     }),
   ),
@@ -143,7 +143,7 @@ it.effect("does not advance a Session until its prior operation completes", () =
   ),
 );
 
-it.effect("orders User deletion behind earlier Session append work", () =>
+it.effect("orders User deletion behind earlier Session conversation work", () =>
   withDatabase(({ database, storage }) =>
     Effect.gen(function* () {
       seedSession(database);
@@ -160,7 +160,7 @@ it.effect("orders User deletion behind earlier Session append work", () =>
       });
 
       const first = yield* outbox.claimNext(now, liveLease, "claim-append");
-      expect(Option.getOrThrow(first).payload._tag).toBe("AppendConversationDelta");
+      expect(Option.getOrThrow(first).payload._tag).toBe("SaveConversation");
       expect(yield* outbox.claimNext(now, liveLease, "claim-blocked-delete")).toEqual(
         Option.none(),
       );
@@ -263,6 +263,38 @@ it.effect("durably retains deletion work across a provider outage and store rest
           userId: "user-1",
         },
       });
+    }),
+  ),
+);
+
+it.effect("rejects usage evidence without a matching provider-applied marker", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      seedSession(database);
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      yield* makeAgentStore(db).recordCommittedTurn(
+        committedTurn("assistant-1", "request-1"),
+        conversationProjection("assistant-1"),
+      );
+      database
+        .prepare(
+          `UPDATE osfo_memory_provider_outbox
+            SET usage_json = ?
+            WHERE outbox_id = ?`,
+        )
+        .run(
+          '{"items":[],"rateCardVersion":"test-rate-card"}',
+          "conversation:9:session-1:assistant-1",
+        );
+
+      const claimed = yield* makeMemoryProviderOutboxStore(db)
+        .claimNext(now, liveLease, "claim-invalid")
+        .pipe(Effect.result);
+
+      expect(Result.isFailure(claimed)).toBe(true);
+      if (Result.isFailure(claimed)) {
+        expect(claimed.failure._tag).toBe("AgentStoreRecordInvalid");
+      }
     }),
   ),
 );
@@ -411,14 +443,16 @@ const committedTurn = (assistantMessageId: string, thinkRequestId: string) => ({
 });
 
 const conversationProjection = (assistantMessageId: string) =>
-  ConversationDeltaProjection.make({
+  ConversationSnapshotProjection.make({
     allowancePeriodId: AllowancePeriodId.make("allowance-1"),
-    firstMessageId: "user-1",
+    conversation: MemoryProvider.ConversationSnapshot.make({
+      messages: [
+        { content: "Remember this", role: "user" },
+        { content: "I will remember it", role: "assistant" },
+      ],
+      usageStartIndex: 0,
+    }),
     lastMessageId: AssistantMessageId.make(assistantMessageId),
-    messages: [
-      { content: "Remember this", role: "user" },
-      { content: "I will remember it", role: "assistant" },
-    ],
     sessionId: SessionId.make("session-1"),
     userId: UserId.make("user-1"),
   });
@@ -434,11 +468,11 @@ const deletion = (outboxId: string, sessionId: string, userId = "user-1", enqueu
 });
 
 const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvider.Interface => ({
-  appendConversationDelta: () => Effect.die(new Error("Unexpected append")),
   deleteSessionConversation: () => Effect.die(new Error("Unexpected Session deletion")),
   deleteUserKnowledge: () => Effect.die(new Error("Unexpected User deletion")),
   forgetKnowledge: () => Effect.die(new Error("Unexpected forget")),
   recall: () => Effect.die(new Error("Unexpected recall")),
+  saveConversation: () => Effect.die(new Error("Unexpected conversation save")),
   ...overrides,
 });
 

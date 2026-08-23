@@ -6,8 +6,8 @@ import type { AllowancePeriodId, AssistantMessageId } from "../../../domain";
 import type { DbTimestamp } from "../../../db";
 import { AllowanceKind, ConsumptionBasis } from "../../../domain/allowance";
 import { MemoryProvider } from "../../../services/memory-provider";
-import { ConversationDeltaProjection } from "../memory-provider-projection";
-import type { ConversationDeltaProjection as ConversationDeltaProjectionType } from "../memory-provider-projection";
+import { ConversationSnapshotProjection } from "../memory-provider-projection";
+import type { ConversationSnapshotProjection as ConversationSnapshotProjectionType } from "../memory-provider-projection";
 import type { AgentDb } from "./client";
 import { AgentStoreRecordInvalid, AgentStoreUnavailable } from "./errors";
 import { memoryProviderOutbox } from "./schema";
@@ -20,8 +20,8 @@ const NonEmptyString = Schema.String.check(Schema.isMinLength(1));
 export const MemoryProviderOutboxId = NonEmptyString.pipe(Schema.brand("MemoryProviderOutboxId"));
 export type MemoryProviderOutboxId = typeof MemoryProviderOutboxId.Type;
 
-export const AppendConversationDeltaPayload = Schema.TaggedStruct("AppendConversationDelta", {
-  projection: ConversationDeltaProjection,
+export const SaveConversationPayload = Schema.TaggedStruct("SaveConversation", {
+  projection: ConversationSnapshotProjection,
 });
 export const DeleteSessionConversationPayload = Schema.TaggedStruct("DeleteSessionConversation", {
   sessionId: SessionId,
@@ -37,7 +37,7 @@ export const ForgetKnowledgePayload = Schema.TaggedStruct("ForgetKnowledge", {
 
 /** Exact provider input retained for retries without rebuilding from Think history. */
 export const MemoryProviderOutboxPayload = Schema.Union([
-  AppendConversationDeltaPayload,
+  SaveConversationPayload,
   DeleteSessionConversationPayload,
   DeleteUserKnowledgePayload,
   ForgetKnowledgePayload,
@@ -109,7 +109,7 @@ export const selectMemoryProviderClaimCandidate = (
 type AgentTransaction = Parameters<Parameters<AgentDb["transaction"]>[0]>[0];
 
 /** Deterministic local identity used for every retry of a committed assistant boundary. */
-export const conversationDeltaOutboxId = (
+export const conversationSnapshotOutboxId = (
   sessionId: SessionId,
   assistantMessageId: AssistantMessageId,
 ): MemoryProviderOutboxId =>
@@ -117,27 +117,27 @@ export const conversationDeltaOutboxId = (
     `conversation:${sessionId.length}:${sessionId}:${assistantMessageId}`,
   );
 
-/** Insert one exact conversation delta inside the committed-turn receipt transaction. */
-export const enqueueConversationDeltaTransaction = (
+/** Insert one exact conversation snapshot inside the committed-turn receipt transaction. */
+export const enqueueConversationSnapshotTransaction = (
   transaction: AgentTransaction,
-  projection: ConversationDeltaProjectionType,
+  projection: ConversationSnapshotProjectionType,
   enqueuedAt: DbTimestamp,
 ) =>
   enqueueTransaction(transaction, {
     allowancePeriodId: projection.allowancePeriodId,
     enqueuedAt,
-    operationType: "appendConversationDelta",
+    operationType: "saveConversation",
     orderingKey: userOrderingKey(projection.userId),
-    outboxId: conversationDeltaOutboxId(projection.sessionId, projection.lastMessageId),
-    payload: AppendConversationDeltaPayload.make({ projection }),
+    outboxId: conversationSnapshotOutboxId(projection.sessionId, projection.lastMessageId),
+    payload: SaveConversationPayload.make({ projection }),
   });
 
 /** Check retry identity before a transaction mutates either its receipt or outbox row. */
-export const conversationDeltaIsCompatibleTransaction = (
+export const conversationSnapshotIsCompatibleTransaction = (
   transaction: AgentTransaction,
-  projection: ConversationDeltaProjectionType,
+  projection: ConversationSnapshotProjectionType,
 ): boolean => {
-  const outboxId = conversationDeltaOutboxId(projection.sessionId, projection.lastMessageId);
+  const outboxId = conversationSnapshotOutboxId(projection.sessionId, projection.lastMessageId);
   const existing = transaction
     .select({ payloadJson: memoryProviderOutbox.payload_json })
     .from(memoryProviderOutbox)
@@ -146,7 +146,7 @@ export const conversationDeltaIsCompatibleTransaction = (
     .get();
   return (
     existing === undefined ||
-    existing.payloadJson === JSON.stringify(AppendConversationDeltaPayload.make({ projection }))
+    existing.payloadJson === JSON.stringify(SaveConversationPayload.make({ projection }))
   );
 };
 
@@ -365,16 +365,16 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
       ? null
       : yield* decodeUsage(row.usage_json).pipe(Effect.mapError(() => invalidRecord()));
   if (row.claim_token === null || row.attempt_count < 1) return yield* invalidRecord();
-  if (row.provider_applied_at !== null && usage === null) return yield* invalidRecord();
+  if ((row.provider_applied_at === null) !== (usage === null)) return yield* invalidRecord();
   if (
-    payload._tag === "AppendConversationDelta" &&
-    (row.operation_type !== "appendConversationDelta" ||
+    payload._tag === "SaveConversation" &&
+    (row.operation_type !== "saveConversation" ||
       row.allowance_period_id !== payload.projection.allowancePeriodId)
   ) {
     return yield* invalidRecord();
   }
   if (
-    payload._tag !== "AppendConversationDelta" &&
+    payload._tag !== "SaveConversation" &&
     (row.operation_type !== operationType(payload) || row.allowance_period_id !== null)
   ) {
     return yield* invalidRecord();
