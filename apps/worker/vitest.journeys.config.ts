@@ -48,6 +48,7 @@ export default defineConfig({
             BETTER_AUTH_API_URL: context.providerOrigin,
             DB: { connectionString: database.connectionString },
             STRIPE_API_BASE_URL: context.providerOrigin,
+            SUPERMEMORY_API_BASE_URL: context.providerOrigin,
             TWILIO_VERIFY_API_BASE_URL: context.providerOrigin,
           },
         },

@@ -49,6 +49,17 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
           .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
         return;
       }
+      if (request.method === "POST" && pathname === "/v4/profile") {
+        readTextBody(request)
+          .then(() =>
+            respondJson(response, 200, {
+              profile: { dynamic: [], static: [] },
+              searchResults: { results: [], timing: 0, total: 0 },
+            }),
+          )
+          .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
+        return;
+      }
       if (
         request.method === "POST" &&
         (pathname === "/v1/customers" || pathname === "/v1/checkout/sessions")

@@ -41,6 +41,7 @@ import { BillingDb } from "../../db/billing";
 import { decodeOsfoStage, loadConfig } from "../../config";
 import { ChannelLinkAuthorizationPostgres } from "../../integrations/postgres/channel-link-authorization";
 import { SessionRecallAuthorizationPostgres } from "../../integrations/postgres/session-recall-authorization";
+import { SupermemoryMemoryProvider } from "../../integrations/supermemory/memory-provider";
 import {
   CancelManagedConversationInput,
   ManagedTurnMetadata,
@@ -138,6 +139,7 @@ import {
   SessionRecallStoreUnavailable,
 } from "../../services/session-recall";
 import { makeSessionRecallAuthorization } from "../../services/session-recall-authorization";
+import { PromptAssembly } from "../../services/prompt-assembly";
 import type {
   CurrentSessionActivationUnavailable,
   CurrentSessionReplaced,
@@ -401,6 +403,7 @@ export class OsfoAgent extends Think<Env> {
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
     persistence: this.#modelCallUsagePersistence,
   });
+  readonly #promptAssembly = PromptAssembly.makeRetainedPromptAssembly();
   readonly #store = makeAgentStore(this.#db);
   readonly #sessionExecution = makeSessionExecution({
     hasPendingOrRunning: callThinkSubmission("listSubmissions", () =>
@@ -697,31 +700,33 @@ export class OsfoAgent extends Think<Env> {
   override async beforeTurn(context: TurnContext): Promise<TurnConfig> {
     const system = await this.session.refreshSystemPrompt();
     const tools = { ...context.tools, ...coreMemoryTools(this.session) };
-    return Effect.runPromise(
-      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata).pipe(
-        Effect.map((metadata) => {
-          this.#completedModelSteps.clear();
-          this.contextOverflow = {
-            maxRetries: 1,
-            proactive: {
-              headroom: metadata.targetInputTokens / metadata.maxInputTokens,
-              maxCompactions: 1,
-              maxInputTokens: metadata.maxInputTokens,
-            },
-            reactive: true,
-          };
-          return {
-            maxOutputTokens: metadata.maxOutputTokens,
-            maxRetries: metadata.maxRetries,
-            maxSteps: metadata.maxSteps,
-            model: metadata.route,
-            sendReasoning: false,
-            system,
-            tools,
-          };
-        }),
-      ),
+    const metadata = await Effect.runPromise(
+      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
     );
+    const prompt = await this.#assemblePrompt(context, metadata, system);
+    if (prompt.usage !== null) {
+      this.ctx.waitUntil(this.#recordProviderRecallUsage(metadata, prompt.usage));
+    }
+    this.#completedModelSteps.clear();
+    this.contextOverflow = {
+      maxRetries: 1,
+      proactive: {
+        headroom: metadata.targetInputTokens / metadata.maxInputTokens,
+        maxCompactions: 1,
+        maxInputTokens: metadata.maxInputTokens,
+      },
+      reactive: true,
+    };
+    return {
+      maxOutputTokens: metadata.maxOutputTokens,
+      maxRetries: metadata.maxRetries,
+      maxSteps: metadata.maxSteps,
+      model: metadata.route,
+      messages: prompt.messages,
+      sendReasoning: false,
+      instructions: prompt.instructions,
+      tools,
+    };
   }
 
   /** Admit each Action through Osfo policy after Think validates its exact input. */
@@ -798,6 +803,70 @@ export class OsfoAgent extends Think<Env> {
       }
     }
     return super.onChatError(error, context);
+  }
+
+  async #assemblePrompt(
+    context: TurnContext,
+    metadata: ManagedTurnMetadata,
+    agentInstructions: string,
+  ): Promise<PromptAssembly.ModelTurnResult> {
+    const config = loadConfig(this.env);
+    return Effect.runPromise(
+      this.#promptAssembly
+        .forModelTurn({
+          agentInstructions,
+          continuation: context.continuation,
+          messages: context.messages,
+          submissionId: metadata.submissionId,
+          userId: metadata.authorityIdentity.userId,
+        })
+        .pipe(
+          // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Think's beforeTurn hook is the application entry point for this request Layer.
+          Effect.provide(SupermemoryMemoryProvider.layerFromConfig(config.supermemory)),
+        ),
+    );
+  }
+
+  async #recordProviderRecallUsage(
+    metadata: ManagedTurnMetadata,
+    usage: PromptAssembly.ProviderRecallAvailable["usage"],
+  ): Promise<void> {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      await Effect.runPromise(
+        Effect.logError("MemoryProvider recall usage could not be recorded").pipe(
+          Effect.annotateLogs({ failureTag: "InvalidOsfoEnvironment" }),
+        ),
+      );
+      return;
+    }
+    const result = await runtime.runPromiseExit(
+      Effect.scoped(
+        Db.database.pipe(
+          Effect.flatMap((database) =>
+            Allowances.make({
+              billing: BillingDb.make(database),
+              catalog: retainedCatalog,
+              now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
+            }).record(
+              metadata.allowancePeriodId,
+              { sourceId: metadata.submissionId, sourceType: "MemoryProviderRecall" },
+              usage.items,
+            ),
+          ),
+        ),
+      ),
+    );
+    if (Exit.isSuccess(result)) return;
+    const failureTag = Option.match(Cause.findErrorOption(result.cause), {
+      onNone: () => "DefectOrInterruption",
+      onSome: (failure) => failure._tag,
+    });
+    await Effect.runPromise(
+      Effect.logError("MemoryProvider recall usage could not be recorded").pipe(
+        Effect.annotateLogs({ failureTag, submissionId: metadata.submissionId }),
+      ),
+    );
   }
 
   async #recordCurrentModelUsage(stepNumber: ModelStepNumber, step?: StepContext): Promise<void> {
