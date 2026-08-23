@@ -344,10 +344,8 @@ const sanitizeJsonValue = (value: Schema.Json, depth: number): SafeJson | undefi
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "string") {
     const trimmed = value.trim();
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-      const parsed = Schema.decodeOption(Schema.fromJsonString(Schema.Json))(trimmed);
-      if (Option.isSome(parsed)) return sanitizeJsonValue(parsed.value, depth + 1);
-    }
+    const fullJson = sanitizeFullJsonString(trimmed, depth + 1);
+    if (fullJson.kind === "sanitized") return fullJson.value;
     const embedded = sanitizeEmbeddedJson(trimmed, depth);
     if (Option.isSome(embedded)) return embedded.value;
     if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
@@ -392,14 +390,24 @@ const sanitizeEmbeddedJson = (value: string, depth: number): Option.Option<strin
   return Option.none();
 };
 
+type FullJsonSanitization =
+  | { readonly kind: "notJson" }
+  | { readonly kind: "sanitized"; readonly value: SafeJson | undefined };
+
+const sanitizeFullJsonString = (value: string, depth: number): FullJsonSanitization => {
+  if (!value.startsWith("{") && !value.startsWith("[")) return { kind: "notJson" };
+  const parsed = Schema.decodeOption(Schema.fromJsonString(Schema.Json))(value);
+  return Option.match(parsed, {
+    onNone: () => ({ kind: "notJson" }),
+    onSome: (json) => ({ kind: "sanitized", value: sanitizeJsonValue(json, depth) }),
+  });
+};
+
 const sanitizeVisibleText = (value: string): string => {
   const trimmed = value.trim();
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    const parsed = Schema.decodeOption(Schema.fromJsonString(Schema.Json))(trimmed);
-    if (Option.isSome(parsed)) {
-      const sanitized = sanitizeJsonValue(parsed.value, 0);
-      return sanitized === undefined ? "" : JSON.stringify(sanitized);
-    }
+  const fullJson = sanitizeFullJsonString(trimmed, 0);
+  if (fullJson.kind === "sanitized") {
+    return fullJson.value === undefined ? "" : JSON.stringify(fullJson.value);
   }
   const embedded = sanitizeEmbeddedJson(trimmed, 0);
   return redactSecrets(Option.getOrElse(embedded, () => trimmed));

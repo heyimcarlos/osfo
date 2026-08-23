@@ -217,6 +217,27 @@ it.effect("deletes one Session conversation by its stable provider identity", ()
   ),
 );
 
+it.effect("keeps a processing conflict retryable when deleting a Session conversation", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({ body: { error: "Document is still processing" }, status: 409 });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .deleteSessionConversation({
+          sessionId: SessionId.make("session-1"),
+          userId: UserId.make("user-1"),
+        })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderRejected",
+        operation: "deleteSessionConversation",
+        status: 409,
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
 it.effect("deletes every Knowledge Base item in one User container", () =>
   withProvider(({ requests, origin, respondWith }) =>
     Effect.gen(function* () {

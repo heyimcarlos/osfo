@@ -639,141 +639,11 @@ export const makeAgentStore = (db: AgentDb) => {
     );
     const outcome = yield* execute("recordCommittedTurn", () =>
       // The Durable SQLite driver implements this exact local transaction with transactionSync.
-      db.transaction((transaction) => {
-        if (
-          projection !== undefined &&
-          (projection.lastMessageId !== reference.assistantMessageId ||
-            projection.sessionId !== reference.sessionId)
-        ) {
-          return { _tag: "InvalidRecord" } as const;
-        }
-        const snapshotState =
-          projection === undefined
-            ? "missing"
-            : inspectConversationSnapshotTransaction(transaction, projection);
-        if (snapshotState === "conflict") return { _tag: "InvalidRecord" } as const;
-        const receipt = <T>(value: T, preserveExistingSnapshot: boolean) => {
-          if (projection !== undefined) {
-            if (snapshotState === "existing" && !preserveExistingSnapshot) {
-              return { _tag: "InvalidRecord" } as const;
-            }
-            if (
-              snapshotState === "missing" &&
-              !enqueueConversationSnapshotTransaction(transaction, projection, enqueuedAt)
-            ) {
-              return { _tag: "InvalidRecord" } as const;
-            }
-          }
-          return { _tag: "Receipt", receipt: value } as const;
-        };
-        const findByThinkRequestId = (thinkRequestId: ThinkRequestId) =>
-          decodeCommittedTurnRecord(
-            transaction
-              .select(committedTurnReceiptFields)
-              .from(committedTurns)
-              .where(eq(committedTurns.think_request_id, thinkRequestId))
-              .limit(1)
-              .get(),
-          );
-        const matchingMessage = decodeCommittedTurnRecord(
-          transaction
-            .select(committedTurnReceiptFields)
-            .from(committedTurns)
-            .where(eq(committedTurns.assistant_message_id, reference.assistantMessageId))
-            .limit(1)
-            .get(),
-        );
-        if (matchingMessage === invalidCommittedTurnRecord) {
-          return { _tag: "InvalidRecord" } as const;
-        }
-        if (matchingMessage !== undefined) {
-          if (matchingMessage.sessionId !== reference.sessionId) {
-            return {
-              _tag: "Conflict",
-              existing: matchingMessage,
-              message: "The assistant message is already observed for another Session",
-            } as const;
-          }
-          if (
-            matchingMessage.thinkRequestId !== null &&
-            reference.thinkRequestId !== null &&
-            matchingMessage.thinkRequestId !== reference.thinkRequestId
-          ) {
-            return {
-              _tag: "Conflict",
-              existing: matchingMessage,
-              message: "The assistant message is already observed for another Think request",
-            } as const;
-          }
-          if (matchingMessage.thinkRequestId === null && reference.thinkRequestId !== null) {
-            const matchingRequest = findByThinkRequestId(reference.thinkRequestId);
-            if (matchingRequest === invalidCommittedTurnRecord) {
-              return { _tag: "InvalidRecord" } as const;
-            }
-            if (matchingRequest !== undefined) {
-              return {
-                _tag: "Conflict",
-                existing: matchingRequest,
-                message: "The Think request is already observed for another assistant message",
-              } as const;
-            }
-            const enriched = transaction
-              .update(committedTurns)
-              .set({ source: reference.source, think_request_id: reference.thinkRequestId })
-              .where(eq(committedTurns.observation_sequence, matchingMessage.observationSequence))
-              .returning(committedTurnReceiptFields)
-              .get();
-            return enriched === undefined
-              ? ({ _tag: "InvalidRecord" } as const)
-              : receipt(enriched, true);
-          }
-          return receipt(matchingMessage, true);
-        }
-
-        if (reference.thinkRequestId !== null) {
-          const matchingRequest = findByThinkRequestId(reference.thinkRequestId);
-          if (matchingRequest === invalidCommittedTurnRecord) {
-            return { _tag: "InvalidRecord" } as const;
-          }
-          if (matchingRequest !== undefined) {
-            return {
-              _tag: "Conflict",
-              existing: matchingRequest,
-              message: "The Think request is already observed for another assistant message",
-            } as const;
-          }
-        }
-        if (snapshotState === "existing") return { _tag: "InvalidRecord" } as const;
-        const inserted = transaction
-          .insert(committedTurns)
-          .values({
-            assistant_message_id: reference.assistantMessageId,
-            session_id: reference.sessionId,
-            source: reference.source,
-            think_request_id: reference.thinkRequestId,
-          })
-          .returning(committedTurnReceiptFields)
-          .get();
-        return inserted === undefined
-          ? ({ _tag: "InvalidRecord" } as const)
-          : receipt(inserted, false);
-      }),
+      db.transaction((transaction) =>
+        recordCommittedTurnTransaction(transaction, { enqueuedAt, projection, reference }),
+      ),
     );
-    if (outcome["_tag"] === "InvalidRecord") {
-      return yield* invalidStoreRecord("recordCommittedTurn");
-    }
-    if (outcome["_tag"] === "Conflict") {
-      return yield* new CommittedTurnConflict({
-        assistantMessageId: reference.assistantMessageId,
-        existingAssistantMessageId: outcome.existing.assistantMessageId,
-        existingSessionId: outcome.existing.sessionId,
-        existingThinkRequestId: outcome.existing.thinkRequestId,
-        message: outcome.message,
-        sessionId: reference.sessionId,
-        thinkRequestId: reference.thinkRequestId,
-      });
-    }
-    return yield* decodeCommittedTurnReceipt("recordCommittedTurn", outcome.receipt);
+    return yield* decodeRecordCommittedTurnOutcome(reference, outcome);
   });
 
   const readCommittedTurns = execute("readCommittedTurns", () =>
@@ -852,6 +722,167 @@ export const makeAgentStore = (db: AgentDb) => {
     recordCommittedTurn,
     replaceCurrentSession,
   };
+};
+
+interface RecordCommittedTurnTransactionInput {
+  readonly enqueuedAt: DbTimestamp;
+  readonly projection: ConversationSnapshotProjection | undefined;
+  readonly reference: CommittedTurnObservation;
+}
+
+type SnapshotReceiptPolicy = "acceptExisting" | "requireMissing";
+
+const recordCommittedTurnTransaction = (
+  transaction: AgentTransaction,
+  input: RecordCommittedTurnTransactionInput,
+) => {
+  const { enqueuedAt, projection, reference } = input;
+  if (
+    projection !== undefined &&
+    (projection.lastMessageId !== reference.assistantMessageId ||
+      projection.sessionId !== reference.sessionId)
+  ) {
+    return { _tag: "InvalidRecord" } as const;
+  }
+  const snapshotState =
+    projection === undefined
+      ? "missing"
+      : inspectConversationSnapshotTransaction(transaction, projection);
+  if (snapshotState === "conflict") return { _tag: "InvalidRecord" } as const;
+
+  const persistSnapshotWithReceipt = (
+    receipt: CommittedTurnRecord,
+    policy: SnapshotReceiptPolicy,
+  ) => {
+    if (projection !== undefined) {
+      if (snapshotState === "existing" && policy === "requireMissing") {
+        return { _tag: "InvalidRecord" } as const;
+      }
+      if (
+        snapshotState === "missing" &&
+        !enqueueConversationSnapshotTransaction(transaction, projection, enqueuedAt)
+      ) {
+        return { _tag: "InvalidRecord" } as const;
+      }
+    }
+    return { _tag: "Receipt", receipt } as const;
+  };
+  const findByThinkRequestId = (thinkRequestId: ThinkRequestId) =>
+    decodeCommittedTurnRecord(
+      transaction
+        .select(committedTurnReceiptFields)
+        .from(committedTurns)
+        .where(eq(committedTurns.think_request_id, thinkRequestId))
+        .limit(1)
+        .get(),
+    );
+  const matchingMessage = decodeCommittedTurnRecord(
+    transaction
+      .select(committedTurnReceiptFields)
+      .from(committedTurns)
+      .where(eq(committedTurns.assistant_message_id, reference.assistantMessageId))
+      .limit(1)
+      .get(),
+  );
+  if (matchingMessage === invalidCommittedTurnRecord) {
+    return { _tag: "InvalidRecord" } as const;
+  }
+  if (matchingMessage !== undefined) {
+    if (matchingMessage.sessionId !== reference.sessionId) {
+      return {
+        _tag: "Conflict",
+        existing: matchingMessage,
+        message: "The assistant message is already observed for another Session",
+      } as const;
+    }
+    if (
+      matchingMessage.thinkRequestId !== null &&
+      reference.thinkRequestId !== null &&
+      matchingMessage.thinkRequestId !== reference.thinkRequestId
+    ) {
+      return {
+        _tag: "Conflict",
+        existing: matchingMessage,
+        message: "The assistant message is already observed for another Think request",
+      } as const;
+    }
+    if (matchingMessage.thinkRequestId === null && reference.thinkRequestId !== null) {
+      const matchingRequest = findByThinkRequestId(reference.thinkRequestId);
+      if (matchingRequest === invalidCommittedTurnRecord) {
+        return { _tag: "InvalidRecord" } as const;
+      }
+      if (matchingRequest !== undefined) {
+        return {
+          _tag: "Conflict",
+          existing: matchingRequest,
+          message: "The Think request is already observed for another assistant message",
+        } as const;
+      }
+      const enriched = transaction
+        .update(committedTurns)
+        .set({ source: reference.source, think_request_id: reference.thinkRequestId })
+        .where(eq(committedTurns.observation_sequence, matchingMessage.observationSequence))
+        .returning(committedTurnReceiptFields)
+        .get();
+      return enriched === undefined
+        ? ({ _tag: "InvalidRecord" } as const)
+        : persistSnapshotWithReceipt(enriched, "acceptExisting");
+    }
+    return persistSnapshotWithReceipt(matchingMessage, "acceptExisting");
+  }
+
+  if (reference.thinkRequestId !== null) {
+    const matchingRequest = findByThinkRequestId(reference.thinkRequestId);
+    if (matchingRequest === invalidCommittedTurnRecord) {
+      return { _tag: "InvalidRecord" } as const;
+    }
+    if (matchingRequest !== undefined) {
+      return {
+        _tag: "Conflict",
+        existing: matchingRequest,
+        message: "The Think request is already observed for another assistant message",
+      } as const;
+    }
+  }
+  if (snapshotState === "existing") return { _tag: "InvalidRecord" } as const;
+  const inserted = transaction
+    .insert(committedTurns)
+    .values({
+      assistant_message_id: reference.assistantMessageId,
+      session_id: reference.sessionId,
+      source: reference.source,
+      think_request_id: reference.thinkRequestId,
+    })
+    .returning(committedTurnReceiptFields)
+    .get();
+  return inserted === undefined
+    ? ({ _tag: "InvalidRecord" } as const)
+    : persistSnapshotWithReceipt(inserted, "requireMissing");
+};
+
+type RecordCommittedTurnOutcome = ReturnType<typeof recordCommittedTurnTransaction>;
+
+const decodeRecordCommittedTurnOutcome = (
+  reference: CommittedTurnObservation,
+  outcome: RecordCommittedTurnOutcome,
+) => {
+  if (outcome["_tag"] === "InvalidRecord") {
+    return Effect.fail(invalidStoreRecord("recordCommittedTurn"));
+  }
+  if (outcome["_tag"] === "Conflict") {
+    return Effect.fail(
+      new CommittedTurnConflict({
+        assistantMessageId: reference.assistantMessageId,
+        existingAssistantMessageId: outcome.existing.assistantMessageId,
+        existingSessionId: outcome.existing.sessionId,
+        existingThinkRequestId: outcome.existing.thinkRequestId,
+        message: outcome.message,
+        sessionId: reference.sessionId,
+        thinkRequestId: reference.thinkRequestId,
+      }),
+    );
+  }
+  return decodeCommittedTurnReceipt("recordCommittedTurn", outcome.receipt);
 };
 
 const committedTurnReceiptFields = {
