@@ -132,22 +132,38 @@ export const enqueueConversationSnapshotTransaction = (
     payload: SaveConversationPayload.make({ projection }),
   });
 
-/** Check retry identity before a transaction mutates either its receipt or outbox row. */
-export const conversationSnapshotIsCompatibleTransaction = (
+/** Classify an existing durable snapshot without rebuilding its immutable payload. */
+export const inspectConversationSnapshotTransaction = (
   transaction: AgentTransaction,
   projection: ConversationSnapshotProjectionType,
-): boolean => {
+): "conflict" | "existing" | "missing" => {
   const outboxId = conversationSnapshotOutboxId(projection.sessionId, projection.lastMessageId);
   const existing = transaction
-    .select({ payloadJson: memoryProviderOutbox.payload_json })
+    .select({
+      allowancePeriodId: memoryProviderOutbox.allowance_period_id,
+      operationType: memoryProviderOutbox.operation_type,
+      orderingKey: memoryProviderOutbox.ordering_key,
+      payloadJson: memoryProviderOutbox.payload_json,
+    })
     .from(memoryProviderOutbox)
     .where(eq(memoryProviderOutbox.outbox_id, outboxId))
     .limit(1)
     .get();
-  return (
-    existing === undefined ||
-    existing.payloadJson === JSON.stringify(SaveConversationPayload.make({ projection }))
+  if (existing === undefined) return "missing";
+  const payload = Schema.decodeOption(Schema.fromJsonString(SaveConversationPayload))(
+    existing.payloadJson,
   );
+  if (Option.isNone(payload)) return "conflict";
+  const stored = payload.value.projection;
+  return existing.operationType === "saveConversation" &&
+    existing.allowancePeriodId === projection.allowancePeriodId &&
+    existing.orderingKey === userOrderingKey(projection.userId) &&
+    stored.allowancePeriodId === projection.allowancePeriodId &&
+    stored.lastMessageId === projection.lastMessageId &&
+    stored.sessionId === projection.sessionId &&
+    stored.userId === projection.userId
+    ? "existing"
+    : "conflict";
 };
 
 /** Construct the durable claim and settlement operations for provider reconciliation. */

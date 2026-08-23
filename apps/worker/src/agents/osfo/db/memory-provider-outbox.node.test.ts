@@ -63,6 +63,42 @@ it.effect("atomically records a committed turn and its provider conversation sna
   ),
 );
 
+it.effect("keeps the first durable snapshot when reconciliation sees later history changes", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      seedSession(database);
+      const store = makeAgentStore(makeAgentDb(asDurableObjectStorage(storage)));
+      const reference = committedTurn("assistant-1", "request-1");
+      const original = conversationProjection("assistant-1");
+      yield* store.recordCommittedTurn(reference, original);
+
+      const reconciled = ConversationSnapshotProjection.make({
+        ...original,
+        conversation: MemoryProvider.ConversationSnapshot.make({
+          messages: [
+            { content: "Remember this", role: "user" },
+            { content: "I will remember it\nTool result: settled later", role: "assistant" },
+          ],
+          usageStartIndex: 0,
+        }),
+      });
+
+      yield* store.recordCommittedTurn({ ...reference, source: "reconciliation" }, reconciled);
+
+      expect(countRows(database, "osfo_committed_turns")).toBe(1);
+      expect(countRows(database, "osfo_memory_provider_outbox")).toBe(1);
+      expect(
+        database
+          .prepare("SELECT payload_json FROM osfo_memory_provider_outbox WHERE outbox_id = ?")
+          .get("conversation:9:session-1:assistant-1"),
+      ).toEqual({
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This proves reconciliation preserves the exact first durable provider payload.
+        payload_json: JSON.stringify({ _tag: "SaveConversation", projection: original }),
+      });
+    }),
+  ),
+);
+
 it.effect("rolls back the committed receipt when durable enqueue fails", () =>
   withDatabase(({ database, storage }) =>
     Effect.gen(function* () {

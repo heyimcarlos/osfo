@@ -12,3 +12,9 @@ short, specific, and actionable.
   to that package directory, even when the config path resolves from the repo root.
 - Build Git-derived formatter paths and run the formatter from the same repository
   root; package-relative working directories make those paths invalid.
+- After a production messaging deployment, send a real channel message and observe
+  the reply. CI and a Worker health probe do not exercise Telegram through the
+  Agent lifecycle.
+- Reconciliation must preserve the first immutable outbox payload when later
+  history changes. Exact payload equality on an existing committed-turn identity
+  can prevent an Agent from activating.

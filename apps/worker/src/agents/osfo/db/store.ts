@@ -37,8 +37,8 @@ import {
 } from "./schema";
 import type { ConversationSnapshotProjection } from "../memory-provider-projection";
 import {
-  conversationSnapshotIsCompatibleTransaction,
   enqueueConversationSnapshotTransaction,
+  inspectConversationSnapshotTransaction,
 } from "./memory-provider-outbox";
 
 const sqliteCurrentTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u;
@@ -643,18 +643,26 @@ export const makeAgentStore = (db: AgentDb) => {
         if (
           projection !== undefined &&
           (projection.lastMessageId !== reference.assistantMessageId ||
-            projection.sessionId !== reference.sessionId ||
-            !conversationSnapshotIsCompatibleTransaction(transaction, projection))
+            projection.sessionId !== reference.sessionId)
         ) {
           return { _tag: "InvalidRecord" } as const;
         }
-        const receipt = <T>(value: T) => {
-          if (
-            projection !== undefined &&
-            !enqueueConversationSnapshotTransaction(transaction, projection, enqueuedAt)
-          ) {
-            // The compatibility check above makes this unreachable within one SQLite transaction.
-            throw new Error("The MemoryProvider outbox identity changed during insertion");
+        const snapshotState =
+          projection === undefined
+            ? "missing"
+            : inspectConversationSnapshotTransaction(transaction, projection);
+        if (snapshotState === "conflict") return { _tag: "InvalidRecord" } as const;
+        const receipt = <T>(value: T, preserveExistingSnapshot: boolean) => {
+          if (projection !== undefined) {
+            if (snapshotState === "existing" && !preserveExistingSnapshot) {
+              return { _tag: "InvalidRecord" } as const;
+            }
+            if (
+              snapshotState === "missing" &&
+              !enqueueConversationSnapshotTransaction(transaction, projection, enqueuedAt)
+            ) {
+              return { _tag: "InvalidRecord" } as const;
+            }
           }
           return { _tag: "Receipt", receipt: value } as const;
         };
@@ -717,9 +725,9 @@ export const makeAgentStore = (db: AgentDb) => {
               .get();
             return enriched === undefined
               ? ({ _tag: "InvalidRecord" } as const)
-              : receipt(enriched);
+              : receipt(enriched, true);
           }
-          return receipt(matchingMessage);
+          return receipt(matchingMessage, true);
         }
 
         if (reference.thinkRequestId !== null) {
@@ -735,6 +743,7 @@ export const makeAgentStore = (db: AgentDb) => {
             } as const;
           }
         }
+        if (snapshotState === "existing") return { _tag: "InvalidRecord" } as const;
         const inserted = transaction
           .insert(committedTurns)
           .values({
@@ -745,7 +754,9 @@ export const makeAgentStore = (db: AgentDb) => {
           })
           .returning(committedTurnReceiptFields)
           .get();
-        return inserted === undefined ? ({ _tag: "InvalidRecord" } as const) : receipt(inserted);
+        return inserted === undefined
+          ? ({ _tag: "InvalidRecord" } as const)
+          : receipt(inserted, false);
       }),
     );
     if (outcome["_tag"] === "InvalidRecord") {
