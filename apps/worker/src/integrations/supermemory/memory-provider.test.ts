@@ -1,6 +1,7 @@
 /* oxlint-disable effecttsgo/async-function -- Node HTTP request streams are Promise boundaries in this provider emulator. */
 /* oxlint-disable effecttsgo/node-builtin-import -- The adapter contract test uses a scoped local provider emulator. */
 /* oxlint-disable effecttsgo/strict-effect-provide -- Each it.effect is the application entry point for its isolated adapter Layer. */
+/* oxlint-disable eslint/no-underscore-dangle -- Application outcomes use the _tag discriminator. */
 /* oxlint-disable osfo/no-runtime-typeof -- Node's listen callback returns a documented string-or-address representation. */
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -10,6 +11,7 @@ import { Effect, Redacted, Schema } from "effect";
 
 import { SessionId, UserId } from "../../domain";
 import { MemoryProvider } from "../../services/memory-provider";
+import { PromptAssembly } from "../../services/prompt-assembly";
 import { SupermemoryMemoryProvider } from "./memory-provider";
 
 it.effect("recalls User-scoped profile and relevant Knowledge Base evidence", () =>
@@ -288,6 +290,23 @@ it.effect("rejects malformed provider payloads at the adapter boundary", () =>
         message: "The MemoryProvider returned an invalid response",
         operation: "recall",
       });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("keeps Native Memory when provider recall returns a malformed response", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({ body: { profile: "not-a-profile" }, status: 200 });
+      const result = yield* PromptAssembly.assemble({
+        agentInstructions: "Native Memory remains available",
+        query: "deployment",
+        userId: UserId.make("user-1"),
+      });
+
+      expect(result._tag).toBe("ProviderRecallUnavailable");
+      expect(result.instructions).toContain("Native Memory remains available");
+      expect(result.instructions).not.toContain("not-a-profile");
     }).pipe(Effect.provide(providerLayer(origin))),
   ),
 );
