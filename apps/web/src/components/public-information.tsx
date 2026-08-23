@@ -6,20 +6,22 @@ type Locale = "en" | "es";
 
 const planRows = {
   en: [
-    ["Accepted messages", "30 per 30-day period", "300 per billing period"],
-    ["Managed model steps per request", "6", "12"],
-    ["File uploads", "10 files, 10 MB each", "100 files, 25 MB each"],
-    ["Generated documents", "Not included", "10 per period"],
-    ["Cited research reports", "Not included", "5 per period"],
-    ["Reminders", "1 active", "25 active"],
+    ["Self-serve capabilities", "All included", "All included"],
+    ["Plan Usage", "Light use", "More included Usage"],
+    ["Managed models", "Standard", "Stronger for complex work"],
+    ["Retained content", "100 MB", "2 GB"],
+    ["Active Workflows", "3", "25"],
+    ["Active reminders", "5", "25"],
+    ["GM Summon", "Not included", "One per period"],
   ],
   es: [
-    ["Mensajes aceptados", "30 por cada periodo de 30 días", "300 por periodo de facturación"],
-    ["Pasos de modelo por solicitud", "6", "12"],
-    ["Archivos subidos", "10 archivos de 10 MB", "100 archivos de 25 MB"],
-    ["Documentos generados", "No incluido", "10 por periodo"],
-    ["Informes de investigación con citas", "No incluido", "5 por periodo"],
-    ["Recordatorios", "1 activo", "25 activos"],
+    ["Capacidades digitales", "Todas incluidas", "Todas incluidas"],
+    ["Uso del plan", "Uso ligero", "Más uso incluido"],
+    ["Modelos administrados", "Estándar", "Más potentes para trabajo complejo"],
+    ["Contenido guardado", "100 MB", "2 GB"],
+    ["Workflows activos", "3", "25"],
+    ["Recordatorios activos", "5", "25"],
+    ["GM Summon", "No incluido", "Uno por periodo"],
   ],
 } as const;
 
@@ -108,7 +110,7 @@ export function PrivacyNotice({ locale = publicLocale() }: { readonly locale?: L
 export function PlanDetails({ locale = publicLocale() }: { readonly locale?: Locale }) {
   const spanish = locale === "es";
   return (
-    <InformationPage locale={locale} title={spanish ? "Planes y límites" : "Plans and allowances"}>
+    <InformationPage locale={locale} title={spanish ? "Planes y uso" : "Plans and Usage"}>
       <p>
         {spanish
           ? "Free cuesta CA$0. Adventurer cuesta CA$25 al mes, más impuestos. Al inicio no hay plan anual, prueba, cargos por exceso, complementos de uso ni selección de modelo."
@@ -118,7 +120,7 @@ export function PlanDetails({ locale = publicLocale() }: { readonly locale?: Loc
         <table className="w-full min-w-[34rem] border-collapse text-left text-sm">
           <thead>
             <tr>
-              <th className="border-2 p-3">{spanish ? "Límite" : "Allowance"}</th>
+              <th className="border-2 p-3">{spanish ? "Servicio" : "Service"}</th>
               <th className="border-2 p-3">Free</th>
               <th className="border-2 p-3">Adventurer</th>
             </tr>
@@ -136,8 +138,8 @@ export function PlanDetails({ locale = publicLocale() }: { readonly locale?: Loc
       </div>
       <p>
         {spanish
-          ? "Free incluye conversación administrada, uso limitado de memoria, análisis de archivos compatibles y recordatorios únicos. Adventurer añade límites mayores, generación de documentos, investigación con citas, Gmail, recordatorios recurrentes, Workflows y GM Summon. Los límites no se acumulan. Las acciones de seguridad, cuenta, facturación, cancelación, eliminación y derechos de datos siguen disponibles después de agotar el uso normal."
-          : "Free includes managed conversation, bounded memory use, supported file analysis, and one-time reminders. Adventurer adds higher limits, document generation, cited research, Gmail, recurring reminders, Workflows, and GM Summon. Allowances do not roll over. Safety, account, billing, cancellation, deletion, and data-right actions remain available after ordinary use is exhausted."}
+          ? "Ambos planes incluyen conversación, memoria, Skills, archivos, investigación, artefactos, imágenes, recordatorios, Workflows, Gmail, Google Calendar y Google Drive. Adventurer ofrece más uso, modelos administrados más potentes, más espacio y capacidad, y GM Summon. El uso no se acumula. Después de agotarlo continúan la conversación básica y la gestión segura."
+          : "Both Plans include conversation, memory, Skills, files, research, artifacts, images, reminders, Workflows, Gmail, Google Calendar, and Google Drive. Adventurer provides more Usage, stronger managed models, more storage and capacity, and GM Summon. Usage does not roll over. Basic conversation and safe management continue after exhaustion."}
       </p>
     </InformationPage>
   );

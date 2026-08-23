@@ -62,10 +62,11 @@ describe("App", () => {
     expect(privacy).toContain("What Osfo stores");
     expect(privacy).toContain("Your choices and rights");
     expect(plans).toContain("CA$25 each month");
-    expect(plans).toContain("30 per 30-day period");
+    expect(plans).toContain("All included");
+    expect(plans).toContain("More included Usage");
     expect(spanishPrivacy).toContain("Qué guarda Osfo");
     expect(spanishPrivacy).toContain("Tus opciones y derechos");
-    expect(spanishPlans).toContain("Planes y límites");
-    expect(spanishPlans).toContain("30 por cada periodo de 30 días");
+    expect(spanishPlans).toContain("Planes y uso");
+    expect(spanishPlans).toContain("Todas incluidas");
   });
 });

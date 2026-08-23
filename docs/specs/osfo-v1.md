@@ -138,8 +138,8 @@ declared launch actions. It does not use a general permission framework.
 
 ```text
 registered User
-  + named Plan Entitlement
-  + current Usage Allowance
+  + known Capability Catalog operation and manifest when applicable
+  + normal, exhausted, or unmetered execution mode
   + exact resource ownership or Integration Connection
   + exact Approval when required
   - User Suspension, revoked AuthSession or Channel Link, or deletion access revocation
@@ -147,12 +147,14 @@ registered User
 ```
 
 Ingress resolves the Channel Link before any privileged model execution, then
-checks User suspension, Plan access, and allowance.
+checks User suspension, Capability Catalog, Plan Usage state, and the
+Adventurer-only GM Summon exception.
 Every protected external effect checks the exact User, action, resource,
 Integration Connection, Approval, User Suspension, Channel Link and session
-revocation, and deletion access revocation again. Missing ownership, Plan
-entitlement, allowance, Integration Connection, or Approval also denies the
-operation. Model output, tool visibility, earlier acceptance, and an earlier
+revocation, and deletion access revocation again. Missing ownership, a known
+operation or manifest, available Plan Usage or exhausted mode, Integration
+Connection, or Approval also denies the operation. Model output, tool visibility,
+earlier acceptance, and an earlier
 Approval are not authority. Osfo does not store these decisions in one generic
 denial-facts table.
 
@@ -166,7 +168,7 @@ extract a shared audit model only after several concrete workflows need it.
 
 Osfo presents one visible persona. An unlinked direct-message sender talks to
 Osfo itself in a temporary Company Conversation instead of receiving only a
-deterministic invite. The conversation runs on a fixed model route inside a
+deterministic invite. The conversation runs on a bounded company-funded direct route inside a
 bounded envelope: a capped transcript window, an optional per-address daily
 turn ceiling, and no memory, entitlements, tools, or external authority except
 one presentation capability for the current Channel Link Invite. The model
@@ -371,77 +373,53 @@ must implement the same Interface without changing product authority.
 ## Plans, capabilities, and cost controls
 
 Osfo has two launch Plans. Free has no charge. Adventurer costs CA$25 each month,
-plus tax. V1 has no annual billing, trial, overage, usage add-on, or user-selected
-model. Managed models serve all launch work. User-selected model Provider
-Connections are deferred.
+plus tax. Both Plans include every self-serve digital capability: conversation,
+memory, Skills, files, web and research, artifacts, images and diagrams,
+reminders, all declared Workflows, Gmail, Google Calendar, and Google Drive. GM
+Summon is the sole capability exception and remains Adventurer-only.
 
-Free includes managed conversation, bounded Supermemory use, supported file
-analysis, and unambiguous one-time reminders. Adventurer adds a stronger managed
-route, higher limits, PDF and DOCX generation, cited web research, one Gmail
-Integration Connection, recurring reminders, three Workflows, and GM Summon.
+One shared Plan Usage pool covers every completed costly operation. Free begins
+each active 30-day period with 2,000,000 hidden Usage micros; Adventurer begins
+each confirmed paid period with 6,000,000. One Rated Cost USD micro converts to
+one Plan Usage micro. These units are not money or provider credit and never
+appear in the regular User experience. Usage does not roll over.
 
-| Capability                      |                     Free |                                   Adventurer |
-| ------------------------------- | -----------------------: | -------------------------------------------: |
-| Accepted User messages          |            30 per period |                               300 per period |
-| Managed model steps per request |                        6 |                                           12 |
-| Supermemory ingestion           | 10,000 normalized tokens |                    250,000 normalized tokens |
-| Supermemory retrievals          |                      100 |                                        2,000 |
-| File uploads                    |         10 at 10 MB each |                            100 at 25 MB each |
-| Retained files                  |                   100 MB |                                         2 GB |
-| Generated documents             |                     None |            10, at most 20 pages or 5 MB each |
-| Research Reports                |                     None |                  5, at most 20 searches each |
-| Gmail                           |                     None | 50 searches, 500 messages examined, 20 sends |
-| Reminders                       |   1 active, 3 deliveries |                    25 active, 100 deliveries |
-| Workflows                       |                     None |                      3 concurrent, 40 starts |
-| GM Summon                       |                     None |                        1 completed or active |
-| Hidden vendor-cost ceiling      |                  US$0.25 |                                      US$7.50 |
-| Maximum vendor cost per request |                  US$0.03 |                                      US$0.75 |
+The User sees one whole-percentage bar, `<1%` while a positive remainder exists,
+`0%` only after exhaustion, a reset date, one warning at 20%, and one exhaustion
+warning. Completed work deducts silently. Broad explanations group activity as
+conversation and memory, web and research, integrations, files and artifacts,
+images and diagrams, or automations.
 
-Free periods are 30 days from registration. Adventurer uses its billing period.
-Allowances do not roll over. Safety, account, billing, usage, cancellation,
-revocation, deletion, and data-right actions stay available after normal usage
-is exhausted.
+Each final Usage Event belongs to an existing product or effect identity and its
+original period. Useful completed components consume Usage; failed or cancelled
+work does not. Identical retries return the existing result and changed facts
+conflict. Authorization admits bounded costly work below the pool, records its
+full completed cost afterward, permits bounded overshoot, then pauses later
+costly work. There are no reservations, overage charges, or per-capability
+monthly counters.
 
-An allowance period is `scheduled` before its start, `active` during its
-half-open `[startsAt, endsAt)` interval, and `expired` at or after its end. One
-common period for one User covers every allowance kind. The period pins one
-immutable Plan policy version.
+After exhaustion, basic bounded conversation, direct retained-data reads, safe
+management, billing, cancellation, revocation, deletion, export, and data-rights
+work continue. Only explicitly manifest-declared connector reads may use the
+bounded exhausted read mode. Search, broad retrieval, generation, analysis,
+artifacts, images, compute, and new Workflow work pause until reset.
 
-Authorization admits ordinary work only while recorded consumption is below its
-limit and the operation fits its own size, step, cost, and concurrency limits.
-Known-at-start consumption can be checked and recorded during admission. Actual
-category use and vendor cost are recorded after the owning effect has trusted
-evidence. Each Allowance Consumption record uses an existing product or effect
-identity, so safe retries do not count it twice. Feature modules normalize their
-own evidence. Osfo does not create a generic allowance work identity.
+Approval depends on declared consequences: external communication, destruction
+or overwrite, access or ownership change, financial commitment, a future or
+recurring external effect, or human escalation. Approval binds the exact User,
+operation, Action identity, and immutable presentation. Connection consent and a
+direct request do not replace it. Cost alone never requires Approval.
 
-Work admitted below a limit may finish and can move recorded use above that
-limit. The next ordinary operation is denied. Per-operation cost limits and
-concurrency limits bound this overshoot. Provider-reported exact cost is used
-when trustworthy. An uncertain incurred cost uses a conservative configured
-maximum. Proven no-use work creates no consumption record. Osfo never creates an
-overage charge.
+Adventurer increases managed-route strength, input and output context, retained
+storage, active reminders and Workflows, and costly-job concurrency. Equal
+per-operation bounds contain files, model steps, web and research, artifacts,
+compute, integration calls, and execution time. Hidden Company Cost backstops are
+US$5 for Free and US$12 for Adventurer and are never presented as entitlements.
 
-These actions need one exact Approval:
-
-- Gmail send;
-- creation or material change of a recurring reminder;
-- every Workflow start or material change;
-- GM Summon;
-- destructive memory, file, Session, or account-data action.
-
-Cost alone never requires Approval.
-
-Approval is bound to one immutable Action Presentation. A material change to a
-recipient, content, schedule, resource, or cost creates a new Action and needs a
-new Approval.
-
-On downgrade or expiry, excess retained data stays readable, exportable, and
-deletable. New writes stop while use exceeds Free limits. Paid reminders and
-Workflows pause or cancel before another protected effect. The Osfo Gmail
-Integration Connection authorization fact stays dormant and revocable. Composio
-continues to own its connected-account record and credentials. Existing User data
-is not silently deleted.
+On downgrade, admitted work finishes against its pinned period. A fresh Free
+period receives no Adventurer rollover. Retained data and connections remain
+readable and revocable; the oldest resources stay active up to Free limits and
+newer excess resources pause until the User changes the active selection.
 
 ## Launch capabilities
 
@@ -575,12 +553,12 @@ generated artifacts belong in R2. Disposable Python task compute can support
 file analysis and document generation. It is bounded, isolated, and not a
 general User-facing execution product.
 
-Adventurer web research produces cited Research Reports within the declared
-search and cost limits. It does not bypass authentication or paywalls.
+Web research produces cited Research Reports within the declared search and
+resource limits. It does not bypass authentication or paywalls.
 
-One Gmail Integration Connection permits on-demand search and read, local
-summaries and drafts, and approved sends. V1 does not perform mailbox-wide sync,
-continuous monitoring, delete, archive, label changes, or automatic replies.
+Integration Capability Manifests permit allowlisted Gmail, Calendar, and Drive
+reads and effects through generic central operations. V1 does not perform
+mailbox-wide sync, continuous monitoring, or arbitrary discovered provider work.
 Composio supplies current provider connection evidence for the Osfo Integration
 Connection. Provider consent does not approve a send.
 
@@ -590,8 +568,8 @@ discovery and execution, and provider API transport. Osfo does not persist Gmail
 credentials or connected-account records and does not call Google OAuth or Gmail
 APIs directly.
 
-Osfo owns User identity and AuthSession authority, Plan Entitlements and Usage
-Allowances, authorization decisions, human Approval for protected effects,
+Osfo owns User identity and AuthSession authority, Plan Usage, authorization
+decisions, human Approval for protected effects,
 stable Action identity and idempotency, product-level outcome and recovery
 policy, and safe audit evidence without credentials. An approved Gmail send must
 still pass the current Osfo authorization checks before execution through
@@ -606,10 +584,10 @@ account as product authority.
 
 ### Reminders and Workflows
 
-One-time reminders use Scheduled Tasks. Adventurer recurring reminders have a
-minimum interval of one day. Workflows are not used for simple reminders.
+One-time and recurring reminders use Scheduled Tasks, with a minimum recurring
+interval of one day. Workflows are not used for simple reminders.
 
-Adventurer exposes exactly these Workflows:
+Both Plans expose exactly these Workflows:
 
 | Workflow        | Purpose                                                  | Milestone                                                 |
 | --------------- | -------------------------------------------------------- | --------------------------------------------------------- |
@@ -916,7 +894,7 @@ or cost evidence makes the affected gate MISSING. At target, measured use stays
 at least 30% below every hard limit.
 
 The economics gate requires at least 50% Adventurer contribution margin and at
-most US$0.50 all-in cost for an active Free period. It includes platform, model,
+most US$5.00 all-in cost for an active Free period. It includes platform, model,
 search, Supermemory, WhatsApp, file, compute, storage, backup, observability,
 payment, support, expected GM Summon, idle, failure, retry, recovery, retention,
 and teardown costs. Prices are at most 30 days old and reconcile with bills.

@@ -8,6 +8,12 @@ import type { BillingDatabase } from "./database";
 import { inspect } from "./inspect";
 import { loadSubscription } from "./load-subscription";
 import { recordUsage, type RecordUsageError, type RecordUsageResult } from "./record-usage";
+import {
+  recordUsageEvent,
+  type RecordUsageEventError,
+  type RecordUsageEventResult,
+} from "./record-usage-event";
+import type { UsageEvent } from "../../domain/usage-event";
 
 export * from "./errors";
 export type { BillingDatabase } from "./database";
@@ -22,6 +28,9 @@ export interface Interface {
     source: AllowanceSource,
     items: ReadonlyArray<AllowanceItem>,
   ) => Effect.Effect<RecordUsageResult, RecordUsageError>;
+  readonly recordUsageEvent: (
+    event: UsageEvent,
+  ) => Effect.Effect<RecordUsageEventResult, RecordUsageEventError>;
   readonly load: (userId: UserId) => ReturnType<typeof loadSubscription>;
 }
 
@@ -37,6 +46,7 @@ export const make = (database: BillingDatabase): Interface => ({
   load: (userId) => loadSubscription(database, userId),
   recordUsage: (allowancePeriodId, source, items) =>
     recordUsage(database, allowancePeriodId, source, items),
+  recordUsageEvent: (event) => recordUsageEvent(database, event),
 });
 
 export * as BillingDb from "./index";

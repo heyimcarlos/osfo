@@ -29,7 +29,7 @@ _Avoid_: Benchmark target, AgentRun throughput target, DAU target
 **Reference Workload Trace**:
 A versioned, reproducible incoming-message trace whose observed work mix and
 amplification represent production-shaped Osfo behavior. Before beta evidence
-exists, its declared assumptions derive from Plan mix and Usage Allowances.
+exists, its declared assumptions derive from Plan mix and Plan Usage.
 _Avoid_: Synthetic benchmark, worst-case workload
 
 **Challenge Lane**:
@@ -178,27 +178,56 @@ _Avoid_: AuthSession, permanent phone login, conversation ownership
 
 **Free Plan**:
 The no-cost Subscription established by User Registration. It gives a
-registered User a bounded set of capabilities and managed usage without giving
-unregistered contacts product access.
+registered User every self-serve digital capability within a light shared Plan
+Usage pool. It does not give unregistered contacts product access or include GM
+Summon.
 _Avoid_: Free trial, provisional access, unlimited free tier
 
 **Adventurer Plan**:
 The sole paid Subscription at Osfo v1 launch. It grants recurring, sensitive,
-and higher-cost capabilities within bounded monthly Usage Allowances.
+and self-serve digital capabilities through more Plan Usage, stronger managed
+routing, larger context and retained storage, more active resources and
+concurrency, and one GM Summon per period.
 _Avoid_: Premium Plan, Pro Plan, unlimited plan, usage add-on
 
-**Usage Allowance**:
-A Plan-scoped quantity or cost budget that stops new ordinary work after
-recorded consumption reaches its limit without granting authority. Work already
-admitted may complete with bounded overshoot, and it never creates an overage
-charge.
-_Avoid_: Plan Entitlement, message quota, pay-as-you-go balance
+**Plan Usage**:
+The included, noncash capacity shared by a User's completed costly self-serve
+work during one Plan period. It does not grant authority, roll over, represent
+provider spending, or create an overage charge.
+_Avoid_: Cash balance, credit grant, provider allowance, capability quota
 
-**Allowance Consumption**:
-One idempotently recorded quantity attributed to an existing product or effect
-identity and one Usage Allowance period. It records known-at-start or observed
-use without becoming a reservation or a new work identity.
-_Avoid_: Allowance reservation, billing charge, generic usage event
+**Usage Event**:
+The final accounting fact for one completed product operation or Workflow
+occurrence. It retains its original period, existing source identity, outcome,
+rated components, pinned policy versions, and opaque evidence references.
+_Avoid_: Reservation, provider payload, billing charge, generic work identity
+
+**Rated Cost**:
+The deterministic integer USD-micro value obtained from completed low-level
+resource evidence and an immutable Resource Price Version. Plan Usage derives
+from it, but it is neither actual Company Cost nor User money.
+_Avoid_: Provider estimate, invoice amount, cash balance
+
+**Company Cost**:
+The actual attributable cost of successful and failed attempts, retries,
+providers, platform, transport, payment, storage, support, and other company
+work. It remains separate from Rated Cost and User Plan Usage.
+_Avoid_: Plan Usage, Rated Cost, public allowance
+
+**Resource Price Version**:
+An immutable source-controlled set of provider-specific rates that converts
+completed evidence into Rated Cost for newly admitted work.
+_Avoid_: Live provider estimate, Usage Policy Version, mutable dashboard price
+
+**Usage Policy Version**:
+An immutable rule that converts Rated Cost into Plan Usage and defines the
+included Plan Usage pool pinned by a Plan period.
+_Avoid_: Resource Price Version, Capability Catalog, current subscription state
+
+**Purchased Credits**:
+Future prepaid capacity consumed only after included Plan Usage. V1 does not
+sell, allocate, expire, auto-reload, or bill Purchased Credits.
+_Avoid_: Included Plan Usage, overage, cash wallet, launch feature
 
 **Integration Connection**:
 Revocable authority for Osfo to read or act through a third-party product such as
@@ -211,9 +240,9 @@ _Avoid_: Account, Better Auth provider Account, local connected-account record,
 implicit provider scope, Approval
 
 **Model Access Policy**:
-The Osfo-owned rule that chooses a managed model route for a request and applies
-its Plan and cost budget. V1 does not expose model choice or a Provider
-Connection.
+The immutable Osfo-owned rule that derives a managed route profile from trusted
+task requirements and controls qualification and one-way quality escalation.
+It does not expose model choice or create a Provider Connection.
 _Avoid_: Model Adapter, provider credential, hard-coded model
 
 **AuthSession**:
@@ -226,22 +255,17 @@ _Avoid_: Channel Link, Account, permanent bearer token
 A durable administrative fact that blocks a User's protected operations without
 changing or replacing the User. Recovery and deletion remain separate manual
 policies.
-_Avoid_: User lifecycle status, AuthSession revocation, allowance exhaustion
+_Avoid_: User lifecycle status, AuthSession revocation, Plan Usage exhaustion
 
 **Channel Link Revocation**:
 The durable end of one Channel Link's authority to act as or deliver to a User.
 It does not revoke the Phone Account or another Channel Link.
 _Avoid_: AuthSession revocation, User Suspension, channel delivery failure
 
-**Plan Entitlement**:
-A positive Subscription fact that makes one capability eligible for a User. It
-does not by itself grant authority over an action or resource.
-_Avoid_: Usage Allowance, Approval, paid User status
-
 **Authorization Policy**:
 The small deterministic default-deny table that decides whether one v1 launch
 action is allowed for a User, resource, and current context. It uses exact Plan,
-allowance, ownership, Integration Connection, Approval, User Suspension,
+Plan Usage mode, ownership, Integration Connection, Approval, User Suspension,
 AuthSession revocation, Channel Link revocation, and deletion-access facts.
 _Avoid_: Agent judgment, generic permission framework, tool visibility
 

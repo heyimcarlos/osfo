@@ -2,6 +2,7 @@ import { Effect, Predicate, Schema } from "effect";
 
 import { ConversationRouteId, ThinkSubmissionId, type SessionId } from "../domain";
 import {
+  isLaunchPolicy,
   policyFor,
   policyForVersion,
   retainedCatalog,
@@ -9,7 +10,7 @@ import {
 } from "../domain/plan-policy";
 import {
   launchModelAccessPolicy,
-  type ManagedRouteUnavailable,
+  ManagedRouteUnavailable,
   selectManagedRoute,
 } from "../domain/model-access-policy";
 import { ManagedTurnAuthorityIdentity, ManagedTurnMetadata } from "../domain/managed-conversation";
@@ -102,6 +103,13 @@ export const admitManagedConversation = (
     const planPolicyVersion = input.authorization.subscription.planPolicyVersion;
     const profile = yield* selectManagedRoute(launchModelAccessPolicy, plan, planPolicyVersion);
     const planPolicy = yield* policyForVersion(retainedCatalog, planPolicyVersion);
+    if (!isLaunchPolicy(planPolicy)) {
+      return yield* new ManagedRouteUnavailable({
+        message: "Shared Plan Usage routing is not activated",
+        plan,
+        planPolicyVersion,
+      });
+    }
     const operationLimits = policyFor(planPolicy, plan).operationLimits;
     const maxSteps = Number(operationLimits.modelStepsPerRequest);
     const maxVendorUsdMicros = operationLimits.vendorUsdMicrosPerRequest;

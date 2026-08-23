@@ -66,7 +66,7 @@ export const LiveLimits = Schema.Struct({
 /** Live resource limits enforced by the module that owns each resource. */
 export type LiveLimits = typeof LiveLimits.Type;
 
-/** Immutable launch rules for one Plan. */
+/** Immutable retained launch rules for one Plan. */
 export const PlanRules = Schema.Struct({
   allowanceLimits: AllowanceLimits,
   entitlements: Schema.Array(Capability),
@@ -74,16 +74,40 @@ export const PlanRules = Schema.Struct({
   operationLimits: OperationLimits,
 });
 
-/** Immutable launch rules for one Plan. */
+/** Immutable retained launch rules for one Plan. */
 export type PlanRules = typeof PlanRules.Type;
 
-/** One retained, immutable Plan policy version. */
-export const PlanPolicy = Schema.Struct({
+/** The delivered capability-specific policy retained for historical interpretation. */
+export const LaunchPlanPolicy = Schema.Struct({
   plans: Schema.Struct({ adventurer: PlanRules, free: PlanRules }),
-  version: PlanPolicyVersion,
+  version: Schema.Literal("launch-v1").pipe(Schema.brand("PlanPolicyVersion")),
 });
 
-/** One retained, immutable Plan policy version. */
+/** The delivered capability-specific policy retained for historical interpretation. */
+export type LaunchPlanPolicy = typeof LaunchPlanPolicy.Type;
+
+/** Included noncash Plan Usage owned by one shared-Usage Plan policy. */
+export const SharedUsagePlanRules = Schema.Struct({
+  includedPlanUsageMicros: Schema.BigInt.check(Schema.isGreaterThanBigInt(0n)),
+});
+
+/** Included noncash Plan Usage owned by one shared-Usage Plan policy. */
+export type SharedUsagePlanRules = typeof SharedUsagePlanRules.Type;
+
+/** One immutable shared Plan Usage policy with no capability-specific counters. */
+export const SharedUsagePlanPolicy = Schema.Struct({
+  plans: Schema.Struct({ adventurer: SharedUsagePlanRules, free: SharedUsagePlanRules }),
+  ratedCostUsdMicroToPlanUsageMicro: Schema.Literal(1n),
+  version: Schema.Literal("shared-usage-v1").pipe(Schema.brand("PlanPolicyVersion")),
+});
+
+/** One immutable shared Plan Usage policy with no capability-specific counters. */
+export type SharedUsagePlanPolicy = typeof SharedUsagePlanPolicy.Type;
+
+/** One retained immutable legacy or shared Plan policy. */
+export const PlanPolicy = Schema.Union([LaunchPlanPolicy, SharedUsagePlanPolicy]);
+
+/** One retained immutable legacy or shared Plan policy. */
 export type PlanPolicy = typeof PlanPolicy.Type;
 
 /** Source-controlled catalog of retained Plan policies and its explicit current version. */
@@ -123,18 +147,6 @@ export class PlanPolicyNotFound extends Schema.TaggedError<PlanPolicyNotFound>()
     version: PlanPolicyVersion,
   },
 ) {}
-
-/** Source-shaped catalog input that must be parsed before it becomes policy authority. */
-export interface PlanPolicyCatalogSource {
-  readonly currentVersion: string;
-  readonly policies: ReadonlyArray<{
-    readonly plans: {
-      readonly adventurer?: typeof PlanRules.Encoded;
-      readonly free?: typeof PlanRules.Encoded;
-    };
-    readonly version: string;
-  }>;
-}
 
 const launchCatalog = {
   currentVersion: "launch-v1",
@@ -220,12 +232,21 @@ const launchCatalog = {
       },
       version: "launch-v1",
     },
+    {
+      plans: {
+        adventurer: { includedPlanUsageMicros: 6_000_000n },
+        free: { includedPlanUsageMicros: 2_000_000n },
+      },
+      ratedCostUsdMicroToPlanUsageMicro: 1n,
+      version: "shared-usage-v1",
+    },
   ],
 };
 
 /** Parse one policy catalog before it becomes application authority. */
-export const parseCatalog = (input: PlanPolicyCatalogSource) =>
-  Schema.decodeUnknownEffect(PlanPolicyCatalog)(input).pipe(
+// oxlint-disable-next-line osfo/no-unknown-parameters -- This function is the schema parser at the policy boundary.
+export const parseCatalog = (input: unknown) =>
+  Schema.decodeUnknownEffect(PlanPolicyCatalog, { onExcessProperty: "error" })(input).pipe(
     Effect.mapError(
       (cause) =>
         new InvalidPlanPolicyCatalog({
@@ -238,14 +259,40 @@ export const parseCatalog = (input: PlanPolicyCatalogSource) =>
 /** Retained source-controlled Plan policy catalog. */
 export const retainedCatalog = Schema.decodeUnknownSync(PlanPolicyCatalog)(launchCatalog);
 
+/** Immutable shared Usage policy retained for new Free-period and replay calculations. */
+export const sharedUsagePolicyV1 = Schema.decodeUnknownSync(SharedUsagePlanPolicy)(
+  retainedCatalog.policies.find((policy) => policy.version === "shared-usage-v1"),
+);
+
 /** Current source-controlled Plan policy. */
 export const currentPolicy = Schema.decodeUnknownSync(PlanPolicy)(
   retainedCatalog.policies.find((policy) => policy.version === retainedCatalog.currentVersion),
 );
 
+/** Currently active launch policy while shared Usage activation evidence is MISSING. */
+export const currentLaunchPolicy = Schema.decodeUnknownSync(LaunchPlanPolicy)(currentPolicy);
+
 /** Read one Plan entry from a parsed policy. */
-export const policyFor = (policy: PlanPolicy, plan: "adventurer" | "free"): PlanRules =>
-  policy.plans[plan];
+export function policyFor(policy: LaunchPlanPolicy, plan: "adventurer" | "free"): PlanRules;
+export function policyFor(
+  policy: SharedUsagePlanPolicy,
+  plan: "adventurer" | "free",
+): SharedUsagePlanRules;
+export function policyFor(
+  policy: PlanPolicy,
+  plan: "adventurer" | "free",
+): PlanRules | SharedUsagePlanRules;
+export function policyFor(policy: PlanPolicy, plan: "adventurer" | "free") {
+  return policy.plans[plan];
+}
+
+/** Prove a retained policy uses the delivered launch shape. */
+export const isLaunchPolicy = (policy: PlanPolicy): policy is LaunchPlanPolicy =>
+  policy.version === "launch-v1";
+
+/** Prove a retained policy uses the shared Plan Usage shape. */
+export const isSharedUsagePolicy = (policy: PlanPolicy): policy is SharedUsagePlanPolicy =>
+  policy.version === "shared-usage-v1";
 
 /** Resolve one retained policy version for persisted allowance history. */
 export const policyForVersion = (catalog: PlanPolicyCatalog, version: PlanPolicyVersion) => {

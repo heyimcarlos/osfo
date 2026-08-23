@@ -2,7 +2,7 @@ import { Schema } from "effect";
 
 import { AllowancePeriodId, Plan, UserId } from "../domain";
 
-/** Period consumables recorded by the launch allowance policy. */
+/** Evolving persisted metrics interpreted by their pinned legacy or shared Usage policy. */
 export const AllowanceKind = Schema.Literals([
   "acceptedMessages",
   "supermemoryIngestionTokens",
@@ -17,9 +17,10 @@ export const AllowanceKind = Schema.Literals([
   "workflowStarts",
   "gmSummons",
   "vendorUsdMicros",
+  "planUsageMicros",
 ]);
 
-/** Period consumables recorded by the launch allowance policy. */
+/** Evolving persisted metrics interpreted by their pinned legacy or shared Usage policy. */
 export type AllowanceKind = typeof AllowanceKind.Type;
 
 /** Trusted evidence basis for one normalized consumption quantity. */
@@ -100,8 +101,8 @@ export const VisibleAllowanceUse = Schema.Struct({
 /** Visible aggregate for one period allowance kind. */
 export type VisibleAllowanceUse = typeof VisibleAllowanceUse.Type;
 
-/** User-visible allowance inspection with hidden vendor cost removed. */
-export const AllowanceInspection = Schema.Struct({
+/** Retained launch-v1 inspection with hidden vendor cost removed. */
+export const LegacyAllowanceInspection = Schema.Struct({
   allowancePeriodId: AllowancePeriodId,
   plan: Plan,
   resetsAt: Schema.Date,
@@ -109,7 +110,39 @@ export const AllowanceInspection = Schema.Struct({
   userId: UserId,
 });
 
-/** User-visible allowance inspection with hidden vendor cost removed. */
+/** Retained launch-v1 inspection with hidden vendor cost removed. */
+export type LegacyAllowanceInspection = typeof LegacyAllowanceInspection.Type;
+
+/** Safe one-pool User presentation for a shared Plan Usage period. */
+export const PlanUsageInspection = Schema.TaggedStruct("PlanUsage", {
+  allowancePeriodId: AllowancePeriodId,
+  plan: Plan,
+  remainingLabel: Schema.String,
+  remainingPercent: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
+  resetsAt: Schema.Date,
+  userId: UserId,
+  warning: Schema.NullOr(Schema.Literals(["twentyPercent", "exhausted"])),
+});
+
+/** Safe one-pool User presentation for a shared Plan Usage period. */
+export type PlanUsageInspection = typeof PlanUsageInspection.Type;
+
+/** Canonical percentage presentation for one shared Plan Usage pool. */
+export const presentPlanUsage = (recorded: bigint, included: bigint) => {
+  const remaining = recorded >= included ? 0n : included - recorded;
+  const remainingPercent = Number((remaining * 100n) / included);
+  return {
+    remainingLabel:
+      remaining === 0n ? "0%" : remainingPercent === 0 ? "<1%" : `${remainingPercent}%`,
+    remainingPercent,
+    warning: remaining === 0n ? "exhausted" : remainingPercent <= 20 ? "twentyPercent" : null,
+  } as const;
+};
+
+/** Version-specific User inspection that preserves retained launch behavior. */
+export const AllowanceInspection = Schema.Union([LegacyAllowanceInspection, PlanUsageInspection]);
+
+/** Version-specific User inspection that preserves retained launch behavior. */
 export type AllowanceInspection = typeof AllowanceInspection.Type;
 
 /** PostgreSQL allowance transaction operations that can fail without driver details. */
@@ -117,6 +150,7 @@ export const BillingDatabaseOperation = Schema.Literals([
   "admitAllowance",
   "inspectAllowances",
   "recordUsage",
+  "recordUsageEvent",
   "loadBillingSubscription",
   "applyStripeSnapshot",
 ]);

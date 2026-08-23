@@ -67,7 +67,11 @@ import {
   launchModelAccessPolicy,
   type ManagedRouteUnavailable,
 } from "../../domain/model-access-policy";
-import { currentPolicy, retainedCatalog, type PlanPolicyNotFound } from "../../domain/plan-policy";
+import {
+  currentLaunchPolicy,
+  retainedCatalog,
+  type PlanPolicyNotFound,
+} from "../../domain/plan-policy";
 import { FileAnalysisId, FileId, FileName, FileUploadId } from "../../domain/file";
 import { makeCloudflareFileCompute } from "../../integrations/cloudflare/file-compute";
 import {
@@ -119,6 +123,7 @@ import {
 import { Allowances } from "../../services/allowances";
 import { makeActionApprovals } from "../../services/action-approvals";
 import {
+  approvalFor,
   Authorization,
   restoreCoreMemoryAuthorization,
   type ApprovalRequired,
@@ -344,7 +349,7 @@ export class OsfoAgent extends Think<Env> {
   override sendReasoning = false;
 
   /** Free policy is the safe class fallback. Every admitted turn overrides it from metadata. */
-  override maxSteps = Number(currentPolicy.plans.free.operationLimits.modelStepsPerRequest);
+  override maxSteps = Number(currentLaunchPolicy.plans.free.operationLimits.modelStepsPerRequest);
 
   /** Never replay an uncertain external effect from an abandoned pending ledger row. */
   override actionLedgerPendingRetryLeaseMs = false as const;
@@ -1046,11 +1051,11 @@ export class OsfoAgent extends Think<Env> {
     const recheck = authorization.recheck(
       {
         ...current,
-        approval: {
-          actionId,
-          operation: "memory.clear",
-          userId: current.user.userId,
-        },
+        approval: approvalFor(
+          current.user.userId,
+          { actionId, kind: "memory.clear" },
+          "Clear the presented Core Memory content",
+        ),
       },
       { actionId, kind: "memory.clear" },
     );
@@ -1568,6 +1573,7 @@ export class OsfoAgent extends Think<Env> {
       this.#currentDocumentAuthorization(0n, {
         actionId,
         operation: "file.delete",
+        presentation: `Delete retained document ${input.contentId}`,
       });
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) throw invalidOsfoEnvironment;
@@ -1597,6 +1603,7 @@ export class OsfoAgent extends Think<Env> {
     approval?: {
       readonly actionId: ActionId;
       readonly operation: "file.delete";
+      readonly presentation: string;
     },
   ) {
     // oxlint-disable-next-line effecttsgo/prefer-typed-schema-decoder -- Agent metadata is optional and supplied by the external Think boundary.
@@ -1634,11 +1641,11 @@ export class OsfoAgent extends Think<Env> {
           approval:
             approval === undefined
               ? null
-              : {
-                  actionId: approval.actionId,
-                  operation: approval.operation,
-                  userId: currentContext.user.userId,
-                },
+              : approvalFor(
+                  currentContext.user.userId,
+                  { actionId: approval.actionId, kind: approval.operation },
+                  approval.presentation,
+                ),
           requestVendorUsdMicros,
         }),
       ),

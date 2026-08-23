@@ -4,6 +4,7 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   pgTable,
   primaryKey,
   text,
@@ -81,5 +82,138 @@ export const allowanceUsage = pgTable(
       name: "allowance_usage_user_period_fk",
     }).onDelete("cascade"),
     index("allowance_usage_period_kind_index").on(table.allowance_period_id, table.allowance_kind),
+  ],
+);
+
+const usageEventOutcomeValues = ["completed", "useful_partial", "failed", "cancelled"] as const;
+const usageActivityValues = [
+  "conversationsAndMemory",
+  "webAndResearch",
+  "integrations",
+  "filesAndArtifacts",
+  "imagesAndDiagrams",
+  "automations",
+] as const;
+const usageComponentKindValues = ["model", "non_model"] as const;
+const usageEvidenceReferenceKindValues = [
+  "providerLog",
+  "gatewayLog",
+  "companyCost",
+  "operationEvidence",
+] as const;
+
+/** Immutable final outcome for one existing operation identity in its original period. */
+export const usageEvents = pgTable(
+  "usage_events",
+  {
+    allowance_period_id: text().notNull(),
+    capability_catalog_version: text().notNull(),
+    facts_json: text().notNull(),
+    manifest_version: text(),
+    model_access_policy_version: text().notNull(),
+    occurred_at: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    outcome: text({ enum: usageEventOutcomeValues }).notNull(),
+    plan_usage_micros: bigint({ mode: "bigint" }),
+    rated_cost_usd_micros: bigint({ mode: "bigint" }),
+    root_operation_id: text().notNull(),
+    source_id: text().notNull(),
+    source_type: text().notNull(),
+    usage_policy_version: text().notNull(),
+    user_id: text().notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.allowance_period_id, table.source_type, table.source_id],
+      name: "usage_events_pk",
+    }),
+    check(
+      "usage_events_charge_consistency_check",
+      sql`(
+        ${table.outcome} in ('completed', 'useful_partial')
+        and ${table.rated_cost_usd_micros} > 0
+        and ${table.plan_usage_micros} > 0
+      ) or (
+        ${table.outcome} in ('failed', 'cancelled')
+        and ${table.rated_cost_usd_micros} is null
+        and ${table.plan_usage_micros} is null
+      )`,
+    ),
+    foreignKey({
+      columns: [table.user_id, table.allowance_period_id],
+      foreignColumns: [allowancePeriods.user_id, allowancePeriods.allowance_period_id],
+      name: "usage_events_user_period_fk",
+    }).onDelete("cascade"),
+    index("usage_events_root_operation_index").on(table.user_id, table.root_operation_id),
+    index("usage_events_period_outcome_index").on(table.allowance_period_id, table.outcome),
+  ],
+);
+
+/** Low-level reproducible Rated Cost component retained beneath one Usage Event. */
+export const usageEventComponents = pgTable(
+  "usage_event_components",
+  {
+    activity: text({ enum: usageActivityValues }).notNull(),
+    allowance_period_id: text().notNull(),
+    component_index: integer().notNull(),
+    component_kind: text({ enum: usageComponentKindValues }).notNull(),
+    evidence_json: text().notNull(),
+    rated_cost_usd_micros: bigint({ mode: "bigint" }).notNull(),
+    resource_price_version: text().notNull(),
+    source_id: text().notNull(),
+    source_type: text().notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.allowance_period_id,
+        table.source_type,
+        table.source_id,
+        table.component_index,
+      ],
+      name: "usage_event_components_pk",
+    }),
+    check("usage_event_components_positive_cost_check", sql`${table.rated_cost_usd_micros} > 0`),
+    foreignKey({
+      columns: [table.allowance_period_id, table.source_type, table.source_id],
+      foreignColumns: [
+        usageEvents.allowance_period_id,
+        usageEvents.source_type,
+        usageEvents.source_id,
+      ],
+      name: "usage_event_components_event_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
+/** Opaque provider, Company Cost, gateway, or operation reference beneath one Usage Event. */
+export const usageEventEvidenceReferences = pgTable(
+  "usage_event_evidence_references",
+  {
+    allowance_period_id: text().notNull(),
+    reference: text().notNull(),
+    reference_kind: text({ enum: usageEvidenceReferenceKindValues }).notNull(),
+    source_id: text().notNull(),
+    source_type: text().notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.allowance_period_id,
+        table.source_type,
+        table.source_id,
+        table.reference_kind,
+        table.reference,
+      ],
+      name: "usage_event_evidence_references_pk",
+    }),
+    foreignKey({
+      columns: [table.allowance_period_id, table.source_type, table.source_id],
+      foreignColumns: [
+        usageEvents.allowance_period_id,
+        usageEvents.source_type,
+        usageEvents.source_id,
+      ],
+      name: "usage_event_evidence_references_event_fk",
+    }).onDelete("cascade"),
   ],
 );

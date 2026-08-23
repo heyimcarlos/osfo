@@ -80,9 +80,36 @@ export function BillingScreen({
                   </strong>
                 </p>
               )}
-              <div className="mt-7 h-2 overflow-hidden rounded-full bg-[#dbe7f6]">
-                <span className="block h-full w-[62%] rounded-full bg-[#2f7df4]" />
-              </div>
+              {summary.usage === null ? null : (
+                <div className="mt-7">
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <strong>{summary.usage.label} Plan Usage remaining</strong>
+                    <span className="text-xs text-[#687896]">
+                      Resets {formatDate(summary.usage.resetAt)}
+                    </span>
+                  </div>
+                  <div
+                    aria-label={`${summary.usage.label} Plan Usage remaining`}
+                    aria-valuemax={100}
+                    aria-valuemin={0}
+                    aria-valuenow={summary.usage.remainingPercentage}
+                    className="mt-3 h-2 overflow-hidden rounded-full bg-[#dbe7f6]"
+                    role="progressbar"
+                  >
+                    <span
+                      className="block h-full rounded-full bg-[#2f7df4]"
+                      style={{ width: `${summary.usage.remainingPercentage}%` }}
+                    />
+                  </div>
+                  {summary.usage.warning === null ? null : (
+                    <p className="mt-3 text-sm font-semibold text-amber-800">
+                      {summary.usage.warning === "exhausted"
+                        ? `Plan Usage is exhausted. Higher-cost work resumes ${formatDate(summary.usage.resetAt)}.`
+                        : `Your Plan Usage is running low. It resets ${formatDate(summary.usage.resetAt)}.`}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </section>
 
@@ -175,13 +202,13 @@ export function BillingScreen({
 
 const planFeatures = (plan: BillingSummary["currentPlan"]): ReadonlyArray<string> =>
   plan === "free"
-    ? ["Personal Osfo Agent", "WhatsApp messaging", "Private memory"]
+    ? ["All self-serve digital capabilities", "Light-use Plan Usage", "Private memory"]
     : [
-        "Personal Osfo Agent",
-        "Expanded message allowance",
-        "Advanced automations",
-        "Priority support",
-        "Custom integrations",
+        "All self-serve digital capabilities",
+        "More Plan Usage and retained storage",
+        "Stronger managed models for complex work",
+        "More active resources and concurrency",
+        "One GM Summon each period",
       ];
 
 const paymentMessage = (summary: BillingSummary) => {

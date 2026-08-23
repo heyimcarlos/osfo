@@ -1,5 +1,11 @@
 import { Schema } from "effect";
 
+import { ArtifactKind, SkillChange } from "./capability-catalog";
+
+const nonNegative = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
+const positive = Schema.BigInt.check(Schema.isGreaterThanBigInt(0n));
+const nonEmptyString = Schema.String.check(Schema.isMinLength(1));
+
 const simpleOperation = <const Kind extends string>(kind: Kind) =>
   Schema.Struct({ actionId: Schema.String, kind: Schema.Literal(kind) });
 
@@ -33,9 +39,12 @@ const simpleOperations = [
   "dataRights.request",
 ] as const;
 
+const governedSimpleOperations = ["skill.inspect", "artifact.read", "artifact.delete"] as const;
+
 /** Stable closed names for all launch authorization operations. */
 export const AuthorizationOperationName = Schema.Literals([
   ...simpleOperations,
+  ...governedSimpleOperations,
   "conversation.run",
   "file.upload",
   "document.generate",
@@ -43,6 +52,12 @@ export const AuthorizationOperationName = Schema.Literals([
   "reminder.deliver",
   "workflow.manage",
   "gmail.connection.manage",
+  "skill.manage",
+  "artifact.generate",
+  "artifact.revise",
+  "integration.connection.manage",
+  "integration.read",
+  "integration.effect",
 ]);
 
 /** Stable closed names for all launch authorization operations. */
@@ -51,15 +66,42 @@ export type AuthorizationOperationName = typeof AuthorizationOperationName.Type;
 /** Closed, schema-checked union of launch authorization operations. */
 export const AuthorizationOperation = Schema.Union([
   ...simpleOperations.map(simpleOperation),
+  ...governedSimpleOperations.map(simpleOperation),
   Schema.Struct({
     actionId: Schema.String,
+    documentChunks: Schema.optionalKey(nonNegative),
     kind: Schema.Literal("conversation.run"),
-    modelSteps: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+    inputTokens: Schema.optionalKey(nonNegative),
+    memoryDeadlineMilliseconds: Schema.optionalKey(nonNegative),
+    memoryProfileTokens: Schema.optionalKey(nonNegative),
+    memoryQueryTokens: Schema.optionalKey(nonNegative),
+    memoryRecalls: Schema.optionalKey(nonNegative),
+    modelSteps: nonNegative,
+    outputTokens: Schema.optionalKey(nonNegative),
+    queryRewrites: Schema.optionalKey(nonNegative),
+    rerankingPasses: Schema.optionalKey(nonNegative),
+    retries: Schema.optionalKey(nonNegative),
+    skillLearningJobs: Schema.optionalKey(nonNegative),
+    toolExecutions: Schema.optionalKey(nonNegative),
   }),
   Schema.Struct({
     actionId: Schema.String,
     bytes: Schema.BigInt.check(Schema.isGreaterThanBigInt(0n)),
     kind: Schema.Literal("file.upload"),
+  }),
+  Schema.Struct({
+    actionId: Schema.String,
+    artifactKind: ArtifactKind,
+    bytes: positive,
+    kind: Schema.Literals(["artifact.generate", "artifact.revise"]),
+    pages: nonNegative,
+    pixelsPerEdge: nonNegative,
+    slides: nonNegative,
+  }),
+  Schema.Struct({
+    actionId: Schema.String,
+    change: SkillChange,
+    kind: Schema.Literal("skill.manage"),
   }),
   Schema.Struct({
     actionId: Schema.String,
@@ -93,6 +135,33 @@ export const AuthorizationOperation = Schema.Union([
     actionId: Schema.String,
     change: Schema.Literals(["connect", "revoke"]),
     kind: Schema.Literal("gmail.connection.manage"),
+  }),
+  Schema.Struct({
+    actionId: Schema.String,
+    change: Schema.Literals(["connect", "revoke"]),
+    kind: Schema.Literal("integration.connection.manage"),
+    toolkit: nonEmptyString,
+  }),
+  Schema.Struct({
+    actionId: Schema.String,
+    attachments: nonNegative,
+    deadlineMilliseconds: positive,
+    kind: Schema.Literal("integration.read"),
+    manifestVersion: nonEmptyString,
+    pagination: nonNegative,
+    providerExecutions: positive,
+    providerOperation: nonEmptyString,
+    records: positive,
+    responseBytes: positive,
+    toolkit: nonEmptyString,
+    windowDays: Schema.optionalKey(nonNegative),
+  }),
+  Schema.Struct({
+    actionId: Schema.String,
+    kind: Schema.Literal("integration.effect"),
+    manifestVersion: nonEmptyString,
+    providerOperation: nonEmptyString,
+    toolkit: nonEmptyString,
   }),
 ]);
 

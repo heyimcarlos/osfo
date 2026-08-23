@@ -69,7 +69,7 @@ describe("Osfo route tree", () => {
     ["/get-started", "What should Osfo call you?"],
     ["/get-started?lang=es", "¿Cómo quieres que te llame Osfo?"],
     ["/privacy?lang=es", "Aviso de privacidad"],
-    ["/plans", "Plans and allowances"],
+    ["/plans", "Plans and Usage"],
   ])("preserves the public direct link %s", async (path, heading) => {
     renderAt(path);
 

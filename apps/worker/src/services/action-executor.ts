@@ -51,6 +51,7 @@ export interface ApprovalOwner {
 
 /** Current Integration Connection owner. */
 export interface IntegrationConnectionOwner {
+  readonly inspect: (userId: UserId) => CurrentFact<AuthorizationContext["integrationConnections"]>;
   readonly inspectGmail: (userId: UserId) => CurrentFact<AuthorizationContext["gmailConnection"]>;
 }
 
@@ -116,6 +117,7 @@ export const make = (authorization: Authorization, owners: AuthorityOwners): Int
         authority,
         deletionAccess,
         gmailConnection,
+        integrationConnections,
         liveFacts,
         resourceOwnerUserId,
         subscription,
@@ -126,6 +128,7 @@ export const make = (authorization: Authorization, owners: AuthorityOwners): Int
         inspectAuthority(owners, identities),
         owners.deletionCases.inspect(identities.userId),
         owners.integrationConnections.inspectGmail(identities.userId),
+        owners.integrationConnections.inspect(identities.userId),
         owners.liveResources.inspect(identities.userId, operation),
         owners.resourceOwnership.inspect(identities.userId, operation),
         owners.subscriptions.inspect(identities.userId),
@@ -139,6 +142,7 @@ export const make = (authorization: Authorization, owners: AuthorityOwners): Int
           authority,
           deletionAccess,
           gmailConnection,
+          integrationConnections,
           liveFacts,
           now: DateTime.toDateUtc(DateTime.makeUnsafe(nowMillis)),
           originatingAuthority:

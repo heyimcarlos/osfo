@@ -13,6 +13,7 @@ export interface StoredBillingSummary {
   readonly pendingPlanEffectiveAt: Date | null;
   readonly plan: Plan;
   readonly stripeCurrentPeriodEnd: Date | null;
+  readonly usage: BillingSummary["usage"];
 }
 
 /** Narrow persistence port for current billing presentation. */
@@ -66,6 +67,7 @@ export const make = (
                 : (stored.checkoutPaymentState ?? "free"),
           pendingPlan,
           period: stored.currentPeriod,
+          usage: stored.usage,
         };
       }),
     ),

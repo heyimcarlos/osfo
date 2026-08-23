@@ -178,11 +178,43 @@ export const ChannelLinkId = Schema.String.pipe(Schema.brand("ChannelLinkId"));
 /** Stable identity for one revocable Channel Link. */
 export type ChannelLinkId = typeof ChannelLinkId.Type;
 
-/** Version identity for one launch Plan policy. */
+/** Version identity persisted for one retained legacy or shared Usage policy. */
 export const PlanPolicyVersion = Schema.String.pipe(Schema.brand("PlanPolicyVersion"));
 
-/** Version identity for one launch Plan policy. */
+/** Version identity persisted for one retained legacy or shared Usage policy. */
 export type PlanPolicyVersion = typeof PlanPolicyVersion.Type;
+
+/** Immutable provider price authority used to reproduce Rated Cost. */
+export const ResourcePriceVersion = Schema.String.check(Schema.isMinLength(1)).pipe(
+  Schema.brand("ResourcePriceVersion"),
+);
+
+/** Immutable provider price authority used to reproduce Rated Cost. */
+export type ResourcePriceVersion = typeof ResourcePriceVersion.Type;
+
+/** Immutable managed routing authority pinned at operation admission. */
+export const ModelAccessPolicyVersion = Schema.String.check(Schema.isMinLength(1)).pipe(
+  Schema.brand("ModelAccessPolicyVersion"),
+);
+
+/** Immutable managed routing authority pinned at operation admission. */
+export type ModelAccessPolicyVersion = typeof ModelAccessPolicyVersion.Type;
+
+/** Immutable capability and hard-limit authority pinned at operation admission. */
+export const CapabilityCatalogVersion = Schema.String.check(Schema.isMinLength(1)).pipe(
+  Schema.brand("CapabilityCatalogVersion"),
+);
+
+/** Immutable capability and hard-limit authority pinned at operation admission. */
+export type CapabilityCatalogVersion = typeof CapabilityCatalogVersion.Type;
+
+/** Immutable Integration Capability Manifest authority pinned at operation admission. */
+export const ManifestVersion = Schema.String.check(Schema.isMinLength(1)).pipe(
+  Schema.brand("ManifestVersion"),
+);
+
+/** Immutable Integration Capability Manifest authority pinned at operation admission. */
+export type ManifestVersion = typeof ManifestVersion.Type;
 
 /** Launch Plan names persisted by the directory. */
 export const Plan = Schema.Literals(["free", "adventurer"]);

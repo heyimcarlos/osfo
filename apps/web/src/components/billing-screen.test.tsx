@@ -26,6 +26,12 @@ describe("BillingScreen", () => {
             endsAt: new Date("2026-09-16T00:00:00.000Z"),
             startsAt: new Date("2026-08-16T00:00:00.000Z"),
           },
+          usage: {
+            label: "20%",
+            remainingPercentage: 20,
+            resetAt: new Date("2026-09-16T00:00:00.000Z"),
+            warning: "low",
+          },
         }}
       />,
     );
@@ -34,6 +40,8 @@ describe("BillingScreen", () => {
     expect(html).toContain("Free starts");
     expect(html).toContain("September 16, 2026");
     expect(html).toContain("Manage billing");
+    expect(html).toContain("20% Plan Usage remaining");
+    expect(html).toContain("Your Plan Usage is running low");
     expect(html).not.toContain("customer.subscription");
     expect(html).not.toContain("past_due");
   });
@@ -51,6 +59,7 @@ describe("BillingScreen", () => {
             endsAt: new Date("2026-09-15T00:00:00.000Z"),
             startsAt: new Date("2026-08-16T00:00:00.000Z"),
           },
+          usage: null,
         }}
       />,
     );
@@ -71,11 +80,41 @@ describe("BillingScreen", () => {
           paymentState: "paymentNeeded",
           pendingPlan: null,
           period: null,
+          usage: null,
         }}
       />,
     );
 
     expect(html).toContain("Payment needs attention before paid access can start");
     expect(html).not.toContain("payment_intent");
+  });
+
+  it("shows less than one percent without leaking accounting internals", () => {
+    const html = renderBilling(
+      <BillingScreen
+        onCheckout={() => undefined}
+        onPortal={() => undefined}
+        summary={{
+          currentPlan: "free",
+          paymentState: "free",
+          pendingPlan: null,
+          period: {
+            endsAt: new Date("2026-09-15T00:00:00.000Z"),
+            startsAt: new Date("2026-08-16T00:00:00.000Z"),
+          },
+          usage: {
+            label: "<1%",
+            remainingPercentage: 0,
+            resetAt: new Date("2026-09-15T00:00:00.000Z"),
+            warning: "low",
+          },
+        }}
+      />,
+    );
+
+    expect(html).toContain("&lt;1% Plan Usage remaining");
+    expect(html).not.toContain("micros");
+    expect(html).not.toContain("USD");
+    expect(html).not.toContain("policy");
   });
 });
