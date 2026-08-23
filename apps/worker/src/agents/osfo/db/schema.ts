@@ -76,6 +76,53 @@ const fileAnalysisState = customType<{ data: FileAnalysisState; driverData: stri
   dataType: () => "text",
 });
 
+/** Ordered provider work retained until its external effect is confirmed. */
+export const memoryProviderOutbox = sqliteTable(
+  "osfo_memory_provider_outbox",
+  {
+    allowance_period_id: allowancePeriodId(),
+    attempt_count: integer().notNull().default(0),
+    available_at: timestamp().notNull(),
+    claim_expires_at: timestamp(),
+    claim_token: text(),
+    completed_at: timestamp(),
+    enqueued_at: timestamp().notNull(),
+    last_error: text(),
+    operation_type: text({
+      enum: [
+        "appendConversationDelta",
+        "deleteSessionConversation",
+        "deleteUserKnowledge",
+        "forgetKnowledge",
+      ],
+    }).notNull(),
+    ordering_key: text().notNull(),
+    outbox_id: text().primaryKey(),
+    payload_json: text().notNull(),
+    provider_applied_at: timestamp(),
+    sequence: integer().notNull().unique(),
+    status: text({ enum: ["pending", "claimed", "completed"] }).notNull(),
+    usage_json: text(),
+  },
+  (table) => [
+    check(
+      "osfo_memory_provider_outbox_operation",
+      sql`${table.operation_type} IN ('appendConversationDelta', 'deleteSessionConversation', 'deleteUserKnowledge', 'forgetKnowledge')`,
+    ),
+    check(
+      "osfo_memory_provider_outbox_status",
+      sql`${table.status} IN ('pending', 'claimed', 'completed')`,
+    ),
+    check("osfo_memory_provider_outbox_attempt_count", sql`${table.attempt_count} >= 0`),
+    index("osfo_memory_provider_outbox_reconciliation").on(
+      table.status,
+      table.available_at,
+      table.sequence,
+    ),
+    index("osfo_memory_provider_outbox_order").on(table.ordering_key, table.sequence),
+  ],
+);
+
 /** Stable Agent-local conversation routes. */
 export const conversationRoutes = sqliteTable(
   "osfo_conversation_routes",

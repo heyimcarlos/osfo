@@ -68,6 +68,11 @@ import {
   type ManagedRouteUnavailable,
 } from "../../domain/model-access-policy";
 import { currentPolicy, retainedCatalog, type PlanPolicyNotFound } from "../../domain/plan-policy";
+import {
+  CommittedTurnTerminal,
+  readCommittedTurnTerminal,
+  withCommittedTurnTerminal,
+} from "./committed-turn-terminal";
 import { FileAnalysisId, FileId, FileName, FileUploadId } from "../../domain/file";
 import { makeCloudflareFileCompute } from "../../integrations/cloudflare/file-compute";
 import {
@@ -198,12 +203,16 @@ import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-author
 import { makeAgentSessionLifecycle } from "./session-lifecycle";
 import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
 import { effectToolSchema } from "./effect-tool-schema";
+import { projectCommittedConversationDelta } from "./memory-provider-projection";
+import { makeMemoryProviderOutboxStore } from "./db/memory-provider-outbox";
+import { reconcileMemoryProviderOutbox } from "./memory-provider-reconciliation";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries, and Effect results use _tag. */
 
 const pendingSessionId = "__osfo_uninitialized__";
 const gatewayId = "default";
 const modelCallUsageRetryDelaySeconds = 60;
+const memoryProviderRetryDelaySeconds = 30;
 const gatewayCostMaximumLookups = 3;
 const authorization = Authorization.make(retainedCatalog);
 
@@ -301,6 +310,7 @@ export const SessionHistoryMessage = Schema.StructWithRest(
   Schema.Struct({
     createdAt: Schema.optional(Schema.Union([Schema.Date, Schema.String])),
     id: Schema.String,
+    metadata: Schema.optional(Schema.Unknown),
     parts: Schema.Array(SessionHistoryMessagePart),
     role: Schema.String,
   }),
@@ -398,6 +408,7 @@ export class OsfoAgent extends Think<Env> {
     present: presentProtectedAction,
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
+  readonly #memoryProviderOutbox = makeMemoryProviderOutboxStore(this.#db);
   readonly #modelCallUsage = makeDurableModelCallUsage({
     dispatch: { record: (usage) => this.#dispatchModelCallUsage(usage) },
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
@@ -413,11 +424,15 @@ export class OsfoAgent extends Think<Env> {
   readonly #migrationsReady = this.ctx.blockConcurrencyWhile(() =>
     Effect.runPromise(applyAgentMigrations(this.ctx.storage)),
   );
-  readonly #runtime = Option.map(decodeOsfoStage(this.env.OSFO_STAGE), (stage) =>
-    makeOsfoAgentRuntime(this.ctx.id.name ?? this.ctx.id.toString(), stage, {
-      db: this.env.DB,
-    }),
-  );
+  readonly #runtime = Option.map(decodeOsfoStage(this.env.OSFO_STAGE), (stage) => {
+    const config = loadConfig(this.env);
+    return makeOsfoAgentRuntime(
+      this.ctx.id.name ?? this.ctx.id.toString(),
+      stage,
+      { db: this.env.DB },
+      config.supermemory,
+    );
+  });
   readonly #sessionRecallSearch = makeThinkSessionRecallSearch((sessionId, query, limit) =>
     Session.create(this).forSession(sessionId).search(query, { limit }),
   );
@@ -1090,6 +1105,13 @@ export class OsfoAgent extends Think<Env> {
     await this.#migrationsReady;
     await this.#reconcileModelCallUsageOrSchedule();
     await Effect.runPromise(this.#reconcileCommittedTurns());
+    this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
+  }
+
+  /** Retry durable Knowledge Base operations after an activation or scheduled wake. */
+  async reconcileMemoryProviderOutbox(): Promise<void> {
+    await this.#migrationsReady;
+    await this.#reconcileMemoryProviderOutboxOrSchedule();
   }
 
   /** Retry durable model usage that has not reached PostgreSQL Allowances. */
@@ -1645,24 +1667,45 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
-  /** Record one correlation reference after Think commits a completed response. */
+  /** Record terminal evidence after Think commits an assistant response. */
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
-    if (result.status !== "completed") return;
     await this.#migrationsReady;
     const assistantMessageId = AssistantMessageId.make(result.message.id);
     const thinkRequestId = ThinkRequestId.make(result.requestId);
+    const terminal = CommittedTurnTerminal.make({
+      requestId: thinkRequestId,
+      status: result.status,
+    });
+    await this.updateMessageInHistory({
+      ...result.message,
+      metadata: withCommittedTurnTerminal(result.message.metadata, terminal),
+    });
     await Effect.runPromise(
       this.#findThinkMessageOwner(assistantMessageId, thinkRequestId).pipe(
-        Effect.flatMap((sessionId) =>
-          this.#store.recordCommittedTurn({
-            assistantMessageId,
-            sessionId,
-            source: "hook",
-            thinkRequestId,
-          }),
+        Effect.tap((sessionId) =>
+          readThinkHistory(Session.create(this), sessionId).pipe(
+            Effect.flatMap((history) =>
+              this.#store.recordCommittedTurn(
+                {
+                  assistantMessageId,
+                  sessionId,
+                  source: "hook",
+                  thinkRequestId,
+                },
+                result.status === "completed"
+                  ? Option.getOrUndefined(
+                      projectCommittedConversationDelta(history, assistantMessageId, sessionId),
+                    )
+                  : undefined,
+              ),
+            ),
+          ),
         ),
       ),
     );
+    if (result.status === "completed") {
+      this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
+    }
   }
 
   /** Read idempotent committed-turn references owned by this Agent. */
@@ -1893,6 +1936,38 @@ export class OsfoAgent extends Think<Env> {
       idempotent: true,
       retry: { baseDelayMs: 500, maxAttempts: 3, maxDelayMs: 5_000 },
     });
+  }
+
+  async #scheduleMemoryProviderReconciliation(): Promise<void> {
+    await this.schedule(
+      memoryProviderRetryDelaySeconds,
+      "reconcileMemoryProviderOutbox",
+      undefined,
+      {
+        idempotent: true,
+        retry: { baseDelayMs: 500, maxAttempts: 3, maxDelayMs: 5_000 },
+      },
+    );
+  }
+
+  async #reconcileMemoryProviderOutboxOrSchedule(): Promise<void> {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime !== undefined) {
+      try {
+        await runtime.runPromise(
+          Effect.scoped(reconcileMemoryProviderOutbox(this.#memoryProviderOutbox)),
+        );
+      } catch (cause) {
+        await Effect.runPromise(
+          Effect.logError("MemoryProvider outbox reconciliation failed").pipe(
+            Effect.annotateLogs({ cause, failureTag: "MemoryProviderOutboxReconciliationFailure" }),
+          ),
+        );
+      }
+    }
+    if (await Effect.runPromise(this.#memoryProviderOutbox.hasRetryableWork)) {
+      await this.#scheduleMemoryProviderReconciliation();
+    }
   }
 
   async #reconcileModelCallUsageOrSchedule(): Promise<void> {
@@ -2151,13 +2226,28 @@ export class OsfoAgent extends Think<Env> {
               Effect.flatMap((messages) =>
                 Effect.forEach(
                   messages.filter(({ role }) => role === "assistant"),
-                  (message) =>
-                    this.#store.recordCommittedTurn({
-                      assistantMessageId: AssistantMessageId.make(message.id),
-                      sessionId,
-                      source: "reconciliation",
-                      thinkRequestId: null,
-                    }),
+                  (message) => {
+                    const terminal = readCommittedTurnTerminal(message.metadata);
+                    if (Option.isNone(terminal)) return Effect.void;
+                    const assistantMessageId = AssistantMessageId.make(message.id);
+                    return this.#store.recordCommittedTurn(
+                      {
+                        assistantMessageId,
+                        sessionId,
+                        source: "reconciliation",
+                        thinkRequestId: terminal.value.requestId,
+                      },
+                      terminal.value.status === "completed"
+                        ? Option.getOrUndefined(
+                            projectCommittedConversationDelta(
+                              messages,
+                              assistantMessageId,
+                              sessionId,
+                            ),
+                          )
+                        : undefined,
+                    );
+                  },
                   { concurrency: 1, discard: true },
                 ),
               ),

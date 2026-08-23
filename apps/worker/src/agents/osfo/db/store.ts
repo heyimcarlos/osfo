@@ -35,6 +35,11 @@ import {
   sessionRecallCursors,
   sessionOwnership,
 } from "./schema";
+import type { ConversationDeltaProjection } from "../memory-provider-projection";
+import {
+  conversationDeltaIsCompatibleTransaction,
+  enqueueConversationDeltaTransaction,
+} from "./memory-provider-outbox";
 
 const sqliteCurrentTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u;
 
@@ -625,74 +630,74 @@ export const makeAgentStore = (db: AgentDb) => {
     Effect.map((rows) => rows.map(({ sessionId }) => sessionId)),
   );
 
-  const recordCommittedTurn = (reference: CommittedTurnObservation) =>
-    Effect.gen(function* () {
-      const outcome = yield* execute("recordCommittedTurn", () =>
-        // The Durable SQLite driver implements this exact local transaction with transactionSync.
-        db.transaction((transaction) => {
-          const findByThinkRequestId = (thinkRequestId: ThinkRequestId) =>
-            decodeCommittedTurnRecord(
-              transaction
-                .select(committedTurnReceiptFields)
-                .from(committedTurns)
-                .where(eq(committedTurns.think_request_id, thinkRequestId))
-                .limit(1)
-                .get(),
-            );
-          const matchingMessage = decodeCommittedTurnRecord(
+  const recordCommittedTurn = Effect.fn("AgentStore.recordCommittedTurn")(function* (
+    reference: CommittedTurnObservation,
+    projection?: ConversationDeltaProjection,
+  ) {
+    const enqueuedAt = yield* DateTime.now.pipe(
+      Effect.map((time) => DbTimestamp.make(DateTime.toDateUtc(time).toISOString())),
+    );
+    const outcome = yield* execute("recordCommittedTurn", () =>
+      // The Durable SQLite driver implements this exact local transaction with transactionSync.
+      db.transaction((transaction) => {
+        if (
+          projection !== undefined &&
+          (projection.lastMessageId !== reference.assistantMessageId ||
+            projection.sessionId !== reference.sessionId ||
+            !conversationDeltaIsCompatibleTransaction(transaction, projection))
+        ) {
+          return { _tag: "InvalidRecord" } as const;
+        }
+        const receipt = <T>(value: T) => {
+          if (
+            projection !== undefined &&
+            !enqueueConversationDeltaTransaction(transaction, projection, enqueuedAt)
+          ) {
+            // The compatibility check above makes this unreachable within one SQLite transaction.
+            throw new Error("The MemoryProvider outbox identity changed during insertion");
+          }
+          return { _tag: "Receipt", receipt: value } as const;
+        };
+        const findByThinkRequestId = (thinkRequestId: ThinkRequestId) =>
+          decodeCommittedTurnRecord(
             transaction
               .select(committedTurnReceiptFields)
               .from(committedTurns)
-              .where(eq(committedTurns.assistant_message_id, reference.assistantMessageId))
+              .where(eq(committedTurns.think_request_id, thinkRequestId))
               .limit(1)
               .get(),
           );
-          if (matchingMessage === invalidCommittedTurnRecord) {
-            return { _tag: "InvalidRecord" } as const;
+        const matchingMessage = decodeCommittedTurnRecord(
+          transaction
+            .select(committedTurnReceiptFields)
+            .from(committedTurns)
+            .where(eq(committedTurns.assistant_message_id, reference.assistantMessageId))
+            .limit(1)
+            .get(),
+        );
+        if (matchingMessage === invalidCommittedTurnRecord) {
+          return { _tag: "InvalidRecord" } as const;
+        }
+        if (matchingMessage !== undefined) {
+          if (matchingMessage.sessionId !== reference.sessionId) {
+            return {
+              _tag: "Conflict",
+              existing: matchingMessage,
+              message: "The assistant message is already observed for another Session",
+            } as const;
           }
-          if (matchingMessage !== undefined) {
-            if (matchingMessage.sessionId !== reference.sessionId) {
-              return {
-                _tag: "Conflict",
-                existing: matchingMessage,
-                message: "The assistant message is already observed for another Session",
-              } as const;
-            }
-            if (
-              matchingMessage.thinkRequestId !== null &&
-              reference.thinkRequestId !== null &&
-              matchingMessage.thinkRequestId !== reference.thinkRequestId
-            ) {
-              return {
-                _tag: "Conflict",
-                existing: matchingMessage,
-                message: "The assistant message is already observed for another Think request",
-              } as const;
-            }
-            if (matchingMessage.thinkRequestId === null && reference.thinkRequestId !== null) {
-              const matchingRequest = findByThinkRequestId(reference.thinkRequestId);
-              if (matchingRequest === invalidCommittedTurnRecord) {
-                return { _tag: "InvalidRecord" } as const;
-              }
-              if (matchingRequest !== undefined) {
-                return {
-                  _tag: "Conflict",
-                  existing: matchingRequest,
-                  message: "The Think request is already observed for another assistant message",
-                } as const;
-              }
-              const enriched = transaction
-                .update(committedTurns)
-                .set({ source: reference.source, think_request_id: reference.thinkRequestId })
-                .where(eq(committedTurns.observation_sequence, matchingMessage.observationSequence))
-                .returning(committedTurnReceiptFields)
-                .get();
-              return { _tag: "Receipt", receipt: enriched } as const;
-            }
-            return { _tag: "Receipt", receipt: matchingMessage } as const;
+          if (
+            matchingMessage.thinkRequestId !== null &&
+            reference.thinkRequestId !== null &&
+            matchingMessage.thinkRequestId !== reference.thinkRequestId
+          ) {
+            return {
+              _tag: "Conflict",
+              existing: matchingMessage,
+              message: "The assistant message is already observed for another Think request",
+            } as const;
           }
-
-          if (reference.thinkRequestId !== null) {
+          if (matchingMessage.thinkRequestId === null && reference.thinkRequestId !== null) {
             const matchingRequest = findByThinkRequestId(reference.thinkRequestId);
             if (matchingRequest === invalidCommittedTurnRecord) {
               return { _tag: "InvalidRecord" } as const;
@@ -704,36 +709,61 @@ export const makeAgentStore = (db: AgentDb) => {
                 message: "The Think request is already observed for another assistant message",
               } as const;
             }
+            const enriched = transaction
+              .update(committedTurns)
+              .set({ source: reference.source, think_request_id: reference.thinkRequestId })
+              .where(eq(committedTurns.observation_sequence, matchingMessage.observationSequence))
+              .returning(committedTurnReceiptFields)
+              .get();
+            return enriched === undefined
+              ? ({ _tag: "InvalidRecord" } as const)
+              : receipt(enriched);
           }
-          const inserted = transaction
-            .insert(committedTurns)
-            .values({
-              assistant_message_id: reference.assistantMessageId,
-              session_id: reference.sessionId,
-              source: reference.source,
-              think_request_id: reference.thinkRequestId,
-            })
-            .returning(committedTurnReceiptFields)
-            .get();
-          return { _tag: "Receipt", receipt: inserted } as const;
-        }),
-      );
-      if (outcome["_tag"] === "InvalidRecord") {
-        return yield* invalidStoreRecord("recordCommittedTurn");
-      }
-      if (outcome["_tag"] === "Conflict") {
-        return yield* new CommittedTurnConflict({
-          assistantMessageId: reference.assistantMessageId,
-          existingAssistantMessageId: outcome.existing.assistantMessageId,
-          existingSessionId: outcome.existing.sessionId,
-          existingThinkRequestId: outcome.existing.thinkRequestId,
-          message: outcome.message,
-          sessionId: reference.sessionId,
-          thinkRequestId: reference.thinkRequestId,
-        });
-      }
-      return yield* decodeCommittedTurnReceipt("recordCommittedTurn", outcome.receipt);
-    });
+          return receipt(matchingMessage);
+        }
+
+        if (reference.thinkRequestId !== null) {
+          const matchingRequest = findByThinkRequestId(reference.thinkRequestId);
+          if (matchingRequest === invalidCommittedTurnRecord) {
+            return { _tag: "InvalidRecord" } as const;
+          }
+          if (matchingRequest !== undefined) {
+            return {
+              _tag: "Conflict",
+              existing: matchingRequest,
+              message: "The Think request is already observed for another assistant message",
+            } as const;
+          }
+        }
+        const inserted = transaction
+          .insert(committedTurns)
+          .values({
+            assistant_message_id: reference.assistantMessageId,
+            session_id: reference.sessionId,
+            source: reference.source,
+            think_request_id: reference.thinkRequestId,
+          })
+          .returning(committedTurnReceiptFields)
+          .get();
+        return inserted === undefined ? ({ _tag: "InvalidRecord" } as const) : receipt(inserted);
+      }),
+    );
+    if (outcome["_tag"] === "InvalidRecord") {
+      return yield* invalidStoreRecord("recordCommittedTurn");
+    }
+    if (outcome["_tag"] === "Conflict") {
+      return yield* new CommittedTurnConflict({
+        assistantMessageId: reference.assistantMessageId,
+        existingAssistantMessageId: outcome.existing.assistantMessageId,
+        existingSessionId: outcome.existing.sessionId,
+        existingThinkRequestId: outcome.existing.thinkRequestId,
+        message: outcome.message,
+        sessionId: reference.sessionId,
+        thinkRequestId: reference.thinkRequestId,
+      });
+    }
+    return yield* decodeCommittedTurnReceipt("recordCommittedTurn", outcome.receipt);
+  });
 
   const readCommittedTurns = execute("readCommittedTurns", () =>
     db
