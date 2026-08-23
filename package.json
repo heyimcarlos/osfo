@@ -24,6 +24,7 @@
     "test": "vitest run tools/oxlint/test && bun run --cwd packages/model-quality test && bun run --cwd packages/auth test && bun run --cwd packages/db test && bun run --cwd packages/ui test && bun run --cwd apps/worker test && bun run --cwd apps/web test",
     "typecheck": "tsc --project tools/oxlint/tsconfig.json && bun run --cwd packages/api typecheck && bun run --cwd packages/model-quality typecheck && bun run --cwd packages/auth typecheck && bun run --cwd packages/db typecheck && bun run --cwd packages/ui typecheck && bun run --cwd apps/worker typecheck && bun run --cwd apps/web typecheck && tsc --project tsconfig.infra.json"
   },
+  "dependencies": {},
   "devDependencies": {
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node": "catalog:",
@@ -68,6 +69,7 @@
     "typescript": "7.0.2",
     "vite": "8.0.8",
     "vitest": "4.1.5",
-    "wrangler": "4.122.0"
+    "wrangler": "4.122.0",
+    "better-result": "3.0.1"
   }
 }

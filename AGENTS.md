@@ -16,8 +16,10 @@ Repositories under `.reference/` are read-only reference material.
 - Before making an important implementation or pattern decision involving a related
   library, inspect the relevant reference repository and compare its source, tests,
   and examples.
-- Prefer patterns found in these repositories over generated guesses or web search
-  results.
+- For library API truth, check the installed version first, then version-matched
+  official source, documentation, and migration notes. Use reference applications
+  to compare working patterns, not to override the installed API or upstream
+  guidance.
 - Do not edit, format, or generate files under `.reference/` unless explicitly asked.
 - Do not import from `.reference/`. Application code must use its normal package
   dependencies.
@@ -26,6 +28,9 @@ Repositories under `.reference/` are read-only reference material.
 
 ## Package ownership
 
+- `packages/api`: shared Effect HTTP contracts implemented by the Worker and
+  consumed by clients. It owns paths, wire schemas, public transport errors,
+  OpenAPI annotations, and middleware requirements, not product behavior.
 - `packages/ui`: shared React DOM, Tailwind CSS, and shadcn/ui components,
   styles, hooks, and UI utilities. Every consumable path has an explicit
   package export. Keep Osfo-specific behavior in `apps/web`.
@@ -35,15 +40,22 @@ Repositories under `.reference/` are read-only reference material.
 - `packages/db`: private PostgreSQL schema, migrations, Drizzle construction,
   and database test support. Keep Cloudflare bindings, Effect integration,
   typed application failures, and product operations in `apps/worker`.
+- `packages/model-quality`: framework-neutral deterministic model-quality policy
+  exposed through its supported facade. Callers supply time, configuration,
+  evidence, and provider results; the package performs no provider I/O.
 - `apps/worker`: Osfo product behavior, Cloudflare runtime composition, provider
   adapters, and authority-specific PostgreSQL, Agent SQLite, and R2 modules.
 - `apps/web`: Osfo-specific web behavior and the browser composition root.
 - Extract a workspace package only after a second consumer or supported public
-  interface proves the seam. Create `packages/api` only when Worker and web share
-  a real wire contract.
+  interface proves the seam.
 
 ## Engineering boundaries
 
+- This is an Effect-first repository. Represent application effects, expected
+  failures that need composition, resource lifetimes, concurrency, retries, and
+  integration boundaries with Effect. Adapt Promise, callback, and throwing APIs
+  once in the module that owns the external library. Keep total pure calculations
+  as ordinary TypeScript values and functions.
 - Preserve runtime behavior during lint, typing, or test structure changes.
 - Use public package exports; never cross package boundaries with relative
   imports.
@@ -59,7 +71,9 @@ Repositories under `.reference/` are read-only reference material.
 - Let exported contracts and genuinely clarifying annotations carry explicit
   types. Rely on inference for local implementation details.
 - Keep `any`, non-null assertions, and unchecked casts out of application code.
-  Decode unknown input or narrow it with a type guard.
+  Decode unknown input or prove it with a complete guard. When an interoperability
+  boundary requires a cast that TypeScript cannot express, contain it in the
+  owning adapter or constructor and document the runtime proof with `SAFETY:`.
 - Prefer `const`, early returns, and direct property access. Reassignment,
   `else`, and destructuring should make the code clearer before they earn a place.
 - Prefer `map`, `filter`, `flatMap`, and other collection operations when they
@@ -91,10 +105,13 @@ Repositories under `.reference/` are read-only reference material.
   string or template literal directly to `Effect.die`.
 - Recover expected failures through the typed error channel. Reserve
   `try`/`catch` for throwing or Promise boundaries.
-- Do not return `Effect` from helpers unless they actually perform effectful work.
-  Synchronous parsing, validation, and option building should stay synchronous.
-- Prefer Effect schema helpers such as `Schema.UnknownFromJsonString` and `Schema.decodeUnknownOption`
-  over manual `JSON.parse` wrapped in `Effect.try` when parsing untrusted JSON strings.
+- Keep total parsing helpers, transformations, and option building synchronous.
+  A pure fallible decoder may return `Result` or a domain outcome when failure is
+  retained as data, or `Effect` when it belongs to an Effect failure path.
+- Prefer Effect schema helpers such as `Schema.UnknownFromJsonString` over manual
+  `JSON.parse` wrapped in `Effect.try` for untrusted JSON strings. Choose the
+  decoder by the required failure representation. Use `decodeUnknownOption` only
+  when diagnostics are intentionally discarded.
 
 ## Verification and evidence
 
@@ -102,7 +119,8 @@ Repositories under `.reference/` are read-only reference material.
   package script. Never use `bun test`.
 - Use the narrowest meaningful verification while iterating. Merge-ready gates
   are `bun run format:check`, `lint`, `typecheck`, and `test`.
-- Run `bun run format` before a PR and include only files owned by the branch.
+- Format only files owned by the branch with `bunx oxfmt --write <files>`. Run
+  `bun run format:check` before a PR.
 - User-visible work require the relevant `@osfo/web` test, a production
   build, and inspection in the browser development instance. Record the exact
   commands and observable evidence in the issue or PR.
