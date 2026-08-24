@@ -138,6 +138,7 @@ import {
 } from "../../services/authorization";
 import { DocumentGeneration } from "../../services/document-generation";
 import { makeDurableModelCallUsage } from "../../services/model-call-usage";
+import { makeManagedActionAuthorization } from "../../services/managed-action-authorization";
 import {
   makeSessionLifecycle,
   type SessionAuthorizationFactsFound,
@@ -188,8 +189,7 @@ import {
   type ActionPresentationUnavailable,
   ActionApprovalRequestInvalid,
   ApprovalActorAuthorizationUnavailable,
-  type ApprovalActor,
-  ApprovalActorUnauthorized,
+  type ApprovalActorUnauthorized,
   type ApprovalAlreadyResolved,
   type ApprovalDecisionAccepted,
   CancelActionApprovalRequest,
@@ -409,7 +409,6 @@ export class OsfoAgent extends Think<Env> {
   readonly #currentApprovedActions = new Map<
     ActionId,
     {
-      readonly authorization: AuthorizationContext;
       readonly actionPresentation: ActionPresentation;
       readonly operation: "file.delete" | "memory.clear";
       readonly presentation: ApprovalPresentation;
@@ -503,6 +502,9 @@ export class OsfoAgent extends Think<Env> {
             }),
         ),
       ),
+  });
+  readonly #managedActionAuthorization = makeManagedActionAuthorization({
+    inspectAuthorization: (identity) => this.#inspectSessionRecallAuthorization(identity),
   });
   readonly #agentSessionLifecycle = makeAgentSessionLifecycle({
     activateCurrentSession: () => this.#activateCurrentSession(),
@@ -1079,17 +1081,37 @@ export class OsfoAgent extends Think<Env> {
         operation: "clear",
       });
     }
-    const recheck = authorization.recheck(
-      {
-        ...current.authorization,
-        approval: approvalFor(
-          current.authorization.user.userId,
-          { actionId, kind: "memory.clear" },
-          current.presentation,
+    const recheck = await runRpc(
+      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata).pipe(
+        Effect.mapError(
+          (cause) =>
+            new CoreMemoryUnavailable({
+              cause,
+              message: "Current Core Memory authority is unavailable",
+              operation: "clear",
+            }),
         ),
-      },
-      { actionId, kind: "memory.clear" },
+        Effect.flatMap((metadata) =>
+          this.#managedActionAuthorization
+            .recheck(
+              metadata.authorityIdentity,
+              { actionId, kind: "memory.clear" },
+              current.presentation,
+            )
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new CoreMemoryUnavailable({
+                    cause,
+                    message: "Current Core Memory authority could not be loaded",
+                    operation: "clear",
+                  }),
+              ),
+            ),
+        ),
+      ),
     );
+    if (Predicate.isTagged(recheck, "CoreMemoryUnavailable")) return recheck;
     if (Predicate.isTagged(recheck, "Denied")) return recheck;
     await this.#activateCurrentSession();
     return runRpc(clearCoreMemory(this.session, input));
@@ -1401,18 +1423,8 @@ export class OsfoAgent extends Think<Env> {
                 (found.presentation.operation === "memory.clear" ||
                   found.presentation.operation === "file.delete")
               ) {
-                if (!authorizationMatchesActor(parsed.authorization, parsed.actor)) {
-                  return Effect.fail(
-                    new ApprovalActorUnauthorized({
-                      message: "The current Authorization context does not match the actor",
-                      presentationId: parsed.presentationId,
-                      userId: parsed.actor.userId,
-                    }),
-                  );
-                }
                 this.#currentApprovedActions.set(actionId, {
                   actionPresentation: found.presentation,
-                  authorization: parsed.authorization,
                   operation: found.presentation.operation,
                   presentation: approvalPresentationFor(found.presentation),
                 });
@@ -2405,26 +2417,6 @@ const readAiGatewayLogId = (
   return Option.flatMap(
     Schema.decodeUnknownOption(GatewayProviderMetadata)(providerMetadata),
     (metadata) => Option.fromNullishOr(metadata.cloudflare?.aiGatewayLogId),
-  );
-};
-
-const authorizationMatchesActor = (
-  context: AuthorizationContext,
-  actor: ApprovalActor,
-): boolean => {
-  const authority = context.authority;
-  if (authority === null || authority.userId !== actor.userId) return false;
-  if (Predicate.isTagged(actor, "AuthSession")) {
-    return (
-      (Predicate.isTagged(authority, "AuthSession") ||
-        Predicate.isTagged(authority, "RevokedAuthSession")) &&
-      authority.authSessionId === actor.authSessionId
-    );
-  }
-  return (
-    (Predicate.isTagged(authority, "ChannelLink") ||
-      Predicate.isTagged(authority, "RevokedChannelLink")) &&
-    authority.channelLinkId === actor.channelLinkId
   );
 };
 

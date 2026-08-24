@@ -139,6 +139,11 @@ export const usageEvents = pgTable(
       )`,
     ),
     check(
+      "usage_events_shared_v1_conversion_check",
+      sql`${table.usage_policy_version} <> 'shared-usage-v1'
+        or ${table.plan_usage_micros} is not distinct from ${table.rated_cost_usd_micros}`,
+    ),
+    check(
       "usage_events_outcome_check",
       sql`${table.outcome} in ('completed', 'useful_partial', 'failed', 'cancelled')`,
     ),

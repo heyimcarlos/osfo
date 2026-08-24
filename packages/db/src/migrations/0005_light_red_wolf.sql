@@ -1,0 +1,2 @@
+ALTER TABLE "usage_events" ADD CONSTRAINT "usage_events_shared_v1_conversion_check" CHECK ("usage_events"."usage_policy_version" <> 'shared-usage-v1'
+        or "usage_events"."plan_usage_micros" is not distinct from "usage_events"."rated_cost_usd_micros");

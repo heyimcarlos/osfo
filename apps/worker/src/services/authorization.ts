@@ -9,35 +9,34 @@ import {
   PlanPolicyVersion,
   UserId,
 } from "../domain";
-import {
-  type AllowanceKind,
-  type PlanUsageGrantSource,
-  RecordedAllowanceUse,
-} from "../domain/allowance";
+import { type PlanUsageGrantSource, RecordedAllowanceUse } from "../domain/allowance";
 import {
   AuthorizationOperation,
   type AuthorizationOperationInput,
   AuthorizationOperationName,
 } from "../domain/authorization-operation";
-import {
-  currentCapabilityCatalog,
-  type CapabilityCatalog,
-  hasProtectedConsequence,
-} from "../domain/capability-catalog";
+import { currentCapabilityCatalog, type CapabilityCatalog } from "../domain/capability-catalog";
 import {
   currentManifestCatalog,
   type IntegrationManifestCatalog,
-  type IntegrationManifestOperation,
-  resolveManifest,
 } from "../domain/integration-manifest";
 import {
-  type Capability,
   isLaunchPolicy,
   type PlanPolicyCatalog,
   type PlanRules,
   policyFor,
 } from "../domain/plan-policy";
 import { CoreMemoryAuthorizationSnapshot } from "../domain/core-memory-authorization";
+import {
+  allowanceKindsFor,
+  authorityPermits,
+  entitlementFor,
+  isLaunchUnmetered,
+  requiresApproval,
+  requiresGmailConnection,
+  requiresOwnership,
+} from "./authorization-operation-policy";
+import { authorizeShared } from "./shared-authorization";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Authorization and manifest outcomes use the standard Effect _tag discriminator. */
 import { AuthSessionAuthorityFact, AuthSessionId } from "../domain/auth-session";
@@ -132,6 +131,20 @@ export const LiveResourceFacts = Schema.Struct({
   retainedFileBytes: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
 });
 
+/** Canonical current fact set when an operation owns no live-resource counters. */
+export const emptyLiveResourceFacts = LiveResourceFacts.make({
+  activeGmSummonsInSession: 0n,
+  activeReminders: 0n,
+  concurrentCostlyJobs: 0n,
+  concurrentExhaustedConnectorReads: 0n,
+  concurrentExhaustedConversations: 0n,
+  concurrentIntegrationEffects: 0n,
+  concurrentWorkflows: 0n,
+  exhaustedConnectorReadsInRollingDay: 0n,
+  gmSummonsInPeriod: 0n,
+  retainedFileBytes: 0n,
+});
+
 /** Current Subscription fact used for Plan Entitlement checks. */
 export const AuthorizationSubscription = Schema.Struct({
   plan: Plan,
@@ -183,18 +196,7 @@ export const restoreCoreMemoryAuthorization = (
     deletionAccess: snapshot.deletionAccess,
     gmailConnection: null,
     integrationConnections: [],
-    liveFacts: {
-      activeGmSummonsInSession: 0n,
-      activeReminders: 0n,
-      concurrentCostlyJobs: 0n,
-      concurrentExhaustedConnectorReads: 0n,
-      concurrentExhaustedConversations: 0n,
-      concurrentIntegrationEffects: 0n,
-      concurrentWorkflows: 0n,
-      exhaustedConnectorReadsInRollingDay: 0n,
-      gmSummonsInPeriod: 0n,
-      retainedFileBytes: 0n,
-    },
+    liveFacts: emptyLiveResourceFacts,
     now: snapshot.now,
     originatingAuthority: restoreOriginatingAuthority(snapshot.originatingAuthority),
     requestVendorUsdMicros: 0n,
@@ -388,7 +390,12 @@ const authorize = (
   if (subscriptionPolicy === undefined) return denied("policyUnavailable");
 
   if (!isLaunchPolicy(subscriptionPolicy)) {
-    return authorizeShared(catalog, capabilityCatalog, manifestCatalog, context, operation, mode);
+    return authorizeShared(catalog, capabilityCatalog, manifestCatalog, context, operation, mode, {
+      admitted,
+      denied,
+      hasExactApproval,
+      requiresApproval,
+    });
   }
 
   const rules = policyFor(subscriptionPolicy, context.subscription.plan);
@@ -420,7 +427,7 @@ const authorize = (
     };
   }
 
-  if (mode === "recheck" || isUnmetered(operation)) {
+  if (mode === "recheck" || isLaunchUnmetered(operation)) {
     return admitted(capabilityCatalog, "unmeteredContinuity");
   }
   if (!Predicate.isTagged(context.allowance, "Metered")) {
@@ -462,117 +469,6 @@ const authorize = (
   };
 };
 
-const authorizeShared = (
-  catalog: PlanPolicyCatalog,
-  capabilityCatalog: CapabilityCatalog,
-  manifestCatalog: IntegrationManifestCatalog,
-  context: AuthorizationContext,
-  operation: AuthorizationOperation,
-  mode: "admission" | "recheck",
-): AuthorizationResult => {
-  if (!capabilityCatalog.operations.some((name) => name === operation.kind)) {
-    return denied("unknownOperation");
-  }
-  const exception = capabilityCatalog.planExceptions.adventurer.some(
-    (name) => name === operation.kind,
-  );
-  if (
-    exception &&
-    !capabilityCatalog.planExceptions[context.subscription.plan].some(
-      (name) => name === operation.kind,
-    )
-  ) {
-    return denied("missingEntitlement");
-  }
-  const integrationManifest = manifestForOperation(operation, manifestCatalog);
-  if (Result.isFailure(integrationManifest)) return denied("unknownOperation");
-  const manifest = integrationManifest.success;
-  if (manifest !== null) {
-    const connected = context.integrationConnections.some(
-      (connection) =>
-        Predicate.isTagged(connection, "Connected") &&
-        connection.userId === context.user.userId &&
-        connection.toolkit === manifest.toolkit,
-    );
-    if (!connected) {
-      return denied("integrationConnectionRequired");
-    }
-  }
-  const resourceLimits = capabilityCatalog.planResourceLimits[context.subscription.plan];
-  if (exceedsGovernedLiveLimit(operation, context, resourceLimits)) {
-    return denied("liveResourceLimitReached");
-  }
-  if (
-    mode === "admission" &&
-    exceedsGovernedOperationLimit(operation, capabilityCatalog, "normalPlanUsage")
-  ) {
-    return denied("operationLimitExceeded");
-  }
-  if (
-    (requiresApproval(operation) || hasProtectedConsequence(manifest?.consequences ?? [])) &&
-    !hasExactApproval(context, operation)
-  ) {
-    if (mode === "recheck") return denied("approvalRequired");
-    return { _tag: "ApprovalRequired", actionId: operation.actionId, operation: operation.kind };
-  }
-  if (mode === "recheck" || isSharedUnmetered(operation)) {
-    return admitted(capabilityCatalog, "unmeteredContinuity");
-  }
-  if (!Predicate.isTagged(context.allowance, "Metered")) {
-    return denied("allowancePeriodUnavailable");
-  }
-  const allowance = context.allowance;
-  if (
-    context.now.getTime() < allowance.startsAt.getTime() ||
-    context.now.getTime() >= allowance.endsAt.getTime()
-  ) {
-    return denied("allowancePeriodUnavailable", allowance.endsAt);
-  }
-  const allowancePolicy = catalog.policies.find(
-    (policy) => policy.version === allowance.planPolicyVersion,
-  );
-  if (allowancePolicy === undefined || isLaunchPolicy(allowancePolicy)) {
-    return denied("policyUnavailable");
-  }
-  const pool = policyFor(allowancePolicy, allowance.plan).includedPlanUsageMicros;
-  const recorded =
-    allowance.usage.find((usage) => usage.allowanceKind === "planUsageMicros")?.quantity ?? 0n;
-  if (recorded < pool) {
-    return {
-      _tag: "Admitted",
-      allowancePeriod: {
-        _tag: "Metered",
-        allowancePeriodId: allowance.allowancePeriodId,
-        grantSource: "includedPlanUsage",
-      },
-      capabilityCatalogVersion: capabilityCatalog.version,
-      executionMode: "normalPlanUsage",
-      manifestVersion: manifest?.manifestVersion ?? null,
-    };
-  }
-  if (
-    operation.kind === "conversation.run" &&
-    context.liveFacts.concurrentExhaustedConversations <
-      BigInt(capabilityCatalog.exhaustedConversation.concurrentOperations) &&
-    !exceedsGovernedOperationLimit(operation, capabilityCatalog, "exhaustedConversation")
-  ) {
-    return admitted(capabilityCatalog, "exhaustedConversation");
-  }
-  if (
-    operation.kind === "integration.read" &&
-    manifest !== null &&
-    manifest.exhaustedMode !== null &&
-    context.liveFacts.concurrentExhaustedConnectorReads <
-      BigInt(capabilityCatalog.exhaustedConnectorRead.concurrentReads) &&
-    context.liveFacts.exhaustedConnectorReadsInRollingDay <
-      BigInt(capabilityCatalog.exhaustedConnectorRead.callsPerRollingDay) &&
-    withinExhaustedConnectorLimits(operation, capabilityCatalog, manifest)
-  ) {
-    return admitted(capabilityCatalog, "exhaustedConnectorRead", manifest.manifestVersion);
-  }
-  return denied("allowanceExhausted", allowance.endsAt);
-};
-
 const admitted = (
   capabilityCatalog: CapabilityCatalog,
   executionMode: Admitted["executionMode"],
@@ -590,22 +486,6 @@ const denied = (reason: AuthorizationDenialReason, resetAt: Date | null = null):
   reason,
   resetAt,
 });
-
-const authorityPermits = (
-  authority: Exclude<AuthorizationContext["authority"], null>,
-  operation: AuthorizationOperation,
-) => {
-  if (!Predicate.isTagged(authority, "DurableTrigger")) return true;
-  if (authority.triggerType === "scheduledTask") return operation.kind === "reminder.deliver";
-  return (
-    operation.kind.startsWith("workflow.") ||
-    operation.kind.startsWith("gmail.") ||
-    operation.kind.startsWith("integration.") ||
-    operation.kind.startsWith("artifact.") ||
-    operation.kind === "document.generate" ||
-    operation.kind === "support.gmSummon"
-  );
-};
 
 const authorityMatchesOrigin = (
   authority: Exclude<AuthorizationContext["authority"], null>,
@@ -631,22 +511,6 @@ const authorityMatchesOrigin = (
     authority.triggerType === origin.triggerType
   );
 };
-
-const requiresOwnership = (operation: AuthorizationOperation) =>
-  operation.kind.startsWith("session.") ||
-  operation.kind.startsWith("memory.") ||
-  operation.kind.startsWith("file.") ||
-  operation.kind === "document.generate" ||
-  operation.kind.startsWith("reminder.") ||
-  operation.kind.startsWith("workflow.") ||
-  operation.kind.startsWith("gmail.") ||
-  operation.kind.startsWith("skill.") ||
-  operation.kind.startsWith("integration.") ||
-  operation.kind.startsWith("artifact.") ||
-  operation.kind === "support.gmSummon";
-
-const requiresGmailConnection = (operation: AuthorizationOperation) =>
-  operation.kind.startsWith("gmail.") && operation.kind !== "gmail.connection.manage";
 
 const exceedsLiveLimit = (
   operation: AuthorizationOperation,
@@ -700,260 +564,6 @@ const exceedsOperationLimit = (
   }
 };
 
-const exceedsGovernedLiveLimit = (
-  operation: AuthorizationOperation,
-  context: AuthorizationContext,
-  limits: CapabilityCatalog["planResourceLimits"]["free"],
-) => {
-  if (
-    !isSharedUnmetered(operation) &&
-    context.liveFacts.concurrentCostlyJobs >= BigInt(limits.concurrentCostlyJobs)
-  ) {
-    return true;
-  }
-  switch (operation.kind) {
-    case "file.upload":
-      return (
-        context.liveFacts.retainedFileBytes + operation.bytes > limits.retainedUserContentBytes
-      );
-    case "reminder.manage":
-      return (
-        (operation.change === "oneTimeCreate" || operation.change === "recurringCreate") &&
-        context.liveFacts.activeReminders >= BigInt(limits.activeReminders)
-      );
-    case "workflow.manage":
-      return (
-        operation.change === "start" &&
-        context.liveFacts.concurrentWorkflows >= BigInt(limits.activeWorkflows)
-      );
-    case "support.gmSummon":
-      return (
-        context.liveFacts.activeGmSummonsInSession >= BigInt(limits.activeGmSummonsPerSession) ||
-        context.liveFacts.gmSummonsInPeriod >= BigInt(limits.gmSummonsPerPeriod)
-      );
-    case "integration.effect":
-      return (
-        context.liveFacts.concurrentIntegrationEffects >=
-        BigInt(limits.concurrentIntegrationEffects)
-      );
-    default:
-      return false;
-  }
-};
-
-const exceedsGovernedOperationLimit = (
-  operation: AuthorizationOperation,
-  catalog: CapabilityCatalog,
-  mode: "normalPlanUsage" | "exhaustedConversation",
-) => {
-  if (mode === "exhaustedConversation") {
-    if (operation.kind !== "conversation.run") return true;
-    const limits = catalog.exhaustedConversation;
-    return (
-      operation.inputTokens === undefined ||
-      operation.documentChunks === undefined ||
-      operation.outputTokens === undefined ||
-      operation.queryRewrites === undefined ||
-      operation.rerankingPasses === undefined ||
-      operation.retries === undefined ||
-      operation.skillInstructions === undefined ||
-      operation.skillLearningJobs === undefined ||
-      operation.toolExecutions === undefined ||
-      operation.memoryRecalls === undefined ||
-      operation.memoryDeadlineMilliseconds === undefined ||
-      operation.memoryProfileTokens === undefined ||
-      operation.memoryQueryTokens === undefined ||
-      operation.inputTokens > BigInt(limits.inputTokens) ||
-      operation.outputTokens > BigInt(limits.outputTokens) ||
-      operation.modelSteps > BigInt(limits.modelSteps) ||
-      operation.retries > BigInt(limits.retries) ||
-      operation.skillInstructions !== limits.skillInstructions ||
-      operation.memoryRecalls > BigInt(limits.memoryRecalls) ||
-      operation.memoryDeadlineMilliseconds > BigInt(limits.memoryDeadlineMilliseconds) ||
-      operation.memoryProfileTokens > BigInt(limits.memoryProfileTokens) ||
-      operation.memoryQueryTokens > BigInt(limits.memoryQueryTokens) ||
-      operation.documentChunks > 0n ||
-      operation.queryRewrites > 0n ||
-      operation.rerankingPasses > 0n ||
-      operation.skillLearningJobs > 0n ||
-      operation.toolExecutions > 0n
-    );
-  }
-  const limits = catalog.operationLimits;
-  switch (operation.kind) {
-    case "conversation.run":
-      return operation.modelSteps > BigInt(limits.modelSteps);
-    case "file.upload":
-      return operation.bytes > limits.uploadBytes;
-    case "artifact.generate":
-    case "artifact.revise":
-      if (operation.artifactKind === "pdf" || operation.artifactKind === "docx") {
-        return (
-          operation.bytes > limits.generatedDocumentBytes ||
-          operation.pages > BigInt(limits.generatedDocumentPages)
-        );
-      }
-      if (operation.artifactKind === "pptx") {
-        return (
-          operation.bytes > limits.generatedPresentationBytes ||
-          operation.slides > BigInt(limits.generatedPresentationSlides)
-        );
-      }
-      return (
-        operation.bytes > limits.generatedImageBytes ||
-        operation.pixelsPerEdge > BigInt(limits.generatedImagePixelsPerEdge)
-      );
-    case "integration.read":
-      return (
-        operation.providerExecutions >
-          BigInt(catalog.integrationReadLimits.sequentialProviderCalls) ||
-        operation.records >
-          BigInt(
-            catalog.integrationReadLimits.recordsPerCall *
-              catalog.integrationReadLimits.sequentialProviderCalls,
-          ) ||
-        operation.responseBytes > catalog.integrationReadLimits.totalResponseBytes
-      );
-    default:
-      return false;
-  }
-};
-
-const manifestForOperation = (
-  operation: AuthorizationOperation,
-  manifestCatalog: IntegrationManifestCatalog,
-) => {
-  if (operation.kind !== "integration.read" && operation.kind !== "integration.effect") {
-    return Result.succeed<IntegrationManifestOperation | null>(null);
-  }
-  const resolved = resolveManifest(
-    {
-      manifestVersion: operation.manifestVersion,
-      operation: operation.providerOperation,
-      toolkit: operation.toolkit,
-    },
-    manifestCatalog,
-  );
-  if (Result.isFailure(resolved)) return resolved;
-  return resolved.success.operationKind ===
-    (operation.kind === "integration.read" ? "read" : "effect")
-    ? resolved
-    : Result.fail(
-        new Error("The manifest operation kind does not match the authorization operation"),
-      );
-};
-
-const withinExhaustedConnectorLimits = (
-  operation: Extract<AuthorizationOperation, { readonly kind: "integration.read" }>,
-  catalog: CapabilityCatalog,
-  manifest: IntegrationManifestOperation,
-) => {
-  const limits = catalog.exhaustedConnectorRead;
-  const declared = manifest.exhaustedMode;
-  if (declared === null) return false;
-  const maximumRecords =
-    declared._tag === "EmailThread" ? declared.maximumMessages : limits.records;
-  if (
-    operation.attachments > BigInt(limits.attachments) ||
-    operation.deadlineMilliseconds > BigInt(limits.deadlineMilliseconds) ||
-    operation.pagination > BigInt(limits.pagination) ||
-    operation.providerExecutions > BigInt(limits.providerExecutions) ||
-    operation.records > BigInt(maximumRecords) ||
-    operation.responseBytes > limits.responseBytes
-  ) {
-    return false;
-  }
-  switch (declared._tag) {
-    case "EmailThread":
-      return (
-        operation.records <= BigInt(declared.maximumMessages) &&
-        operation.responseBytes <= BigInt(declared.responseBytes)
-      );
-    case "CalendarEvents":
-      return (
-        operation.windowDays !== undefined &&
-        operation.records <= BigInt(declared.maximumEvents) &&
-        operation.windowDays <= BigInt(declared.windowDays)
-      );
-    case "Availability":
-      return (
-        operation.windowDays !== undefined &&
-        operation.records <= BigInt(declared.calendars) &&
-        operation.windowDays <= BigInt(declared.windowDays)
-      );
-    case "ProviderMetadata":
-      return (
-        operation.records <= BigInt(declared.items) &&
-        operation.responseBytes <= BigInt(declared.responseBytes)
-      );
-    default:
-      return declared satisfies never;
-  }
-};
-
-const requiresApproval = (operation: AuthorizationOperation) => {
-  switch (operation.kind) {
-    case "session.delete":
-    case "memory.clear":
-    case "memory.forgetKnowledge":
-    case "file.delete":
-    case "artifact.delete":
-    case "gmail.send":
-    case "support.gmSummon":
-    case "account.delete":
-      return true;
-    case "skill.manage":
-      return operation.change === "delete";
-    case "reminder.manage":
-      return (
-        operation.change === "oneTimeCreate" ||
-        operation.change === "recurringCreate" ||
-        operation.change === "recurringMaterialChange"
-      );
-    case "workflow.manage":
-      return false;
-    default:
-      return false;
-  }
-};
-
-const isSharedUnmetered = (operation: AuthorizationOperation) => {
-  switch (operation.kind) {
-    case "conversation.accept":
-    case "session.recall":
-    case "session.delete":
-    case "memory.inspect":
-    case "memory.clear":
-    case "memory.forgetKnowledge":
-    case "file.read":
-    case "file.delete":
-    case "skill.inspect":
-    case "skill.manage":
-    case "artifact.read":
-    case "artifact.delete":
-    case "workflow.inspect":
-    case "workflow.cancel":
-    case "support.open":
-    case "usage.inspect":
-    case "billing.inspect":
-    case "subscription.manage":
-    case "authSession.revoke":
-    case "channelLink.revoke":
-    case "phoneAccount.replace":
-    case "account.delete":
-    case "dataRights.request":
-      return true;
-    case "reminder.manage":
-      return operation.change === "cancel";
-    case "workflow.manage":
-      return operation.change === "stop";
-    case "integration.connection.manage":
-      return operation.change === "revoke";
-    default:
-      return false;
-  }
-};
-
 const hasExactApproval = (context: AuthorizationContext, operation: AuthorizationOperation) =>
   context.approval !== null &&
   context.approval.userId === context.user.userId &&
@@ -970,124 +580,5 @@ const approvalIdentity = (
   operation: AuthorizationOperation,
   presentation: ApprovalPresentation,
 ): string => JSON.stringify({ operation: operationIdentity(operation), presentation });
-
-const isUnmetered = (operation: AuthorizationOperation) => {
-  switch (operation.kind) {
-    case "session.delete":
-    case "memory.clear":
-    case "memory.forgetKnowledge":
-    case "file.delete":
-    case "workflow.cancel":
-    case "support.open":
-    case "usage.inspect":
-    case "billing.inspect":
-    case "subscription.manage":
-    case "authSession.revoke":
-    case "channelLink.revoke":
-    case "phoneAccount.replace":
-    case "account.delete":
-    case "dataRights.request":
-      return true;
-    case "reminder.manage":
-      return operation.change === "cancel";
-    case "workflow.manage":
-      return operation.change === "stop";
-    case "gmail.connection.manage":
-      return operation.change === "revoke";
-    default:
-      return false;
-  }
-};
-
-const allowanceKindsFor = (operation: AuthorizationOperation): ReadonlyArray<AllowanceKind> => {
-  switch (operation.kind) {
-    case "conversation.accept":
-      return ["acceptedMessages"];
-    case "conversation.run":
-      return ["supermemoryIngestionTokens", "supermemoryRetrievals"];
-    case "file.upload":
-      return ["fileUploads"];
-    case "document.generate":
-      return [operation.artifactKind === "document" ? "generatedDocuments" : "researchReports"];
-    case "reminder.deliver":
-      return ["reminderDeliveries"];
-    case "workflow.manage":
-      return operation.change === "start" ? ["workflowStarts"] : [];
-    case "gmail.search":
-      return ["gmailSearches"];
-    case "gmail.read":
-      return ["gmailMessagesExamined"];
-    case "gmail.send":
-      return ["gmailSends"];
-    case "support.gmSummon":
-      return ["gmSummons"];
-    default:
-      return [];
-  }
-};
-
-const entitlementFor = (operation: AuthorizationOperation): Capability | null => {
-  switch (operation.kind) {
-    case "conversation.accept":
-    case "conversation.run":
-      return "conversation";
-    case "session.recall":
-    case "session.replace":
-    case "session.delete":
-      return "session";
-    case "memory.inspect":
-    case "memory.correct":
-    case "memory.clear":
-    case "memory.forgetKnowledge":
-      return "memory";
-    case "file.upload":
-    case "file.read":
-    case "file.analyze":
-    case "file.delete":
-      return "files";
-    case "document.generate":
-      return operation.artifactKind === "document" ? "documents" : "researchReports";
-    case "reminder.manage":
-      if (operation.change === "cancel") return null;
-      return operation.change === "oneTimeCreate" ? "oneTimeReminders" : "recurringReminders";
-    case "reminder.deliver":
-      return operation.schedule === "oneTime" ? "oneTimeReminders" : "recurringReminders";
-    case "workflow.manage":
-      return operation.change === "stop" ? null : "workflows";
-    case "workflow.inspect":
-    case "workflow.cancel":
-      return null;
-    case "gmail.connection.manage":
-      return operation.change === "revoke" ? null : "gmail";
-    case "skill.inspect":
-    case "skill.manage":
-    case "artifact.generate":
-    case "artifact.revise":
-    case "artifact.read":
-    case "artifact.delete":
-    case "integration.connection.manage":
-    case "integration.read":
-    case "integration.effect":
-      return null;
-    case "gmail.search":
-    case "gmail.read":
-    case "gmail.draft":
-    case "gmail.send":
-      return "gmail";
-    case "support.gmSummon":
-      return "gmSummon";
-    case "support.open":
-    case "usage.inspect":
-    case "billing.inspect":
-    case "subscription.manage":
-    case "authSession.revoke":
-    case "channelLink.revoke":
-    case "phoneAccount.replace":
-    case "account.delete":
-    case "dataRights.request":
-      return null;
-  }
-  return null;
-};
 
 export * as Authorization from "./authorization";

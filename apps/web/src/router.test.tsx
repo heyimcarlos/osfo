@@ -90,6 +90,42 @@ describe("Osfo route tree", () => {
     });
   });
 
+  it("does not rewrite an in-flight legacy billing return while authentication is pending", async () => {
+    const { router } = renderAt(
+      "/billing/return?source=checkout&session_id=checkout-session",
+      pending,
+    );
+
+    await waitFor(() => expect(screen.getByText("Loading Osfo...")).toBeTruthy());
+    expect(router.state.location.href).toBe(
+      "/billing/return?source=checkout&session_id=checkout-session",
+    );
+  });
+
+  it.each([
+    ["/billing", "/settings/billing"],
+    [
+      "/billing/return?source=checkout&session_id=checkout-session",
+      "/settings/billing?source=checkout&session_id=checkout-session",
+    ],
+  ])("redirects the retired billing URL %s into settings", async (legacyPath, expectedPath) => {
+    globalThis.fetch = async (input) => {
+      const url = new Request(input).url;
+      if (url.endsWith("/v1/billing/reconcile")) return Response.json({ result: "unchanged" });
+      return Response.json({
+        currentPlan: "free",
+        paymentState: "free",
+        pendingPlan: null,
+        period: null,
+        usage: null,
+      });
+    };
+    const { router } = renderAt(legacyPath, signedIn);
+
+    await waitFor(() => expect(router.state.location.href).toBe(expectedPath));
+    expect(screen.getByRole("heading", { name: "Billing" })).toBeTruthy();
+  });
+
   it("rejects illegal billing return states", () => {
     expect(parseBillingReturnSearch({ source: "checkout" })).toEqual({
       _tag: "Invalid",

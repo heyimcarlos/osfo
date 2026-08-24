@@ -114,4 +114,27 @@ describe("Usage Event", () => {
 
     expect(Result.isFailure(result)).toBe(true);
   });
+
+  it("rejects a shared-v1 charge whose Plan Usage does not equal its Rated Cost", () => {
+    const result = parseUsageEvent({
+      ...baseEvent,
+      outcome: {
+        _tag: "Completed",
+        charge: {
+          components: [
+            {
+              activity: "integrations",
+              ratedCostUsdMicros: 700n,
+              resourcePriceVersion: ResourcePriceVersion.make("resource-prices-2026-08-22"),
+            },
+          ],
+          planUsageMicros: 1n,
+          ratedCostUsdMicros: 700n,
+          usagePolicyVersion: PlanPolicyVersion.make("shared-usage-v1"),
+        },
+      },
+    });
+
+    expect(Result.isFailure(result)).toBe(true);
+  });
 });

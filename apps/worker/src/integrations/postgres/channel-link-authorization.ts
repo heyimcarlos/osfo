@@ -7,7 +7,7 @@ import { Db } from "../../db";
 import { BillingDb } from "../../db/billing";
 import { type AgentId, type ChannelLinkId, UserId } from "../../domain";
 import type { ChannelAddress } from "../../domain/channel-link";
-import { AuthorizationContext } from "../../services/authorization";
+import { AuthorizationContext, emptyLiveResourceFacts } from "../../services/authorization";
 import { ChannelLinks } from "../../services/channel-links";
 import { DeletionCasePostgres } from "./deletion-case";
 import { UserSuspensionPostgres } from "./user-suspension";
@@ -85,18 +85,7 @@ export const make = Effect.gen(function* () {
         deletionAccess,
         gmailConnection: null,
         integrationConnections: [],
-        liveFacts: {
-          activeGmSummonsInSession: 0n,
-          activeReminders: 0n,
-          concurrentCostlyJobs: 0n,
-          concurrentExhaustedConnectorReads: 0n,
-          concurrentExhaustedConversations: 0n,
-          concurrentIntegrationEffects: 0n,
-          concurrentWorkflows: 0n,
-          exhaustedConnectorReadsInRollingDay: 0n,
-          gmSummonsInPeriod: 0n,
-          retainedFileBytes: 0n,
-        },
+        liveFacts: emptyLiveResourceFacts,
         now,
         originatingAuthority: { _tag: "ChannelLink", channelLinkId: fixedRoute.channelLinkId },
         requestVendorUsdMicros: 0n,

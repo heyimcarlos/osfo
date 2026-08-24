@@ -343,6 +343,28 @@ describe("Postgres migrations", () => {
                rated_cost_usd_micros, root_operation_id, source_id, source_type,
                usage_policy_version, user_id
              ) VALUES (
+               'usage-period-1', 'governed-capabilities-v1', '{
+                 "allowancePeriodId":"usage-period-1",
+                 "capabilityCatalogVersion":"governed-capabilities-v1",
+                 "evidenceReferences":[],
+                 "manifestVersion":null,
+                 "modelAccessPolicyVersion":"managed-routing-v1",
+                 "occurredAt":"2026-08-24T00:00:00.000Z",
+                 "outcome":{"_tag":"Completed","charge":{}},
+                 "rootOperationId":"conversion-root",
+                 "source":{"sourceId":"conversion-source","sourceType":"testOperation"},
+                 "usagePolicyVersion":"shared-usage-v1"
+               }',
+               'managed-routing-v1', now(), 'completed', 1, 700,
+               'conversion-root', 'conversion-source', 'testOperation',
+               'shared-usage-v1', 'usage-user-1'
+             )`,
+            `INSERT INTO usage_events (
+               allowance_period_id, capability_catalog_version, facts_json,
+               model_access_policy_version, occurred_at, outcome, plan_usage_micros,
+               rated_cost_usd_micros, root_operation_id, source_id, source_type,
+               usage_policy_version, user_id
+             ) VALUES (
                'usage-period-1', 'governed-capabilities-v1', '{}',
                'managed-routing-v1', now(), 'completed', 1, 1,
                'malformed-root', 'malformed-source', 'testOperation',

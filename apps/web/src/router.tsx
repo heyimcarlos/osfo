@@ -126,6 +126,19 @@ const settingsMarketplaceRoute = createRoute({
     "SettingsMarketplacePage",
   ),
 });
+const legacyBillingRoute = createRoute({
+  getParentRoute: () => authenticatedRoute,
+  path: "billing",
+  component: lazyRouteComponent(() => import("./pages/legacy-billing-page"), "LegacyBillingPage"),
+});
+const legacyBillingReturnRoute = createRoute({
+  getParentRoute: () => authenticatedRoute,
+  path: "billing/return",
+  component: lazyRouteComponent(
+    () => import("./pages/legacy-billing-page"),
+    "LegacyBillingReturnPage",
+  ),
+});
 const routeTree = rootRoute.addChildren([
   homeRoute,
   loginRoute,
@@ -143,6 +156,8 @@ const routeTree = rootRoute.addChildren([
       settingsBillingRoute,
       settingsMarketplaceRoute,
     ]),
+    legacyBillingRoute,
+    legacyBillingReturnRoute,
   ]),
 ]);
 

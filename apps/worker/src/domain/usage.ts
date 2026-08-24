@@ -97,6 +97,12 @@ export const UsageCharge = Schema.Struct({
       charge.components.reduce((total, component) => total + component.ratedCostUsdMicros, 0n) ===
         charge.ratedCostUsdMicros || "component Rated Cost must equal the declared Rated Cost",
   ),
+  Schema.makeFilter(
+    (charge) =>
+      charge.usagePolicyVersion !== "shared-usage-v1" ||
+      charge.planUsageMicros === charge.ratedCostUsdMicros ||
+      "shared-usage-v1 requires one Plan Usage micro per Rated Cost USD micro",
+  ),
 );
 
 /** Full shared Plan Usage charge for completed useful work. */
