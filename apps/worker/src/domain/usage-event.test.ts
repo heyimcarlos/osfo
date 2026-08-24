@@ -91,4 +91,27 @@ describe("Usage Event", () => {
 
     expect(Result.isFailure(result)).toBe(true);
   });
+
+  it("rejects a charge whose component costs do not equal its declared Rated Cost", () => {
+    const result = parseUsageEvent({
+      ...baseEvent,
+      outcome: {
+        _tag: "Completed",
+        charge: {
+          components: [
+            {
+              activity: "integrations",
+              ratedCostUsdMicros: 400n,
+              resourcePriceVersion: ResourcePriceVersion.make("resource-prices-2026-08-22"),
+            },
+          ],
+          planUsageMicros: 800n,
+          ratedCostUsdMicros: 800n,
+          usagePolicyVersion: PlanPolicyVersion.make("shared-usage-v1"),
+        },
+      },
+    });
+
+    expect(Result.isFailure(result)).toBe(true);
+  });
 });

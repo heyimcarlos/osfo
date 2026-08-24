@@ -42,6 +42,7 @@ describe("Capability Catalog", () => {
     expect(currentCapabilityCatalog.operationLimits).toMatchObject({
       computeMilliseconds: 60_000,
       csvInputRows: 100_000,
+      durableArtifactOperationMilliseconds: 3_600_000,
       generatedDocumentBytes: 5_000_000n,
       generatedDocumentPages: 20,
       generatedImageBytes: 10_000_000n,
@@ -63,6 +64,7 @@ describe("Capability Catalog", () => {
       modelSteps: 2,
       outputTokens: 1_024,
       retries: 0,
+      skillInstructions: "locallyAvailableOnly",
     });
     expect(currentCapabilityCatalog.exhaustedConnectorRead).toMatchObject({
       callsPerRollingDay: 20,

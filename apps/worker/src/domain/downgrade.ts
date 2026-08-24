@@ -1,9 +1,10 @@
+import type { AllowancePeriodId } from "../domain";
 import { policyFor, sharedUsagePolicyV1 } from "./plan-policy";
 
 /** Start a new Free period without transferring Adventurer Usage or reassigning admitted work. */
 export const startFreePeriodAfterDowngrade = (facts: {
-  readonly admittedAllowancePeriodId: string;
-  readonly newFreeAllowancePeriodId: string;
+  readonly admittedAllowancePeriodId: AllowancePeriodId;
+  readonly newFreeAllowancePeriodId: AllowancePeriodId;
 }) => ({
   admittedWorkAllowancePeriodId: facts.admittedAllowancePeriodId,
   includedPlanUsageMicros: policyFor(sharedUsagePolicyV1, "free").includedPlanUsageMicros,

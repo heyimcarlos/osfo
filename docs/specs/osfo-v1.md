@@ -614,8 +614,8 @@ Summon.
 A Problem groups distinct Resolution Attempts in one Session without copying
 Think history. An attempt counts as failed only after explicit User feedback or
 objective failure evidence. Osfo can offer GM Summon only when one open Problem
-has three distinct failed attempts, the User has active Adventurer entitlement,
-no summon is active for the Session, and the allowance-period limit is available.
+has three distinct failed attempts, the User's current Plan is Adventurer, no
+summon is active for the Session, and the GM Summon period limit remains available.
 The User must confirm. One stable summon identity survives safe retries. Osfo
 promises no response time.
 
@@ -1012,7 +1012,7 @@ Implementation evidence must include at least:
 - webhook signature and schema rejection, duplicate inbound events, exact-byte
   Delivery recovery, status disorder, ambiguity, wake-up coalescing, suspension,
   support, and GM Summon;
-- the full entitlement, soft-cap allowance consumption, Approval, downgrade,
+- the full Plan-parity, shared Plan Usage, Approval, downgrade,
   reminder, Workflow, and authority-loss matrix;
 - Core Memory inference and correction, Session replacement, Session Recall,
   forgetting, Session and account deletion, ordered conversation capture,

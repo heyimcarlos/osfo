@@ -91,7 +91,13 @@ export const UsageCharge = Schema.Struct({
   planUsageMicros: positiveQuantity,
   ratedCostUsdMicros: positiveQuantity,
   usagePolicyVersion: PlanPolicyVersion,
-});
+}).check(
+  Schema.makeFilter(
+    (charge) =>
+      charge.components.reduce((total, component) => total + component.ratedCostUsdMicros, 0n) ===
+        charge.ratedCostUsdMicros || "component Rated Cost must equal the declared Rated Cost",
+  ),
+);
 
 /** Full shared Plan Usage charge for completed useful work. */
 export type UsageCharge = typeof UsageCharge.Type;

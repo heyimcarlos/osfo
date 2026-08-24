@@ -15,7 +15,7 @@ import {
   ResourcePriceVersion,
   UserId,
 } from "../../src/domain";
-import type { UsageEvent } from "../../src/domain/usage-event";
+import { UsageEvent } from "../../src/domain/usage-event";
 import { spawnApp } from "../support/spawn-app";
 
 /* oxlint-disable effecttsgo/async-function, effecttsgo/strict-effect-provide, effecttsgo/global-date, effecttsgo/global-date-in-effect, eslint/no-underscore-dangle -- This PostgreSQL contract owns its Promise transaction helper, concrete database Layer, fixed evidence times, and tagged outcomes. */
@@ -70,6 +70,30 @@ it.effect("records final Usage Events idempotently without charging failed or ca
       expect(yield* billing.recordUsageEvent(failed)).toMatchObject({
         outcome: { _tag: "ExistingUsage" },
       });
+
+      const invalidCharge = UsageEvent.make(
+        {
+          ...usageEvent(period.allowancePeriodId, "invalid-event", "invalid-root", 700n),
+          outcome: {
+            _tag: "Completed",
+            charge: {
+              components: [
+                {
+                  activity: "automations",
+                  ratedCostUsdMicros: 699n,
+                  resourcePriceVersion: ResourcePriceVersion.make("resource-prices-2026-08-22"),
+                },
+              ],
+              planUsageMicros: 700n,
+              ratedCostUsdMicros: 700n,
+              usagePolicyVersion: PlanPolicyVersion.make("shared-usage-v1"),
+            },
+          },
+        },
+        { disableChecks: true },
+      );
+      const invalidResult = yield* billing.recordUsageEvent(invalidCharge).pipe(Effect.flip);
+      expect(invalidResult._tag).toBe("UsageEventInvalid");
 
       const admission = yield* billing.admit(userId, new Date(period.startsAt.getTime() + 1_000));
       expect(admission.usage).toContainEqual({

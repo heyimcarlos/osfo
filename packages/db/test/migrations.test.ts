@@ -317,7 +317,18 @@ describe("Postgres migrations", () => {
                 rated_cost_usd_micros, root_operation_id, source_id, source_type,
                 usage_policy_version, user_id
               ) VALUES (
-                'usage-period-1', 'governed-capabilities-v1', '{}',
+                'usage-period-1', 'governed-capabilities-v1', '{
+                  "allowancePeriodId":"usage-period-1",
+                  "capabilityCatalogVersion":"governed-capabilities-v1",
+                  "evidenceReferences":[],
+                  "manifestVersion":null,
+                  "modelAccessPolicyVersion":"managed-routing-v1",
+                  "occurredAt":"2026-08-24T00:00:00.000Z",
+                  "outcome":{"_tag":"Completed","charge":{}},
+                  "rootOperationId":"usage-root-1",
+                  "source":{"sourceId":"usage-source-1","sourceType":"testOperation"},
+                  "usagePolicyVersion":"shared-usage-v1"
+                }',
                 'managed-routing-v1', now(), 'completed', 1, 1,
                 'usage-root-1', 'usage-source-1', 'testOperation',
                 'shared-usage-v1', 'usage-user-1'
@@ -334,7 +345,8 @@ describe("Postgres migrations", () => {
              ) VALUES (
                'usage-period-1', 'governed-capabilities-v1', '{}',
                'managed-routing-v1', now(), 'completed', 1, 1,
-               '   ', 'blank-root', 'testOperation', 'shared-usage-v1', 'usage-user-1'
+               'malformed-root', 'malformed-source', 'testOperation',
+               'shared-usage-v1', 'usage-user-1'
              )`,
             `INSERT INTO usage_event_components (
                activity, allowance_period_id, component_index, component_kind, evidence_json,

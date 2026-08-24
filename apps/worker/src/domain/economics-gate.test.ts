@@ -1,10 +1,17 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { evaluateEconomics, type EconomicsEvidence } from "./economics-gate";
+import { companyCostBackstops, evaluateEconomics, type EconomicsEvidence } from "./economics-gate";
 
 /* oxlint-disable effecttsgo/global-date -- Fixed dates prove evidence freshness. */
 
 describe("shared Plan Usage economics gate", () => {
+  it("freezes typed hidden Company Cost backstops for both Plans", () => {
+    expect(companyCostBackstops).toEqual({
+      adventurer: 12_000_000n,
+      free: 5_000_000n,
+    });
+  });
+
   it("reports MISSING for any material omitted or stale evidence", () => {
     const evidence = passingEvidence();
     expect(
@@ -48,6 +55,19 @@ describe("shared Plan Usage economics gate", () => {
     );
     expect(result.status).toBe("FAIL");
     expect(result.free.status).toBe("FAIL");
+  });
+
+  it("fails Adventurer above its hidden Company Cost backstop", () => {
+    const result = evaluateEconomics(
+      {
+        ...passingEvidence(),
+        adventurerNonUsageCostUsdMicros: 5_000_000n,
+        adventurerRevenueUsdMicrosAtConservativeFx: 40_000_000n,
+      },
+      new Date("2026-08-23T00:00:00.000Z"),
+    );
+
+    expect(result.adventurer.status).toBe("FAIL");
   });
 });
 

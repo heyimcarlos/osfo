@@ -82,6 +82,9 @@ export const AuthorizationOperation = Schema.Union([
     queryRewrites: Schema.optionalKey(nonNegative),
     rerankingPasses: Schema.optionalKey(nonNegative),
     retries: Schema.optionalKey(nonNegative),
+    skillInstructions: Schema.optionalKey(
+      Schema.Literals(["locallyAvailableOnly", "providerBacked"]),
+    ),
     skillLearningJobs: Schema.optionalKey(nonNegative),
     toolExecutions: Schema.optionalKey(nonNegative),
   }),

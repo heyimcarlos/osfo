@@ -57,6 +57,12 @@ export const AllowanceSource = Schema.Struct({
 /** Existing product or effect identity used to make consumption idempotent. */
 export type AllowanceSource = typeof AllowanceSource.Type;
 
+/** Ordered source selected when admitting work against available Plan capacity. */
+export const PlanUsageGrantSource = Schema.Literals(["includedPlanUsage", "purchasedCredits"]);
+
+/** Ordered source selected when admitting work against available Plan capacity. */
+export type PlanUsageGrantSource = typeof PlanUsageGrantSource.Type;
+
 /** Expected conflict when an idempotency key is retried with changed facts. */
 export class UsageConflict extends Schema.TaggedError<UsageConflict>()("UsageConflict", {
   allowanceKind: AllowanceKind,

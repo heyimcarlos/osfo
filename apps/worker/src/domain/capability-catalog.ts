@@ -65,6 +65,10 @@ export const ConsequenceClass = Schema.Literals([
 /** Closed consequences that always require exact Approval. */
 export type ConsequenceClass = typeof ConsequenceClass.Type;
 
+/** Any declared protected consequence requires exact Approval. */
+export const hasProtectedConsequence = (consequences: ReadonlyArray<ConsequenceClass>): boolean =>
+  consequences.length > 0;
+
 /** Closed artifact kinds governed by the generic artifact operations. */
 export const ArtifactKind = Schema.Literals(["pdf", "docx", "pptx", "image", "diagram"]);
 
@@ -84,6 +88,7 @@ export const GovernedOperationLimits = Schema.Struct({
   computeInputBytes: positiveBytes,
   computeMilliseconds: positiveInteger,
   csvInputRows: positiveInteger,
+  durableArtifactOperationMilliseconds: positiveInteger,
   equivalentFallbackCandidatesPerModelStep: positiveInteger,
   filesPerUpload: positiveInteger,
   generatedDocumentBytes: positiveBytes,
@@ -146,6 +151,7 @@ export const ExhaustedConversationLimits = Schema.Struct({
   modelSteps: positiveInteger,
   outputTokens: positiveInteger,
   retries: Schema.Literal(0),
+  skillInstructions: Schema.Literal("locallyAvailableOnly"),
 });
 
 /** Shared envelope for manifest-declared reads after Plan Usage exhaustion. */
@@ -259,6 +265,7 @@ const governedCapabilitiesV1 = {
     modelSteps: 2,
     outputTokens: 1_024,
     retries: 0,
+    skillInstructions: "locallyAvailableOnly",
   },
   integrationReadLimits: {
     recordsPerCall: 20,
@@ -270,6 +277,7 @@ const governedCapabilitiesV1 = {
     computeInputBytes: 25_000_000n,
     computeMilliseconds: 60_000,
     csvInputRows: 100_000,
+    durableArtifactOperationMilliseconds: 3_600_000,
     equivalentFallbackCandidatesPerModelStep: 1,
     filesPerUpload: 1,
     generatedDocumentBytes: 5_000_000n,

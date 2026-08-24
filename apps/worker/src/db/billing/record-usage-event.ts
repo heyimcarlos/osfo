@@ -6,13 +6,15 @@ import {
   usageEvents,
 } from "@osfo/db/schema/allowances";
 import { and, eq, sql } from "drizzle-orm";
-import { Effect, Predicate, Schema } from "effect";
+import { Effect, Predicate, Result, Schema } from "effect";
 
 import { UserId } from "../../domain";
 import { AllowancePeriodNotFound, ExistingUsage, Recorded } from "../../domain/allowance";
 import {
+  parseUsageEvent,
   type UsageEvent,
   UsageEventConflict,
+  type UsageEventInvalid,
   type UsageEvidenceReference,
 } from "../../domain/usage-event";
 import type { RatedComponent } from "../../domain/usage";
@@ -36,14 +38,17 @@ export type RecordUsageEventError =
   | AllowancePeriodNotFound
   | BillingTransactionRetryExhausted
   | DatabaseUnavailable
-  | UsageEventConflict;
+  | UsageEventConflict
+  | UsageEventInvalid;
 
 /** Retain final evidence and shared Plan Usage atomically against the original period. */
 export const recordUsageEvent = Effect.fn("Billing.recordUsageEvent")(function* (
   database: BillingDatabase,
   supplied: UsageEvent,
 ) {
-  const event = normalizeEvent(supplied);
+  const parsed = parseUsageEvent(supplied);
+  if (Result.isFailure(parsed)) return yield* parsed.failure;
+  const event = normalizeEvent(parsed.success);
   const factsJson = encodeFacts(event);
   const charge = chargedOutcome(event.outcome);
   const result = yield* runBillingTransaction("recordUsageEvent", () =>

@@ -143,6 +143,33 @@ export const usageEvents = pgTable(
       sql`${table.outcome} in ('completed', 'useful_partial', 'failed', 'cancelled')`,
     ),
     check(
+      "usage_events_facts_json_contract_check",
+      sql`jsonb_typeof(${table.facts_json}::jsonb) = 'object'
+        and ${table.facts_json}::jsonb ?& array[
+          'allowancePeriodId', 'capabilityCatalogVersion', 'evidenceReferences',
+          'manifestVersion', 'modelAccessPolicyVersion', 'occurredAt', 'outcome',
+          'rootOperationId', 'source', 'usagePolicyVersion'
+        ]
+        and ${table.facts_json}::jsonb ->> 'allowancePeriodId' = ${table.allowance_period_id}
+        and ${table.facts_json}::jsonb ->> 'capabilityCatalogVersion' = ${table.capability_catalog_version}
+        and (${table.facts_json}::jsonb ->> 'manifestVersion') is not distinct from ${table.manifest_version}
+        and ${table.facts_json}::jsonb ->> 'modelAccessPolicyVersion' = ${table.model_access_policy_version}
+        and ${table.facts_json}::jsonb ->> 'rootOperationId' = ${table.root_operation_id}
+        and ${table.facts_json}::jsonb ->> 'usagePolicyVersion' = ${table.usage_policy_version}
+        and jsonb_typeof(${table.facts_json}::jsonb -> 'evidenceReferences') = 'array'
+        and jsonb_typeof(${table.facts_json}::jsonb -> 'outcome') = 'object'
+        and jsonb_typeof(${table.facts_json}::jsonb -> 'source') = 'object'
+        and ${table.facts_json}::jsonb -> 'source' ->> 'sourceId' = ${table.source_id}
+        and ${table.facts_json}::jsonb -> 'source' ->> 'sourceType' = ${table.source_type}
+        and case ${table.outcome}
+          when 'completed' then ${table.facts_json}::jsonb -> 'outcome' ->> '_tag' = 'Completed'
+          when 'useful_partial' then ${table.facts_json}::jsonb -> 'outcome' ->> '_tag' = 'UsefulPartial'
+          when 'failed' then ${table.facts_json}::jsonb -> 'outcome' ->> '_tag' = 'Failed'
+          when 'cancelled' then ${table.facts_json}::jsonb -> 'outcome' ->> '_tag' = 'Cancelled'
+          else false
+        end`,
+    ),
+    check(
       "usage_events_required_text_check",
       sql`length(btrim(${table.allowance_period_id})) > 0
         and length(btrim(${table.capability_catalog_version})) > 0

@@ -9,14 +9,27 @@ import {
   PlanPolicyVersion,
   UserId,
 } from "../domain";
-import { type AllowanceKind, RecordedAllowanceUse } from "../domain/allowance";
+import {
+  type AllowanceKind,
+  type PlanUsageGrantSource,
+  RecordedAllowanceUse,
+} from "../domain/allowance";
 import {
   AuthorizationOperation,
   type AuthorizationOperationInput,
   AuthorizationOperationName,
 } from "../domain/authorization-operation";
-import { currentCapabilityCatalog, type CapabilityCatalog } from "../domain/capability-catalog";
-import { resolveManifest, type IntegrationManifestOperation } from "../domain/integration-manifest";
+import {
+  currentCapabilityCatalog,
+  type CapabilityCatalog,
+  hasProtectedConsequence,
+} from "../domain/capability-catalog";
+import {
+  currentManifestCatalog,
+  type IntegrationManifestCatalog,
+  type IntegrationManifestOperation,
+  resolveManifest,
+} from "../domain/integration-manifest";
 import {
   type Capability,
   isLaunchPolicy,
@@ -249,7 +262,11 @@ export type Admitted = {
   readonly manifestVersion: ManifestVersion | null;
   readonly allowancePeriod:
     | { readonly _tag: "Unmetered" }
-    | { readonly _tag: "Metered"; readonly allowancePeriodId: AllowancePeriodId };
+    | {
+        readonly _tag: "Metered";
+        readonly allowancePeriodId: AllowancePeriodId;
+        readonly grantSource: PlanUsageGrantSource | null;
+      };
 };
 
 /** Successful denial answer with an optional known reset time. */
@@ -288,6 +305,7 @@ export interface Interface {
 export const make = (
   catalog: PlanPolicyCatalog,
   capabilityCatalog: CapabilityCatalog = currentCapabilityCatalog,
+  manifestCatalog: IntegrationManifestCatalog = currentManifestCatalog,
 ): Interface => {
   const admit = (
     context: AuthorizationContext,
@@ -297,7 +315,14 @@ export const make = (
     if (Result.isFailure(decoded)) {
       return { _tag: "Denied", reason: "unknownOperation", resetAt: null };
     }
-    return authorize(catalog, capabilityCatalog, context, decoded.success, "admission");
+    return authorize(
+      catalog,
+      capabilityCatalog,
+      manifestCatalog,
+      context,
+      decoded.success,
+      "admission",
+    );
   };
 
   return {
@@ -307,7 +332,14 @@ export const make = (
       if (Result.isFailure(decoded)) {
         return { _tag: "Denied", reason: "unknownOperation", resetAt: null };
       }
-      const result = authorize(catalog, capabilityCatalog, context, decoded.success, "recheck");
+      const result = authorize(
+        catalog,
+        capabilityCatalog,
+        manifestCatalog,
+        context,
+        decoded.success,
+        "recheck",
+      );
       if (Predicate.isTagged(result, "Admitted")) return { _tag: "Permitted" };
       return Predicate.isTagged(result, "ApprovalRequired") ? denied("approvalRequired") : result;
     },
@@ -317,6 +349,7 @@ export const make = (
 const authorize = (
   catalog: PlanPolicyCatalog,
   capabilityCatalog: CapabilityCatalog,
+  manifestCatalog: IntegrationManifestCatalog,
   context: AuthorizationContext,
   operation: AuthorizationOperation,
   mode: "admission" | "recheck",
@@ -355,7 +388,7 @@ const authorize = (
   if (subscriptionPolicy === undefined) return denied("policyUnavailable");
 
   if (!isLaunchPolicy(subscriptionPolicy)) {
-    return authorizeShared(catalog, capabilityCatalog, context, operation, mode);
+    return authorizeShared(catalog, capabilityCatalog, manifestCatalog, context, operation, mode);
   }
 
   const rules = policyFor(subscriptionPolicy, context.subscription.plan);
@@ -424,6 +457,7 @@ const authorize = (
     allowancePeriod: {
       _tag: "Metered",
       allowancePeriodId: allowance.allowancePeriodId,
+      grantSource: null,
     },
   };
 };
@@ -431,6 +465,7 @@ const authorize = (
 const authorizeShared = (
   catalog: PlanPolicyCatalog,
   capabilityCatalog: CapabilityCatalog,
+  manifestCatalog: IntegrationManifestCatalog,
   context: AuthorizationContext,
   operation: AuthorizationOperation,
   mode: "admission" | "recheck",
@@ -449,7 +484,7 @@ const authorizeShared = (
   ) {
     return denied("missingEntitlement");
   }
-  const integrationManifest = manifestForOperation(operation);
+  const integrationManifest = manifestForOperation(operation, manifestCatalog);
   if (Result.isFailure(integrationManifest)) return denied("unknownOperation");
   const manifest = integrationManifest.success;
   if (manifest !== null) {
@@ -474,7 +509,7 @@ const authorizeShared = (
     return denied("operationLimitExceeded");
   }
   if (
-    (requiresApproval(operation) || (manifest?.consequences.length ?? 0) > 0) &&
+    (requiresApproval(operation) || hasProtectedConsequence(manifest?.consequences ?? [])) &&
     !hasExactApproval(context, operation)
   ) {
     if (mode === "recheck") return denied("approvalRequired");
@@ -505,7 +540,11 @@ const authorizeShared = (
   if (recorded < pool) {
     return {
       _tag: "Admitted",
-      allowancePeriod: { _tag: "Metered", allowancePeriodId: allowance.allowancePeriodId },
+      allowancePeriod: {
+        _tag: "Metered",
+        allowancePeriodId: allowance.allowancePeriodId,
+        grantSource: "includedPlanUsage",
+      },
       capabilityCatalogVersion: capabilityCatalog.version,
       executionMode: "normalPlanUsage",
       manifestVersion: manifest?.manifestVersion ?? null,
@@ -717,6 +756,7 @@ const exceedsGovernedOperationLimit = (
       operation.queryRewrites === undefined ||
       operation.rerankingPasses === undefined ||
       operation.retries === undefined ||
+      operation.skillInstructions === undefined ||
       operation.skillLearningJobs === undefined ||
       operation.toolExecutions === undefined ||
       operation.memoryRecalls === undefined ||
@@ -727,6 +767,7 @@ const exceedsGovernedOperationLimit = (
       operation.outputTokens > BigInt(limits.outputTokens) ||
       operation.modelSteps > BigInt(limits.modelSteps) ||
       operation.retries > BigInt(limits.retries) ||
+      operation.skillInstructions !== limits.skillInstructions ||
       operation.memoryRecalls > BigInt(limits.memoryRecalls) ||
       operation.memoryDeadlineMilliseconds > BigInt(limits.memoryDeadlineMilliseconds) ||
       operation.memoryProfileTokens > BigInt(limits.memoryProfileTokens) ||
@@ -778,14 +819,20 @@ const exceedsGovernedOperationLimit = (
   }
 };
 
-const manifestForOperation = (operation: AuthorizationOperation) => {
+const manifestForOperation = (
+  operation: AuthorizationOperation,
+  manifestCatalog: IntegrationManifestCatalog,
+) => {
   if (operation.kind !== "integration.read" && operation.kind !== "integration.effect") {
     return Result.succeed<IntegrationManifestOperation | null>(null);
   }
   const resolved = resolveManifest(
-    operation.toolkit,
-    operation.providerOperation,
-    operation.manifestVersion,
+    {
+      manifestVersion: operation.manifestVersion,
+      operation: operation.providerOperation,
+      toolkit: operation.toolkit,
+    },
+    manifestCatalog,
   );
   if (Result.isFailure(resolved)) return resolved;
   return resolved.success.operationKind ===
@@ -802,18 +849,20 @@ const withinExhaustedConnectorLimits = (
   manifest: IntegrationManifestOperation,
 ) => {
   const limits = catalog.exhaustedConnectorRead;
+  const declared = manifest.exhaustedMode;
+  if (declared === null) return false;
+  const maximumRecords =
+    declared._tag === "EmailThread" ? declared.maximumMessages : limits.records;
   if (
     operation.attachments > BigInt(limits.attachments) ||
     operation.deadlineMilliseconds > BigInt(limits.deadlineMilliseconds) ||
     operation.pagination > BigInt(limits.pagination) ||
     operation.providerExecutions > BigInt(limits.providerExecutions) ||
-    operation.records > BigInt(limits.records) ||
+    operation.records > BigInt(maximumRecords) ||
     operation.responseBytes > limits.responseBytes
   ) {
     return false;
   }
-  const declared = manifest.exhaustedMode;
-  if (declared === null) return false;
   switch (declared._tag) {
     case "EmailThread":
       return (
@@ -857,10 +906,12 @@ const requiresApproval = (operation: AuthorizationOperation) => {
       return operation.change === "delete";
     case "reminder.manage":
       return (
-        operation.change === "recurringCreate" || operation.change === "recurringMaterialChange"
+        operation.change === "oneTimeCreate" ||
+        operation.change === "recurringCreate" ||
+        operation.change === "recurringMaterialChange"
       );
     case "workflow.manage":
-      return operation.change === "start" || operation.change === "materialChange";
+      return false;
     default:
       return false;
   }

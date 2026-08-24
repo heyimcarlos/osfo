@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
+import { AllowancePeriodId } from "../domain";
 import { selectActiveResources, startFreePeriodAfterDowngrade } from "./downgrade";
 
 /* oxlint-disable effecttsgo/global-date -- Fixed resource and period order proves downgrade behavior. */
@@ -7,8 +8,8 @@ import { selectActiveResources, startFreePeriodAfterDowngrade } from "./downgrad
 describe("Adventurer downgrade", () => {
   it("starts fresh Free Usage while admitted work keeps its original period", () => {
     const result = startFreePeriodAfterDowngrade({
-      admittedAllowancePeriodId: "adventurer-period",
-      newFreeAllowancePeriodId: "free-period",
+      admittedAllowancePeriodId: AllowancePeriodId.make("adventurer-period"),
+      newFreeAllowancePeriodId: AllowancePeriodId.make("free-period"),
     });
     expect(result).toEqual({
       admittedWorkAllowancePeriodId: "adventurer-period",

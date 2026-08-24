@@ -23,22 +23,20 @@ export const RetainedDocumentInput = Schema.Struct({ contentId: ContentId });
 export type RetainedDocumentInput = typeof RetainedDocumentInput.Type;
 
 /** Project one registered Action into its definition-owned immutable presentation. */
-export const presentOsfoAction = (
+export const presentOsfoAction = Effect.fn("ActionPresentation.present")(function* (
   pending: PendingThinkAction,
-): Effect.Effect<ActionPresentation, ActionPresentationUnavailable> => {
+) {
   if (pending.descriptor.action === "osfoClearCoreMemory") {
-    return presentCoreMemoryClearAction(pending);
+    return yield* presentCoreMemoryClearAction(pending);
   }
   if (pending.descriptor.action === documentDeleteActionName) {
-    return presentDocumentDeleteAction(pending);
+    return yield* presentDocumentDeleteAction(pending);
   }
-  return Effect.fail(
-    new ActionPresentationUnavailable({
-      action: pending.descriptor.action,
-      message: "The Action has no safe presentation projection",
-    }),
-  );
-};
+  return yield* new ActionPresentationUnavailable({
+    action: pending.descriptor.action,
+    message: "The Action has no safe presentation projection",
+  });
+});
 
 const encodeActionPresentation = Schema.encodeSync(ActionPresentation);
 
@@ -46,8 +44,8 @@ const encodeActionPresentation = Schema.encodeSync(ActionPresentation);
 export const makeActionPresentationPersistence = (
   storage: DurableObjectStorage,
 ): ActionPresentationPersistence => ({
-  retain: (candidate) =>
-    Effect.tryPromise({
+  retain: Effect.fn("ActionPresentation.retain")(function* (candidate) {
+    return yield* Effect.tryPromise({
       try: () =>
         // oxlint-disable-next-line effecttsgo/async-function -- Durable Object transactions own their Promise callback boundary.
         storage.transaction(async (transaction) => {
@@ -66,7 +64,8 @@ export const makeActionPresentationPersistence = (
           ? cause
           : actionPresentationPersistenceUnavailable("decode", cause),
       ),
-    ),
+    );
+  }),
 });
 
 /** Canonical identity of the exact structured presentation approved by the User. */
@@ -93,56 +92,58 @@ export const hasExactActionInput = (
   );
 };
 
-const presentCoreMemoryClearAction = (
-  pending: PendingThinkAction,
-): Effect.Effect<ActionPresentation, ActionPresentationUnavailable> =>
-  Schema.decodeUnknownEffect(ClearCoreMemoryInput)(pending.descriptor.input).pipe(
-    Effect.mapError(
-      () =>
-        new ActionPresentationUnavailable({
-          action: pending.descriptor.action,
-          message: "The Core Memory clear input cannot be projected safely",
-        }),
-    ),
-    Effect.map((input) => {
-      const label = coreMemoryLabelFor(input.block);
-      return ActionPresentation.make({
-        actionDefinitionVersion: "osfo-core-memory-clear-v1",
-        actionId: ActionId.make(pending.descriptor.toolCallId),
-        consequences: [`Permanently clear the ${label} block.`],
-        description: `Clear the ${label} block.`,
-        fields: [{ label: "Block", name: "block", value: label }],
-        operation: "memory.clear",
-        presentationId: ActionPresentationId.make(pending.executionId),
-        title: `Clear ${label}`,
-      });
-    }),
-  );
+const presentCoreMemoryClearAction = Effect.fn("ActionPresentation.presentCoreMemoryClear")(
+  function* (pending: PendingThinkAction) {
+    const input = yield* Schema.decodeUnknownEffect(ClearCoreMemoryInput)(
+      pending.descriptor.input,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The Core Memory clear input cannot be projected safely",
+          }),
+      ),
+    );
+    const label = coreMemoryLabelFor(input.block);
+    return ActionPresentation.make({
+      actionDefinitionVersion: "osfo-core-memory-clear-v1",
+      actionId: ActionId.make(pending.descriptor.toolCallId),
+      consequences: [`Permanently clear the ${label} block.`],
+      description: `Clear the ${label} block.`,
+      fields: [{ label: "Block", name: "block", value: label }],
+      operation: "memory.clear",
+      presentationId: ActionPresentationId.make(pending.executionId),
+      title: `Clear ${label}`,
+    });
+  },
+);
 
-const presentDocumentDeleteAction = (
-  pending: PendingThinkAction,
-): Effect.Effect<ActionPresentation, ActionPresentationUnavailable> =>
-  Schema.decodeUnknownEffect(RetainedDocumentInput)(pending.descriptor.input).pipe(
-    Effect.mapError(
-      () =>
-        new ActionPresentationUnavailable({
-          action: pending.descriptor.action,
-          message: "The retained-document deletion input cannot be projected safely",
-        }),
-    ),
-    Effect.map((input) =>
-      ActionPresentation.make({
-        actionDefinitionVersion: "osfo-delete-generated-document-v1",
-        actionId: ActionId.make(pending.descriptor.toolCallId),
-        consequences: ["Permanently delete the retained generated document."],
-        description: "Delete the exact retained document shown here.",
-        fields: [{ label: "Content", name: "contentId", value: input.contentId }],
-        operation: "file.delete",
-        presentationId: ActionPresentationId.make(pending.executionId),
-        title: "Delete generated document",
-      }),
-    ),
-  );
+const presentDocumentDeleteAction = Effect.fn("ActionPresentation.presentDocumentDelete")(
+  function* (pending: PendingThinkAction) {
+    const input = yield* Schema.decodeUnknownEffect(RetainedDocumentInput)(
+      pending.descriptor.input,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The retained-document deletion input cannot be projected safely",
+          }),
+      ),
+    );
+    return ActionPresentation.make({
+      actionDefinitionVersion: "osfo-delete-generated-document-v1",
+      actionId: ActionId.make(pending.descriptor.toolCallId),
+      consequences: ["Permanently delete the retained generated document."],
+      description: "Delete the exact retained document shown here.",
+      fields: [{ label: "Content", name: "contentId", value: input.contentId }],
+      operation: "file.delete",
+      presentationId: ActionPresentationId.make(pending.executionId),
+      title: "Delete generated document",
+    });
+  },
+);
 
 const actionPresentationStorageKey = (presentationId: ActionPresentationId) =>
   `osfo:action-presentation:${presentationId}`;

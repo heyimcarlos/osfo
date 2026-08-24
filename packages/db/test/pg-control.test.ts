@@ -84,7 +84,13 @@ describe("PostgreSQL test database control", () => {
                 ) values (
                   'clone-period', 'clone-user', 'clone-subscription',
                   'free', 'shared-usage-v1', '2026-08-01T00:00:00Z', '2026-09-01T00:00:00Z'
-                );
+                )
+              `),
+            );
+
+            const malformedEvent = yield* Effect.tryPromise({
+              try: () =>
+                client.unsafe(`
                 insert into usage_events (
                   allowance_period_id, capability_catalog_version, facts_json,
                   model_access_policy_version, occurred_at, outcome, plan_usage_micros,
@@ -92,6 +98,34 @@ describe("PostgreSQL test database control", () => {
                   usage_policy_version, user_id
                 ) values (
                   'clone-period', 'governed-capabilities-v1', '{}',
+                  'managed-routing-v1', now(), 'completed', 1, 1,
+                  'malformed-root', 'malformed-source', 'testOperation',
+                  'shared-usage-v1', 'clone-user'
+                )
+                `),
+              catch: (cause) => new PostgreSqlConstraintRejected({ cause }),
+            }).pipe(Effect.exit);
+
+            yield* Effect.promise(() =>
+              client.unsafe(`
+                insert into usage_events (
+                  allowance_period_id, capability_catalog_version, facts_json,
+                  model_access_policy_version, occurred_at, outcome, plan_usage_micros,
+                  rated_cost_usd_micros, root_operation_id, source_id, source_type,
+                  usage_policy_version, user_id
+                ) values (
+                  'clone-period', 'governed-capabilities-v1', '{
+                    "allowancePeriodId":"clone-period",
+                    "capabilityCatalogVersion":"governed-capabilities-v1",
+                    "evidenceReferences":[],
+                    "manifestVersion":null,
+                    "modelAccessPolicyVersion":"managed-routing-v1",
+                    "occurredAt":"2026-08-24T00:00:00.000Z",
+                    "outcome":{"_tag":"Completed","charge":{}},
+                    "rootOperationId":"clone-root",
+                    "source":{"sourceId":"clone-source","sourceType":"testOperation"},
+                    "usagePolicyVersion":"shared-usage-v1"
+                  }',
                   'managed-routing-v1', now(), 'completed', 1, 1,
                   'clone-root', 'clone-source', 'testOperation',
                   'shared-usage-v1', 'clone-user'
@@ -116,6 +150,7 @@ describe("PostgreSQL test database control", () => {
 
             expect(identity?.name).toBe(firstCloneName);
             expect(latestMigrationTable?.name).toBe("channel_links");
+            expect(Exit.isFailure(malformedEvent)).toBe(true);
             expect(Exit.isFailure(malformedComponent)).toBe(true);
           }),
         );

@@ -21,6 +21,19 @@ const CostEvidence = Schema.NullOr(Schema.BigInt.check(Schema.isGreaterThanOrEqu
 const CountEvidence = Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0)));
 const evidenceReference = Schema.String.check(Schema.isMinLength(1));
 
+/** Hidden positive all-in Company Cost ceiling expressed in integer USD micros. */
+export const CompanyCostBackstopUsdMicros = Schema.BigInt.check(
+  Schema.isGreaterThanBigInt(0n),
+).pipe(Schema.brand("CompanyCostBackstopUsdMicros"));
+
+/** Source-controlled hidden period backstops. These are never User entitlements. */
+export const companyCostBackstops = Schema.decodeSync(
+  Schema.Struct({
+    adventurer: CompanyCostBackstopUsdMicros,
+    free: CompanyCostBackstopUsdMicros,
+  }),
+)({ adventurer: 12_000_000n, free: 5_000_000n });
+
 /** Complete measured evidence required to activate shared Plan Usage. */
 export const EconomicsEvidence = Schema.Struct({
   adventurerIncludedUsageUsdMicros: CostEvidence,
@@ -124,10 +137,11 @@ export const evaluateEconomics = (evidence: EconomicsEvidence, now: Date): Econo
     values.paymentCostUsdMicros +
     values.supportCostUsdMicros +
     values.gmSummonExpectedCostUsdMicros;
-  const freeStatus = freeAllIn <= 5_000_000n ? "PASS" : "FAIL";
+  const freeStatus = freeAllIn <= companyCostBackstops.free ? "PASS" : "FAIL";
   const adventurerStatus =
+    adventurerAllIn <= companyCostBackstops.adventurer &&
     (values.adventurerRevenueUsdMicrosAtConservativeFx - adventurerAllIn) * 2n >=
-    values.adventurerRevenueUsdMicrosAtConservativeFx
+      values.adventurerRevenueUsdMicrosAtConservativeFx
       ? "PASS"
       : "FAIL";
   return {
