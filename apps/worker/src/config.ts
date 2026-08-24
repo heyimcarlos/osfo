@@ -122,6 +122,7 @@ export interface StripeConfig {
 export interface SupermemoryConfig {
   /** API origin override for emulated or proxied Supermemory deployments. */
   readonly apiBaseURL?: string | undefined;
+  /** Admin-role key required to upsert an empty User container before first ingestion. */
   readonly apiKey: Redacted.Redacted;
 }
 

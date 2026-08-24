@@ -437,14 +437,20 @@ _Avoid_: Session transcript, Core Memory, product database
 
 **MemoryProvider**:
 The replaceable external capability that maintains and recalls the Knowledge
-Base from committed conversation updates. Provider failure never blocks normal
-conversation.
+Base from committed conversation updates. Recall labels provider profile,
+derived memory, and indexed source evidence. Provider failure never blocks
+normal conversation.
 _Avoid_: Native Memory, model provider, canonical truth store
 
 **SupermemoryMemoryProvider**:
 The v1 MemoryProvider adapter. It maps `UserId` to the provider permission scope
 and `SessionId` to the provider conversation identity without exposing provider
-SDK types to Osfo callers.
+SDK types to Osfo callers. It provisions versioned organization extraction
+guidance and upserts versioned User guidance before the first structured
+conversation ingest. Every ingest uses one stable User tag. It retains recent
+turn evidence after processing finishes until hybrid search returns the expected
+source. Normal recall combines profile evidence with hybrid memory and
+source-chunk search.
 _Avoid_: MemoryProvider interface, canonical memory store, generic document API
 
 **Forget Knowledge**:

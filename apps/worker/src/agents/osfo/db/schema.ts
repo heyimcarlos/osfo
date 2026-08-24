@@ -131,6 +131,32 @@ export const memoryProviderOutbox = sqliteTable(
   ],
 );
 
+/** Agent-local repair status for versioned provider extraction guidance. */
+export const memoryProviderConfiguration = sqliteTable(
+  "osfo_memory_provider_configuration",
+  {
+    configured_at: timestamp(),
+    scope: text({ enum: ["organization", "user"] }).primaryKey(),
+    status: text({ enum: ["pending", "configured"] }).notNull(),
+    updated_at: timestamp().notNull(),
+    version: text().notNull(),
+  },
+  (table) => [
+    check(
+      "osfo_memory_provider_configuration_scope",
+      sql`${table.scope} IN ('organization', 'user')`,
+    ),
+    check(
+      "osfo_memory_provider_configuration_status",
+      sql`${table.status} IN ('pending', 'configured')`,
+    ),
+    check(
+      "osfo_memory_provider_configuration_completion",
+      sql`(${table.status} = 'configured' AND ${table.configured_at} IS NOT NULL) OR (${table.status} = 'pending' AND ${table.configured_at} IS NULL)`,
+    ),
+  ],
+);
+
 /** Stable Agent-local conversation routes. */
 export const conversationRoutes = sqliteTable(
   "osfo_conversation_routes",
