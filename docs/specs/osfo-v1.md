@@ -512,25 +512,27 @@ storage. SupermemoryMemoryProvider is the v1 adapter. It maps `containerTag` to
 User-scoped across Sessions and routes. If one User owns several Agents later,
 they share this scope until a separate product decision changes it. After each
 completed turn, Think commits the User and final assistant messages before an
-Agent-local ordered outbox records a delta-only provider append. Outbox records
-are synchronization machinery, not memory. The adapter sends only newly
-committed messages for that Session. It never mixes full-transcript and delta
-updates, creates fixed time windows, or runs another LLM before ingestion.
+Agent-local ordered outbox records a full conversation snapshot. Outbox records
+are synchronization machinery, not memory. The adapter sends the complete
+sanitized conversation as structured messages to Supermemory's turn-aware
+conversation endpoint and lets the provider detect net-new content. It never
+mixes document deltas with conversation snapshots, creates fixed time windows,
+or runs another LLM before ingestion.
 Human-readable tool outcomes and supported human-visible source details can be
 included. Hidden reasoning, raw tool traces, credentials, secrets, aborted
 output, and infrastructure records are excluded.
 
 The caller-shaped interface has five operations: recall User-scoped context,
-append one ordered Session delta, forget derived knowledge, delete one Session
-conversation, and delete all knowledge for one User. Application-owned request,
+save one ordered Session conversation snapshot, forget derived knowledge, delete
+one Session conversation, and delete all knowledge for one User. Application-owned request,
 result, and typed failure values isolate callers from Supermemory SDK types.
 Provider selection is an internal composition decision, not a User setting.
 
-Provider append failure never rolls back a committed Think turn. Failed appends
-retry in Session order with stable append identities. Provider deletion
+Provider save failure never rolls back a committed Think turn. Failed saves
+retry in Session order with stable snapshot identities. Provider deletion
 obligations also retry, and deletion remains pending until the provider confirms
 it. Observability records provider latency, recall failures, retry count, and the
-oldest pending append age. Osfo tells the User about degraded memory only when it
+oldest pending save age. Osfo tells the User about degraded memory only when it
 affects the requested task.
 
 Compaction thresholds and safety headroom are configurable per model. The 50 to
@@ -547,7 +549,7 @@ under storage pressure. Explicit `/new` creates a replacement current Session
 and deletes nothing. Forget Knowledge updates Core Memory and asks
 MemoryProvider to forget matching derived memory while preserving the original
 Session transcript. Delete Session removes local messages, branches,
-compactions, and search entries, settles related pending append work, and
+compactions, and search entries, settles related pending conversation work, and
 permanently deletes the provider conversation. If it is current, Osfo creates
 its replacement first. Account deletion fences the Agent, permanently deletes
 all provider memory under the UserId scope, and deletes Agent SQLite as part of
@@ -817,13 +819,17 @@ The committed-turn projection is idempotent:
 stable Think committed-turn reference
   -> one Agent SQLite transaction
      + Delivery obligation and stored parts
-     + ordered MemoryProvider append record
+     + ordered MemoryProvider conversation snapshot record
      + required operational records
 ```
 
-An Agent activation reconciles committed Think turns that lack an Osfo projection.
-Workflow outcomes and milestones use stable RPC to the named Agent. The Agent
-records correlation and creates at most one proactive Submission.
+An Agent activation reconciles terminal-marked committed Think turns that lack
+an Osfo projection. Think 0.15.1 persists the assistant before invoking the
+terminal hook, so a crash in that narrow interval cannot be recovered without
+confusing completed and aborted output. `DESIRES.md` records the upstream
+capability needed to close that gap. Workflow outcomes and milestones use stable
+RPC to the named Agent. The Agent records correlation and creates at most one
+proactive Submission.
 
 PostgreSQL migrations are forward-only. Alchemy applies them before updated traffic.
 Failure aborts deployment. Agent SQLite carries the complete immutable Osfo
@@ -1031,7 +1037,7 @@ Implementation evidence must include at least:
 - the full entitlement, soft-cap allowance consumption, Approval, downgrade,
   reminder, Workflow, and authority-loss matrix;
 - Core Memory inference and correction, Session replacement, Session Recall,
-  forgetting, Session and account deletion, ordered delta capture,
+  forgetting, Session and account deletion, ordered conversation capture,
   MemoryProvider timeout, outage, and retry;
 - PostgreSQL and Agent SQLite migration chains, interruption, old Agent activation,
   Think-table isolation, and Worker-to-Agent recovery;

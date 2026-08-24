@@ -2,7 +2,8 @@ import { Context, Effect, Layer, ManagedRuntime, Random, Schema } from "effect";
 import { BrowserCrypto } from "@effect/platform-browser";
 
 import { Db } from "./db";
-import { OsfoStage } from "./config";
+import { OsfoStage, type SupermemoryConfig } from "./config";
+import { SupermemoryMemoryProvider } from "./integrations/supermemory/memory-provider";
 
 /** Schema for a Cloudflare execution unit that owns an Effect runtime. */
 export const ExecutionUnitKind = Schema.Literals(["worker", "osfo-agent", "workflow"]);
@@ -62,12 +63,18 @@ export const probeExecutionUnit: Effect.Effect<RuntimeProbe, never, ExecutionUni
 export const makeWorkerRuntime = (stage: OsfoStage) => makeRuntime("worker", "request", stage);
 
 /** Create an activation-scoped Osfo Agent runtime. */
-export const makeOsfoAgentRuntime = (identity: string, stage: OsfoStage, database: Db.Options) =>
+export const makeOsfoAgentRuntime = (
+  identity: string,
+  stage: OsfoStage,
+  database: Db.Options,
+  supermemory: SupermemoryConfig,
+) =>
   ManagedRuntime.make(
     Layer.mergeAll(
       makeExecutionUnitLayer("osfo-agent", identity, stage),
       Db.layer(database),
       BrowserCrypto.layer,
+      SupermemoryMemoryProvider.layerFromConfig(supermemory),
     ),
   );
 

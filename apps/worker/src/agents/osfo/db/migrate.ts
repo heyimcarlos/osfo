@@ -6,6 +6,8 @@ import acceptanceReceiptMigrationSql from "./migrations/0002_absurd_unus.sql";
 import sessionRecallMigrationSql from "./migrations/0003_typical_sir_ram.sql";
 import fileCapabilityMigrationSql from "./migrations/0004_sudden_invaders.sql";
 import transportReceiptRemovalMigrationSql from "./migrations/0005_tidy_james_howlett.sql";
+import memoryProviderOutboxMigrationSql from "./migrations/0006_perpetual_skaar.sql";
+import structuredConversationIngestionMigrationSql from "./migrations/0007_red_fantastic_four.sql";
 import {
   AgentMigrationDefinitionMismatch,
   AgentMigrationDigestMismatch,
@@ -52,6 +54,16 @@ export const agentMigrations: ReadonlyArray<AgentMigration> = [
     digest: "sha256:db33de4b3d6accce7384198dd43143dcd7ccc6d179d2f5fd86cfec5a885a5ec0",
     sql: transportReceiptRemovalMigrationSql,
     version: 6,
+  },
+  {
+    digest: "sha256:e73b45242dc024fa5e2b7b36d1eb7dd7dddccd413f99ea33695be8ed548b1b9f",
+    sql: memoryProviderOutboxMigrationSql,
+    version: 7,
+  },
+  {
+    digest: "sha256:8ace81730e97abe4559c6c4f2af78a77ca05fe68cc24b219363fe0cea85abbcc",
+    sql: structuredConversationIngestionMigrationSql,
+    version: 8,
   },
 ];
 

@@ -55,3 +55,19 @@ This is a future product desire, not a current commitment. Before it becomes
 planned work, investigate site generation and editing, preview and publishing,
 custom domains, authentication, storage, deployment isolation, abuse controls,
 usage limits, observability, rollback, and ownership of generated content.
+
+# Durable Think terminal evidence for post-commit consumers
+
+Date captured: 2026-08-23
+Horizon: upstream Think capability
+
+Think should durably retain whether each persisted assistant message completed,
+errored, or was aborted, or replay a post-commit hook until its consumer
+acknowledges it. Think 0.15.1 persists the assistant message before exposing its
+terminal status to `onChatResponse`, then does not retain a completed-versus-
+aborted distinction that Osfo can recover after a Worker crash.
+
+This would let durable consumers close the narrow crash window between Think's
+message commit and their own local outbox transaction without treating aborted
+output as completed. The capability should preserve Think history ownership and
+avoid requiring a cross-database transaction.
