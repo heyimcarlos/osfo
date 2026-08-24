@@ -3,16 +3,16 @@ import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { withTestRouter } from "../testing/router";
-import { BillingScreen } from "./billing-screen";
+import { SettingsBillingContent } from "./settings-billing-page";
 
 /* oxlint-disable effecttsgo/global-date -- These static presentation tests use fixed Date fixtures. */
 
 const renderBilling = (children: ReactNode) => renderToStaticMarkup(withTestRouter(children));
 
-describe("BillingScreen", () => {
+describe("SettingsBillingContent", () => {
   it("shows current Plan, scheduled cancellation, period, and safe actions", () => {
     const html = renderBilling(
-      <BillingScreen
+      <SettingsBillingContent
         onCheckout={() => undefined}
         onPortal={() => undefined}
         summary={{
@@ -50,7 +50,7 @@ describe("BillingScreen", () => {
 
   it("offers Stripe-hosted Checkout on Free without technical payment details", () => {
     const html = renderBilling(
-      <BillingScreen
+      <SettingsBillingContent
         onCheckout={() => undefined}
         onPortal={() => undefined}
         summary={{
@@ -74,7 +74,7 @@ describe("BillingScreen", () => {
 
   it("uses safe payment-attention language after a failed Checkout", () => {
     const html = renderBilling(
-      <BillingScreen
+      <SettingsBillingContent
         onCheckout={() => undefined}
         onPortal={() => undefined}
         summary={{
@@ -93,7 +93,7 @@ describe("BillingScreen", () => {
 
   it("shows less than one percent without leaking accounting internals", () => {
     const html = renderBilling(
-      <BillingScreen
+      <SettingsBillingContent
         onCheckout={() => undefined}
         onPortal={() => undefined}
         summary={{

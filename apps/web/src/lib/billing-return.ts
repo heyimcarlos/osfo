@@ -14,8 +14,7 @@ export type BillingReturnSearch =
   | { readonly _tag: "Ordinary" }
   | { readonly _tag: "Portal" };
 
-/** Raw browser query accepted by the billing settings route. */
-export type BillingReturnQueryInput = {
+type BillingReturnQueryInput = {
   readonly session_id?: unknown;
   readonly source?: unknown;
 };
@@ -39,20 +38,4 @@ export const parseBillingReturnSearchString = (search: string): BillingReturnSea
     session_id: query.get("session_id") ?? undefined,
     source: query.get("source") ?? undefined,
   });
-};
-
-/** Preserve a validated legacy billing return while redirecting into Settings. */
-export const billingReturnQuery = (state: BillingReturnSearch): BillingReturnQueryInput => {
-  switch (state._tag) {
-    case "Checkout":
-      return { session_id: state.checkoutSessionId, source: "checkout" };
-    case "Portal":
-      return { source: "portal" };
-    case "Invalid":
-      return { source: "invalid" };
-    case "Ordinary":
-      return {};
-  }
-  state satisfies never;
-  return {};
 };

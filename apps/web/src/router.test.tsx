@@ -6,11 +6,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { DateTime } from "effect";
 
 import { AuthStateProvider, type AuthState } from "./auth-state";
-import {
-  billingReturnQuery,
-  parseBillingReturnSearch,
-  parseBillingReturnSearchString,
-} from "./lib/billing-return";
+import { parseBillingReturnSearch, parseBillingReturnSearchString } from "./lib/billing-return";
 import { createAppRouter } from "./router";
 
 /* oxlint-disable effecttsgo/async-function -- Router navigation and Testing Library own browser Promises. */
@@ -94,30 +90,6 @@ describe("Osfo route tree", () => {
     });
   });
 
-  it.each([
-    ["/billing", "/settings/billing"],
-    [
-      "/billing/return?source=checkout&session_id=checkout-session",
-      "/settings/billing?session_id=checkout-session&source=checkout",
-    ],
-  ])("redirects the retired billing URL %s into settings", async (legacyPath, expectedPath) => {
-    globalThis.fetch = async (input) => {
-      const url = new Request(input).url;
-      if (url.endsWith("/v1/billing/reconcile")) return Response.json({ result: "unchanged" });
-      return Response.json({
-        currentPlan: "free",
-        paymentState: "free",
-        pendingPlan: null,
-        period: null,
-        usage: null,
-      });
-    };
-    const { router } = renderAt(legacyPath, signedIn);
-
-    await waitFor(() => expect(router.state.location.href).toBe(expectedPath));
-    expect(screen.getByRole("heading", { name: "Billing" })).toBeTruthy();
-  });
-
   it("rejects illegal billing return states", () => {
     expect(parseBillingReturnSearch({ source: "checkout" })).toEqual({
       _tag: "Invalid",
@@ -125,12 +97,6 @@ describe("Osfo route tree", () => {
     expect(parseBillingReturnSearch({ session_id: "orphan" })).toEqual({
       _tag: "Invalid",
     });
-    expect(billingReturnQuery({ _tag: "Checkout", checkoutSessionId: "checkout-session" })).toEqual(
-      {
-        session_id: "checkout-session",
-        source: "checkout",
-      },
-    );
     expect(parseBillingReturnSearchString("?source=portal")).toEqual({ _tag: "Portal" });
   });
 
