@@ -13,7 +13,6 @@ import type {
 /* oxlint-disable eslint/no-underscore-dangle -- Effect results and provider payloads use the canonical _tag discriminator. */
 
 const retryDelaySeconds = 30;
-const rejectedRetryDelaySeconds = 60 * 60;
 const claimLeaseMilliseconds = 60_000;
 const maximumClaimsPerRun = 100;
 
@@ -50,87 +49,152 @@ const processClaim = Effect.fn("MemoryProviderOutbox.processClaim")(function* (
   store: MemoryProviderOutboxStore,
   claim: ClaimedMemoryProviderWork,
 ) {
-  let usage = claim.usage;
-  if (!claim.providerApplied) {
-    const providerResult = yield* executeProviderClaim(claim).pipe(Effect.result);
-    if (Result.isFailure(providerResult)) {
-      const delaySeconds = Predicate.isTagged(providerResult.failure, "MemoryProviderRejected")
-        ? rejectedRetryDelaySeconds
-        : retryDelaySeconds;
-      return yield* retryClaim(store, claim, providerResult.failure.message, delaySeconds);
-    }
-    usage = providerResult.success;
-    if (usage === null) {
-      const completedAt = yield* DateTime.now;
-      yield* store.complete(claim, toDbTimestamp(completedAt));
-      return undefined;
-    }
-    const appliedAt = yield* DateTime.now;
-    const applied = yield* store.markProviderApplied(claim, usage, toDbTimestamp(appliedAt));
-    if (!applied) return undefined;
+  if (claim.payload._tag === "SaveConversation") {
+    return yield* processConversationClaim(store, claim);
   }
 
-  const allowancePeriodId = claim.allowancePeriodId;
-  if (usage === null || allowancePeriodId === null) {
-    return yield* retryClaim(
-      store,
-      claim,
-      "MemoryProvider usage attribution is invalid",
-      rejectedRetryDelaySeconds,
-    );
-  }
-
-  const recorded = yield* Effect.scoped(
-    Db.database.pipe(
-      Effect.flatMap((database) => {
-        const allowances = Allowances.make({
-          billing: BillingDb.make(database),
-          catalog: retainedCatalog,
-          now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-        });
-        return allowances.record(
-          allowancePeriodId,
-          { sourceId: claim.outboxId, sourceType: "MemoryProviderOutbox" },
-          usage.items,
-        );
-      }),
-    ),
-  ).pipe(Effect.result);
-  if (Result.isFailure(recorded)) {
-    return yield* retryClaim(
-      store,
-      claim,
-      "MemoryProvider usage recording is unavailable",
-      retryDelaySeconds,
-    );
+  const providerResult = yield* executeDeletionClaim(claim).pipe(Effect.result);
+  if (Result.isFailure(providerResult)) {
+    return yield* settleProviderFailure(store, claim, providerResult.failure, false);
   }
   const completedAt = yield* DateTime.now;
   yield* store.complete(claim, toDbTimestamp(completedAt));
   return undefined;
 });
 
-const executeProviderClaim = Effect.fn("MemoryProviderOutbox.executeProviderClaim")(function* (
+const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversationClaim")(
+  function* (store: MemoryProviderOutboxStore, claim: ClaimedMemoryProviderWork) {
+    const provider = yield* MemoryProvider.Service;
+    const projection = claim.payload._tag === "SaveConversation" ? claim.payload.projection : null;
+    if (projection === null) {
+      return yield* Effect.die(new Error("Conversation processing received deletion work"));
+    }
+
+    let acceptance = claim.providerAcceptance;
+    let usage = claim.usage;
+    if (acceptance === null) {
+      const saved = yield* provider
+        .saveConversation({
+          conversation: projection.conversation,
+          sessionId: projection.sessionId,
+          userId: projection.userId,
+        })
+        .pipe(Effect.result);
+      if (Result.isFailure(saved)) {
+        if (Predicate.isTagged(saved.failure, "MemoryProviderAcceptanceStatusInvalid")) {
+          const acceptedAt = yield* DateTime.now;
+          yield* store.failProviderAcceptance(claim, saved.failure, toDbTimestamp(acceptedAt));
+          return undefined;
+        }
+        return yield* settleProviderFailure(store, claim, saved.failure, false);
+      }
+      const acceptedAt = yield* DateTime.now;
+      const accepted = yield* store.markProviderAccepted(
+        claim,
+        saved.success,
+        toDbTimestamp(acceptedAt),
+      );
+      if (!accepted) return undefined;
+      acceptance = {
+        documentId: saved.success.documentId,
+        processingStatus: saved.success.processingStatus,
+      };
+      usage = saved.success.usage;
+    }
+
+    if (acceptance.processingStatus !== "done") {
+      if (claim.providerAcceptance === null) {
+        return yield* awaitProvider(store, claim, acceptance.processingStatus);
+      }
+      const status = yield* provider
+        .getConversationStatus({ documentId: acceptance.documentId })
+        .pipe(Effect.result);
+      if (Result.isFailure(status)) {
+        return yield* settleProviderFailure(store, claim, status.failure, true);
+      }
+      if (status.success.processingStatus !== "done") {
+        return yield* awaitProvider(store, claim, status.success.processingStatus);
+      }
+      const updated = yield* store.markProviderStatus(claim, "done");
+      if (!updated) return undefined;
+    }
+
+    const allowancePeriodId = claim.allowancePeriodId;
+    if (usage === null || allowancePeriodId === null) {
+      return yield* store.fail(claim, "MemoryProvider usage attribution is invalid");
+    }
+
+    const recorded = yield* Effect.scoped(
+      Db.database.pipe(
+        Effect.flatMap((database) => {
+          const allowances = Allowances.make({
+            billing: BillingDb.make(database),
+            catalog: retainedCatalog,
+            now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
+          });
+          return allowances.record(
+            allowancePeriodId,
+            { sourceId: claim.outboxId, sourceType: "MemoryProviderOutbox" },
+            usage.items,
+          );
+        }),
+      ),
+    ).pipe(Effect.result);
+    if (Result.isFailure(recorded)) {
+      return yield* retryClaim(
+        store,
+        claim,
+        "MemoryProvider usage recording is unavailable",
+        retryDelaySeconds,
+      );
+    }
+    const completedAt = yield* DateTime.now;
+    yield* store.complete(claim, toDbTimestamp(completedAt));
+    return undefined;
+  },
+);
+
+const executeDeletionClaim = Effect.fn("MemoryProviderOutbox.executeDeletionClaim")(function* (
   claim: ClaimedMemoryProviderWork,
 ) {
   const provider = yield* MemoryProvider.Service;
   const payload = claim.payload;
   switch (payload._tag) {
     case "SaveConversation":
-      return yield* provider
-        .saveConversation({
-          conversation: payload.projection.conversation,
-          sessionId: payload.projection.sessionId,
-          userId: payload.projection.userId,
-        })
-        .pipe(Effect.map(({ usage }) => usage));
+      return yield* Effect.die(new Error("Deletion processing received conversation work"));
     case "DeleteSessionConversation":
-      return yield* provider.deleteSessionConversation(payload).pipe(Effect.as(null));
+      return yield* provider.deleteSessionConversation(payload);
     case "DeleteUserKnowledge":
-      return yield* provider.deleteUserKnowledge(payload).pipe(Effect.as(null));
+      return yield* provider.deleteUserKnowledge(payload);
     case "ForgetKnowledge":
-      return yield* provider.forgetKnowledge(payload).pipe(Effect.as(null));
+      return yield* provider.forgetKnowledge(payload);
   }
   return yield* Effect.die(new Error("Unsupported MemoryProvider outbox operation"));
+});
+
+const settleProviderFailure = Effect.fn("MemoryProviderOutbox.settleProviderFailure")(function* (
+  store: MemoryProviderOutboxStore,
+  claim: ClaimedMemoryProviderWork,
+  failure: MemoryProvider.MemoryProviderRejected | MemoryProvider.MemoryProviderUnavailable,
+  accepted: boolean,
+) {
+  if (Predicate.isTagged(failure, "MemoryProviderRejected")) {
+    return yield* store.fail(claim, failure.message, accepted ? "failed" : undefined);
+  }
+  return yield* retryClaim(store, claim, failure.message, retryDelaySeconds);
+});
+
+const awaitProvider = Effect.fn("MemoryProviderOutbox.awaitProvider")(function* (
+  store: MemoryProviderOutboxStore,
+  claim: ClaimedMemoryProviderWork,
+  status: MemoryProvider.ConversationProcessingStatus,
+) {
+  const now = yield* DateTime.now;
+  yield* store.awaitProvider(
+    claim,
+    status,
+    toDbTimestamp(DateTime.add(now, { seconds: retryDelaySeconds })),
+  );
 });
 
 const retryClaim = Effect.fn("MemoryProviderOutbox.retryClaim")(function* (

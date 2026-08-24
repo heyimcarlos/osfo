@@ -57,6 +57,13 @@
       "when": 1787493113148,
       "tag": "0007_red_fantastic_four",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1787538784740,
+      "tag": "0008_little_adam_warlock",
+      "breakpoints": true
     }
   ]
 }

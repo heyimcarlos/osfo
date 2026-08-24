@@ -99,9 +99,13 @@ export const memoryProviderOutbox = sqliteTable(
     ordering_key: text().notNull(),
     outbox_id: text().primaryKey(),
     payload_json: text().notNull(),
-    provider_applied_at: timestamp(),
+    provider_accepted_at: timestamp(),
+    provider_document_id: text(),
+    provider_status: text({
+      enum: ["processing", "done", "failed"],
+    }),
     sequence: integer().notNull().unique(),
-    status: text({ enum: ["pending", "claimed", "completed"] }).notNull(),
+    status: text({ enum: ["pending", "claimed", "completed", "failed"] }).notNull(),
     usage_json: text(),
   },
   (table) => [
@@ -111,7 +115,11 @@ export const memoryProviderOutbox = sqliteTable(
     ),
     check(
       "osfo_memory_provider_outbox_status",
-      sql`${table.status} IN ('pending', 'claimed', 'completed')`,
+      sql`${table.status} IN ('pending', 'claimed', 'completed', 'failed')`,
+    ),
+    check(
+      "osfo_memory_provider_outbox_provider_status",
+      sql`${table.provider_status} IS NULL OR ${table.provider_status} IN ('processing', 'done', 'failed')`,
     ),
     check("osfo_memory_provider_outbox_attempt_count", sql`${table.attempt_count} >= 0`),
     index("osfo_memory_provider_outbox_reconciliation").on(

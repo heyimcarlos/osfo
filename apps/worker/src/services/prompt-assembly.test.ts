@@ -390,6 +390,7 @@ const memoryLayerWithRecall = (recall: MemoryProvider.Interface["recall"]) =>
       deleteSessionConversation: () => Effect.die(new Error("unexpected Session delete")),
       deleteUserKnowledge: () => Effect.die(new Error("unexpected User delete")),
       forgetKnowledge: () => Effect.die(new Error("unexpected forget")),
+      getConversationStatus: () => Effect.die(new Error("unexpected conversation status read")),
       recall,
       saveConversation: () => Effect.die(new Error("unexpected conversation save")),
     }),

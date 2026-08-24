@@ -15,14 +15,28 @@ import { MemoryProvider } from "../../services/memory-provider";
 
 const NonEmptyString = Schema.String.check(Schema.isMinLength(1));
 const SaveConversationRequest = Schema.Struct({
-  containerTags: Schema.NonEmptyArray(NonEmptyString),
+  containerTags: Schema.Tuple([NonEmptyString]),
   conversationId: NonEmptyString,
   messages: Schema.NonEmptyArray(MemoryProvider.ConversationMessage),
 });
+const SupermemoryDocumentStatus = Schema.Literals([
+  "unknown",
+  "queued",
+  "extracting",
+  "chunking",
+  "embedding",
+  "indexing",
+  "done",
+  "failed",
+]);
 const SaveConversationResponse = Schema.Struct({
   conversationId: NonEmptyString,
-  id: NonEmptyString,
-  status: NonEmptyString,
+  id: MemoryProvider.ProviderDocumentId,
+  status: Schema.optionalKey(Schema.Unknown),
+});
+const GetConversationStatusResponse = Schema.Struct({
+  id: MemoryProvider.ProviderDocumentId,
+  status: Schema.optionalKey(Schema.Unknown),
 });
 const ForgetResponse = Schema.Struct({
   forgotten: Schema.Literal(true),
@@ -188,24 +202,62 @@ const make = (options: Options) =>
             0,
           ),
       );
+      const usage = {
+        items: [
+          {
+            allowanceKind: "supermemoryIngestionTokens",
+            basis: "conservative",
+            quantity: ingestionTokens,
+          },
+          {
+            allowanceKind: "vendorUsdMicros",
+            basis: "conservative",
+            quantity: ingestionTokens * options.rateCard.ingestionTokenUsdMicros,
+          },
+        ],
+        rateCardVersion: options.rateCard.version,
+      } satisfies MemoryProvider.UsageEvidence;
+      const processingStatus = yield* decodeConversationProcessingStatus(
+        "saveConversation",
+        decoded.status,
+        () =>
+          new MemoryProvider.MemoryProviderAcceptanceStatusInvalid({
+            documentId: decoded.id,
+            message: "The MemoryProvider accepted the conversation with an invalid status",
+            operation: "saveConversation",
+            usage,
+          }),
+      );
       return {
-        usage: {
-          items: [
-            {
-              allowanceKind: "supermemoryIngestionTokens",
-              basis: "conservative",
-              quantity: ingestionTokens,
-            },
-            {
-              allowanceKind: "vendorUsdMicros",
-              basis: "conservative",
-              quantity: ingestionTokens * options.rateCard.ingestionTokenUsdMicros,
-            },
-          ],
-          rateCardVersion: options.rateCard.version,
-        },
+        documentId: decoded.id,
+        processingStatus,
+        usage,
       } satisfies MemoryProvider.SaveConversationResult;
     });
+
+    const getConversationStatus = Effect.fn("SupermemoryMemoryProvider.getConversationStatus")(
+      function* (input: MemoryProvider.GetConversationStatusInput) {
+        const response = yield* sdk.use("getConversationStatus", (client, signal) =>
+          client.documents.get(input.documentId, { signal }),
+        );
+        const decoded = yield* decodeResponse(
+          "getConversationStatus",
+          GetConversationStatusResponse,
+          response,
+        );
+        if (decoded.id !== input.documentId) {
+          return yield* providerUnavailable("getConversationStatus", "identityMismatch");
+        }
+        const processingStatus = yield* decodeConversationProcessingStatus(
+          "getConversationStatus",
+          decoded.status,
+          () => providerUnavailable("getConversationStatus", "responseDecoding"),
+        );
+        return {
+          processingStatus,
+        } satisfies MemoryProvider.GetConversationStatusResult;
+      },
+    );
 
     const forgetKnowledge = Effect.fn("SupermemoryMemoryProvider.forgetKnowledge")(function* (
       input: MemoryProvider.ForgetKnowledgeInput,
@@ -285,6 +337,7 @@ const make = (options: Options) =>
       deleteSessionConversation,
       deleteUserKnowledge,
       forgetKnowledge,
+      getConversationStatus,
       recall,
       saveConversation,
     });
@@ -322,6 +375,36 @@ const providerIdentity = (
           message: "A provider-safe MemoryProvider identity could not be derived",
           operation,
         }),
+    ),
+  );
+
+const providerRejected = (operation: MemoryProvider.MemoryProviderOperation) =>
+  new MemoryProvider.MemoryProviderRejected({
+    message: "The MemoryProvider rejected the operation",
+    operation,
+  });
+
+/**
+ * Supermemory's documented pipeline treats every state before `done` as processing and says
+ * `done` makes the document path ready for search. That is the qualified ordering-release
+ * boundary; later memory dreaming remains outside this ingestion barrier.
+ * https://supermemory.ai/docs/concepts/how-it-works#what-the-pipeline-does
+ */
+const decodeConversationProcessingStatus = <E>(
+  operation: MemoryProvider.MemoryProviderOperation,
+  // oxlint-disable-next-line osfo/no-unknown-parameters -- Status is isolated from an otherwise valid provider identity before it is decoded.
+  status: unknown,
+  invalid: () => E,
+): Effect.Effect<
+  MemoryProvider.ConversationProcessingStatus,
+  E | MemoryProvider.MemoryProviderRejected
+> =>
+  Schema.decodeUnknownEffect(SupermemoryDocumentStatus)(status).pipe(
+    Effect.mapError(invalid),
+    Effect.flatMap((decoded) =>
+      decoded === "failed"
+        ? Effect.fail(providerRejected(operation))
+        : Effect.succeed(decoded === "done" ? "done" : "processing"),
     ),
   );
 
