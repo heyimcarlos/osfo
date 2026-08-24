@@ -4,6 +4,7 @@ import {
   createRouter,
   lazyRouteComponent,
   Outlet,
+  redirect,
   type RouterHistory,
   useRouterState,
 } from "@tanstack/react-router";
@@ -12,6 +13,7 @@ import { AuthenticatedGate } from "./components/authenticated-gate";
 import { LoadingScreen } from "./components/loading-screen";
 import { NotFoundScreen } from "./components/not-found-screen";
 import { SettingsShell } from "./components/settings-shell";
+import { billingReturnQuery, parseBillingReturnSearchString } from "./lib/billing-return";
 import { useDocumentLanguage } from "./lib/document-language";
 import { parseLocaleSearch, parseRegistrationSearch } from "./lib/route-locale";
 
@@ -129,15 +131,20 @@ const settingsMarketplaceRoute = createRoute({
 const legacyBillingRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "billing",
-  component: lazyRouteComponent(() => import("./pages/legacy-billing-page"), "LegacyBillingPage"),
+  beforeLoad: () => {
+    throw redirect({ replace: true, search: {}, to: "/settings/billing" });
+  },
 });
 const legacyBillingReturnRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "billing/return",
-  component: lazyRouteComponent(
-    () => import("./pages/legacy-billing-page"),
-    "LegacyBillingReturnPage",
-  ),
+  beforeLoad: ({ location }) => {
+    throw redirect({
+      replace: true,
+      search: billingReturnQuery(parseBillingReturnSearchString(location.searchStr)),
+      to: "/settings/billing",
+    });
+  },
 });
 const routeTree = rootRoute.addChildren([
   homeRoute,

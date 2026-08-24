@@ -22,29 +22,30 @@ export interface ManagedActionAuthorizationDependencies<E> {
 /** Recheck one retained Approval against current authority at protected-effect time. */
 export const makeManagedActionAuthorization = <E>(
   dependencies: ManagedActionAuthorizationDependencies<E>,
-) => ({
-  recheck: (
+) => {
+  const recheck = Effect.fn("ManagedActionAuthorization.recheck")(function* (
     identity: ManagedTurnAuthorityIdentity,
     operation: AuthorizationOperation,
     presentation: ApprovalPresentation,
-  ) =>
-    Effect.gen(function* () {
-      const facts = yield* dependencies.inspectAuthorization(identity);
-      const { userId: _userId, ...originatingAuthority } = identity;
-      return Authorization.make(retainedCatalog).recheck(
-        AuthorizationContext.make({
-          allowance: { _tag: "Unavailable" },
-          approval: approvalFor(facts.user.userId, operation, presentation),
-          ...facts,
-          gmailConnection: null,
-          integrationConnections: [],
-          liveFacts: emptyLiveResourceFacts,
-          originatingAuthority,
-          requestVendorUsdMicros: 0n,
-        }),
-        operation,
-      );
-    }),
-});
+  ) {
+    const facts = yield* dependencies.inspectAuthorization(identity);
+    const { userId: _userId, ...originatingAuthority } = identity;
+    return Authorization.make(retainedCatalog).recheck(
+      AuthorizationContext.make({
+        allowance: { _tag: "Unavailable" },
+        approval: approvalFor(facts.user.userId, operation, presentation),
+        ...facts,
+        gmailConnection: null,
+        integrationConnections: [],
+        liveFacts: emptyLiveResourceFacts,
+        originatingAuthority,
+        requestVendorUsdMicros: 0n,
+      }),
+      operation,
+    );
+  });
+
+  return { recheck };
+};
 
 export * as ManagedActionAuthorization from "./managed-action-authorization";

@@ -12,7 +12,6 @@ import { createAppRouter } from "./router";
 /* oxlint-disable effecttsgo/async-function -- Router navigation and Testing Library own browser Promises. */
 
 const refreshFromAuthority = () => Promise.resolve();
-const originalFetch = globalThis.fetch;
 const signedOut: AuthState = { data: null, isPending: false, refreshFromAuthority };
 const pending: AuthState = { data: null, isPending: true, refreshFromAuthority };
 const signedIn: AuthState = {
@@ -40,7 +39,6 @@ const registrationIncomplete: AuthState = {
 
 afterEach(() => {
   cleanup();
-  globalThis.fetch = originalFetch;
 });
 
 const renderAt = (path: string, authState: AuthState = signedOut) => {
@@ -90,18 +88,6 @@ describe("Osfo route tree", () => {
     });
   });
 
-  it("does not rewrite an in-flight legacy billing return while authentication is pending", async () => {
-    const { router } = renderAt(
-      "/billing/return?source=checkout&session_id=checkout-session",
-      pending,
-    );
-
-    await waitFor(() => expect(screen.getByText("Loading Osfo...")).toBeTruthy());
-    expect(router.state.location.href).toBe(
-      "/billing/return?source=checkout&session_id=checkout-session",
-    );
-  });
-
   it.each([
     ["/billing", "/settings/billing"],
     [
@@ -109,21 +95,12 @@ describe("Osfo route tree", () => {
       "/settings/billing?source=checkout&session_id=checkout-session",
     ],
   ])("redirects the retired billing URL %s into settings", async (legacyPath, expectedPath) => {
-    globalThis.fetch = async (input) => {
-      const url = new Request(input).url;
-      if (url.endsWith("/v1/billing/reconcile")) return Response.json({ result: "unchanged" });
-      return Response.json({
-        currentPlan: "free",
-        paymentState: "free",
-        pendingPlan: null,
-        period: null,
-        usage: null,
-      });
-    };
-    const { router } = renderAt(legacyPath, signedIn);
+    const router = createAppRouter({
+      history: createMemoryHistory({ initialEntries: [legacyPath] }),
+    });
 
+    await router.load();
     await waitFor(() => expect(router.state.location.href).toBe(expectedPath));
-    expect(screen.getByRole("heading", { name: "Billing" })).toBeTruthy();
   });
 
   it("rejects illegal billing return states", () => {

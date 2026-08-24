@@ -292,6 +292,121 @@ describe("governed Authorization", () => {
     );
   });
 
+  it("enforces every connector-specific exhausted-read bound independently", () => {
+    const exhaustedFor = (toolkit: string) => ({
+      ...context("free", 2_000_000n),
+      integrationConnections: [{ _tag: "Connected" as const, toolkit, userId }],
+    });
+    const baseRead = {
+      attachments: 0n,
+      deadlineMilliseconds: 10_000n,
+      kind: "integration.read" as const,
+      pagination: 0n,
+      providerExecutions: 1n,
+    };
+    const assertSpecificLimits = (
+      authorization: ReturnType<typeof make>,
+      exhausted: AuthorizationContext,
+      admitted: Extract<AuthorizationOperation, { readonly kind: "integration.read" }>,
+      firstFailures: ReadonlyArray<
+        Extract<AuthorizationOperation, { readonly kind: "integration.read" }>
+      >,
+    ) => {
+      expect(authorization.admit(exhausted, admitted)).toMatchObject({
+        _tag: "Admitted",
+        executionMode: "exhaustedConnectorRead",
+      });
+      for (const firstFailure of firstFailures) {
+        expect(authorization.admit(exhausted, firstFailure)).toEqual({
+          _tag: "Denied",
+          reason: "allowanceExhausted",
+          resetAt: resetsAt,
+        });
+      }
+    };
+
+    const calendar = {
+      ...baseRead,
+      actionId: "calendar-events",
+      manifestVersion: ManifestVersion.make("calendar-v1"),
+      providerOperation: "CALENDAR_LIST_EVENTS",
+      records: 10n,
+      responseBytes: 65_536n,
+      toolkit: "googlecalendar",
+      windowDays: 14n,
+    };
+    assertSpecificLimits(make(retainedCatalog), exhaustedFor("googlecalendar"), calendar, [
+      { ...calendar, records: 11n },
+      { ...calendar, windowDays: 15n },
+    ]);
+
+    const metadata = {
+      ...baseRead,
+      actionId: "drive-metadata",
+      manifestVersion: ManifestVersion.make("drive-v1"),
+      providerOperation: "DRIVE_GET_METADATA",
+      records: 1n,
+      responseBytes: 16_384n,
+      toolkit: "googledrive",
+    };
+    assertSpecificLimits(make(retainedCatalog), exhaustedFor("googledrive"), metadata, [
+      { ...metadata, records: 2n },
+      { ...metadata, responseBytes: 16_385n },
+    ]);
+
+    const availabilityCatalog = IntegrationManifestCatalog.make({
+      manifests: [
+        ...currentManifestCatalog.manifests,
+        {
+          completedEvidence: "zeroMarginalCost",
+          completedEvidenceContract: "boundedReadV1",
+          consequences: [],
+          exhaustedMode: { _tag: "Availability", calendars: 1, windowDays: 14 },
+          hardBounds: {
+            maximumRecords: 1,
+            maximumResponseBytes: 65_536n,
+            mutations: 0,
+            providerExecutions: 1,
+          },
+          idempotency: "readOnly",
+          inputContract: "calendarListEventsV1",
+          manifestVersion: ManifestVersion.make("availability-v1"),
+          operation: "CALENDAR_GET_AVAILABILITY",
+          operationKind: "read",
+          requiredConnection: true,
+          safeErrors: [
+            "connectionUnavailable",
+            "inputRejected",
+            "notFound",
+            "providerRateLimited",
+            "providerUnavailable",
+            "resultInvalid",
+          ],
+          toolkit: "googlecalendar",
+        },
+      ],
+    });
+    const availability = {
+      ...baseRead,
+      actionId: "calendar-availability",
+      manifestVersion: ManifestVersion.make("availability-v1"),
+      providerOperation: "CALENDAR_GET_AVAILABILITY",
+      records: 1n,
+      responseBytes: 65_536n,
+      toolkit: "googlecalendar",
+      windowDays: 14n,
+    };
+    assertSpecificLimits(
+      make(retainedCatalog, currentCapabilityCatalog, availabilityCatalog),
+      exhaustedFor("googlecalendar"),
+      availability,
+      [
+        { ...availability, records: 2n },
+        { ...availability, windowDays: 15n },
+      ],
+    );
+  });
+
   it("requires Approval for a one-time reminder but not for a Workflow start", () => {
     const authorization = make(retainedCatalog);
 
