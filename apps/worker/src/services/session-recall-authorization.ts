@@ -6,7 +6,7 @@ import type {
   ManagedTurnAuthorityIdentity,
   ManagedTurnMetadata,
 } from "../domain/managed-conversation";
-import { Authorization, AuthorizationContext } from "./authorization";
+import { Authorization, AuthorizationContext, emptyLiveResourceFacts } from "./authorization";
 import {
   SessionRecallAuthorizationDenied,
   type SessionRecallAuthorizationUnavailable,
@@ -69,12 +69,8 @@ export const makeSessionRecallAuthorization = (
           approval: null,
           ...facts,
           gmailConnection: null,
-          liveFacts: {
-            activeGmSummonsInSession: 0n,
-            activeReminders: 0n,
-            concurrentWorkflows: 0n,
-            retainedFileBytes: 0n,
-          },
+          integrationConnections: [],
+          liveFacts: emptyLiveResourceFacts,
           originatingAuthority,
           requestVendorUsdMicros: 0n,
         }),

@@ -1,4 +1,4 @@
-import { allowancePeriods } from "@osfo/db/schema/allowances";
+import { allowancePeriods, allowanceUsage } from "@osfo/db/schema/allowances";
 import {
   billingCheckoutSessions,
   billingCustomers,
@@ -18,11 +18,13 @@ import {
   StripeProductId,
   UserId,
 } from "../../domain";
+import { presentPlanUsage } from "../../domain/allowance";
 import {
   effectivePlanAt,
   type BillingAuthorizationFacts,
 } from "../../services/billing-authorization";
-import type { Persistence } from "../../services/billing-presentation";
+import type { Persistence, StoredBillingSummary } from "../../services/billing-presentation";
+import { isSharedUsagePolicy, retainedCatalog } from "../../domain/plan-policy";
 import { BillingPersistenceUnavailable } from "../../services/stripe-billing";
 import type { Database } from "../index";
 
@@ -49,7 +51,13 @@ export const inspectStripeBilling = (
           .limit(1);
         if (subscription === undefined) return undefined;
         const [period] = await transaction
-          .select({ endsAt: allowancePeriods.ends_at, startsAt: allowancePeriods.starts_at })
+          .select({
+            allowancePeriodId: allowancePeriods.allowance_period_id,
+            endsAt: allowancePeriods.ends_at,
+            plan: allowancePeriods.plan,
+            planPolicyVersion: allowancePeriods.plan_policy_version,
+            startsAt: allowancePeriods.starts_at,
+          })
           .from(allowancePeriods)
           .where(
             and(
@@ -59,6 +67,22 @@ export const inspectStripeBilling = (
             ),
           )
           .limit(1);
+        const [usage] =
+          period === undefined
+            ? []
+            : await transaction
+                .select({
+                  quantity: sql<bigint>`coalesce(sum(${allowanceUsage.quantity}), 0)`.mapWith(
+                    allowanceUsage.quantity,
+                  ),
+                })
+                .from(allowanceUsage)
+                .where(
+                  and(
+                    eq(allowanceUsage.allowance_period_id, period.allowancePeriodId),
+                    eq(allowanceUsage.allowance_kind, "planUsageMicros"),
+                  ),
+                );
         const [checkout] = await transaction
           .select({
             state: billingCheckoutSessions.state,
@@ -74,7 +98,9 @@ export const inspectStripeBilling = (
             checkout?.state === "failed" || checkout?.stripePaymentStatus === "unpaid"
               ? ("paymentNeeded" as const)
               : null,
-          currentPeriod: period ?? null,
+          currentPeriod:
+            period === undefined ? null : { endsAt: period.endsAt, startsAt: period.startsAt },
+          usage: planUsageSummary(period, usage?.quantity ?? 0n),
         };
       }),
     catch: (cause) =>
@@ -96,6 +122,31 @@ export const inspectStripeBilling = (
         : Effect.succeed(result),
     ),
   );
+
+const planUsageSummary = (
+  period:
+    | {
+        readonly endsAt: Date;
+        readonly plan: "free" | "adventurer";
+        readonly planPolicyVersion: string;
+      }
+    | undefined,
+  recorded: bigint,
+): StoredBillingSummary["usage"] => {
+  if (period === undefined) return null;
+  const policy = retainedCatalog.policies.find(
+    (candidate) => candidate.version === period.planPolicyVersion,
+  );
+  if (policy === undefined || !isSharedUsagePolicy(policy)) return null;
+  const included = policy.plans[period.plan].includedPlanUsageMicros;
+  const presentation = presentPlanUsage(recorded, included);
+  return {
+    label: presentation.remainingLabel,
+    remainingPercentage: presentation.remainingPercent,
+    resetAt: period.endsAt,
+    warning: presentation.warning === "twentyPercent" ? "low" : presentation.warning,
+  };
+};
 
 /** Read the current Stripe Subscription identity for explicit reconciliation. */
 export const findStripeSubscription = (database: Pick<Database, "select">, userId: UserId) =>

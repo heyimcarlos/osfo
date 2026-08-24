@@ -13,8 +13,13 @@ import type {
   RecordedAllowanceUse,
   UsageConflict,
 } from "../domain/allowance";
-import type { PlanPolicyCatalog, PlanPolicyNotFound } from "../domain/plan-policy";
-import { policyFor, policyForVersion } from "../domain/plan-policy";
+import { presentPlanUsage } from "../domain/allowance";
+import type {
+  PlanPolicyCatalog,
+  PlanPolicyNotFound,
+  SharedUsagePlanRules,
+} from "../domain/plan-policy";
+import { isLaunchPolicy, policyFor, policyForVersion } from "../domain/plan-policy";
 
 const visibleAllowanceKinds = [
   "acceptedMessages",
@@ -38,20 +43,22 @@ export interface MakeOptions {
   readonly now: Effect.Effect<Date>;
 }
 
+interface InspectionFacts {
+  readonly allowancePeriodId: AllowancePeriodId;
+  readonly endsAt: Date;
+  readonly plan: Plan;
+  readonly planPolicyVersion: PlanPolicyVersion;
+  readonly usage: ReadonlyArray<RecordedAllowanceUse>;
+  readonly userId: UserId;
+}
+
 /** Narrow persistence port required by the Allowances application service. */
 export interface Persistence {
   readonly inspect: (
     userId: UserId,
     now: Date,
   ) => Effect.Effect<
-    {
-      readonly allowancePeriodId: AllowancePeriodId;
-      readonly endsAt: Date;
-      readonly plan: Plan;
-      readonly planPolicyVersion: PlanPolicyVersion;
-      readonly usage: ReadonlyArray<RecordedAllowanceUse>;
-      readonly userId: UserId;
-    },
+    InspectionFacts,
     AllowancePeriodNotFound | BillingTransactionRetryExhausted | DatabaseUnavailable
   >;
   readonly recordUsage: (
@@ -104,6 +111,9 @@ export const make = (options: MakeOptions): Interface => ({
       const now = yield* options.now;
       const stored = yield* options.billing.inspect(userId, now);
       const policy = yield* policyForVersion(options.catalog, stored.planPolicyVersion);
+      if (!isLaunchPolicy(policy)) {
+        return planUsageInspection(stored, policyFor(policy, stored.plan));
+      }
       const rules = policyFor(policy, stored.plan);
       return {
         allowancePeriodId: stored.allowancePeriodId,
@@ -129,26 +139,75 @@ export const make = (options: MakeOptions): Interface => ({
       const recorded = yield* options.billing.recordUsage(allowancePeriodId, source, items);
       if (recorded.period !== null) {
         const policy = yield* policyForVersion(options.catalog, recorded.period.planPolicyVersion);
-        const limits = policyFor(policy, recorded.period.plan).allowanceLimits;
-        yield* Effect.forEach(
-          recorded.usage,
-          (usage) =>
-            usage.quantity > limits[usage.allowanceKind]
-              ? Effect.logWarning("Allowance Consumption exceeded its soft cap").pipe(
-                  Effect.annotateLogs({
-                    allowanceKind: usage.allowanceKind,
+        if (isLaunchPolicy(policy)) {
+          const limits = policyFor(policy, recorded.period.plan).allowanceLimits;
+          yield* Effect.forEach(
+            recorded.usage,
+            (usage) => {
+              if (usage.allowanceKind === "planUsageMicros") return Effect.void;
+              return usage.quantity > limits[usage.allowanceKind]
+                ? logSoftCap(
                     allowancePeriodId,
-                    limit: String(limits[usage.allowanceKind]),
-                    recorded: String(usage.quantity),
-                    userId: recorded.period?.userId,
-                  }),
-                )
-              : Effect.void,
-          { discard: true },
-        );
+                    usage.allowanceKind,
+                    limits[usage.allowanceKind],
+                    usage.quantity,
+                    recorded.period?.userId,
+                  )
+                : Effect.void;
+            },
+            { discard: true },
+          );
+        } else {
+          const limit = policyFor(policy, recorded.period.plan).includedPlanUsageMicros;
+          const usage = recorded.usage.find(
+            (candidate) => candidate.allowanceKind === "planUsageMicros",
+          );
+          if (usage !== undefined && usage.quantity > limit) {
+            yield* logSoftCap(
+              allowancePeriodId,
+              usage.allowanceKind,
+              limit,
+              usage.quantity,
+              recorded.period.userId,
+            );
+          }
+        }
       }
       return recorded.outcome;
     }),
 });
+
+const planUsageInspection = (
+  stored: InspectionFacts,
+  rules: SharedUsagePlanRules,
+): AllowanceInspection => {
+  const recorded =
+    stored.usage.find((candidate) => candidate.allowanceKind === "planUsageMicros")?.quantity ?? 0n;
+  return {
+    _tag: "PlanUsage",
+    allowancePeriodId: stored.allowancePeriodId,
+    plan: stored.plan,
+    ...presentPlanUsage(recorded, rules.includedPlanUsageMicros),
+    resetsAt: stored.endsAt,
+    userId: stored.userId,
+  };
+};
+
+const logSoftCap = (
+  allowancePeriodId: AllowancePeriodId,
+  allowanceKind: AllowanceItem["allowanceKind"],
+  limit: bigint,
+  recorded: bigint,
+  userId: UserId | undefined,
+) =>
+  Effect.logWarning("Allowance Consumption exceeded its soft cap").pipe(
+    Effect.annotateLogs({
+      allowanceKind,
+      allowancePeriodId,
+      limit: String(limit),
+      recorded: String(recorded),
+      userId,
+    }),
+  );
 
 export * as Allowances from "./allowances";

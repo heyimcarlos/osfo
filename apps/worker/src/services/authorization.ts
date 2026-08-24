@@ -1,14 +1,44 @@
 import { Predicate, Result, Schema } from "effect";
 
-import { AllowancePeriodId, ChannelLinkId, Plan, PlanPolicyVersion, UserId } from "../domain";
-import { type AllowanceKind, RecordedAllowanceUse } from "../domain/allowance";
+import {
+  AllowancePeriodId,
+  type CapabilityCatalogVersion,
+  ChannelLinkId,
+  type ManifestVersion,
+  Plan,
+  PlanPolicyVersion,
+  UserId,
+} from "../domain";
+import { type PlanUsageGrantSource, RecordedAllowanceUse } from "../domain/allowance";
 import {
   AuthorizationOperation,
   type AuthorizationOperationInput,
   AuthorizationOperationName,
 } from "../domain/authorization-operation";
-import { type Capability, type PlanPolicyCatalog, policyFor } from "../domain/plan-policy";
+import { currentCapabilityCatalog, type CapabilityCatalog } from "../domain/capability-catalog";
+import {
+  currentManifestCatalog,
+  type IntegrationManifestCatalog,
+} from "../domain/integration-manifest";
+import {
+  isLaunchPolicy,
+  type PlanPolicyCatalog,
+  type PlanRules,
+  policyFor,
+} from "../domain/plan-policy";
 import { CoreMemoryAuthorizationSnapshot } from "../domain/core-memory-authorization";
+import {
+  allowanceKindsFor,
+  authorityPermits,
+  entitlementFor,
+  isLaunchUnmetered,
+  requiresApproval,
+  requiresGmailConnection,
+  requiresOwnership,
+} from "./authorization-operation-policy";
+import { authorizeShared } from "./shared-authorization";
+
+/* oxlint-disable eslint/no-underscore-dangle -- Authorization and manifest outcomes use the standard Effect _tag discriminator. */
 import { AuthSessionAuthorityFact, AuthSessionId } from "../domain/auth-session";
 import { ChannelLinkAuthorityFact } from "../domain/channel-link";
 import { DeletionAccessFact } from "../domain/deletion-case";
@@ -34,12 +64,36 @@ export const OriginatingAuthority = Schema.Union([
   }),
 ]);
 
+/** Nonempty immutable User-visible presentation retained with one Approval. */
+export const ApprovalPresentation = Schema.String.check(Schema.isMinLength(1)).pipe(
+  Schema.brand("ApprovalPresentation"),
+);
+
+/** Branded presentation that cannot be constructed from an empty string. */
+export type ApprovalPresentation = typeof ApprovalPresentation.Type;
+
 /** Exact User, operation, and Action approved for one protected effect. */
 export const Approval = Schema.Struct({
   actionId: Schema.String,
   operation: AuthorizationOperationName,
+  operationIdentity: Schema.String.check(Schema.isMinLength(1)),
+  presentation: ApprovalPresentation,
   userId: UserId,
 });
+
+/** Bind Approval to the complete operation facts and retained immutable presentation. */
+export const approvalFor = (
+  userId: UserId,
+  operation: AuthorizationOperation,
+  presentation: ApprovalPresentation,
+) =>
+  Approval.make({
+    actionId: operation.actionId,
+    operation: operation.kind,
+    operationIdentity: approvalIdentity(operation, presentation),
+    presentation,
+    userId,
+  });
 
 /** Current allowance facts used to admit or deny one operation. */
 export const Allowance = Schema.Union([
@@ -55,19 +109,40 @@ export const Allowance = Schema.Union([
 ]);
 
 /** Current Integration Connection fact used by Authorization. */
-export const GmailConnection = Schema.NullOr(
-  Schema.Union([
-    Schema.TaggedStruct("Connected", { userId: UserId }),
-    Schema.TaggedStruct("Revoked", { userId: UserId }),
-  ]),
-);
+export const IntegrationConnection = Schema.Union([
+  Schema.TaggedStruct("Connected", { toolkit: Schema.String, userId: UserId }),
+  Schema.TaggedStruct("Revoked", { toolkit: Schema.String, userId: UserId }),
+]);
+
+/** Retained single Gmail fact used only by launch-v1 Authorization. */
+export const GmailConnection = Schema.NullOr(IntegrationConnection);
 
 /** Current live resource facts used by Authorization. */
 export const LiveResourceFacts = Schema.Struct({
   activeGmSummonsInSession: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
   activeReminders: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  concurrentCostlyJobs: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  concurrentExhaustedConnectorReads: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  concurrentExhaustedConversations: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  concurrentIntegrationEffects: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
   concurrentWorkflows: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  exhaustedConnectorReadsInRollingDay: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  gmSummonsInPeriod: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
   retainedFileBytes: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+});
+
+/** Canonical current fact set when an operation owns no live-resource counters. */
+export const emptyLiveResourceFacts = LiveResourceFacts.make({
+  activeGmSummonsInSession: 0n,
+  activeReminders: 0n,
+  concurrentCostlyJobs: 0n,
+  concurrentExhaustedConnectorReads: 0n,
+  concurrentExhaustedConversations: 0n,
+  concurrentIntegrationEffects: 0n,
+  concurrentWorkflows: 0n,
+  exhaustedConnectorReadsInRollingDay: 0n,
+  gmSummonsInPeriod: 0n,
+  retainedFileBytes: 0n,
 });
 
 /** Current Subscription fact used for Plan Entitlement checks. */
@@ -83,6 +158,7 @@ export const AuthorizationContext = Schema.Struct({
   authority: Schema.NullOr(ActingAuthority),
   deletionAccess: DeletionAccessFact,
   gmailConnection: GmailConnection,
+  integrationConnections: Schema.Array(IntegrationConnection),
   liveFacts: LiveResourceFacts,
   now: Schema.Date,
   originatingAuthority: OriginatingAuthority,
@@ -119,12 +195,8 @@ export const restoreCoreMemoryAuthorization = (
     authority: restoreActingAuthority(snapshot.authority),
     deletionAccess: snapshot.deletionAccess,
     gmailConnection: null,
-    liveFacts: {
-      activeGmSummonsInSession: 0n,
-      activeReminders: 0n,
-      concurrentWorkflows: 0n,
-      retainedFileBytes: 0n,
-    },
+    integrationConnections: [],
+    liveFacts: emptyLiveResourceFacts,
     now: snapshot.now,
     originatingAuthority: restoreOriginatingAuthority(snapshot.originatingAuthority),
     requestVendorUsdMicros: 0n,
@@ -183,9 +255,20 @@ export type AuthorizationDenialReason = typeof AuthorizationDenialReason.Type;
 /** Successful Authorization outcome for work admitted below current limits. */
 export type Admitted = {
   readonly _tag: "Admitted";
+  readonly capabilityCatalogVersion: CapabilityCatalogVersion;
+  readonly executionMode:
+    | "exhaustedConnectorRead"
+    | "exhaustedConversation"
+    | "normalPlanUsage"
+    | "unmeteredContinuity";
+  readonly manifestVersion: ManifestVersion | null;
   readonly allowancePeriod:
     | { readonly _tag: "Unmetered" }
-    | { readonly _tag: "Metered"; readonly allowancePeriodId: AllowancePeriodId };
+    | {
+        readonly _tag: "Metered";
+        readonly allowancePeriodId: AllowancePeriodId;
+        readonly grantSource: PlanUsageGrantSource | null;
+      };
 };
 
 /** Successful denial answer with an optional known reset time. */
@@ -221,7 +304,11 @@ export interface Interface {
 }
 
 /** Construct deterministic launch Authorization from one retained policy version. */
-export const make = (catalog: PlanPolicyCatalog): Interface => {
+export const make = (
+  catalog: PlanPolicyCatalog,
+  capabilityCatalog: CapabilityCatalog = currentCapabilityCatalog,
+  manifestCatalog: IntegrationManifestCatalog = currentManifestCatalog,
+): Interface => {
   const admit = (
     context: AuthorizationContext,
     input: AuthorizationOperationInput,
@@ -230,7 +317,14 @@ export const make = (catalog: PlanPolicyCatalog): Interface => {
     if (Result.isFailure(decoded)) {
       return { _tag: "Denied", reason: "unknownOperation", resetAt: null };
     }
-    return authorize(catalog, context, decoded.success, "admission");
+    return authorize(
+      catalog,
+      capabilityCatalog,
+      manifestCatalog,
+      context,
+      decoded.success,
+      "admission",
+    );
   };
 
   return {
@@ -240,7 +334,14 @@ export const make = (catalog: PlanPolicyCatalog): Interface => {
       if (Result.isFailure(decoded)) {
         return { _tag: "Denied", reason: "unknownOperation", resetAt: null };
       }
-      const result = authorize(catalog, context, decoded.success, "recheck");
+      const result = authorize(
+        catalog,
+        capabilityCatalog,
+        manifestCatalog,
+        context,
+        decoded.success,
+        "recheck",
+      );
       if (Predicate.isTagged(result, "Admitted")) return { _tag: "Permitted" };
       return Predicate.isTagged(result, "ApprovalRequired") ? denied("approvalRequired") : result;
     },
@@ -249,6 +350,8 @@ export const make = (catalog: PlanPolicyCatalog): Interface => {
 
 const authorize = (
   catalog: PlanPolicyCatalog,
+  capabilityCatalog: CapabilityCatalog,
+  manifestCatalog: IntegrationManifestCatalog,
   context: AuthorizationContext,
   operation: AuthorizationOperation,
   mode: "admission" | "recheck",
@@ -286,6 +389,15 @@ const authorize = (
   );
   if (subscriptionPolicy === undefined) return denied("policyUnavailable");
 
+  if (!isLaunchPolicy(subscriptionPolicy)) {
+    return authorizeShared(catalog, capabilityCatalog, manifestCatalog, context, operation, mode, {
+      admitted,
+      denied,
+      hasExactApproval,
+      requiresApproval,
+    });
+  }
+
   const rules = policyFor(subscriptionPolicy, context.subscription.plan);
   const requiredEntitlement = entitlementFor(operation);
   if (requiredEntitlement !== null && !rules.entitlements.includes(requiredEntitlement)) {
@@ -296,7 +408,8 @@ const authorize = (
     if (
       connection === null ||
       !Predicate.isTagged(connection, "Connected") ||
-      connection.userId !== context.user.userId
+      connection.userId !== context.user.userId ||
+      connection.toolkit !== "gmail"
     ) {
       return denied("integrationConnectionRequired");
     }
@@ -314,8 +427,8 @@ const authorize = (
     };
   }
 
-  if (mode === "recheck" || isUnmetered(operation)) {
-    return { _tag: "Admitted", allowancePeriod: { _tag: "Unmetered" } };
+  if (mode === "recheck" || isLaunchUnmetered(operation)) {
+    return admitted(capabilityCatalog, "unmeteredContinuity");
   }
   if (!Predicate.isTagged(context.allowance, "Metered")) {
     return denied("allowancePeriodUnavailable");
@@ -330,10 +443,13 @@ const authorize = (
   const allowancePolicy = catalog.policies.find(
     (policy) => policy.version === allowance.planPolicyVersion,
   );
-  if (allowancePolicy === undefined) return denied("policyUnavailable");
+  if (allowancePolicy === undefined || !isLaunchPolicy(allowancePolicy)) {
+    return denied("policyUnavailable");
+  }
   const allowanceRules = policyFor(allowancePolicy, allowance.plan);
   const relevantKinds = [...allowanceKindsFor(operation), "vendorUsdMicros" as const];
   for (const allowanceKind of relevantKinds) {
+    if (allowanceKind === "planUsageMicros") continue;
     const recorded =
       allowance.usage.find((usage) => usage.allowanceKind === allowanceKind)?.quantity ?? 0n;
     if (recorded >= allowanceRules.allowanceLimits[allowanceKind]) {
@@ -342,32 +458,34 @@ const authorize = (
   }
   return {
     _tag: "Admitted",
+    capabilityCatalogVersion: capabilityCatalog.version,
+    executionMode: "normalPlanUsage",
+    manifestVersion: null,
     allowancePeriod: {
       _tag: "Metered",
       allowancePeriodId: allowance.allowancePeriodId,
+      grantSource: null,
     },
   };
 };
+
+const admitted = (
+  capabilityCatalog: CapabilityCatalog,
+  executionMode: Admitted["executionMode"],
+  manifestVersion: ManifestVersion | null = null,
+): Admitted => ({
+  _tag: "Admitted",
+  allowancePeriod: { _tag: "Unmetered" },
+  capabilityCatalogVersion: capabilityCatalog.version,
+  executionMode,
+  manifestVersion,
+});
 
 const denied = (reason: AuthorizationDenialReason, resetAt: Date | null = null): Denied => ({
   _tag: "Denied",
   reason,
   resetAt,
 });
-
-const authorityPermits = (
-  authority: Exclude<AuthorizationContext["authority"], null>,
-  operation: AuthorizationOperation,
-) => {
-  if (!Predicate.isTagged(authority, "DurableTrigger")) return true;
-  if (authority.triggerType === "scheduledTask") return operation.kind === "reminder.deliver";
-  return (
-    operation.kind.startsWith("workflow.") ||
-    operation.kind.startsWith("gmail.") ||
-    operation.kind === "document.generate" ||
-    operation.kind === "support.gmSummon"
-  );
-};
 
 const authorityMatchesOrigin = (
   authority: Exclude<AuthorizationContext["authority"], null>,
@@ -394,23 +512,10 @@ const authorityMatchesOrigin = (
   );
 };
 
-const requiresOwnership = (operation: AuthorizationOperation) =>
-  operation.kind.startsWith("session.") ||
-  operation.kind.startsWith("memory.") ||
-  operation.kind.startsWith("file.") ||
-  operation.kind === "document.generate" ||
-  operation.kind.startsWith("reminder.") ||
-  operation.kind.startsWith("workflow.") ||
-  operation.kind.startsWith("gmail.") ||
-  operation.kind === "support.gmSummon";
-
-const requiresGmailConnection = (operation: AuthorizationOperation) =>
-  operation.kind.startsWith("gmail.") && operation.kind !== "gmail.connection.manage";
-
 const exceedsLiveLimit = (
   operation: AuthorizationOperation,
   context: AuthorizationContext,
-  rules: ReturnType<typeof policyFor>,
+  rules: PlanRules,
 ) => {
   switch (operation.kind) {
     case "file.upload":
@@ -439,7 +544,7 @@ const exceedsLiveLimit = (
 const exceedsOperationLimit = (
   operation: AuthorizationOperation,
   context: AuthorizationContext,
-  rules: ReturnType<typeof policyFor>,
+  rules: PlanRules,
 ) => {
   if (context.requestVendorUsdMicros > rules.operationLimits.vendorUsdMicrosPerRequest) return true;
   switch (operation.kind) {
@@ -459,140 +564,21 @@ const exceedsOperationLimit = (
   }
 };
 
-const requiresApproval = (operation: AuthorizationOperation) => {
-  switch (operation.kind) {
-    case "session.delete":
-    case "memory.clear":
-    case "memory.forgetKnowledge":
-    case "file.delete":
-    case "gmail.send":
-    case "support.gmSummon":
-    case "account.delete":
-      return true;
-    case "reminder.manage":
-      return (
-        operation.change === "recurringCreate" || operation.change === "recurringMaterialChange"
-      );
-    case "workflow.manage":
-      return operation.change === "start" || operation.change === "materialChange";
-    default:
-      return false;
-  }
-};
-
 const hasExactApproval = (context: AuthorizationContext, operation: AuthorizationOperation) =>
   context.approval !== null &&
   context.approval.userId === context.user.userId &&
   context.approval.operation === operation.kind &&
-  context.approval.actionId === operation.actionId;
+  context.approval.actionId === operation.actionId &&
+  context.approval.operationIdentity === approvalIdentity(operation, context.approval.presentation);
 
-const isUnmetered = (operation: AuthorizationOperation) => {
-  switch (operation.kind) {
-    case "session.delete":
-    case "memory.clear":
-    case "memory.forgetKnowledge":
-    case "file.delete":
-    case "workflow.cancel":
-    case "support.open":
-    case "usage.inspect":
-    case "billing.inspect":
-    case "subscription.manage":
-    case "authSession.revoke":
-    case "channelLink.revoke":
-    case "phoneAccount.replace":
-    case "account.delete":
-    case "dataRights.request":
-      return true;
-    case "reminder.manage":
-      return operation.change === "cancel";
-    case "workflow.manage":
-      return operation.change === "stop";
-    case "gmail.connection.manage":
-      return operation.change === "revoke";
-    default:
-      return false;
-  }
-};
+const encodeAuthorizationOperation = Schema.encodeSync(AuthorizationOperation);
 
-const allowanceKindsFor = (operation: AuthorizationOperation): ReadonlyArray<AllowanceKind> => {
-  switch (operation.kind) {
-    case "conversation.accept":
-      return ["acceptedMessages"];
-    case "conversation.run":
-      return ["supermemoryIngestionTokens", "supermemoryRetrievals"];
-    case "file.upload":
-      return ["fileUploads"];
-    case "document.generate":
-      return [operation.artifactKind === "document" ? "generatedDocuments" : "researchReports"];
-    case "reminder.deliver":
-      return ["reminderDeliveries"];
-    case "workflow.manage":
-      return operation.change === "start" ? ["workflowStarts"] : [];
-    case "gmail.search":
-      return ["gmailSearches"];
-    case "gmail.read":
-      return ["gmailMessagesExamined"];
-    case "gmail.send":
-      return ["gmailSends"];
-    case "support.gmSummon":
-      return ["gmSummons"];
-    default:
-      return [];
-  }
-};
+const operationIdentity = (operation: AuthorizationOperation): string =>
+  JSON.stringify(encodeAuthorizationOperation(operation));
 
-const entitlementFor = (operation: AuthorizationOperation): Capability | null => {
-  switch (operation.kind) {
-    case "conversation.accept":
-    case "conversation.run":
-      return "conversation";
-    case "session.recall":
-    case "session.replace":
-    case "session.delete":
-      return "session";
-    case "memory.inspect":
-    case "memory.correct":
-    case "memory.clear":
-    case "memory.forgetKnowledge":
-      return "memory";
-    case "file.upload":
-    case "file.read":
-    case "file.analyze":
-    case "file.delete":
-      return "files";
-    case "document.generate":
-      return operation.artifactKind === "document" ? "documents" : "researchReports";
-    case "reminder.manage":
-      if (operation.change === "cancel") return null;
-      return operation.change === "oneTimeCreate" ? "oneTimeReminders" : "recurringReminders";
-    case "reminder.deliver":
-      return operation.schedule === "oneTime" ? "oneTimeReminders" : "recurringReminders";
-    case "workflow.manage":
-      return operation.change === "stop" ? null : "workflows";
-    case "workflow.inspect":
-    case "workflow.cancel":
-      return null;
-    case "gmail.connection.manage":
-      return operation.change === "revoke" ? null : "gmail";
-    case "gmail.search":
-    case "gmail.read":
-    case "gmail.draft":
-    case "gmail.send":
-      return "gmail";
-    case "support.gmSummon":
-      return "gmSummon";
-    case "support.open":
-    case "usage.inspect":
-    case "billing.inspect":
-    case "subscription.manage":
-    case "authSession.revoke":
-    case "channelLink.revoke":
-    case "phoneAccount.replace":
-    case "account.delete":
-    case "dataRights.request":
-      return null;
-  }
-  return null;
-};
+const approvalIdentity = (
+  operation: AuthorizationOperation,
+  presentation: ApprovalPresentation,
+): string => JSON.stringify({ operation: operationIdentity(operation), presentation });
 
 export * as Authorization from "./authorization";

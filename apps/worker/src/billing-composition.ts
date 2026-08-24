@@ -54,13 +54,13 @@ export const makeBillingServices = (database: Database, config: CloudflareConfig
     persistence: makeStripePersistence(database),
     portal: {
       configurationId: StripePortalConfigurationId.make(config.stripe.portalConfigurationId),
-      returnUrl: new URL("/billing/return?source=portal", webBaseUrl),
+      returnUrl: new URL("/settings/billing?source=portal", webBaseUrl),
     },
     stripe,
     urls: {
-      cancel: new URL("/billing", webBaseUrl),
+      cancel: new URL("/settings/billing", webBaseUrl),
       success: new URL(
-        "/billing/return?source=checkout&session_id={CHECKOUT_SESSION_ID}",
+        "/settings/billing?source=checkout&session_id={CHECKOUT_SESSION_ID}",
         webBaseUrl,
       ),
     },

@@ -47,6 +47,9 @@ describe("Postgres migrations", () => {
             "migrations",
             "rate_limits",
             "sessions",
+            "usage_event_components",
+            "usage_event_evidence_references",
+            "usage_events",
             "user_suspension_events",
             "users",
             "verifications",
@@ -286,6 +289,132 @@ describe("Postgres migrations", () => {
           }),
         closeTestDatabase,
       ),
+  );
+
+  it.effect("rejects malformed Plan Usage ledger facts", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          yield* applyMigrations(client);
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO users (id, name, email, updated_at)
+              VALUES ('usage-user-1', 'Usage User', 'usage@example.test', now());
+              INSERT INTO billing_subscriptions (
+                billing_subscription_id, user_id, plan, plan_policy_version
+              ) VALUES ('usage-subscription-1', 'usage-user-1', 'free', 'shared-usage-v1');
+              INSERT INTO allowance_periods (
+                allowance_period_id, user_id, billing_subscription_id,
+                plan, plan_policy_version, starts_at, ends_at
+              ) VALUES (
+                'usage-period-1', 'usage-user-1', 'usage-subscription-1',
+                'free', 'shared-usage-v1', '2026-08-01T00:00:00Z', '2026-09-01T00:00:00Z'
+              );
+              INSERT INTO usage_events (
+                allowance_period_id, capability_catalog_version, facts_json,
+                model_access_policy_version, occurred_at, outcome, plan_usage_micros,
+                rated_cost_usd_micros, root_operation_id, source_id, source_type,
+                usage_policy_version, user_id
+              ) VALUES (
+                'usage-period-1', 'governed-capabilities-v1', '{
+                  "allowancePeriodId":"usage-period-1",
+                  "capabilityCatalogVersion":"governed-capabilities-v1",
+                  "evidenceReferences":[],
+                  "manifestVersion":null,
+                  "modelAccessPolicyVersion":"managed-routing-v1",
+                  "occurredAt":"2026-08-24T00:00:00.000Z",
+                  "outcome":{"_tag":"Completed","charge":{}},
+                  "rootOperationId":"usage-root-1",
+                  "source":{"sourceId":"usage-source-1","sourceType":"testOperation"},
+                  "usagePolicyVersion":"shared-usage-v1"
+                }',
+                'managed-routing-v1', now(), 'completed', 1, 1,
+                'usage-root-1', 'usage-source-1', 'testOperation',
+                'shared-usage-v1', 'usage-user-1'
+              );
+            `),
+          );
+
+          const rejectedStatements = [
+            `INSERT INTO usage_events (
+               allowance_period_id, capability_catalog_version, facts_json,
+               model_access_policy_version, occurred_at, outcome, plan_usage_micros,
+               rated_cost_usd_micros, root_operation_id, source_id, source_type,
+               usage_policy_version, user_id
+             ) VALUES (
+               'usage-period-1', 'governed-capabilities-v1', '{
+                 "allowancePeriodId":"usage-period-1",
+                 "capabilityCatalogVersion":"governed-capabilities-v1",
+                 "evidenceReferences":[],
+                 "manifestVersion":null,
+                 "modelAccessPolicyVersion":"managed-routing-v1",
+                 "occurredAt":"2026-08-24T00:00:00.000Z",
+                 "outcome":{"_tag":"Completed","charge":{}},
+                 "rootOperationId":"conversion-root",
+                 "source":{"sourceId":"conversion-source","sourceType":"testOperation"},
+                 "usagePolicyVersion":"shared-usage-v1"
+               }',
+               'managed-routing-v1', now(), 'completed', 1, 700,
+               'conversion-root', 'conversion-source', 'testOperation',
+               'shared-usage-v1', 'usage-user-1'
+             )`,
+            `INSERT INTO usage_events (
+               allowance_period_id, capability_catalog_version, facts_json,
+               model_access_policy_version, occurred_at, outcome, plan_usage_micros,
+               rated_cost_usd_micros, root_operation_id, source_id, source_type,
+               usage_policy_version, user_id
+             ) VALUES (
+               'usage-period-1', 'governed-capabilities-v1', '{}',
+               'managed-routing-v1', now(), 'completed', 1, 1,
+               'malformed-root', 'malformed-source', 'testOperation',
+               'shared-usage-v1', 'usage-user-1'
+             )`,
+            `INSERT INTO usage_event_components (
+               activity, allowance_period_id, component_index, component_kind, evidence_json,
+               rated_cost_usd_micros, resource_price_version, source_id, source_type
+             ) VALUES (
+               'unknown', 'usage-period-1', 0, 'model', '{}', 1,
+               'resource-prices-v1', 'usage-source-1', 'testOperation'
+             )`,
+            `INSERT INTO usage_event_components (
+               activity, allowance_period_id, component_index, component_kind, evidence_json,
+               rated_cost_usd_micros, resource_price_version, source_id, source_type
+             ) VALUES (
+               'automations', 'usage-period-1', 1, 'unknown', '{}', 1,
+               'resource-prices-v1', 'usage-source-1', 'testOperation'
+             )`,
+            `INSERT INTO usage_event_components (
+               activity, allowance_period_id, component_index, component_kind, evidence_json,
+               rated_cost_usd_micros, resource_price_version, source_id, source_type
+             ) VALUES (
+               'automations', 'usage-period-1', -1, 'model', '{}', 1,
+               'resource-prices-v1', 'usage-source-1', 'testOperation'
+             )`,
+            `INSERT INTO usage_event_evidence_references (
+               allowance_period_id, reference, reference_kind, source_id, source_type
+             ) VALUES (
+               'usage-period-1', 'provider-log-1', 'unknown',
+               'usage-source-1', 'testOperation'
+             )`,
+            `INSERT INTO usage_event_evidence_references (
+               allowance_period_id, reference, reference_kind, source_id, source_type
+             ) VALUES (
+               'usage-period-1', '   ', 'providerLog',
+               'usage-source-1', 'testOperation'
+             )`,
+          ];
+
+          for (const statement of rejectedStatements) {
+            const result = yield* Effect.tryPromise({
+              try: () => client.exec(statement),
+              catch: (cause) => new MigrationConstraintRejected({ cause }),
+            }).pipe(Effect.exit);
+            expect(Exit.isFailure(result)).toBe(true);
+          }
+        }),
+      closeTestDatabase,
+    ),
   );
 
   it.effect("enforces Stripe billing projection and webhook invariants", () =>

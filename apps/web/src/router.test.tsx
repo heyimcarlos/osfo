@@ -6,7 +6,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { DateTime } from "effect";
 
 import { AuthStateProvider, type AuthState } from "./auth-state";
-import { parseBillingReturnSearch } from "./lib/billing-return";
+import { parseBillingReturnSearch, parseBillingReturnSearchString } from "./lib/billing-return";
 import { createAppRouter } from "./router";
 
 /* oxlint-disable effecttsgo/async-function -- Router navigation and Testing Library own browser Promises. */
@@ -37,7 +37,9 @@ const registrationIncomplete: AuthState = {
   refreshFromAuthority,
 };
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+});
 
 const renderAt = (path: string, authState: AuthState = signedOut) => {
   const history = createMemoryHistory({ initialEntries: [path] });
@@ -76,14 +78,29 @@ describe("Osfo route tree", () => {
     await waitFor(() => expect(screen.getByText(heading)).toBeTruthy());
   });
 
-  it("parses hosted billing return search through the matched route", async () => {
-    const { router } = renderAt("/billing/return?source=checkout&session_id=checkout-session");
+  it("keeps hosted billing return search on the settings route", async () => {
+    const { router } = renderAt("/settings/billing?source=checkout&session_id=checkout-session");
 
     await waitFor(() => expect(screen.getByText("SMS code")).toBeTruthy());
-    expect(router.state.matches.at(-1)?.search).toMatchObject({
-      _tag: "Checkout",
-      checkoutSessionId: "checkout-session",
+    expect(router.state.location.search).toMatchObject({
+      session_id: "checkout-session",
+      source: "checkout",
     });
+  });
+
+  it.each([
+    ["/billing", "/settings/billing"],
+    [
+      "/billing/return?source=checkout&session_id=checkout-session",
+      "/settings/billing?source=checkout&session_id=checkout-session",
+    ],
+  ])("redirects the retired billing URL %s into settings", async (legacyPath, expectedPath) => {
+    const router = createAppRouter({
+      history: createMemoryHistory({ initialEntries: [legacyPath] }),
+    });
+
+    await router.load();
+    await waitFor(() => expect(router.state.location.href).toBe(expectedPath));
   });
 
   it("rejects illegal billing return states", () => {
@@ -93,6 +110,7 @@ describe("Osfo route tree", () => {
     expect(parseBillingReturnSearch({ session_id: "orphan" })).toEqual({
       _tag: "Invalid",
     });
+    expect(parseBillingReturnSearchString("?source=portal")).toEqual({ _tag: "Portal" });
   });
 
   it("restores the document language after localized navigation", async () => {

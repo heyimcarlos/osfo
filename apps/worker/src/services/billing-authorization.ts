@@ -3,7 +3,7 @@ import { Predicate } from "effect";
 import { Plan, type PlanPolicyVersion, type UserId } from "../domain";
 import type { AuthSessionId } from "../domain/auth-session";
 import { retainedCatalog } from "../domain/plan-policy";
-import { Authorization } from "./authorization";
+import { Authorization, emptyLiveResourceFacts } from "./authorization";
 
 /** Authenticated and persisted facts required to authorize one billing operation. */
 export interface BillingAuthorizationFacts {
@@ -64,12 +64,8 @@ export const admit = (facts: BillingAuthorizationFacts, operation: BillingOperat
         },
         deletionAccess: facts.deletionAccess,
         gmailConnection: null,
-        liveFacts: {
-          activeGmSummonsInSession: 0n,
-          activeReminders: 0n,
-          concurrentWorkflows: 0n,
-          retainedFileBytes: 0n,
-        },
+        integrationConnections: [],
+        liveFacts: emptyLiveResourceFacts,
         now,
         originatingAuthority: {
           _tag: "AuthSession",

@@ -1,46 +1,87 @@
 import type { BillingSummary } from "@osfo/api";
 import { Button } from "@osfo/ui/components/button";
-import { Link } from "@tanstack/react-router";
+import { GlassPanel } from "@osfo/ui/components/glass-panel";
+import { Progress } from "@osfo/ui/components/progress";
+import { Effect } from "effect";
 import { Check, CreditCard } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouterState } from "@tanstack/react-router";
+
+import {
+  inspectBilling,
+  openBillingPortal,
+  reconcileBilling,
+  startBillingCheckout,
+} from "../lib/api-client";
+import { parseBillingReturnSearchString, type BillingReturnSearch } from "../lib/billing-return";
+
+/* oxlint-disable eslint/no-underscore-dangle -- Typed billing return states use the standard _tag discriminator. */
+
+/** Billing controls rendered inside the authenticated Settings dashboard. */
+export function SettingsBillingPage() {
+  const search = useRouterState({ select: (state) => state.location.searchStr });
+  const returnState = useMemo(() => parseBillingReturnSearchString(search), [search]);
+  const [summary, setSummary] = useState<BillingSummary | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const load = billingLoad(returnState);
+    if (load === null) {
+      setError("Billing is temporarily unavailable. Please try again.");
+      return;
+    }
+    void Effect.runPromise(load).then(setSummary, () =>
+      setError("Billing is temporarily unavailable. Please try again."),
+    );
+  }, [returnState]);
+  const redirect = (effect: typeof startBillingCheckout) => {
+    setBusy(true);
+    setError(null);
+    void Effect.runPromise(effect).then(
+      ({ url }) => globalThis.location.assign(url.href),
+      () => {
+        setBusy(false);
+        setError("Billing is temporarily unavailable. Please try again.");
+      },
+    );
+  };
+  if (summary === null)
+    return (
+      <div className="grid min-h-64 place-items-center text-center">
+        {error ?? "Loading billing..."}
+      </div>
+    );
+  return (
+    <div>
+      {error === null ? null : <p role="alert">{error}</p>}
+      <SettingsBillingContent
+        busy={busy}
+        onCheckout={() => redirect(startBillingCheckout)}
+        onPortal={() => redirect(openBillingPortal)}
+        summary={summary}
+      />
+    </div>
+  );
+}
 
 /** Safe Plan and hosted-billing actions for one authenticated User. */
-export function BillingScreen({
+export function SettingsBillingContent({
   busy = false,
-  presentation = "standalone",
   onCheckout,
   onPortal,
   summary,
 }: {
   readonly busy?: boolean;
-  readonly presentation?: "settings" | "standalone";
   readonly onCheckout: () => void;
   readonly onPortal: () => void;
   readonly summary: BillingSummary;
 }) {
   const currentPlan = summary.currentPlan === "adventurer" ? "Adventurer" : "Free";
   return (
-    <main
-      className={
-        presentation === "settings"
-          ? "text-[#16213f]"
-          : "min-h-dvh bg-background px-5 py-10 text-foreground"
-      }
-    >
-      <section className={presentation === "settings" ? "mx-auto" : "mx-auto max-w-5xl"}>
-        {presentation === "settings" ? null : (
-          <div className="mb-8">
-            <Link className="font-bold underline" to="/">
-              Back to Osfo
-            </Link>
-            <p className="mt-8 text-sm font-bold uppercase tracking-[0.18em] text-muted-foreground">
-              Billing
-            </p>
-            <h1 className="mt-2 text-4xl font-black uppercase sm:text-6xl">{currentPlan}</h1>
-          </div>
-        )}
-
+    <div className="text-[#16213f]">
+      <div className="mx-auto">
         <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-          <section className="flex min-h-[32rem] flex-col rounded-[1.5rem] border border-white/85 bg-white/68 p-6 shadow-[0_14px_36px_rgba(63,88,124,0.11)]">
+          <GlassPanel className="flex min-h-[32rem] flex-col p-6">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="font-bold">Current Plan</h2>
@@ -80,14 +121,34 @@ export function BillingScreen({
                   </strong>
                 </p>
               )}
-              <div className="mt-7 h-2 overflow-hidden rounded-full bg-[#dbe7f6]">
-                <span className="block h-full w-[62%] rounded-full bg-[#2f7df4]" />
-              </div>
+              {summary.usage === null ? null : (
+                <div className="mt-7">
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <strong>{summary.usage.label} Plan Usage remaining</strong>
+                    <span className="text-xs text-[#687896]">
+                      Resets {formatDate(summary.usage.resetAt)}
+                    </span>
+                  </div>
+                  <Progress
+                    aria-label={`${summary.usage.label} Plan Usage remaining`}
+                    className="mt-3 bg-[#dbe7f6]"
+                    indicatorClassName="bg-[#2f7df4]"
+                    value={summary.usage.remainingPercentage}
+                  />
+                  {summary.usage.warning === null ? null : (
+                    <p className="mt-3 text-sm font-semibold text-amber-800">
+                      {summary.usage.warning === "exhausted"
+                        ? `Plan Usage is exhausted. Higher-cost work resumes ${formatDate(summary.usage.resetAt)}.`
+                        : `Your Plan Usage is running low. It resets ${formatDate(summary.usage.resetAt)}.`}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
-          </section>
+          </GlassPanel>
 
           <div className="grid content-start gap-5">
-            <section className="rounded-[1.5rem] border border-white/85 bg-white/68 p-5 shadow-[0_14px_36px_rgba(63,88,124,0.11)]">
+            <GlassPanel>
               <h2 className="font-bold">Payment Method</h2>
               <div className="mt-4 flex items-center gap-3">
                 <span className="grid size-11 place-items-center rounded-xl bg-[#edf4ff] text-[#2f7df4]">
@@ -112,9 +173,9 @@ export function BillingScreen({
                   Update
                 </Button>
               </div>
-            </section>
+            </GlassPanel>
 
-            <section className="rounded-[1.5rem] border border-white/85 bg-white/68 p-5 shadow-[0_14px_36px_rgba(63,88,124,0.11)]">
+            <GlassPanel>
               <h2 className="font-bold">Billing History</h2>
               <div className="mt-4 rounded-xl border border-[#dbe4f0] bg-white/50 p-4 text-sm">
                 {summary.period === null ? (
@@ -134,9 +195,9 @@ export function BillingScreen({
               >
                 View invoices in secure billing →
               </button>
-            </section>
+            </GlassPanel>
 
-            <section className="rounded-[1.5rem] border border-white/85 bg-white/68 p-5 shadow-[0_14px_36px_rgba(63,88,124,0.11)]">
+            <GlassPanel>
               <h2 className="font-bold">Promo Code</h2>
               <div className="mt-3 flex gap-3">
                 <input
@@ -149,7 +210,7 @@ export function BillingScreen({
                   Apply
                 </Button>
               </div>
-            </section>
+            </GlassPanel>
           </div>
         </div>
 
@@ -168,10 +229,28 @@ export function BillingScreen({
             <p className="text-sm text-[#687896]">Adventurer is CA$25 each month, plus tax.</p>
           </div>
         ) : null}
-      </section>
-    </main>
+      </div>
+    </div>
   );
 }
+
+const billingLoad = (returnState: BillingReturnSearch): typeof inspectBilling | null => {
+  switch (returnState._tag) {
+    case "Checkout":
+      return reconcileBilling({
+        reason: "checkoutReturn",
+        stripeCheckoutSessionId: returnState.checkoutSessionId,
+      }).pipe(Effect.andThen(inspectBilling));
+    case "Portal":
+      return reconcileBilling({ reason: "portalReturn" }).pipe(Effect.andThen(inspectBilling));
+    case "Ordinary":
+      return inspectBilling;
+    case "Invalid":
+      return null;
+  }
+  returnState satisfies never;
+  return null;
+};
 
 const planFeatures = (plan: BillingSummary["currentPlan"]): ReadonlyArray<string> =>
   plan === "free"

@@ -33,7 +33,6 @@ import {
   ThinkRequestId,
 } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
-import { ContentId } from "../../domain/client-content";
 import { DocumentArtifact } from "../../domain/document-artifact";
 import { DocumentGenerationComposition } from "../../composition/document-generation";
 import { Db } from "../../db";
@@ -67,7 +66,11 @@ import {
   launchModelAccessPolicy,
   type ManagedRouteUnavailable,
 } from "../../domain/model-access-policy";
-import { currentPolicy, retainedCatalog, type PlanPolicyNotFound } from "../../domain/plan-policy";
+import {
+  currentLaunchPolicy,
+  retainedCatalog,
+  type PlanPolicyNotFound,
+} from "../../domain/plan-policy";
 import {
   CommittedTurnTerminal,
   persistThinkTerminalBeforeCapture,
@@ -108,6 +111,7 @@ import {
   boundCoreMemory,
   clearCoreMemory,
   configureCoreMemory,
+  coreMemoryLabelFor,
   coreMemoryTools,
   type CoreMemoryBudgetExceeded,
   type CoreMemoryBound,
@@ -124,6 +128,8 @@ import {
 import { Allowances } from "../../services/allowances";
 import { makeActionApprovals } from "../../services/action-approvals";
 import {
+  approvalFor,
+  type ApprovalPresentation,
   Authorization,
   restoreCoreMemoryAuthorization,
   type ApprovalRequired,
@@ -132,6 +138,7 @@ import {
 } from "../../services/authorization";
 import { DocumentGeneration } from "../../services/document-generation";
 import { makeDurableModelCallUsage } from "../../services/model-call-usage";
+import { makeManagedActionAuthorization } from "../../services/managed-action-authorization";
 import {
   makeSessionLifecycle,
   type SessionAuthorizationFactsFound,
@@ -176,15 +183,13 @@ import {
   makeAgentStore,
 } from "./db/store";
 import {
-  ActionPresentation,
+  type ActionPresentation,
   type ActionPresentationFound,
-  ActionPresentationId,
   type ActionPresentationNotFound,
-  ActionPresentationUnavailable,
+  type ActionPresentationUnavailable,
   ActionApprovalRequestInvalid,
   ApprovalActorAuthorizationUnavailable,
-  type ApprovalActor,
-  ApprovalActorUnauthorized,
+  type ApprovalActorUnauthorized,
   type ApprovalAlreadyResolved,
   type ApprovalDecisionAccepted,
   CancelActionApprovalRequest,
@@ -195,10 +200,17 @@ import {
 } from "./think-action-approvals";
 import {
   coreMemoryClearActionName,
+  documentDeleteActionName,
   makeOsfoActions,
   presentOsfoAction,
+  RetainedDocumentInput,
   sanitizePendingApproval,
 } from "./action-registry";
+import {
+  approvalPresentationFor,
+  hasExactActionInput,
+  makeActionPresentationPersistence,
+} from "./action-presentation";
 import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-authorization";
 import { makeAgentSessionLifecycle } from "./session-lifecycle";
 import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
@@ -248,9 +260,6 @@ const GenerateDocumentInput = Schema.Struct({
   format: DocumentArtifact.DocumentFormat,
   source: DocumentGeneration.DocumentSource,
 });
-const RetainedDocumentInput = Schema.Struct({ contentId: ContentId });
-const documentDeleteActionName = "deleteDocument";
-
 /** RPC representation of one managed conversation submission. */
 export type SubmitManagedConversationRequest = typeof SubmitManagedConversationInput.Encoded;
 
@@ -357,7 +366,7 @@ export class OsfoAgent extends Think<Env> {
   override sendReasoning = false;
 
   /** Free policy is the safe class fallback. Every admitted turn overrides it from metadata. */
-  override maxSteps = Number(currentPolicy.plans.free.operationLimits.modelStepsPerRequest);
+  override maxSteps = Number(currentLaunchPolicy.plans.free.operationLimits.modelStepsPerRequest);
 
   /** Never replay an uncertain external effect from an abandoned pending ledger row. */
   override actionLedgerPendingRetryLeaseMs = false as const;
@@ -397,7 +406,14 @@ export class OsfoAgent extends Think<Env> {
   });
   #activeModelStepNumber = ModelStepNumber.make(1);
   readonly #completedModelSteps = new Set<number>();
-  readonly #currentApprovalAuthorization = new Map<ActionId, AuthorizationContext>();
+  readonly #currentApprovedActions = new Map<
+    ActionId,
+    {
+      readonly actionPresentation: ActionPresentation;
+      readonly operation: "file.delete" | "memory.clear";
+      readonly presentation: ApprovalPresentation;
+    }
+  >();
   readonly #actionApprovals = makeActionApprovals({
     authorizer: { ownsAgent: (userId) => this.#userOwnsAgent(userId) },
     lifecycle: makeThinkActionApprovalAdapter({
@@ -408,7 +424,8 @@ export class OsfoAgent extends Think<Env> {
       },
     }),
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-    present: presentProtectedAction,
+    present: presentOsfoAction,
+    presentations: makeActionPresentationPersistence(this.ctx.storage),
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
   readonly #memoryProviderOutbox = makeMemoryProviderOutboxStore(this.#db);
@@ -485,6 +502,9 @@ export class OsfoAgent extends Think<Env> {
             }),
         ),
       ),
+  });
+  readonly #managedActionAuthorization = makeManagedActionAuthorization({
+    inspectAuthorization: (identity) => this.#inspectSessionRecallAuthorization(identity),
   });
   readonly #agentSessionLifecycle = makeAgentSessionLifecycle({
     activateCurrentSession: () => this.#activateCurrentSession(),
@@ -703,15 +723,7 @@ export class OsfoAgent extends Think<Env> {
   /** Keep inherited pending-Approval RPC output client-safe for every registered Action. */
   override async pendingApprovals(executionId?: string): Promise<Array<PendingApproval>> {
     const pending = await super.pendingApprovals(executionId);
-    return pending.map((approval) =>
-      approval.source === "action" && approval.descriptor.action === documentDeleteActionName
-        ? Object.assign({}, approval, {
-            descriptor: Object.assign({}, approval.descriptor, {
-              input: sanitizeDocumentDeleteInput(approval.descriptor.input),
-            }),
-          })
-        : sanitizePendingApproval(approval),
-    );
+    return pending.map(sanitizePendingApproval);
   }
 
   /** Apply only the route and limits pinned to the current durable Think Submission. */
@@ -1053,25 +1065,53 @@ export class OsfoAgent extends Think<Env> {
 
   async #clearCoreMemory(input: Parameters<typeof clearCoreMemory>[1], actionId: ActionId) {
     await this.#migrationsReady;
-    const current = this.#currentApprovalAuthorization.get(actionId);
-    if (current === undefined) {
+    const current = this.#currentApprovedActions.get(actionId);
+    if (
+      current === undefined ||
+      current.operation !== "memory.clear" ||
+      !hasExactActionInput(
+        current.actionPresentation,
+        "memory.clear",
+        coreMemoryLabelFor(input.block),
+      )
+    ) {
       return new CoreMemoryUnavailable({
         cause: actionId,
         message: "Current Core Memory authority is unavailable",
         operation: "clear",
       });
     }
-    const recheck = authorization.recheck(
-      {
-        ...current,
-        approval: {
-          actionId,
-          operation: "memory.clear",
-          userId: current.user.userId,
-        },
-      },
-      { actionId, kind: "memory.clear" },
+    const recheck = await runRpc(
+      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata).pipe(
+        Effect.mapError(
+          (cause) =>
+            new CoreMemoryUnavailable({
+              cause,
+              message: "Current Core Memory authority is unavailable",
+              operation: "clear",
+            }),
+        ),
+        Effect.flatMap((metadata) =>
+          this.#managedActionAuthorization
+            .recheck(
+              metadata.authorityIdentity,
+              { actionId, kind: "memory.clear" },
+              current.presentation,
+            )
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new CoreMemoryUnavailable({
+                    cause,
+                    message: "Current Core Memory authority could not be loaded",
+                    operation: "clear",
+                  }),
+              ),
+            ),
+        ),
+      ),
     );
+    if (Predicate.isTagged(recheck, "CoreMemoryUnavailable")) return recheck;
     if (Predicate.isTagged(recheck, "Denied")) return recheck;
     await this.#activateCurrentSession();
     return runRpc(clearCoreMemory(this.session, input));
@@ -1380,18 +1420,14 @@ export class OsfoAgent extends Think<Env> {
               const actionId = found.presentation.actionId;
               if (
                 parsed.decision === "approve" &&
-                found.presentation.operation === "memory.clear"
+                (found.presentation.operation === "memory.clear" ||
+                  found.presentation.operation === "file.delete")
               ) {
-                if (!authorizationMatchesActor(parsed.authorization, parsed.actor)) {
-                  return Effect.fail(
-                    new ApprovalActorUnauthorized({
-                      message: "The current Authorization context does not match the actor",
-                      presentationId: parsed.presentationId,
-                      userId: parsed.actor.userId,
-                    }),
-                  );
-                }
-                this.#currentApprovalAuthorization.set(actionId, parsed.authorization);
+                this.#currentApprovedActions.set(actionId, {
+                  actionPresentation: found.presentation,
+                  operation: found.presentation.operation,
+                  presentation: approvalPresentationFor(found.presentation),
+                });
               }
               return this.#actionApprovals
                 .dispatch(
@@ -1401,9 +1437,7 @@ export class OsfoAgent extends Think<Env> {
                   parsed.reason,
                 )
                 .pipe(
-                  Effect.ensuring(
-                    Effect.sync(() => this.#currentApprovalAuthorization.delete(actionId)),
-                  ),
+                  Effect.ensuring(Effect.sync(() => this.#currentApprovedActions.delete(actionId))),
                 );
             }),
           ),
@@ -1558,7 +1592,7 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
-  async #exportDocument(input: typeof RetainedDocumentInput.Type, toolCallId: string) {
+  async #exportDocument(input: RetainedDocumentInput, toolCallId: string) {
     await this.#migrationsReady;
     const currentAuthorization = () => this.#currentDocumentAuthorization(0n);
     const runtime = Option.getOrUndefined(this.#runtime);
@@ -1586,13 +1620,25 @@ export class OsfoAgent extends Think<Env> {
     return { artifact, delivery: "authenticated-retained-content" } as const;
   }
 
-  async #deleteDocument(input: typeof RetainedDocumentInput.Type, toolCallId: string) {
+  async #deleteDocument(input: RetainedDocumentInput, toolCallId: string) {
     await this.#migrationsReady;
     const actionId = ActionId.make(toolCallId);
+    const approved = this.#currentApprovedActions.get(actionId);
+    if (
+      approved === undefined ||
+      approved.operation !== "file.delete" ||
+      !hasExactActionInput(approved.actionPresentation, "file.delete", input.contentId)
+    ) {
+      throw new DocumentGeneration.DocumentAuthorizationUnavailable({
+        cause: actionId,
+        message: "The approved document presentation is unavailable",
+      });
+    }
     const currentAuthorization = () =>
       this.#currentDocumentAuthorization(0n, {
         actionId,
         operation: "file.delete",
+        presentation: approved.presentation,
       });
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime === undefined) throw invalidOsfoEnvironment;
@@ -1622,6 +1668,7 @@ export class OsfoAgent extends Think<Env> {
     approval?: {
       readonly actionId: ActionId;
       readonly operation: "file.delete";
+      readonly presentation: ApprovalPresentation;
     },
   ) {
     // oxlint-disable-next-line effecttsgo/prefer-typed-schema-decoder -- Agent metadata is optional and supplied by the external Think boundary.
@@ -1659,11 +1706,11 @@ export class OsfoAgent extends Think<Env> {
           approval:
             approval === undefined
               ? null
-              : {
-                  actionId: approval.actionId,
-                  operation: approval.operation,
-                  userId: currentContext.user.userId,
-                },
+              : approvalFor(
+                  currentContext.user.userId,
+                  { actionId: approval.actionId, kind: approval.operation },
+                  approval.presentation,
+                ),
           requestVendorUsdMicros,
         }),
       ),
@@ -2373,26 +2420,6 @@ const readAiGatewayLogId = (
   );
 };
 
-const authorizationMatchesActor = (
-  context: AuthorizationContext,
-  actor: ApprovalActor,
-): boolean => {
-  const authority = context.authority;
-  if (authority === null || authority.userId !== actor.userId) return false;
-  if (Predicate.isTagged(actor, "AuthSession")) {
-    return (
-      (Predicate.isTagged(authority, "AuthSession") ||
-        Predicate.isTagged(authority, "RevokedAuthSession")) &&
-      authority.authSessionId === actor.authSessionId
-    );
-  }
-  return (
-    (Predicate.isTagged(authority, "ChannelLink") ||
-      Predicate.isTagged(authority, "RevokedChannelLink")) &&
-    authority.channelLinkId === actor.channelLinkId
-  );
-};
-
 const summarizeManagedSession = (prompt: string): Promise<string> => {
   const initialMarker = "CONVERSATION TO SUMMARIZE:\n";
   const updateMarker = "PREVIOUS SUMMARY:\n";
@@ -2466,33 +2493,3 @@ const runRpc = <A, E>(effect: Effect.Effect<A, E>): Promise<A | E> =>
       }),
     ),
   );
-
-const presentProtectedAction = (pending: Parameters<typeof presentOsfoAction>[0]) =>
-  pending.descriptor.action === documentDeleteActionName
-    ? Schema.decodeUnknownEffect(RetainedDocumentInput)(pending.descriptor.input).pipe(
-        Effect.mapError(
-          () =>
-            new ActionPresentationUnavailable({
-              action: pending.descriptor.action,
-              message: "The document deletion input cannot be projected safely",
-            }),
-        ),
-        Effect.map((input) =>
-          ActionPresentation.make({
-            actionDefinitionVersion: "osfo-delete-generated-document-v1",
-            actionId: ActionId.make(pending.descriptor.toolCallId),
-            consequences: ["Permanently delete the retained generated document."],
-            description: "Delete the exact retained document shown here.",
-            fields: [{ label: "Content", name: "contentId", value: input.contentId }],
-            operation: "file.delete",
-            presentationId: ActionPresentationId.make(pending.executionId),
-            title: "Delete generated document",
-          }),
-        ),
-      )
-    : presentOsfoAction(pending);
-
-/* oxlint-disable osfo/no-unknown-parameters -- This is the parser at Think's descriptor boundary. */
-const sanitizeDocumentDeleteInput = (input: unknown) =>
-  Option.getOrElse(Schema.decodeUnknownOption(RetainedDocumentInput)(input), () => ({}));
-/* oxlint-enable osfo/no-unknown-parameters */

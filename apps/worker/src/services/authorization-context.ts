@@ -1,5 +1,5 @@
 import type { Plan, PlanPolicyVersion, UserId } from "../domain";
-import { AuthorizationContext } from "./authorization";
+import { AuthorizationContext, emptyLiveResourceFacts } from "./authorization";
 
 /** Current facts shared by authenticated HTTP and durable protected-effect entry points. */
 export interface CurrentAuthorizationFacts {
@@ -20,12 +20,8 @@ export const project = (facts: CurrentAuthorizationFacts): AuthorizationContext 
     authority: facts.authority,
     deletionAccess: { _tag: "DeletionAccessAvailable" },
     gmailConnection: null,
-    liveFacts: {
-      activeGmSummonsInSession: 0n,
-      activeReminders: 0n,
-      concurrentWorkflows: 0n,
-      retainedFileBytes: 0n,
-    },
+    integrationConnections: [],
+    liveFacts: emptyLiveResourceFacts,
     now: facts.now,
     originatingAuthority: facts.originatingAuthority,
     requestVendorUsdMicros: 0n,

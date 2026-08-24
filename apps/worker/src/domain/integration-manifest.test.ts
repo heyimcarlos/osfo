@@ -1,0 +1,251 @@
+import { describe, expect, it } from "@effect/vitest";
+import { Result } from "effect";
+
+import { ManifestVersion } from "../domain";
+import { parseManifestCatalog, resolveManifest } from "./integration-manifest";
+
+describe("Integration Capability Manifests", () => {
+  it("resolves only an exact immutable operation and manifest version", () => {
+    const resolved = resolveManifest({
+      manifestVersion: ManifestVersion.make("gmail-v1"),
+      operation: "GMAIL_FETCH_THREAD",
+      toolkit: "gmail",
+    });
+    expect(Result.getOrThrow(resolved)).toMatchObject({
+      consequences: [],
+      exhaustedMode: { _tag: "EmailThread", maximumMessages: 20 },
+      hardBounds: {
+        maximumRecords: 20,
+        maximumResponseBytes: 65_536n,
+        mutations: 0,
+        providerExecutions: 1,
+      },
+      manifestVersion: ManifestVersion.make("gmail-v1"),
+      safeErrors: [
+        "connectionUnavailable",
+        "inputRejected",
+        "notFound",
+        "providerRateLimited",
+        "providerUnavailable",
+        "resultInvalid",
+      ],
+    });
+    expect(
+      Result.isFailure(
+        resolveManifest({
+          manifestVersion: ManifestVersion.make("gmail-v1"),
+          operation: "GMAIL_UNKNOWN",
+          toolkit: "gmail",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      Result.isFailure(
+        resolveManifest({
+          manifestVersion: ManifestVersion.make("gmail-v2"),
+          operation: "GMAIL_FETCH_THREAD",
+          toolkit: "gmail",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps approval consequence-based across providers", () => {
+    expect(
+      Result.getOrThrow(
+        resolveManifest({
+          manifestVersion: ManifestVersion.make("gmail-v1"),
+          operation: "GMAIL_CREATE_DRAFT",
+          toolkit: "gmail",
+        }),
+      ).consequences,
+    ).toEqual([]);
+    expect(
+      Result.getOrThrow(
+        resolveManifest({
+          manifestVersion: ManifestVersion.make("gmail-v1"),
+          operation: "GMAIL_SEND_EMAIL",
+          toolkit: "gmail",
+        }),
+      ).consequences,
+    ).toEqual(["externalCommunication"]);
+    expect(
+      Result.getOrThrow(
+        resolveManifest({
+          manifestVersion: ManifestVersion.make("calendar-v1"),
+          operation: "CALENDAR_CREATE_PRIVATE",
+          toolkit: "googlecalendar",
+        }),
+      ).consequences,
+    ).toEqual([]);
+    expect(
+      Result.getOrThrow(
+        resolveManifest({
+          manifestVersion: ManifestVersion.make("calendar-v1"),
+          operation: "CALENDAR_UPDATE_EVENT",
+          toolkit: "googlecalendar",
+        }),
+      ).consequences,
+    ).toEqual(["destructionOrOverwrite"]);
+  });
+
+  it("rejects unknown manifest fields at the trust boundary", () => {
+    const result = parseManifestCatalog({ manifests: [], surprise: true });
+    expect(Result.isFailure(result)).toBe(true);
+  });
+
+  it("decodes provider input and completed evidence through operation-owned bounds", () => {
+    const manifest = Result.getOrThrow(
+      resolveManifest({
+        manifestVersion: ManifestVersion.make("gmail-v1"),
+        operation: "GMAIL_FETCH_THREAD",
+        toolkit: "gmail",
+      }),
+    );
+
+    expect(
+      Result.isSuccess(
+        manifest.decodeInput({
+          includeAttachments: false,
+          maximumMessages: 20,
+          threadId: "thread-1",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      Result.isFailure(
+        manifest.decodeInput({
+          includeAttachments: false,
+          maximumMessages: 21,
+          threadId: "thread-1",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      Result.isSuccess(
+        manifest.decodeCompletedEvidence({
+          _tag: "CompletedIntegrationRead",
+          providerExecutionId: "execution-1",
+          records: 20,
+          responseBytes: 65_536n,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      Result.isFailure(
+        manifest.decodeCompletedEvidence({
+          _tag: "CompletedIntegrationRead",
+          providerExecutionId: "execution-1",
+          providerPayload: { secret: "must not persist" },
+          records: 20,
+          responseBytes: 65_536n,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("gives every retained operation an executable input and evidence contract", () => {
+    const cases = [
+      {
+        evidence: {
+          _tag: "CompletedIntegrationRead",
+          providerExecutionId: "gmail-read",
+          records: 20,
+          responseBytes: 65_536n,
+        },
+        identity: {
+          manifestVersion: "gmail-v1",
+          operation: "GMAIL_FETCH_THREAD",
+          toolkit: "gmail",
+        },
+        input: { includeAttachments: false, maximumMessages: 20, threadId: "thread-1" },
+      },
+      ...["GMAIL_CREATE_DRAFT", "GMAIL_SEND_EMAIL"].map((operation) => ({
+        evidence: {
+          _tag: "CompletedIntegrationEffect",
+          mutations: 1,
+          providerExecutionId: `gmail-effect:${operation}`,
+        },
+        identity: { manifestVersion: "gmail-v1", operation, toolkit: "gmail" },
+        input: { body: "Message body", recipients: ["person@example.test"], subject: "Subject" },
+      })),
+      {
+        evidence: {
+          _tag: "CompletedIntegrationRead",
+          providerExecutionId: "calendar-read",
+          records: 10,
+          responseBytes: 65_536n,
+        },
+        identity: {
+          manifestVersion: "calendar-v1",
+          operation: "CALENDAR_LIST_EVENTS",
+          toolkit: "googlecalendar",
+        },
+        input: {
+          calendarId: "primary",
+          endsAt: "2026-09-14T00:00:00Z",
+          maximumEvents: 10,
+          startsAt: "2026-09-01T00:00:00Z",
+        },
+      },
+      {
+        evidence: {
+          _tag: "CompletedIntegrationEffect",
+          mutations: 1,
+          providerExecutionId: "calendar-create",
+        },
+        identity: {
+          manifestVersion: "calendar-v1",
+          operation: "CALENDAR_CREATE_PRIVATE",
+          toolkit: "googlecalendar",
+        },
+        input: {
+          attendeeCount: 0,
+          calendarId: "primary",
+          endsAt: "2026-09-01T13:00:00Z",
+          sendNotifications: false,
+          startsAt: "2026-09-01T12:00:00Z",
+          title: "Private event",
+        },
+      },
+      {
+        evidence: {
+          _tag: "CompletedIntegrationEffect",
+          mutations: 1,
+          providerExecutionId: "calendar-update",
+        },
+        identity: {
+          manifestVersion: "calendar-v1",
+          operation: "CALENDAR_UPDATE_EVENT",
+          toolkit: "googlecalendar",
+        },
+        input: { calendarId: "primary", change: "Move by one hour", eventId: "event-1" },
+      },
+      {
+        evidence: {
+          _tag: "CompletedIntegrationRead",
+          providerExecutionId: "drive-read",
+          records: 1,
+          responseBytes: 16_384n,
+        },
+        identity: {
+          manifestVersion: "drive-v1",
+          operation: "DRIVE_GET_METADATA",
+          toolkit: "googledrive",
+        },
+        input: { fileId: "file-1" },
+      },
+    ] as const;
+
+    for (const contract of cases) {
+      const manifest = Result.getOrThrow(
+        resolveManifest({
+          ...contract.identity,
+          manifestVersion: ManifestVersion.make(contract.identity.manifestVersion),
+        }),
+      );
+      expect(Result.isSuccess(manifest.decodeInput(contract.input))).toBe(true);
+      expect(Result.isSuccess(manifest.decodeCompletedEvidence(contract.evidence))).toBe(true);
+    }
+  });
+});

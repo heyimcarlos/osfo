@@ -1,23 +1,23 @@
 import { action, type PendingApproval } from "@cloudflare/think";
-import { Effect, Option, Schema } from "effect";
+import { Option, Schema } from "effect";
 
 import { ActionId } from "../../domain/action-execution";
 import type { Denied } from "../../services/authorization";
+import { documentDeleteActionName, RetainedDocumentInput } from "./action-presentation";
 import {
   ClearCoreMemoryInput,
   type CoreMemoryCleared,
   type CoreMemoryUnavailable,
-  coreMemoryLabelFor,
 } from "./core-memory";
-import {
-  ActionPresentation,
-  ActionPresentationId,
-  ActionPresentationUnavailable,
-  type PendingThinkAction,
-} from "./think-action-approvals";
 import { effectToolSchema } from "./effect-tool-schema";
 
-type SanitizedPendingApprovalInput = Partial<ClearCoreMemoryInput>;
+type SanitizedPendingApprovalInput = Partial<ClearCoreMemoryInput> | Partial<RetainedDocumentInput>;
+
+export {
+  documentDeleteActionName,
+  presentOsfoAction,
+  RetainedDocumentInput,
+} from "./action-presentation";
 
 /** Name registered with Think for the Core Memory clear Action. */
 export const coreMemoryClearActionName = "osfoClearCoreMemory";
@@ -58,34 +58,16 @@ export const sanitizePendingApproval = (approval: PendingApproval): PendingAppro
       ),
     );
   }
+  if (approval.descriptor.action === documentDeleteActionName) {
+    return withInput(
+      approval,
+      Schema.decodeUnknownOption(RetainedDocumentInput)(approval.descriptor.input).pipe(
+        Option.match({ onNone: () => ({}), onSome: (safe) => safe }),
+      ),
+    );
+  }
   return withoutInput(approval);
 };
-
-const presentCoreMemoryClearAction = (
-  pending: PendingThinkAction,
-): Effect.Effect<ActionPresentation, ActionPresentationUnavailable> =>
-  Schema.decodeUnknownEffect(ClearCoreMemoryInput)(pending.descriptor.input).pipe(
-    Effect.mapError(
-      () =>
-        new ActionPresentationUnavailable({
-          action: pending.descriptor.action,
-          message: "The Core Memory clear input cannot be projected safely",
-        }),
-    ),
-    Effect.map((input) => {
-      const label = coreMemoryLabelFor(input.block);
-      return ActionPresentation.make({
-        actionDefinitionVersion: "osfo-core-memory-clear-v1",
-        actionId: ActionId.make(pending.descriptor.toolCallId),
-        consequences: [`Permanently clear the ${label} block.`],
-        description: `Clear the ${label} block.`,
-        fields: [{ label: "Block", name: "block", value: label }],
-        operation: "memory.clear",
-        presentationId: ActionPresentationId.make(pending.executionId),
-        title: `Clear ${label}`,
-      });
-    }),
-  );
 
 const withInput = (
   approval: PendingApproval,
@@ -96,6 +78,3 @@ const withInput = (
   });
 
 const withoutInput = (approval: PendingApproval): PendingApproval => withInput(approval, {});
-
-/** Project one registered Action into its definition-owned safe presentation. */
-export const presentOsfoAction = presentCoreMemoryClearAction;

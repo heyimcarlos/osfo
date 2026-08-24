@@ -13,7 +13,7 @@ import type {
   FileUploadId,
 } from "../domain/file";
 import type { PlanPolicyCatalog } from "../domain/plan-policy";
-import { policyFor } from "../domain/plan-policy";
+import { isLaunchPolicy, policyFor } from "../domain/plan-policy";
 import type { DbTimestamp } from "../db";
 import type { AuthorizationContext, Interface as Authorization } from "./authorization";
 
@@ -303,6 +303,11 @@ export const makeFiles = <AllowanceError, ContextError, ObjectError, Persistence
       if (policy === undefined) {
         return yield* new FilePolicyUnavailable({ message: "The file Plan policy is unavailable" });
       }
+      if (!isLaunchPolicy(policy)) {
+        return yield* new FilePolicyUnavailable({
+          message: "Shared Plan Usage is not active for file work",
+        });
+      }
       const rules = policyFor(policy, admittedContext.subscription.plan);
       const normalizationVendorUsdMicros = rules.operationLimits.vendorUsdMicrosPerRequest;
       const context = withFileFacts(
@@ -589,6 +594,11 @@ export const makeFiles = <AllowanceError, ContextError, ObjectError, Persistence
       );
       if (policy === undefined) {
         return yield* new FilePolicyUnavailable({ message: "The file Plan policy is unavailable" });
+      }
+      if (!isLaunchPolicy(policy)) {
+        return yield* new FilePolicyUnavailable({
+          message: "Shared Plan Usage is not active for file work",
+        });
       }
       const analysisVendorUsdMicros = policyFor(policy, admittedContext.subscription.plan)
         .operationLimits.vendorUsdMicrosPerRequest;

@@ -16,6 +16,14 @@ export const BillingSummary = Schema.Struct({
   period: Schema.NullOr(
     Schema.Struct({ endsAt: Schema.DateFromString, startsAt: Schema.DateFromString }),
   ),
+  usage: Schema.NullOr(
+    Schema.Struct({
+      label: Schema.String,
+      remainingPercentage: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
+      resetAt: Schema.DateFromString,
+      warning: Schema.NullOr(Schema.Literals(["low", "exhausted"])),
+    }),
+  ),
 });
 
 /** Safe current Plan and billing-period presentation. */

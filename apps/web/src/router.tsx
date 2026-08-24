@@ -4,6 +4,7 @@ import {
   createRouter,
   lazyRouteComponent,
   Outlet,
+  redirect,
   type RouterHistory,
   useRouterState,
 } from "@tanstack/react-router";
@@ -12,7 +13,7 @@ import { AuthenticatedGate } from "./components/authenticated-gate";
 import { LoadingScreen } from "./components/loading-screen";
 import { NotFoundScreen } from "./components/not-found-screen";
 import { SettingsShell } from "./components/settings-shell";
-import { parseBillingReturnSearch } from "./lib/billing-return";
+import { billingReturnQuery, parseBillingReturnSearchString } from "./lib/billing-return";
 import { useDocumentLanguage } from "./lib/document-language";
 import { parseLocaleSearch, parseRegistrationSearch } from "./lib/route-locale";
 
@@ -114,7 +115,10 @@ const settingsProfileRoute = createRoute({
 const settingsBillingRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "settings/billing",
-  component: lazyRouteComponent(() => import("./pages/billing-page"), "BillingPage"),
+  component: lazyRouteComponent(
+    () => import("./pages/settings-billing-page"),
+    "SettingsBillingPage",
+  ),
 });
 const settingsMarketplaceRoute = createRoute({
   getParentRoute: () => settingsRoute,
@@ -124,18 +128,24 @@ const settingsMarketplaceRoute = createRoute({
     "SettingsMarketplacePage",
   ),
 });
-const billingRoute = createRoute({
+const legacyBillingRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "billing",
-  component: lazyRouteComponent(() => import("./pages/billing-page"), "BillingPage"),
+  beforeLoad: () => {
+    throw redirect({ replace: true, search: {}, to: "/settings/billing" });
+  },
 });
-const billingReturnRoute = createRoute({
+const legacyBillingReturnRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "billing/return",
-  validateSearch: parseBillingReturnSearch,
-  component: lazyRouteComponent(() => import("./pages/billing-page"), "BillingReturnPage"),
+  beforeLoad: ({ location }) => {
+    throw redirect({
+      replace: true,
+      search: billingReturnQuery(parseBillingReturnSearchString(location.searchStr)),
+      to: "/settings/billing",
+    });
+  },
 });
-
 const routeTree = rootRoute.addChildren([
   homeRoute,
   loginRoute,
@@ -153,8 +163,8 @@ const routeTree = rootRoute.addChildren([
       settingsBillingRoute,
       settingsMarketplaceRoute,
     ]),
-    billingRoute,
-    billingReturnRoute,
+    legacyBillingRoute,
+    legacyBillingReturnRoute,
   ]),
 ]);
 
