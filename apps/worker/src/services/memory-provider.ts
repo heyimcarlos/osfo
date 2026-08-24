@@ -150,7 +150,7 @@ export const summarizeUsageEvidence = (usage: UsageEvidence) => ({
   ),
 });
 
-/** One User container whose extraction guidance must be repaired after first ingest. */
+/** One User container whose extraction guidance must exist before first ingest. */
 export interface ConfigureUserGuidanceInput {
   readonly userId: UserId;
 }
@@ -177,6 +177,12 @@ export interface GetConversationStatusInput {
 /** Current provider processing state for one accepted conversation document. */
 export interface GetConversationStatusResult {
   readonly processingStatus: ConversationProcessingStatus;
+}
+
+/** A processed conversation whose indexed source must be visible before its bridge is released. */
+export interface CheckConversationSearchabilityInput {
+  readonly expectedSource: string;
+  readonly userId: UserId;
 }
 
 /** Exact approved derived memories to forget within one User scope. */
@@ -206,6 +212,7 @@ export const MemoryProviderOperation = Schema.Literals([
   "recall",
   "saveConversation",
   "getConversationStatus",
+  "checkConversationSearchability",
   "forgetKnowledge",
   "deleteSessionConversation",
   "deleteUserKnowledge",
@@ -272,6 +279,9 @@ export interface Interface {
     GetConversationStatusResult,
     MemoryProviderRejected | MemoryProviderUnavailable
   >;
+  readonly checkConversationSearchability: (
+    input: CheckConversationSearchabilityInput,
+  ) => Effect.Effect<boolean, MemoryProviderRejected | MemoryProviderUnavailable>;
   readonly saveConversation: (
     input: SaveConversationInput,
   ) => Effect.Effect<

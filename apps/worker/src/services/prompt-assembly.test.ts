@@ -513,6 +513,8 @@ const memoryLayerWithRecall = (recall: MemoryProvider.Interface["recall"]) =>
   Layer.succeed(
     MemoryProvider.Service,
     MemoryProvider.Service.of({
+      checkConversationSearchability: () =>
+        Effect.die(new Error("unexpected conversation searchability check")),
       configureOrganizationGuidance: Effect.die(new Error("unexpected organization configuration")),
       configureUserGuidance: () => Effect.die(new Error("unexpected User configuration")),
       deleteSessionConversation: () => Effect.die(new Error("unexpected Session delete")),

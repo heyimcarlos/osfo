@@ -446,9 +446,11 @@ _Avoid_: Native Memory, model provider, canonical truth store
 The v1 MemoryProvider adapter. It maps `UserId` to the provider permission scope
 and `SessionId` to the provider conversation identity without exposing provider
 SDK types to Osfo callers. It provisions versioned organization extraction
-guidance before the first structured conversation ingest and User guidance after
-provider acceptance. Normal recall combines profile evidence with hybrid memory
-and source-chunk search.
+guidance and upserts versioned User guidance before the first structured
+conversation ingest. Every ingest uses one stable User tag. It retains recent
+turn evidence after processing finishes until hybrid search returns the expected
+source. Normal recall combines profile evidence with hybrid memory and
+source-chunk search.
 _Avoid_: MemoryProvider interface, canonical memory store, generic document API
 
 **Forget Knowledge**:

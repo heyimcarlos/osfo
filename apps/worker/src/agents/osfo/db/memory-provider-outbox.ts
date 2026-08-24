@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, max, ne, or } from "drizzle-orm";
+import { and, asc, desc, eq, max, ne } from "drizzle-orm";
 import { Array, Effect, Option, Schema } from "effect";
 
 import { ResourcePriceVersion, SessionId, UserId } from "../../../domain";
@@ -230,10 +230,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
         .where(
           and(
             eq(memoryProviderOutbox.operation_type, "saveConversation"),
-            or(
-              isNull(memoryProviderOutbox.provider_status),
-              ne(memoryProviderOutbox.provider_status, "done"),
-            ),
+            ne(memoryProviderOutbox.status, "completed"),
           ),
         )
         .orderBy(desc(memoryProviderOutbox.sequence))

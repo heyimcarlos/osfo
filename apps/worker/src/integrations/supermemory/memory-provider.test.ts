@@ -202,7 +202,7 @@ it.effect("configures versioned organization and per-User extraction guidance", 
   ),
 );
 
-it.effect("keeps a missing post-ingest User container retryable", () =>
+it.effect("keeps a failed User-container upsert retryable", () =>
   withProvider(({ origin, respondWith }) =>
     Effect.gen(function* () {
       respondWith({ body: { error: "Container not found" }, status: 404 });
@@ -330,6 +330,83 @@ it.effect("reads the accepted conversation processing status by provider documen
           path: "/v3/documents/document-1",
         },
       ]);
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("confirms the expected processed source is searchable", () =>
+  withProvider(({ requests, origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: {
+          results: [
+            {
+              chunk: "user: Remember this",
+              documents: [{ id: "document-1" }],
+              id: "chunk-1",
+              similarity: 0.99,
+              updatedAt: "2026-08-24T12:00:00.000Z",
+            },
+          ],
+          timing: 9,
+          total: 1,
+        },
+        status: 200,
+      });
+      const memory = yield* MemoryProvider.Service;
+      const searchable = yield* memory.checkConversationSearchability({
+        expectedSource: "Remember this",
+        userId: UserId.make("user:with/provider-invalid characters"),
+      });
+
+      expect(searchable).toBe(true);
+      expect(requests).toEqual([
+        {
+          authorization: "Bearer test-api-key",
+          body: {
+            containerTag: "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY",
+            limit: 20,
+            q: "Remember this",
+            rerank: false,
+            rewriteQuery: false,
+            searchMode: "documents",
+            threshold: 0,
+          },
+          method: "POST",
+          path: "/v4/search",
+        },
+      ]);
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("keeps a processed conversation pending when search only returns stale source", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: {
+          results: [
+            {
+              chunk: "user: An older statement",
+              documents: [{ id: "document-1" }],
+              id: "chunk-1",
+              similarity: 0.99,
+              updatedAt: "2026-08-24T12:00:00.000Z",
+            },
+          ],
+          timing: 9,
+          total: 1,
+        },
+        status: 200,
+      });
+      const memory = yield* MemoryProvider.Service;
+
+      expect(
+        yield* memory.checkConversationSearchability({
+          expectedSource: "The corrected statement",
+          userId: UserId.make("user-1"),
+        }),
+      ).toBe(false);
     }).pipe(Effect.provide(providerLayer(origin))),
   ),
 );

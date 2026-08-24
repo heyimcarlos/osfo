@@ -203,7 +203,7 @@ it.effect("retains versioned provider configuration status across retries and mi
   ),
 );
 
-it.effect("recovers a deduplicated recent-turn bridge and removes indexed evidence", () =>
+it.effect("retains a deduplicated recent-turn bridge until indexed evidence is searchable", () =>
   withDatabase(({ database, storage }) =>
     Effect.gen(function* () {
       seedSession(database);
@@ -239,6 +239,10 @@ it.effect("recovers a deduplicated recent-turn bridge and removes indexed eviden
       ]);
 
       database.prepare("UPDATE osfo_memory_provider_outbox SET provider_status = 'done'").run();
+      expect(
+        (yield* outbox.readRecentTurnBridge(UserId.make("user-1"))).map(({ sourceId }) => sourceId),
+      ).toEqual(["conversation:9:session-1:assistant-1", "conversation:9:session-1:assistant-2"]);
+      database.prepare("UPDATE osfo_memory_provider_outbox SET status = 'completed'").run();
       expect(yield* outbox.readRecentTurnBridge(UserId.make("user-1"))).toEqual([]);
     }),
   ),
@@ -1048,6 +1052,7 @@ const deletion = (outboxId: string, sessionId: string, userId = "user-1", enqueu
 });
 
 const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvider.Interface => ({
+  checkConversationSearchability: () => Effect.succeed(true),
   configureOrganizationGuidance: Effect.void,
   configureUserGuidance: () => Effect.void,
   deleteSessionConversation: () => Effect.die(new Error("Unexpected Session deletion")),

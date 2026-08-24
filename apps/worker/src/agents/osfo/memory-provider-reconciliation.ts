@@ -77,6 +77,16 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
     );
     if (!organizationConfigured) return undefined;
 
+    const userConfigured = yield* ensureConfiguration(
+      store,
+      claim,
+      "user",
+      MemoryProvider.userGuidanceVersion,
+      provider.configureUserGuidance({ userId: projection.userId }),
+      claim.providerAcceptance !== null,
+    );
+    if (!userConfigured) return undefined;
+
     let acceptance = claim.providerAcceptance;
     let usage = claim.usage;
     if (acceptance === null) {
@@ -109,16 +119,6 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
       usage = saved.success.usage;
     }
 
-    const userConfigured = yield* ensureConfiguration(
-      store,
-      claim,
-      "user",
-      MemoryProvider.userGuidanceVersion,
-      provider.configureUserGuidance({ userId: projection.userId }),
-      true,
-    );
-    if (!userConfigured) return undefined;
-
     if (acceptance.processingStatus !== "done") {
       if (claim.providerAcceptance === null) {
         return yield* awaitProvider(store, claim, acceptance.processingStatus);
@@ -134,6 +134,19 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
       }
       const updated = yield* store.markProviderStatus(claim, "done");
       if (!updated) return undefined;
+    }
+
+    const searchable = yield* provider
+      .checkConversationSearchability({
+        expectedSource: conversationSearchSource(projection.conversation.messages),
+        userId: projection.userId,
+      })
+      .pipe(Effect.result);
+    if (Result.isFailure(searchable)) {
+      return yield* settleProviderFailure(store, claim, searchable.failure, true);
+    }
+    if (!searchable.success) {
+      return yield* awaitProvider(store, claim, "done");
     }
 
     if (usage === null || claim.allowancePeriodId === null) {
@@ -156,6 +169,17 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
     return undefined;
   },
 );
+
+const conversationSearchSource = (
+  messages: MemoryProvider.ConversationSnapshot["messages"],
+): string => {
+  const source =
+    messages.reduceRight<string | undefined>(
+      (query, message) => query ?? (message.role === "user" ? message.content : undefined),
+      undefined,
+    ) ?? messages[0].content;
+  return Array.from(source).slice(0, 256).join("");
+};
 
 const ensureConfiguration = Effect.fn("MemoryProviderOutbox.ensureConfiguration")(function* (
   store: MemoryProviderOutboxStore,

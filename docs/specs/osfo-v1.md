@@ -495,28 +495,30 @@ storage. SupermemoryMemoryProvider is the v1 adapter. It maps `containerTag` to
 `UserId` and `conversationId` to `SessionId`. This makes the Knowledge Base
 User-scoped across Sessions and routes. If one User owns several Agents later,
 they share this scope until a separate product decision changes it. The adapter
-applies versioned organization extraction guidance before the first ingest and
-versioned User entity context after the provider accepts that User's first
-conversation. The second ordering is a provider constraint: Osfo does not claim
-that User entity context governs extraction of the already accepted first
-snapshot. Durable Agent SQLite state makes both configuration operations
-idempotent and causes changed versions to be applied again. After each completed
-turn, Think commits the User and final assistant messages before an Agent-local
+applies versioned organization extraction guidance and upserts versioned User
+entity context before the first ingest. Every conversation write uses exactly
+one stable User container tag because Supermemory applies entity context only to
+single-tag ingestion and matches conversation updates against the exact tag
+array. Durable Agent SQLite state makes both configuration operations idempotent
+and causes changed versions to be applied again. After each completed turn,
+Think commits the User and final assistant messages before an Agent-local
 ordered outbox records a full conversation snapshot. Outbox records are
 synchronization machinery, not memory. The adapter sends the complete sanitized
 conversation as structured messages to Supermemory's turn-aware conversation
 endpoint and lets the provider detect net-new content. It never mixes document
 deltas with conversation snapshots, creates fixed time windows, or runs another
-LLM before ingestion.
+LLM before ingestion. Supermemory's `done` status ends processing but is not a
+search barrier. The outbox retains recent-turn evidence and polls hybrid search
+for the expected source before completing the write.
 Human-readable tool outcomes and supported human-visible source details can be
 included. Hidden reasoning, raw tool traces, credentials, secrets, aborted
 output, and infrastructure records are excluded.
 
-The caller-shaped interface has eight operations: configure organization
+The caller-shaped interface has nine operations: configure organization
 extraction guidance, configure User entity context, recall User-scoped context,
 save one ordered Session conversation snapshot, read its processing status,
-forget derived knowledge, delete one Session conversation, and delete all
-knowledge for one User.
+confirm its indexed source is searchable, forget derived knowledge, delete one
+Session conversation, and delete all knowledge for one User.
 Application-owned request, result, and typed failure values isolate callers from
 Supermemory SDK types. Provider selection is an internal composition decision,
 not a User setting.

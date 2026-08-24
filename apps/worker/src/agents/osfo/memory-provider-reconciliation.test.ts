@@ -119,50 +119,84 @@ it.effect("retries the exact conversation snapshot during a provider outage", ()
   );
 });
 
-it.effect(
-  "configures organization guidance before ingest and User guidance after acceptance",
-  () => {
-    const claim = conversationClaim();
-    const calls: Array<string> = [];
-    const { completed, retried, store } = testStore(claim, { configurationCurrent: false });
-    const provider = providerStub({
-      configureOrganizationGuidance: Effect.sync(() => {
-        calls.push("organization");
-      }),
-      configureUserGuidance: () => {
+it.effect("configures organization and User guidance before first ingest", () => {
+  const claim = conversationClaim();
+  const calls: Array<string> = [];
+  const { completed, retried, store } = testStore(claim, { configurationCurrent: false });
+  const provider = providerStub({
+    configureOrganizationGuidance: Effect.sync(() => {
+      calls.push("organization");
+    }),
+    configureUserGuidance: () =>
+      Effect.sync(() => {
         calls.push("user");
-        return Effect.fail(
-          new MemoryProvider.MemoryProviderUnavailable({
-            message: "The MemoryProvider User container is not ready",
-            operation: "configureUserGuidance",
-            status: 404,
-          }),
-        );
-      },
-      saveConversation: () => {
+      }),
+    saveConversation: () =>
+      Effect.sync(() => {
         calls.push("save");
-        return Effect.succeed({
+        return {
           documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
-          processingStatus: "processing",
+          processingStatus: "processing" as const,
           usage: providerUsage,
-        });
-      },
-    });
+        };
+      }),
+  });
 
-    return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
-      Effect.provideService(MemoryProvider.Service, provider),
-      Effect.provideService(Db.Service, unavailableDatabase),
-      Effect.provide(BrowserCrypto.layer),
-      Effect.andThen(
-        Effect.sync(() => {
-          expect(calls).toEqual(["organization", "save", "user"]);
-          expect(retried).toEqual([claim.outboxId]);
-          expect(completed).toEqual([]);
+  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(calls).toEqual(["organization", "user", "save"]);
+        expect(retried).toEqual([]);
+        expect(completed).toEqual([]);
+      }),
+    ),
+  );
+});
+
+it.effect("does not ingest when the User container cannot be configured", () => {
+  const claim = conversationClaim();
+  const calls: Array<string> = [];
+  const { completed, retried, store } = testStore(claim, { configurationCurrent: false });
+  const provider = providerStub({
+    configureOrganizationGuidance: Effect.sync(() => {
+      calls.push("organization");
+    }),
+    configureUserGuidance: () => {
+      calls.push("user");
+      return Effect.fail(
+        new MemoryProvider.MemoryProviderUnavailable({
+          message: "The MemoryProvider did not upsert the User container",
+          operation: "configureUserGuidance",
+          status: 404,
         }),
-      ),
-    );
-  },
-);
+      );
+    },
+    saveConversation: () => {
+      calls.push("save");
+      return Effect.succeed({
+        documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+        processingStatus: "processing",
+        usage: providerUsage,
+      });
+    },
+  });
+
+  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(calls).toEqual(["organization", "user"]);
+        expect(retried).toEqual([claim.outboxId]);
+        expect(completed).toEqual([]);
+      }),
+    ),
+  );
+});
 
 it.effect("repairs organization guidance for a conversation accepted before migration", () => {
   const base = conversationClaim();
@@ -189,6 +223,11 @@ it.effect("repairs organization guidance for a conversation accepted before migr
         calls.push("status");
         return { processingStatus: "done" as const };
       }),
+    checkConversationSearchability: () =>
+      Effect.sync(() => {
+        calls.push("search");
+        return true;
+      }),
   });
 
   return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
@@ -197,8 +236,41 @@ it.effect("repairs organization guidance for a conversation accepted before migr
     Effect.provide(BrowserCrypto.layer),
     Effect.andThen(
       Effect.sync(() => {
-        expect(calls).toEqual(["organization", "user", "status"]);
+        expect(calls).toEqual(["organization", "user", "status", "search"]);
         expect(completed).toEqual([claim.outboxId]);
+      }),
+    ),
+  );
+});
+
+it.effect("retains an indexed conversation until hybrid search returns its document", () => {
+  const base = conversationClaim();
+  const claim: ClaimedMemoryProviderWork = {
+    ...base,
+    providerAcceptance: {
+      documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+      processingStatus: "done",
+    },
+    usage: providerUsage,
+  };
+  const observed: Array<MemoryProvider.CheckConversationSearchabilityInput> = [];
+  const { awaited, completed, store } = testStore(claim);
+  const provider = providerStub({
+    checkConversationSearchability: (input) => {
+      observed.push(input);
+      return Effect.succeed(false);
+    },
+  });
+
+  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(observed).toEqual([{ expectedSource: "Remember this", userId: "user-1" }]);
+        expect(awaited).toEqual(["done"]);
+        expect(completed).toEqual([]);
       }),
     ),
   );
@@ -309,9 +381,17 @@ const testStore = (
   const failed: Array<MemoryProviderOutboxId> = [];
   const completed: Array<MemoryProviderOutboxId> = [];
   const retried: Array<MemoryProviderOutboxId> = [];
+  const awaited: Array<MemoryProvider.ConversationProcessingStatus> = [];
   let available = true;
   const store = {
-    awaitProvider: () => Effect.succeed(true),
+    awaitProvider: (
+      _work: ClaimedMemoryProviderWork,
+      status: MemoryProvider.ConversationProcessingStatus,
+    ) =>
+      Effect.sync(() => {
+        awaited.push(status);
+        return true;
+      }),
     claimNext: () =>
       Effect.sync(() => {
         if (!available) return Option.none<ClaimedMemoryProviderWork>();
@@ -348,10 +428,12 @@ const testStore = (
       }),
     requireConfiguration: () => Effect.succeed(options.configurationCurrent ?? true),
   } satisfies MemoryProviderOutboxStore;
-  return { completed, failed, retried, store };
+  return { awaited, completed, failed, retried, store };
 };
 
 const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvider.Interface => ({
+  checkConversationSearchability: () =>
+    Effect.die(new Error("Unexpected conversation searchability check")),
   configureOrganizationGuidance: Effect.die(
     new Error("Unexpected organization guidance configuration"),
   ),

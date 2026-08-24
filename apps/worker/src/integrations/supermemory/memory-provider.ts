@@ -16,6 +16,7 @@ import { MemoryProvider } from "../../services/memory-provider";
 
 const NonEmptyString = Schema.String.check(Schema.isMinLength(1));
 const SaveConversationRequest = Schema.Struct({
+  // Supermemory applies entity context and update deduplication only for this exact stable tag set.
   containerTags: Schema.Tuple([NonEmptyString]),
   conversationId: NonEmptyString,
   messages: Schema.NonEmptyArray(MemoryProvider.ConversationMessage),
@@ -80,6 +81,13 @@ const HybridSearchResponse = Schema.Struct({
   results: Schema.Array(HybridSearchResult),
   timing: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   total: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+const ConversationSearchabilityResponse = Schema.Struct({
+  results: Schema.Array(
+    Schema.Struct({
+      chunk: NonEmptyString,
+    }),
+  ),
 });
 const OrganizationGuidanceRequest = Schema.Struct({
   filterPrompt: NonEmptyString,
@@ -184,7 +192,7 @@ const make = (options: Options) =>
       if (operation === "configureUserGuidance" && response.status === 404) {
         // oxlint-disable-next-line typescript/consistent-return -- The yieldable error is a definitive failure exit, not a success value.
         return yield* new MemoryProvider.MemoryProviderUnavailable({
-          message: "The MemoryProvider User container is not ready",
+          message: "The MemoryProvider did not upsert the User container",
           operation,
           status: response.status,
         });
@@ -391,6 +399,37 @@ const make = (options: Options) =>
       },
     );
 
+    const checkConversationSearchability = Effect.fn(
+      "SupermemoryMemoryProvider.checkConversationSearchability",
+    )(function* (input: MemoryProvider.CheckConversationSearchabilityInput) {
+      const containerTag = yield* providerIdentity(
+        crypto,
+        "u",
+        input.userId,
+        "checkConversationSearchability",
+      );
+      const response = yield* sdk.use("checkConversationSearchability", (client, signal) =>
+        client.search(
+          {
+            containerTag,
+            limit: 20,
+            q: input.expectedSource,
+            rerank: false,
+            rewriteQuery: false,
+            searchMode: "documents",
+            threshold: 0,
+          },
+          { signal },
+        ),
+      );
+      const decoded = yield* decodeResponse(
+        "checkConversationSearchability",
+        ConversationSearchabilityResponse,
+        response,
+      );
+      return decoded.results.some(({ chunk }) => chunk.includes(input.expectedSource));
+    });
+
     const forgetKnowledge = Effect.fn("SupermemoryMemoryProvider.forgetKnowledge")(function* (
       input: MemoryProvider.ForgetKnowledgeInput,
     ) {
@@ -466,6 +505,7 @@ const make = (options: Options) =>
     );
 
     return MemoryProvider.Service.of({
+      checkConversationSearchability,
       configureOrganizationGuidance,
       configureUserGuidance,
       deleteSessionConversation,
@@ -518,12 +558,7 @@ const providerRejected = (operation: MemoryProvider.MemoryProviderOperation) =>
     operation,
   });
 
-/**
- * Supermemory's documented pipeline treats every state before `done` as processing and says
- * `done` makes the document path ready for search. That is the qualified ordering-release
- * boundary; later memory dreaming remains outside this ingestion barrier.
- * https://supermemory.ai/docs/concepts/how-it-works#what-the-pipeline-does
- */
+/** Supermemory `done` ends processing but does not guarantee hybrid-search visibility. */
 const decodeConversationProcessingStatus = <E>(
   operation: MemoryProvider.MemoryProviderOperation,
   // oxlint-disable-next-line osfo/no-unknown-parameters -- Status is isolated from an otherwise valid provider identity before it is decoded.
