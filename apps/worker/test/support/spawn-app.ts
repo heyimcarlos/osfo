@@ -63,7 +63,14 @@ interface RegistrationProfile {
   readonly preferredName: string | null;
 }
 
+interface MintVerifiedUserOptions {
+  readonly phoneNumber?: string;
+  readonly profile?: RegistrationProfile;
+}
+
 type JsonRequestBody = PhoneOtpRequest | PhoneOtpVerificationRequest | RegistrationProfile;
+
+let nextPhoneNumber = 1_000_000;
 
 /** Create one stateful HTTP client and observation surface for a Worker journey. */
 export const spawnApp = async () => {
@@ -80,20 +87,48 @@ export const spawnApp = async () => {
     return exports.default.fetch(new Request(`https://osfo.test${path}`, { ...init, headers }));
   };
 
+  const sendPhoneOtp = (phoneNumber: string) =>
+    jsonRequest(request, "/auth/phone-number/send-otp", "POST", { phoneNumber });
+  const verifyPhoneOtp = async (phoneNumber: string, code: string) => {
+    const response = await jsonRequest(request, "/auth/phone-number/verify", "POST", {
+      code,
+      phoneNumber,
+    });
+    cookie = response.headers.get("set-cookie")?.split(";")[0] ?? "";
+    return response;
+  };
+  const completeRegistration = async (profile: RegistrationProfile) => {
+    const response = await jsonRequest(request, "/v1/registration", "PUT", profile);
+    return {
+      body: response.ok
+        ? await Schema.decodeUnknownPromise(RegistrationResponse)(await response.json())
+        : undefined,
+      response,
+    };
+  };
+  const mintVerifiedUser = async (options: MintVerifiedUserOptions = {}) => {
+    const phoneNumber = options.phoneNumber ?? syntheticPhoneNumber();
+    const sent = await sendPhoneOtp(phoneNumber);
+    await requireSuccessfulResponse(sent, "Send phone OTP");
+    const verified = await verifyPhoneOtp(phoneNumber, "424242");
+    await requireSuccessfulResponse(verified, "Verify phone OTP");
+    const completed = await completeRegistration(
+      options.profile ?? { helpAreas: [], locale: "en", preferredName: null },
+    );
+    await requireSuccessfulResponse(completed.response, "Complete registration");
+    if (completed.body === undefined) {
+      throw new Error("Complete registration returned no User identity");
+    }
+    return { ...completed.body, phoneNumber };
+  };
+
   return {
     fetch: request,
     auth: {
+      mintVerifiedUser,
       session: () => request("/auth/get-session"),
-      sendPhoneOtp: (phoneNumber: string) =>
-        jsonRequest(request, "/auth/phone-number/send-otp", "POST", { phoneNumber }),
-      verifyPhoneOtp: async (phoneNumber: string, code: string) => {
-        const response = await jsonRequest(request, "/auth/phone-number/verify", "POST", {
-          code,
-          phoneNumber,
-        });
-        cookie = response.headers.get("set-cookie")?.split(";")[0] ?? "";
-        return response;
-      },
+      sendPhoneOtp,
+      verifyPhoneOtp,
     },
     database: {
       billingCheckout: async (userId: string) => {
@@ -129,15 +164,7 @@ export const spawnApp = async () => {
       },
     },
     registration: {
-      complete: async (profile: RegistrationProfile) => {
-        const response = await jsonRequest(request, "/v1/registration", "PUT", profile);
-        return {
-          body: response.ok
-            ? await Schema.decodeUnknownPromise(RegistrationResponse)(await response.json())
-            : undefined,
-          response,
-        };
-      },
+      complete: completeRegistration,
     },
     twilio: {
       ledger: async () => {
@@ -169,3 +196,14 @@ const jsonRequest = (
     headers: { "content-type": "application/json" },
     method,
   });
+
+const syntheticPhoneNumber = (): string => {
+  const phoneNumber = `+1555${String(nextPhoneNumber).padStart(7, "0")}`;
+  nextPhoneNumber += 1;
+  return phoneNumber;
+};
+
+const requireSuccessfulResponse = async (response: Response, operation: string): Promise<void> => {
+  if (response.ok) return;
+  throw new Error(`${operation} failed with HTTP ${response.status}: ${await response.text()}`);
+};
