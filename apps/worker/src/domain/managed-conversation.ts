@@ -1,7 +1,8 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import {
   AllowancePeriodId,
+  CapabilityCatalogVersion,
   ChannelLinkId,
   ConversationRouteId,
   Plan,
@@ -15,6 +16,7 @@ import { ChannelAddress } from "./channel-link";
 import { OriginatingAuthority } from "./authority";
 import { CoreMemoryAuthorizationSnapshotEncoded } from "./core-memory-authorization";
 import { ManagedModelRoute } from "./model-access-policy";
+import { governedCapabilitiesV1Version } from "./capability-catalog";
 
 const positiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0));
 
@@ -46,6 +48,9 @@ export const CancelManagedConversationInput = Schema.Struct({
 export const ManagedTurnMetadata = Schema.TaggedStruct("OsfoManagedTurn", {
   allowancePeriodId: AllowancePeriodId,
   authorityIdentity: ManagedTurnAuthorityIdentity,
+  capabilityCatalogVersion: CapabilityCatalogVersion.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(governedCapabilitiesV1Version)),
+  ),
   conservativeVendorUsdMicros: positiveInteger,
   coreMemoryAuthorization: CoreMemoryAuthorizationSnapshotEncoded,
   maxInputTokens: positiveInteger,

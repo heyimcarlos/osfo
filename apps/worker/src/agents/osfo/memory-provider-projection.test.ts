@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
+import { Schema } from "effect";
 
 import { AssistantMessageId, SessionId } from "../../domain";
+import { ManagedTurnMetadata } from "../../domain/managed-conversation";
 import {
   projectCommittedConversationSnapshot,
   projectTerminalMarkedCommittedTurns,
@@ -12,6 +14,15 @@ const sessionId = SessionId.make("session-1");
 const assistantMessageId = AssistantMessageId.make("assistant-2");
 
 describe("committed conversation projection", () => {
+  it("pins legacy active turns to the only catalog available before catalog metadata", () => {
+    const { capabilityCatalogVersion: _capabilityCatalogVersion, ...legacy } =
+      managedMetadata().turnMetadata;
+
+    expect(Schema.decodeUnknownSync(ManagedTurnMetadata)(legacy).capabilityCatalogVersion).toBe(
+      "governed-capabilities-v1",
+    );
+  });
+
   it("captures the visible conversation and sanitizes supported outcomes and sources", () => {
     const history = [
       {
@@ -538,6 +549,7 @@ const managedMetadata = () => ({
     _tag: "OsfoManagedTurn",
     allowancePeriodId: "allowance-1",
     authorityIdentity: { _tag: "AuthSession", authSessionId: "auth-session-1", userId: "user-1" },
+    capabilityCatalogVersion: "governed-capabilities-v1",
     conservativeVendorUsdMicros: 100,
     coreMemoryAuthorization: {
       authority: {

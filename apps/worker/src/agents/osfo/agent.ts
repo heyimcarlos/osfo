@@ -10,6 +10,7 @@ import {
   type StreamCallback,
   type PrepareStepContext,
   type PendingApproval,
+  type StepConfig,
   type StepContext,
   type SubmitMessagesResult,
   type ThinkSubmissionInspection,
@@ -17,7 +18,14 @@ import {
   type TurnContext,
 } from "@cloudflare/think";
 import type { MessengerContext } from "@cloudflare/think/messengers";
-import { tool, type ToolSet, type UIMessage } from "ai";
+import {
+  asSchema,
+  tool,
+  type ModelMessage,
+  type ToolSet,
+  type UIMessage,
+  type UserModelMessage,
+} from "ai";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import { Cause, DateTime, Effect, Exit, Option, Predicate, Result, Schema } from "effect";
 
@@ -152,6 +160,8 @@ import {
 } from "../../services/session-recall";
 import { makeSessionRecallAuthorization } from "../../services/session-recall-authorization";
 import { PromptAssembly } from "../../services/prompt-assembly";
+import { Capabilities } from "../../services/capabilities";
+import { CapabilityTurn } from "./capability-turn";
 import type {
   CurrentSessionActivationUnavailable,
   CurrentSessionReplaced,
@@ -260,6 +270,21 @@ const GenerateDocumentInput = Schema.Struct({
   format: DocumentArtifact.DocumentFormat,
   source: DocumentGeneration.DocumentSource,
 });
+const LoadSkillToolInput = Schema.Struct({
+  skillId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  skillVersion: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+});
+const LoadedSkillPin = Schema.Struct({
+  skillId: LoadSkillToolInput.fields.skillId,
+  skillVersion: LoadSkillToolInput.fields.skillVersion,
+});
+
+// Think 0.15.1 documents and forwards both fields, but its StepConfig Omit loses
+// them when AI SDK 7's PrepareStepResult union includes undefined.
+type CapabilityStepConfig = StepConfig & {
+  readonly activeTools: Array<string>;
+  readonly instructions: string;
+};
 /** RPC representation of one managed conversation submission. */
 export type SubmitManagedConversationRequest = typeof SubmitManagedConversationInput.Encoded;
 
@@ -434,6 +459,20 @@ export class OsfoAgent extends Think<Env> {
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
     persistence: this.#modelCallUsagePersistence,
   });
+  readonly #runtime = Option.map(decodeOsfoStage(this.env.OSFO_STAGE), (stage) => {
+    const config = loadConfig(this.env);
+    return makeOsfoAgentRuntime(
+      this.ctx.id.name ?? this.ctx.id.toString(),
+      stage,
+      { db: this.env.DB },
+      config.supermemory,
+    );
+  });
+  readonly #capabilities = Option.match(this.#runtime, {
+    onNone: () => Capabilities.make(),
+    onSome: (runtime) => runtime.runSync(Capabilities.Service),
+  });
+  #activeCapabilityTurn: CapabilityTurn.Interface | undefined;
   readonly #promptAssembly = PromptAssembly.makeRetainedPromptAssembly();
   readonly #store = makeAgentStore(this.#db);
   readonly #sessionExecution = makeSessionExecution({
@@ -444,15 +483,6 @@ export class OsfoAgent extends Think<Env> {
   readonly #migrationsReady = this.ctx.blockConcurrencyWhile(() =>
     Effect.runPromise(applyAgentMigrations(this.ctx.storage)),
   );
-  readonly #runtime = Option.map(decodeOsfoStage(this.env.OSFO_STAGE), (stage) => {
-    const config = loadConfig(this.env);
-    return makeOsfoAgentRuntime(
-      this.ctx.id.name ?? this.ctx.id.toString(),
-      stage,
-      { db: this.env.DB },
-      config.supermemory,
-    );
-  });
   readonly #sessionRecallSearch = makeThinkSessionRecallSearch((sessionId, query, limit) =>
     Session.create(this).forSession(sessionId).search(query, { limit }),
   );
@@ -708,7 +738,7 @@ export class OsfoAgent extends Think<Env> {
     };
   }
 
-  /** Register Session Recall and document export tools. */
+  /** Register trusted native Tools; beforeTurn publishes only the selected schemas. */
   override getTools(): ToolSet {
     return {
       ...this.#sessionRecallTools,
@@ -716,6 +746,12 @@ export class OsfoAgent extends Think<Env> {
         description: "Export one retained generated PDF or DOCX owned by the current User.",
         execute: (input, context) => this.#exportDocument(input, context.toolCallId),
         inputSchema: effectToolSchema(RetainedDocumentInput),
+      }),
+      loadSkill: tool({
+        description:
+          "Load one exact Skill Version from the current turn's validated Skill index. This never grants authority or registers Tools.",
+        execute: (input) => this.#loadSkill(input),
+        inputSchema: effectToolSchema(LoadSkillToolInput),
       }),
     };
   }
@@ -734,6 +770,54 @@ export class OsfoAgent extends Think<Env> {
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
     );
     const prompt = await this.#assemblePrompt(context, metadata, system);
+    const taskDescription = currentTaskDescription(context.messages);
+    const index = await Effect.runPromise(
+      this.#capabilities.eligibleIndex({
+        availableIntegrationToolkits: [],
+        availableRequirements: [
+          "document-renderer",
+          "file-storage",
+          "native-memory",
+          "personal-agent",
+          "session-history",
+        ],
+        availableToolNames: Object.keys(tools),
+        catalogVersion: metadata.capabilityCatalogVersion,
+        declaredRequirements: [],
+        origin: capabilityTurnOrigin(metadata.authorityIdentity),
+        personalSkills: [],
+        plan: metadata.plan,
+        taskDescription,
+        taskKinds: capabilityTaskKinds(taskDescription),
+        userId: metadata.authorityIdentity.userId,
+      }),
+    );
+    const loadedSkills = await Effect.runPromise(
+      Effect.forEach(loadedSkillPins(context.messages), (pin) =>
+        this.#capabilities
+          .loadSkill({
+            index,
+            personalSkills: [],
+            skillId: pin.skillId,
+            skillVersion: pin.skillVersion,
+            userId: metadata.authorityIdentity.userId,
+          })
+          .pipe(Effect.option),
+      ).pipe(Effect.map((skills) => skills.flatMap(Option.toArray))),
+    );
+    const activeCapabilityTurn = CapabilityTurn.make({
+      availableToolNames: Object.keys(tools),
+      baseInstructions: prompt.instructions,
+      capabilities: this.#capabilities,
+      index,
+      loadedSkills,
+      personalSkills: [],
+      toolSchemas: toolSchemaAccounting(tools),
+      userId: metadata.authorityIdentity.userId,
+    });
+    this.#activeCapabilityTurn = activeCapabilityTurn;
+    const capabilityStep = activeCapabilityTurn.step();
+    this.#recordCapabilityAccounting(capabilityStep.bundle, index);
     if (prompt.usage !== null) {
       this.ctx.waitUntil(this.#recordProviderRecallUsage(metadata, prompt.usage));
     }
@@ -754,7 +838,8 @@ export class OsfoAgent extends Think<Env> {
       model: metadata.route,
       messages: prompt.messages,
       sendReasoning: false,
-      instructions: prompt.instructions,
+      activeTools: [...capabilityStep.activeToolNames],
+      instructions: capabilityStep.instructions,
       tools,
     };
   }
@@ -812,9 +897,19 @@ export class OsfoAgent extends Think<Env> {
     }
   }
 
-  /** Reuse Think's zero-based step index as the stable model-call attempt position. */
-  override beforeStep(context: PrepareStepContext): void {
+  /** Publish newly loaded Skill bodies and schemas on the next model step. */
+  override beforeStep(context: PrepareStepContext): CapabilityStepConfig | void {
     this.#activeModelStepNumber = ModelStepNumber.make(context.stepNumber + 1);
+    const activeTurn = this.#activeCapabilityTurn;
+    if (activeTurn === undefined) return;
+    const step = activeTurn.step();
+    if (context.stepNumber > 0) {
+      this.#recordCapabilityAccounting(step.bundle, step.index);
+    }
+    return {
+      activeTools: [...step.activeToolNames],
+      instructions: step.instructions,
+    };
   }
 
   /** Record observed AI Gateway cost or one bounded share after each completed step. */
@@ -833,6 +928,47 @@ export class OsfoAgent extends Think<Env> {
       }
     }
     return super.onChatError(error, context);
+  }
+
+  async #loadSkill(input: typeof LoadSkillToolInput.Type) {
+    const activeTurn = this.#activeCapabilityTurn;
+    if (activeTurn === undefined) {
+      return {
+        _tag: "SkillUnavailable",
+        message: "The active turn has no validated Skill index",
+      } as const;
+    }
+    return Effect.runPromise(
+      activeTurn.loadSkill(input).pipe(
+        Effect.match({
+          onFailure: () => ({
+            _tag: "SkillUnavailable" as const,
+            message: "The requested Skill is not eligible for this turn",
+          }),
+          onSuccess: (loaded) => loaded,
+        }),
+      ),
+    );
+  }
+
+  #recordCapabilityAccounting(
+    bundle: Capabilities.ToolBundle,
+    index: Capabilities.EligibleIndex,
+  ): void {
+    this.ctx.waitUntil(
+      Effect.runPromise(
+        Effect.logInfo("Capability turn assembled").pipe(
+          Effect.annotateLogs({
+            alwaysVisibleCoreBytes: bundle.accounting.prompt.alwaysVisibleCoreBytes,
+            capabilityCatalogVersion: index.catalogVersion,
+            integrationToolSchemasBytes: bundle.accounting.schemas.integrationToolSchemasBytes,
+            loadedSkillBodyBytes: bundle.accounting.prompt.loadedSkillBodyBytes,
+            nativeToolSchemasBytes: bundle.accounting.schemas.nativeToolSchemasBytes,
+            selectedSkillIndexBytes: bundle.accounting.prompt.selectedSkillIndexBytes,
+          }),
+        ),
+      ),
+    );
   }
 
   async #assemblePrompt(
@@ -2433,6 +2569,86 @@ const summarizeManagedSession = (prompt: string): Promise<string> => {
     `[Earlier conversation]\n${prompt.slice(bodyStart, bodyEnd).slice(-8_000)}`,
   );
 };
+
+const currentTaskDescription = (messages: Array<ModelMessage>): string => {
+  const current = messages.reduceRight<UserModelMessage | undefined>(
+    (found, candidate) => found ?? (candidate.role === "user" ? candidate : undefined),
+    undefined,
+  );
+  if (current?.role !== "user") return "";
+  if (Predicate.isString(current.content)) return current.content.trim();
+  return current.content
+    .filter((part) => part.type === "text")
+    .map(({ text }) => text)
+    .join("\n")
+    .trim();
+};
+
+const capabilityTaskKinds = (description: string): ReadonlyArray<Capabilities.TaskKind> => {
+  const task = description.toLocaleLowerCase("en");
+  const kinds: Array<Capabilities.TaskKind> = [];
+  if (/\b(?:remember|memory|recall|forget)\b/u.test(task)) kinds.push("memory");
+  if (/\b(?:attachment|csv|file|spreadsheet|upload)\b/u.test(task)) kinds.push("file");
+  if (/\b(?:document|docx|pdf|presentation|pptx|report|slides)\b/u.test(task)) {
+    kinds.push("document");
+  }
+  if (/\b(?:image|picture|graphic)\b/u.test(task)) kinds.push("image");
+  if (/\b(?:chart|diagram|flowchart)\b/u.test(task)) kinds.push("diagram");
+  if (/\b(?:current|latest|page|search|url|web|website)\b/u.test(task)) kinds.push("web");
+  if (/\b(?:investigate|research|sources)\b/u.test(task)) kinds.push("research");
+  if (/\b(?:gmail|calendar|drive|email)\b/u.test(task)) kinds.push("integration");
+  if (/\bremind(?:er)?\b/u.test(task)) kinds.push("reminder");
+  if (/\b(?:automate|recurring|workflow)\b/u.test(task)) kinds.push("workflow");
+  if (/\b(?:procedure|skill)\b/u.test(task)) kinds.push("skill");
+  return kinds.length === 0 ? ["conversation"] : kinds;
+};
+
+const capabilityTurnOrigin = (identity: ManagedTurnAuthorityIdentity): Capabilities.TurnOrigin => {
+  if (identity._tag === "AuthSession") return "authSession";
+  if (identity._tag === "ChannelLink") return "channelLink";
+  return identity.triggerType;
+};
+
+const loadedSkillPins = (
+  messages: Array<ModelMessage>,
+): ReadonlyArray<typeof LoadedSkillPin.Type> => {
+  const pins = messages.flatMap((message) =>
+    message.role !== "tool"
+      ? []
+      : message.content.flatMap((part) => {
+          if (
+            part.type !== "tool-result" ||
+            part.toolName !== "loadSkill" ||
+            part.output.type !== "json"
+          ) {
+            return [];
+          }
+          return Option.toArray(Schema.decodeUnknownOption(LoadedSkillPin)(part.output.value));
+        }),
+  );
+  return pins.filter(
+    (pin, index) =>
+      pins.findIndex(
+        ({ skillId, skillVersion }) => skillId === pin.skillId && skillVersion === pin.skillVersion,
+      ) === index,
+  );
+};
+
+const toolSchemaAccounting = (
+  tools: ToolSet,
+): ReadonlyArray<{
+  readonly bytes: number;
+  readonly source: "native";
+  readonly toolName: string;
+}> =>
+  Object.entries(tools).flatMap(([toolName, definition]) => {
+    if (!("inputSchema" in definition)) return [];
+    const serialized = JSON.stringify({
+      description: "description" in definition ? definition.description : undefined,
+      inputSchema: asSchema(definition.inputSchema).jsonSchema,
+    });
+    return [{ bytes: new TextEncoder().encode(serialized).byteLength, source: "native", toolName }];
+  });
 
 const readThinkHistory = (session: Session, sessionId: SessionId) =>
   Effect.tryPromise({
