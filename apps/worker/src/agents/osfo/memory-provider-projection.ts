@@ -30,6 +30,7 @@ const ToolOutcomePart = Schema.Struct({
   title: Schema.optional(Schema.String),
   type: Schema.String,
 });
+const decodeJsonString = Schema.decodeOption(Schema.fromJsonString(Schema.Json));
 
 const sensitiveKey = /(?:authorization|credential|password|secret|token|api[-_]?key)/iu;
 const infrastructureKeys = new Set([
@@ -331,15 +332,7 @@ const humanReadableOutcome = (value: Schema.Json): Option.Option<string> => {
   return Option.some(JSON.stringify(sanitized));
 };
 
-type SafeJson =
-  | null
-  | boolean
-  | number
-  | string
-  | ReadonlyArray<SafeJson>
-  | { readonly [key: string]: SafeJson };
-
-const sanitizeJsonValue = (value: Schema.Json, depth: number): SafeJson | undefined => {
+const sanitizeJsonValue = (value: Schema.Json, depth: number): Schema.Json | undefined => {
   if (depth > 5) return undefined;
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -359,7 +352,7 @@ const sanitizeJsonValue = (value: Schema.Json, depth: number): SafeJson | undefi
     const values = value
       .slice(0, 50)
       .map((item) => sanitizeJsonValue(item, depth + 1))
-      .filter((item): item is SafeJson => item !== undefined);
+      .filter((item): item is Schema.Json => item !== undefined);
     return values;
   }
   if (typeof value !== "object") return undefined;
@@ -380,7 +373,7 @@ const isInfrastructureKey = (key: string): boolean =>
 const sanitizeEmbeddedJson = (value: string, depth: number): Option.Option<string> => {
   const starts = [value.indexOf("{"), value.indexOf("[")].filter((index) => index > 0);
   for (const start of starts) {
-    const parsed = Schema.decodeOption(Schema.fromJsonString(Schema.Json))(value.slice(start));
+    const parsed = decodeJsonString(value.slice(start));
     if (Option.isNone(parsed)) continue;
     const sanitized = sanitizeJsonValue(parsed.value, depth + 1);
     if (sanitized === undefined) return Option.none();
@@ -392,11 +385,11 @@ const sanitizeEmbeddedJson = (value: string, depth: number): Option.Option<strin
 
 type FullJsonSanitization =
   | { readonly kind: "notJson" }
-  | { readonly kind: "sanitized"; readonly value: SafeJson | undefined };
+  | { readonly kind: "sanitized"; readonly value: Schema.Json | undefined };
 
 const sanitizeFullJsonString = (value: string, depth: number): FullJsonSanitization => {
   if (!value.startsWith("{") && !value.startsWith("[")) return { kind: "notJson" };
-  const parsed = Schema.decodeOption(Schema.fromJsonString(Schema.Json))(value);
+  const parsed = decodeJsonString(value);
   return Option.match(parsed, {
     onNone: () => ({ kind: "notJson" }),
     onSome: (json) => ({ kind: "sanitized", value: sanitizeJsonValue(json, depth) }),
