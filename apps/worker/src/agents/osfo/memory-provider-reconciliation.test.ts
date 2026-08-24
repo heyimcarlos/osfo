@@ -15,10 +15,10 @@ import type {
 import { MemoryProviderOutboxId } from "./db/memory-provider-outbox";
 import { reconcileMemoryProviderOutbox } from "./memory-provider-reconciliation";
 
-it.effect("retains a rejected deletion for retry with its exact durable identity", () => {
+it.effect("retains a rejected deletion in an explicit terminal state", () => {
   const claim = deletionClaim();
   const observed: Array<MemoryProviderOutboxPayload> = [];
-  const { completed, retried, store } = testStore(claim);
+  const { completed, failed, retried, store } = testStore(claim);
   const provider = providerStub({
     deleteSessionConversation: (input) => {
       observed.push({ _tag: "DeleteSessionConversation", ...input });
@@ -38,7 +38,8 @@ it.effect("retains a rejected deletion for retry with its exact durable identity
     Effect.andThen(
       Effect.sync(() => {
         expect(observed).toEqual([claim.payload]);
-        expect(retried).toEqual([claim.outboxId]);
+        expect(failed).toEqual([claim.outboxId]);
+        expect(retried).toEqual([]);
         expect(completed).toEqual([]);
       }),
     ),
@@ -112,12 +113,52 @@ it.effect("retries the exact conversation snapshot during a provider outage", ()
   );
 });
 
+it.effect("terminalizes an accepted conversation whose provider status is invalid", () => {
+  const claim = conversationClaim();
+  const { completed, failed, retried, store } = testStore(claim);
+  const provider = providerStub({
+    saveConversation: () =>
+      Effect.fail(
+        new MemoryProvider.MemoryProviderAcceptanceStatusInvalid({
+          documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+          message: "The MemoryProvider accepted the conversation with an invalid status",
+          operation: "saveConversation",
+          usage: {
+            items: [
+              {
+                allowanceKind: "supermemoryIngestionTokens",
+                basis: "conservative",
+                quantity: 1n,
+              },
+            ],
+            rateCardVersion: "test-rate-card",
+          },
+        }),
+      ),
+  });
+
+  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(failed).toEqual([claim.outboxId]);
+        expect(retried).toEqual([]);
+        expect(completed).toEqual([]);
+      }),
+    ),
+  );
+});
+
 it.effect("stops when a stale conversation claim loses settlement ownership", () => {
   const claim = conversationClaim();
-  const { completed, retried, store } = testStore(claim, { providerApplied: false });
+  const { completed, retried, store } = testStore(claim, { providerAccepted: false });
   const provider = providerStub({
     saveConversation: () =>
       Effect.succeed({
+        documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+        processingStatus: "processing",
         usage: {
           items: [
             {
@@ -154,7 +195,7 @@ const deletionClaim = (): ClaimedMemoryProviderWork => ({
     sessionId: SessionId.make("session-1"),
     userId: UserId.make("user-1"),
   },
-  providerApplied: false,
+  providerAcceptance: null,
   sequence: 1,
   usage: null,
 });
@@ -180,19 +221,21 @@ const conversationClaim = (): ClaimedMemoryProviderWork => ({
       userId: UserId.make("user-1"),
     },
   },
-  providerApplied: false,
+  providerAcceptance: null,
   sequence: 1,
   usage: null,
 });
 
 const testStore = (
   claim: ClaimedMemoryProviderWork,
-  options: { readonly providerApplied?: boolean } = {},
+  options: { readonly providerAccepted?: boolean } = {},
 ) => {
+  const failed: Array<MemoryProviderOutboxId> = [];
   const completed: Array<MemoryProviderOutboxId> = [];
   const retried: Array<MemoryProviderOutboxId> = [];
   let available = true;
   const store = {
+    awaitProvider: () => Effect.succeed(true),
     claimNext: () =>
       Effect.sync(() => {
         if (!available) return Option.none<ClaimedMemoryProviderWork>();
@@ -206,21 +249,33 @@ const testStore = (
       }),
     // oxlint-disable-next-line effecttsgo/sync-to-succeed -- The exact undefined return matches the store contract; Effect.void widens it to void.
     enqueueDeletion: () => Effect.sync(() => undefined),
+    fail: (work: ClaimedMemoryProviderWork) =>
+      Effect.sync(() => {
+        failed.push(work.outboxId);
+        return true;
+      }),
+    failProviderAcceptance: (work: ClaimedMemoryProviderWork) =>
+      Effect.sync(() => {
+        failed.push(work.outboxId);
+        return true;
+      }),
     hasRetryableWork: Effect.succeed(false),
-    markProviderApplied: () => Effect.succeed(options.providerApplied ?? true),
+    markProviderAccepted: () => Effect.succeed(options.providerAccepted ?? true),
+    markProviderStatus: () => Effect.succeed(true),
     retry: (work: ClaimedMemoryProviderWork) =>
       Effect.sync(() => {
         retried.push(work.outboxId);
         return true;
       }),
   } satisfies MemoryProviderOutboxStore;
-  return { completed, retried, store };
+  return { completed, failed, retried, store };
 };
 
 const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvider.Interface => ({
   deleteSessionConversation: () => Effect.die(new Error("Unexpected Session deletion")),
   deleteUserKnowledge: () => Effect.die(new Error("Unexpected User deletion")),
   forgetKnowledge: () => Effect.die(new Error("Unexpected forget")),
+  getConversationStatus: () => Effect.die(new Error("Unexpected conversation status read")),
   recall: () => Effect.die(new Error("Unexpected recall")),
   saveConversation: () => Effect.die(new Error("Unexpected conversation save")),
   ...overrides,

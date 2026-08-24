@@ -69,6 +69,17 @@ const StoredUsageEvidence = Schema.Struct({
   rateCardVersion: NonEmptyString,
 });
 
+const StoredProviderStatus = Schema.Union([
+  MemoryProvider.ConversationProcessingStatus,
+  Schema.Literal("failed"),
+]);
+type StoredProviderStatus = typeof StoredProviderStatus.Type;
+
+export interface AcceptedConversationDocument {
+  readonly documentId: MemoryProvider.ProviderDocumentId;
+  readonly processingStatus: MemoryProvider.ConversationProcessingStatus;
+}
+
 /** One leased operation. A stale worker cannot settle it after the lease is reclaimed. */
 export interface ClaimedMemoryProviderWork {
   readonly allowancePeriodId: AllowancePeriodId | null;
@@ -76,7 +87,7 @@ export interface ClaimedMemoryProviderWork {
   readonly claimToken: string;
   readonly outboxId: MemoryProviderOutboxId;
   readonly payload: MemoryProviderOutboxPayload;
-  readonly providerApplied: boolean;
+  readonly providerAcceptance: AcceptedConversationDocument | null;
   readonly sequence: number;
   readonly usage: MemoryProvider.UsageEvidence | null;
 }
@@ -86,7 +97,31 @@ export interface MemoryProviderClaimCandidate {
   readonly claimExpiresAt: DbTimestamp | null;
   readonly orderingKey: string;
   readonly outboxId: string;
-  readonly status: "claimed" | "completed" | "pending";
+  readonly providerStatus: StoredProviderStatus | null;
+  readonly status: "claimed" | "completed" | "failed" | "pending";
+}
+
+const actionableOrderingRows = <Row extends MemoryProviderOrderingRow>(
+  rows: ReadonlyArray<Row>,
+): ReadonlyArray<Row> => {
+  const visitedOrderingKeys = new Set<string>();
+  return rows.filter((row) => {
+    if (row.status === "completed") return false;
+    if (row.status === "failed") {
+      visitedOrderingKeys.add(row.orderingKey);
+      return false;
+    }
+    if (row.providerStatus === "done") return true;
+    if (visitedOrderingKeys.has(row.orderingKey)) return false;
+    visitedOrderingKeys.add(row.orderingKey);
+    return true;
+  });
+};
+
+interface MemoryProviderOrderingRow {
+  readonly orderingKey: string;
+  readonly providerStatus: StoredProviderStatus | null;
+  readonly status: "claimed" | "completed" | "failed" | "pending";
 }
 
 /** Select only the oldest unfinished operation per ordering key. */
@@ -94,11 +129,7 @@ export const selectMemoryProviderClaimCandidate = (
   rows: ReadonlyArray<MemoryProviderClaimCandidate>,
   now: DbTimestamp,
 ): MemoryProviderClaimCandidate | undefined => {
-  const visitedOrderingKeys = new Set<string>();
-  return rows.find((row) => {
-    if (visitedOrderingKeys.has(row.orderingKey)) return false;
-    visitedOrderingKeys.add(row.orderingKey);
-    if (row.status === "completed") return false;
+  return actionableOrderingRows(rows).find((row) => {
     if (row.status === "claimed" && row.claimExpiresAt !== null && row.claimExpiresAt > now) {
       return false;
     }
@@ -206,6 +237,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
             claimExpiresAt: row.claim_expires_at,
             orderingKey: row.ordering_key,
             outboxId: row.outbox_id,
+            providerStatus: row.provider_status,
             status: row.status,
           })),
           now,
@@ -229,15 +261,56 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     return Option.some(yield* decodeClaim(claimed));
   });
 
-  const markProviderApplied = Effect.fn("MemoryProviderOutbox.markProviderApplied")(
+  const markProviderAccepted = Effect.fn("MemoryProviderOutbox.markProviderAccepted")(
     (
       claim: ClaimedMemoryProviderWork,
-      usage: MemoryProvider.UsageEvidence,
-      appliedAt: DbTimestamp,
+      result: MemoryProvider.SaveConversationResult,
+      acceptedAt: DbTimestamp,
     ) =>
       updateClaim("completeMemoryProviderOutbox", claim, {
-        provider_applied_at: appliedAt,
-        usage_json: encodeUsage(usage),
+        provider_accepted_at: acceptedAt,
+        provider_document_id: result.documentId,
+        provider_status: result.processingStatus,
+        usage_json: encodeUsage(result.usage),
+      }),
+  );
+
+  const markProviderStatus = Effect.fn("MemoryProviderOutbox.markProviderStatus")(
+    (claim: ClaimedMemoryProviderWork, status: MemoryProvider.ConversationProcessingStatus) =>
+      updateClaim("completeMemoryProviderOutbox", claim, { provider_status: status }),
+  );
+
+  const failProviderAcceptance = Effect.fn("MemoryProviderOutbox.failProviderAcceptance")(
+    (
+      claim: ClaimedMemoryProviderWork,
+      failure: MemoryProvider.MemoryProviderAcceptanceStatusInvalid,
+      acceptedAt: DbTimestamp,
+    ) =>
+      updateClaim("completeMemoryProviderOutbox", claim, {
+        claim_expires_at: null,
+        claim_token: null,
+        last_error: failure.message,
+        provider_accepted_at: acceptedAt,
+        provider_document_id: failure.documentId,
+        provider_status: "failed",
+        status: "failed" as const,
+        usage_json: encodeUsage(failure.usage),
+      }),
+  );
+
+  const awaitProvider = Effect.fn("MemoryProviderOutbox.awaitProvider")(
+    (
+      claim: ClaimedMemoryProviderWork,
+      processingStatus: MemoryProvider.ConversationProcessingStatus,
+      availableAt: DbTimestamp,
+    ) =>
+      updateClaim("retryMemoryProviderOutbox", claim, {
+        available_at: availableAt,
+        claim_expires_at: null,
+        claim_token: null,
+        last_error: null,
+        provider_status: processingStatus,
+        status: "pending" as const,
       }),
   );
 
@@ -263,22 +336,35 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
       }),
   );
 
+  const fail = Effect.fn("MemoryProviderOutbox.fail")(
+    (
+      claim: ClaimedMemoryProviderWork,
+      message: string,
+      providerStatus?: Extract<StoredProviderStatus, "failed">,
+    ) =>
+      updateClaim("completeMemoryProviderOutbox", claim, {
+        claim_expires_at: null,
+        claim_token: null,
+        last_error: message,
+        provider_status: providerStatus,
+        status: "failed" as const,
+      }),
+  );
+
   const hasRetryableWork = execute("inspectMemoryProviderOutbox", () => {
     const rows = db
       .select({
         orderingKey: memoryProviderOutbox.ordering_key,
+        providerStatus: memoryProviderOutbox.provider_status,
         status: memoryProviderOutbox.status,
       })
       .from(memoryProviderOutbox)
       .where(ne(memoryProviderOutbox.status, "completed"))
       .orderBy(asc(memoryProviderOutbox.sequence))
       .all();
-    const visitedOrderingKeys = new Set<string>();
-    return rows.some((row) => {
-      if (visitedOrderingKeys.has(row.orderingKey)) return false;
-      visitedOrderingKeys.add(row.orderingKey);
-      return row.status === "pending" || row.status === "claimed";
-    });
+    return actionableOrderingRows(rows).some(
+      (row) => row.status === "pending" || row.status === "claimed",
+    );
   });
 
   const updateClaim = Effect.fn("MemoryProviderOutbox.updateClaim")(function* (
@@ -312,8 +398,12 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     claimNext,
     complete,
     enqueueDeletion,
+    fail,
+    failProviderAcceptance,
     hasRetryableWork,
-    markProviderApplied,
+    awaitProvider,
+    markProviderAccepted,
+    markProviderStatus,
     retry,
   };
 };
@@ -381,7 +471,27 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
       ? null
       : yield* decodeUsage(row.usage_json).pipe(Effect.mapError(() => invalidRecord()));
   if (row.claim_token === null || row.attempt_count < 1) return yield* invalidRecord();
-  if ((row.provider_applied_at === null) !== (usage === null)) return yield* invalidRecord();
+  const providerDocumentId =
+    row.provider_document_id === null
+      ? null
+      : yield* Schema.decodeEffect(MemoryProvider.ProviderDocumentId)(
+          row.provider_document_id,
+        ).pipe(Effect.mapError(() => invalidRecord()));
+  const providerStatus =
+    row.provider_status === null
+      ? null
+      : yield* Schema.decodeEffect(StoredProviderStatus)(row.provider_status).pipe(
+          Effect.mapError(() => invalidRecord()),
+        );
+  const hasProviderAcceptance = row.provider_accepted_at !== null;
+  if (
+    hasProviderAcceptance !== (usage !== null) ||
+    hasProviderAcceptance !== (providerDocumentId !== null) ||
+    hasProviderAcceptance !== (providerStatus !== null) ||
+    providerStatus === "failed"
+  ) {
+    return yield* invalidRecord();
+  }
   if (
     payload._tag === "SaveConversation" &&
     (row.operation_type !== "saveConversation" ||
@@ -391,7 +501,9 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
   }
   if (
     payload._tag !== "SaveConversation" &&
-    (row.operation_type !== operationType(payload) || row.allowance_period_id !== null)
+    (row.operation_type !== operationType(payload) ||
+      row.allowance_period_id !== null ||
+      hasProviderAcceptance)
   ) {
     return yield* invalidRecord();
   }
@@ -404,7 +516,10 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
     claimToken: row.claim_token,
     outboxId,
     payload,
-    providerApplied: row.provider_applied_at !== null,
+    providerAcceptance:
+      providerDocumentId === null || providerStatus === null
+        ? null
+        : { documentId: providerDocumentId, processingStatus: providerStatus },
     sequence: row.sequence,
     usage,
   } satisfies ClaimedMemoryProviderWork;

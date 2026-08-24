@@ -116,6 +116,8 @@ it.effect("saves one structured Session conversation with conservative usage evi
       });
 
       expect(result).toEqual({
+        documentId: "document-1",
+        processingStatus: "processing",
         usage: {
           items: [
             {
@@ -149,6 +151,134 @@ it.effect("saves one structured Session conversation with conservative usage evi
           path: "/v4/conversations",
         },
       ]);
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("reads the accepted conversation processing status by provider document identity", () =>
+  withProvider(({ requests, origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({ body: { id: "document-1", status: "done" }, status: 200 });
+      const memory = yield* MemoryProvider.Service;
+      const result = yield* memory.getConversationStatus({
+        documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+      });
+
+      expect(result).toEqual({ processingStatus: "done" });
+      expect(requests).toEqual([
+        {
+          authorization: "Bearer test-api-key",
+          body: undefined,
+          method: "GET",
+          path: "/v3/documents/document-1",
+        },
+      ]);
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("classifies a terminal conversation processing failure as a provider rejection", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({ body: { id: "document-1", status: "failed" }, status: 200 });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .getConversationStatus({
+          documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+        })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderRejected",
+        operation: "getConversationStatus",
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("retains accepted document identity when the provider status is unknown", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: {
+          conversationId: "s_hAl4KPwxqMjSkhDfSJAahd5_0BP2hrF7530b4py3qYs",
+          id: "document-1",
+          status: "unknown",
+        },
+        status: 200,
+      });
+      const memory = yield* MemoryProvider.Service;
+      const result = yield* memory.saveConversation({
+        conversation: MemoryProvider.ConversationSnapshot.make({
+          messages: [
+            { content: "Hello", role: "user" },
+            { content: "Hi", role: "assistant" },
+          ],
+          usageStartIndex: 0,
+        }),
+        sessionId: SessionId.make("session-1"),
+        userId: UserId.make("user-1"),
+      });
+
+      expect(result).toMatchObject({ documentId: "document-1", processingStatus: "processing" });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("rejects a malformed conversation processing status at the adapter boundary", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith(
+        {
+          body: {
+            conversationId: "s_hAl4KPwxqMjSkhDfSJAahd5_0BP2hrF7530b4py3qYs",
+            id: "document-1",
+            status: "waiting",
+          },
+          status: 200,
+        },
+        {
+          body: {
+            conversationId: "s_hAl4KPwxqMjSkhDfSJAahd5_0BP2hrF7530b4py3qYs",
+            id: "document-1",
+            status: 42,
+          },
+          status: 200,
+        },
+        {
+          body: {
+            conversationId: "s_hAl4KPwxqMjSkhDfSJAahd5_0BP2hrF7530b4py3qYs",
+            id: "document-1",
+          },
+          status: 200,
+        },
+      );
+      const memory = yield* MemoryProvider.Service;
+      const failures = yield* Effect.forEach(["string", "number", "missing"], () =>
+        memory
+          .saveConversation({
+            conversation: MemoryProvider.ConversationSnapshot.make({
+              messages: [
+                { content: "Hello", role: "user" },
+                { content: "Hi", role: "assistant" },
+              ],
+              usageStartIndex: 0,
+            }),
+            sessionId: SessionId.make("session-1"),
+            userId: UserId.make("user-1"),
+          })
+          .pipe(Effect.flip),
+      );
+
+      expect(failures).toEqual(
+        Array.from({ length: 3 }, () =>
+          expect.objectContaining({
+            _tag: "MemoryProviderAcceptanceStatusInvalid",
+            documentId: "document-1",
+            operation: "saveConversation",
+          }),
+        ),
+      );
     }).pipe(Effect.provide(providerLayer(origin))),
   ),
 );

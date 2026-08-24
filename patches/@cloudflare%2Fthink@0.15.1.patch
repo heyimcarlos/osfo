@@ -1,0 +1,216 @@
+diff --git a/dist/chat-sdk-iuBa-CGM.js b/dist/chat-sdk-iuBa-CGM.js
+index 6e2eee1..38ffe71 100644
+--- a/dist/chat-sdk-iuBa-CGM.js
++++ b/dist/chat-sdk-iuBa-CGM.js
+@@ -245,13 +245,18 @@ function defaultDeliveryTag(stage) {
+ 		turnEnded: stage === "completed"
+ 	};
+ }
+-function messengerReplySnapshot(stage, event, thread, tag) {
++function messengerReplySnapshot(stage, event, thread, tag, userMessage) {
++	const snapshotUserMessage = userMessage === void 0 ? void 0 : {
++		...userMessage,
++		metadata: { messenger: messengerContextFromEvent(event) }
++	};
+ 	return {
+ 		event,
+ 		stage,
+ 		tag: tag ?? defaultDeliveryTag(stage),
+ 		thread,
+-		type: MESSENGER_REPLY_FIBER_NAME
++		type: MESSENGER_REPLY_FIBER_NAME,
++		userMessage: snapshotUserMessage
+ 	};
+ }
+ function parseMessengerReplySnapshot(snapshot) {
+@@ -263,7 +268,8 @@ function parseMessengerReplySnapshot(snapshot) {
+ 		stage: candidate.stage,
+ 		tag: candidate.tag ?? defaultDeliveryTag(candidate.stage),
+ 		thread: candidate.thread,
+-		type: MESSENGER_REPLY_FIBER_NAME
++		type: MESSENGER_REPLY_FIBER_NAME,
++		userMessage: candidate.userMessage
+ 	};
+ }
+ function messengerReplyRecoveryMode(snapshot) {
+@@ -287,7 +293,7 @@ async function deliverMessengerReply(options) {
+ 	});
+ 	const callback = new TextStreamCallback({
+ 		onVisibleStart: async () => {
+-			await checkpoint(messengerReplySnapshot("streaming", snapshotEvent, options.snapshotThread));
++			await checkpoint(messengerReplySnapshot("streaming", snapshotEvent, options.snapshotThread, void 0, options.userMessage));
+ 		},
+ 		visibleSoftLimit: options.policy?.visibleSoftLimit
+ 	});
+@@ -312,7 +318,7 @@ async function deliverMessengerReply(options) {
+ 			callback.close();
+ 			await post.catch(() => void 0);
+ 			await options.surface.post(interruptedResponseText).catch(() => void 0);
+-			await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread));
++			await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage));
+ 			return;
+ 		}
+ 		completedModelTurn = true;
+@@ -320,22 +326,22 @@ async function deliverMessengerReply(options) {
+ 		await post;
+ 		if (!callback.hasText()) await options.surface.post(emptyResponseText);
+ 		for (const chunk of options.policy?.splitText?.(callback.remainingText()) ?? []) await options.surface.post(chunk);
+-		await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread));
++		await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage));
+ 	} catch (error) {
+ 		callback.fail(error);
+ 		await post.catch(() => void 0);
+ 		const failureMode = messengerReplyFailureMode(callback.hasText(), completedModelTurn, options.policy?.isExpectedDeliveryCompletion?.(error, callback));
+ 		if (failureMode === null) {
+-			await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread));
++			await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage));
+ 			return;
+ 		}
+ 		if (failureMode === "apologize") {
+ 			await options.surface.post(interruptedResponseText).catch(() => void 0);
+-			await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread));
++			await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage));
+ 			return;
+ 		}
+ 		await options.surface.post({ markdown: errorResponseText }).catch(() => void 0);
+-		await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread));
++		await checkpoint(messengerReplySnapshot("completed", snapshotEvent, options.snapshotThread, void 0, options.userMessage));
+ 	}
+ }
+ function toError(error) {
+@@ -350,6 +356,22 @@ function chatSdkMessenger(options) {
+ 		adapterName: options.adapterName ?? options.provider
+ 	};
+ }
++function toMessengerBurstUserMessage(definition, event, context) {
++	const current = toMessengerUserMessage(event, definition.channelSpeakerLabel);
++	if (!context?.skipped.length || !event.message) return current;
++	const messages = context.skipped.map((message) => toMessengerUserMessage({
++		...event,
++		message: toMessengerMessage(message)
++	}, definition.channelSpeakerLabel));
++	const text = [...messages, current].flatMap((message) => message.parts).filter((part) => part.type === "text").map((part) => part.text).join("\n\n");
++	return {
++		...current,
++		parts: [{
++			type: "text",
++			text
++		}]
++	};
++}
+ var ThinkMessengerRuntime = class {
+ 	constructor(definitions, host) {
+ 		this.host = host;
+@@ -392,7 +414,7 @@ var ThinkMessengerRuntime = class {
+ 		const thread = this.reviveChatObject(snapshot.thread);
+ 		const mode = messengerReplyRecoveryMode(snapshot);
+ 		if (mode === "answer") {
+-			await this.answer(definition, snapshot.event, thread, void 0, snapshot.event, async (nextSnapshot) => {
++			await this.answer(definition, snapshot.event, thread, void 0, snapshot.event, snapshot.userMessage, async (nextSnapshot) => {
+ 				await this.host.resolveFiber(ctx.id, {
+ 					snapshot: nextSnapshot,
+ 					status: nextSnapshot.stage === "completed" ? "completed" : "interrupted"
+@@ -423,16 +445,16 @@ var ThinkMessengerRuntime = class {
+ 			}),
+ 			userName: this.definitions[0]?.userName ?? "think"
+ 		});
+-		chat.onDirectMessage(async (thread, message) => {
++		chat.onDirectMessage(async (thread, message, _channel, context) => {
+ 			const definition = this.definitionForThread(thread);
+ 			if (!definition) return;
+ 			if (definition.respondTo.includes("direct-message")) await this.enqueueReply(definition, await this.toEvent(definition, {
+ 				eventKind: "direct-message",
+ 				message,
+ 				thread
+-			}), thread);
++			}), thread, context);
+ 		});
+-		chat.onNewMention(async (thread, message) => {
++		chat.onNewMention(async (thread, message, context) => {
+ 			const definition = this.definitionForThread(thread);
+ 			if (!definition) return;
+ 			if (definition.subscribeOnMention) await thread.subscribe();
+@@ -440,16 +462,16 @@ var ThinkMessengerRuntime = class {
+ 				eventKind: "mention",
+ 				message,
+ 				thread
+-			}), thread);
++			}), thread, context);
+ 		});
+-		chat.onSubscribedMessage(async (thread, message) => {
++		chat.onSubscribedMessage(async (thread, message, context) => {
+ 			const definition = this.definitionForThread(thread);
+ 			if (!definition) return;
+ 			if (definition.respondTo.includes("subscribed-thread") || message.isMention && definition.respondTo.includes("mention")) await this.enqueueReply(definition, await this.toEvent(definition, {
+ 				eventKind: message.isMention ? "mention" : "subscribed-message",
+ 				message,
+ 				thread
+-			}), thread);
++			}), thread, context);
+ 		});
+ 		chat.onAction(async (event) => {
+ 			if (!event.thread) return;
+@@ -465,12 +487,13 @@ var ThinkMessengerRuntime = class {
+ 		});
+ 		return chat.registerSingleton();
+ 	}
+-	async enqueueReply(definition, event, thread) {
++	async enqueueReply(definition, event, thread, context) {
+ 		const snapshotEvent = serializableMessengerEvent(event);
+ 		const snapshotThread = thread.toJSON();
++		const userMessage = toMessengerBurstUserMessage(definition, event, context);
+ 		const result = await this.host.startFiber(MESSENGER_REPLY_FIBER_NAME, async (fiber) => {
+-			fiber.stash(messengerReplySnapshot("accepted", snapshotEvent, snapshotThread));
+-			await this.answer(definition, event, thread, fiber, snapshotEvent);
++			fiber.stash(messengerReplySnapshot("accepted", snapshotEvent, snapshotThread, void 0, userMessage));
++			await this.answer(definition, event, thread, fiber, snapshotEvent, userMessage);
+ 		}, {
+ 			idempotencyKey: idempotencyKeyForEvent(event),
+ 			metadata: {
+@@ -486,7 +509,7 @@ var ThinkMessengerRuntime = class {
+ 		if (!snapshot) return;
+ 		const mode = messengerReplyRecoveryMode(snapshot);
+ 		if (mode === "answer") {
+-			await this.answer(definition, snapshot.event, thread, void 0, snapshot.event, async (nextSnapshot) => {
++			await this.answer(definition, snapshot.event, thread, void 0, snapshot.event, snapshot.userMessage, async (nextSnapshot) => {
+ 				await this.host.resolveFiber(result.fiberId, {
+ 					snapshot: nextSnapshot,
+ 					status: nextSnapshot.stage === "completed" ? "completed" : "interrupted"
+@@ -499,7 +522,7 @@ var ThinkMessengerRuntime = class {
+ 			await this.host.resolveFiber(result.fiberId, { status: "completed" });
+ 		}
+ 	}
+-	async answer(definition, event, thread, fiber, snapshotEvent = serializableMessengerEvent(event), checkpoint) {
++	async answer(definition, event, thread, fiber, snapshotEvent = serializableMessengerEvent(event), userMessage = toMessengerUserMessage(event, definition.channelSpeakerLabel), checkpoint) {
+ 		const target = await this.resolveTarget(definition, event);
+ 		await deliverMessengerReply({
+ 			event,
+@@ -510,7 +533,7 @@ var ThinkMessengerRuntime = class {
+ 			snapshotThread: thread.toJSON(),
+ 			surface: thread,
+ 			target,
+-			userMessage: toMessengerUserMessage(event, definition.channelSpeakerLabel)
++			userMessage
+ 		});
+ 	}
+ 	/**
+diff --git a/dist/index-s3Pl812H.d.ts b/dist/index-s3Pl812H.d.ts
+index f863d18..2d6edd8 100644
+--- a/dist/index-s3Pl812H.d.ts
++++ b/dist/index-s3Pl812H.d.ts
+@@ -4054,12 +4054,14 @@ interface MessengerReplySnapshot {
+   tag?: DeliveryTag;
+   thread?: unknown;
+   type: typeof MESSENGER_REPLY_FIBER_NAME;
++  userMessage?: UIMessage;
+ }
+ declare function messengerReplySnapshot(
+   stage: MessengerReplyStage,
+   event: MessengerEvent,
+   thread?: unknown,
+-  tag?: DeliveryTag
++  tag?: DeliveryTag,
++  userMessage?: UIMessage
+ ): MessengerReplySnapshot;
+ declare function parseMessengerReplySnapshot(
+   snapshot: unknown

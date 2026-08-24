@@ -51,6 +51,18 @@ describe("MemoryProvider outbox ordering", () => {
 
     expect(selected?.outboxId).toBe("first");
   });
+
+  it("releases later work after provider processing completes even while usage settles", () => {
+    const selected = selectMemoryProviderClaimCandidate(
+      [
+        candidate("usage", "user:one", "claimed", "2026-08-23T12:01:00.000Z", "done"),
+        candidate("next", "user:one", "pending", null),
+      ],
+      now,
+    );
+
+    expect(selected?.outboxId).toBe("next");
+  });
 });
 
 const candidate = (
@@ -58,10 +70,12 @@ const candidate = (
   orderingKey: string,
   status: "claimed" | "pending",
   claimExpiresAt: string | null,
+  providerStatus: "done" | "processing" | null = null,
 ) => ({
   availableAt: DbTimestamp.make("2026-08-23T11:00:00.000Z"),
   claimExpiresAt: claimExpiresAt === null ? null : DbTimestamp.make(claimExpiresAt),
   orderingKey,
   outboxId,
+  providerStatus,
   status,
 });

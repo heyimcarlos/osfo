@@ -2,6 +2,7 @@
 /* oxlint-disable effecttsgo/node-builtin-import -- This Node-only suite supplies real SQLite persistence to the Durable SQLite adapter. */
 /* oxlint-disable osfo/no-runtime-typeof -- The adapter branches over node:sqlite's closed SQLOutputValue union. */
 /* oxlint-disable typescript/no-unsafe-type-assertion -- The test adapter proves Cloudflare's generic cursor result shapes at its boundary. */
+/* oxlint-disable osfo/no-chained-type-assertions -- Node-only compatibility stubs prove the narrow runtime members they supply. */
 /* oxlint-disable typescript/no-unnecessary-type-parameters -- SqlStorageCursor.raw requires its upstream generic method signature. */
 /* oxlint-disable eslint/no-underscore-dangle -- Effect payload assertions use the canonical _tag discriminator. */
 /* oxlint-disable effecttsgo/strict-effect-provide -- Each it.effect is the entry point for its isolated service Layers. */
@@ -11,6 +12,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { expect, it } from "@effect/vitest";
 import { BrowserCrypto } from "@effect/platform-browser";
 import { Effect, Option, Result } from "effect";
+import { TestClock } from "effect/testing";
 
 import { Db, DbTimestamp } from "../../../db";
 import {
@@ -21,6 +23,7 @@ import {
   UserId,
 } from "../../../domain";
 import { makeAgentDb } from "./client";
+import { agentMigrations, applyAgentMigrations, applyMigrationChain } from "./migrate";
 import { makeMemoryProviderOutboxStore, MemoryProviderOutboxId } from "./memory-provider-outbox";
 import { makeAgentStore } from "./store";
 import { ConversationSnapshotProjection } from "../memory-provider-projection";
@@ -51,6 +54,76 @@ it("includes every generated Agent migration in the runtime manifest", () => {
   expect(imports.map((match) => match[2])).toEqual(migrationFiles);
   expect(imports.every((match) => referencedSql.has(match[1] ?? ""))).toBe(true);
 });
+
+it.effect("activates an Agent that slept before the conversation processing migration", () =>
+  withEmptyDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const previousMigrations = agentMigrations.slice(0, -1);
+      yield* applyMigrationChain(asDurableObjectStorage(storage), previousMigrations);
+      database
+        .prepare(
+          `INSERT INTO osfo_memory_provider_outbox
+            (allowance_period_id, attempt_count, available_at, enqueued_at, operation_type,
+             ordering_key, outbox_id, payload_json, sequence, status)
+            VALUES (NULL, 0, ?, ?, 'deleteSessionConversation', 'user:user-1',
+              'delete-session-1', ?, 1, 'pending')`,
+        )
+        .run(
+          now,
+          now,
+          '{"_tag":"DeleteSessionConversation","sessionId":"session-1","userId":"user-1"}',
+        );
+      database
+        .prepare(
+          `INSERT INTO osfo_memory_provider_outbox
+            (allowance_period_id, attempt_count, available_at, enqueued_at, operation_type,
+             ordering_key, outbox_id, payload_json, provider_applied_at, sequence, status,
+             usage_json)
+            VALUES ('allowance-1', 1, ?, ?, 'saveConversation', 'user:user-2',
+              'legacy-accepted-conversation', ?, ?, 2, 'pending', ?)`,
+        )
+        .run(
+          now,
+          now,
+          // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This seeds a version-8 row before the version-9 codecs exist.
+          JSON.stringify({
+            _tag: "SaveConversation",
+            projection: conversationProjection("assistant-legacy"),
+          }),
+          now,
+          '{"items":[],"rateCardVersion":"legacy-rate-card"}',
+        );
+
+      const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
+
+      expect(result).toEqual({ appliedVersions: [9], currentVersion: 9 });
+      expect(
+        database
+          .prepare(
+            `SELECT last_error, outbox_id, provider_document_id, provider_status, status
+              FROM osfo_memory_provider_outbox
+              ORDER BY sequence`,
+          )
+          .all(),
+      ).toEqual([
+        {
+          last_error: null,
+          outbox_id: "delete-session-1",
+          provider_document_id: null,
+          provider_status: null,
+          status: "pending",
+        },
+        {
+          last_error: "Provider acceptance predates durable processing status",
+          outbox_id: "legacy-accepted-conversation",
+          provider_document_id: null,
+          provider_status: null,
+          status: "failed",
+        },
+      ]);
+    }),
+  ),
+);
 
 it.effect("atomically records a committed turn and its provider conversation snapshot", () =>
   withDatabase(({ database, storage }) =>
@@ -223,6 +296,357 @@ it.effect("orders User deletion behind earlier Session conversation work", () =>
   ),
 );
 
+it.effect("keeps a later conversation snapshot blocked while the accepted document processes", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      seedSession(database);
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const agentStore = makeAgentStore(db);
+      yield* agentStore.recordCommittedTurn(
+        committedTurn("assistant-1", "request-1"),
+        conversationProjection("assistant-1"),
+      );
+      yield* agentStore.recordCommittedTurn(
+        committedTurn("assistant-2", "request-2"),
+        conversationProjection("assistant-2"),
+      );
+      database.exec(
+        "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+      );
+
+      const saved: Array<string> = [];
+      const provider = providerStub({
+        saveConversation: ({ conversation }) => {
+          saved.push(conversation.messages.at(-1)?.content ?? "");
+          return Effect.succeed(conversationSaveResult("document-1", "processing"));
+        },
+      });
+
+      yield* reconcileMemoryProviderOutbox(makeMemoryProviderOutboxStore(db)).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+
+      expect(saved).toEqual(["I will remember it"]);
+      expect(
+        database
+          .prepare(
+            `SELECT provider_document_id, provider_status, status
+              FROM osfo_memory_provider_outbox
+              ORDER BY sequence`,
+          )
+          .all(),
+      ).toEqual([
+        { provider_document_id: "document-1", provider_status: "processing", status: "pending" },
+        { provider_document_id: null, provider_status: null, status: "pending" },
+      ]);
+    }),
+  ),
+);
+
+it.effect(
+  "polls the accepted document and releases the next snapshot when processing finishes",
+  () =>
+    withDatabase(({ database, storage }) =>
+      Effect.gen(function* () {
+        seedSession(database);
+        const db = makeAgentDb(asDurableObjectStorage(storage));
+        const agentStore = makeAgentStore(db);
+        yield* agentStore.recordCommittedTurn(
+          committedTurn("assistant-1", "request-1"),
+          conversationProjection("assistant-1"),
+        );
+        yield* agentStore.recordCommittedTurn(
+          committedTurn("assistant-2", "request-2"),
+          conversationProjection("assistant-2"),
+        );
+        database.exec(
+          "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+        );
+
+        let saveCount = 0;
+        let statusCount = 0;
+        const provider = providerStub({
+          getConversationStatus: () => {
+            statusCount += 1;
+            return Effect.succeed({ processingStatus: "done" });
+          },
+          saveConversation: () => {
+            saveCount += 1;
+            return Effect.succeed(conversationSaveResult(`document-${saveCount}`, "processing"));
+          },
+        });
+        const outbox = makeMemoryProviderOutboxStore(db);
+
+        yield* reconcileMemoryProviderOutbox(outbox).pipe(
+          Effect.provideService(MemoryProvider.Service, provider),
+          Effect.provideService(Db.Service, unavailableDatabase),
+          Effect.provide(BrowserCrypto.layer),
+        );
+        database
+          .prepare(
+            `UPDATE osfo_memory_provider_outbox
+            SET available_at = ?
+            WHERE sequence = 1`,
+          )
+          .run(past);
+
+        yield* reconcileMemoryProviderOutbox(outbox).pipe(
+          Effect.provideService(MemoryProvider.Service, provider),
+          Effect.provideService(Db.Service, failingUsageDatabase),
+          Effect.provide(BrowserCrypto.layer),
+        );
+
+        expect({ saveCount, statusCount }).toEqual({ saveCount: 2, statusCount: 1 });
+        expect(
+          database
+            .prepare(
+              `SELECT last_error, provider_document_id, provider_status, status
+              FROM osfo_memory_provider_outbox
+              ORDER BY sequence`,
+            )
+            .all(),
+        ).toEqual([
+          {
+            last_error: "MemoryProvider usage recording is unavailable",
+            provider_document_id: "document-1",
+            provider_status: "done",
+            status: "pending",
+          },
+          {
+            last_error: null,
+            provider_document_id: "document-2",
+            provider_status: "processing",
+            status: "pending",
+          },
+        ]);
+      }),
+    ),
+);
+
+it.effect("resumes status polling after restart without resending an accepted snapshot", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(now));
+      seedSession(database);
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      yield* makeAgentStore(db).recordCommittedTurn(
+        committedTurn("assistant-1", "request-1"),
+        conversationProjection("assistant-1"),
+      );
+      database.exec(
+        "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+      );
+
+      let saveCount = 0;
+      let statusCount = 0;
+      const provider = providerStub({
+        getConversationStatus: () => {
+          statusCount += 1;
+          return Effect.fail(
+            new MemoryProvider.MemoryProviderUnavailable({
+              message: "Provider is unavailable",
+              operation: "getConversationStatus",
+            }),
+          );
+        },
+        saveConversation: () => {
+          saveCount += 1;
+          return Effect.succeed(conversationSaveResult("document-1", "processing"));
+        },
+      });
+
+      yield* reconcileMemoryProviderOutbox(makeMemoryProviderOutboxStore(db)).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+      database.exec(
+        "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+      );
+
+      const restarted = makeMemoryProviderOutboxStore(db);
+      yield* reconcileMemoryProviderOutbox(restarted).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+
+      expect({ saveCount, statusCount }).toEqual({ saveCount: 1, statusCount: 1 });
+      expect(
+        database
+          .prepare(
+            `SELECT available_at, last_error, provider_document_id, provider_status, status
+              FROM osfo_memory_provider_outbox`,
+          )
+          .get(),
+      ).toEqual({
+        available_at: "2026-08-23T12:00:30.000Z",
+        last_error: "Provider is unavailable",
+        provider_document_id: "document-1",
+        provider_status: "processing",
+        status: "pending",
+      });
+    }),
+  ),
+);
+
+it.effect("terminalizes an accepted document with an invalid status without resending it", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      seedSession(database);
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const agentStore = makeAgentStore(db);
+      yield* agentStore.recordCommittedTurn(
+        committedTurn("assistant-1", "request-1"),
+        conversationProjection("assistant-1"),
+      );
+      yield* agentStore.recordCommittedTurn(
+        committedTurn("assistant-2", "request-2"),
+        conversationProjection("assistant-2"),
+      );
+      database.exec(
+        "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+      );
+
+      let saveCount = 0;
+      const provider = providerStub({
+        saveConversation: () => {
+          saveCount += 1;
+          const accepted = conversationSaveResult("document-1", "processing");
+          return Effect.fail(
+            new MemoryProvider.MemoryProviderAcceptanceStatusInvalid({
+              documentId: accepted.documentId,
+              message: "The MemoryProvider accepted the conversation with an invalid status",
+              operation: "saveConversation",
+              usage: accepted.usage,
+            }),
+          );
+        },
+      });
+      const outbox = makeMemoryProviderOutboxStore(db);
+
+      yield* reconcileMemoryProviderOutbox(outbox).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+      yield* reconcileMemoryProviderOutbox(outbox).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+
+      expect(saveCount).toBe(1);
+      expect(yield* outbox.hasRetryableWork).toBe(false);
+      expect(
+        database
+          .prepare(
+            `SELECT last_error, provider_accepted_at, provider_document_id, provider_status, status
+              FROM osfo_memory_provider_outbox
+              ORDER BY sequence`,
+          )
+          .all(),
+      ).toEqual([
+        {
+          last_error: "The MemoryProvider accepted the conversation with an invalid status",
+          provider_accepted_at: expect.any(String),
+          provider_document_id: "document-1",
+          provider_status: "failed",
+          status: "failed",
+        },
+        {
+          last_error: null,
+          provider_accepted_at: null,
+          provider_document_id: null,
+          provider_status: null,
+          status: "pending",
+        },
+      ]);
+    }),
+  ),
+);
+
+it.effect("keeps a terminal provider failure durable without releasing later work", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      seedSession(database);
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const agentStore = makeAgentStore(db);
+      yield* agentStore.recordCommittedTurn(
+        committedTurn("assistant-1", "request-1"),
+        conversationProjection("assistant-1"),
+      );
+      yield* agentStore.recordCommittedTurn(
+        committedTurn("assistant-2", "request-2"),
+        conversationProjection("assistant-2"),
+      );
+      database.exec(
+        "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+      );
+
+      let saveCount = 0;
+      let statusCount = 0;
+      const provider = providerStub({
+        getConversationStatus: () => {
+          statusCount += 1;
+          return Effect.fail(
+            new MemoryProvider.MemoryProviderRejected({
+              message: "Conversation processing failed",
+              operation: "getConversationStatus",
+            }),
+          );
+        },
+        saveConversation: () => {
+          saveCount += 1;
+          return Effect.succeed(conversationSaveResult("document-1", "processing"));
+        },
+      });
+      const outbox = makeMemoryProviderOutboxStore(db);
+
+      yield* reconcileMemoryProviderOutbox(outbox).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+      database.exec(
+        "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+      );
+      yield* reconcileMemoryProviderOutbox(outbox).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+
+      expect({ saveCount, statusCount }).toEqual({ saveCount: 1, statusCount: 1 });
+      expect(yield* outbox.hasRetryableWork).toBe(false);
+      expect(
+        database
+          .prepare(
+            `SELECT last_error, provider_document_id, provider_status, status
+              FROM osfo_memory_provider_outbox
+              ORDER BY sequence`,
+          )
+          .all(),
+      ).toEqual([
+        {
+          last_error: "Conversation processing failed",
+          provider_document_id: "document-1",
+          provider_status: "failed",
+          status: "failed",
+        },
+        {
+          last_error: null,
+          provider_document_id: null,
+          provider_status: null,
+          status: "pending",
+        },
+      ]);
+    }),
+  ),
+);
+
 it.effect("allows independent reconcilers to overlap without duplicating provider work", () =>
   withDatabase(({ database, storage }) =>
     Effect.gen(function* () {
@@ -357,6 +781,13 @@ const withDatabase = <A, E>(
     Effect.sync(() => database.close()),
   );
 
+const withEmptyDatabase = <A, E>(
+  use: (database: TestDatabase) => Effect.Effect<A, E>,
+): Effect.Effect<A, E> =>
+  Effect.acquireUseRelease(Effect.sync(makeEmptyTestDatabase), use, ({ database }) =>
+    Effect.sync(() => database.close()),
+  );
+
 interface TestDatabase {
   readonly database: DatabaseSync;
   readonly storage: NodeSqliteStorage;
@@ -368,8 +799,7 @@ interface NodeSqliteStorage {
 }
 
 const makeTestDatabase = (): TestDatabase => {
-  const database = new DatabaseSync(":memory:");
-  database.exec("PRAGMA foreign_keys = ON");
+  const { database, storage } = makeEmptyTestDatabase();
   const migrations = new URL("./migrations/", import.meta.url);
   const migrationFiles = readdirSync(migrations).filter((name) => name.endsWith(".sql"));
   // oxlint-disable-next-line unicorn/no-array-sort -- The Worker target lacks ES2023 toSorted; this local fresh array is safe to mutate.
@@ -378,6 +808,12 @@ const makeTestDatabase = (): TestDatabase => {
     const sql = readFileSync(new URL(filename, migrations), "utf8");
     database.exec(sql.replaceAll("--> statement-breakpoint", "\n"));
   }
+  return { database, storage };
+};
+
+const makeEmptyTestDatabase = (): TestDatabase => {
+  const database = new DatabaseSync(":memory:");
+  database.exec("PRAGMA foreign_keys = ON");
   return { database, storage: nodeSqliteStorage(database) };
 };
 
@@ -522,13 +958,41 @@ const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvi
   deleteSessionConversation: () => Effect.die(new Error("Unexpected Session deletion")),
   deleteUserKnowledge: () => Effect.die(new Error("Unexpected User deletion")),
   forgetKnowledge: () => Effect.die(new Error("Unexpected forget")),
+  getConversationStatus: () => Effect.die(new Error("Unexpected conversation status read")),
   recall: () => Effect.die(new Error("Unexpected recall")),
   saveConversation: () => Effect.die(new Error("Unexpected conversation save")),
   ...overrides,
 });
 
+const conversationSaveResult = (
+  documentId: string,
+  processingStatus: MemoryProvider.ConversationProcessingStatus,
+): MemoryProvider.SaveConversationResult => ({
+  documentId: MemoryProvider.ProviderDocumentId.make(documentId),
+  processingStatus,
+  usage: {
+    items: [
+      {
+        allowanceKind: "supermemoryIngestionTokens",
+        basis: "conservative",
+        quantity: 10n,
+      },
+    ],
+    rateCardVersion: "test-rate-card",
+  },
+});
+
 const unavailableDatabase: Db.Interface = {
   database: Effect.die(new Error("Unexpected PostgreSQL access")),
+};
+
+const failingUsageDatabase: Db.Interface = {
+  database: Effect.succeed(
+    // SAFETY: Allowance recording only calls transaction on this focused failure stub.
+    {
+      transaction: () => Promise.reject(new Error("Injected PostgreSQL outage")),
+    } as unknown as Db.Database,
+  ),
 };
 
 const countRows = (

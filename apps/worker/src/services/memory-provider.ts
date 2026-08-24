@@ -11,6 +11,20 @@ export const KnowledgeMemoryId = Schema.String.check(Schema.isMinLength(1)).pipe
 /** Opaque provider-assigned identity for one recalled Knowledge Base memory. */
 export type KnowledgeMemoryId = typeof KnowledgeMemoryId.Type;
 
+/** Opaque provider-assigned identity for one accepted conversation document. */
+export const ProviderDocumentId = Schema.String.check(Schema.isMinLength(1)).pipe(
+  Schema.brand("ProviderDocumentId"),
+);
+
+/** Opaque provider-assigned identity for one accepted conversation document. */
+export type ProviderDocumentId = typeof ProviderDocumentId.Type;
+
+/** Application readiness for sending the next ordered conversation snapshot. */
+export const ConversationProcessingStatus = Schema.Literals(["processing", "done"]);
+
+/** Application readiness for sending the next ordered conversation snapshot. */
+export type ConversationProcessingStatus = typeof ConversationProcessingStatus.Type;
+
 /** Human-visible conversation roles accepted by the Knowledge Base. */
 export const ConversationRole = Schema.Literals(["user", "assistant"]);
 
@@ -83,7 +97,19 @@ export interface SaveConversationInput {
 
 /** Successful provider acceptance of one Session conversation snapshot. */
 export interface SaveConversationResult {
+  readonly documentId: ProviderDocumentId;
+  readonly processingStatus: ConversationProcessingStatus;
   readonly usage: UsageEvidence;
+}
+
+/** Accepted conversation document whose provider processing state must be checked. */
+export interface GetConversationStatusInput {
+  readonly documentId: ProviderDocumentId;
+}
+
+/** Current provider processing state for one accepted conversation document. */
+export interface GetConversationStatusResult {
+  readonly processingStatus: ConversationProcessingStatus;
 }
 
 /** Exact approved derived memories to forget within one User scope. */
@@ -110,6 +136,7 @@ export type DeletionResult = { readonly _tag: "AlreadyAbsent" } | { readonly _ta
 export const MemoryProviderOperation = Schema.Literals([
   "recall",
   "saveConversation",
+  "getConversationStatus",
   "forgetKnowledge",
   "deleteSessionConversation",
   "deleteUserKnowledge",
@@ -150,11 +177,31 @@ export class MemoryProviderUnavailable extends Schema.TaggedError<MemoryProvider
   },
 ) {}
 
+/** A save was accepted, but its returned status cannot safely drive ordered follow-up work. */
+export class MemoryProviderAcceptanceStatusInvalid extends Schema.TaggedError<MemoryProviderAcceptanceStatusInvalid>()(
+  "MemoryProviderAcceptanceStatusInvalid",
+  {
+    documentId: ProviderDocumentId,
+    message: Schema.String,
+    operation: Schema.Literal("saveConversation"),
+    usage: UsageEvidence,
+  },
+) {}
+
 /** Application-owned Knowledge Base operations independent of provider SDK types. */
 export interface Interface {
+  readonly getConversationStatus: (
+    input: GetConversationStatusInput,
+  ) => Effect.Effect<
+    GetConversationStatusResult,
+    MemoryProviderRejected | MemoryProviderUnavailable
+  >;
   readonly saveConversation: (
     input: SaveConversationInput,
-  ) => Effect.Effect<SaveConversationResult, MemoryProviderRejected | MemoryProviderUnavailable>;
+  ) => Effect.Effect<
+    SaveConversationResult,
+    MemoryProviderAcceptanceStatusInvalid | MemoryProviderRejected | MemoryProviderUnavailable
+  >;
   readonly deleteSessionConversation: (
     input: DeleteSessionConversationInput,
   ) => Effect.Effect<DeletionResult, MemoryProviderRejected | MemoryProviderUnavailable>;
