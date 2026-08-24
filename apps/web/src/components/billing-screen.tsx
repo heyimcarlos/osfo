@@ -1,46 +1,27 @@
 import type { BillingSummary } from "@osfo/api";
 import { Button } from "@osfo/ui/components/button";
-import { Link } from "@tanstack/react-router";
+import { GlassPanel } from "@osfo/ui/components/glass-panel";
+import { Progress } from "@osfo/ui/components/progress";
 import { Check, CreditCard } from "lucide-react";
 
 /** Safe Plan and hosted-billing actions for one authenticated User. */
 export function BillingScreen({
   busy = false,
-  presentation = "standalone",
   onCheckout,
   onPortal,
   summary,
 }: {
   readonly busy?: boolean;
-  readonly presentation?: "settings" | "standalone";
   readonly onCheckout: () => void;
   readonly onPortal: () => void;
   readonly summary: BillingSummary;
 }) {
   const currentPlan = summary.currentPlan === "adventurer" ? "Adventurer" : "Free";
   return (
-    <main
-      className={
-        presentation === "settings"
-          ? "text-[#16213f]"
-          : "min-h-dvh bg-background px-5 py-10 text-foreground"
-      }
-    >
-      <section className={presentation === "settings" ? "mx-auto" : "mx-auto max-w-5xl"}>
-        {presentation === "settings" ? null : (
-          <div className="mb-8">
-            <Link className="font-bold underline" to="/">
-              Back to Osfo
-            </Link>
-            <p className="mt-8 text-sm font-bold uppercase tracking-[0.18em] text-muted-foreground">
-              Billing
-            </p>
-            <h1 className="mt-2 text-4xl font-black uppercase sm:text-6xl">{currentPlan}</h1>
-          </div>
-        )}
-
+    <div className="text-[#16213f]">
+      <div className="mx-auto">
         <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-          <section className="flex min-h-[32rem] flex-col rounded-[1.5rem] border border-white/85 bg-white/68 p-6 shadow-[0_14px_36px_rgba(63,88,124,0.11)]">
+          <GlassPanel className="flex min-h-[32rem] flex-col p-6">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="font-bold">Current Plan</h2>
@@ -88,19 +69,12 @@ export function BillingScreen({
                       Resets {formatDate(summary.usage.resetAt)}
                     </span>
                   </div>
-                  <div
+                  <Progress
                     aria-label={`${summary.usage.label} Plan Usage remaining`}
-                    aria-valuemax={100}
-                    aria-valuemin={0}
-                    aria-valuenow={summary.usage.remainingPercentage}
-                    className="mt-3 h-2 overflow-hidden rounded-full bg-[#dbe7f6]"
-                    role="progressbar"
-                  >
-                    <span
-                      className="block h-full rounded-full bg-[#2f7df4]"
-                      style={{ width: `${summary.usage.remainingPercentage}%` }}
-                    />
-                  </div>
+                    className="mt-3 bg-[#dbe7f6]"
+                    indicatorClassName="bg-[#2f7df4]"
+                    value={summary.usage.remainingPercentage}
+                  />
                   {summary.usage.warning === null ? null : (
                     <p className="mt-3 text-sm font-semibold text-amber-800">
                       {summary.usage.warning === "exhausted"
@@ -111,10 +85,10 @@ export function BillingScreen({
                 </div>
               )}
             </div>
-          </section>
+          </GlassPanel>
 
           <div className="grid content-start gap-5">
-            <section className="rounded-[1.5rem] border border-white/85 bg-white/68 p-5 shadow-[0_14px_36px_rgba(63,88,124,0.11)]">
+            <GlassPanel>
               <h2 className="font-bold">Payment Method</h2>
               <div className="mt-4 flex items-center gap-3">
                 <span className="grid size-11 place-items-center rounded-xl bg-[#edf4ff] text-[#2f7df4]">
@@ -139,9 +113,9 @@ export function BillingScreen({
                   Update
                 </Button>
               </div>
-            </section>
+            </GlassPanel>
 
-            <section className="rounded-[1.5rem] border border-white/85 bg-white/68 p-5 shadow-[0_14px_36px_rgba(63,88,124,0.11)]">
+            <GlassPanel>
               <h2 className="font-bold">Billing History</h2>
               <div className="mt-4 rounded-xl border border-[#dbe4f0] bg-white/50 p-4 text-sm">
                 {summary.period === null ? (
@@ -161,9 +135,9 @@ export function BillingScreen({
               >
                 View invoices in secure billing →
               </button>
-            </section>
+            </GlassPanel>
 
-            <section className="rounded-[1.5rem] border border-white/85 bg-white/68 p-5 shadow-[0_14px_36px_rgba(63,88,124,0.11)]">
+            <GlassPanel>
               <h2 className="font-bold">Promo Code</h2>
               <div className="mt-3 flex gap-3">
                 <input
@@ -176,7 +150,7 @@ export function BillingScreen({
                   Apply
                 </Button>
               </div>
-            </section>
+            </GlassPanel>
           </div>
         </div>
 
@@ -195,8 +169,8 @@ export function BillingScreen({
             <p className="text-sm text-[#687896]">Adventurer is CA$25 each month, plus tax.</p>
           </div>
         ) : null}
-      </section>
-    </main>
+      </div>
+    </div>
   );
 }
 

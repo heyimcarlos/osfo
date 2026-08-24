@@ -1,9 +1,10 @@
+import { GlassPanel } from "@osfo/ui/components/glass-panel";
 import { MessageCircle, Send } from "lucide-react";
 
 /** Route-owned instructions for starting a private Channel Link journey. */
 export function SettingsChannelsPage() {
   return (
-    <div className="rounded-[1.5rem] border border-white/85 bg-white/68 p-6 shadow-[0_14px_36px_rgba(63,88,124,0.11)]">
+    <GlassPanel className="p-6">
       <h2 className="text-xl font-bold">Link a messaging channel</h2>
       <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[#687896]">
         Send Osfo a private message from the external account you want to link. Osfo replies there
@@ -13,7 +14,7 @@ export function SettingsChannelsPage() {
         <ChannelCard color="bg-[#2f8fe8]" icon={Send} label="Telegram" />
         <ChannelCard color="bg-[#25d366]" icon={MessageCircle} label="WhatsApp" />
       </div>
-    </div>
+    </GlassPanel>
   );
 }
 

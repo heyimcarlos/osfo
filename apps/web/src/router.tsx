@@ -127,13 +127,13 @@ const settingsMarketplaceRoute = createRoute({
 const billingRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "billing",
-  component: lazyRouteComponent(() => import("./pages/billing-page"), "BillingPage"),
+  component: lazyRouteComponent(() => import("./pages/billing-page"), "LegacyBillingPage"),
 });
 const billingReturnRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "billing/return",
   validateSearch: parseBillingReturnSearch,
-  component: lazyRouteComponent(() => import("./pages/billing-page"), "BillingReturnPage"),
+  component: lazyRouteComponent(() => import("./pages/billing-page"), "LegacyBillingReturnPage"),
 });
 
 const routeTree = rootRoute.addChildren([

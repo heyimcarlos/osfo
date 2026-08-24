@@ -1,7 +1,7 @@
 import type { BillingSummary } from "@osfo/api";
 import { Effect } from "effect";
-import { useEffect, useState } from "react";
-import { useSearch } from "@tanstack/react-router";
+import { useEffect, useMemo, useState } from "react";
+import { Navigate, useRouterState, useSearch } from "@tanstack/react-router";
 
 import { BillingScreen } from "../components/billing-screen";
 import {
@@ -10,16 +10,18 @@ import {
   reconcileBilling,
   startBillingCheckout,
 } from "../lib/api-client";
-import type { BillingReturnSearch } from "../lib/billing-return";
+import {
+  billingReturnQuery,
+  parseBillingReturnSearchString,
+  type BillingReturnSearch,
+} from "../lib/billing-return";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Typed billing return states use the standard _tag discriminator. */
 
 /** Route-owned billing settings and hosted return handling. */
-export function BillingPage({
-  returnState = ordinaryBilling,
-}: {
-  readonly returnState?: BillingReturnSearch;
-}) {
+export function BillingPage() {
+  const search = useRouterState({ select: (state) => state.location.searchStr });
+  const returnState = useMemo(() => parseBillingReturnSearchString(search), [search]);
   const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,7 +57,6 @@ export function BillingPage({
       {error === null ? null : <p role="alert">{error}</p>}
       <BillingScreen
         busy={busy}
-        presentation="settings"
         onCheckout={() => redirect(startBillingCheckout)}
         onPortal={() => redirect(openBillingPortal)}
         summary={summary}
@@ -64,23 +65,18 @@ export function BillingPage({
   );
 }
 
-/** Compatibility route for Stripe hosted billing returns. */
-export function BillingReturnPage() {
+/** Redirect the retired standalone billing URL into the settings dashboard. */
+export function LegacyBillingPage() {
+  return <Navigate replace search={{}} to="/settings/billing" />;
+}
+
+/** Preserve an older hosted billing return while moving it into the settings dashboard. */
+export function LegacyBillingReturnPage() {
   const returnState = useSearch({
     from: "/authenticated/billing/return",
   });
-  switch (returnState._tag) {
-    case "Checkout":
-    case "Portal":
-    case "Ordinary":
-    case "Invalid":
-      return <BillingPage returnState={returnState} />;
-  }
-  returnState satisfies never;
-  return null;
+  return <Navigate replace search={billingReturnQuery(returnState)} to="/settings/billing" />;
 }
-
-const ordinaryBilling: BillingReturnSearch = { _tag: "Ordinary" };
 
 const billingLoad = (returnState: BillingReturnSearch): typeof inspectBilling | null => {
   switch (returnState._tag) {
