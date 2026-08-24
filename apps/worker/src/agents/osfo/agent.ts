@@ -225,6 +225,7 @@ import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-author
 import { makeAgentSessionLifecycle } from "./session-lifecycle";
 import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
 import { effectToolSchema } from "./effect-tool-schema";
+import { makeFileTools } from "./file-tools";
 import {
   projectCommittedConversationSnapshot,
   projectTerminalMarkedCommittedTurns,
@@ -240,7 +241,6 @@ const modelCallUsageRetryDelaySeconds = 60;
 const memoryProviderRetryDelaySeconds = 30;
 const gatewayCostMaximumLookups = 3;
 const authorization = Authorization.make(retainedCatalog);
-
 type AgentFilePersistenceError =
   | FileAnalysisConflict
   | FileNotFound
@@ -428,6 +428,18 @@ export class OsfoAgent extends Think<Env> {
     ),
     objects: makeR2FileObjects(this.env.FILES),
     store: this.#fileStore,
+  });
+  readonly #fileTools = makeFileTools({
+    analyze: (input) =>
+      Effect.promise(() => this.#migrationsReady).pipe(
+        Effect.andThen(this.#fileToolAuthorizationContext()),
+        Effect.flatMap((context) => this.#files.analyze({ ...input, context })),
+      ),
+    read: (input) =>
+      Effect.promise(() => this.#migrationsReady).pipe(
+        Effect.andThen(this.#fileToolAuthorizationContext()),
+        Effect.flatMap((context) => this.#files.read({ ...input, context })),
+      ),
   });
   #activeModelStepNumber = ModelStepNumber.make(1);
   readonly #completedModelSteps = new Set<number>();
@@ -734,6 +746,7 @@ export class OsfoAgent extends Think<Env> {
     const osfoActions = makeOsfoActions({ clearCoreMemory: executeClear });
     return {
       ...documentActions,
+      ...this.#fileTools.actions,
       ...osfoActions,
     };
   }
@@ -741,6 +754,7 @@ export class OsfoAgent extends Think<Env> {
   /** Register trusted native Tools; beforeTurn publishes only the selected schemas. */
   override getTools(): ToolSet {
     return {
+      ...this.#fileTools.tools,
       ...this.#sessionRecallTools,
       exportDocument: tool({
         description: "Export one retained generated PDF or DOCX owned by the current User.",
@@ -946,6 +960,54 @@ export class OsfoAgent extends Think<Env> {
             message: "The requested Skill is not eligible for this turn",
           }),
           onSuccess: (loaded) => loaded,
+        }),
+      ),
+    );
+  }
+
+  #fileToolAuthorizationContext(): Effect.Effect<AuthorizationContext, FileCapabilityUnavailable> {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new FileCapabilityUnavailable({
+          cause: invalidOsfoEnvironment,
+          message: "File Tool authorization has no valid Worker runtime",
+          operation: "readToolAuthorization",
+        }),
+      );
+    }
+    return this.#readCoreMemoryAuthorization().pipe(
+      Effect.mapError(
+        (cause) =>
+          new FileCapabilityUnavailable({
+            cause,
+            message: "The active turn has no retained file authority",
+            operation: "readToolAuthorization",
+          }),
+      ),
+      Effect.flatMap((base) =>
+        Effect.tryPromise({
+          try: () =>
+            runtime.runPromise(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+                  const database = yield* Db.database;
+                  const allowance = yield* BillingDb.make(database).admit(base.user.userId, now);
+                  return AuthorizationContext.make({
+                    ...base,
+                    allowance: { _tag: "Metered", ...allowance },
+                    now,
+                  });
+                }),
+              ),
+            ),
+          catch: (cause) =>
+            new FileCapabilityUnavailable({
+              cause,
+              message: "Current file Tool allowance facts are unavailable",
+              operation: "readToolAuthorization",
+            }),
         }),
       ),
     );

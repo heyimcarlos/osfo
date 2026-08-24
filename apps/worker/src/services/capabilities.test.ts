@@ -16,11 +16,13 @@ const baseInput = {
   ] as const,
   availableIntegrationToolkits: [] as const,
   availableToolNames: [
+    "analyzeFile",
     "deleteDocument",
     "exportDocument",
     "generateDocument",
     "loadSkill",
     "osfoClearCoreMemory",
+    "readFile",
     "sessionRecall",
     "set_context",
   ],
@@ -131,6 +133,87 @@ it.effect("keeps supported direct Tools and narrows a Skill bundle to channel av
       loadedSkills: [],
     });
     expect(deleteBundle.activeToolNames).toEqual(["deleteDocument", "loadSkill"]);
+  }),
+);
+
+it.effect("publishes only the exact existing file Tool required by the task", () =>
+  Effect.gen(function* () {
+    const capabilities = Capabilities.make();
+    const analysisIndex = yield* capabilities.eligibleIndex({
+      ...baseInput,
+      plan: "free",
+      taskDescription: "Analyze the uploaded CSV file",
+      taskKinds: ["file"],
+    });
+    const analysisBundle = capabilities.assembleToolBundle({
+      availableToolNames: baseInput.availableToolNames,
+      index: analysisIndex,
+      loadedSkills: [],
+    });
+    expect(analysisBundle.activeToolNames).toEqual(["analyzeFile", "loadSkill"]);
+
+    const readIndex = yield* capabilities.eligibleIndex({
+      ...baseInput,
+      plan: "free",
+      taskDescription: "Read this retained file",
+      taskKinds: ["file"],
+    });
+    const readBundle = capabilities.assembleToolBundle({
+      availableToolNames: baseInput.availableToolNames,
+      index: readIndex,
+      loadedSkills: [],
+    });
+    expect(readBundle.activeToolNames).toEqual(["loadSkill", "readFile"]);
+
+    const unavailable = capabilities.explainUnavailable({
+      availableIntegrationToolkits: [],
+      availableRequirements: baseInput.availableRequirements,
+      availableToolNames: baseInput.availableToolNames.filter(
+        (toolName) => toolName !== "analyzeFile",
+      ),
+      catalogVersion: baseInput.catalogVersion,
+      capabilityId: "file-analysis",
+    });
+    expect(unavailable).toEqual({
+      _tag: "Unavailable",
+      capabilityId: "file-analysis",
+      missing: [{ _tag: "Tool", toolName: "analyzeFile" }],
+    });
+  }),
+);
+
+it.effect("keeps Core Memory Tools behind their progressive system Skill", () =>
+  Effect.gen(function* () {
+    const capabilities = Capabilities.make();
+    const index = yield* capabilities.eligibleIndex({
+      ...baseInput,
+      plan: "adventurer",
+      taskDescription: "Forget an old preference and update memory",
+      taskKinds: ["memory"],
+    });
+
+    expect(
+      capabilities.assembleToolBundle({
+        availableToolNames: baseInput.availableToolNames,
+        index,
+        loadedSkills: [],
+      }).activeToolNames,
+    ).toEqual(["loadSkill"]);
+
+    const loaded = yield* capabilities.loadSkill({
+      index,
+      personalSkills: [],
+      skillId: "memory-curation",
+      skillVersion: "system-memory-curation-v1",
+      userId: baseInput.userId,
+    });
+    expect(
+      capabilities.assembleToolBundle({
+        availableToolNames: baseInput.availableToolNames,
+        index,
+        loadedSkills: [loaded],
+      }).activeToolNames,
+    ).toEqual(["loadSkill", "osfoClearCoreMemory", "set_context"]);
   }),
 );
 

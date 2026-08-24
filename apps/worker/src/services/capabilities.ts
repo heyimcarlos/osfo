@@ -169,11 +169,23 @@ const governedCapabilitiesV1 = [
   }),
   entry("file-read", "Read an owned retained file.", "file.read", ["file"], {
     availabilityRequirements: ["file-storage"],
-    keywords: ["attachment", "file", "upload"],
+    keywords: ["attachment", "open", "read"],
+    resultBounds: {
+      maximumBytes: 2_000_000n,
+      maximumDurationMillis: 300_000,
+      maximumItems: 1,
+    },
+    toolRequirements: ["readFile"],
   }),
   entry("file-analysis", "Analyze one bounded owned file.", "file.analyze", ["file"], {
     availabilityRequirements: ["file-storage"],
-    keywords: ["analyze", "csv", "file", "spreadsheet"],
+    keywords: ["analyse", "analyze", "inspect data", "summarize file", "summarize spreadsheet"],
+    resultBounds: {
+      maximumBytes: 2_000_000n,
+      maximumDurationMillis: 300_000,
+      maximumItems: 1,
+    },
+    toolRequirements: ["analyzeFile"],
   }),
   entry(
     "document-generation",
@@ -459,11 +471,13 @@ const toolRegistrations: ReadonlyArray<{
   readonly source: "integration" | "native";
   readonly toolName: string;
 }> = [
+  { source: "native", toolName: "analyzeFile" },
   { source: "native", toolName: "deleteDocument" },
   { source: "native", toolName: "exportDocument" },
   { source: "native", toolName: "generateDocument" },
   { source: "native", toolName: "loadSkill" },
   { source: "native", toolName: "osfoClearCoreMemory" },
+  { source: "native", toolName: "readFile" },
   { source: "native", toolName: "sessionRecall" },
   { source: "native", toolName: "set_context" },
 ];

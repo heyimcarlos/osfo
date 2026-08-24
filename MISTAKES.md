@@ -21,3 +21,6 @@ short, specific, and actionable.
 - Adding a generated Agent SQLite migration is incomplete until the runtime
   manifest imports it. Keep a test that compares generated SQL files with the
   manifest imports so package tests exercise the production migration chain.
+- A Capability Catalog entry does not prove an existing Tool was migrated. Trace
+  every Tool named by an acceptance criterion through its catalog requirement,
+  closed registry entry, model-visible schema, and existing execution path.
