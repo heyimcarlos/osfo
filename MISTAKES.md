@@ -21,3 +21,6 @@ short, specific, and actionable.
 - Adding a generated Agent SQLite migration is incomplete until the runtime
   manifest imports it. Keep a test that compares generated SQL files with the
   manifest imports so package tests exercise the production migration chain.
+- Supermemory rejects an organization `filterPrompt` unless the same settings
+  update enables `shouldLLMFilter`. Qualify coupled provider settings live, not
+  from the generated request type alone.

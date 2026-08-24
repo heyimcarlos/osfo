@@ -18,6 +18,7 @@ import { Db, DbTimestamp } from "../../../db";
 import {
   AllowancePeriodId,
   AssistantMessageId,
+  ResourcePriceVersion,
   SessionId,
   ThinkRequestId,
   UserId,
@@ -58,7 +59,7 @@ it("includes every generated Agent migration in the runtime manifest", () => {
 it.effect("activates an Agent that slept before the conversation processing migration", () =>
   withEmptyDatabase(({ database, storage }) =>
     Effect.gen(function* () {
-      const previousMigrations = agentMigrations.slice(0, -1);
+      const previousMigrations = agentMigrations.slice(0, -2);
       yield* applyMigrationChain(asDurableObjectStorage(storage), previousMigrations);
       database
         .prepare(
@@ -85,7 +86,7 @@ it.effect("activates an Agent that slept before the conversation processing migr
         .run(
           now,
           now,
-          // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This seeds a version-8 row before the version-9 codecs exist.
+          // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This seeds a retained legacy row before the version-10 configuration migration.
           JSON.stringify({
             _tag: "SaveConversation",
             projection: conversationProjection("assistant-legacy"),
@@ -96,7 +97,7 @@ it.effect("activates an Agent that slept before the conversation processing migr
 
       const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
-      expect(result).toEqual({ appliedVersions: [9], currentVersion: 9 });
+      expect(result).toEqual({ appliedVersions: [9, 10], currentVersion: 10 });
       expect(
         database
           .prepare(
@@ -147,6 +148,98 @@ it.effect("atomically records a committed turn and its provider conversation sna
         // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This asserts the exact stored encoding of an already typed payload.
         payload_json: JSON.stringify({ _tag: "SaveConversation", projection }),
       });
+    }),
+  ),
+);
+
+it.effect("retains versioned provider configuration status across retries and migration", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const store = makeMemoryProviderOutboxStore(makeAgentDb(asDurableObjectStorage(storage)));
+
+      const required = yield* store.requireConfiguration(
+        "organization",
+        MemoryProvider.organizationGuidanceVersion,
+        now,
+      );
+      expect(required).toBe(false);
+      expect(yield* store.inspectConfiguration("organization")).toEqual(
+        Option.some({
+          configuredAt: null,
+          scope: "organization",
+          status: "pending",
+          version: "osfo-filter-prompt-v1",
+        }),
+      );
+
+      expect(
+        yield* store.completeConfiguration(
+          "organization",
+          MemoryProvider.organizationGuidanceVersion,
+          liveLease,
+        ),
+      ).toBe(true);
+      expect(
+        yield* store.requireConfiguration(
+          "organization",
+          MemoryProvider.organizationGuidanceVersion,
+          extendedLease,
+        ),
+      ).toBe(true);
+
+      const nextVersion = MemoryProvider.ConfigurationVersion.make("osfo-filter-prompt-v2");
+      expect(yield* store.requireConfiguration("organization", nextVersion, extendedLease)).toBe(
+        false,
+      );
+      expect(yield* store.inspectConfiguration("organization")).toEqual(
+        Option.some({
+          configuredAt: null,
+          scope: "organization",
+          status: "pending",
+          version: "osfo-filter-prompt-v2",
+        }),
+      );
+    }),
+  ),
+);
+
+it.effect("recovers a deduplicated recent-turn bridge and removes indexed evidence", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      seedSession(database);
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const agentStore = makeAgentStore(db);
+      const outbox = makeMemoryProviderOutboxStore(db);
+      const first = conversationProjection("assistant-1");
+      const second = ConversationSnapshotProjection.make({
+        ...conversationProjection("assistant-2"),
+        conversation: MemoryProvider.ConversationSnapshot.make({
+          messages: [
+            { content: "Remember this", role: "user" },
+            { content: "I will remember it", role: "assistant" },
+            { content: "Actually, approval is no longer required", role: "user" },
+            { content: "Understood", role: "assistant" },
+          ],
+          usageStartIndex: 1,
+        }),
+      });
+      yield* agentStore.recordCommittedTurn(committedTurn("assistant-1", "request-1"), first);
+      yield* agentStore.recordCommittedTurn(committedTurn("assistant-2", "request-2"), second);
+
+      const bridge = yield* outbox.readRecentTurnBridge(UserId.make("user-1"));
+      expect(bridge.flatMap(({ messages }) => messages)).toEqual([
+        { content: "Remember this", role: "user" },
+        { content: "I will remember it", role: "assistant" },
+        { content: "Actually, approval is no longer required", role: "user" },
+        { content: "Understood", role: "assistant" },
+      ]);
+      expect(bridge.map(({ sourceId }) => sourceId)).toEqual([
+        "conversation:9:session-1:assistant-1",
+        "conversation:9:session-1:assistant-2",
+      ]);
+
+      database.prepare("UPDATE osfo_memory_provider_outbox SET provider_status = 'done'").run();
+      expect(yield* outbox.readRecentTurnBridge(UserId.make("user-1"))).toEqual([]);
     }),
   ),
 );
@@ -409,10 +502,10 @@ it.effect(
             .all(),
         ).toEqual([
           {
-            last_error: "MemoryProvider usage recording is unavailable",
+            last_error: null,
             provider_document_id: "document-1",
             provider_status: "done",
-            status: "pending",
+            status: "completed",
           },
           {
             last_error: null,
@@ -955,6 +1048,8 @@ const deletion = (outboxId: string, sessionId: string, userId = "user-1", enqueu
 });
 
 const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvider.Interface => ({
+  configureOrganizationGuidance: Effect.void,
+  configureUserGuidance: () => Effect.void,
   deleteSessionConversation: () => Effect.die(new Error("Unexpected Session deletion")),
   deleteUserKnowledge: () => Effect.die(new Error("Unexpected User deletion")),
   forgetKnowledge: () => Effect.die(new Error("Unexpected forget")),
@@ -971,14 +1066,13 @@ const conversationSaveResult = (
   documentId: MemoryProvider.ProviderDocumentId.make(documentId),
   processingStatus,
   usage: {
-    items: [
+    completedNonModelCost: [
       {
-        allowanceKind: "supermemoryIngestionTokens",
-        basis: "conservative",
-        quantity: 10n,
+        activity: "conversationsAndMemory",
+        ratedCostUsdMicros: 10n,
+        resourcePriceVersion: ResourcePriceVersion.make("resource-prices-2026-08-22"),
       },
     ],
-    rateCardVersion: "test-rate-card",
   },
 });
 

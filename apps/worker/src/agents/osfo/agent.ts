@@ -138,6 +138,7 @@ import {
 } from "../../services/authorization";
 import { DocumentGeneration } from "../../services/document-generation";
 import { makeDurableModelCallUsage } from "../../services/model-call-usage";
+import { MemoryProvider } from "../../services/memory-provider";
 import { makeManagedActionAuthorization } from "../../services/managed-action-authorization";
 import {
   makeSessionLifecycle,
@@ -735,7 +736,7 @@ export class OsfoAgent extends Think<Env> {
     );
     const prompt = await this.#assemblePrompt(context, metadata, system);
     if (prompt.usage !== null) {
-      this.ctx.waitUntil(this.#recordProviderRecallUsage(metadata, prompt.usage));
+      this.ctx.waitUntil(this.#recordProviderRecallCompanyCost(metadata, prompt.usage));
     }
     this.#completedModelSteps.clear();
     this.contextOverflow = {
@@ -841,60 +842,49 @@ export class OsfoAgent extends Think<Env> {
     agentInstructions: string,
   ): Promise<PromptAssembly.ModelTurnResult> {
     const config = loadConfig(this.env);
+    const memoryProviderOutbox = this.#memoryProviderOutbox;
+    const promptAssembly = this.#promptAssembly;
     return Effect.runPromise(
-      this.#promptAssembly
-        .forModelTurn({
+      Effect.gen(function* () {
+        const recentTurns = yield* memoryProviderOutbox
+          .readRecentTurnBridge(metadata.authorityIdentity.userId)
+          .pipe(
+            Effect.catch((failure) =>
+              Effect.logWarning("MemoryProvider recent-turn bridge is unavailable").pipe(
+                Effect.annotateLogs({ failureTag: failure._tag }),
+                Effect.as([]),
+              ),
+            ),
+          );
+        return yield* promptAssembly.forModelTurn({
           agentInstructions,
           continuation: context.continuation,
           messages: context.messages,
+          recentTurns,
           submissionId: metadata.submissionId,
           userId: metadata.authorityIdentity.userId,
-        })
-        .pipe(
-          // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Think's beforeTurn hook is the application entry point for this request Layer.
-          Effect.provide(SupermemoryMemoryProvider.layerFromConfig(config.supermemory)),
-        ),
+        });
+      }).pipe(
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Think's beforeTurn hook is the application entry point for this request Layer.
+        Effect.provide(SupermemoryMemoryProvider.layerFromConfig(config.supermemory)),
+      ),
     );
   }
 
-  async #recordProviderRecallUsage(
+  async #recordProviderRecallCompanyCost(
     metadata: ManagedTurnMetadata,
     usage: PromptAssembly.ProviderRecallAvailable["usage"],
   ): Promise<void> {
-    const runtime = Option.getOrUndefined(this.#runtime);
-    if (runtime === undefined) {
-      await Effect.runPromise(
-        Effect.logError("MemoryProvider recall usage could not be recorded").pipe(
-          Effect.annotateLogs({ failureTag: "InvalidOsfoEnvironment" }),
-        ),
-      );
-      return;
-    }
-    const result = await runtime.runPromiseExit(
-      Effect.scoped(
-        Db.database.pipe(
-          Effect.flatMap((database) =>
-            Allowances.make({
-              billing: BillingDb.make(database),
-              catalog: retainedCatalog,
-              now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-            }).record(
-              metadata.allowancePeriodId,
-              { sourceId: metadata.submissionId, sourceType: "MemoryProviderRecall" },
-              usage.items,
-            ),
-          ),
-        ),
-      ),
-    );
-    if (Exit.isSuccess(result)) return;
-    const failureTag = Option.match(Cause.findErrorOption(result.cause), {
-      onNone: () => "DefectOrInterruption",
-      onSome: (failure) => failure._tag,
-    });
+    const summary = MemoryProvider.summarizeUsageEvidence(usage);
     await Effect.runPromise(
-      Effect.logError("MemoryProvider recall usage could not be recorded").pipe(
-        Effect.annotateLogs({ failureTag, submissionId: metadata.submissionId }),
+      Effect.logInfo("MemoryProvider recall completed").pipe(
+        Effect.annotateLogs({
+          allowancePeriodId: metadata.allowancePeriodId,
+          companyCostContinuity: true,
+          ratedCostUsdMicros: String(summary.ratedCostUsdMicros),
+          resourcePriceVersions: summary.resourcePriceVersions.join(","),
+          submissionId: metadata.submissionId,
+        }),
       ),
     );
   }

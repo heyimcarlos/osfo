@@ -472,8 +472,14 @@ current User correction
 ```
 
 Each incoming User message automatically assembles Core Memory, the rolling
-Think context view, the current provider profile, query-relevant provider recall,
-and the current User input. Provider recall has a strict timeout and fails open.
+Think context view, recent committed turns that have not finished provider
+indexing, the current provider profile, query-relevant provider-derived memory,
+query-relevant indexed source chunks, and the current User input. Recent
+unindexed turns are a bounded freshness bridge, not a second memory store; they
+leave the bridge as soon as provider indexing completes. Exact User-authored
+source evidence outranks contradictory older or inferred provider memory.
+Provider recall has a strict timeout and fails open. Exhausted-allowance recall
+uses smaller limits and omits the freshness bridge and indexed source search.
 Session Recall is a separate model-invoked FTS5 search across current and
 historical Sessions. Osfo does not run FTS5 automatically on each turn and does
 not add a heuristic prefetch layer in v1. Some overlap between Core Memory and
@@ -488,30 +494,43 @@ MemoryProvider exposes Osfo-owned conversation operations, not generic document
 storage. SupermemoryMemoryProvider is the v1 adapter. It maps `containerTag` to
 `UserId` and `conversationId` to `SessionId`. This makes the Knowledge Base
 User-scoped across Sessions and routes. If one User owns several Agents later,
-they share this scope until a separate product decision changes it. After each
-completed turn, Think commits the User and final assistant messages before an
-Agent-local ordered outbox records a full conversation snapshot. Outbox records
-are synchronization machinery, not memory. The adapter sends the complete
-sanitized conversation as structured messages to Supermemory's turn-aware
-conversation endpoint and lets the provider detect net-new content. It never
-mixes document deltas with conversation snapshots, creates fixed time windows,
-or runs another LLM before ingestion.
+they share this scope until a separate product decision changes it. The adapter
+applies versioned organization extraction guidance before the first ingest and
+versioned User entity context after the provider accepts that User's first
+conversation. The second ordering is a provider constraint: Osfo does not claim
+that User entity context governs extraction of the already accepted first
+snapshot. Durable Agent SQLite state makes both configuration operations
+idempotent and causes changed versions to be applied again. After each completed
+turn, Think commits the User and final assistant messages before an Agent-local
+ordered outbox records a full conversation snapshot. Outbox records are
+synchronization machinery, not memory. The adapter sends the complete sanitized
+conversation as structured messages to Supermemory's turn-aware conversation
+endpoint and lets the provider detect net-new content. It never mixes document
+deltas with conversation snapshots, creates fixed time windows, or runs another
+LLM before ingestion.
 Human-readable tool outcomes and supported human-visible source details can be
 included. Hidden reasoning, raw tool traces, credentials, secrets, aborted
 output, and infrastructure records are excluded.
 
-The caller-shaped interface has five operations: recall User-scoped context,
-save one ordered Session conversation snapshot, forget derived knowledge, delete
-one Session conversation, and delete all knowledge for one User. Application-owned request,
-result, and typed failure values isolate callers from Supermemory SDK types.
-Provider selection is an internal composition decision, not a User setting.
+The caller-shaped interface has eight operations: configure organization
+extraction guidance, configure User entity context, recall User-scoped context,
+save one ordered Session conversation snapshot, read its processing status,
+forget derived knowledge, delete one Session conversation, and delete all
+knowledge for one User.
+Application-owned request, result, and typed failure values isolate callers from
+Supermemory SDK types. Provider selection is an internal composition decision,
+not a User setting.
 
 Provider save failure never rolls back a committed Think turn. Failed saves
 retry in Session order with stable snapshot identities. Provider deletion
 obligations also retry, and deletion remains pending until the provider confirms
-it. Observability records provider latency, recall failures, retry count, and the
-oldest pending save age. Osfo tells the User about degraded memory only when it
-affects the requested task.
+it. Successful provider operations return generic completed non-model resource
+cost, priced from a pinned resource-price version. They do not report synthetic
+capability counters. Until shared usage policy is activated, Osfo preserves
+company-cost continuity evidence without turning memory calls into User-facing
+allowance debits. Observability records provider latency, recall failures, retry
+count, resource-price evidence, and the oldest pending save age. Osfo tells the
+User about degraded memory only when it affects the requested task.
 
 Compaction thresholds and safety headroom are configurable per model. The 50 to
 60 percent context target is a measurement hypothesis, not a product rule.

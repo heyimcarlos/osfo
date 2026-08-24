@@ -5,7 +5,13 @@ import { BrowserCrypto } from "@effect/platform-browser";
 import { Effect, Option } from "effect";
 
 import { Db } from "../../db";
-import { AllowancePeriodId, AssistantMessageId, SessionId, UserId } from "../../domain";
+import {
+  AllowancePeriodId,
+  AssistantMessageId,
+  ResourcePriceVersion,
+  SessionId,
+  UserId,
+} from "../../domain";
 import { MemoryProvider } from "../../services/memory-provider";
 import type {
   ClaimedMemoryProviderWork,
@@ -113,6 +119,91 @@ it.effect("retries the exact conversation snapshot during a provider outage", ()
   );
 });
 
+it.effect(
+  "configures organization guidance before ingest and User guidance after acceptance",
+  () => {
+    const claim = conversationClaim();
+    const calls: Array<string> = [];
+    const { completed, retried, store } = testStore(claim, { configurationCurrent: false });
+    const provider = providerStub({
+      configureOrganizationGuidance: Effect.sync(() => {
+        calls.push("organization");
+      }),
+      configureUserGuidance: () => {
+        calls.push("user");
+        return Effect.fail(
+          new MemoryProvider.MemoryProviderUnavailable({
+            message: "The MemoryProvider User container is not ready",
+            operation: "configureUserGuidance",
+            status: 404,
+          }),
+        );
+      },
+      saveConversation: () => {
+        calls.push("save");
+        return Effect.succeed({
+          documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+          processingStatus: "processing",
+          usage: providerUsage,
+        });
+      },
+    });
+
+    return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+      Effect.provideService(MemoryProvider.Service, provider),
+      Effect.provideService(Db.Service, unavailableDatabase),
+      Effect.provide(BrowserCrypto.layer),
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(calls).toEqual(["organization", "save", "user"]);
+          expect(retried).toEqual([claim.outboxId]);
+          expect(completed).toEqual([]);
+        }),
+      ),
+    );
+  },
+);
+
+it.effect("repairs organization guidance for a conversation accepted before migration", () => {
+  const base = conversationClaim();
+  const claim: ClaimedMemoryProviderWork = {
+    ...base,
+    providerAcceptance: {
+      documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+      processingStatus: "processing",
+    },
+    usage: providerUsage,
+  };
+  const calls: Array<string> = [];
+  const { completed, store } = testStore(claim, { configurationCurrent: false });
+  const provider = providerStub({
+    configureOrganizationGuidance: Effect.sync(() => {
+      calls.push("organization");
+    }),
+    configureUserGuidance: () =>
+      Effect.sync(() => {
+        calls.push("user");
+      }),
+    getConversationStatus: () =>
+      Effect.sync(() => {
+        calls.push("status");
+        return { processingStatus: "done" as const };
+      }),
+  });
+
+  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(calls).toEqual(["organization", "user", "status"]);
+        expect(completed).toEqual([claim.outboxId]);
+      }),
+    ),
+  );
+});
+
 it.effect("terminalizes an accepted conversation whose provider status is invalid", () => {
   const claim = conversationClaim();
   const { completed, failed, retried, store } = testStore(claim);
@@ -123,16 +214,7 @@ it.effect("terminalizes an accepted conversation whose provider status is invali
           documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
           message: "The MemoryProvider accepted the conversation with an invalid status",
           operation: "saveConversation",
-          usage: {
-            items: [
-              {
-                allowanceKind: "supermemoryIngestionTokens",
-                basis: "conservative",
-                quantity: 1n,
-              },
-            ],
-            rateCardVersion: "test-rate-card",
-          },
+          usage: providerUsage,
         }),
       ),
   });
@@ -159,16 +241,7 @@ it.effect("stops when a stale conversation claim loses settlement ownership", ()
       Effect.succeed({
         documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
         processingStatus: "processing",
-        usage: {
-          items: [
-            {
-              allowanceKind: "supermemoryIngestionTokens",
-              basis: "conservative",
-              quantity: 1n,
-            },
-          ],
-          rateCardVersion: "test-rate-card",
-        },
+        usage: providerUsage,
       }),
   });
 
@@ -228,7 +301,10 @@ const conversationClaim = (): ClaimedMemoryProviderWork => ({
 
 const testStore = (
   claim: ClaimedMemoryProviderWork,
-  options: { readonly providerAccepted?: boolean } = {},
+  options: {
+    readonly configurationCurrent?: boolean;
+    readonly providerAccepted?: boolean;
+  } = {},
 ) => {
   const failed: Array<MemoryProviderOutboxId> = [];
   const completed: Array<MemoryProviderOutboxId> = [];
@@ -247,6 +323,7 @@ const testStore = (
         completed.push(work.outboxId);
         return true;
       }),
+    completeConfiguration: () => Effect.succeed(true),
     // oxlint-disable-next-line effecttsgo/sync-to-succeed -- The exact undefined return matches the store contract; Effect.void widens it to void.
     enqueueDeletion: () => Effect.sync(() => undefined),
     fail: (work: ClaimedMemoryProviderWork) =>
@@ -260,18 +337,25 @@ const testStore = (
         return true;
       }),
     hasRetryableWork: Effect.succeed(false),
+    inspectConfiguration: () => Effect.succeed(Option.none()),
     markProviderAccepted: () => Effect.succeed(options.providerAccepted ?? true),
     markProviderStatus: () => Effect.succeed(true),
+    readRecentTurnBridge: () => Effect.succeed([]),
     retry: (work: ClaimedMemoryProviderWork) =>
       Effect.sync(() => {
         retried.push(work.outboxId);
         return true;
       }),
+    requireConfiguration: () => Effect.succeed(options.configurationCurrent ?? true),
   } satisfies MemoryProviderOutboxStore;
   return { completed, failed, retried, store };
 };
 
 const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvider.Interface => ({
+  configureOrganizationGuidance: Effect.die(
+    new Error("Unexpected organization guidance configuration"),
+  ),
+  configureUserGuidance: () => Effect.die(new Error("Unexpected User guidance configuration")),
   deleteSessionConversation: () => Effect.die(new Error("Unexpected Session deletion")),
   deleteUserKnowledge: () => Effect.die(new Error("Unexpected User deletion")),
   forgetKnowledge: () => Effect.die(new Error("Unexpected forget")),
@@ -280,6 +364,16 @@ const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvi
   saveConversation: () => Effect.die(new Error("Unexpected conversation save")),
   ...overrides,
 });
+
+const providerUsage: MemoryProvider.UsageEvidence = {
+  completedNonModelCost: [
+    {
+      activity: "conversationsAndMemory",
+      ratedCostUsdMicros: 1n,
+      resourcePriceVersion: ResourcePriceVersion.make("resource-prices-2026-08-22"),
+    },
+  ],
+};
 
 const unavailableDatabase: Db.Interface = {
   database: Effect.die(new Error("Unexpected PostgreSQL access")),
