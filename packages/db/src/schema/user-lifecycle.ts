@@ -36,13 +36,20 @@ export const deletionCases = pgTable(
     user_id: text()
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    requested_by_admin_id: text().notNull(),
+    requested_by_admin_id: text(),
+    requested_by_user_id: text().references(() => users.id, { onDelete: "cascade" }),
+    approval_action_id: text(),
+    approval_presentation: text(),
     reason: text().notNull(),
     requested_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
     uniqueIndex("deletion_cases_user_unique").on(table.user_id),
-    check("deletion_cases_actor_check", sql`length(btrim(${table.requested_by_admin_id})) > 0`),
+    check(
+      "deletion_cases_actor_check",
+      sql`(${table.requested_by_admin_id} is not null and length(btrim(${table.requested_by_admin_id})) > 0 and ${table.requested_by_user_id} is null and ${table.approval_action_id} is null and ${table.approval_presentation} is null)
+        or (${table.requested_by_admin_id} is null and ${table.requested_by_user_id} = ${table.user_id} and length(btrim(${table.approval_action_id})) > 0 and length(btrim(${table.approval_presentation})) > 0)`,
+    ),
     check("deletion_cases_reason_check", sql`length(btrim(${table.reason})) > 0`),
   ],
 );

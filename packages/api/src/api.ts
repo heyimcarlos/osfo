@@ -4,9 +4,11 @@ import { HealthGroup } from "./groups/health";
 import { BillingGroup } from "./groups/billing";
 import { ChannelLinksGroup } from "./groups/channel-links";
 import { RegistrationGroup } from "./groups/registration";
+import { AccountGroup } from "./groups/account";
 
 /** Shared HTTP contract implemented by the Worker and consumed by clients. */
 export const Api = HttpApi.make("osfo")
+  .add(AccountGroup)
   .add(BillingGroup)
   .add(ChannelLinksGroup)
   .add(HealthGroup)
@@ -20,6 +22,12 @@ export const Api = HttpApi.make("osfo")
   );
 
 export { HealthGroup, HealthResponse } from "./groups/health";
+export {
+  AccountDeletionRequest,
+  AccountDeletionResponse,
+  AccountDeletionUnavailable,
+  AccountGroup,
+} from "./groups/account";
 export {
   ChannelLinkAcceptanceResponse,
   ChannelLinkConflict,

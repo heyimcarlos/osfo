@@ -12,7 +12,7 @@ export const channelLinks = pgTable(
     author_id: text().notNull(),
     user_id: text()
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     created_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
     revoked_at: timestamp({ withTimezone: true }),
     revoked_by: text(),
@@ -43,8 +43,10 @@ export const channelLinkInvites = pgTable(
     created_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
     expires_at: timestamp({ withTimezone: true }).notNull(),
     accepted_at: timestamp({ withTimezone: true }),
-    accepted_user_id: text().references(() => users.id),
-    accepted_channel_link_id: text().references(() => channelLinks.channel_link_id),
+    accepted_user_id: text().references(() => users.id, { onDelete: "cascade" }),
+    accepted_channel_link_id: text().references(() => channelLinks.channel_link_id, {
+      onDelete: "cascade",
+    }),
     expired_at: timestamp({ withTimezone: true }),
     cancelled_at: timestamp({ withTimezone: true }),
     superseded_at: timestamp({ withTimezone: true }),
@@ -79,9 +81,11 @@ export const channelLinkAuditEvents = pgTable(
     event_id: text().primaryKey(),
     event_type: text().notNull(),
     actor_id: text().notNull(),
-    invite_id: text().references(() => channelLinkInvites.invite_id),
-    channel_link_id: text().references(() => channelLinks.channel_link_id),
-    user_id: text().references(() => users.id),
+    invite_id: text().references(() => channelLinkInvites.invite_id, { onDelete: "cascade" }),
+    channel_link_id: text().references(() => channelLinks.channel_link_id, {
+      onDelete: "cascade",
+    }),
+    user_id: text().references(() => users.id, { onDelete: "cascade" }),
     metadata: jsonb().$type<Readonly<Record<string, string>>>().default({}).notNull(),
     occurred_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
   },

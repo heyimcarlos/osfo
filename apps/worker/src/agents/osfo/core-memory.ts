@@ -251,6 +251,13 @@ export const correctCoreMemory = (
   session: Session,
   input: CorrectCoreMemoryInput,
 ): Effect.Effect<CoreMemoryCorrected, CoreMemoryBudgetExceeded | CoreMemoryUnavailable> =>
+  replaceCoreMemoryBlock(session, input);
+
+/** Replace one Core Memory block after the caller establishes current authority. */
+export const replaceCoreMemoryBlock = (
+  session: Session,
+  input: { readonly block: CoreMemoryBlockName; readonly content: string },
+): Effect.Effect<CoreMemoryCorrected, CoreMemoryBudgetExceeded | CoreMemoryUnavailable> =>
   Effect.gen(function* () {
     const memory = yield* inspectCoreMemory(session);
     const maxTokens = memory[input.block].maxTokens;

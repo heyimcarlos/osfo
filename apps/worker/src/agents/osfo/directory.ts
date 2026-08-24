@@ -130,6 +130,13 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     await this.deleteSubAgent(OsfoAgent, agentId);
   }
 
+  /** Fence new provider appends and wait for already-started provider work. */
+  async quiesceAgentMemoryProvider(agentId: string, userId: string): Promise<void> {
+    if (!this.hasSubAgent(OsfoAgent, agentId)) return;
+    const agent = await this.subAgent(OsfoAgent, agentId);
+    await agent.quiesceMemoryProvider(userId);
+  }
+
   #resolveMessengerAddress = Effect.fn("OsfoDirectory.resolveMessengerAddress")(
     { self: this },
     function* (this: OsfoDirectory, address: typeof ChannelLinks.ChannelAddress.Type) {

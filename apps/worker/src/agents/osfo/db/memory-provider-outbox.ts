@@ -1,4 +1,4 @@
-import { asc, eq, max, ne } from "drizzle-orm";
+import { and, asc, eq, max, ne } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 
 import { SessionId, UserId } from "../../../domain";
@@ -6,6 +6,7 @@ import type { AllowancePeriodId, AssistantMessageId } from "../../../domain";
 import type { DbTimestamp } from "../../../db";
 import { AllowanceKind, ConsumptionBasis } from "../../../domain/allowance";
 import { MemoryProvider } from "../../../services/memory-provider";
+import { CoreMemoryReplacement, DeletionAuthorization } from "../deletion-actions";
 import { ConversationSnapshotProjection } from "../memory-provider-projection";
 import type { ConversationSnapshotProjection as ConversationSnapshotProjectionType } from "../memory-provider-projection";
 import type { AgentDb } from "./client";
@@ -24,6 +25,7 @@ export const SaveConversationPayload = Schema.TaggedStruct("SaveConversation", {
   projection: ConversationSnapshotProjection,
 });
 export const DeleteSessionConversationPayload = Schema.TaggedStruct("DeleteSessionConversation", {
+  authorization: Schema.optionalKey(DeletionAuthorization),
   sessionId: SessionId,
   userId: UserId,
 });
@@ -31,6 +33,8 @@ export const DeleteUserKnowledgePayload = Schema.TaggedStruct("DeleteUserKnowled
   userId: UserId,
 });
 export const ForgetKnowledgePayload = Schema.TaggedStruct("ForgetKnowledge", {
+  authorization: Schema.optionalKey(DeletionAuthorization),
+  coreMemory: Schema.optionalKey(Schema.Array(CoreMemoryReplacement)),
   memoryIds: Schema.NonEmptyArray(MemoryProvider.KnowledgeMemoryId),
   userId: UserId,
 });
@@ -367,6 +371,43 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     );
   });
 
+  const hasProcessingConversationWork = execute("inspectMemoryProviderOutbox", () =>
+    db
+      .select({ outboxId: memoryProviderOutbox.outbox_id })
+      .from(memoryProviderOutbox)
+      .where(
+        and(
+          eq(memoryProviderOutbox.operation_type, "saveConversation"),
+          eq(memoryProviderOutbox.provider_status, "processing"),
+        ),
+      )
+      .limit(1)
+      .all(),
+  ).pipe(Effect.map((rows) => rows.length > 0));
+
+  const expediteProcessingConversationWork = Effect.fn(
+    "MemoryProviderOutbox.expediteProcessingConversationWork",
+  )((availableAt: DbTimestamp) =>
+    execute("retryMemoryProviderOutbox", () =>
+      db
+        .update(memoryProviderOutbox)
+        .set({
+          available_at: availableAt,
+          claim_expires_at: null,
+          claim_token: null,
+          completed_at: null,
+          status: "pending",
+        })
+        .where(
+          and(
+            eq(memoryProviderOutbox.operation_type, "saveConversation"),
+            eq(memoryProviderOutbox.provider_status, "processing"),
+          ),
+        )
+        .run(),
+    ).pipe(Effect.asVoid),
+  );
+
   const updateClaim = Effect.fn("MemoryProviderOutbox.updateClaim")(function* (
     operation: "completeMemoryProviderOutbox" | "retryMemoryProviderOutbox",
     claim: ClaimedMemoryProviderWork,
@@ -400,6 +441,8 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     enqueueDeletion,
     fail,
     failProviderAcceptance,
+    expediteProcessingConversationWork,
+    hasProcessingConversationWork,
     hasRetryableWork,
     awaitProvider,
     markProviderAccepted,
@@ -449,6 +492,20 @@ const enqueueTransaction = (transaction: AgentTransaction, input: EnqueueMemoryP
     .run();
   return true;
 };
+
+/** Insert one exact deletion operation inside a wider Agent-local transaction. */
+export const enqueueMemoryProviderDeletionTransaction = (
+  transaction: AgentTransaction,
+  input: EnqueueMemoryProviderDeletion,
+) =>
+  enqueueTransaction(transaction, {
+    allowancePeriodId: null,
+    enqueuedAt: input.enqueuedAt,
+    operationType: operationType(input.payload),
+    orderingKey: userOrderingKey(input.payload.userId),
+    outboxId: input.outboxId,
+    payload: input.payload,
+  });
 
 const operationTypes = {
   DeleteSessionConversation: "deleteSessionConversation",

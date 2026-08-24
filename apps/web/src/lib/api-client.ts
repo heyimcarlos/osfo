@@ -80,3 +80,11 @@ export const reconcileBilling = (payload: BillingReconciliationRequest) =>
     }
     return yield* client.billing.reconcile({ payload });
   });
+
+/** Fence access and start permanent deletion for the authenticated account. */
+export const requestAccountDeletion = Effect.gen(function* () {
+  const client = yield* apiClient;
+  return yield* client.account.deleteAccount({
+    payload: { confirmation: "delete-my-account" },
+  });
+});

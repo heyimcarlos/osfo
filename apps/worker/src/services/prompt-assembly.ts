@@ -190,10 +190,7 @@ export const assemble = Effect.fn("PromptAssembly.assemble")(function* (input: I
     "## Provider profile",
     boundedProfile(recalled.profile, limits.providerProfileMaxTokens),
     "## Query-relevant provider recall",
-    boundedStringArray(
-      recalled.relevantMemories.map(({ content }) => content),
-      limits.providerRecallMaxTokens,
-    ),
+    boundedRelevantMemories(recalled.relevantMemories, limits.providerRecallMaxTokens),
   ].join("\n\n");
 
   return {
@@ -306,8 +303,33 @@ const boundedProfile = (
   );
 };
 
-const boundedStringArray = (entries: ReadonlyArray<string>, maxTokens: number): string =>
-  boundedJson(entries.slice(0, maximumProviderItemsPerCategory), maxTokens, JSON.stringify);
+const boundedRelevantMemories = (
+  memories: ReadonlyArray<MemoryProvider.RelevantMemory>,
+  maxTokens: number,
+): string => {
+  const bounded = memories.slice(0, maximumProviderItemsPerCategory);
+  const encode = (maximumCharacters: number) => {
+    const contents = distributeCharacters(
+      bounded.map(({ content }) => content),
+      maximumCharacters,
+    );
+    return JSON.stringify(bounded.map(({ id }, index) => ({ content: contents[index], id })));
+  };
+  let lower = 0;
+  let upper = maxTokens * 4;
+  let selected = encode(0);
+  while (lower <= upper) {
+    const candidateCharacters = Math.floor((lower + upper) / 2);
+    const candidate = encode(candidateCharacters);
+    if (estimateStringTokens(candidate) <= maxTokens) {
+      selected = candidate;
+      lower = candidateCharacters + 1;
+    } else {
+      upper = candidateCharacters - 1;
+    }
+  }
+  return selected;
+};
 
 const boundedJson = (
   entries: ReadonlyArray<string>,

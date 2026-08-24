@@ -5,6 +5,7 @@ import { AllowancePeriodId, SessionId, ThinkRequestId, UserId } from "../../doma
 /** Minimal trusted authority retained for post-commit conversation projection. */
 export const CommittedTurnAttribution = Schema.Struct({
   allowancePeriodId: AllowancePeriodId,
+  executionMode: Schema.optionalKey(Schema.Literals(["exhaustedConversation", "normalPlanUsage"])),
   sessionId: SessionId,
   userId: UserId,
 });

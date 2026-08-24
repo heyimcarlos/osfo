@@ -16,9 +16,11 @@ import { DocumentDownload } from "./integrations/cloudflare/document-download";
 import { AgentDirectory } from "./services/agent-directory";
 import { UserId } from "./domain";
 import { ChannelLinks } from "./services/channel-links";
+import type { AccountDeletionComposition } from "./composition/account-deletion";
 
 /** Cloudflare bindings used by the Worker route tree. */
-export type Bindings = RegistrationCloudflare.Bindings &
+export type Bindings = AccountDeletionComposition.Bindings &
+  RegistrationCloudflare.Bindings &
   WebhookHandlers.Bindings & {
     readonly ARTIFACTS?: R2Bucket;
     readonly routeOsfoAgentRequest: (
@@ -39,7 +41,7 @@ export interface Options {
 /** Assemble typed product routes, Better Auth, and Cloudflare host probes. */
 export const layer = (options: Options) => {
   const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
-    Layer.provide(Handlers.layer(options.runtime, options.config)),
+    Layer.provide(Handlers.layer(options.runtime, options.config, options.env)),
     Layer.provide(ChannelLinks.layerFromConfig(options.config)),
     Layer.provide(Registration.layerWithoutDependencies),
     Layer.provide(RegistrationCloudflare.layer(options.env)),

@@ -1,5 +1,9 @@
 import { Link } from "@tanstack/react-router";
 import { BriefcaseBusiness, Database, Download, ShieldCheck, Trash2 } from "lucide-react";
+import { Effect } from "effect";
+import { useState } from "react";
+
+import { requestAccountDeletion } from "../lib/api-client";
 
 const privacyPreferences = [
   {
@@ -26,6 +30,16 @@ const privacyPreferences = [
 
 /** Route-owned privacy controls and policy access. */
 export function SettingsPrivacyPage() {
+  return <SettingsPrivacyContent onDelete={deleteAccount} />;
+}
+
+const deleteAccount = () =>
+  Effect.runPromise(requestAccountDeletion).then(() => {
+    globalThis.location.assign("/");
+  });
+
+/** Privacy settings content with an injectable destructive boundary for focused UI tests. */
+export function SettingsPrivacyContent({ onDelete }: { readonly onDelete: () => Promise<void> }) {
   return (
     <div className="space-y-6">
       <section aria-labelledby="data-controls-title">
@@ -55,12 +69,7 @@ export function SettingsPrivacyPage() {
             icon={Download}
             label="Export My Data"
           />
-          <UnavailablePrivacyRow
-            danger
-            description="Permanently delete your data"
-            icon={Trash2}
-            label="Delete My Data"
-          />
+          <DeleteAccountControl onDelete={onDelete} />
         </div>
       </section>
 
@@ -105,6 +114,65 @@ export function SettingsPrivacyPage() {
           </p>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** One explicit confirmation before the irreversible account deletion request. */
+export function DeleteAccountControl({ onDelete }: { readonly onDelete: () => Promise<void> }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(false);
+  const remove = () => {
+    setBusy(true);
+    setError(false);
+    void onDelete().catch(() => {
+      setBusy(false);
+      setError(true);
+    });
+  };
+  return (
+    <div className="rounded-2xl border border-white/80 bg-white/68 px-3 py-3">
+      <div className="flex min-h-10 items-center gap-3">
+        <PrivacyIcon icon={Trash2} />
+        <span className="min-w-0 flex-1">
+          <span className="block font-semibold text-[#e54858]">Delete My Data</span>
+          <span className="block text-xs text-[#687896]">Permanently delete your data</span>
+        </span>
+        <button
+          className="min-h-11 rounded-full px-3 text-sm font-semibold text-[#c83242] hover:bg-red-50 focus-visible:ring-2 focus-visible:ring-[#e54858] focus-visible:outline-none"
+          type="button"
+          onClick={() => setConfirming(true)}
+        >
+          Delete My Data
+        </button>
+      </div>
+      {confirming ? (
+        <div className="mt-3 border-t border-red-100 pt-3">
+          <p className="text-sm text-[#7f2630]">
+            This permanently deletes your account and all of its data.
+          </p>
+          <div className="mt-3 flex gap-2">
+            <button
+              className="min-h-11 rounded-full bg-[#d63243] px-4 text-sm font-semibold text-white disabled:opacity-60"
+              disabled={busy}
+              type="button"
+              onClick={remove}
+            >
+              {busy ? "Deleting…" : "Confirm account deletion"}
+            </button>
+            <button
+              className="min-h-11 rounded-full px-4 text-sm font-semibold"
+              disabled={busy}
+              type="button"
+              onClick={() => setConfirming(false)}
+            >
+              Cancel
+            </button>
+          </div>
+          {error ? <p role="alert">Account deletion could not start. Please try again.</p> : null}
+        </div>
+      ) : null}
     </div>
   );
 }

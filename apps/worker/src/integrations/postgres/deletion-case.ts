@@ -12,6 +12,43 @@ import { DeletionCase } from "../../services/deletion-case";
 /** Build the Deletion Case persistence adapter from Postgres. */
 export const make = Effect.gen(function* () {
   const database = yield* Db.database;
+  const requestSelf = Effect.fn("DeletionCasePostgres.requestSelf")(function* (
+    userId: Parameters<DeletionCase.PersistencePort["requestSelf"]>[0],
+    deletion_case_id: Parameters<DeletionCase.PersistencePort["requestSelf"]>[1],
+    approval: Parameters<DeletionCase.PersistencePort["requestSelf"]>[2],
+  ) {
+    return yield* Db.execute("requestDeletion", () =>
+      database.transaction(async (transaction) => {
+        const [user] = await transaction
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.id, userId))
+          .for("update")
+          .limit(1);
+        if (user === undefined) return { _tag: "MissingUser" } as const;
+        const [existing] = await transaction
+          .select({ deletionCaseId: deletionCases.deletion_case_id })
+          .from(deletionCases)
+          .where(eq(deletionCases.user_id, userId))
+          .limit(1);
+        if (existing !== undefined) {
+          return {
+            _tag: "Existing",
+            deletionCaseId: DeletionCaseId.make(existing.deletionCaseId),
+          } as const;
+        }
+        await transaction.insert(deletionCases).values({
+          approval_action_id: approval.actionId,
+          approval_presentation: approval.presentation,
+          deletion_case_id,
+          reason: "User requested permanent account deletion",
+          requested_by_user_id: userId,
+          user_id: userId,
+        });
+        return { _tag: "Created" } as const;
+      }),
+    );
+  });
   return DeletionCase.Persistence.of({
     inspect: (userId) =>
       Db.execute("inspectDeletionCase", () =>
@@ -57,6 +94,7 @@ export const make = Effect.gen(function* () {
           return { _tag: "Created" } as const;
         }),
       ),
+    requestSelf,
   });
 });
 

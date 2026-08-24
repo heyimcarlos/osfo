@@ -21,8 +21,15 @@ export const startDatabaseObserver = (
   new Promise((resolve, reject) => {
     const server = createServer((request, response) => {
       const path = new URL(request.url ?? "/", "http://localhost").pathname;
-      const query = path === "/registration" ? findRegistration : findBillingCheckout;
-      if (request.method !== "POST" || !["/registration", "/billing-checkout"].includes(path)) {
+      const query =
+        path === "/registration"
+          ? findRegistration
+          : path === "/billing-checkout"
+            ? findBillingCheckout
+            : path === "/account-deletion"
+              ? findAccountDeletion
+              : null;
+      if (request.method !== "POST" || query === null) {
         respondJson(response, 404, { error: "Not found" });
         return;
       }
@@ -82,6 +89,18 @@ const findRegistration = async (options: DatabaseObserverOptions, userId: string
       join billing_subscriptions on billing_subscriptions.user_id = users.id
       join allowance_periods on allowance_periods.user_id = users.id
       where users.id = ${userId}
+    `;
+    return row;
+  });
+
+const findAccountDeletion = async (options: DatabaseObserverOptions, userId: string) =>
+  findJourneyRow(options, async (client) => {
+    const [row] = await client`
+      select
+        exists(select 1 from users where id = ${userId}) as user_exists,
+        exists(select 1 from agents where user_id = ${userId}) as agent_exists,
+        exists(select 1 from sessions where user_id = ${userId}) as auth_session_exists,
+        exists(select 1 from deletion_cases where user_id = ${userId}) as deletion_case_exists
     `;
     return row;
   });

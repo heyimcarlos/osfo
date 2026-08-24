@@ -10,12 +10,15 @@ import { makeWorkerRuntime, type ExecutionUnit } from "./layers";
 import { Routes } from "./routes";
 import { ChannelLinks } from "./services/channel-links";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/identity";
+import { AccountDeletionComposition } from "./composition/account-deletion";
+import { SupermemoryMemoryProvider } from "./integrations/supermemory/memory-provider";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare RPC adapters expose Promise-based interfaces. */
 
 /** Cloudflare bindings used by the Worker HTTP application. */
 export interface Bindings {
   readonly ARTIFACTS?: R2Bucket;
+  readonly FILES?: R2Bucket;
   readonly DB: Pick<Hyperdrive, "connectionString">;
   readonly OSFO_DIRECTORY: Routes.Bindings["OSFO_DIRECTORY"];
   readonly routeOsfoAgentRequest: Routes.Bindings["routeOsfoAgentRequest"];
@@ -86,8 +89,30 @@ export const expireChannelLinkInvites = (env: CloudflareEnv) => {
   );
 };
 
+/** Retry every fenced account until provider, R2, Agent SQLite, and PostgreSQL erasure complete. */
+export const reconcileAccountDeletions = (env: CloudflareEnv) => {
+  const config = loadConfig(env);
+  const base = Layer.merge(
+    Db.layer({ db: env.DB }),
+    SupermemoryMemoryProvider.layerFromConfig(config.supermemory),
+  );
+  return Effect.runPromise(
+    Effect.scoped(
+      Db.database.pipe(
+        Effect.flatMap(
+          (database) =>
+            AccountDeletionComposition.make(database, adaptBindings(env)).reconcilePending,
+        ),
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Scheduled maintenance is an application entry point.
+        Effect.provide(base),
+      ),
+    ),
+  );
+};
+
 const adaptBindings = (env: CloudflareEnv): Bindings => ({
   ARTIFACTS: env.ARTIFACTS,
+  FILES: env.FILES,
   DB: env.DB,
   OSFO_DIRECTORY: {
     getByName: () => {
@@ -99,6 +124,9 @@ const adaptBindings = (env: CloudflareEnv): Bindings => ({
         },
         initializeAgent: async (agentId, input) =>
           Schema.decodePromise(AgentRpcTag)(await directory.initializeAgent(agentId, input)),
+        deleteAgent: (agentId) => directory.deleteAgent(agentId),
+        quiesceAgentMemoryProvider: (agentId, userId) =>
+          directory.quiesceAgentMemoryProvider(agentId, userId),
       };
     },
   },

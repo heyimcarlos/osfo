@@ -41,6 +41,7 @@ it.effect("orders bounded provider evidence after Native Memory policy", () => {
     );
     expect(result.providerContext).toContain('"Prefers small releases"');
     expect(result.providerContext).toContain('"Production deploys require approval"');
+    expect(result.providerContext).toContain('"id":"memory-1"');
     expect(result.usage.items).toEqual([
       {
         allowanceKind: "supermemoryRetrievals",

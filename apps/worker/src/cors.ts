@@ -26,7 +26,7 @@ const corsHeaderNames = [
 export const productApiLayer = (trustedOrigins: ReadonlyArray<string>) =>
   HttpRouter.cors({
     allowedHeaders: ["Content-Type", "B3", "Traceparent"],
-    allowedMethods: ["GET", "POST", "PUT", "OPTIONS"],
+    allowedMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedOrigins: [...trustedOrigins],
     credentials: true,
     maxAge: 600,

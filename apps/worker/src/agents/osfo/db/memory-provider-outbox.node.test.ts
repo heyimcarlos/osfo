@@ -8,6 +8,7 @@
 /* oxlint-disable effecttsgo/strict-effect-provide -- Each it.effect is the entry point for its isolated service Layers. */
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
+import { Session, type SqlProvider } from "agents/experimental/memory/session";
 
 import { expect, it } from "@effect/vitest";
 import { BrowserCrypto } from "@effect/platform-browser";
@@ -16,12 +17,18 @@ import { TestClock } from "effect/testing";
 
 import { Db, DbTimestamp } from "../../../db";
 import {
+  AgentId,
+  AgentInitializationId,
   AllowancePeriodId,
   AssistantMessageId,
+  ConversationRouteId,
   SessionId,
   ThinkRequestId,
   UserId,
 } from "../../../domain";
+import { ActionId } from "../../../domain/action-execution";
+import { AuthSessionId } from "../../../domain/auth-session";
+import { ApprovalPresentation } from "../../../services/authorization";
 import { makeAgentDb } from "./client";
 import { agentMigrations, applyAgentMigrations, applyMigrationChain } from "./migrate";
 import { makeMemoryProviderOutboxStore, MemoryProviderOutboxId } from "./memory-provider-outbox";
@@ -29,6 +36,7 @@ import { makeAgentStore } from "./store";
 import { ConversationSnapshotProjection } from "../memory-provider-projection";
 import { MemoryProvider } from "../../../services/memory-provider";
 import { reconcileMemoryProviderOutbox } from "../memory-provider-reconciliation";
+import { deleteLocalSession } from "../session-deletion";
 
 /**
  * These tests need white-box access because atomic SQLite rollback, unique claims, and stale lease
@@ -292,6 +300,201 @@ it.effect("orders User deletion behind earlier Session conversation work", () =>
       yield* outbox.complete(Option.getOrThrow(first), now);
       const deletion = yield* outbox.claimNext(now, liveLease, "claim-delete");
       expect(Option.getOrThrow(deletion).payload._tag).toBe("DeleteUserKnowledge");
+    }),
+  ),
+);
+
+it.effect("settles pending append work while deleting historical Session ownership", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const store = makeAgentStore(db);
+      yield* store.initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: SessionId.make("session-1"),
+      });
+      yield* store.replaceCurrentSession({
+        expectedCurrentSessionId: SessionId.make("session-1"),
+        replacedAt: now,
+        replacementSessionId: SessionId.make("session-2"),
+        routeId: ConversationRouteId.make("route-1"),
+      });
+      yield* store.recordCommittedTurn(
+        committedTurn("assistant-1", "request-1"),
+        conversationProjection("assistant-1"),
+      );
+      database
+        .prepare(
+          `UPDATE osfo_memory_provider_outbox
+          SET provider_accepted_at = ?, provider_document_id = 'document-1',
+            provider_status = 'processing',
+            usage_json = '{"items":[],"rateCardVersion":"test-rate-card"}'
+          WHERE operation_type = 'saveConversation'`,
+        )
+        .run(now);
+      const historical = Session.create(thinkSqlProvider(database)).forSession("session-1");
+      const current = Session.create(thinkSqlProvider(database)).forSession("session-2");
+      yield* seedThinkHistory(historical, "historical");
+      yield* seedThinkHistory(current, "current");
+
+      yield* deleteLocalSession(
+        {
+          replacementSessionId: SessionId.make("unused-replacement"),
+          sessionId: SessionId.make("session-1"),
+        },
+        {
+          activateCurrentSession: Effect.die(new Error("Historical deletion activated Session")),
+          clearMessages: () => Effect.promise(() => historical.clearMessages()),
+          inspect: store.inspect().pipe(Effect.orDie),
+          ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+          replacedAt: Effect.succeed(now),
+          replaceCurrentSession: () =>
+            Effect.die(new Error("Historical deletion replaced current Session")),
+          settle: (sessionId) =>
+            store
+              .deleteHistoricalSession({
+                authorization: authorizedDeletion("delete-session-1", sessionId).payload
+                  .authorization,
+                deletedAt: now,
+                outboxId: MemoryProviderOutboxId.make("delete-session-1"),
+                sessionId,
+                userId: UserId.make("user-1"),
+              })
+              .pipe(Effect.orDie),
+        },
+      );
+
+      expect(
+        database.prepare("SELECT session_id FROM osfo_session_ownership ORDER BY session_id").all(),
+      ).toEqual([{ session_id: "session-2" }]);
+      expect(countRows(database, "osfo_committed_turns")).toBe(0);
+      expect(thinkSessionCounts(database, "session-1")).toEqual({
+        compactions: 0,
+        fts: 0,
+        messages: 0,
+      });
+      expect(thinkSessionCounts(database, "session-2")).toEqual({
+        compactions: 1,
+        fts: 2,
+        messages: 2,
+      });
+      expect(
+        database
+          .prepare(
+            "SELECT initial_session_id FROM osfo_agent_initialization WHERE singleton_key = 'agent'",
+          )
+          .get(),
+      ).toEqual({ initial_session_id: "session-2" });
+      expect(
+        database
+          .prepare(
+            `SELECT operation_type, outbox_id, provider_status, status
+            FROM osfo_memory_provider_outbox ORDER BY sequence`,
+          )
+          .all(),
+      ).toEqual([
+        {
+          operation_type: "saveConversation",
+          outbox_id: "conversation:9:session-1:assistant-1",
+          provider_status: "processing",
+          status: "completed",
+        },
+        {
+          operation_type: "deleteSessionConversation",
+          outbox_id: "delete-session-1",
+          provider_status: null,
+          status: "pending",
+        },
+      ]);
+
+      const outbox = makeMemoryProviderOutboxStore(db);
+      expect(yield* outbox.hasProcessingConversationWork).toBe(true);
+      yield* outbox.expediteProcessingConversationWork(now);
+      expect(
+        database
+          .prepare(
+            `SELECT claim_expires_at, claim_token, completed_at, status
+            FROM osfo_memory_provider_outbox
+            WHERE operation_type = 'saveConversation'`,
+          )
+          .get(),
+      ).toEqual({
+        claim_expires_at: null,
+        claim_token: null,
+        completed_at: null,
+        status: "pending",
+      });
+      const resumed = Option.getOrThrow(yield* outbox.claimNext(now, liveLease, "resume-claim"));
+      expect(resumed.providerAcceptance).toEqual({
+        documentId: "document-1",
+        processingStatus: "processing",
+      });
+    }),
+  ),
+);
+
+it.effect("creates a replacement before clearing and settling the current Session", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const store = makeAgentStore(db);
+      yield* store.initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: SessionId.make("session-1"),
+      });
+      const current = Session.create(thinkSqlProvider(database)).forSession("session-1");
+      yield* seedThinkHistory(current, "current");
+      const events: Array<string> = [];
+
+      yield* deleteLocalSession(
+        {
+          replacementSessionId: SessionId.make("session-2"),
+          sessionId: SessionId.make("session-1"),
+        },
+        {
+          activateCurrentSession: Effect.sync(() => events.push("activate")).pipe(Effect.asVoid),
+          clearMessages: () =>
+            Effect.sync(() => events.push("clear")).pipe(
+              Effect.andThen(Effect.promise(() => current.clearMessages())),
+            ),
+          inspect: store.inspect().pipe(Effect.orDie),
+          ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+          replacedAt: Effect.succeed(now),
+          replaceCurrentSession: (replacement) =>
+            Effect.sync(() => events.push("replace")).pipe(
+              Effect.andThen(store.replaceCurrentSession(replacement).pipe(Effect.orDie)),
+            ),
+          settle: (sessionId) =>
+            Effect.sync(() => events.push("settle")).pipe(
+              Effect.andThen(
+                store
+                  .deleteHistoricalSession({
+                    authorization: authorizedDeletion("delete-session-current", sessionId).payload
+                      .authorization,
+                    deletedAt: now,
+                    outboxId: MemoryProviderOutboxId.make("delete-session-current"),
+                    sessionId,
+                    userId: UserId.make("user-1"),
+                  })
+                  .pipe(Effect.orDie),
+              ),
+            ),
+        },
+      );
+
+      expect(events).toEqual(["replace", "activate", "clear", "settle"]);
+      expect(yield* store.inspect()).toMatchObject({ currentSessionId: "session-2" });
+      expect(thinkSessionCounts(database, "session-1")).toEqual({
+        compactions: 0,
+        fts: 0,
+        messages: 0,
+      });
     }),
   ),
 );
@@ -651,8 +854,12 @@ it.effect("allows independent reconcilers to overlap without duplicating provide
   withDatabase(({ database, storage }) =>
     Effect.gen(function* () {
       const outbox = makeMemoryProviderOutboxStore(makeAgentDb(asDurableObjectStorage(storage)));
-      yield* outbox.enqueueDeletion(deletion("delete-user-1", "session-1", "user-1", past));
-      yield* outbox.enqueueDeletion(deletion("delete-user-2", "session-2", "user-2", past));
+      yield* outbox.enqueueDeletion(
+        authorizedDeletion("delete-user-1", "session-1", "user-1", past),
+      );
+      yield* outbox.enqueueDeletion(
+        authorizedDeletion("delete-user-2", "session-2", "user-2", past),
+      );
       const observed: Array<string> = [];
       let active = 0;
       let maximumActive = 0;
@@ -669,7 +876,10 @@ it.effect("allows independent reconcilers to overlap without duplicating provide
       });
 
       yield* Effect.all(
-        [reconcileMemoryProviderOutbox(outbox), reconcileMemoryProviderOutbox(outbox)],
+        [
+          reconcileMemoryProviderOutbox(outbox, permittedDeletionOptions),
+          reconcileMemoryProviderOutbox(outbox, permittedDeletionOptions),
+        ],
         { concurrency: "unbounded", discard: true },
       ).pipe(
         Effect.provideService(MemoryProvider.Service, provider),
@@ -696,7 +906,9 @@ it.effect("durably retains deletion work across a provider outage and store rest
     Effect.gen(function* () {
       const db = makeAgentDb(asDurableObjectStorage(storage));
       const outbox = makeMemoryProviderOutboxStore(db);
-      yield* outbox.enqueueDeletion(deletion("delete-session-1", "session-1", "user-1", past));
+      yield* outbox.enqueueDeletion(
+        authorizedDeletion("delete-session-1", "session-1", "user-1", past),
+      );
       const provider = providerStub({
         deleteSessionConversation: () =>
           Effect.fail(
@@ -707,7 +919,7 @@ it.effect("durably retains deletion work across a provider outage and store rest
           ),
       });
 
-      yield* reconcileMemoryProviderOutbox(outbox).pipe(
+      yield* reconcileMemoryProviderOutbox(outbox, permittedDeletionOptions).pipe(
         Effect.provideService(MemoryProvider.Service, provider),
         Effect.provideService(Db.Service, unavailableDatabase),
         Effect.provide(BrowserCrypto.layer),
@@ -954,6 +1166,39 @@ const deletion = (outboxId: string, sessionId: string, userId = "user-1", enqueu
   },
 });
 
+const authorizedDeletion = (
+  outboxId: string,
+  sessionId: string,
+  userId = "user-1",
+  enqueuedAt = now,
+) => {
+  const user = UserId.make(userId);
+  return {
+    enqueuedAt,
+    outboxId: MemoryProviderOutboxId.make(outboxId),
+    payload: {
+      _tag: "DeleteSessionConversation" as const,
+      authorization: {
+        actionId: ActionId.make(outboxId),
+        authorityIdentity: {
+          _tag: "AuthSession" as const,
+          authSessionId: AuthSessionId.make(`auth-${userId}`),
+          userId: user,
+        },
+        operation: "session.delete" as const,
+        presentation: ApprovalPresentation.make(`Delete Session ${sessionId}`),
+      },
+      sessionId: SessionId.make(sessionId),
+      userId: user,
+    },
+  };
+};
+
+const permittedDeletionOptions = {
+  authorizeDeletion: () => Effect.succeed({ _tag: "Permitted" as const }),
+  prepareDeletion: () => Effect.void,
+};
+
 const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvider.Interface => ({
   deleteSessionConversation: () => Effect.die(new Error("Unexpected Session deletion")),
   deleteUserKnowledge: () => Effect.die(new Error("Unexpected User deletion")),
@@ -994,6 +1239,64 @@ const failingUsageDatabase: Db.Interface = {
     } as unknown as Db.Database,
   ),
 };
+
+const thinkSqlProvider = (database: DatabaseSync): SqlProvider => ({
+  sql: (strings, ...values) => {
+    const query = strings.reduce(
+      (statement, part, index) => statement + part + (index < values.length ? "?" : ""),
+      "",
+    );
+    const bindings = values.map((value) => (typeof value === "boolean" ? Number(value) : value));
+    // SAFETY: Think's SqlProvider accepts the same closed SQLite values and returns rows whose
+    // generic shape is selected by its own fixed queries.
+    return database.prepare(query).all(...bindings) as never;
+  },
+});
+
+const seedThinkHistory = (session: Session, prefix: string) =>
+  Effect.promise(() =>
+    session.appendMessage({
+      id: `${prefix}-user`,
+      parts: [{ text: `${prefix} question`, type: "text" }],
+      role: "user",
+    }),
+  ).pipe(
+    Effect.andThen(
+      Effect.promise(() =>
+        session.appendMessage(
+          {
+            id: `${prefix}-assistant`,
+            parts: [{ text: `${prefix} answer`, type: "text" }],
+            role: "assistant",
+          },
+          `${prefix}-user`,
+        ),
+      ),
+    ),
+    Effect.andThen(
+      Effect.promise(() =>
+        session.addCompaction(`${prefix} summary`, `${prefix}-user`, `${prefix}-assistant`),
+      ),
+    ),
+  );
+
+const thinkSessionCounts = (database: DatabaseSync, sessionId: string) => ({
+  compactions: Number(
+    database
+      .prepare("SELECT COUNT(*) AS count FROM assistant_compactions WHERE session_id = ?")
+      .get(sessionId)?.["count"] ?? 0,
+  ),
+  fts: Number(
+    database
+      .prepare("SELECT COUNT(*) AS count FROM assistant_fts WHERE session_id = ?")
+      .get(sessionId)?.["count"] ?? 0,
+  ),
+  messages: Number(
+    database
+      .prepare("SELECT COUNT(*) AS count FROM assistant_messages WHERE session_id = ?")
+      .get(sessionId)?.["count"] ?? 0,
+  ),
+});
 
 const countRows = (
   database: DatabaseSync,

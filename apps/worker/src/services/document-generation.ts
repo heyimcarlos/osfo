@@ -235,6 +235,7 @@ export interface DisposableCompute {
     readonly format: DocumentArtifact.DocumentFormat;
     readonly intentDigest: DocumentIntentDigest;
     readonly source: DocumentSource;
+    readonly userId: UserId;
   }) => Effect.Effect<ComputeResult>;
   readonly inspect: (
     contentId: ContentId,
@@ -418,6 +419,7 @@ export const make = (options: MakeOptions): Interface => ({
           format: request.format,
           intentDigest,
           source: request.source,
+          userId,
         });
         const recordComputedCost = recordCost(options.allowances, computed.cost);
         if (Predicate.isTagged(computed, "AttemptPending")) {

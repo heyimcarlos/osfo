@@ -36,7 +36,7 @@ import {
   requiresGmailConnection,
   requiresOwnership,
 } from "./authorization-operation-policy";
-import { authorizeShared } from "./shared-authorization";
+import { authorizeShared, exceedsExhaustedConversationLimit } from "./shared-authorization";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Authorization and manifest outcomes use the standard Effect _tag discriminator. */
 import { AuthSessionAuthorityFact, AuthSessionId } from "../domain/auth-session";
@@ -448,13 +448,26 @@ const authorize = (
   }
   const allowanceRules = policyFor(allowancePolicy, allowance.plan);
   const relevantKinds = [...allowanceKindsFor(operation), "vendorUsdMicros" as const];
+  let allowanceExhausted = false;
   for (const allowanceKind of relevantKinds) {
     if (allowanceKind === "planUsageMicros") continue;
     const recorded =
       allowance.usage.find((usage) => usage.allowanceKind === allowanceKind)?.quantity ?? 0n;
     if (recorded >= allowanceRules.allowanceLimits[allowanceKind]) {
-      return denied("allowanceExhausted", allowance.endsAt);
+      allowanceExhausted = true;
+      break;
     }
+  }
+  if (allowanceExhausted) {
+    if (
+      operation.kind === "conversation.run" &&
+      context.liveFacts.concurrentExhaustedConversations <
+        BigInt(capabilityCatalog.exhaustedConversation.concurrentOperations) &&
+      !exceedsExhaustedConversationLimit(operation, capabilityCatalog)
+    ) {
+      return admitted(capabilityCatalog, "exhaustedConversation");
+    }
+    return denied("allowanceExhausted", allowance.endsAt);
   }
   return {
     _tag: "Admitted",

@@ -16,6 +16,12 @@ export interface StripeLedgerEntry {
   readonly path: string;
 }
 
+/** One observed Supermemory request. */
+export interface SupermemoryLedgerEntry {
+  readonly method: string;
+  readonly path: string;
+}
+
 /** Local HTTP providers and their request ledgers for composed Worker journeys. */
 export interface ProviderEmulator {
   readonly close: () => Promise<void>;
@@ -25,11 +31,13 @@ export interface ProviderEmulator {
 export const startProviderEmulator = (): Promise<ProviderEmulator> =>
   new Promise((resolve, reject) => {
     const stripeLedger: Array<StripeLedgerEntry> = [];
+    const supermemoryLedger: Array<SupermemoryLedgerEntry> = [];
     const twilioLedger: Array<TwilioLedgerEntry> = [];
     const server = createServer((request, response) => {
       const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
       if (request.method === "POST" && pathname === "/_test/reset") {
         stripeLedger.length = 0;
+        supermemoryLedger.length = 0;
         twilioLedger.length = 0;
         response.statusCode = 204;
         response.end();
@@ -41,6 +49,15 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
       }
       if (request.method === "GET" && pathname === "/_test/stripe/ledger") {
         respondJson(response, 200, stripeLedger);
+        return;
+      }
+      if (request.method === "GET" && pathname === "/_test/supermemory/ledger") {
+        respondJson(response, 200, supermemoryLedger);
+        return;
+      }
+      if (request.method === "DELETE" && pathname.startsWith("/v3/container-tags/")) {
+        supermemoryLedger.push({ method: request.method, path: pathname });
+        respondJson(response, 200, { success: true });
         return;
       }
       if (request.method === "POST" && pathname === "/events/track") {

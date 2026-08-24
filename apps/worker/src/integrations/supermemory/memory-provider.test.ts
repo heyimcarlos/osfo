@@ -390,6 +390,24 @@ it.effect("deletes every Knowledge Base item in one User container", () =>
   ),
 );
 
+it.effect("keeps account deletion pending when the provider does not confirm success", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({ body: { success: false }, status: 200 });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .deleteUserKnowledge({ userId: UserId.make("user-1") })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "responseDecoding",
+        operation: "deleteUserKnowledge",
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
 it.effect("normalizes only deletion-specific absence responses", () =>
   withProvider(({ origin, respondWith }) =>
     Effect.gen(function* () {

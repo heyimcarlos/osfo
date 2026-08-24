@@ -293,10 +293,15 @@ At most one GM Summon may be active per Session, and it promises no response tim
 _Avoid_: HELP response, automatic escalation, support-time guarantee
 
 **Deletion Case**:
-The explicit administrative process that closes a User and applies the accepted
-deletion and retention policy. A request immediately revokes access, but v1 does
-not expose a general User lifecycle or automated deletion workflow.
-_Avoid_: User Suspension, Account removal, immediate hard delete
+The irreversible process, started by explicit User confirmation or an
+administrator, that closes a User and removes its owned data under the accepted
+deletion policy. Provider-backed erasure remains pending until confirmed.
+_Avoid_: User Suspension, Account removal, synchronous hard delete
+
+**Account Deletion**:
+The User-facing name for starting a self-service Deletion Case that closes the
+entire User. It does not mean removing only an Account or Phone Account.
+_Avoid_: Account removal, Phone Account deletion
 
 **Osfo Agent**:
 The durable personal agent owned by exactly one User. It has one stable AgentId

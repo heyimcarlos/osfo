@@ -2,7 +2,7 @@ import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import { Clock, Effect, Random, Schema } from "effect";
 
 import type { ContentId } from "../../domain/client-content";
-import { AllowancePeriodId } from "../../domain";
+import { AllowancePeriodId, UserId } from "../../domain";
 import { DocumentArtifact } from "../../domain/document-artifact";
 import {
   DocumentSource,
@@ -23,6 +23,7 @@ export interface AttemptEvidence {
   readonly intentDigest: DocumentIntentDigest;
   readonly renderedPageCount: number | null;
   readonly status: "claimed" | "started" | "completed";
+  readonly userId?: UserId;
 }
 
 /** Expected failure when durable attempt evidence cannot be reconciled. */
@@ -38,6 +39,7 @@ export interface AttemptEvidenceStore {
     intentDigest: DocumentIntentDigest,
     cost: AttemptEvidence["cost"],
     executionLeaseExpiresAt: number,
+    userId: UserId,
   ) => Promise<
     | {
         readonly _tag: "Claimed";
@@ -182,6 +184,7 @@ const render = async (
     readonly format: DocumentArtifact.DocumentFormat;
     readonly intentDigest: DocumentIntentDigest;
     readonly source: DocumentSource;
+    readonly userId: UserId;
   },
   attemptOperationId: string,
   currentTimeMillis: () => number,
@@ -203,6 +206,7 @@ const render = async (
       input.intentDigest,
       proposedCost,
       currentTimeMillis() + executionLeaseMs,
+      input.userId,
     );
     // oxlint-disable-next-line eslint/no-underscore-dangle -- Persisted outcomes use _tag.
     if (claimed._tag === "IntentConflict") {
@@ -343,6 +347,7 @@ const AttemptEvidenceMetadata = Schema.fromJsonString(
       Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(20)),
     ),
     status: Schema.Literals(["claimed", "started", "completed"]),
+    userId: Schema.optionalKey(UserId),
   }),
 );
 
@@ -395,7 +400,7 @@ const interrupted = (cost: AttemptEvidence["cost"], evidence: string): ComputeRe
 /** Construct durable R2-backed execution identity evidence. */
 export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore => ({
   // oxlint-disable-next-line effecttsgo/async-function -- R2 is a Promise-based boundary.
-  claim: async (contentId, intentDigest, cost, executionLeaseExpiresAt) => {
+  claim: async (contentId, intentDigest, cost, executionLeaseExpiresAt, userId) => {
     const key = attemptKeyFor(contentId);
     const proposed = {
       cost,
@@ -403,6 +408,7 @@ export const makeAttemptEvidenceStore = (bucket: R2Bucket): AttemptEvidenceStore
       intentDigest,
       renderedPageCount: null,
       status: "claimed" as const,
+      userId,
     };
     const created = await bucket.put(key, new Uint8Array(), {
       customMetadata: { osfo: encodeAttemptEvidence(proposed) },

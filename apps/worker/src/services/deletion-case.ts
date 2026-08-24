@@ -6,6 +6,8 @@ import type { AdminActorId, AdminReason } from "../domain/account-administration
 import { type DeletionAccessFact, DeletionCaseId } from "../domain/deletion-case";
 import type { AuthSessionUnavailable } from "./auth-session";
 import { AuthSession } from "./auth-session";
+import type { ActionId } from "../domain/action-execution";
+import type { ApprovalPresentation } from "./authorization";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Domain outcomes use the _tag discriminator. */
 
@@ -22,6 +24,12 @@ export interface RequestCommand {
   readonly userId: UserId;
 }
 
+/** Exact immutable Approval retained with a self-service Deletion Case. */
+export interface SelfDeletionApproval {
+  readonly actionId: ActionId;
+  readonly presentation: ApprovalPresentation;
+}
+
 /** Persistence result for one Deletion Case request. */
 export type RequestResult =
   | { readonly _tag: "Created" }
@@ -35,6 +43,11 @@ export interface PersistencePort {
     command: RequestCommand,
     deletionCaseId: DeletionCaseId,
   ) => Effect.Effect<RequestResult, DbUnavailable>;
+  readonly requestSelf: (
+    userId: UserId,
+    deletionCaseId: DeletionCaseId,
+    approval: SelfDeletionApproval,
+  ) => Effect.Effect<RequestResult, DbUnavailable>;
 }
 
 /** Deletion Case persistence capability supplied by Postgres. */
@@ -47,6 +60,15 @@ export interface Interface {
   readonly inspect: PersistencePort["inspect"];
   readonly request: (
     command: RequestCommand,
+  ) => Effect.Effect<
+    | { readonly _tag: "DeletionAlreadyRequested"; readonly deletionCaseId: DeletionCaseId }
+    | { readonly _tag: "DeletionRequested"; readonly deletionCaseId: DeletionCaseId }
+    | { readonly _tag: "UserMissing" },
+    AuthSessionUnavailable | DbUnavailable | DeletionCaseIdentityUnavailable
+  >;
+  readonly requestSelf: (
+    userId: UserId,
+    approval: SelfDeletionApproval,
   ) => Effect.Effect<
     | { readonly _tag: "DeletionAlreadyRequested"; readonly deletionCaseId: DeletionCaseId }
     | { readonly _tag: "DeletionRequested"; readonly deletionCaseId: DeletionCaseId }
@@ -71,6 +93,21 @@ export const make = Effect.gen(function* () {
         message: "A secure Deletion Case identity could not be generated",
       }),
   );
+  const requestSelf = Effect.fn("DeletionCase.requestSelf")(function* (
+    userId: UserId,
+    approval: SelfDeletionApproval,
+  ) {
+    const deletionCaseId = DeletionCaseId.make(yield* secureId);
+    const result = yield* persistence.requestSelf(userId, deletionCaseId, approval);
+    if (result._tag === "MissingUser") return { _tag: "UserMissing" } as const;
+    yield* authSessions.revokeAllForUser(userId);
+    return result._tag === "Existing"
+      ? ({
+          _tag: "DeletionAlreadyRequested",
+          deletionCaseId: result.deletionCaseId,
+        } as const)
+      : ({ _tag: "DeletionRequested", deletionCaseId } as const);
+  });
   return Service.of({
     inspect: persistence.inspect,
     request: (command) =>
@@ -86,6 +123,7 @@ export const make = Effect.gen(function* () {
             } as const)
           : ({ _tag: "DeletionRequested", deletionCaseId } as const);
       }),
+    requestSelf,
   });
 });
 

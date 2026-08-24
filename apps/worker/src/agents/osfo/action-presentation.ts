@@ -6,6 +6,12 @@ import type { ActionPresentationPersistence } from "../../services/action-approv
 import { ApprovalPresentation } from "../../services/authorization";
 import { ClearCoreMemoryInput, coreMemoryLabelFor } from "./core-memory";
 import {
+  ForgetKnowledgeInput,
+  forgetKnowledgeActionName,
+  SessionDeleteInput,
+  sessionDeleteActionName,
+} from "./deletion-actions";
+import {
   ActionPresentation,
   ActionPresentationId,
   ActionPresentationUnavailable,
@@ -31,6 +37,12 @@ export const presentOsfoAction = Effect.fn("ActionPresentation.present")(functio
   }
   if (pending.descriptor.action === documentDeleteActionName) {
     return yield* presentDocumentDeleteAction(pending);
+  }
+  if (pending.descriptor.action === forgetKnowledgeActionName) {
+    return yield* presentForgetKnowledgeAction(pending);
+  }
+  if (pending.descriptor.action === sessionDeleteActionName) {
+    return yield* presentSessionDeleteAction(pending);
   }
   return yield* new ActionPresentationUnavailable({
     action: pending.descriptor.action,
@@ -92,6 +104,25 @@ export const hasExactActionInput = (
   );
 };
 
+/** Verify the complete Knowledge deletion target and Native Memory correction. */
+export const hasExactForgetKnowledgeInput = (
+  presentation: ActionPresentation,
+  input: typeof ForgetKnowledgeInput.Encoded,
+): boolean =>
+  hasExactFields(presentation, "memory.forgetKnowledge", "osfo-forget-knowledge-v1", [
+    { name: "memoryIds", value: JSON.stringify(input.memoryIds) },
+    { name: "coreMemory", value: JSON.stringify(input.coreMemory) },
+  ]);
+
+/** Verify the exact Session selected for deletion. */
+export const hasExactSessionDeleteInput = (
+  presentation: ActionPresentation,
+  input: typeof SessionDeleteInput.Encoded,
+): boolean =>
+  hasExactFields(presentation, "session.delete", "osfo-session-delete-v1", [
+    { name: "sessionId", value: input.sessionId },
+  ]);
+
 const presentCoreMemoryClearAction = Effect.fn("ActionPresentation.presentCoreMemoryClear")(
   function* (pending: PendingThinkAction) {
     const input = yield* Schema.decodeUnknownEffect(ClearCoreMemoryInput)(
@@ -144,6 +175,93 @@ const presentDocumentDeleteAction = Effect.fn("ActionPresentation.presentDocumen
     });
   },
 );
+
+const presentForgetKnowledgeAction = Effect.fn("ActionPresentation.presentForgetKnowledge")(
+  function* (pending: PendingThinkAction) {
+    const input = yield* Schema.decodeUnknownEffect(ForgetKnowledgeInput)(
+      pending.descriptor.input,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The Knowledge deletion input cannot be projected safely",
+          }),
+      ),
+    );
+    const coreMemoryConsequences = input.coreMemory.map(
+      ({ block }) => `Immediately replace the ${coreMemoryLabelFor(block)} Core Memory block.`,
+    );
+    return ActionPresentation.make({
+      actionDefinitionVersion: "osfo-forget-knowledge-v1",
+      actionId: ActionId.make(pending.descriptor.toolCallId),
+      consequences: [
+        ...coreMemoryConsequences,
+        `Permanently forget ${input.memoryIds.length} selected Knowledge Base ${input.memoryIds.length === 1 ? "memory" : "memories"}.`,
+        "Keep the original Session transcript.",
+      ],
+      description: "Apply the exact Native Memory correction and provider forgetting shown here.",
+      fields: [
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Approval fields retain canonical JSON for exact array comparison.
+        { label: "Provider memories", name: "memoryIds", value: JSON.stringify(input.memoryIds) },
+        {
+          label: "Core Memory replacements",
+          name: "coreMemory",
+          // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Approval fields retain canonical JSON for exact array comparison.
+          value: JSON.stringify(input.coreMemory),
+        },
+      ],
+      operation: "memory.forgetKnowledge",
+      presentationId: ActionPresentationId.make(pending.executionId),
+      title: "Forget selected knowledge",
+    });
+  },
+);
+
+const presentSessionDeleteAction = Effect.fn("ActionPresentation.presentSessionDelete")(function* (
+  pending: PendingThinkAction,
+) {
+  const input = yield* Schema.decodeUnknownEffect(SessionDeleteInput)(
+    pending.descriptor.input,
+  ).pipe(
+    Effect.mapError(
+      () =>
+        new ActionPresentationUnavailable({
+          action: pending.descriptor.action,
+          message: "The Session deletion input cannot be projected safely",
+        }),
+    ),
+  );
+  return ActionPresentation.make({
+    actionDefinitionVersion: "osfo-session-delete-v1",
+    actionId: ActionId.make(pending.descriptor.toolCallId),
+    consequences: [
+      "Permanently delete the selected Session transcript and search history.",
+      "Create a replacement first when this is the current Session.",
+      "Permanently delete the matching Knowledge Base conversation.",
+    ],
+    description: "Delete the exact Session shown here.",
+    fields: [{ label: "Session", name: "sessionId", value: input.sessionId }],
+    operation: "session.delete",
+    presentationId: ActionPresentationId.make(pending.executionId),
+    title: "Delete Session",
+  });
+});
+
+const hasExactFields = (
+  presentation: ActionPresentation,
+  operation: string,
+  version: string,
+  expected: ReadonlyArray<{ readonly name: string; readonly value: string }>,
+) =>
+  presentation.operation === operation &&
+  presentation.actionDefinitionVersion === version &&
+  presentation.fields.length === expected.length &&
+  expected.every(
+    (field, index) =>
+      presentation.fields[index]?.name === field.name &&
+      presentation.fields[index]?.value === field.value,
+  );
 
 const actionPresentationStorageKey = (presentationId: ActionPresentationId) =>
   `osfo:action-presentation:${presentationId}`;

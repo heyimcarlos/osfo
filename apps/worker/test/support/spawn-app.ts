@@ -25,6 +25,17 @@ const StripeLedger = Schema.Array(
   }),
 );
 
+const SupermemoryLedger = Schema.Array(
+  Schema.Struct({ method: Schema.String, path: Schema.String }),
+);
+
+const StoredAccountDeletion = Schema.Struct({
+  agent_exists: Schema.Boolean,
+  auth_session_exists: Schema.Boolean,
+  deletion_case_exists: Schema.Boolean,
+  user_exists: Schema.Boolean,
+});
+
 const StoredRegistration = Schema.Struct({
   agent_id: Schema.String,
   allowance_plan: Schema.String,
@@ -63,7 +74,11 @@ interface RegistrationProfile {
   readonly preferredName: string | null;
 }
 
-type JsonRequestBody = PhoneOtpRequest | PhoneOtpVerificationRequest | RegistrationProfile;
+type JsonRequestBody =
+  | PhoneOtpRequest
+  | PhoneOtpVerificationRequest
+  | RegistrationProfile
+  | { readonly confirmation: "delete-my-account" };
 
 /** Create one stateful HTTP client and observation surface for a Worker journey. */
 export const spawnApp = async () => {
@@ -82,6 +97,12 @@ export const spawnApp = async () => {
 
   return {
     fetch: request,
+    account: {
+      delete: () =>
+        jsonRequest(request, "/v1/account", "DELETE", {
+          confirmation: "delete-my-account",
+        }),
+    },
     auth: {
       session: () => request("/auth/get-session"),
       sendPhoneOtp: (phoneNumber: string) =>
@@ -96,6 +117,16 @@ export const spawnApp = async () => {
       },
     },
     database: {
+      accountDeletion: async (userId: string) => {
+        const response = await fetch(`${context.databaseObserverOrigin}/account-deletion`, {
+          body: JSON.stringify({ userId }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        });
+        return Schema.decodeUnknownPromise(Schema.NullOr(StoredAccountDeletion))(
+          await response.json(),
+        );
+      },
       billingCheckout: async (userId: string) => {
         const response = await fetch(`${context.databaseObserverOrigin}/billing-checkout`, {
           body: JSON.stringify({ userId }),
@@ -149,6 +180,12 @@ export const spawnApp = async () => {
       ledger: async () => {
         const response = await fetch(`${context.providerOrigin}/_test/stripe/ledger`);
         return Schema.decodeUnknownPromise(StripeLedger)(await response.json());
+      },
+    },
+    supermemory: {
+      ledger: async () => {
+        const response = await fetch(`${context.providerOrigin}/_test/supermemory/ledger`);
+        return Schema.decodeUnknownPromise(SupermemoryLedger)(await response.json());
       },
     },
     dispose: () => {

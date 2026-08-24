@@ -13,6 +13,7 @@ import {
 /** Agent SQLite operations exposed by the typed store seam. */
 export const AgentStoreOperation = Schema.Literals([
   "initialize",
+  "deleteSession",
   "inspect",
   "readRoute",
   "readRouteSessionPage",

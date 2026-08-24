@@ -32,14 +32,20 @@ import {
   agentInitialization,
   committedTurns,
   conversationRoutes,
+  memoryProviderOutbox,
   sessionRecallCursors,
   sessionOwnership,
 } from "./schema";
 import type { ConversationSnapshotProjection } from "../memory-provider-projection";
 import {
   enqueueConversationSnapshotTransaction,
+  enqueueMemoryProviderDeletionTransaction,
   inspectConversationSnapshotTransaction,
+  type MemoryProviderOutboxId,
+  type MemoryProviderDeletionPayload,
 } from "./memory-provider-outbox";
+import type { UserId } from "../../../domain";
+import type { DeletionAuthorization } from "../deletion-actions";
 
 const sqliteCurrentTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u;
 
@@ -48,6 +54,14 @@ interface ReplaceCurrentSessionRecordInput {
   readonly replacedAt: DbTimestamp;
   readonly replacementSessionId: SessionId;
   readonly routeId: ConversationRouteId;
+}
+
+interface DeleteHistoricalSessionInput {
+  readonly authorization?: DeletionAuthorization;
+  readonly deletedAt: DbTimestamp;
+  readonly outboxId: MemoryProviderOutboxId;
+  readonly sessionId: SessionId;
+  readonly userId: UserId;
 }
 
 type AgentTransaction = Parameters<Parameters<AgentDb["transaction"]>[0]>[0];
@@ -658,6 +672,83 @@ export const makeAgentStore = (db: AgentDb) => {
     ),
   );
 
+  const deleteHistoricalSession = Effect.fn("AgentStore.deleteHistoricalSession")(function* (
+    input: DeleteHistoricalSessionInput,
+  ) {
+    const outcome = yield* execute("deleteSession", () =>
+      db.transaction((transaction) => {
+        const owned = transaction
+          .select({ replacedAt: sessionOwnership.replaced_at })
+          .from(sessionOwnership)
+          .where(eq(sessionOwnership.session_id, input.sessionId))
+          .limit(1)
+          .get();
+        if (owned === undefined) {
+          return enqueueMemoryProviderDeletionTransaction(transaction, {
+            enqueuedAt: input.deletedAt,
+            outboxId: input.outboxId,
+            payload: deleteSessionPayload(input),
+          })
+            ? "AlreadyDeleted"
+            : "Invalid";
+        }
+        if (owned.replacedAt === null) return "Current";
+        const current = transaction
+          .select({ sessionId: sessionOwnership.session_id })
+          .from(sessionOwnership)
+          .where(isNull(sessionOwnership.replaced_at))
+          .limit(1)
+          .get();
+        if (current === undefined) return "Invalid";
+        transaction
+          .update(agentInitialization)
+          .set({ initial_session_id: current.sessionId })
+          .where(eq(agentInitialization.initial_session_id, input.sessionId))
+          .run();
+        transaction
+          .delete(committedTurns)
+          .where(eq(committedTurns.session_id, input.sessionId))
+          .run();
+        transaction
+          .update(memoryProviderOutbox)
+          .set({
+            claim_expires_at: null,
+            claim_token: null,
+            completed_at: input.deletedAt,
+            last_error: null,
+            status: "completed",
+          })
+          .where(
+            and(
+              eq(memoryProviderOutbox.operation_type, "saveConversation"),
+              inArray(memoryProviderOutbox.status, ["failed", "pending"]),
+              sql`json_extract(${memoryProviderOutbox.payload_json}, '$.projection.sessionId') = ${input.sessionId}`,
+            ),
+          )
+          .run();
+        transaction
+          .delete(sessionOwnership)
+          .where(eq(sessionOwnership.session_id, input.sessionId))
+          .run();
+        return enqueueMemoryProviderDeletionTransaction(transaction, {
+          enqueuedAt: input.deletedAt,
+          outboxId: input.outboxId,
+          payload: deleteSessionPayload(input),
+        })
+          ? "Deleted"
+          : "Invalid";
+      }),
+    );
+    if (outcome === "Current") {
+      return yield* new AgentStoreRecordInvalid({
+        message: "The current Session must be replaced before deletion",
+        operation: "deleteSession",
+      });
+    }
+    if (outcome === "Invalid") return yield* invalidStoreRecord("deleteSession");
+    return { _tag: "SessionDeleted", sessionId: input.sessionId } as const;
+  });
+
   const readPrimaryFacts = (operation: AgentStoreOperation) =>
     Effect.gen(function* () {
       const facts = yield* execute(operation, () =>
@@ -711,6 +802,7 @@ export const makeAgentStore = (db: AgentDb) => {
     });
 
   return {
+    deleteHistoricalSession,
     initialize,
     inspect,
     ownsSession,
@@ -722,6 +814,18 @@ export const makeAgentStore = (db: AgentDb) => {
     recordCommittedTurn,
     replaceCurrentSession,
   };
+};
+
+const deleteSessionPayload = (
+  input: DeleteHistoricalSessionInput,
+): MemoryProviderDeletionPayload => {
+  const payload = {
+    _tag: "DeleteSessionConversation" as const,
+    sessionId: input.sessionId,
+    userId: input.userId,
+  };
+  if (input.authorization === undefined) return payload;
+  return { ...payload, authorization: input.authorization };
 };
 
 interface RecordCommittedTurnTransactionInput {

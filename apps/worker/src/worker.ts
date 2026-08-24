@@ -62,9 +62,11 @@ const worker = {
     try {
       loadConfig(env);
       context.waitUntil(
-        Promise.all([App.expireChannelLinkInvites(env), DocumentCostReconciliation.run(env)]).then(
-          () => undefined,
-        ),
+        Promise.all([
+          App.expireChannelLinkInvites(env),
+          App.reconcileAccountDeletions(env),
+          DocumentCostReconciliation.run(env),
+        ]).then(() => undefined),
       );
     } catch (error) {
       if (Schema.is(WorkerConfigurationError)(error)) logConfigurationError(error);

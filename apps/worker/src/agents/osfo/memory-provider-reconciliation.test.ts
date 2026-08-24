@@ -6,6 +6,9 @@ import { Effect, Option } from "effect";
 
 import { Db } from "../../db";
 import { AllowancePeriodId, AssistantMessageId, SessionId, UserId } from "../../domain";
+import { ActionId } from "../../domain/action-execution";
+import { AuthSessionId } from "../../domain/auth-session";
+import { ApprovalPresentation } from "../../services/authorization";
 import { MemoryProvider } from "../../services/memory-provider";
 import type {
   ClaimedMemoryProviderWork,
@@ -13,10 +16,13 @@ import type {
   MemoryProviderOutboxStore,
 } from "./db/memory-provider-outbox";
 import { MemoryProviderOutboxId } from "./db/memory-provider-outbox";
-import { reconcileMemoryProviderOutbox } from "./memory-provider-reconciliation";
+import {
+  quiesceProcessingConversations,
+  reconcileMemoryProviderOutbox,
+} from "./memory-provider-reconciliation";
 
-it.effect("retains a rejected deletion in an explicit terminal state", () => {
-  const claim = deletionClaim();
+it.effect("retries a rejected deletion until the provider confirms it", () => {
+  const claim = authorizedDeletionClaim();
   const observed: Array<MemoryProviderOutboxPayload> = [];
   const { completed, failed, retried, store } = testStore(claim);
   const provider = providerStub({
@@ -31,29 +37,29 @@ it.effect("retains a rejected deletion in an explicit terminal state", () => {
     },
   });
 
-  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
     Effect.provideService(MemoryProvider.Service, provider),
     Effect.provideService(Db.Service, unavailableDatabase),
     Effect.provide(BrowserCrypto.layer),
     Effect.andThen(
       Effect.sync(() => {
         expect(observed).toEqual([claim.payload]);
-        expect(failed).toEqual([claim.outboxId]);
-        expect(retried).toEqual([]);
+        expect(failed).toEqual([]);
+        expect(retried).toEqual([claim.outboxId]);
         expect(completed).toEqual([]);
       }),
     ),
   );
 });
 
-it.effect("completes deletion work only after provider confirmation", () => {
+it.effect("does not execute legacy deletion work without retained authorization", () => {
   const claim = deletionClaim();
   const observed: Array<MemoryProviderOutboxPayload> = [];
-  const { completed, retried, store } = testStore(claim);
+  const { completed, failed, retried, store } = testStore(claim);
   const provider = providerStub({
     deleteSessionConversation: (input) => {
       observed.push({ _tag: "DeleteSessionConversation", ...input });
-      return Effect.succeed({ _tag: "AlreadyAbsent" as const });
+      return Effect.succeed({ _tag: "Deleted" as const });
     },
   });
 
@@ -63,9 +69,98 @@ it.effect("completes deletion work only after provider confirmation", () => {
     Effect.provide(BrowserCrypto.layer),
     Effect.andThen(
       Effect.sync(() => {
+        expect(observed).toEqual([]);
+        expect(failed).toEqual([]);
+        expect(retried).toEqual([claim.outboxId]);
+        expect(completed).toEqual([]);
+      }),
+    ),
+  );
+});
+
+it.effect("does not execute legacy User deletion outside the PostgreSQL Deletion Case", () => {
+  const claim: ClaimedMemoryProviderWork = {
+    ...deletionClaim(),
+    payload: { _tag: "DeleteUserKnowledge", userId: UserId.make("user-1") },
+  };
+  let providerCalled = false;
+  const { completed, failed, retried, store } = testStore(claim);
+  const provider = providerStub({
+    deleteUserKnowledge: () => {
+      providerCalled = true;
+      return Effect.succeed({ _tag: "Deleted" as const });
+    },
+  });
+
+  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(providerCalled).toBe(false);
+        expect(failed).toEqual([]);
+        expect(retried).toEqual([claim.outboxId]);
+        expect(completed).toEqual([]);
+      }),
+    ),
+  );
+});
+
+it.effect("completes deletion work only after provider confirmation", () => {
+  const claim = authorizedDeletionClaim();
+  const observed: Array<MemoryProviderOutboxPayload> = [];
+  const { completed, retried, store } = testStore(claim);
+  const provider = providerStub({
+    deleteSessionConversation: (input) => {
+      observed.push({ _tag: "DeleteSessionConversation", ...input });
+      return Effect.succeed({ _tag: "AlreadyAbsent" as const });
+    },
+  });
+
+  return Effect.scoped(reconcileMemoryProviderOutbox(store, permittedDeletionOptions)).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
         expect(observed).toEqual([claim.payload]);
         expect(completed).toEqual([claim.outboxId]);
         expect(retried).toEqual([]);
+      }),
+    ),
+  );
+});
+
+it.effect("rechecks retained Approval around idempotent local deletion preparation", () => {
+  const claim = authorizedDeletionClaim();
+  const events: Array<string> = [];
+  const { completed, store } = testStore(claim);
+  const provider = providerStub({
+    deleteSessionConversation: () =>
+      Effect.sync(() => {
+        events.push("provider");
+        return { _tag: "Deleted" as const };
+      }),
+  });
+
+  return Effect.scoped(
+    reconcileMemoryProviderOutbox(store, {
+      authorizeDeletion: () =>
+        Effect.sync(() => {
+          events.push("authorize");
+          return { _tag: "Permitted" as const };
+        }),
+      prepareDeletion: () => Effect.sync(() => events.push("local")),
+    }),
+  ).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(events).toEqual(["authorize", "local", "authorize", "provider"]);
+        expect(completed).toEqual([claim.outboxId]);
       }),
     ),
   );
@@ -108,6 +203,62 @@ it.effect("retries the exact conversation snapshot during a provider outage", ()
         ]);
         expect(retried).toEqual([claim.outboxId]);
         expect(completed).toEqual([]);
+      }),
+    ),
+  );
+});
+
+it.effect("does not start a provider append after account deletion fences the User", () => {
+  const claim = conversationClaim();
+  let providerCalled = false;
+  const { completed, retried, store } = testStore(claim);
+  const provider = providerStub({
+    saveConversation: () => {
+      providerCalled = true;
+      return Effect.die(new Error("Account-fenced conversation reached the provider"));
+    },
+  });
+
+  return Effect.scoped(
+    reconcileMemoryProviderOutbox(store, {
+      canSaveConversation: () => Effect.succeed(false),
+    }),
+  ).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(providerCalled).toBe(false);
+        expect(retried).toEqual([claim.outboxId]);
+        expect(completed).toEqual([]);
+      }),
+    ),
+  );
+});
+
+it.effect("waits for an accepted provider conversation to leave processing", () => {
+  const events: Array<string> = [];
+  let processing = true;
+  const { store: base } = testStore(conversationClaim());
+  const store: MemoryProviderOutboxStore = {
+    ...base,
+    expediteProcessingConversationWork: () => Effect.sync(() => events.push("expedite")),
+    hasProcessingConversationWork: Effect.sync(() => processing),
+  };
+
+  return quiesceProcessingConversations(
+    store,
+    () =>
+      Effect.sync(() => {
+        events.push("status");
+        processing = false;
+      }),
+    1,
+  ).pipe(
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(events).toEqual(["expedite", "status"]);
       }),
     ),
   );
@@ -200,6 +351,25 @@ const deletionClaim = (): ClaimedMemoryProviderWork => ({
   usage: null,
 });
 
+const authorizedDeletionClaim = (): ClaimedMemoryProviderWork => ({
+  ...deletionClaim(),
+  payload: {
+    _tag: "DeleteSessionConversation",
+    authorization: {
+      actionId: ActionId.make("action-1"),
+      authorityIdentity: {
+        _tag: "AuthSession",
+        authSessionId: AuthSessionId.make("auth-session-1"),
+        userId: UserId.make("user-1"),
+      },
+      operation: "session.delete",
+      presentation: ApprovalPresentation.make("Delete Session session-1"),
+    },
+    sessionId: SessionId.make("session-1"),
+    userId: UserId.make("user-1"),
+  },
+});
+
 const conversationClaim = (): ClaimedMemoryProviderWork => ({
   allowancePeriodId: AllowancePeriodId.make("allowance-1"),
   attemptCount: 1,
@@ -225,6 +395,11 @@ const conversationClaim = (): ClaimedMemoryProviderWork => ({
   sequence: 1,
   usage: null,
 });
+
+const permittedDeletionOptions = {
+  authorizeDeletion: () => Effect.succeed({ _tag: "Permitted" as const }),
+  prepareDeletion: () => Effect.void,
+};
 
 const testStore = (
   claim: ClaimedMemoryProviderWork,
@@ -259,6 +434,8 @@ const testStore = (
         failed.push(work.outboxId);
         return true;
       }),
+    expediteProcessingConversationWork: () => Effect.void,
+    hasProcessingConversationWork: Effect.succeed(false),
     hasRetryableWork: Effect.succeed(false),
     markProviderAccepted: () => Effect.succeed(options.providerAccepted ?? true),
     markProviderStatus: () => Effect.succeed(true),

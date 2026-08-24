@@ -1,0 +1,76 @@
+/* oxlint-disable effecttsgo/strict-effect-provide, vitest/no-standalone-expect -- The PostgreSQL contract test owns its concrete database Layer and assertions execute inside it.effect. */
+import { env } from "cloudflare:workers";
+import { agents } from "@osfo/db/schema/agents";
+import { users } from "@osfo/db/schema/auth";
+import { deletionCases } from "@osfo/db/schema/user-lifecycle";
+import { expect, it } from "@effect/vitest";
+import { eq } from "drizzle-orm";
+import { Effect } from "effect";
+
+import { Db } from "../../src/db";
+import { UserId } from "../../src/domain";
+import { DeletionCaseId } from "../../src/domain/deletion-case";
+import { ActionId } from "../../src/domain/action-execution";
+import { ApprovalPresentation } from "../../src/services/authorization";
+import { AccountDeletionPostgres } from "../../src/integrations/postgres/account-deletion";
+import { DeletionCasePostgres } from "../../src/integrations/postgres/deletion-case";
+import { spawnApp } from "../support/spawn-app";
+
+it.effect("retains a valid self-service fence and atomically removes the User graph", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      // This adapter-level journey proves the PostgreSQL transaction and cascades that the
+      // public DELETE response cannot expose independently.
+      const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
+        Effect.promise(client.dispose),
+      );
+      const userId = yield* registerUser(app);
+      const database = yield* Db.database;
+      const deletionCasesPersistence = yield* DeletionCasePostgres.make;
+
+      expect(
+        yield* deletionCasesPersistence.requestSelf(
+          userId,
+          DeletionCaseId.make("self-delete-case-1"),
+          {
+            actionId: ActionId.make("account-delete-1"),
+            presentation: ApprovalPresentation.make("Delete account"),
+          },
+        ),
+      ).toEqual({ _tag: "Created" });
+
+      const accountDeletion = AccountDeletionPostgres.make(database);
+      const [candidate] = yield* accountDeletion.pending;
+      if (candidate === undefined) return yield* Effect.die(new Error("Deletion Case missing"));
+      expect(yield* AccountDeletionPostgres.authorize(database)(candidate)).toBe(true);
+
+      yield* accountDeletion.removeUser(userId);
+
+      const [remainingUsers, remainingAgents, remainingCases] = yield* Effect.promise(() =>
+        Promise.all([
+          database.select().from(users).where(eq(users.id, userId)),
+          database.select().from(agents).where(eq(agents.user_id, userId)),
+          database.select().from(deletionCases).where(eq(deletionCases.user_id, userId)),
+        ]),
+      );
+      expect(remainingUsers).toEqual([]);
+      expect(remainingAgents).toEqual([]);
+      expect(remainingCases).toEqual([]);
+      return undefined;
+    }).pipe(Effect.provide(Db.layer({ db: env.DB }))),
+  ),
+);
+
+const registerUser = (app: Awaited<ReturnType<typeof spawnApp>>) =>
+  Effect.gen(function* () {
+    const phoneNumber = "+15550002522";
+    yield* Effect.promise(() => app.auth.sendPhoneOtp(phoneNumber));
+    yield* Effect.promise(() => app.auth.verifyPhoneOtp(phoneNumber, "424242"));
+    const completed = yield* Effect.promise(() =>
+      app.registration.complete({ helpAreas: [], locale: "en", preferredName: "Delete Me" }),
+    );
+    if (completed.body === undefined) {
+      return yield* Effect.die(new Error("Registration did not return an identity"));
+    }
+    return UserId.make(completed.body.userId);
+  });

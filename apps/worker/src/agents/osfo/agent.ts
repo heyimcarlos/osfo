@@ -21,7 +21,7 @@ import { tool, type ToolSet, type UIMessage } from "ai";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import { Cause, DateTime, Effect, Exit, Option, Predicate, Result, Schema } from "effect";
 
-import type { ChannelLinkId, UserId } from "../../domain";
+import type { ChannelLinkId } from "../../domain";
 import type { AllowanceItem, AllowanceSource } from "../../domain/allowance";
 import {
   AgentId,
@@ -31,6 +31,7 @@ import {
   SessionId,
   ThinkSubmissionId,
   ThinkRequestId,
+  UserId,
 } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
 import { DocumentArtifact } from "../../domain/document-artifact";
@@ -84,6 +85,7 @@ import {
   makeR2FileObjects,
 } from "../../integrations/cloudflare/file-objects";
 import { loadCurrentFileAuthorization } from "../../integrations/postgres/file-authorization";
+import { DeletionCasePostgres } from "../../integrations/postgres/deletion-case";
 import { AgentDirectory } from "../../services/agent-directory";
 import { ChannelLinks } from "../../services/channel-links";
 import {
@@ -124,6 +126,7 @@ import {
   inspectCoreMemory,
   InspectCoreMemoryInput,
   type InspectCoreMemoryEncoded,
+  replaceCoreMemoryBlock,
 } from "./core-memory";
 import { Allowances } from "../../services/allowances";
 import { makeActionApprovals } from "../../services/action-approvals";
@@ -201,26 +204,43 @@ import {
 import {
   coreMemoryClearActionName,
   documentDeleteActionName,
+  type ForgetKnowledgeInput,
   makeOsfoActions,
   presentOsfoAction,
   RetainedDocumentInput,
   sanitizePendingApproval,
+  type SessionDeleteInput,
 } from "./action-registry";
 import {
   approvalPresentationFor,
   hasExactActionInput,
+  hasExactForgetKnowledgeInput,
+  hasExactSessionDeleteInput,
   makeActionPresentationPersistence,
 } from "./action-presentation";
 import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-authorization";
 import { makeAgentSessionLifecycle } from "./session-lifecycle";
+import { deleteLocalSession } from "./session-deletion";
+import { correctForgottenKnowledge } from "./knowledge-deletion";
 import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
 import { effectToolSchema } from "./effect-tool-schema";
 import {
   projectCommittedConversationSnapshot,
   projectTerminalMarkedCommittedTurns,
 } from "./memory-provider-projection";
-import { makeMemoryProviderOutboxStore } from "./db/memory-provider-outbox";
-import { reconcileMemoryProviderOutbox } from "./memory-provider-reconciliation";
+import {
+  type ClaimedMemoryProviderWork,
+  makeMemoryProviderOutboxStore,
+  MemoryProviderOutboxId,
+} from "./db/memory-provider-outbox";
+import {
+  ProviderDeletionDeferred,
+  ProviderSaveDeferred,
+  quiesceProcessingConversations,
+  reconcileMemoryProviderOutbox,
+  type ReconciliationOptions,
+} from "./memory-provider-reconciliation";
+import { type DeletionAuthorization, DeletionActionUnavailable } from "./deletion-actions";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries, and Effect results use _tag. */
 
@@ -228,6 +248,8 @@ const pendingSessionId = "__osfo_uninitialized__";
 const gatewayId = "default";
 const modelCallUsageRetryDelaySeconds = 60;
 const memoryProviderRetryDelaySeconds = 30;
+const accountDeletionProviderPollMilliseconds = 250;
+const accountDeletionProviderQuiescenceTimeoutMilliseconds = 10_000;
 const gatewayCostMaximumLookups = 3;
 const authorization = Authorization.make(retainedCatalog);
 
@@ -410,7 +432,11 @@ export class OsfoAgent extends Think<Env> {
     ActionId,
     {
       readonly actionPresentation: ActionPresentation;
-      readonly operation: "file.delete" | "memory.clear";
+      readonly operation:
+        | "file.delete"
+        | "memory.clear"
+        | "memory.forgetKnowledge"
+        | "session.delete";
       readonly presentation: ApprovalPresentation;
     }
   >();
@@ -429,6 +455,7 @@ export class OsfoAgent extends Think<Env> {
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
   readonly #memoryProviderOutbox = makeMemoryProviderOutboxStore(this.#db);
+  #memoryProviderReconciliation = Promise.resolve();
   readonly #modelCallUsage = makeDurableModelCallUsage({
     dispatch: { record: (usage) => this.#dispatchModelCallUsage(usage) },
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
@@ -658,11 +685,13 @@ export class OsfoAgent extends Think<Env> {
       return;
     }
 
-    const recorded = await this.#recordMessengerAcceptedMessage(
-      result.value.currentAuthorization,
-      provider,
-      message.providerMessageId,
-    );
+    const recorded =
+      result.value.admission.metadata.executionMode === "exhaustedConversation" ||
+      (await this.#recordMessengerAcceptedMessage(
+        result.value.currentAuthorization,
+        provider,
+        message.providerMessageId,
+      ));
     if (!recorded) {
       await this.#completeMessengerPolicyReply(
         callback,
@@ -701,7 +730,11 @@ export class OsfoAgent extends Think<Env> {
     };
     const executeClear = (input: Parameters<typeof clearCoreMemory>[1], actionId: ActionId) =>
       this.#clearCoreMemory(input, actionId);
-    const osfoActions = makeOsfoActions({ clearCoreMemory: executeClear });
+    const osfoActions = makeOsfoActions({
+      clearCoreMemory: executeClear,
+      deleteSession: (input, actionId) => this.#deleteSession(input, actionId),
+      forgetKnowledge: (input, actionId) => this.#forgetKnowledge(input, actionId),
+    });
     return {
       ...documentActions,
       ...osfoActions,
@@ -734,7 +767,7 @@ export class OsfoAgent extends Think<Env> {
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
     );
     const prompt = await this.#assemblePrompt(context, metadata, system);
-    if (prompt.usage !== null) {
+    if (prompt.usage !== null && metadata.executionMode !== "exhaustedConversation") {
       this.ctx.waitUntil(this.#recordProviderRecallUsage(metadata, prompt.usage));
     }
     this.#completedModelSteps.clear();
@@ -909,6 +942,7 @@ export class OsfoAgent extends Think<Env> {
       );
       return;
     }
+    if (metadata.value.executionMode === "exhaustedConversation") return;
     const attemptId = modelCallAttemptId(metadata.value.submissionId, stepNumber);
     if (step !== undefined) {
       const evidence = await this.#readStepEvidence(metadata.value, stepNumber, step);
@@ -1117,6 +1151,316 @@ export class OsfoAgent extends Think<Env> {
     return runRpc(clearCoreMemory(this.session, input));
   }
 
+  async #forgetKnowledge(input: ForgetKnowledgeInput, actionId: ActionId) {
+    await this.#migrationsReady;
+    const current = this.#currentApprovedActions.get(actionId);
+    if (current === undefined) return deletionApprovalUnavailable(actionId, "forgetKnowledge");
+    const recheck = await this.#recheckDeletionAction(
+      actionId,
+      "memory.forgetKnowledge",
+      hasExactForgetKnowledgeInput(current.actionPresentation, input),
+      "forgetKnowledge",
+    );
+    if (
+      Predicate.isTagged(recheck, "DeletionActionUnavailable") ||
+      Predicate.isTagged(recheck, "Denied")
+    )
+      return recheck;
+    const owner = await this.#resolveOwnerUserId("forgetKnowledge");
+    if (Predicate.isTagged(owner, "DeletionActionUnavailable")) return owner;
+    const deletionAuthorization: DeletionAuthorization = {
+      actionId,
+      authorityIdentity: recheck.authorityIdentity,
+      operation: "memory.forgetKnowledge",
+      presentation: current.presentation,
+    };
+    const enqueuedAt = await Effect.runPromise(currentDbTimestamp);
+    const enqueued = await runRpc(
+      this.#memoryProviderOutbox
+        .enqueueDeletion({
+          enqueuedAt,
+          outboxId: MemoryProviderOutboxId.make(`forget-knowledge:${actionId}`),
+          payload: {
+            _tag: "ForgetKnowledge",
+            authorization: deletionAuthorization,
+            coreMemory: input.coreMemory,
+            memoryIds: input.memoryIds,
+            userId: owner,
+          },
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new DeletionActionUnavailable({
+                cause,
+                message: "Knowledge forgetting could not be retained for provider retry",
+                operation: "forgetKnowledge",
+              }),
+          ),
+        ),
+    );
+    if (Predicate.isTagged(enqueued, "DeletionActionUnavailable")) return enqueued;
+    this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
+    await this.#activateCurrentSession();
+    const corrected = await runRpc(
+      correctForgottenKnowledge(input.coreMemory, (replacement) =>
+        replaceCoreMemoryBlock(this.session, replacement),
+      ).pipe(
+        Effect.mapError(
+          (cause) =>
+            new DeletionActionUnavailable({
+              cause,
+              message: "Matching Core Memory could not be corrected",
+              operation: "forgetKnowledge",
+            }),
+        ),
+      ),
+    );
+    if (Predicate.isTagged(corrected, "DeletionActionUnavailable")) return corrected;
+    return { _tag: "KnowledgeForgetPending", corrected, memoryIds: input.memoryIds } as const;
+  }
+
+  async #deleteSession(input: SessionDeleteInput, actionId: ActionId) {
+    await this.#migrationsReady;
+    const current = this.#currentApprovedActions.get(actionId);
+    if (current === undefined) return deletionApprovalUnavailable(actionId, "deleteSession");
+    const recheck = await this.#recheckDeletionAction(
+      actionId,
+      "session.delete",
+      hasExactSessionDeleteInput(current.actionPresentation, input),
+      "deleteSession",
+    );
+    if (
+      Predicate.isTagged(recheck, "DeletionActionUnavailable") ||
+      Predicate.isTagged(recheck, "Denied")
+    )
+      return recheck;
+    const owner = await this.#resolveOwnerUserId("deleteSession");
+    if (Predicate.isTagged(owner, "DeletionActionUnavailable")) return owner;
+    const initiallyOwned = await runRpc(
+      this.#store.ownsSession(input.sessionId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new DeletionActionUnavailable({
+              cause,
+              message: "Session ownership could not be checked",
+              operation: "deleteSession",
+            }),
+        ),
+      ),
+    );
+    if (Predicate.isTagged(initiallyOwned, "DeletionActionUnavailable")) return initiallyOwned;
+    if (!initiallyOwned) {
+      return new DeletionActionUnavailable({
+        cause: input.sessionId,
+        message: "The selected Session does not belong to this Agent",
+        operation: "deleteSession",
+      });
+    }
+    const deletionAuthorization: DeletionAuthorization = {
+      actionId,
+      authorityIdentity: recheck.authorityIdentity,
+      operation: "session.delete",
+      presentation: current.presentation,
+    };
+    const enqueuedAt = await Effect.runPromise(currentDbTimestamp);
+    const enqueued = await runRpc(
+      this.#memoryProviderOutbox
+        .enqueueDeletion({
+          enqueuedAt,
+          outboxId: MemoryProviderOutboxId.make(`delete-session:${actionId}`),
+          payload: {
+            _tag: "DeleteSessionConversation",
+            authorization: deletionAuthorization,
+            sessionId: input.sessionId,
+            userId: owner,
+          },
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new DeletionActionUnavailable({
+                cause,
+                message: "Session deletion could not be retained for provider retry",
+                operation: "deleteSession",
+              }),
+          ),
+        ),
+    );
+    if (Predicate.isTagged(enqueued, "DeletionActionUnavailable")) return enqueued;
+    this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
+    const deleted = await this.#deleteSessionLocally(input, deletionAuthorization, owner);
+    if (Predicate.isTagged(deleted, "DeletionActionUnavailable")) return deleted;
+    return { _tag: "SessionDeletionPending", sessionId: input.sessionId } as const;
+  }
+
+  async #deleteSessionLocally(
+    input: SessionDeleteInput,
+    deletionAuthorization: DeletionAuthorization,
+    owner: UserId,
+  ) {
+    return runRpc(
+      deleteLocalSession(
+        {
+          replacementSessionId: SessionId.make(`session-delete-${deletionAuthorization.actionId}`),
+          sessionId: input.sessionId,
+        },
+        {
+          activateCurrentSession: Effect.tryPromise({
+            try: () => this.#activateCurrentSession(),
+            catch: sessionDeletionFailure("The replacement Session could not be activated"),
+          }),
+          clearMessages: (sessionId) =>
+            Effect.tryPromise({
+              try: () => Session.create(this).forSession(sessionId).clearMessages(),
+              catch: sessionDeletionFailure("Think Session history could not be deleted"),
+            }),
+          inspect: this.#store
+            .inspect()
+            .pipe(
+              Effect.mapError(sessionDeletionFailure("Current Session ownership is unavailable")),
+            ),
+          ownsSession: (sessionId) =>
+            this.#store
+              .ownsSession(sessionId)
+              .pipe(
+                Effect.mapError(sessionDeletionFailure("Session ownership could not be checked")),
+              ),
+          replacedAt: currentDbTimestamp,
+          replaceCurrentSession: (replacement) =>
+            this.#store
+              .replaceCurrentSession(replacement)
+              .pipe(
+                Effect.mapError(
+                  sessionDeletionFailure(
+                    "A replacement Session could not be created before deletion",
+                  ),
+                ),
+              ),
+          settle: (sessionId) =>
+            Effect.promise(() =>
+              this.#settleDeletedSession(sessionId, deletionAuthorization, owner),
+            ).pipe(
+              Effect.flatMap((result) =>
+                Predicate.isTagged(result, "DeletionActionUnavailable")
+                  ? Effect.fail(result)
+                  : Effect.succeed(result),
+              ),
+            ),
+        },
+      ),
+    );
+  }
+
+  async #settleDeletedSession(
+    sessionId: SessionId,
+    deletionAuthorization: DeletionAuthorization,
+    owner: UserId,
+  ) {
+    const deletedAt = await Effect.runPromise(currentDbTimestamp);
+    return runRpc(
+      this.#store
+        .deleteHistoricalSession({
+          authorization: deletionAuthorization,
+          deletedAt,
+          outboxId: MemoryProviderOutboxId.make(`delete-session:${deletionAuthorization.actionId}`),
+          sessionId,
+          userId: owner,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new DeletionActionUnavailable({
+                cause,
+                message: "Session deletion could not be retained for provider retry",
+                operation: "deleteSession",
+              }),
+          ),
+        ),
+    );
+  }
+
+  async #recheckDeletionAction(
+    actionId: ActionId,
+    operation: "memory.forgetKnowledge" | "session.delete",
+    exactInput: boolean,
+    failureOperation: "forgetKnowledge" | "deleteSession",
+  ) {
+    const current = this.#currentApprovedActions.get(actionId);
+    if (current?.operation !== operation || !exactInput) {
+      return new DeletionActionUnavailable({
+        cause: actionId,
+        message: "Current deletion Approval does not match the requested target",
+        operation: failureOperation,
+      });
+    }
+    return runRpc(
+      Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata).pipe(
+        Effect.mapError(
+          (cause) =>
+            new DeletionActionUnavailable({
+              cause,
+              message: "Current deletion authority is unavailable",
+              operation: failureOperation,
+            }),
+        ),
+        Effect.flatMap((metadata) =>
+          this.#managedActionAuthorization
+            .recheck(
+              metadata.authorityIdentity,
+              { actionId, kind: operation },
+              current.presentation,
+            )
+            .pipe(
+              Effect.map((result) =>
+                result._tag === "Permitted"
+                  ? {
+                      _tag: "DeletionPermitted" as const,
+                      authorityIdentity: metadata.authorityIdentity,
+                    }
+                  : result,
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new DeletionActionUnavailable({
+                    cause,
+                    message: "Current deletion authority could not be loaded",
+                    operation: failureOperation,
+                  }),
+              ),
+            ),
+        ),
+      ),
+    );
+  }
+
+  async #resolveOwnerUserId(operation: "forgetKnowledge" | "deleteSession") {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return new DeletionActionUnavailable({
+        cause: invalidOsfoEnvironment,
+        message: "The Agent owner is unavailable",
+        operation,
+      });
+    }
+    try {
+      return await runtime.runPromise(
+        Effect.scoped(
+          AgentDirectory.make.pipe(
+            Effect.flatMap((directory) => directory.resolveAgent(AgentId.make(this.name))),
+            Effect.map(({ userId }) => userId),
+          ),
+        ),
+      );
+    } catch (cause) {
+      return new DeletionActionUnavailable({
+        cause,
+        message: "The Agent owner could not be resolved",
+        operation,
+      });
+    }
+  }
+
   #readCoreMemoryAuthorization() {
     const metadata = Schema.decodeUnknownOption(ManagedTurnMetadata)(this.activeTurnMetadata);
     if (Option.isSome(metadata)) {
@@ -1155,6 +1499,120 @@ export class OsfoAgent extends Think<Env> {
   async reconcileMemoryProviderOutbox(): Promise<void> {
     await this.#migrationsReady;
     await this.#reconcileMemoryProviderOutboxOrSchedule();
+  }
+
+  /** Wait until prior provider work settles, then prove the PostgreSQL deletion fence is observed. */
+  async quiesceMemoryProvider(encodedUserId: string): Promise<void> {
+    await this.#migrationsReady;
+    const userId = await Effect.runPromise(Schema.decodeEffect(UserId)(encodedUserId));
+    await this.#reconcileMemoryProviderOutboxOrSchedule();
+    const canSave = await Effect.runPromise(this.#canSaveProviderConversation(userId));
+    if (canSave) throw new Error("Account deletion has not fenced provider conversation saves");
+    await Effect.runPromise(
+      quiesceProcessingConversations(
+        this.#memoryProviderOutbox,
+        () =>
+          Effect.promise(() =>
+            this.#reconcileMemoryProviderOutboxOrSchedule(accountDeletionProviderPollMilliseconds),
+          ),
+        accountDeletionProviderPollMilliseconds,
+      ).pipe(Effect.timeout(accountDeletionProviderQuiescenceTimeoutMilliseconds)),
+    );
+  }
+
+  #authorizeProviderDeletion(deletionAuthorization: DeletionAuthorization) {
+    return this.#managedActionAuthorization
+      .recheck(
+        deletionAuthorization.authorityIdentity,
+        { actionId: deletionAuthorization.actionId, kind: deletionAuthorization.operation },
+        deletionAuthorization.presentation,
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderDeletionDeferred({
+              cause,
+              message: "Current deletion authority could not be loaded",
+            }),
+        ),
+      );
+  }
+
+  #canSaveProviderConversation(userId: UserId) {
+    const runtime = Option.getOrUndefined(this.#runtime);
+    if (runtime === undefined) {
+      return Effect.fail(
+        new ProviderSaveDeferred({
+          cause: invalidOsfoEnvironment,
+          message: "Current account-deletion state is unavailable",
+        }),
+      );
+    }
+    return Effect.tryPromise({
+      try: () =>
+        runtime.runPromise(
+          Effect.scoped(
+            DeletionCasePostgres.make.pipe(
+              Effect.flatMap((deletionCases) => deletionCases.inspect(userId)),
+              Effect.map((access) => access._tag === "DeletionAccessAvailable"),
+            ),
+          ),
+        ),
+      catch: (cause) =>
+        new ProviderSaveDeferred({
+          cause,
+          message: "Current account-deletion state could not be loaded",
+        }),
+    });
+  }
+
+  #prepareProviderDeletion(claim: ClaimedMemoryProviderWork) {
+    const payload = claim.payload;
+    if (payload._tag === "ForgetKnowledge" && payload.coreMemory !== undefined) {
+      return Effect.tryPromise({
+        try: () => this.#activateCurrentSession(),
+        catch: (cause) =>
+          new ProviderDeletionDeferred({
+            cause,
+            message: "Current Session could not be activated for Core Memory correction",
+          }),
+      }).pipe(
+        Effect.andThen(
+          correctForgottenKnowledge(payload.coreMemory, (replacement) =>
+            replaceCoreMemoryBlock(this.session, replacement),
+          ).pipe(Effect.asVoid),
+        ),
+        Effect.mapError(
+          (cause) =>
+            new ProviderDeletionDeferred({
+              cause,
+              message: "Core Memory correction remains pending",
+            }),
+        ),
+      );
+    }
+    if (payload._tag === "DeleteSessionConversation" && payload.authorization !== undefined) {
+      const deletionAuthorization = payload.authorization;
+      return Effect.promise(() =>
+        this.#deleteSessionLocally(
+          { sessionId: payload.sessionId },
+          deletionAuthorization,
+          payload.userId,
+        ),
+      ).pipe(
+        Effect.flatMap((result) =>
+          Predicate.isTagged(result, "DeletionActionUnavailable")
+            ? Effect.fail(
+                new ProviderDeletionDeferred({
+                  cause: result,
+                  message: "Local Session deletion remains pending",
+                }),
+              )
+            : Effect.void,
+        ),
+      );
+    }
+    return Effect.void;
   }
 
   /** Retry durable model usage that has not reached PostgreSQL Allowances. */
@@ -1421,7 +1879,9 @@ export class OsfoAgent extends Think<Env> {
               if (
                 parsed.decision === "approve" &&
                 (found.presentation.operation === "memory.clear" ||
-                  found.presentation.operation === "file.delete")
+                  found.presentation.operation === "file.delete" ||
+                  found.presentation.operation === "memory.forgetKnowledge" ||
+                  found.presentation.operation === "session.delete")
               ) {
                 this.#currentApprovedActions.set(actionId, {
                   actionPresentation: found.presentation,
@@ -1728,6 +2188,7 @@ export class OsfoAgent extends Think<Env> {
       : CommittedTurnTerminal.make({
           attribution: {
             allowancePeriodId: activeTurn.value.allowancePeriodId,
+            executionMode: activeTurn.value.executionMode ?? "normalPlanUsage",
             sessionId: activeTurn.value.sessionId,
             userId: activeTurn.value.authorityIdentity.userId,
           },
@@ -1752,7 +2213,11 @@ export class OsfoAgent extends Think<Env> {
                     source: "hook",
                     thinkRequestId,
                   },
-                  result.status === "completed"
+                  result.status === "completed" &&
+                    !(
+                      Option.isSome(activeTurn) &&
+                      activeTurn.value.executionMode === "exhaustedConversation"
+                    )
                     ? Option.getOrUndefined(
                         projectCommittedConversationSnapshot(
                           history,
@@ -2015,12 +2480,34 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
-  async #reconcileMemoryProviderOutboxOrSchedule(): Promise<void> {
+  async #reconcileMemoryProviderOutboxOrSchedule(
+    conversationStatusRetryMilliseconds?: number,
+  ): Promise<void> {
+    const reconciliation = this.#memoryProviderReconciliation.then(
+      () => this.#runMemoryProviderReconciliationOrSchedule(conversationStatusRetryMilliseconds),
+      () => this.#runMemoryProviderReconciliationOrSchedule(conversationStatusRetryMilliseconds),
+    );
+    this.#memoryProviderReconciliation = reconciliation;
+    await reconciliation;
+  }
+
+  async #runMemoryProviderReconciliationOrSchedule(
+    conversationStatusRetryMilliseconds?: number,
+  ): Promise<void> {
     const runtime = Option.getOrUndefined(this.#runtime);
     if (runtime !== undefined) {
       try {
+        const baseOptions: ReconciliationOptions = {
+          authorizeDeletion: (deletion) => this.#authorizeProviderDeletion(deletion),
+          canSaveConversation: (userId) => this.#canSaveProviderConversation(userId),
+          prepareDeletion: (claim) => this.#prepareProviderDeletion(claim),
+        };
+        const options =
+          conversationStatusRetryMilliseconds === undefined
+            ? baseOptions
+            : { ...baseOptions, conversationStatusRetryMilliseconds };
         await runtime.runPromise(
-          Effect.scoped(reconcileMemoryProviderOutbox(this.#memoryProviderOutbox)),
+          Effect.scoped(reconcileMemoryProviderOutbox(this.#memoryProviderOutbox, options)),
         );
       } catch (cause) {
         await Effect.runPromise(
@@ -2389,6 +2876,9 @@ const approvalActorAuthorizationUnavailable = (userId: UserId, cause: unknown) =
     userId,
   });
 
+const sessionDeletionFailure = (message: string) => (cause: unknown) =>
+  new DeletionActionUnavailable({ cause, message, operation: "deleteSession" });
+
 const conservativeStepEvidence = (metadata: ManagedTurnMetadata, stepNumber: ModelStepNumber) => {
   const maximum = BigInt(metadata.conservativeVendorUsdMicros);
   return {
@@ -2493,3 +2983,17 @@ const runRpc = <A, E>(effect: Effect.Effect<A, E>): Promise<A | E> =>
       }),
     ),
   );
+
+const currentDbTimestamp = DateTime.now.pipe(
+  Effect.map((time) => Db.DbTimestamp.make(DateTime.toDateUtc(time).toISOString())),
+);
+
+const deletionApprovalUnavailable = (
+  actionId: ActionId,
+  operation: "forgetKnowledge" | "deleteSession",
+) =>
+  new DeletionActionUnavailable({
+    cause: actionId,
+    message: "Current deletion Approval does not match the requested target",
+    operation,
+  });
