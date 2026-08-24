@@ -41,6 +41,7 @@ describe("Capability Catalog", () => {
   it("freezes the shared operation, exhaustion, and Plan-specific resource bounds", () => {
     expect(currentCapabilityCatalog.operationLimits).toMatchObject({
       computeMilliseconds: 60_000,
+      csvInputRows: 100_000,
       generatedDocumentBytes: 5_000_000n,
       generatedDocumentPages: 20,
       generatedImageBytes: 10_000_000n,

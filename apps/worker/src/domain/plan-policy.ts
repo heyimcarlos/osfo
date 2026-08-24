@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 
-import { PlanPolicyVersion } from "../domain";
+import { IncludedPlanUsageMicros, PlanPolicyVersion } from "../domain";
 
 const NonNegativeLimit = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
 
@@ -88,7 +88,7 @@ export type LaunchPlanPolicy = typeof LaunchPlanPolicy.Type;
 
 /** Included noncash Plan Usage owned by one shared-Usage Plan policy. */
 export const SharedUsagePlanRules = Schema.Struct({
-  includedPlanUsageMicros: Schema.BigInt.check(Schema.isGreaterThanBigInt(0n)),
+  includedPlanUsageMicros: IncludedPlanUsageMicros,
 });
 
 /** Included noncash Plan Usage owned by one shared-Usage Plan policy. */

@@ -138,6 +138,23 @@ export const usageEvents = pgTable(
         and ${table.plan_usage_micros} is null
       )`,
     ),
+    check(
+      "usage_events_outcome_check",
+      sql`${table.outcome} in ('completed', 'useful_partial', 'failed', 'cancelled')`,
+    ),
+    check(
+      "usage_events_required_text_check",
+      sql`length(btrim(${table.allowance_period_id})) > 0
+        and length(btrim(${table.capability_catalog_version})) > 0
+        and length(btrim(${table.facts_json})) > 0
+        and (${table.manifest_version} is null or length(btrim(${table.manifest_version})) > 0)
+        and length(btrim(${table.model_access_policy_version})) > 0
+        and length(btrim(${table.root_operation_id})) > 0
+        and length(btrim(${table.source_id})) > 0
+        and length(btrim(${table.source_type})) > 0
+        and length(btrim(${table.usage_policy_version})) > 0
+        and length(btrim(${table.user_id})) > 0`,
+    ),
     foreignKey({
       columns: [table.user_id, table.allowance_period_id],
       foreignColumns: [allowancePeriods.user_id, allowancePeriods.allowance_period_id],
@@ -172,7 +189,24 @@ export const usageEventComponents = pgTable(
       ],
       name: "usage_event_components_pk",
     }),
+    check(
+      "usage_event_components_activity_check",
+      sql`${table.activity} in ('conversationsAndMemory', 'webAndResearch', 'integrations', 'filesAndArtifacts', 'imagesAndDiagrams', 'automations')`,
+    ),
+    check(
+      "usage_event_components_component_kind_check",
+      sql`${table.component_kind} in ('model', 'non_model')`,
+    ),
+    check("usage_event_components_index_check", sql`${table.component_index} >= 0`),
     check("usage_event_components_positive_cost_check", sql`${table.rated_cost_usd_micros} > 0`),
+    check(
+      "usage_event_components_required_text_check",
+      sql`length(btrim(${table.allowance_period_id})) > 0
+        and length(btrim(${table.evidence_json})) > 0
+        and length(btrim(${table.resource_price_version})) > 0
+        and length(btrim(${table.source_id})) > 0
+        and length(btrim(${table.source_type})) > 0`,
+    ),
     foreignKey({
       columns: [table.allowance_period_id, table.source_type, table.source_id],
       foreignColumns: [
@@ -206,6 +240,17 @@ export const usageEventEvidenceReferences = pgTable(
       ],
       name: "usage_event_evidence_references_pk",
     }),
+    check(
+      "usage_event_evidence_references_kind_check",
+      sql`${table.reference_kind} in ('providerLog', 'gatewayLog', 'companyCost', 'operationEvidence')`,
+    ),
+    check(
+      "usage_event_evidence_references_required_text_check",
+      sql`length(btrim(${table.allowance_period_id})) > 0
+        and length(btrim(${table.reference})) > 0
+        and length(btrim(${table.source_id})) > 0
+        and length(btrim(${table.source_type})) > 0`,
+    ),
     foreignKey({
       columns: [table.allowance_period_id, table.source_type, table.source_id],
       foreignColumns: [

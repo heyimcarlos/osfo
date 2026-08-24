@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { describe, expect, it } from "@effect/vitest";
-import { Config, Effect, Exit, Redacted } from "effect";
+import { Config, Data, Effect, Exit, Redacted } from "effect";
 import postgres from "postgres";
 
 import {
@@ -17,6 +17,10 @@ const templateName = `${runPrefix}template`;
 const firstCloneName = `${runPrefix}clone_a`;
 const secondCloneName = `${runPrefix}clone_b`;
 
+class PostgreSqlConstraintRejected extends Data.TaggedError("PostgreSqlConstraintRejected")<{
+  readonly cause: unknown;
+}> {}
+
 describe("PostgreSQL test database control", () => {
   it.effect("refuses to drop a database outside the Osfo test prefix", () =>
     Effect.gen(function* () {
@@ -31,7 +35,7 @@ describe("PostgreSQL test database control", () => {
     }),
   );
 
-  it.effect("clones isolated databases from one migrated template", () =>
+  it.effect("clones isolated migrated databases and preserves ledger constraints", () =>
     Effect.gen(function* () {
       const maintenanceUrl = Redacted.value(yield* Config.redacted("OSFO_TEST_POSTGRES_URL"));
       const cleanup = Effect.promise(() =>
@@ -69,9 +73,50 @@ describe("PostgreSQL test database control", () => {
               () =>
                 client`insert into users (id, name, email) values ('clone-user', 'Clone User', 'clone@example.test')`,
             );
+            yield* Effect.promise(() =>
+              client.unsafe(`
+                insert into billing_subscriptions (
+                  billing_subscription_id, user_id, plan, plan_policy_version
+                ) values ('clone-subscription', 'clone-user', 'free', 'shared-usage-v1');
+                insert into allowance_periods (
+                  allowance_period_id, user_id, billing_subscription_id,
+                  plan, plan_policy_version, starts_at, ends_at
+                ) values (
+                  'clone-period', 'clone-user', 'clone-subscription',
+                  'free', 'shared-usage-v1', '2026-08-01T00:00:00Z', '2026-09-01T00:00:00Z'
+                );
+                insert into usage_events (
+                  allowance_period_id, capability_catalog_version, facts_json,
+                  model_access_policy_version, occurred_at, outcome, plan_usage_micros,
+                  rated_cost_usd_micros, root_operation_id, source_id, source_type,
+                  usage_policy_version, user_id
+                ) values (
+                  'clone-period', 'governed-capabilities-v1', '{}',
+                  'managed-routing-v1', now(), 'completed', 1, 1,
+                  'clone-root', 'clone-source', 'testOperation',
+                  'shared-usage-v1', 'clone-user'
+                )
+              `),
+            );
+
+            const malformedComponent = yield* Effect.tryPromise({
+              try: () =>
+                client.unsafe(`
+                  insert into usage_event_components (
+                    activity, allowance_period_id, component_index, component_kind,
+                    evidence_json, rated_cost_usd_micros, resource_price_version,
+                    source_id, source_type
+                  ) values (
+                    'unknown', 'clone-period', 0, 'model', '{}', 1,
+                    'resource-prices-v1', 'clone-source', 'testOperation'
+                  )
+                `),
+              catch: (cause) => new PostgreSqlConstraintRejected({ cause }),
+            }).pipe(Effect.exit);
 
             expect(identity?.name).toBe(firstCloneName);
             expect(latestMigrationTable?.name).toBe("channel_links");
+            expect(Exit.isFailure(malformedComponent)).toBe(true);
           }),
         );
 

@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import { AllowancePeriodId, Plan, UserId } from "../domain";
+import { AllowancePeriodId, type IncludedPlanUsageMicros, Plan, UserId } from "../domain";
 
 /** Evolving persisted metrics interpreted by their pinned legacy or shared Usage policy. */
 export const AllowanceKind = Schema.Literals([
@@ -128,7 +128,7 @@ export const PlanUsageInspection = Schema.TaggedStruct("PlanUsage", {
 export type PlanUsageInspection = typeof PlanUsageInspection.Type;
 
 /** Canonical percentage presentation for one shared Plan Usage pool. */
-export const presentPlanUsage = (recorded: bigint, included: bigint) => {
+export const presentPlanUsage = (recorded: bigint, included: IncludedPlanUsageMicros) => {
   const remaining = recorded >= included ? 0n : included - recorded;
   const remainingPercent = Number((remaining * 100n) / included);
   return {

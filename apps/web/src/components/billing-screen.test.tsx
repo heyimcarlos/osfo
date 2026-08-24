@@ -40,6 +40,8 @@ describe("BillingScreen", () => {
     expect(html).toContain("Free starts");
     expect(html).toContain("September 16, 2026");
     expect(html).toContain("Manage billing");
+    expect(html).toContain("Personal Osfo Agent");
+    expect(html).not.toContain("All self-serve digital capabilities");
     expect(html).toContain("20% Plan Usage remaining");
     expect(html).toContain("Your Plan Usage is running low");
     expect(html).not.toContain("customer.subscription");

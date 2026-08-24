@@ -202,13 +202,13 @@ export function BillingScreen({
 
 const planFeatures = (plan: BillingSummary["currentPlan"]): ReadonlyArray<string> =>
   plan === "free"
-    ? ["All self-serve digital capabilities", "Light-use Plan Usage", "Private memory"]
+    ? ["Personal Osfo Agent", "WhatsApp messaging", "Private memory"]
     : [
-        "All self-serve digital capabilities",
-        "More Plan Usage and retained storage",
-        "Stronger managed models for complex work",
-        "More active resources and concurrency",
-        "One GM Summon each period",
+        "Personal Osfo Agent",
+        "Expanded message allowance",
+        "Advanced automations",
+        "Priority support",
+        "Custom integrations",
       ];
 
 const paymentMessage = (summary: BillingSummary) => {

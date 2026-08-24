@@ -46,7 +46,7 @@ export const IntegrationManifestCatalog = Schema.Struct({
 export class IntegrationManifestUnavailable extends Schema.TaggedError<IntegrationManifestUnavailable>()(
   "IntegrationManifestUnavailable",
   {
-    manifestVersion: Schema.String,
+    manifestVersion: ManifestVersion,
     operation: Schema.String,
     toolkit: Schema.String,
   },
@@ -142,7 +142,11 @@ export const currentManifestCatalog = Schema.decodeUnknownSync(IntegrationManife
 export const parseManifestCatalog = (input: unknown) =>
   Schema.decodeUnknownResult(IntegrationManifestCatalog)(input, { onExcessProperty: "error" });
 
-export const resolveManifest = (toolkit: string, operation: string, manifestVersion: string) => {
+export const resolveManifest = (
+  toolkit: string,
+  operation: string,
+  manifestVersion: ManifestVersion,
+) => {
   const manifest = currentManifestCatalog.manifests.find(
     (candidate) =>
       candidate.toolkit === toolkit &&

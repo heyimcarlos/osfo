@@ -184,6 +184,14 @@ export const PlanPolicyVersion = Schema.String.pipe(Schema.brand("PlanPolicyVers
 /** Version identity persisted for one retained legacy or shared Usage policy. */
 export type PlanPolicyVersion = typeof PlanPolicyVersion.Type;
 
+/** Positive included Plan Usage pool owned by one shared policy. */
+export const IncludedPlanUsageMicros = Schema.BigInt.check(Schema.isGreaterThanBigInt(0n)).pipe(
+  Schema.brand("IncludedPlanUsageMicros"),
+);
+
+/** Positive included Plan Usage pool owned by one shared policy. */
+export type IncludedPlanUsageMicros = typeof IncludedPlanUsageMicros.Type;
+
 /** Immutable provider price authority used to reproduce Rated Cost. */
 export const ResourcePriceVersion = Schema.String.check(Schema.isMinLength(1)).pipe(
   Schema.brand("ResourcePriceVersion"),

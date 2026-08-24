@@ -4,6 +4,7 @@ import {
   AllowancePeriodId,
   type CapabilityCatalogVersion,
   ChannelLinkId,
+  type ManifestVersion,
   Plan,
   PlanPolicyVersion,
   UserId,
@@ -51,12 +52,20 @@ export const OriginatingAuthority = Schema.Union([
   }),
 ]);
 
+/** Nonempty immutable User-visible presentation retained with one Approval. */
+export const ApprovalPresentation = Schema.String.check(Schema.isMinLength(1)).pipe(
+  Schema.brand("ApprovalPresentation"),
+);
+
+/** Branded presentation that cannot be constructed from an empty string. */
+export type ApprovalPresentation = typeof ApprovalPresentation.Type;
+
 /** Exact User, operation, and Action approved for one protected effect. */
 export const Approval = Schema.Struct({
   actionId: Schema.String,
   operation: AuthorizationOperationName,
   operationIdentity: Schema.String.check(Schema.isMinLength(1)),
-  presentation: Schema.String.check(Schema.isMinLength(1)),
+  presentation: ApprovalPresentation,
   userId: UserId,
 });
 
@@ -64,12 +73,12 @@ export const Approval = Schema.Struct({
 export const approvalFor = (
   userId: UserId,
   operation: AuthorizationOperation,
-  presentation: string,
+  presentation: ApprovalPresentation,
 ) =>
   Approval.make({
     actionId: operation.actionId,
     operation: operation.kind,
-    operationIdentity: operationIdentity(operation),
+    operationIdentity: approvalIdentity(operation, presentation),
     presentation,
     userId,
   });
@@ -237,7 +246,7 @@ export type Admitted = {
     | "exhaustedConversation"
     | "normalPlanUsage"
     | "unmeteredContinuity";
-  readonly manifestVersion: string | null;
+  readonly manifestVersion: ManifestVersion | null;
   readonly allowancePeriod:
     | { readonly _tag: "Unmetered" }
     | { readonly _tag: "Metered"; readonly allowancePeriodId: AllowancePeriodId };
@@ -528,7 +537,7 @@ const authorizeShared = (
 const admitted = (
   capabilityCatalog: CapabilityCatalog,
   executionMode: Admitted["executionMode"],
-  manifestVersion: string | null = null,
+  manifestVersion: ManifestVersion | null = null,
 ): Admitted => ({
   _tag: "Admitted",
   allowancePeriod: { _tag: "Unmetered" },
@@ -899,12 +908,17 @@ const hasExactApproval = (context: AuthorizationContext, operation: Authorizatio
   context.approval.userId === context.user.userId &&
   context.approval.operation === operation.kind &&
   context.approval.actionId === operation.actionId &&
-  context.approval.operationIdentity === operationIdentity(operation);
+  context.approval.operationIdentity === approvalIdentity(operation, context.approval.presentation);
 
 const encodeAuthorizationOperation = Schema.encodeSync(AuthorizationOperation);
 
 const operationIdentity = (operation: AuthorizationOperation): string =>
   JSON.stringify(encodeAuthorizationOperation(operation));
+
+const approvalIdentity = (
+  operation: AuthorizationOperation,
+  presentation: ApprovalPresentation,
+): string => JSON.stringify({ operation: operationIdentity(operation), presentation });
 
 const isUnmetered = (operation: AuthorizationOperation) => {
   switch (operation.kind) {

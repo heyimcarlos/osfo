@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 
+import { ManifestVersion } from "../domain";
 import { ArtifactKind, SkillChange } from "./capability-catalog";
 
 const nonNegative = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
@@ -147,7 +148,7 @@ export const AuthorizationOperation = Schema.Union([
     attachments: nonNegative,
     deadlineMilliseconds: positive,
     kind: Schema.Literal("integration.read"),
-    manifestVersion: nonEmptyString,
+    manifestVersion: ManifestVersion,
     pagination: nonNegative,
     providerExecutions: positive,
     providerOperation: nonEmptyString,
@@ -159,7 +160,7 @@ export const AuthorizationOperation = Schema.Union([
   Schema.Struct({
     actionId: Schema.String,
     kind: Schema.Literal("integration.effect"),
-    manifestVersion: nonEmptyString,
+    manifestVersion: ManifestVersion,
     providerOperation: nonEmptyString,
     toolkit: nonEmptyString,
   }),

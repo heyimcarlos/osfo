@@ -83,6 +83,7 @@ export type SkillChange = typeof SkillChange.Type;
 export const GovernedOperationLimits = Schema.Struct({
   computeInputBytes: positiveBytes,
   computeMilliseconds: positiveInteger,
+  csvInputRows: positiveInteger,
   equivalentFallbackCandidatesPerModelStep: positiveInteger,
   filesPerUpload: positiveInteger,
   generatedDocumentBytes: positiveBytes,
@@ -268,6 +269,7 @@ const governedCapabilitiesV1 = {
   operationLimits: {
     computeInputBytes: 25_000_000n,
     computeMilliseconds: 60_000,
+    csvInputRows: 100_000,
     equivalentFallbackCandidatesPerModelStep: 1,
     filesPerUpload: 1,
     generatedDocumentBytes: 5_000_000n,

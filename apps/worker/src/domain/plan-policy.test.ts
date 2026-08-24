@@ -1,12 +1,16 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
-import { PlanPolicyVersion } from "../domain";
+import { IncludedPlanUsageMicros, PlanPolicyVersion } from "../domain";
 import { parseCatalog, policyForVersion, retainedCatalog } from "./plan-policy";
 
 /* oxlint-disable eslint/no-underscore-dangle, vitest/no-standalone-expect -- Assertions execute inside @effect/vitest Effect callbacks and inspect tagged failures. */
 
 describe("Plan policy catalog", () => {
+  it("rejects a zero included Plan Usage pool", () => {
+    expect(Schema.is(IncludedPlanUsageMicros)(0n)).toBe(false);
+  });
+
   it.effect("retains launch-v1 as current until the shared Usage activation gates pass", () =>
     Effect.gen(function* () {
       expect(retainedCatalog.currentVersion).toBe("launch-v1");

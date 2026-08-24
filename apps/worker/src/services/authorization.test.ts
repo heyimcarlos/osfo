@@ -1,9 +1,15 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { AllowancePeriodId, PlanPolicyVersion, UserId } from "../domain";
+import { AllowancePeriodId, ManifestVersion, PlanPolicyVersion, UserId } from "../domain";
 import { AuthSessionId } from "../domain/auth-session";
 import { retainedCatalog } from "../domain/plan-policy";
-import { approvalFor, make, type AuthorizationContext } from "./authorization";
+import {
+  Approval,
+  approvalFor,
+  ApprovalPresentation,
+  make,
+  type AuthorizationContext,
+} from "./authorization";
 
 /* oxlint-disable effecttsgo/global-date -- Fixed authority and period fixtures prove policy boundaries. */
 
@@ -173,7 +179,7 @@ describe("governed Authorization", () => {
       attachments: 0n,
       deadlineMilliseconds: 10_000n,
       kind: "integration.read",
-      manifestVersion: "gmail-v1",
+      manifestVersion: ManifestVersion.make("gmail-v1"),
       pagination: 0n,
       providerExecutions: 1n,
       providerOperation: "GMAIL_FETCH_THREAD",
@@ -221,7 +227,7 @@ describe("governed Authorization", () => {
     const send = {
       actionId: "send-email",
       kind: "integration.effect",
-      manifestVersion: "gmail-v1",
+      manifestVersion: ManifestVersion.make("gmail-v1"),
       providerOperation: "GMAIL_SEND_EMAIL",
       toolkit: "gmail",
     } as const;
@@ -236,15 +242,27 @@ describe("governed Authorization", () => {
       actionId: "send-email",
       operation: "integration.effect",
     });
+    const exactApproval = approvalFor(
+      userId,
+      send,
+      ApprovalPresentation.make("Send the presented email to its exact recipients"),
+    );
+    expect(authorization.admit({ ...connected, approval: exactApproval }, send)).toMatchObject({
+      _tag: "Admitted",
+      manifestVersion: "gmail-v1",
+    });
     expect(
       authorization.admit(
         {
           ...connected,
-          approval: approvalFor(userId, send, "Send the presented email to its exact recipients"),
+          approval: Approval.make({
+            ...exactApproval,
+            presentation: ApprovalPresentation.make("Send a different presentation"),
+          }),
         },
         send,
       ),
-    ).toMatchObject({ _tag: "Admitted", manifestVersion: "gmail-v1" });
+    ).toMatchObject({ _tag: "ApprovalRequired" });
 
     expect(
       authorization.admit(
@@ -252,7 +270,11 @@ describe("governed Authorization", () => {
           ...connected,
           gmailConnection: { _tag: "Connected", toolkit: "googlecalendar", userId },
           integrationConnections: [{ _tag: "Connected", toolkit: "googlecalendar", userId }],
-          approval: approvalFor(userId, send, "Send the presented email to its exact recipients"),
+          approval: approvalFor(
+            userId,
+            send,
+            ApprovalPresentation.make("Send the presented email to its exact recipients"),
+          ),
         },
         {
           ...send,

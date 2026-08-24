@@ -80,7 +80,7 @@ it.effect("records final Usage Events idempotently without charging failed or ca
   ),
 );
 
-it.effect("serializes the declared Adventurer concurrency overshoot and retains every event", () =>
+it.effect("admits three concurrent Adventurer operations and retains every completed event", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
@@ -98,11 +98,17 @@ it.effect("serializes the declared Adventurer concurrency overshoot and retains 
       );
       yield* billing.recordUsageEvent(initial);
 
-      const before = yield* billing.admit(userId, new Date(period.startsAt.getTime() + 1_000));
-      expect(before.usage).toContainEqual({
-        allowanceKind: "planUsageMicros",
-        quantity: 5_999_999n,
-      });
+      const admissions = yield* Effect.all(
+        [1, 2, 3].map(() => billing.admit(userId, new Date(period.startsAt.getTime() + 1_000))),
+        { concurrency: "unbounded" },
+      );
+      expect(admissions).toHaveLength(3);
+      for (const admission of admissions) {
+        expect(admission.usage).toContainEqual({
+          allowanceKind: "planUsageMicros",
+          quantity: 5_999_999n,
+        });
+      }
 
       const concurrentlyAdmitted = [1, 2, 3].map((index) =>
         usageEvent(
