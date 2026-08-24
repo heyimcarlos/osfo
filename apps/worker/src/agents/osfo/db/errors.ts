@@ -20,6 +20,11 @@ export const AgentStoreOperation = Schema.Literals([
   "replaceCurrentSession",
   "recordCommittedTurn",
   "readCommittedTurns",
+  "claimMemoryProviderOutbox",
+  "completeMemoryProviderOutbox",
+  "enqueueMemoryProviderOutbox",
+  "inspectMemoryProviderOutbox",
+  "retryMemoryProviderOutbox",
 ]);
 
 /** Agent SQLite operations exposed by the typed store seam. */

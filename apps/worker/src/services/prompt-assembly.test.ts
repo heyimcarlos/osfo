@@ -387,11 +387,11 @@ const memoryLayerWithRecall = (recall: MemoryProvider.Interface["recall"]) =>
   Layer.succeed(
     MemoryProvider.Service,
     MemoryProvider.Service.of({
-      appendConversationDelta: () => Effect.die(new Error("unexpected append")),
       deleteSessionConversation: () => Effect.die(new Error("unexpected Session delete")),
       deleteUserKnowledge: () => Effect.die(new Error("unexpected User delete")),
       forgetKnowledge: () => Effect.die(new Error("unexpected forget")),
       recall,
+      saveConversation: () => Effect.die(new Error("unexpected conversation save")),
     }),
   );
 
