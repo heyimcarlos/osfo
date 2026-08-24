@@ -40,12 +40,20 @@ export type PresentAction = (
   pending: PendingThinkAction,
 ) => Effect.Effect<ActionPresentation, ActionPresentationUnavailable>;
 
+/** Durable first-write-wins storage for one immutable Action presentation. */
+export interface ActionPresentationPersistence {
+  readonly retain: (
+    candidate: ActionPresentation,
+  ) => Effect.Effect<ActionPresentation, ThinkApprovalUnavailable>;
+}
+
 /** Apply Osfo authority and sequencing around Think's sole Approval lifecycle. */
 export const makeActionApprovals = (options: {
   readonly authorizer: ApprovalActorAuthorizer;
   readonly lifecycle: ActionApprovalLifecycle;
   readonly now: Effect.Effect<Date>;
   readonly present: PresentAction;
+  readonly presentations: ActionPresentationPersistence;
 }) => {
   const authorize = (actor: ApprovalActor, presentationId: ActionPresentationId) =>
     Effect.gen(function* () {
@@ -62,6 +70,7 @@ export const makeActionApprovals = (options: {
     authorize(actor, presentationId).pipe(
       Effect.andThen(options.lifecycle.findPending(presentationId)),
       Effect.flatMap(options.present),
+      Effect.flatMap(options.presentations.retain),
       Effect.map((presentation) => ActionPresentationFound.make({ presentation })),
     );
 

@@ -2,12 +2,14 @@ import { Effect, Schema } from "effect";
 
 import { ActionId } from "../../domain/action-execution";
 import { ContentId } from "../../domain/client-content";
+import type { ActionPresentationPersistence } from "../../services/action-approvals";
 import { ApprovalPresentation } from "../../services/authorization";
 import { ClearCoreMemoryInput, coreMemoryLabelFor } from "./core-memory";
 import {
   ActionPresentation,
   ActionPresentationId,
   ActionPresentationUnavailable,
+  ThinkApprovalUnavailable,
   type PendingThinkAction,
 } from "./think-action-approvals";
 
@@ -39,6 +41,33 @@ export const presentOsfoAction = (
 };
 
 const encodeActionPresentation = Schema.encodeSync(ActionPresentation);
+
+/** Retain the first User-visible presentation for one persisted pending Action. */
+export const makeActionPresentationPersistence = (
+  storage: DurableObjectStorage,
+): ActionPresentationPersistence => ({
+  retain: (candidate) =>
+    Effect.tryPromise({
+      try: () =>
+        // oxlint-disable-next-line effecttsgo/async-function -- Durable Object transactions own their Promise callback boundary.
+        storage.transaction(async (transaction) => {
+          const key = actionPresentationStorageKey(candidate.presentationId);
+          const retained = await transaction.get(key);
+          if (retained !== undefined) return retained;
+          const encoded = encodeActionPresentation(candidate);
+          await transaction.put(key, encoded);
+          return encoded;
+        }),
+      catch: (cause) => actionPresentationPersistenceUnavailable("retain", cause),
+    }).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(ActionPresentation)),
+      Effect.mapError((cause) =>
+        Schema.is(ThinkApprovalUnavailable)(cause)
+          ? cause
+          : actionPresentationPersistenceUnavailable("decode", cause),
+      ),
+    ),
+});
 
 /** Canonical identity of the exact structured presentation approved by the User. */
 export const approvalPresentationFor = (presentation: ActionPresentation): ApprovalPresentation =>
@@ -114,3 +143,13 @@ const presentDocumentDeleteAction = (
       }),
     ),
   );
+
+const actionPresentationStorageKey = (presentationId: ActionPresentationId) =>
+  `osfo:action-presentation:${presentationId}`;
+
+const actionPresentationPersistenceUnavailable = (operation: string, cause: unknown) =>
+  new ThinkApprovalUnavailable({
+    cause,
+    message: "The retained Action presentation is unavailable",
+    operation: `actionPresentation.${operation}`,
+  });

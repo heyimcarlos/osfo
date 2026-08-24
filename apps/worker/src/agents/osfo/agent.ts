@@ -206,7 +206,11 @@ import {
   RetainedDocumentInput,
   sanitizePendingApproval,
 } from "./action-registry";
-import { approvalPresentationFor, hasExactActionInput } from "./action-presentation";
+import {
+  approvalPresentationFor,
+  hasExactActionInput,
+  makeActionPresentationPersistence,
+} from "./action-presentation";
 import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-authorization";
 import { makeAgentSessionLifecycle } from "./session-lifecycle";
 import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
@@ -422,6 +426,7 @@ export class OsfoAgent extends Think<Env> {
     }),
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
     present: presentOsfoAction,
+    presentations: makeActionPresentationPersistence(this.ctx.storage),
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
   readonly #memoryProviderOutbox = makeMemoryProviderOutboxStore(this.#db);
