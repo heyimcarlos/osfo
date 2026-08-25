@@ -228,9 +228,11 @@ const providerLayer = (result: () => "deleted" | "unavailable", calls: Array<str
               }),
             );
       },
+      findSessionConversation: () => Effect.die(new Error("unexpected Session discovery")),
       forgetKnowledge: () => Effect.die(new Error("unexpected forgetting")),
       getConversationStatus: () => Effect.die(new Error("unexpected status read")),
       recall: () => Effect.die(new Error("unexpected recall")),
       saveConversation: () => Effect.die(new Error("unexpected conversation save")),
+      verifySessionConversation: () => Effect.die(new Error("unexpected Session verification")),
     }),
   );

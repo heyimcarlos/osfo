@@ -1,5 +1,6 @@
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
 /* oxlint-disable effecttsgo/strict-effect-provide -- Each it.effect is the entry point for its isolated service Layers. */
+/* oxlint-disable eslint/no-underscore-dangle -- Assertions inspect canonical tagged outcomes. */
 import { expect, it } from "@effect/vitest";
 import { BrowserCrypto } from "@effect/platform-browser";
 import { Effect, Option } from "effect";
@@ -18,6 +19,7 @@ import { ApprovalPresentation } from "../../services/authorization";
 import { MemoryProvider } from "../../services/memory-provider";
 import type {
   ClaimedMemoryProviderWork,
+  MemoryProviderDeletionProgress,
   MemoryProviderOutboxPayload,
   MemoryProviderOutboxStore,
 } from "./db/memory-provider-outbox";
@@ -26,6 +28,8 @@ import {
   quiesceProcessingConversations,
   reconcileMemoryProviderOutbox,
 } from "./memory-provider-reconciliation";
+
+const documentId = MemoryProvider.ProviderDocumentId.make("document-1");
 
 it.effect("retries a rejected deletion until the provider confirms it", () => {
   const claim = authorizedDeletionClaim();
@@ -49,7 +53,14 @@ it.effect("retries a rejected deletion until the provider confirms it", () => {
     Effect.provide(BrowserCrypto.layer),
     Effect.andThen(
       Effect.sync(() => {
-        expect(observed).toEqual([claim.payload]);
+        expect(observed).toEqual([
+          {
+            _tag: "DeleteSessionConversation",
+            documentId,
+            sessionId: "session-1",
+            userId: "user-1",
+          },
+        ]);
         expect(failed).toEqual([]);
         expect(retried).toEqual([claim.outboxId]);
         expect(completed).toEqual([]);
@@ -130,7 +141,14 @@ it.effect("completes deletion work only after provider confirmation", () => {
     Effect.provide(BrowserCrypto.layer),
     Effect.andThen(
       Effect.sync(() => {
-        expect(observed).toEqual([claim.payload]);
+        expect(observed).toEqual([
+          {
+            _tag: "DeleteSessionConversation",
+            documentId,
+            sessionId: "session-1",
+            userId: "user-1",
+          },
+        ]);
         expect(completed).toEqual([claim.outboxId]);
         expect(retried).toEqual([]);
       }),
@@ -165,8 +183,164 @@ it.effect("rechecks retained Approval around idempotent local deletion preparati
     Effect.provide(BrowserCrypto.layer),
     Effect.andThen(
       Effect.sync(() => {
-        expect(events).toEqual(["authorize", "local", "authorize", "provider"]);
+        expect(events).toEqual([
+          "authorize",
+          "local",
+          "authorize",
+          "authorize",
+          "authorize",
+          "authorize",
+          "provider",
+        ]);
         expect(completed).toEqual([claim.outboxId]);
+      }),
+    ),
+  );
+});
+
+it.effect("persists each forgotten memory before rechecking authority for the next target", () => {
+  const claim = authorizedForgetKnowledgeClaim();
+  const events: Array<string> = [];
+  let checks = 0;
+  const { deletionProgress, completed, retried, store } = testStore(claim);
+  const provider = providerStub({
+    forgetKnowledge: ({ memoryId }) =>
+      Effect.sync(() => {
+        events.push(`forget:${memoryId}`);
+        return { _tag: "Deleted" as const };
+      }),
+  });
+
+  return Effect.scoped(
+    reconcileMemoryProviderOutbox(store, {
+      authorizeDeletion: () =>
+        Effect.sync(() => {
+          checks += 1;
+          events.push(`authorize:${checks}`);
+          return checks < 4
+            ? ({ _tag: "Permitted" } as const)
+            : ({ _tag: "Denied", reason: "authorityRevoked", resetAt: null } as const);
+        }),
+      prepareDeletion: () => Effect.void,
+    }),
+  ).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(events).toEqual([
+          "authorize:1",
+          "authorize:2",
+          "authorize:3",
+          "forget:memory-1",
+          "authorize:4",
+        ]);
+        expect(deletionProgress).toEqual([
+          { _tag: "ForgetKnowledge", completedMemoryIds: ["memory-1"] },
+        ]);
+        expect(retried).toEqual([claim.outboxId]);
+        expect(completed).toEqual([]);
+      }),
+    ),
+  );
+});
+
+it.effect("rechecks authority between Session discovery and ownership verification", () => {
+  const claim = authorizedDeletionClaim();
+  const events: Array<string> = [];
+  let checks = 0;
+  const { deletionProgress, completed, retried, store } = testStore(claim);
+  const provider = providerStub({
+    findSessionConversation: () =>
+      Effect.sync(() => {
+        events.push("list");
+        return { _tag: "Found" as const, documentId };
+      }),
+    verifySessionConversation: () => Effect.die(new Error("Stale authority reached GET")),
+  });
+
+  return Effect.scoped(
+    reconcileMemoryProviderOutbox(store, {
+      authorizeDeletion: () =>
+        Effect.sync(() => {
+          checks += 1;
+          events.push(`authorize:${checks}`);
+          return checks < 4
+            ? ({ _tag: "Permitted" } as const)
+            : ({ _tag: "Denied", reason: "authorityRevoked", resetAt: null } as const);
+        }),
+      prepareDeletion: () => Effect.void,
+    }),
+  ).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(events).toEqual([
+          "authorize:1",
+          "authorize:2",
+          "authorize:3",
+          "list",
+          "authorize:4",
+        ]);
+        expect(deletionProgress).toEqual([{ _tag: "DeleteSessionConversation", documentId }]);
+        expect(retried).toEqual([claim.outboxId]);
+        expect(completed).toEqual([]);
+      }),
+    ),
+  );
+});
+
+it.effect("rechecks authority between Session ownership verification and deletion", () => {
+  const claim = authorizedDeletionClaim();
+  const events: Array<string> = [];
+  let checks = 0;
+  const { completed, retried, store } = testStore(claim);
+  const provider = providerStub({
+    findSessionConversation: () =>
+      Effect.sync(() => {
+        events.push("list");
+        return { _tag: "Found" as const, documentId };
+      }),
+    verifySessionConversation: () =>
+      Effect.sync(() => {
+        events.push("get");
+        return { _tag: "Verified" as const };
+      }),
+    deleteSessionConversation: () => Effect.die(new Error("Stale authority reached DELETE")),
+  });
+
+  return Effect.scoped(
+    reconcileMemoryProviderOutbox(store, {
+      authorizeDeletion: () =>
+        Effect.sync(() => {
+          checks += 1;
+          events.push(`authorize:${checks}`);
+          return checks < 5
+            ? ({ _tag: "Permitted" } as const)
+            : ({ _tag: "Denied", reason: "authorityRevoked", resetAt: null } as const);
+        }),
+      prepareDeletion: () => Effect.void,
+    }),
+  ).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(events).toEqual([
+          "authorize:1",
+          "authorize:2",
+          "authorize:3",
+          "list",
+          "authorize:4",
+          "get",
+          "authorize:5",
+        ]);
+        expect(retried).toEqual([claim.outboxId]);
+        expect(completed).toEqual([]);
       }),
     ),
   );
@@ -515,6 +689,28 @@ const authorizedDeletionClaim = (): ClaimedMemoryProviderWork => ({
   },
 });
 
+const authorizedForgetKnowledgeClaim = (): ClaimedMemoryProviderWork => {
+  const authorization = authorizedDeletionClaim().payload;
+  if (
+    authorization._tag !== "DeleteSessionConversation" ||
+    authorization.authorization === undefined
+  )
+    throw new Error("Invalid fixture");
+  return {
+    ...authorizedDeletionClaim(),
+    outboxId: MemoryProviderOutboxId.make("deletion:forget-1"),
+    payload: {
+      _tag: "ForgetKnowledge",
+      authorization: authorization.authorization,
+      memoryIds: [
+        MemoryProvider.KnowledgeMemoryId.make("memory-1"),
+        MemoryProvider.KnowledgeMemoryId.make("memory-2"),
+      ],
+      userId: UserId.make("user-1"),
+    },
+  };
+};
+
 const conversationClaim = (): ClaimedMemoryProviderWork => ({
   allowancePeriodId: AllowancePeriodId.make("allowance-1"),
   attemptCount: 1,
@@ -557,6 +753,7 @@ const testStore = (
   const completed: Array<MemoryProviderOutboxId> = [];
   const retried: Array<MemoryProviderOutboxId> = [];
   const awaited: Array<MemoryProvider.ConversationProcessingStatus> = [];
+  const deletionProgress: Array<MemoryProviderDeletionProgress> = [];
   let available = true;
   const store = {
     awaitProvider: (
@@ -598,6 +795,11 @@ const testStore = (
     markProviderAccepted: () => Effect.succeed(options.providerAccepted ?? true),
     markProviderStatus: () => Effect.succeed(true),
     readRecentTurnBridge: () => Effect.succeed([]),
+    recordDeletionProgress: (_work, progress) =>
+      Effect.sync(() => {
+        deletionProgress.push(progress);
+        return true;
+      }),
     retry: (work: ClaimedMemoryProviderWork) =>
       Effect.sync(() => {
         retried.push(work.outboxId);
@@ -605,7 +807,7 @@ const testStore = (
       }),
     requireConfiguration: () => Effect.succeed(options.configurationCurrent ?? true),
   } satisfies MemoryProviderOutboxStore;
-  return { awaited, completed, failed, retried, store };
+  return { awaited, completed, deletionProgress, failed, retried, store };
 };
 
 const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvider.Interface => ({
@@ -617,10 +819,16 @@ const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvi
   configureUserGuidance: () => Effect.die(new Error("Unexpected User guidance configuration")),
   deleteSessionConversation: () => Effect.die(new Error("Unexpected Session deletion")),
   deleteUserKnowledge: () => Effect.die(new Error("Unexpected User deletion")),
+  findSessionConversation: () =>
+    Effect.succeed({
+      _tag: "Found",
+      documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+    }),
   forgetKnowledge: () => Effect.die(new Error("Unexpected forget")),
   getConversationStatus: () => Effect.die(new Error("Unexpected conversation status read")),
   recall: () => Effect.die(new Error("Unexpected recall")),
   saveConversation: () => Effect.die(new Error("Unexpected conversation save")),
+  verifySessionConversation: () => Effect.succeed({ _tag: "Verified" }),
   ...overrides,
 });
 

@@ -16,6 +16,7 @@ it.effect("corrects Core Memory while preserving the source Session transcript",
       { block: "userContext", content: "Corrected preference" },
       { block: "agentNotes", content: "" },
     ],
+    Effect.void,
     (replacement) =>
       Effect.sync(() => {
         coreMemory[replacement.block] = replacement.content;
@@ -29,6 +30,41 @@ it.effect("corrects Core Memory while preserving the source Session transcript",
           userContext: "Corrected preference",
         });
         expect(transcript).toEqual(["User: My old preference", "Osfo: I will remember that"]);
+      }),
+    ),
+  );
+});
+
+it.effect("rechecks authority immediately before every Core Memory replacement", () => {
+  const coreMemory = {
+    agentNotes: "Old note",
+    userContext: "Old preference",
+  };
+  let checks = 0;
+
+  return correctForgottenKnowledge(
+    [
+      { block: "userContext", content: "Corrected preference" },
+      { block: "agentNotes", content: "" },
+    ],
+    Effect.suspend(() => {
+      checks += 1;
+      return checks === 1 ? Effect.void : Effect.fail("authority changed" as const);
+    }),
+    (replacement) =>
+      Effect.sync(() => {
+        coreMemory[replacement.block] = replacement.content;
+      }),
+  ).pipe(
+    Effect.flip,
+    Effect.tap((failure) =>
+      Effect.sync(() => {
+        expect(failure).toBe("authority changed");
+        expect(checks).toBe(2);
+        expect(coreMemory).toEqual({
+          agentNotes: "Old note",
+          userContext: "Corrected preference",
+        });
       }),
     ),
   );

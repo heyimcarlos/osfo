@@ -520,10 +520,12 @@ const memoryLayerWithRecall = (recall: MemoryProvider.Interface["recall"]) =>
       configureUserGuidance: () => Effect.die(new Error("unexpected User configuration")),
       deleteSessionConversation: () => Effect.die(new Error("unexpected Session delete")),
       deleteUserKnowledge: () => Effect.die(new Error("unexpected User delete")),
+      findSessionConversation: () => Effect.die(new Error("unexpected Session discovery")),
       forgetKnowledge: () => Effect.die(new Error("unexpected forget")),
       getConversationStatus: () => Effect.die(new Error("unexpected conversation status read")),
       recall,
       saveConversation: () => Effect.die(new Error("unexpected conversation save")),
+      verifySessionConversation: () => Effect.die(new Error("unexpected Session verification")),
     }),
   );
 

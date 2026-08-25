@@ -133,10 +133,10 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
   }
 
   /** Fence new provider appends and wait for already-started provider work. */
-  async quiesceAgentMemoryProvider(agentId: string, userId: string): Promise<void> {
+  async quiesceAgentAccountDeletion(agentId: string, userId: string): Promise<void> {
     if (!this.hasSubAgent(OsfoAgent, agentId)) return;
     const agent = await this.subAgent(OsfoAgent, agentId);
-    await agent.quiesceMemoryProvider(userId);
+    await agent.quiesceAccountDeletion(userId);
   }
 
   #resolveMessengerAddress = Effect.fn("OsfoDirectory.resolveMessengerAddress")(

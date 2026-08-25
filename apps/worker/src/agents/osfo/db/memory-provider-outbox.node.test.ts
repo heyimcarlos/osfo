@@ -67,7 +67,7 @@ it("includes every generated Agent migration in the runtime manifest", () => {
 it.effect("activates an Agent that slept before the conversation processing migration", () =>
   withEmptyDatabase(({ database, storage }) =>
     Effect.gen(function* () {
-      const previousMigrations = agentMigrations.slice(0, -2);
+      const previousMigrations = agentMigrations.filter(({ version }) => version <= 8);
       yield* applyMigrationChain(asDurableObjectStorage(storage), previousMigrations);
       database
         .prepare(
@@ -105,7 +105,7 @@ it.effect("activates an Agent that slept before the conversation processing migr
 
       const result = yield* applyAgentMigrations(asDurableObjectStorage(storage));
 
-      expect(result).toEqual({ appliedVersions: [9, 10], currentVersion: 10 });
+      expect(result).toEqual({ appliedVersions: [9, 10, 11], currentVersion: 11 });
       expect(
         database
           .prepare(
@@ -368,6 +368,32 @@ it.effect("does not advance a Session until its prior operation completes", () =
       yield* outbox.complete(Option.getOrThrow(first), now);
       const second = yield* outbox.claimNext(now, liveLease, "claim-second");
       expect(Option.getOrThrow(second).outboxId).toBe("delete-second");
+    }),
+  ),
+);
+
+it.effect("retains per-target deletion progress across claim retry and Agent restart", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const outbox = makeMemoryProviderOutboxStore(db);
+      yield* outbox.enqueueDeletion(forgetKnowledgeDeletion("forget-1"));
+      const claimed = Option.getOrThrow(yield* outbox.claimNext(now, liveLease, "claim-1"));
+
+      expect(
+        yield* outbox.recordDeletionProgress(claimed, {
+          _tag: "ForgetKnowledge",
+          completedMemoryIds: [MemoryProvider.KnowledgeMemoryId.make("memory-1")],
+        }),
+      ).toBe(true);
+      expect(yield* outbox.retry(claimed, past, "authority changed")).toBe(true);
+
+      const restarted = makeMemoryProviderOutboxStore(db);
+      const resumed = Option.getOrThrow(yield* restarted.claimNext(now, extendedLease, "claim-2"));
+      expect(resumed.deletionProgress).toEqual({
+        _tag: "ForgetKnowledge",
+        completedMemoryIds: ["memory-1"],
+      });
     }),
   ),
 );
@@ -1293,6 +1319,32 @@ const authorizedDeletion = (
   };
 };
 
+const forgetKnowledgeDeletion = (outboxId: string) => {
+  const userId = UserId.make("user-1");
+  return {
+    enqueuedAt: now,
+    outboxId: MemoryProviderOutboxId.make(outboxId),
+    payload: {
+      _tag: "ForgetKnowledge" as const,
+      authorization: {
+        actionId: ActionId.make(outboxId),
+        authorityIdentity: {
+          _tag: "AuthSession" as const,
+          authSessionId: AuthSessionId.make("auth-user-1"),
+          userId,
+        },
+        operation: "memory.forgetKnowledge" as const,
+        presentation: ApprovalPresentation.make("Forget memory-1 and memory-2"),
+      },
+      memoryIds: [
+        MemoryProvider.KnowledgeMemoryId.make("memory-1"),
+        MemoryProvider.KnowledgeMemoryId.make("memory-2"),
+      ] as const,
+      userId,
+    },
+  };
+};
+
 const permittedDeletionOptions = {
   authorizeDeletion: () => Effect.succeed({ _tag: "Permitted" as const }),
   prepareDeletion: () => Effect.void,
@@ -1304,10 +1356,16 @@ const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvi
   configureUserGuidance: () => Effect.void,
   deleteSessionConversation: () => Effect.die(new Error("Unexpected Session deletion")),
   deleteUserKnowledge: () => Effect.die(new Error("Unexpected User deletion")),
+  findSessionConversation: () =>
+    Effect.succeed({
+      _tag: "Found",
+      documentId: MemoryProvider.ProviderDocumentId.make("document-1"),
+    }),
   forgetKnowledge: () => Effect.die(new Error("Unexpected forget")),
   getConversationStatus: () => Effect.die(new Error("Unexpected conversation status read")),
   recall: () => Effect.die(new Error("Unexpected recall")),
   saveConversation: () => Effect.die(new Error("Unexpected conversation save")),
+  verifySessionConversation: () => Effect.succeed({ _tag: "Verified" }),
   ...overrides,
 });
 

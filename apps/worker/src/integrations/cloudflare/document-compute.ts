@@ -4,10 +4,12 @@ import { Clock, Effect, Random, Schema } from "effect";
 import type { ContentId } from "../../domain/client-content";
 import { AllowancePeriodId, UserId } from "../../domain";
 import { DocumentArtifact } from "../../domain/document-artifact";
+import type { Denied } from "../../services/authorization";
 import {
   DocumentSource,
   DocumentCleanupUnavailable,
   DocumentComputeInterrupted,
+  type DocumentAuthorizationUnavailable,
   DocumentIntentDigest,
   DocumentIntentConflict,
   type CostEvidence,
@@ -135,6 +137,8 @@ export const makeWithSandbox = (
   generate: (input) =>
     Effect.gen(function* () {
       const clock = yield* Clock.Clock;
+      const context = yield* Effect.context();
+      const runPromise = Effect.runPromiseWith(context);
       const [high, low] = yield* Effect.all([Random.next, Random.next]);
       return yield* Effect.promise(() =>
         render(
@@ -142,6 +146,12 @@ export const makeWithSandbox = (
           attempts,
           conservativeVendorUsdMicros,
           input,
+          () =>
+            runPromise(
+              input.authorizeWrite.pipe(
+                Effect.match({ onFailure: (failure) => failure, onSuccess: () => null }),
+              ),
+            ),
           `cloudflare-sandbox:${input.contentId}:${high.toString(16)}${low.toString(16)}`,
           () => clock.currentTimeMillisUnsafe(),
           deadlines,
@@ -186,6 +196,7 @@ const render = async (
     readonly source: DocumentSource;
     readonly userId: UserId;
   },
+  authorizeWrite: () => Promise<Denied | DocumentAuthorizationUnavailable | null>,
   attemptOperationId: string,
   currentTimeMillis: () => number,
   deadlines: Deadlines,
@@ -196,6 +207,14 @@ const render = async (
   let durableAttemptClaimed = false;
   let providerUsePossible = false;
   try {
+    const claimAuthorizationFailure = await authorizeWrite();
+    if (claimAuthorizationFailure !== null) {
+      return {
+        _tag: "AuthorizationFailure",
+        cost: { _tag: "ProvenNoUse" },
+        failure: claimAuthorizationFailure,
+      };
+    }
     const proposedCost = incurred(
       input.allowancePeriodId,
       providerOperationId,
@@ -233,6 +252,10 @@ const render = async (
           cost,
           evidence: "Another caller owns the durable Sandbox execution transition",
         };
+      }
+      const startAuthorizationFailure = await authorizeWrite();
+      if (startAuthorizationFailure !== null) {
+        return { _tag: "AuthorizationFailure", cost, failure: startAuthorizationFailure };
       }
       const started = await attempts.start(
         input.contentId,
@@ -282,6 +305,10 @@ const render = async (
         return interrupted(cost, `The document renderer exited with code ${result.exitCode}`);
       }
       renderedPageCount = decodeRenderedPageCount(result.stdout);
+      const completionAuthorizationFailure = await authorizeWrite();
+      if (completionAuthorizationFailure !== null) {
+        return { _tag: "AuthorizationFailure", cost, failure: completionAuthorizationFailure };
+      }
       await withDeadline(
         attempts.complete(input.contentId, {
           ...claimed.evidence,

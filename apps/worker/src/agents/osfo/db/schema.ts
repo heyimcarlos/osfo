@@ -86,6 +86,7 @@ export const memoryProviderOutbox = sqliteTable(
     claim_expires_at: timestamp(),
     claim_token: text(),
     completed_at: timestamp(),
+    deletion_progress_json: text(),
     enqueued_at: timestamp().notNull(),
     last_error: text(),
     operation_type: text({

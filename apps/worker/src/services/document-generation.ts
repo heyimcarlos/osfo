@@ -58,6 +58,11 @@ export type CostEvidence =
 /** Closed result from one safely repeatable disposable compute attempt. */
 export type ComputeResult =
   | {
+      readonly _tag: "AuthorizationFailure";
+      readonly cost: CostEvidence;
+      readonly failure: Denied | DocumentAuthorizationUnavailable;
+    }
+  | {
       readonly _tag: "AttemptPending";
       readonly cost: CostEvidence;
       readonly evidence: string;
@@ -234,6 +239,7 @@ export interface DisposableCompute {
     readonly contentId: ContentId;
     readonly format: DocumentArtifact.DocumentFormat;
     readonly intentDigest: DocumentIntentDigest;
+    readonly authorizeWrite: Effect.Effect<void, Denied | DocumentAuthorizationUnavailable>;
     readonly source: DocumentSource;
     readonly userId: UserId;
   }) => Effect.Effect<ComputeResult>;
@@ -357,6 +363,12 @@ export const make = (options: MakeOptions): Interface => ({
         pages: BigInt(request.source.pages.length),
         researchSearches: 0n,
       };
+      const authorizeWrite = Effect.gen(function* () {
+        const currentAuthorization = yield* options.currentAuthorization(request.authorization);
+        const permitted = options.authorization.recheck(currentAuthorization, operation);
+        if (Predicate.isTagged(permitted, "Denied")) return yield* Effect.fail(permitted);
+        return undefined;
+      });
       const existing = yield* options.artifacts.inspect(contentId);
       if (existing !== null) {
         if (
@@ -373,10 +385,8 @@ export const make = (options: MakeOptions): Interface => ({
         // A pending immutable body may only become readable after idempotent allowance
         // evidence is complete. This recovery does not start new provider work.
         yield* recordEvidence(options.allowances, existing);
+        yield* authorizeWrite;
         yield* options.artifacts.account(contentId);
-        const currentAuthorization = yield* options.currentAuthorization(request.authorization);
-        const permitted = options.authorization.recheck(currentAuthorization, operation);
-        if (Predicate.isTagged(permitted, "Denied")) return yield* Effect.fail(permitted);
         yield* options.compute.dispose(contentId);
         return existing.artifact;
       }
@@ -408,13 +418,12 @@ export const make = (options: MakeOptions): Interface => ({
         admittedAllowancePeriodId = recovery.cost.allowancePeriodId;
       }
 
-      const currentAuthorization = yield* options.currentAuthorization(request.authorization);
-      const permitted = options.authorization.recheck(currentAuthorization, operation);
-      if (Predicate.isTagged(permitted, "Denied")) return yield* Effect.fail(permitted);
+      yield* authorizeWrite;
       let cleanupRequired = true;
       return yield* Effect.gen(function* () {
         const computed = yield* options.compute.generate({
           allowancePeriodId: admittedAllowancePeriodId,
+          authorizeWrite,
           contentId,
           format: request.format,
           intentDigest,
@@ -422,6 +431,10 @@ export const make = (options: MakeOptions): Interface => ({
           userId,
         });
         const recordComputedCost = recordCost(options.allowances, computed.cost);
+        if (Predicate.isTagged(computed, "AuthorizationFailure")) {
+          yield* recordComputedCost;
+          return yield* Effect.fail(computed.failure);
+        }
         if (Predicate.isTagged(computed, "AttemptPending")) {
           cleanupRequired = false;
           yield* recordComputedCost;
@@ -499,9 +512,11 @@ export const make = (options: MakeOptions): Interface => ({
           retention: "pending",
           userId,
         };
+        yield* authorizeWrite;
         yield* options.artifacts.put(retained);
         yield* recordComputedCost;
         yield* recordDocument(options.allowances, retained);
+        yield* authorizeWrite;
         yield* options.artifacts.account(contentId);
         return artifact;
       }).pipe(

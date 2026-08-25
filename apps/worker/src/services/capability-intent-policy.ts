@@ -41,10 +41,16 @@ const matchesClosedIntent =
     patterns.some((pattern) => pattern.test(normalizeIntentText(task)));
 
 /** Exact launch-only intent that keeps destructive and data-rights help reachable after exhaustion. */
-export const isDeletionOrDataRightsIntent = matchesClosedIntent(
-  /^(can you |could you |how do i |i need to |i want to |please )?(delete|erase|remove) (my |the |this )?(account|conversation|conversation history|current session|data|memory|session)$/,
-  /^(can you |could you |how do i |i need to |i want to |please )?(exercise|request) (my )?(data rights|privacy rights)$/,
-);
+export const isDeletionOrDataRightsIntent: CapabilityIntentPredicate = (task) => {
+  const normalized = normalizeIntentText(task).replace(
+    /^(?:(?:like|okay|ok|so|um|uh|well|yeah) )+/,
+    "",
+  );
+  return [
+    /^(?:(?:can|could|would|will) you (?:please )?(?:just )?|how do i |i (?:need|want|would like) (?:you )?to |please (?:just )?|just )?(?:clear|delete|erase|forget|remove|wipe) (?:all (?:of )?)?(?:(?:my|the|this|that) )?(?:account|chat history|conversation|conversation history|current session|data|memories|memory|session)(?:(?: for me| now| permanently| please))*$/,
+    /^(?:(?:can|could|would|will) you (?:please )?|how do i |i (?:need|want|would like) to |please )?(?:exercise|request) (?:my )?(?:data rights|privacy rights)(?:(?: now| please))*$/,
+  ].some((pattern) => pattern.test(normalized));
+};
 
 export const capabilityIntentPolicy = {
   conversation: { matches: () => true, taskKinds: ["conversation"] },

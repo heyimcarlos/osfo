@@ -126,8 +126,8 @@ const adaptBindings = (env: CloudflareEnv): Bindings => ({
         initializeAgent: async (agentId, input) =>
           Schema.decodePromise(AgentRpcTag)(await directory.initializeAgent(agentId, input)),
         deleteAgent: (agentId) => directory.deleteAgent(agentId),
-        quiesceAgentMemoryProvider: (agentId, userId) =>
-          directory.quiesceAgentMemoryProvider(agentId, userId),
+        quiesceAgentAccountDeletion: (agentId, userId) =>
+          directory.quiesceAgentAccountDeletion(agentId, userId),
       };
     },
   },

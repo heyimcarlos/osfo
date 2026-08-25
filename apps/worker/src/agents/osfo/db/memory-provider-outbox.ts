@@ -56,6 +56,16 @@ export const MemoryProviderDeletionPayload = Schema.Union([
 ]);
 export type MemoryProviderDeletionPayload = typeof MemoryProviderDeletionPayload.Type;
 
+export const MemoryProviderDeletionProgress = Schema.Union([
+  Schema.TaggedStruct("ForgetKnowledge", {
+    completedMemoryIds: Schema.Array(MemoryProvider.KnowledgeMemoryId),
+  }),
+  Schema.TaggedStruct("DeleteSessionConversation", {
+    documentId: MemoryProvider.ProviderDocumentId,
+  }),
+]);
+export type MemoryProviderDeletionProgress = typeof MemoryProviderDeletionProgress.Type;
+
 export interface EnqueueMemoryProviderDeletion {
   readonly enqueuedAt: DbTimestamp;
   readonly outboxId: MemoryProviderOutboxId;
@@ -105,6 +115,7 @@ export interface ClaimedMemoryProviderWork {
   readonly allowancePeriodId: AllowancePeriodId | null;
   readonly attemptCount: number;
   readonly claimToken: string;
+  readonly deletionProgress?: MemoryProviderDeletionProgress | null;
   readonly outboxId: MemoryProviderOutboxId;
   readonly payload: MemoryProviderOutboxPayload;
   readonly providerAcceptance: AcceptedConversationDocument | null;
@@ -435,6 +446,13 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
       updateClaim("completeMemoryProviderOutbox", claim, { provider_status: status }),
   );
 
+  const recordDeletionProgress = Effect.fn("MemoryProviderOutbox.recordDeletionProgress")(
+    (claim: ClaimedMemoryProviderWork, progress: MemoryProviderDeletionProgress) =>
+      updateClaim("completeMemoryProviderOutbox", claim, {
+        deletion_progress_json: encodeDeletionProgress(progress),
+      }),
+  );
+
   const failProviderAcceptance = Effect.fn("MemoryProviderOutbox.failProviderAcceptance")(
     (
       claim: ClaimedMemoryProviderWork,
@@ -600,6 +618,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     awaitProvider,
     markProviderAccepted,
     markProviderStatus,
+    recordDeletionProgress,
     readRecentTurnBridge,
     requireConfiguration,
     retry,
@@ -678,6 +697,12 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
   const payload = yield* Schema.decodeEffect(Schema.fromJsonString(MemoryProviderOutboxPayload))(
     row.payload_json,
   ).pipe(Effect.mapError(() => invalidRecord()));
+  const deletionProgress =
+    row.deletion_progress_json === null
+      ? null
+      : yield* decodeDeletionProgress(row.deletion_progress_json).pipe(
+          Effect.mapError(() => invalidRecord()),
+        );
   const usage =
     row.usage_json === null
       ? null
@@ -705,6 +730,20 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
     return yield* invalidRecord();
   }
   if (
+    (deletionProgress !== null && deletionProgress._tag !== payload._tag) ||
+    (deletionProgress !== null && payload._tag === "SaveConversation") ||
+    (deletionProgress !== null && payload._tag === "DeleteUserKnowledge") ||
+    (deletionProgress?._tag === "ForgetKnowledge" &&
+      payload._tag === "ForgetKnowledge" &&
+      (new Set(deletionProgress.completedMemoryIds).size !==
+        deletionProgress.completedMemoryIds.length ||
+        deletionProgress.completedMemoryIds.some(
+          (memoryId) => !payload.memoryIds.includes(memoryId),
+        )))
+  ) {
+    return yield* invalidRecord();
+  }
+  if (
     payload._tag === "SaveConversation" &&
     (row.operation_type !== "saveConversation" ||
       row.allowance_period_id !== payload.projection.allowancePeriodId)
@@ -726,6 +765,7 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
     allowancePeriodId: row.allowance_period_id,
     attemptCount: row.attempt_count,
     claimToken: row.claim_token,
+    deletionProgress,
     outboxId,
     payload,
     providerAcceptance:
@@ -738,6 +778,12 @@ const decodeClaim = Effect.fn("MemoryProviderOutbox.decodeClaim")(function* (
 });
 
 const encodeUsage = Schema.encodeSync(Schema.fromJsonString(StoredUsageEvidence));
+const encodeDeletionProgress = Schema.encodeSync(
+  Schema.fromJsonString(MemoryProviderDeletionProgress),
+);
+
+const decodeDeletionProgress = (json: string) =>
+  Schema.decodeEffect(Schema.fromJsonString(MemoryProviderDeletionProgress))(json);
 
 const decodeUsage = (json: string) =>
   Schema.decodeEffect(Schema.fromJsonString(StoredUsageEvidence))(json).pipe(

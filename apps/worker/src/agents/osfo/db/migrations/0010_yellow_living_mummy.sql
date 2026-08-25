@@ -1,0 +1,1 @@
+ALTER TABLE `osfo_memory_provider_outbox` ADD `deletion_progress_json` text;

@@ -46,7 +46,7 @@ export interface PortInterface {
     candidate: PendingAccountDeletion,
   ) => Effect.Effect<CurrentAuthorizationFacts | null, AccountDeletionUnavailable>;
   readonly agents: {
-    /** Fence new provider appends and wait for any provider append already in flight. */
+    /** Fence ordinary Agent/R2 work and drain provider activity before object deletion. */
     readonly quiesce: (
       agentId: AgentId,
       userId: UserId,

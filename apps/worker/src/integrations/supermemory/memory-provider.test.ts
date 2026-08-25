@@ -14,6 +14,46 @@ import { MemoryProvider } from "../../services/memory-provider";
 import { PromptAssembly } from "../../services/prompt-assembly";
 import { SupermemoryMemoryProvider } from "./memory-provider";
 
+const forgetKnowledge = (
+  memory: MemoryProvider.Interface,
+  input: {
+    readonly memoryIds: readonly [
+      MemoryProvider.KnowledgeMemoryId,
+      ...ReadonlyArray<MemoryProvider.KnowledgeMemoryId>,
+    ];
+    readonly userId: UserId;
+  },
+) =>
+  Effect.forEach(input.memoryIds, (memoryId) =>
+    memory.forgetKnowledge({ memoryId, userId: input.userId }),
+  ).pipe(
+    Effect.map((results) =>
+      results.some((result) => result._tag === "Deleted")
+        ? ({ _tag: "Deleted" } as const)
+        : ({ _tag: "AlreadyAbsent" } as const),
+    ),
+  );
+
+const deleteSessionConversation = (
+  memory: MemoryProvider.Interface,
+  input: MemoryProvider.FindSessionConversationInput,
+) =>
+  memory.findSessionConversation(input).pipe(
+    Effect.flatMap((discovered) => {
+      if (discovered._tag === "AlreadyAbsent") return Effect.succeed(discovered);
+      const target = { ...input, documentId: discovered.documentId };
+      return memory
+        .verifySessionConversation(target)
+        .pipe(
+          Effect.flatMap((verified) =>
+            verified._tag === "AlreadyAbsent"
+              ? Effect.succeed(verified)
+              : memory.deleteSessionConversation(target),
+          ),
+        );
+    }),
+  );
+
 it.effect("recalls User-scoped profile and relevant Knowledge Base evidence", () =>
   withProvider(({ requests, origin, respondWith }) =>
     Effect.gen(function* () {
@@ -525,7 +565,7 @@ it.effect("forgets only exact approved memory IDs within the User scope", () =>
         { body: { forgotten: true, id: "memory-2" }, status: 200 },
       );
       const memory = yield* MemoryProvider.Service;
-      const result = yield* memory.forgetKnowledge({
+      const result = yield* forgetKnowledge(memory, {
         memoryIds: [
           MemoryProvider.KnowledgeMemoryId.make("memory-1"),
           MemoryProvider.KnowledgeMemoryId.make("memory-2"),
@@ -593,7 +633,7 @@ it.effect("deletes one Session conversation by its stable provider identity", ()
         { status: 204 },
       );
       const memory = yield* MemoryProvider.Service;
-      const result = yield* memory.deleteSessionConversation({
+      const result = yield* deleteSessionConversation(memory, {
         sessionId: SessionId.make("session:with/provider-invalid characters"),
         userId: UserId.make("user:with/provider-invalid characters"),
       });
@@ -665,12 +705,10 @@ it.effect("keeps a processing conflict retryable when deleting a Session convers
         { body: { error: "Document is still processing" }, status: 409 },
       );
       const memory = yield* MemoryProvider.Service;
-      const failure = yield* memory
-        .deleteSessionConversation({
-          sessionId: SessionId.make("session-1"),
-          userId: UserId.make("user-1"),
-        })
-        .pipe(Effect.flip);
+      const failure = yield* deleteSessionConversation(memory, {
+        sessionId: SessionId.make("session-1"),
+        userId: UserId.make("user-1"),
+      }).pipe(Effect.flip);
 
       expect(failure).toMatchObject({
         _tag: "MemoryProviderRejected",
@@ -692,7 +730,7 @@ it.effect("keeps a colliding Session document in another User container", () =>
         status: 200,
       });
       const memory = yield* MemoryProvider.Service;
-      const result = yield* memory.deleteSessionConversation({
+      const result = yield* deleteSessionConversation(memory, {
         sessionId: SessionId.make("session-1"),
         userId: UserId.make("user-1"),
       });
@@ -731,12 +769,10 @@ it.effect("refuses a Session document shared with another User container", () =>
         status: 200,
       });
       const memory = yield* MemoryProvider.Service;
-      const failure = yield* memory
-        .deleteSessionConversation({
-          sessionId: SessionId.make("session-1"),
-          userId: UserId.make("user-1"),
-        })
-        .pipe(Effect.flip);
+      const failure = yield* deleteSessionConversation(memory, {
+        sessionId: SessionId.make("session-1"),
+        userId: UserId.make("user-1"),
+      }).pipe(Effect.flip);
 
       expect(failure).toMatchObject({
         _tag: "MemoryProviderUnavailable",
@@ -776,12 +812,10 @@ it.effect("refuses deletion when Session document ownership changes after lookup
         },
       );
       const memory = yield* MemoryProvider.Service;
-      const failure = yield* memory
-        .deleteSessionConversation({
-          sessionId: SessionId.make("session-1"),
-          userId: UserId.make("user-1"),
-        })
-        .pipe(Effect.flip);
+      const failure = yield* deleteSessionConversation(memory, {
+        sessionId: SessionId.make("session-1"),
+        userId: UserId.make("user-1"),
+      }).pipe(Effect.flip);
 
       expect(failure).toMatchObject({
         _tag: "MemoryProviderUnavailable",
@@ -849,11 +883,11 @@ it.effect("normalizes only deletion-specific absence responses", () =>
         { body: { error: "Container not found" }, status: 404 },
       );
       const memory = yield* MemoryProvider.Service;
-      const forgotten = yield* memory.forgetKnowledge({
+      const forgotten = yield* forgetKnowledge(memory, {
         memoryIds: [MemoryProvider.KnowledgeMemoryId.make("memory-1")],
         userId: UserId.make("user-1"),
       });
-      const session = yield* memory.deleteSessionConversation({
+      const session = yield* deleteSessionConversation(memory, {
         sessionId: SessionId.make("session-1"),
         userId: UserId.make("user-1"),
       });

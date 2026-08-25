@@ -11,7 +11,7 @@ import { AccountDeletion } from "../services/account-deletion";
 
 interface DirectoryDeletionStub {
   readonly deleteAgent: (agentId: string) => Promise<void>;
-  readonly quiesceAgentMemoryProvider: (agentId: string, userId: string) => Promise<void>;
+  readonly quiesceAgentAccountDeletion: (agentId: string, userId: string) => Promise<void>;
 }
 
 /** Concrete bindings used by the broader account-deletion flow. */
@@ -33,7 +33,7 @@ const makePort = (bindings: Bindings) =>
         quiesce: (agentId: AgentId, userId) =>
           Effect.tryPromise({
             try: () =>
-              bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).quiesceAgentMemoryProvider(
+              bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).quiesceAgentAccountDeletion(
                 agentId,
                 userId,
               ),
@@ -41,7 +41,7 @@ const makePort = (bindings: Bindings) =>
               new AccountDeletion.AccountDeletionUnavailable({
                 cause,
                 message: "Agent provider activity could not be quiesced",
-                operation: "quiesceAgentMemoryProvider",
+                operation: "quiesceAgentAccountDeletion",
               }),
           }),
         remove: (agentId: AgentId) =>

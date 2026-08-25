@@ -1,4 +1,4 @@
-import { Crypto, DateTime, Effect, Option, Predicate, Result, Schema } from "effect";
+import { Crypto, DateTime, Effect, Option, Predicate, Result, Schedule, Schema } from "effect";
 
 import { Db } from "../../db";
 import { MemoryProvider } from "../../services/memory-provider";
@@ -48,12 +48,17 @@ export const quiesceProcessingConversations = Effect.fn(
   reconcile: () => Effect.Effect<void>,
   pollMilliseconds: number,
 ) {
-  while (yield* store.hasProcessingConversationWork) {
+  const poll = Effect.gen(function* () {
+    if (!(yield* store.hasProcessingConversationWork)) return false;
     const now = yield* DateTime.now;
     yield* store.expediteProcessingConversationWork(toDbTimestamp(now));
     yield* reconcile();
-    if (yield* store.hasProcessingConversationWork) yield* Effect.sleep(pollMilliseconds);
-  }
+    return yield* store.hasProcessingConversationWork;
+  });
+  yield* Effect.repeat(poll, {
+    schedule: Schedule.spaced(pollMilliseconds),
+    while: (processing) => processing,
+  });
 });
 
 /** Reconcile a bounded batch of ordered provider work outside Agent SQLite transactions. */
@@ -97,14 +102,133 @@ const processClaim = Effect.fn("MemoryProviderOutbox.processClaim")(function* (
 
   const prepared = yield* prepareDeletionClaim(store, claim, options);
   if (!prepared) return undefined;
-  const providerResult = yield* executeDeletionClaim(claim).pipe(Effect.result);
-  if (Result.isFailure(providerResult)) {
-    return yield* retryClaim(store, claim, providerResult.failure.message, retryDelaySeconds);
-  }
+  const deleted = yield* processDeletionClaim(store, claim, options);
+  if (!deleted) return undefined;
   const completedAt = yield* DateTime.now;
   yield* store.complete(claim, toDbTimestamp(completedAt));
   return undefined;
 });
+
+const processDeletionClaim = Effect.fn("MemoryProviderOutbox.processDeletionClaim")(function* (
+  store: MemoryProviderOutboxStore,
+  claim: ClaimedMemoryProviderWork,
+  options: ReconciliationOptions,
+) {
+  const provider = yield* MemoryProvider.Service;
+  const payload = claim.payload;
+  if (payload._tag === "ForgetKnowledge" && payload.authorization !== undefined) {
+    const completed = new Set(
+      claim.deletionProgress?._tag === "ForgetKnowledge"
+        ? claim.deletionProgress.completedMemoryIds
+        : [],
+    );
+    for (const memoryId of payload.memoryIds) {
+      if (completed.has(memoryId)) continue;
+      const permitted = yield* authorizeProviderRequest(
+        store,
+        claim,
+        options,
+        payload.authorization,
+        "Knowledge deletion authority changed before the next provider memory",
+      );
+      if (!permitted) return false;
+      const result = yield* provider
+        .forgetKnowledge({ memoryId, userId: payload.userId })
+        .pipe(Effect.result);
+      if (Result.isFailure(result)) {
+        yield* retryClaim(store, claim, result.failure.message, retryDelaySeconds);
+        return false;
+      }
+      completed.add(memoryId);
+      const retained = yield* store.recordDeletionProgress(claim, {
+        _tag: "ForgetKnowledge",
+        completedMemoryIds: [...completed],
+      });
+      if (!retained) return false;
+    }
+    return true;
+  }
+  if (payload._tag === "DeleteSessionConversation" && payload.authorization !== undefined) {
+    let documentId =
+      claim.deletionProgress?._tag === "DeleteSessionConversation"
+        ? claim.deletionProgress.documentId
+        : undefined;
+    if (documentId === undefined) {
+      const permitted = yield* authorizeProviderRequest(
+        store,
+        claim,
+        options,
+        payload.authorization,
+        "Session deletion authority changed before provider discovery",
+      );
+      if (!permitted) return false;
+      const discovered = yield* provider.findSessionConversation(payload).pipe(Effect.result);
+      if (Result.isFailure(discovered)) {
+        yield* retryClaim(store, claim, discovered.failure.message, retryDelaySeconds);
+        return false;
+      }
+      if (discovered.success._tag === "AlreadyAbsent") return true;
+      documentId = discovered.success.documentId;
+      const retained = yield* store.recordDeletionProgress(claim, {
+        _tag: "DeleteSessionConversation",
+        documentId,
+      });
+      if (!retained) return false;
+    }
+    const target = { documentId, sessionId: payload.sessionId, userId: payload.userId };
+    const canVerify = yield* authorizeProviderRequest(
+      store,
+      claim,
+      options,
+      payload.authorization,
+      "Session deletion authority changed before provider ownership verification",
+    );
+    if (!canVerify) return false;
+    const verified = yield* provider.verifySessionConversation(target).pipe(Effect.result);
+    if (Result.isFailure(verified)) {
+      yield* retryClaim(store, claim, verified.failure.message, retryDelaySeconds);
+      return false;
+    }
+    if (verified.success._tag === "AlreadyAbsent") return true;
+    const canDelete = yield* authorizeProviderRequest(
+      store,
+      claim,
+      options,
+      payload.authorization,
+      "Session deletion authority changed before provider deletion",
+    );
+    if (!canDelete) return false;
+    const deleted = yield* provider.deleteSessionConversation(target).pipe(Effect.result);
+    if (Result.isFailure(deleted)) {
+      yield* retryClaim(store, claim, deleted.failure.message, retryDelaySeconds);
+      return false;
+    }
+    return true;
+  }
+  return yield* Effect.die(new Error("Unsupported MemoryProvider deletion operation"));
+});
+
+const authorizeProviderRequest = Effect.fn("MemoryProviderOutbox.authorizeProviderRequest")(
+  function* (
+    store: MemoryProviderOutboxStore,
+    claim: ClaimedMemoryProviderWork,
+    options: ReconciliationOptions,
+    authorization: DeletionAuthorization,
+    message: string,
+  ) {
+    const authorize = options.authorizeDeletion;
+    if (authorize === undefined) {
+      yield* retryClaim(store, claim, message, retryDelaySeconds);
+      return false;
+    }
+    const result = yield* authorize(authorization).pipe(Effect.result);
+    if (Result.isSuccess(result) && !Predicate.isTagged(result.success, "Denied")) {
+      return true;
+    }
+    yield* retryClaim(store, claim, message, retryDelaySeconds);
+    return false;
+  },
+);
 
 const prepareDeletionClaim = Effect.fn("MemoryProviderOutbox.prepareDeletionClaim")(function* (
   store: MemoryProviderOutboxStore,
@@ -334,24 +458,6 @@ const ensureConfiguration = Effect.fn("MemoryProviderOutbox.ensureConfiguration"
   }
   const configuredAt = yield* DateTime.now;
   return yield* store.completeConfiguration(scope, version, toDbTimestamp(configuredAt));
-});
-
-const executeDeletionClaim = Effect.fn("MemoryProviderOutbox.executeDeletionClaim")(function* (
-  claim: ClaimedMemoryProviderWork,
-) {
-  const provider = yield* MemoryProvider.Service;
-  const payload = claim.payload;
-  switch (payload._tag) {
-    case "SaveConversation":
-      return yield* Effect.die(new Error("Deletion processing received conversation work"));
-    case "DeleteSessionConversation":
-      return yield* provider.deleteSessionConversation(payload);
-    case "DeleteUserKnowledge":
-      return yield* provider.deleteUserKnowledge(payload);
-    case "ForgetKnowledge":
-      return yield* provider.forgetKnowledge(payload);
-  }
-  return yield* Effect.die(new Error("Unsupported MemoryProvider outbox operation"));
 });
 
 const settleProviderFailure = Effect.fn("MemoryProviderOutbox.settleProviderFailure")(function* (

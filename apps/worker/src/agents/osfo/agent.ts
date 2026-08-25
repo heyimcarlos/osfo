@@ -241,6 +241,7 @@ import {
   makeActionPresentationPersistence,
 } from "./action-presentation";
 import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-authorization";
+import { makeAccountDeletionFence } from "./account-deletion-fence";
 import { makeAgentSessionLifecycle } from "./session-lifecycle";
 import { deleteLocalSession } from "./session-deletion";
 import { correctForgottenKnowledge } from "./knowledge-deletion";
@@ -446,6 +447,7 @@ export class OsfoAgent extends Think<Env> {
   override classifyChatError = defaultContextOverflowClassifier;
 
   readonly #db = makeAgentDb(this.ctx.storage);
+  readonly #accountDeletionFence = makeAccountDeletionFence();
   readonly #fileStore = makeFileStore(this.#db);
   readonly #files = makeFiles<
     FileCapabilityUnavailable,
@@ -1576,8 +1578,34 @@ export class OsfoAgent extends Think<Env> {
     if (Predicate.isTagged(enqueued, "DeletionActionUnavailable")) return enqueued;
     this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
     await this.#activateCurrentSession();
+    const authorizeReplacement = Effect.tryPromise({
+      try: () => {
+        const latest = this.#currentApprovedActions.get(actionId);
+        return this.#recheckDeletionAction(
+          actionId,
+          "memory.forgetKnowledge",
+          latest?.presentation === deletionAuthorization.presentation &&
+            latest !== undefined &&
+            hasExactForgetKnowledgeInput(latest.actionPresentation, input),
+          "forgetKnowledge",
+        );
+      },
+      catch: (cause) =>
+        new DeletionActionUnavailable({
+          cause,
+          message: "Knowledge forgetting authority could not be loaded",
+          operation: "forgetKnowledge",
+        }),
+    }).pipe(
+      Effect.flatMap((result) =>
+        Predicate.isTagged(result, "DeletionActionUnavailable") ||
+        Predicate.isTagged(result, "Denied")
+          ? Effect.fail(result)
+          : Effect.void,
+      ),
+    );
     const corrected = await runRpc(
-      correctForgottenKnowledge(input.coreMemory, (replacement) =>
+      correctForgottenKnowledge(input.coreMemory, authorizeReplacement, (replacement) =>
         replaceCoreMemoryBlock(this.session, replacement),
       ).pipe(
         Effect.mapError(
@@ -1664,7 +1692,11 @@ export class OsfoAgent extends Think<Env> {
     if (Predicate.isTagged(enqueued, "DeletionActionUnavailable")) return enqueued;
     this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
     const deleted = await this.#deleteSessionLocally(input, deletionAuthorization, owner);
-    if (Predicate.isTagged(deleted, "DeletionActionUnavailable")) return deleted;
+    if (
+      Predicate.isTagged(deleted, "DeletionActionUnavailable") ||
+      Predicate.isTagged(deleted, "Denied")
+    )
+      return deleted;
     return { _tag: "SessionDeletionPending", sessionId: input.sessionId } as const;
   }
 
@@ -1685,9 +1717,9 @@ export class OsfoAgent extends Think<Env> {
             catch: sessionDeletionFailure("The replacement Session could not be activated"),
           }),
           authorizeDeletion: Effect.tryPromise({
-            try: async () => {
+            try: () => {
               const current = this.#currentApprovedActions.get(deletionAuthorization.actionId);
-              const result = await this.#recheckDeletionAction(
+              return this.#recheckDeletionAction(
                 deletionAuthorization.actionId,
                 "session.delete",
                 current?.presentation === deletionAuthorization.presentation &&
@@ -1695,17 +1727,16 @@ export class OsfoAgent extends Think<Env> {
                   hasExactSessionDeleteInput(current.actionPresentation, input),
                 "deleteSession",
               );
-              if (
-                Predicate.isTagged(result, "DeletionActionUnavailable") ||
-                Predicate.isTagged(result, "Denied")
-              ) {
-                throw result;
-              }
             },
-            catch: sessionDeletionFailure(
-              "Session deletion authority changed before local history deletion",
+            catch: sessionDeletionFailure("Session deletion authority could not be loaded"),
+          }).pipe(
+            Effect.flatMap((result) =>
+              Predicate.isTagged(result, "DeletionActionUnavailable") ||
+              Predicate.isTagged(result, "Denied")
+                ? Effect.fail(result)
+                : Effect.void,
             ),
-          }),
+          ),
           clearMessages: (sessionId) =>
             Effect.tryPromise({
               try: () => Session.create(this).forSession(sessionId).clearMessages(),
@@ -1897,10 +1928,23 @@ export class OsfoAgent extends Think<Env> {
     await this.#reconcileMemoryProviderOutboxOrSchedule();
   }
 
-  /** Wait until prior provider work settles, then prove the PostgreSQL deletion fence is observed. */
-  async quiesceMemoryProvider(encodedUserId: string): Promise<void> {
+  /** Fence ordinary Agent/R2 work, then drain provider activity for account deletion. */
+  async quiesceAccountDeletion(encodedUserId: string): Promise<void> {
     await this.#migrationsReady;
     const userId = await Effect.runPromise(Schema.decodeEffect(UserId)(encodedUserId));
+    await runRpc(
+      this.#sessionExecution.run(
+        Effect.tryPromise({
+          try: () => this.#cancelActiveSubmissionsForAccountDeletion(),
+          catch: (cause) =>
+            new ThinkSubmissionUnavailable({
+              cause,
+              message: "Ordinary Agent executions could not be cancelled for account deletion",
+              operation: "quiesceAccountDeletion",
+            }),
+        }).pipe(Effect.andThen(this.#accountDeletionFence.close)),
+      ),
+    );
     await this.#reconcileMemoryProviderOutboxOrSchedule();
     const canSave = await Effect.runPromise(this.#canSaveProviderConversation(userId));
     if (canSave) throw new Error("Account deletion has not fenced provider conversation saves");
@@ -1914,6 +1958,17 @@ export class OsfoAgent extends Think<Env> {
         accountDeletionProviderPollMilliseconds,
       ).pipe(Effect.timeout(accountDeletionProviderQuiescenceTimeoutMilliseconds)),
     );
+  }
+
+  async #cancelActiveSubmissionsForAccountDeletion() {
+    const active = await this.listSubmissions({ limit: 100, status: ["pending", "running"] });
+    if (active.length === 0) return;
+    await Promise.all(
+      active.map(({ submissionId }) =>
+        this.cancelSubmission(submissionId, "Account deletion fenced ordinary Agent execution"),
+      ),
+    );
+    await this.#cancelActiveSubmissionsForAccountDeletion();
   }
 
   #authorizeProviderDeletion(deletionAuthorization: DeletionAuthorization) {
@@ -1964,7 +2019,11 @@ export class OsfoAgent extends Think<Env> {
 
   #prepareProviderDeletion(claim: ClaimedMemoryProviderWork) {
     const payload = claim.payload;
-    if (payload._tag === "ForgetKnowledge" && payload.coreMemory !== undefined) {
+    if (
+      payload._tag === "ForgetKnowledge" &&
+      payload.authorization !== undefined &&
+      payload.coreMemory !== undefined
+    ) {
       return Effect.tryPromise({
         try: () => this.#activateCurrentSession(),
         catch: (cause) =>
@@ -1974,8 +2033,21 @@ export class OsfoAgent extends Think<Env> {
           }),
       }).pipe(
         Effect.andThen(
-          correctForgottenKnowledge(payload.coreMemory, (replacement) =>
-            replaceCoreMemoryBlock(this.session, replacement),
+          correctForgottenKnowledge(
+            payload.coreMemory,
+            this.#authorizeProviderDeletion(payload.authorization).pipe(
+              Effect.flatMap((result) =>
+                Predicate.isTagged(result, "Denied")
+                  ? Effect.fail(
+                      new ProviderDeletionDeferred({
+                        cause: result,
+                        message: "Core Memory correction authority changed",
+                      }),
+                    )
+                  : Effect.void,
+              ),
+            ),
+            (replacement) => replaceCoreMemoryBlock(this.session, replacement),
           ).pipe(Effect.asVoid),
         ),
         Effect.mapError(
@@ -1997,7 +2069,8 @@ export class OsfoAgent extends Think<Env> {
         ),
       ).pipe(
         Effect.flatMap((result) =>
-          Predicate.isTagged(result, "DeletionActionUnavailable")
+          Predicate.isTagged(result, "DeletionActionUnavailable") ||
+          Predicate.isTagged(result, "Denied")
             ? Effect.fail(
                 new ProviderDeletionDeferred({
                   cause: result,
@@ -2148,19 +2221,27 @@ export class OsfoAgent extends Think<Env> {
   async uploadFile(input: UploadFileRequest) {
     await this.#migrationsReady;
     return runRpc(
-      Schema.decodeEffect(UploadFileRequest)(input).pipe(
-        Effect.mapError(() => invalidRequest("uploadFile")),
-        Effect.flatMap((parsed) =>
-          this.#files.upload({
-            actionId: parsed.actionId,
-            bytes: parsed.bytes,
-            context: parsed.authorization,
-            declaredMediaType: parsed.declaredMediaType,
-            fileId: parsed.fileId,
-            fileName: parsed.fileName,
-            uploadId: parsed.uploadId,
-          }),
+      this.#accountDeletionFence.run(
+        Schema.decodeEffect(UploadFileRequest)(input).pipe(
+          Effect.mapError(() => invalidRequest("uploadFile")),
+          Effect.flatMap((parsed) =>
+            this.#files.upload({
+              actionId: parsed.actionId,
+              bytes: parsed.bytes,
+              context: parsed.authorization,
+              declaredMediaType: parsed.declaredMediaType,
+              fileId: parsed.fileId,
+              fileName: parsed.fileName,
+              uploadId: parsed.uploadId,
+            }),
+          ),
         ),
+        () =>
+          new FileCapabilityUnavailable({
+            cause: "account deletion fence",
+            message: "File upload is unavailable while account deletion is pending",
+            operation: "uploadFile",
+          }),
       ),
     );
   }
@@ -2428,22 +2509,29 @@ export class OsfoAgent extends Think<Env> {
     if (runtime === undefined) throw invalidOsfoEnvironment;
     const env = this.env;
     return runtime.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const currentContext = yield* currentAuthorization();
-          const database = yield* Db.database;
-          return yield* DocumentGenerationComposition.make(
-            env,
-            database,
-            currentAuthorization,
-          ).generate({
-            actionId,
-            authorization: currentContext,
-            format: input.format,
-            owner: { _tag: "ToolCall", toolCallId },
-            source: input.source,
-          });
-        }),
+      this.#accountDeletionFence.run(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const currentContext = yield* currentAuthorization();
+            const database = yield* Db.database;
+            return yield* DocumentGenerationComposition.make(
+              env,
+              database,
+              currentAuthorization,
+            ).generate({
+              actionId,
+              authorization: currentContext,
+              format: input.format,
+              owner: { _tag: "ToolCall", toolCallId },
+              source: input.source,
+            });
+          }),
+        ),
+        () =>
+          new DocumentGeneration.DocumentAuthorizationUnavailable({
+            cause: "account deletion fence",
+            message: "Document generation is unavailable while account deletion is pending",
+          }),
       ),
     );
   }

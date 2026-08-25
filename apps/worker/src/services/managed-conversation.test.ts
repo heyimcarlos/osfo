@@ -14,6 +14,7 @@ import { emptyLiveResourceFacts, type AuthorizationContext } from "./authorizati
 import { admitManagedConversation } from "./managed-conversation";
 
 /* oxlint-disable effecttsgo/global-date, vitest/no-standalone-expect -- Fixed authority fixtures prove admission output inside the Effect callback. */
+/* oxlint-disable eslint/no-underscore-dangle -- Assertions inspect canonical tagged outcomes. */
 
 it.effect("admits a fresh Submission with explicitly uninitialized capability state", () =>
   Effect.gen(function* () {
@@ -65,6 +66,70 @@ it.effect("admits a bounded unmetered deletion-request turn after ordinary exhau
         maxSteps: 2,
       },
     });
+  }),
+);
+
+it.effect("keeps the supported deletion and data-rights launch surface reachable", () =>
+  Effect.gen(function* () {
+    const messages = [
+      "forget this memory",
+      "delete all memories",
+      "wipe my chat history",
+      "please delete my current session now",
+      "erase my account permanently please",
+      "I want to exercise my data rights",
+      "um yeah could you please just delete all of my memories for me now",
+    ];
+
+    const results = yield* Effect.forEach(messages, (message, index) =>
+      admitManagedConversation(
+        {
+          authorization: exhaustedAuthorization(),
+          idempotencyKey: `deletion-request-${index}`,
+          message,
+          routeId,
+          submissionId: ThinkSubmissionId.make(`deletion-submission-${index}`),
+        },
+        { currentSessionId: SessionId.make("session-1"), routeId },
+      ),
+    );
+
+    expect(results.map((result) => result._tag)).toEqual(
+      messages.map(() => "ManagedConversationAdmitted"),
+    );
+  }),
+);
+
+it.effect("does not mistake ordinary discussion of deletion for a data-rights request", () =>
+  Effect.gen(function* () {
+    const messages = [
+      "Tell me a joke about deleting accounts",
+      "Write a story where someone wipes their chat history",
+      "Remember that my job is deleting data",
+      "I forgot my password",
+    ];
+
+    const results = yield* Effect.forEach(messages, (message, index) =>
+      admitManagedConversation(
+        {
+          authorization: exhaustedAuthorization(),
+          idempotencyKey: `ordinary-request-${index}`,
+          message,
+          routeId,
+          submissionId: ThinkSubmissionId.make(`ordinary-submission-${index}`),
+        },
+        { currentSessionId: SessionId.make("session-1"), routeId },
+      ),
+    );
+
+    expect(results).toEqual(
+      messages.map(() =>
+        expect.objectContaining({
+          _tag: "ManagedConversationDenied",
+          reason: "allowanceExhausted",
+        }),
+      ),
+    );
   }),
 );
 
