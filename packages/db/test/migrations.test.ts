@@ -62,6 +62,64 @@ describe("Postgres migrations", () => {
     ),
   );
 
+  it.effect("backfills retained administrative cases before adding the authority foreign key", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          const migrations = yield* readMigrations;
+          const authorityMigration = migrations.find(
+            ({ name }) => name === "0009_dashing_vin_gonzales.sql",
+          );
+          if (authorityMigration === undefined) {
+            return yield* Effect.die(new Error("Administrative authority migration is missing"));
+          }
+          yield* applyMigrations(
+            client,
+            migrations.filter(({ name }) => name !== authorityMigration.name),
+          );
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO users (id, name, email, updated_at)
+              VALUES ('legacy-user', 'Legacy User', 'legacy-user@example.test', now());
+              INSERT INTO deletion_cases (
+                deletion_case_id, user_id, requested_by_admin_id, reason
+              ) VALUES (
+                'legacy-deletion-case', 'legacy-user', 'legacy-admin', 'Required erasure'
+              );
+            `),
+          );
+
+          yield* applyMigrations(client, migrations);
+          const authorities = yield* Effect.promise(() =>
+            client.query<{ readonly admin_actor_id: string; readonly revoked_at: Date | null }>(`
+              SELECT admin_actor_id, revoked_at
+              FROM administrative_authorities
+              WHERE admin_actor_id = 'legacy-admin'
+            `),
+          );
+
+          expect(authorities.rows).toEqual([{ admin_actor_id: "legacy-admin", revoked_at: null }]);
+          const rejected = yield* Effect.tryPromise({
+            try: () =>
+              client.exec(`
+                INSERT INTO users (id, name, email, updated_at)
+                VALUES ('new-user', 'New User', 'new-user@example.test', now());
+                INSERT INTO deletion_cases (
+                  deletion_case_id, user_id, requested_by_admin_id, reason
+                ) VALUES (
+                  'new-deletion-case', 'new-user', 'unknown-admin', 'Required erasure'
+                );
+              `),
+            catch: (cause) => new MigrationConstraintRejected({ cause }),
+          }).pipe(Effect.exit);
+          expect(Exit.isFailure(rejected)).toBe(true);
+          return undefined;
+        }),
+      closeTestDatabase,
+    ),
+  );
+
   it.effect("enforces Channel Link lifecycle and active-address invariants", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,
