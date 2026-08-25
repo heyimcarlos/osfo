@@ -44,7 +44,7 @@ export const userSuspensionEvents = pgTable(
   ],
 );
 
-/** One administrative deletion request that immediately ends User access. */
+/** One User- or administrator-requested deletion that immediately ends User access. */
 export const deletionCases = pgTable(
   "deletion_cases",
   {

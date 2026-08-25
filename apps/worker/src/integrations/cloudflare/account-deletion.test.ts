@@ -109,7 +109,7 @@ it.effect("fails closed when explicit ownership contradicts a target allowance",
     );
 });
 
-it.effect("removes an owned document body and its attempt sidecar through shared keys", () => {
+it.effect("removes a canonical target-owned document body and attempt sidecar", () => {
   const deleted: Array<string> = [];
   const userId = UserId.make("user-1");
   const contentId = ContentId.make("content-1");
@@ -125,19 +125,56 @@ it.effect("removes an owned document body and its attempt sidecar through shared
           key: contentKey,
         },
       ],
+      [documentAttemptPrefix]: [
+        {
+          customMetadata: {
+            osfo: JSON.stringify({
+              cost: { allowancePeriodId: "period-1" },
+              userId,
+            }),
+          },
+          key: attemptKey,
+        },
+      ],
     },
   });
 
-  return make(files, artifacts, () => Effect.succeed(new Set()))
+  return make(files, artifacts, () => Effect.succeed(new Set([AllowancePeriodId.make("period-1")])))
     .remove(userId, Effect.void)
     .pipe(
       Effect.andThen(
         Effect.sync(() => {
-          expect(deleted).toContain(contentKey);
-          expect(deleted).toContain(attemptKey);
+          expect(deleted).toEqual([contentKey, attemptKey]);
         }),
       ),
     );
+});
+
+it.effect("preserves a target document pair when its attempt metadata is malformed", () => {
+  const contentId = ContentId.make("malformed-attempt-content");
+  return expectPairedOwnershipFailure({
+    attempt: {
+      customMetadata: { osfo: "not-json" },
+      key: attemptKeyFor(contentId),
+    },
+    contentId,
+  });
+});
+
+it.effect("preserves a target document pair when its attempt names another user", () => {
+  const contentId = ContentId.make("other-user-attempt-content");
+  return expectPairedOwnershipFailure({
+    attempt: {
+      customMetadata: {
+        osfo: JSON.stringify({
+          cost: { allowancePeriodId: "unrelated-period" },
+          userId: "user-2",
+        }),
+      },
+      key: attemptKeyFor(contentId),
+    },
+    contentId,
+  });
 });
 
 it.effect("preserves canonically owned unrelated document evidence", () => {
@@ -248,6 +285,12 @@ const bucketStub = (options: {
       options.deleted.push(...(Array.isArray(keys) ? keys : [keys]));
       return Promise.resolve();
     },
+    head: (key: string) =>
+      Promise.resolve(
+        Object.values(options.objectsByPrefix ?? {})
+          .flat()
+          .find((object) => object.key === key) ?? null,
+      ),
     list: ({ prefix }: R2ListOptions) =>
       Promise.resolve({
         delimitedPrefixes: [],
@@ -255,7 +298,7 @@ const bucketStub = (options: {
         truncated: false as const,
       }),
   };
-  // SAFETY: Account deletion uses only the list and delete methods supplied above.
+  // SAFETY: Account deletion uses only the head, list, and delete methods supplied above.
   // oxlint-disable-next-line osfo/no-chained-type-assertions, typescript/no-unsafe-type-assertion -- The fake intentionally implements this test's narrow R2 seam only.
   return bucket as unknown as R2Bucket;
 };
@@ -269,6 +312,37 @@ const expectOwnershipFailure = (input: {
   const artifacts = bucketStub({
     deleted,
     objectsByPrefix: { [input.prefix]: [input.object] },
+  });
+  return make(files, artifacts, () => Effect.succeed(new Set()))
+    .remove(UserId.make("user-1"), Effect.void)
+    .pipe(
+      Effect.result,
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          expect(Result.isFailure(result)).toBe(true);
+          expect(deleted).toEqual([]);
+        }),
+      ),
+    );
+};
+
+const expectPairedOwnershipFailure = (input: {
+  readonly attempt: Partial<R2Object>;
+  readonly contentId: ContentId;
+}) => {
+  const deleted: Array<string> = [];
+  const files = bucketStub({ deleted });
+  const artifacts = bucketStub({
+    deleted,
+    objectsByPrefix: {
+      [documentContentPrefix]: [
+        {
+          customMetadata: { osfo: JSON.stringify({ userId: "user-1" }) },
+          key: contentKeyFor(input.contentId),
+        },
+      ],
+      [documentAttemptPrefix]: [input.attempt],
+    },
   });
   return make(files, artifacts, () => Effect.succeed(new Set()))
     .remove(UserId.make("user-1"), Effect.void)
