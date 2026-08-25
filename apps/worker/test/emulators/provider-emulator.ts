@@ -1,6 +1,7 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/new-promise, effecttsgo/node-builtin-import -- Vitest global setup owns this Node HTTP boundary. */
 /* oxlint-disable osfo/no-runtime-typeof, osfo/no-unknown-parameters -- This test-only emulator decodes raw Node HTTP representations at its boundary. */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { Option, Schema } from "effect";
 
 /** One observed Twilio Verify request. */
 export interface TwilioLedgerEntry {
@@ -21,6 +22,25 @@ export interface TelegramLedgerEntry {
   readonly body: string;
   readonly method: string;
 }
+
+interface TelegramPayload {
+  readonly chatId: number | string;
+  readonly messageId?: number;
+  readonly text: string;
+}
+
+const TelegramRequest = Schema.Struct({
+  chat_id: Schema.optional(Schema.Union([Schema.Finite, Schema.String])),
+  message_id: Schema.optional(Schema.Finite),
+  rich_message: Schema.optional(
+    Schema.Struct({
+      markdown: Schema.optional(Schema.String),
+    }),
+  ),
+  text: Schema.optional(Schema.String),
+});
+
+const TelegramRequestFromJson = Schema.fromJsonString(TelegramRequest);
 
 /** Local HTTP providers and their request ledgers for composed Worker journeys. */
 export interface ProviderEmulator {
@@ -170,34 +190,14 @@ const handleTelegram = (
     .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
 };
 
-const telegramPayload = (
-  body: string,
-): { readonly chatId: number | string; readonly messageId?: number; readonly text: string } => {
-  let value: unknown;
-  try {
-    value = JSON.parse(body);
-  } catch {
-    return { chatId: 700_001, text: "Osfo verification reply" };
-  }
-  if (!isUnknownRecord(value)) return { chatId: 700_001, text: "Osfo verification reply" };
-  const chatId =
-    typeof value.chat_id === "number" || typeof value.chat_id === "string"
-      ? value.chat_id
-      : 700_001;
-  const messageId = typeof value.message_id === "number" ? value.message_id : undefined;
-  const richText =
-    isUnknownRecord(value.rich_message) && typeof value.rich_message.markdown === "string"
-      ? value.rich_message.markdown
-      : undefined;
-  return {
-    chatId,
-    ...(messageId === undefined ? {} : { messageId }),
-    text: typeof value.text === "string" ? value.text : (richText ?? "Osfo verification reply"),
-  };
+const telegramPayload = (body: string): TelegramPayload => {
+  const payload = Option.getOrUndefined(Schema.decodeOption(TelegramRequestFromJson)(body));
+  if (payload === undefined) return { chatId: 700_001, text: "Osfo verification reply" };
+  const chatId = payload.chat_id ?? 700_001;
+  const text = payload.text ?? payload.rich_message?.markdown ?? "Osfo verification reply";
+  if (payload.message_id === undefined) return { chatId, text };
+  return { chatId, messageId: payload.message_id, text };
 };
-
-const isUnknownRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const handleTwilio = (
   request: IncomingMessage,

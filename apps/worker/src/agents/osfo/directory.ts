@@ -44,9 +44,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     });
     return {
       telegram: makeTelegramChannel({
-        ...(config.telegram.apiBaseURL === undefined
-          ? {}
-          : { apiBaseURL: config.telegram.apiBaseURL }),
+        apiBaseURL: config.telegram.apiBaseURL,
         conversation,
         secretToken: Redacted.value(config.telegram.webhookSecret),
         token: Redacted.value(config.telegram.botToken),

@@ -24,6 +24,8 @@ Open `/get-started`, enter a name, continue by SMS, enter the received code, cho
 6. Wait for `/settings` and the `Manage your agent` heading. Capture `result.png`.
 7. Record both screenshots, run `observe registration`, and finish the evidence.
 
+PASS requires Chrome at `/settings` with `Manage your agent`; one phone-verified User, active session, Agent, Free billing subscription, and Free allowance period; and Twilio send and verify entries for the same run-owned phone.
+
 ## Gotchas
 
 - A random `+1555` value fails the browser's real phone parser. Use the helper's valid fictional Canadian number.

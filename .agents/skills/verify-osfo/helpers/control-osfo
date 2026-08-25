@@ -14,11 +14,12 @@ usage() {
     '  control-osfo start <run-id>' \
     '  control-osfo doctor <run-id>' \
     '  control-osfo identity <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking> start' \
-    '  control-osfo record <run-id> <registration|channel-linking> <action|result> <summary>' \
-    '  control-osfo observe <run-id> <registration|channel-linking>' \
+    '  control-osfo journeys <run-id>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|billing> start' \
+    '  control-osfo record <run-id> <registration|channel-linking|billing> <action|result> <summary>' \
+    '  control-osfo observe <run-id> <registration|channel-linking|billing>' \
     '  control-osfo channel-invite <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking> finish' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|billing> finish' \
     '  control-osfo cleanup <run-id>'
 }
 
@@ -32,7 +33,7 @@ require_run_id() {
 
 require_feature() {
   case "${1:-}" in
-    registration|channel-linking) ;;
+    registration|channel-linking|billing) ;;
     *)
       printf 'Unknown browser feature: %s\n' "${1:-}" >&2
       exit 2
@@ -407,6 +408,15 @@ show_identity() {
     "$twilio_code" "$(state_value "$run_id" web-origin)"
 }
 
+qualify_journeys() {
+  local run_id postgres_port
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  postgres_port="$(state_value "$run_id" postgres-port)"
+  OSFO_TEST_POSTGRES_URL="postgres://osfo:osfo@127.0.0.1:$postgres_port/postgres" \
+    bun run --cwd "$repo_root/apps/worker" test:journeys
+}
+
 evidence_start() {
   local run_id feature artifact_dir feature_dir
   run_id="$1"
@@ -539,13 +549,14 @@ channel_invite() {
 }
 
 observe_channel_linking() {
-  local run_id feature_dir container_id provider_origin phone telegram_author state_json
+  local run_id feature_dir container_id provider_origin phone telegram_author invite_url state_json
   run_id="$1"
   feature_dir="$(feature_artifact_dir_for "$run_id" channel-linking)"
   container_id="$(state_value "$run_id" container-id)"
   provider_origin="$(state_value "$run_id" provider-origin)"
   phone="$(state_value "$run_id" phone-e164)"
   telegram_author="$(state_value "$run_id" telegram-author)"
+  invite_url="$(state_value "$run_id" channel-invite-url)"
   state_json="$(docker exec --env PGPASSWORD=osfo "$container_id" \
     psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
     --command "select json_build_object(
@@ -581,7 +592,49 @@ observe_channel_linking() {
       .revokedAt == null and .inviteState == "accepted" and .acceptedAt != null and
       .acceptedUserId == .userId and .acceptedChannelLinkId == .channelLinkId and
       .acceptedAuditCount == 1' "$feature_dir/state.json" >/dev/null
+  jq --exit-status --arg author "$telegram_author" --arg invite "$invite_url" \
+    'any(.[];
+      (.body | fromjson?) as $body |
+      ($body != null) and (($body.chat_id | tostring) == $author) and
+      (($body.text? // $body.rich_message.markdown? // "") | contains($invite)))' \
+    "$feature_dir/provider.json" >/dev/null
   printf 'observed channel-linking state=%s provider=%s\n' \
+    "$feature_dir/state.json" "$feature_dir/provider.json"
+}
+
+observe_billing() {
+  local run_id feature_dir container_id provider_origin phone state_json
+  run_id="$1"
+  feature_dir="$(feature_artifact_dir_for "$run_id" billing)"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  state_json="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userId', u.id,
+      'phoneNumber', u.phone_number,
+      'billingPlan', bs.plan,
+      'allowancePlan', ap.plan,
+      'allowanceEndsAt', ap.ends_at
+    ) from users u
+    join billing_subscriptions bs on bs.user_id = u.id
+    join lateral (
+      select plan, ends_at from allowance_periods where user_id = u.id order by starts_at desc limit 1
+    ) ap on true
+    where u.phone_number = '$phone';")"
+  if [[ -z "$state_json" ]]; then
+    printf 'No committed billing state found for the run-owned User\n' >&2
+    exit 1
+  fi
+  printf '%s\n' "$state_json" | jq . >"$feature_dir/state.json"
+  curl --fail --silent --show-error "$provider_origin/_test/stripe/ledger" \
+    | jq . >"$feature_dir/provider.json"
+  jq --exit-status --arg phone "$phone" \
+    '.phoneNumber == $phone and .billingPlan == "free" and
+      .allowancePlan == "free" and .allowanceEndsAt != null' \
+    "$feature_dir/state.json" >/dev/null
+  printf 'observed billing state=%s provider=%s\n' \
     "$feature_dir/state.json" "$feature_dir/provider.json"
 }
 
@@ -657,6 +710,10 @@ case "$command_name" in
     require_run_id "${2:-}"
     show_identity "$2"
     ;;
+  journeys)
+    require_run_id "${2:-}"
+    qualify_journeys "$2"
+    ;;
   evidence)
     require_run_id "${2:-}"
     require_feature "${3:-}"
@@ -678,6 +735,7 @@ case "$command_name" in
     case "$3" in
       registration) observe_registration "$2" ;;
       channel-linking) observe_channel_linking "$2" ;;
+      billing) observe_billing "$2" ;;
     esac
     ;;
   channel-invite)

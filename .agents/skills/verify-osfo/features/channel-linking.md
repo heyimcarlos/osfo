@@ -23,10 +23,13 @@ Send Osfo a private Telegram message from the address to link. Open the private 
 5. Wait for `Channel linked` and capture `result.png`.
 6. Record both screenshots, run `observe channel-linking`, and finish the evidence.
 
+PASS requires Chrome to show `Channel linked`; an accepted invite, active Telegram Channel Link to the same User, and one `link_accepted` audit event; and a Telegram ledger response containing the run-owned invite URL for the run-owned author.
+
 ## Gotchas
 
 - Opening the invite in a signed-out tab starts phone verification. That is supported, but it is not the shortest review path after registration.
 - Invite generation uses the Company Conversation's Workers AI tool choice. If local Workers AI lacks Cloudflare credentials or availability, preserve the Worker log and report the exact external prerequisite as `verified-unreachable`.
 - The Telegram emulator is a production-boundary adapter. An inserted invite row is an internal shortcut and does not prove this path.
+- Inbound delivery still passes through `/webhooks/telegram`, the real messenger router, Company Conversation, invitation authority, and browser acceptance route. Do not add a test route.
 - `Connect this chat` proves only that the invite is pending. Require the `Channel linked` result and accepted durable state.
 - One invite is single-use. Start a new run after a failed or consumed attempt.

@@ -3,6 +3,7 @@ import type { MessengerConversationResolver } from "@cloudflare/think/messengers
 import {
   isExpectedTelegramFinalEditNoop,
   telegramMessenger,
+  type TelegramMessengerOptions,
 } from "@cloudflare/think/messengers/telegram";
 
 /* oxlint-disable effecttsgo/async-function -- The Think conversation resolver is Promise-based. */
@@ -20,29 +21,31 @@ export interface TelegramChannelOptions {
 }
 
 /** Build the only Telegram transport configuration used by Osfo. */
-export const makeTelegramChannel = (options: TelegramChannelOptions): ChannelDefinition => ({
-  ...messengerChannel(
-    telegramMessenger({
-      ...(options.apiBaseURL === undefined ? {} : { apiBaseUrl: options.apiBaseURL }),
-      conversation: options.conversation,
-      delivery: {
-        errorResponseText: "I could not answer that right now. Please try again.",
-        interruptedResponseText: "My response was interrupted. Please send your message again.",
-        isExpectedDeliveryCompletion: isExpectedTelegramFinalEditNoop,
-      },
-      mode: "webhook",
-      path: "/webhooks/telegram",
-      respondTo: ["direct-message", "mention", "subscribed-thread", "action"],
-      secretToken: options.secretToken,
-      token: options.token,
-      userName: options.userName,
-    }),
-  ),
-  instructions: TELEGRAM_INSTRUCTIONS,
-  maxTurns: 6,
-  tools: (all) => {
-    const selected = { ...all };
-    delete selected.exportDocument;
-    return selected;
-  },
-});
+export const makeTelegramChannel = (options: TelegramChannelOptions): ChannelDefinition => {
+  const messengerOptions: TelegramMessengerOptions = {
+    conversation: options.conversation,
+    delivery: {
+      errorResponseText: "I could not answer that right now. Please try again.",
+      interruptedResponseText: "My response was interrupted. Please send your message again.",
+      isExpectedDeliveryCompletion: isExpectedTelegramFinalEditNoop,
+    },
+    mode: "webhook",
+    path: "/webhooks/telegram",
+    respondTo: ["direct-message", "mention", "subscribed-thread", "action"],
+    secretToken: options.secretToken,
+    token: options.token,
+    userName: options.userName,
+  };
+  if (options.apiBaseURL !== undefined) messengerOptions.apiBaseUrl = options.apiBaseURL;
+
+  return {
+    ...messengerChannel(telegramMessenger(messengerOptions)),
+    instructions: TELEGRAM_INSTRUCTIONS,
+    maxTurns: 6,
+    tools: (all) => {
+      const selected = { ...all };
+      delete selected.exportDocument;
+      return selected;
+    },
+  };
+};
