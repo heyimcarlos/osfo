@@ -21,9 +21,10 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
     const unrelatedProvider = yield* Effect.promise(() =>
       app.supermemory.seedUser("unrelated-user-for-account-deletion"),
     );
-    expect(yield* Effect.promise(app.supermemory.containers)).toEqual(
-      [seededProvider.containerTag, unrelatedProvider.containerTag].toSorted(),
-    );
+    const expectedContainers = [seededProvider.containerTag, unrelatedProvider.containerTag];
+    // oxlint-disable-next-line unicorn/no-array-sort -- The Worker target lacks ES2023 toSorted; this local array is fresh.
+    expectedContainers.sort();
+    expect(yield* Effect.promise(app.supermemory.containers)).toEqual(expectedContainers);
 
     const response = yield* Effect.promise(app.account.delete);
     expect(response.status).toBe(200);

@@ -90,7 +90,10 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         return;
       }
       if (request.method === "GET" && pathname === "/_test/supermemory/containers") {
-        respondJson(response, 200, [...supermemoryContainers].toSorted());
+        const sortedContainers = [...supermemoryContainers];
+        // oxlint-disable-next-line unicorn/no-array-sort -- The Worker target lacks ES2023 toSorted; this local array is fresh.
+        sortedContainers.sort();
+        respondJson(response, 200, sortedContainers);
         return;
       }
       if (request.method === "POST" && pathname === "/_test/supermemory/seed") {
