@@ -19,6 +19,7 @@ export const AgentStoreOperation = Schema.Literals([
   "readRouteSessionPage",
   "readSessionOwnership",
   "replaceCurrentSession",
+  "rollbackCurrentSessionReplacement",
   "recordCommittedTurn",
   "readCommittedTurns",
   "claimMemoryProviderOutbox",

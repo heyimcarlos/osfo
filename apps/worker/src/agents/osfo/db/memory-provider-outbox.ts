@@ -72,6 +72,11 @@ export interface EnqueueMemoryProviderDeletion {
   readonly payload: MemoryProviderDeletionPayload;
 }
 
+export interface RetainMemoryProviderDeletionPreparation extends EnqueueMemoryProviderDeletion {
+  readonly claimExpiresAt: DbTimestamp;
+  readonly claimToken: string;
+}
+
 const StoredUsageEvidence = Schema.Struct({
   completedNonModelCost: Schema.NonEmptyArray(
     Schema.Struct({
@@ -384,6 +389,57 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     return undefined;
   });
 
+  const retainDeletionPreparation = Effect.fn("MemoryProviderOutbox.retainDeletionPreparation")(
+    function* (input: RetainMemoryProviderDeletionPreparation) {
+      const retained = yield* execute("enqueueMemoryProviderOutbox", () =>
+        db.transaction((transaction) => {
+          const payloadJson = JSON.stringify(input.payload);
+          const existing = transaction
+            .select()
+            .from(memoryProviderOutbox)
+            .where(eq(memoryProviderOutbox.outbox_id, input.outboxId))
+            .limit(1)
+            .get();
+          if (existing !== undefined) {
+            if (existing.payload_json !== payloadJson) return { _tag: "Conflict" as const };
+            return existing.status === "claimed" && existing.claim_token === input.claimToken
+              ? { _tag: "Claimed" as const, row: existing }
+              : { _tag: "Existing" as const };
+          }
+          const maximumSequence =
+            transaction
+              .select({ value: max(memoryProviderOutbox.sequence) })
+              .from(memoryProviderOutbox)
+              .get()?.value ?? 0;
+          const row = transaction
+            .insert(memoryProviderOutbox)
+            .values({
+              allowance_period_id: null,
+              attempt_count: 1,
+              available_at: input.enqueuedAt,
+              claim_expires_at: input.claimExpiresAt,
+              claim_token: input.claimToken,
+              enqueued_at: input.enqueuedAt,
+              operation_type: operationType(input.payload),
+              ordering_key: userOrderingKey(input.payload.userId),
+              outbox_id: input.outboxId,
+              payload_json: payloadJson,
+              sequence: maximumSequence + 1,
+              status: "claimed",
+            })
+            .returning()
+            .get();
+          return { _tag: "Claimed" as const, row };
+        }),
+      );
+      if (retained._tag === "Conflict") {
+        return yield* invalidRecord("enqueueMemoryProviderOutbox");
+      }
+      if (retained._tag === "Existing") return Option.none<ClaimedMemoryProviderWork>();
+      return Option.some(yield* decodeClaim(retained.row));
+    },
+  );
+
   const claimNext = Effect.fn("MemoryProviderOutbox.claimNext")(function* (
     now: DbTimestamp,
     leaseExpiresAt: DbTimestamp,
@@ -502,6 +558,39 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
         last_error: null,
         status: "completed" as const,
       }),
+  );
+
+  const releaseDeletionPreparation = Effect.fn("MemoryProviderOutbox.releaseDeletionPreparation")(
+    (claim: ClaimedMemoryProviderWork, availableAt: DbTimestamp) =>
+      updateClaim("retryMemoryProviderOutbox", claim, {
+        available_at: availableAt,
+        claim_expires_at: null,
+        claim_token: null,
+        last_error: null,
+        status: "pending" as const,
+      }),
+  );
+
+  const cancelDeletionPreparation = Effect.fn("MemoryProviderOutbox.cancelDeletionPreparation")(
+    (claim: ClaimedMemoryProviderWork) =>
+      execute("completeMemoryProviderOutbox", () =>
+        db.transaction((transaction) => {
+          const removed = transaction
+            .delete(memoryProviderOutbox)
+            .where(
+              and(
+                eq(memoryProviderOutbox.outbox_id, claim.outboxId),
+                eq(memoryProviderOutbox.status, "claimed"),
+                eq(memoryProviderOutbox.claim_token, claim.claimToken),
+                isNull(memoryProviderOutbox.provider_accepted_at),
+                isNull(memoryProviderOutbox.deletion_progress_json),
+              ),
+            )
+            .returning({ outboxId: memoryProviderOutbox.outbox_id })
+            .get();
+          return removed !== undefined;
+        }),
+      ),
   );
 
   const retry = Effect.fn("MemoryProviderOutbox.retry")(
@@ -647,6 +736,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
 
   return {
     claimNext,
+    cancelDeletionPreparation,
     completeConfiguration,
     complete,
     enqueueDeletion,
@@ -663,6 +753,8 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     recordDeletionProgress,
     retainAmbiguousProviderSubmission,
     readRecentTurnBridge,
+    releaseDeletionPreparation,
+    retainDeletionPreparation,
     requireConfiguration,
     retry,
   };

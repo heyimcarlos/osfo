@@ -850,6 +850,7 @@ const testStore = (
         return true;
       }),
     completeConfiguration: () => Effect.succeed(true),
+    cancelDeletionPreparation: () => Effect.succeed(false),
     // oxlint-disable-next-line effecttsgo/sync-to-succeed -- The exact undefined return matches the store contract; Effect.void widens it to void.
     enqueueDeletion: () => Effect.sync(() => undefined),
     fail: (work: ClaimedMemoryProviderWork) =>
@@ -870,6 +871,7 @@ const testStore = (
     markProviderAccepted: () => Effect.succeed(options.providerAccepted ?? true),
     markProviderStatus: () => Effect.succeed(true),
     readRecentTurnBridge: () => Effect.succeed([]),
+    releaseDeletionPreparation: () => Effect.succeed(false),
     recordDeletionProgress: (_work, progress) =>
       Effect.sync(() => {
         deletionProgress.push(progress);
@@ -880,6 +882,7 @@ const testStore = (
         ambiguous.push(work.outboxId);
         return true;
       }),
+    retainDeletionPreparation: () => Effect.succeed(Option.none()),
     retry: (work: ClaimedMemoryProviderWork) =>
       Effect.sync(() => {
         retried.push(work.outboxId);

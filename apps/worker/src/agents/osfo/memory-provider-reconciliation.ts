@@ -12,7 +12,7 @@ import type {
 /* oxlint-disable eslint/no-underscore-dangle -- Effect results and provider payloads use the canonical _tag discriminator. */
 
 const retryDelaySeconds = 30;
-const claimLeaseMilliseconds = 60_000;
+export const memoryProviderClaimLeaseMilliseconds = 60_000;
 const maximumClaimsPerRun = 100;
 
 /** Retryable inability to authorize or finish local preparation for provider deletion. */
@@ -81,7 +81,9 @@ export const reconcileMemoryProviderOutbox = Effect.fn("MemoryProviderOutbox.rec
             const claimToken = yield* crypto.randomUUIDv4;
             const claimed = yield* store.claimNext(
               toDbTimestamp(claimedAt),
-              toDbTimestamp(DateTime.add(claimedAt, { milliseconds: claimLeaseMilliseconds })),
+              toDbTimestamp(
+                DateTime.add(claimedAt, { milliseconds: memoryProviderClaimLeaseMilliseconds }),
+              ),
               claimToken,
             );
             if (Option.isNone(claimed)) {

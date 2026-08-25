@@ -57,6 +57,12 @@ export interface KnowledgeForgetPending {
   readonly memoryIds: ForgetKnowledgeInput["memoryIds"];
 }
 
+/** Durable local correction ownership retained after cancellation could not be confirmed. */
+export interface KnowledgeForgetCorrectionPending {
+  readonly _tag: "KnowledgeForgetCorrectionPending";
+  readonly memoryIds: ForgetKnowledgeInput["memoryIds"];
+}
+
 /** Local Session deletion with provider conversation deletion retained for retry. */
 export interface SessionDeletionPending {
   readonly _tag: "SessionDeletionPending";

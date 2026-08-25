@@ -247,7 +247,10 @@ import {
 } from "./account-deletion-fence";
 import { makeAgentSessionLifecycle } from "./session-lifecycle";
 import { deleteLocalSession } from "./session-deletion";
-import { correctForgottenKnowledge } from "./knowledge-deletion";
+import {
+  completeKnowledgeDeletionPreparation,
+  correctForgottenKnowledge,
+} from "./knowledge-deletion";
 import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
 import { effectToolSchema } from "./effect-tool-schema";
 import { makeFileTools } from "./file-tools";
@@ -265,6 +268,7 @@ import {
 import {
   ProviderDeletionDeferred,
   ProviderSaveDeferred,
+  memoryProviderClaimLeaseMilliseconds,
   quiesceProcessingConversations,
   reconcileMemoryProviderOutbox,
   type ReconciliationOptions,
@@ -1599,10 +1603,31 @@ export class OsfoAgent extends Think<Env> {
       operation: "memory.forgetKnowledge",
       presentation: current.presentation,
     };
-    const enqueuedAt = await Effect.runPromise(currentDbTimestamp);
-    const enqueued = await runRpc(
+    return this.#serializeMemoryProviderWork(() =>
+      this.#retainAndCorrectForgottenKnowledge(input, actionId, owner, deletionAuthorization),
+    );
+  }
+
+  async #retainAndCorrectForgottenKnowledge(
+    input: ForgetKnowledgeInput,
+    actionId: ActionId,
+    owner: UserId,
+    deletionAuthorization: DeletionAuthorization,
+  ) {
+    const preparationStartedAt = await Effect.runPromise(DateTime.now);
+    const enqueuedAt = Db.DbTimestamp.make(DateTime.toDateUtc(preparationStartedAt).toISOString());
+    const claimExpiresAt = Db.DbTimestamp.make(
+      DateTime.toDateUtc(
+        DateTime.add(preparationStartedAt, {
+          milliseconds: memoryProviderClaimLeaseMilliseconds,
+        }),
+      ).toISOString(),
+    );
+    const retained = await runRpc(
       this.#memoryProviderOutbox
-        .enqueueDeletion({
+        .retainDeletionPreparation({
+          claimExpiresAt,
+          claimToken: `initial-correction:${actionId}`,
           enqueuedAt,
           outboxId: MemoryProviderOutboxId.make(`forget-knowledge:${actionId}`),
           payload: {
@@ -1618,15 +1643,17 @@ export class OsfoAgent extends Think<Env> {
             (cause) =>
               new DeletionActionUnavailable({
                 cause,
-                message: "Knowledge forgetting could not be retained for provider retry",
+                message: "Knowledge forgetting could not be retained for local preparation",
                 operation: "forgetKnowledge",
               }),
           ),
         ),
     );
-    if (Predicate.isTagged(enqueued, "DeletionActionUnavailable")) return enqueued;
-    this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
-    await this.#activateCurrentSession();
+    if (Predicate.isTagged(retained, "DeletionActionUnavailable")) return retained;
+    if (Option.isNone(retained)) {
+      this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
+      return { _tag: "KnowledgeForgetCorrectionPending", memoryIds: input.memoryIds } as const;
+    }
     const authorizeReplacement = Effect.tryPromise({
       try: () => {
         const latest = this.#currentApprovedActions.get(actionId);
@@ -1653,10 +1680,26 @@ export class OsfoAgent extends Think<Env> {
           : Effect.void,
       ),
     );
-    const corrected = await runRpc(
-      correctForgottenKnowledge(input.coreMemory, authorizeReplacement, (replacement) =>
-        replaceCoreMemoryBlock(this.session, replacement),
-      ).pipe(
+    const prepared = await runRpc(
+      completeKnowledgeDeletionPreparation({
+        cancel: this.#memoryProviderOutbox.cancelDeletionPreparation(retained.value),
+        correct: Effect.tryPromise({
+          try: () => this.#activateCurrentSession(),
+          catch: (cause) =>
+            new DeletionActionUnavailable({
+              cause,
+              message: "Current Session could not be activated for Knowledge forgetting",
+              operation: "forgetKnowledge",
+            }),
+        }).pipe(
+          Effect.andThen(
+            correctForgottenKnowledge(input.coreMemory, authorizeReplacement, (replacement) =>
+              replaceCoreMemoryBlock(this.session, replacement),
+            ),
+          ),
+        ),
+        release: this.#memoryProviderOutbox.releaseDeletionPreparation(retained.value, enqueuedAt),
+      }).pipe(
         Effect.mapError(
           (cause) =>
             new DeletionActionUnavailable({
@@ -1667,8 +1710,16 @@ export class OsfoAgent extends Think<Env> {
         ),
       ),
     );
-    if (Predicate.isTagged(corrected, "DeletionActionUnavailable")) return corrected;
-    return { _tag: "KnowledgeForgetPending", corrected, memoryIds: input.memoryIds } as const;
+    if (Predicate.isTagged(prepared, "DeletionActionUnavailable")) return prepared;
+    this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
+    if (prepared._tag === "CorrectionPending") {
+      return { _tag: "KnowledgeForgetCorrectionPending", memoryIds: input.memoryIds } as const;
+    }
+    return {
+      _tag: "KnowledgeForgetPending",
+      corrected: prepared.corrected,
+      memoryIds: input.memoryIds,
+    } as const;
   }
 
   async #deleteSession(input: SessionDeleteInput, actionId: ActionId) {
@@ -1785,6 +1836,28 @@ export class OsfoAgent extends Think<Env> {
                     ),
                   ),
                 ),
+            rollbackCurrentSessionReplacement: (replacement) =>
+              this.#store.rollbackCurrentSessionReplacement(replacement).pipe(
+                Effect.mapError(
+                  sessionDeletionFailure(
+                    "The replacement Session could not be rolled back after authority changed",
+                  ),
+                ),
+                Effect.flatMap((rolledBack) =>
+                  rolledBack
+                    ? Effect.tryPromise({
+                        try: () => this.#activateCurrentSession(),
+                        catch: sessionDeletionFailure(
+                          "The restored current Session could not be activated after rollback",
+                        ),
+                      })
+                    : Effect.fail(
+                        sessionDeletionFailure(
+                          "The replacement Session no longer matched the rollback request",
+                        )(replacement),
+                      ),
+                ),
+              ),
             settle: (sessionId) =>
               Effect.promise(() =>
                 this.#settleDeletedSession(sessionId, deletionAuthorization, owner),
@@ -2990,12 +3063,18 @@ export class OsfoAgent extends Think<Env> {
   async #reconcileMemoryProviderOutboxOrSchedule(
     conversationStatusRetryMilliseconds?: number,
   ): Promise<void> {
-    const reconciliation = this.#memoryProviderReconciliation.then(
-      () => this.#runMemoryProviderReconciliationOrSchedule(conversationStatusRetryMilliseconds),
-      () => this.#runMemoryProviderReconciliationOrSchedule(conversationStatusRetryMilliseconds),
+    await this.#serializeMemoryProviderWork(() =>
+      this.#runMemoryProviderReconciliationOrSchedule(conversationStatusRetryMilliseconds),
     );
-    this.#memoryProviderReconciliation = reconciliation;
-    await reconciliation;
+  }
+
+  #serializeMemoryProviderWork<A>(work: () => Promise<A>): Promise<A> {
+    const result = this.#memoryProviderReconciliation.then(work, work);
+    this.#memoryProviderReconciliation = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   async #runMemoryProviderReconciliationOrSchedule(

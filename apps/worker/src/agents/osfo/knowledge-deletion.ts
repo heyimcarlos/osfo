@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 
 import type { CoreMemoryReplacement } from "./deletion-actions";
 
@@ -16,5 +16,33 @@ export const correctForgottenKnowledge = Effect.fn("KnowledgeDeletion.correctFor
     );
   },
 );
+
+export type KnowledgeDeletionPreparationOutcome<A> =
+  | { readonly _tag: "CorrectionPending" }
+  | { readonly _tag: "Prepared"; readonly corrected: A; readonly released: boolean };
+
+/** Keep provider work leased until local correction commits or its untouched intent is cancelled. */
+export const completeKnowledgeDeletionPreparation = Effect.fn(
+  "KnowledgeDeletion.completeKnowledgeDeletionPreparation",
+)(function* <A, E, E2, E3>(input: {
+  readonly cancel: Effect.Effect<boolean, E2>;
+  readonly correct: Effect.Effect<A, E>;
+  readonly release: Effect.Effect<boolean, E3>;
+}) {
+  const correction = yield* input.correct.pipe(Effect.result);
+  if (Result.isFailure(correction)) {
+    const cancellation = yield* input.cancel.pipe(Effect.result);
+    if (Result.isSuccess(cancellation) && cancellation.success) {
+      return yield* Effect.fail(correction.failure);
+    }
+    return { _tag: "CorrectionPending" } as const;
+  }
+  const release = yield* input.release.pipe(Effect.result);
+  return {
+    _tag: "Prepared",
+    corrected: correction.success,
+    released: Result.isSuccess(release) && release.success,
+  } as const;
+});
 
 export * as KnowledgeDeletion from "./knowledge-deletion";

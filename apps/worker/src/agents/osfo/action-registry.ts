@@ -14,6 +14,7 @@ import {
   ForgetKnowledgeInput,
   forgetKnowledgeActionName,
   type KnowledgeForgetPending,
+  type KnowledgeForgetCorrectionPending,
   SessionDeleteInput,
   type SessionDeletionPending,
   sessionDeleteActionName,
@@ -55,7 +56,9 @@ export const makeOsfoActions = (options: {
   readonly forgetKnowledge: (
     input: ForgetKnowledgeInput,
     actionId: ActionId,
-  ) => Promise<DeletionActionUnavailable | Denied | KnowledgeForgetPending>;
+  ) => Promise<
+    DeletionActionUnavailable | Denied | KnowledgeForgetCorrectionPending | KnowledgeForgetPending
+  >;
 }) => {
   const actions = {
     [coreMemoryClearActionName]: action({

@@ -56,6 +56,8 @@ interface ReplaceCurrentSessionRecordInput {
   readonly routeId: ConversationRouteId;
 }
 
+type RollbackCurrentSessionReplacementInput = ReplaceCurrentSessionRecordInput;
+
 interface DeleteHistoricalSessionInput {
   readonly authorization?: DeletionAuthorization;
   readonly deletedAt: DbTimestamp;
@@ -123,6 +125,58 @@ const replaceCurrentSessionTransaction = (
     })
     .run();
   return { kind: "Replaced" as const };
+};
+
+const rollbackCurrentSessionReplacementTransaction = (
+  transaction: AgentTransaction,
+  input: RollbackCurrentSessionReplacementInput,
+) => {
+  const current = transaction
+    .select({ sessionId: sessionOwnership.session_id })
+    .from(sessionOwnership)
+    .where(and(eq(sessionOwnership.route_id, input.routeId), isNull(sessionOwnership.replaced_at)))
+    .limit(1)
+    .get();
+  const historical = transaction
+    .select({ replacedAt: sessionOwnership.replaced_at })
+    .from(sessionOwnership)
+    .where(
+      and(
+        eq(sessionOwnership.route_id, input.routeId),
+        eq(sessionOwnership.session_id, input.expectedCurrentSessionId),
+        eq(sessionOwnership.replaced_at, input.replacedAt),
+      ),
+    )
+    .limit(1)
+    .get();
+  if (current?.sessionId !== input.replacementSessionId || historical === undefined) return false;
+  const removed = transaction
+    .delete(sessionOwnership)
+    .where(
+      and(
+        eq(sessionOwnership.route_id, input.routeId),
+        eq(sessionOwnership.session_id, input.replacementSessionId),
+        isNull(sessionOwnership.replaced_at),
+      ),
+    )
+    .returning({ sessionId: sessionOwnership.session_id })
+    .all();
+  const restored = transaction
+    .update(sessionOwnership)
+    .set({ replaced_at: null })
+    .where(
+      and(
+        eq(sessionOwnership.route_id, input.routeId),
+        eq(sessionOwnership.session_id, input.expectedCurrentSessionId),
+        eq(sessionOwnership.replaced_at, input.replacedAt),
+      ),
+    )
+    .returning({ sessionId: sessionOwnership.session_id })
+    .all();
+  if (removed.length !== 1 || restored.length !== 1) {
+    throw new Error("Current Session replacement rollback lost its exact ownership facts");
+  }
+  return true;
 };
 
 type ReplaceCurrentSessionOutcome = ReturnType<typeof replaceCurrentSessionTransaction>;
@@ -611,6 +665,16 @@ export const makeAgentStore = (db: AgentDb) => {
     });
   });
 
+  const rollbackCurrentSessionReplacement = Effect.fn(
+    "AgentStore.rollbackCurrentSessionReplacement",
+  )((input: RollbackCurrentSessionReplacementInput) =>
+    execute("rollbackCurrentSessionReplacement", () =>
+      db.transaction((transaction) =>
+        rollbackCurrentSessionReplacementTransaction(transaction, input),
+      ),
+    ),
+  );
+
   const ownsSession = (sessionId: SessionId) =>
     execute("readSessionOwnership", () =>
       db
@@ -812,6 +876,7 @@ export const makeAgentStore = (db: AgentDb) => {
     readSessionIds,
     recordCommittedTurn,
     replaceCurrentSession,
+    rollbackCurrentSessionReplacement,
   };
 };
 

@@ -2,7 +2,10 @@
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
-import { correctForgottenKnowledge } from "./knowledge-deletion";
+import {
+  completeKnowledgeDeletionPreparation,
+  correctForgottenKnowledge,
+} from "./knowledge-deletion";
 
 it.effect("corrects Core Memory while preserving the source Session transcript", () => {
   const transcript = ["User: My old preference", "Osfo: I will remember that"];
@@ -65,6 +68,67 @@ it.effect("rechecks authority immediately before every Core Memory replacement",
           agentNotes: "Old note",
           userContext: "Corrected preference",
         });
+      }),
+    ),
+  );
+});
+
+it.effect("cancels provider work before surfacing an immediate correction failure", () => {
+  const events: Array<string> = [];
+  return completeKnowledgeDeletionPreparation({
+    cancel: Effect.sync(() => {
+      events.push("cancel");
+      return true;
+    }),
+    correct: Effect.sync(() => events.push("correct")).pipe(
+      Effect.andThen(Effect.fail("correction failed" as const)),
+    ),
+    release: Effect.sync(() => {
+      events.push("release");
+      return true;
+    }),
+  }).pipe(
+    Effect.flip,
+    Effect.tap((failure) =>
+      Effect.sync(() => {
+        expect(failure).toBe("correction failed");
+        expect(events).toEqual(["correct", "cancel"]);
+      }),
+    ),
+  );
+});
+
+it.effect("returns explicit pending state when failed correction cancellation is unconfirmed", () =>
+  completeKnowledgeDeletionPreparation({
+    cancel: Effect.succeed(false),
+    correct: Effect.fail("correction failed" as const),
+    release: Effect.die(new Error("Failed correction released provider work")),
+  }).pipe(
+    Effect.tap((result) =>
+      Effect.sync(() => {
+        expect(result).toEqual({ _tag: "CorrectionPending" });
+      }),
+    ),
+  ),
+);
+
+it.effect("releases durable provider retry only after correction commits", () => {
+  const events: Array<string> = [];
+  return completeKnowledgeDeletionPreparation({
+    cancel: Effect.die(new Error("Successful correction was cancelled")),
+    correct: Effect.sync(() => {
+      events.push("correct");
+      return ["corrected"];
+    }),
+    release: Effect.sync(() => {
+      events.push("release");
+      return true;
+    }),
+  }).pipe(
+    Effect.tap((result) =>
+      Effect.sync(() => {
+        expect(result).toEqual({ _tag: "Prepared", corrected: ["corrected"], released: true });
+        expect(events).toEqual(["correct", "release"]);
       }),
     ),
   );

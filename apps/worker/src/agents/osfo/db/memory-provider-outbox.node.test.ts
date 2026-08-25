@@ -443,6 +443,99 @@ it.effect("retains per-target deletion progress across claim retry and Agent res
   ),
 );
 
+it.effect("keeps Knowledge deletion leased until immediate Core Memory correction commits", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const outbox = makeMemoryProviderOutboxStore(db);
+      const preparation = Option.getOrThrow(
+        yield* outbox.retainDeletionPreparation({
+          ...forgetKnowledgeDeletion("forget-preparing"),
+          claimExpiresAt: liveLease,
+          claimToken: "initial-correction",
+        }),
+      );
+
+      expect(yield* outbox.claimNext(now, extendedLease, "provider-too-early")).toEqual(
+        Option.none(),
+      );
+      expect(yield* outbox.releaseDeletionPreparation(preparation, now)).toBe(true);
+
+      const restarted = makeMemoryProviderOutboxStore(db);
+      const providerClaim = Option.getOrThrow(
+        yield* restarted.claimNext(now, extendedLease, "provider-after-correction"),
+      );
+      expect(providerClaim.outboxId).toBe("forget-preparing");
+      expect(providerClaim.payload._tag).toBe("ForgetKnowledge");
+    }),
+  ),
+);
+
+it.effect("cancels untouched Knowledge deletion when immediate correction fails", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const outbox = makeMemoryProviderOutboxStore(makeAgentDb(asDurableObjectStorage(storage)));
+      const preparation = Option.getOrThrow(
+        yield* outbox.retainDeletionPreparation({
+          ...forgetKnowledgeDeletion("forget-cancelled"),
+          claimExpiresAt: liveLease,
+          claimToken: "failed-correction",
+        }),
+      );
+
+      expect(yield* outbox.cancelDeletionPreparation(preparation)).toBe(true);
+      expect(
+        yield* outbox.claimNext(extendedLease, extendedLease, "provider-after-failure"),
+      ).toEqual(Option.none());
+      expect(yield* outbox.hasRetryableWork).toBe(false);
+    }),
+  ),
+);
+
+it.effect("reclaims a crashed Knowledge preparation and corrects before provider deletion", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const outbox = makeMemoryProviderOutboxStore(db);
+      yield* outbox.retainDeletionPreparation({
+        ...forgetKnowledgeDeletion("forget-crashed-preparation"),
+        claimExpiresAt: past,
+        claimToken: "crashed-initial-correction",
+        enqueuedAt: past,
+      });
+      const events: Array<string> = [];
+      const provider = providerStub({
+        forgetKnowledge: ({ memoryId }) =>
+          Effect.sync(() => {
+            events.push(`provider:${memoryId}`);
+            return { _tag: "Deleted" as const };
+          }),
+      });
+
+      yield* reconcileMemoryProviderOutbox(outbox, {
+        authorizeDeletion: () => Effect.succeed({ _tag: "Permitted" as const }),
+        prepareDeletion: () =>
+          Effect.sync(() => {
+            events.push("correct");
+          }),
+      }).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+
+      expect(events).toEqual(["correct", "provider:memory-1", "provider:memory-2"]);
+      expect(
+        database
+          .prepare(
+            "SELECT status FROM osfo_memory_provider_outbox WHERE outbox_id = 'forget-crashed-preparation'",
+          )
+          .get(),
+      ).toEqual({ status: "completed" });
+    }),
+  ),
+);
+
 it.effect("orders User deletion behind earlier Session conversation work", () =>
   withDatabase(({ database, storage }) =>
     Effect.gen(function* () {
@@ -527,6 +620,8 @@ it.effect("terminalizes claimed append work while deleting historical Session ow
           replacedAt: Effect.succeed(now),
           replaceCurrentSession: () =>
             Effect.die(new Error("Historical deletion replaced current Session")),
+          rollbackCurrentSessionReplacement: () =>
+            Effect.die(new Error("Historical deletion rolled back a replacement")),
           settle: (sessionId) =>
             store
               .deleteHistoricalSession({
@@ -673,6 +768,8 @@ it.effect("does not save a claimed append after historical Session deletion term
           replacedAt: Effect.succeed(now),
           replaceCurrentSession: () =>
             Effect.die(new Error("Historical deletion replaced current Session")),
+          rollbackCurrentSessionReplacement: () =>
+            Effect.die(new Error("Historical deletion rolled back a replacement")),
           settle: (sessionId) =>
             store
               .deleteHistoricalSession({
@@ -783,6 +880,8 @@ it.effect("drains an in-flight provider save before terminalizing Session append
                 replacedAt: Effect.succeed(now),
                 replaceCurrentSession: () =>
                   Effect.die(new Error("Historical deletion replaced current Session")),
+                rollbackCurrentSessionReplacement: () =>
+                  Effect.die(new Error("Historical deletion rolled back a replacement")),
                 settle: (sessionId) =>
                   store
                     .deleteHistoricalSession({
@@ -866,6 +965,8 @@ it.effect("rechecks before replacing, clearing, and settling the current Session
             Effect.sync(() => events.push("replace")).pipe(
               Effect.andThen(store.replaceCurrentSession(replacement).pipe(Effect.orDie)),
             ),
+          rollbackCurrentSessionReplacement: (replacement) =>
+            store.rollbackCurrentSessionReplacement(replacement).pipe(Effect.asVoid, Effect.orDie),
           settle: (sessionId) =>
             Effect.sync(() => events.push("settle")).pipe(
               Effect.andThen(
@@ -887,6 +988,7 @@ it.effect("rechecks before replacing, clearing, and settling the current Session
       expect(events).toEqual([
         "recheck",
         "replace",
+        "recheck",
         "activate",
         "recheck",
         "clear",
@@ -899,6 +1001,58 @@ it.effect("rechecks before replacing, clearing, and settling the current Session
         fts: 0,
         messages: 0,
       });
+    }),
+  ),
+);
+
+it.effect("atomically rolls back a replacement when authority changes before activation", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const store = makeAgentStore(makeAgentDb(asDurableObjectStorage(storage)));
+      yield* store.initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: SessionId.make("session-1"),
+      });
+      let checks = 0;
+      const result = yield* deleteLocalSession(
+        {
+          replacementSessionId: SessionId.make("session-2"),
+          sessionId: SessionId.make("session-1"),
+        },
+        {
+          activateCurrentSession: Effect.die(
+            new Error("Authority-changed replacement was activated"),
+          ),
+          authorizeDeletion: () =>
+            Effect.suspend(() => {
+              checks += 1;
+              return checks === 1 ? Effect.void : Effect.fail("authority changed" as const);
+            }),
+          clearMessages: () => Effect.die(new Error("Authority-changed Session was cleared")),
+          inspect: store.inspect().pipe(Effect.orDie),
+          ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+          replacedAt: Effect.succeed(now),
+          replaceCurrentSession: (replacement) =>
+            store.replaceCurrentSession(replacement).pipe(Effect.orDie),
+          rollbackCurrentSessionReplacement: (replacement) =>
+            store.rollbackCurrentSessionReplacement(replacement).pipe(
+              Effect.filterOrFail(
+                (rolledBack) => rolledBack,
+                () => "rollback failed" as const,
+              ),
+              Effect.asVoid,
+              Effect.orDie,
+            ),
+          settle: () => Effect.die(new Error("Authority-changed Session was settled")),
+        },
+      ).pipe(Effect.result);
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(yield* store.inspect()).toMatchObject({ currentSessionId: "session-1" });
+      expect(yield* store.readSessionIds).toEqual([SessionId.make("session-1")]);
     }),
   ),
 );
@@ -940,6 +1094,8 @@ it.effect("retains SQLite Session ownership when authority changes after history
             replacedAt: Effect.succeed(now),
             replaceCurrentSession: () =>
               Effect.die(new Error("Historical Session was replaced as current")),
+            rollbackCurrentSessionReplacement: () =>
+              Effect.die(new Error("Historical Session replacement was rolled back")),
             settle: (sessionId) =>
               store
                 .deleteHistoricalSession({

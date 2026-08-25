@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 
 import type { ConversationRouteId, SessionId } from "../../domain";
 import type { DbTimestamp } from "../../db";
@@ -20,6 +20,12 @@ export interface LocalSessionDeletionDependencies<A, E> {
     readonly replacementSessionId: SessionId;
     readonly routeId: ConversationRouteId;
   }) => Effect.Effect<unknown, E>;
+  readonly rollbackCurrentSessionReplacement: (input: {
+    readonly expectedCurrentSessionId: SessionId;
+    readonly replacedAt: DbTimestamp;
+    readonly replacementSessionId: SessionId;
+    readonly routeId: ConversationRouteId;
+  }) => Effect.Effect<void, E>;
   readonly settle: (sessionId: SessionId) => Effect.Effect<A, E>;
 }
 
@@ -34,13 +40,20 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
   if (agent.currentSessionId === input.sessionId) {
     const replacedAt = yield* dependencies.replacedAt;
     yield* dependencies.authorizeDeletion();
-    yield* dependencies.replaceCurrentSession({
+    const replacement = {
       expectedCurrentSessionId: input.sessionId,
       replacedAt,
       replacementSessionId: input.replacementSessionId,
       routeId: agent.routeId,
-    });
-    yield* dependencies.activateCurrentSession;
+    };
+    yield* dependencies.replaceCurrentSession(replacement);
+    const activation = yield* dependencies
+      .authorizeDeletion()
+      .pipe(Effect.andThen(dependencies.activateCurrentSession), Effect.result);
+    if (Result.isFailure(activation)) {
+      yield* dependencies.rollbackCurrentSessionReplacement(replacement);
+      return yield* Effect.fail(activation.failure);
+    }
   }
   yield* dependencies.authorizeDeletion();
   yield* dependencies.clearMessages(input.sessionId);

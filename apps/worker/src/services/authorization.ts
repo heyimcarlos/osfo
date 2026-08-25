@@ -455,16 +455,12 @@ const authorize = (
   }
   const allowanceRules = policyFor(allowancePolicy, allowance.plan);
   const relevantKinds = [...allowanceKindsFor(operation), "vendorUsdMicros" as const];
-  let allowanceExhausted = false;
-  for (const allowanceKind of relevantKinds) {
-    if (allowanceKind === "planUsageMicros") continue;
+  const allowanceExhausted = relevantKinds.some((allowanceKind) => {
+    if (allowanceKind === "planUsageMicros") return false;
     const recorded =
       allowance.usage.find((usage) => usage.allowanceKind === allowanceKind)?.quantity ?? 0n;
-    if (recorded >= allowanceRules.allowanceLimits[allowanceKind]) {
-      allowanceExhausted = true;
-      break;
-    }
-  }
+    return recorded >= allowanceRules.allowanceLimits[allowanceKind];
+  });
   if (allowanceExhausted) {
     if (
       operation.kind === "conversation.run" &&

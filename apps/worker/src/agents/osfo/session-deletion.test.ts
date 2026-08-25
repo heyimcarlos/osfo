@@ -28,12 +28,100 @@ it.effect("does not replace the current Session when authority changes before re
         ownsSession: () => record(events, "owns").pipe(Effect.as(true)),
         replacedAt: Effect.succeed(DbTimestamp.make("2026-08-25T12:00:00.000Z")),
         replaceCurrentSession: () => record(events, "replace"),
+        rollbackCurrentSessionReplacement: () =>
+          Effect.die(new Error("A replacement was rolled back before it existed")),
         settle: () => record(events, "settle"),
       },
     ).pipe(Effect.result);
 
     expect(Result.isFailure(result)).toBe(true);
     expect(events).toEqual(["owns", "inspect", "recheck"]);
+  });
+});
+
+it.effect("rolls back the replacement when authority changes before activation", () => {
+  const events: Array<string> = [];
+  const deletedSessionId = SessionId.make("session-1");
+  const replacementSessionId = SessionId.make("session-2");
+  let checks = 0;
+  let currentSessionId = deletedSessionId;
+
+  return Effect.gen(function* () {
+    const result = yield* deleteLocalSession(
+      { replacementSessionId, sessionId: deletedSessionId },
+      {
+        activateCurrentSession: record(events, "activate"),
+        authorizeDeletion: () =>
+          Effect.suspend(() => {
+            events.push("recheck");
+            checks += 1;
+            return checks === 1 ? Effect.void : Effect.fail(new TestAuthorityChanged());
+          }),
+        clearMessages: () => record(events, "clear"),
+        inspect: Effect.succeed({
+          currentSessionId,
+          routeId: ConversationRouteId.make("route-1"),
+        }),
+        ownsSession: () => Effect.succeed(true),
+        replacedAt: Effect.succeed(DbTimestamp.make("2026-08-25T12:00:00.000Z")),
+        replaceCurrentSession: () =>
+          Effect.sync(() => {
+            currentSessionId = replacementSessionId;
+            events.push("replace");
+          }),
+        rollbackCurrentSessionReplacement: () =>
+          Effect.sync(() => {
+            currentSessionId = deletedSessionId;
+            events.push("rollback");
+          }),
+        settle: () => record(events, "settle"),
+      },
+    ).pipe(Effect.result);
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(currentSessionId).toBe(deletedSessionId);
+    expect(events).toEqual(["recheck", "replace", "recheck", "rollback"]);
+  });
+});
+
+it.effect("rolls back the replacement when activation fails", () => {
+  const events: Array<string> = [];
+  const deletedSessionId = SessionId.make("session-1");
+  const replacementSessionId = SessionId.make("session-2");
+  let currentSessionId = deletedSessionId;
+
+  return Effect.gen(function* () {
+    const result = yield* deleteLocalSession(
+      { replacementSessionId, sessionId: deletedSessionId },
+      {
+        activateCurrentSession: record(events, "activate").pipe(
+          Effect.andThen(Effect.fail(new TestActivationUnavailable())),
+        ),
+        authorizeDeletion: () => record(events, "recheck"),
+        clearMessages: () => record(events, "clear"),
+        inspect: Effect.succeed({
+          currentSessionId,
+          routeId: ConversationRouteId.make("route-1"),
+        }),
+        ownsSession: () => Effect.succeed(true),
+        replacedAt: Effect.succeed(DbTimestamp.make("2026-08-25T12:00:00.000Z")),
+        replaceCurrentSession: () =>
+          Effect.sync(() => {
+            currentSessionId = replacementSessionId;
+            events.push("replace");
+          }),
+        rollbackCurrentSessionReplacement: () =>
+          Effect.sync(() => {
+            currentSessionId = deletedSessionId;
+            events.push("rollback");
+          }),
+        settle: () => record(events, "settle"),
+      },
+    ).pipe(Effect.result);
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(currentSessionId).toBe(deletedSessionId);
+    expect(events).toEqual(["recheck", "replace", "recheck", "activate", "rollback"]);
   });
 });
 
@@ -67,6 +155,8 @@ it.effect("retries a retained Session deletion after the initial local clear fai
             currentSessionId = replacementSessionId;
             events.push("replace");
           }),
+        rollbackCurrentSessionReplacement: () =>
+          Effect.die(new Error("A successful replacement was rolled back")),
         settle: () =>
           Effect.sync(() => {
             owned = false;
@@ -84,6 +174,7 @@ it.effect("retries a retained Session deletion after the initial local clear fai
     expect(events).toEqual([
       "recheck-retained-authorization",
       "replace",
+      "recheck-retained-authorization",
       "activate",
       "recheck-retained-authorization",
       "clear-1",
@@ -123,6 +214,8 @@ it.effect("retains Session ownership when authority changes after history cleari
         ownsSession: () => Effect.succeed(true),
         replacedAt: Effect.die(new Error("Historical Session requested replacement time")),
         replaceCurrentSession: () => Effect.die(new Error("Historical Session was replaced")),
+        rollbackCurrentSessionReplacement: () =>
+          Effect.die(new Error("Historical Session replacement was rolled back")),
         settle: () => record(events, "settle"),
       },
     ).pipe(Effect.result);
@@ -144,5 +237,10 @@ class TestAuthorityChanged extends Schema.TaggedError<TestAuthorityChanged>()(
 
 class TestLocalClearUnavailable extends Schema.TaggedError<TestLocalClearUnavailable>()(
   "TestLocalClearUnavailable",
+  {},
+) {}
+
+class TestActivationUnavailable extends Schema.TaggedError<TestActivationUnavailable>()(
+  "TestActivationUnavailable",
   {},
 ) {}
