@@ -1,6 +1,6 @@
 ---
 name: verify-osfo
-description: Verify user-visible Osfo web behavior in Chrome with a disposable SMS-verified User, local Worker/provider boundaries, committed PostgreSQL state, and durable evidence. Use after implementing or reviewing registration, authentication, channel linking, settings, billing, privacy, or another browser-facing Osfo change.
+description: Verify Osfo registration, SMS phone authentication, Telegram channel linking, or the Free billing summary in Chrome with a disposable verified User, local provider boundaries, committed state, and durable evidence. Use after implementing or reviewing one of those browser paths.
 ---
 
 # Verify Osfo
@@ -20,6 +20,8 @@ RUN_ID="verify-$(date -u +%Y%m%d-%H%M%S)-$$"
 ```
 
 `start` launches one labeled PostgreSQL container, applies the real migrations, starts local Twilio, Telegram, Stripe, and Supermemory HTTP emulators, starts the actual Worker under Wrangler with run-owned Durable Object and R2 storage, and starts the Vite web UI. It prints `ready` only after `/auth/get-session` and `/get-started` answer.
+
+The helper derives each run's Wrangler config from `apps/worker/wrangler.jsonc`. It changes only the run name, local provider and browser origins, test credentials, run-owned PostgreSQL connection, R2 bucket names, and Workflow name. Compatibility settings, bindings, migrations, containers, triggers, and observability remain canonical.
 
 The run is ready when all of these hold:
 
@@ -76,13 +78,14 @@ Complete browser evidence lives under `artifacts/verification/osfo/<run-id>/<fea
 - `action.png` and `result.png` capture both halves of the User journey;
 - `state.json` is a read-only observation of committed product state;
 - `provider.json` captures the local production-boundary ledger;
+- `observation-passed.txt` exists only after the state and provider assertions pass;
 - `result.txt` records PASS, the exact commit, and completion time.
 
 Each feature file owns its visible result and durable PASS criterion. Do not substitute one feature's proof for another.
 
 If HEAD changes after launch, discard the run as stale and repeat. A screenshot from one commit plus database state from another is not evidence.
 
-Iterative browser runs may use a dirty checkout, but `evidence finish` records PASS only for a clean checkout launched at its current commit. Commit the implementation, start a fresh run, and repeat the proof before handoff.
+`start` records whether the checkout was clean. A run launched dirty remains a draft even if the checkout is later restored. `evidence finish` records PASS only when the run launched clean, HEAD is unchanged, the checkout is still clean, and the observer wrote its post-assertion marker. Commit the implementation, start a fresh run, and repeat the proof before handoff.
 
 The composed Worker journeys remain useful isolation tests. Run them against the run-owned PostgreSQL maintenance database without copying its dynamic port:
 
@@ -94,7 +97,7 @@ Report them as Worker qualification. They do not replace the Chrome evidence abo
 
 ## Cleanup
 
-Cleanup stops only the recorded run-owned process groups, verifies the PostgreSQL run label, removes that container, and deletes run scratch state. Evidence survives:
+Cleanup verifies every member of each recorded run-owned process group, stops the complete groups, verifies the PostgreSQL run label, removes that container, and deletes run scratch state. Evidence survives:
 
 ```sh
 ./.agents/skills/verify-osfo/helpers/control-osfo cleanup "$RUN_ID"

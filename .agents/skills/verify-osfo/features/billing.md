@@ -6,8 +6,6 @@ The billing page shows the registered User's current Free Plan, allowance period
 
 - authenticated billing summary;
 - visible Free Plan and reset period;
-- Checkout creation through the local Stripe HTTP boundary;
-- stored open Checkout attempt.
 
 ## How to get to it (user POV)
 
