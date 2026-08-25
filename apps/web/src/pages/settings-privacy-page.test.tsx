@@ -12,7 +12,7 @@ it("requires one explicit confirmation before deleting the account", async () =>
     confirmation: "delete-my-account",
     consequence: "Permanently delete this account and all of its data",
     operation: "account.delete",
-    title: "Delete account",
+    title: "Delete Account",
   };
   const present = vi.fn<() => Promise<AccountDeletionActionPresentation>>(() =>
     Promise.resolve(presentation),
@@ -27,6 +27,7 @@ it("requires one explicit confirmation before deleting the account", async () =>
   await user.click(screen.getByRole("button", { name: "Delete Account" }));
   expect(present).toHaveBeenCalledOnce();
   expect(remove).not.toHaveBeenCalled();
+  expect(screen.getAllByText("Delete Account")).toHaveLength(2);
   expect(screen.getByText("Permanently delete this account and all of its data.")).toBeDefined();
 
   await user.click(screen.getByRole("button", { name: "Confirm account deletion" }));

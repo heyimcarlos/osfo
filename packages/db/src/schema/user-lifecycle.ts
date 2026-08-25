@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { check, index, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 import { users } from "./auth";
 
@@ -40,6 +40,7 @@ export const deletionCases = pgTable(
     requested_by_user_id: text().references(() => users.id, { onDelete: "cascade" }),
     approval_action_id: text(),
     approval_presentation: text(),
+    integration_targets: jsonb().default([]).notNull(),
     reason: text().notNull(),
     requested_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
   },

@@ -17,7 +17,7 @@ it.effect("keeps local data pending until provider deletion confirms permanent a
     _tag: "SelfService" as const,
     agentId: AgentId.make("agent-1"),
     approvalActionId: ActionId.make("account-delete-1"),
-    approvalPresentation: ApprovalPresentation.make("Delete account"),
+    approvalPresentation: ApprovalPresentation.make("Delete Account"),
     deletionCaseId: DeletionCaseId.make("deletion-case-1"),
     userId: UserId.make("user-1"),
   };
@@ -35,6 +35,7 @@ it.effect("keeps local data pending until provider deletion confirms permanent a
         authorizeDelete.pipe(Effect.andThen(Effect.sync(() => calls.push("objects")))),
     },
     persistence: {
+      ...passthroughIntegrationProgress,
       pending: Effect.succeed([candidate]),
       removeUser: () => Effect.sync(() => calls.push("postgres")),
     },
@@ -94,6 +95,54 @@ it.effect("stops before Agent deletion when authority changes during object dele
   ]),
 );
 
+it.effect("keeps the case pending and local data intact when R2 ownership is ambiguous", () => {
+  const calls: Array<string> = [];
+  const candidate = {
+    _tag: "SelfService" as const,
+    agentId: AgentId.make("agent-1"),
+    approvalActionId: ActionId.make("account-delete-1"),
+    approvalPresentation: ApprovalPresentation.make("Delete Account"),
+    deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+    userId: UserId.make("user-1"),
+  };
+  const port = AccountDeletion.Port.of({
+    inspectAuthorization: () =>
+      Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
+    agents: {
+      quiesce: () => Effect.sync(() => calls.push("quiesce")),
+      remove: () => Effect.sync(() => calls.push("agent")),
+    },
+    integrations: { pending: () => Effect.succeed([]), revoke: () => Effect.void },
+    objects: {
+      remove: () =>
+        Effect.sync(() => calls.push("objects")).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new AccountDeletion.AccountDeletionUnavailable({
+                cause: "malformed metadata",
+                message: "R2 ownership evidence is invalid",
+                operation: "removeObjects",
+              }),
+            ),
+          ),
+        ),
+    },
+    persistence: {
+      ...passthroughIntegrationProgress,
+      pending: Effect.succeed([candidate]),
+      removeUser: () => Effect.sync(() => calls.push("postgres")),
+    },
+  });
+
+  return Effect.gen(function* () {
+    const deletion = yield* AccountDeletion.Service;
+    const result = yield* deletion.reconcileOne(candidate).pipe(Effect.result);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(yield* port.persistence.pending).toEqual([candidate]);
+    expect(calls).toEqual(["recheck", "quiesce", "recheck", "provider", "objects"]);
+  }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
+});
+
 it.effect("stops before PostgreSQL deletion when authority changes during Agent deletion", () =>
   expectStopsWhenAuthorityChangesAfter("agent", [
     "recheck",
@@ -118,7 +167,7 @@ const expectStopsWhenAuthorityChangesAfter = (
     _tag: "SelfService" as const,
     agentId: AgentId.make("agent-1"),
     approvalActionId: ActionId.make("account-delete-1"),
-    approvalPresentation: ApprovalPresentation.make("Delete account"),
+    approvalPresentation: ApprovalPresentation.make("Delete Account"),
     deletionCaseId: DeletionCaseId.make("deletion-case-1"),
     userId: UserId.make("user-1"),
   };
@@ -142,6 +191,7 @@ const expectStopsWhenAuthorityChangesAfter = (
       remove: (_, authorizeDelete) => authorizeDelete.pipe(Effect.andThen(recordEffect("objects"))),
     },
     persistence: {
+      ...passthroughIntegrationProgress,
       pending: Effect.succeed([candidate]),
       removeUser: () => Effect.die(new Error("Unexpected PostgreSQL deletion")),
     },
@@ -168,7 +218,7 @@ it.effect("does not delete provider knowledge when authority changes during quie
     _tag: "SelfService" as const,
     agentId: AgentId.make("agent-1"),
     approvalActionId: ActionId.make("account-delete-1"),
-    approvalPresentation: ApprovalPresentation.make("Delete account"),
+    approvalPresentation: ApprovalPresentation.make("Delete Account"),
     deletionCaseId: DeletionCaseId.make("deletion-case-1"),
     userId: UserId.make("user-1"),
   };
@@ -189,6 +239,7 @@ it.effect("does not delete provider knowledge when authority changes during quie
     integrations: { pending: () => Effect.succeed([]), revoke: () => Effect.void },
     objects: { remove: () => Effect.die(new Error("Unexpected object deletion")) },
     persistence: {
+      ...passthroughIntegrationProgress,
       pending: Effect.succeed([candidate]),
       removeUser: () => Effect.die(new Error("Unexpected PostgreSQL deletion")),
     },
@@ -207,7 +258,7 @@ it.effect("does not advance when Agent quiescence fails", () => {
     _tag: "SelfService" as const,
     agentId: AgentId.make("agent-1"),
     approvalActionId: ActionId.make("account-delete-1"),
-    approvalPresentation: ApprovalPresentation.make("Delete account"),
+    approvalPresentation: ApprovalPresentation.make("Delete Account"),
     deletionCaseId: DeletionCaseId.make("deletion-case-1"),
     userId: UserId.make("user-1"),
   };
@@ -231,6 +282,7 @@ it.effect("does not advance when Agent quiescence fails", () => {
     integrations: { pending: () => Effect.succeed([]), revoke: () => Effect.void },
     objects: { remove: () => Effect.sync(() => calls.push("objects")) },
     persistence: {
+      ...passthroughIntegrationProgress,
       pending: Effect.succeed([candidate]),
       removeUser: () => Effect.sync(() => calls.push("postgres")),
     },
@@ -252,7 +304,7 @@ it.effect(
       _tag: "SelfService" as const,
       agentId: AgentId.make("agent-1"),
       approvalActionId: ActionId.make("account-delete-1"),
-      approvalPresentation: ApprovalPresentation.make("Delete account"),
+      approvalPresentation: ApprovalPresentation.make("Delete Account"),
       deletionCaseId: DeletionCaseId.make("deletion-case-1"),
       userId: UserId.make("user-1"),
     };
@@ -271,7 +323,11 @@ it.effect(
         userId: unrelatedUserId,
       },
     ];
-    let secondTargetAttempts = 0;
+    const progress = new Map<
+      AccountDeletion.IntegrationAuthorityTargetId,
+      AccountDeletion.IntegrationAuthorityTargetProgress
+    >();
+    let firstConfirmationAttempts = 0;
     const port = AccountDeletion.Port.of({
       inspectAuthorization: () =>
         Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
@@ -283,22 +339,17 @@ it.effect(
         pending: (userId) =>
           Effect.sync(() => {
             calls.push("connections");
-            return targets.filter((target) => target.userId === userId);
+            return targets
+              .filter((target) => target.userId === userId)
+              .flatMap((target, index) => (index === 0 ? [target, target] : [target]));
           }),
         revoke: (target) =>
           Effect.suspend(() => {
             calls.push(target.connectionId);
-            if (target.connectionId === "connection-2" && secondTargetAttempts === 0) {
-              secondTargetAttempts += 1;
-              return Effect.fail(
-                new AccountDeletion.AccountDeletionUnavailable({
-                  cause: target,
-                  message: "Provider revocation remains pending",
-                  operation: "deleteIntegrationAuthority",
-                }),
-              );
-            }
-            targets.splice(targets.indexOf(target), 1);
+            const index = targets.findIndex(
+              ({ connectionId }) => connectionId === target.connectionId,
+            );
+            if (index >= 0) targets.splice(index, 1);
             return Effect.void;
           }),
       },
@@ -307,36 +358,67 @@ it.effect(
           authorizeDelete.pipe(Effect.andThen(Effect.sync(() => calls.push("objects")))),
       },
       persistence: {
+        confirmIntegrationTarget: (_, target) =>
+          Effect.suspend(() => {
+            if (target.connectionId === "connection-1" && firstConfirmationAttempts === 0) {
+              firstConfirmationAttempts += 1;
+              return Effect.fail(
+                new AccountDeletion.AccountDeletionUnavailable({
+                  cause: target,
+                  message: "Process stopped before durable target confirmation",
+                  operation: "confirmIntegrationTarget",
+                }),
+              );
+            }
+            const retained = progress.get(target.connectionId);
+            if (retained === undefined) {
+              return Effect.die(new Error("Confirmed integration target was not staged"));
+            }
+            progress.set(target.connectionId, { ...retained, status: "confirmed" });
+            return Effect.void;
+          }),
         pending: Effect.succeed([candidate]),
         removeUser: () => Effect.sync(() => calls.push("postgres")),
+        stageIntegrationTargets: (_, discovered) =>
+          Effect.sync(() => {
+            for (const target of discovered) {
+              progress.set(target.connectionId, { ...target, status: "pending" });
+            }
+            return [...progress.values()].flatMap(({ connectionId, status, userId }) =>
+              status === "pending" ? [{ connectionId, userId }] : [],
+            );
+          }),
       },
     });
 
     return Effect.gen(function* () {
-      const deletion = yield* AccountDeletion.Service;
-      const first = yield* deletion.reconcileOne(candidate).pipe(Effect.result);
+      const reconcile = AccountDeletion.Service.pipe(
+        Effect.flatMap((deletion) => deletion.reconcileOne(candidate)),
+        Effect.provide(accountDeletionLayer(port, calls, () => "deleted")),
+      );
+      const first = yield* reconcile.pipe(Effect.result);
       expect(Result.isFailure(first)).toBe(true);
       expect(targets.map(({ connectionId }) => connectionId)).toEqual([
         "connection-2",
         "unrelated-connection",
       ]);
 
-      yield* deletion.reconcileOne(candidate);
+      yield* reconcile;
       expect(targets).toEqual([
         {
           connectionId: AccountDeletion.IntegrationAuthorityTargetId.make("unrelated-connection"),
           userId: unrelatedUserId,
         },
       ]);
-      expect(calls.filter((call) => call === "connection-1")).toHaveLength(1);
-      expect(calls.filter((call) => call === "connection-2")).toHaveLength(2);
+      expect(calls.filter((call) => call === "connection-1")).toHaveLength(2);
+      expect(calls.filter((call) => call === "connection-2")).toHaveLength(1);
       expect(
         calls.every(
           (call, index) => !call.startsWith("connection-") || calls[index - 1] === "recheck",
         ),
       ).toBe(true);
       expect(calls).toContain("postgres");
-    }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
+    });
   },
 );
 
@@ -369,6 +451,7 @@ it.effect("rechecks a retained administrative case through every protected stage
         authorizeDelete.pipe(Effect.andThen(Effect.sync(() => calls.push("objects")))),
     },
     persistence: {
+      ...passthroughIntegrationProgress,
       pending: Effect.succeed([candidate]),
       removeUser: () => Effect.sync(() => calls.push("postgres")),
     },
@@ -408,6 +491,14 @@ const activeFacts = (userId: UserId): AccountDeletion.CurrentAuthorizationFacts 
   subscription: { plan: "free", planPolicyVersion: PlanPolicyVersion.make("launch-v1") },
   user: { _tag: "ActiveUser", userId },
 });
+
+const passthroughIntegrationProgress = {
+  confirmIntegrationTarget: () => Effect.void,
+  stageIntegrationTargets: (
+    _candidate: AccountDeletion.PendingAccountDeletion,
+    targets: ReadonlyArray<AccountDeletion.IntegrationAuthorityTarget>,
+  ) => Effect.succeed(targets),
+};
 
 const providerLayer = (result: () => "deleted" | "unavailable", calls: Array<string>) =>
   Layer.succeed(

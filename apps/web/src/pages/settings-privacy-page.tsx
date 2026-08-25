@@ -184,6 +184,7 @@ export function DeleteAccountControl({
       ) : null}
       {presentation !== null ? (
         <div className="mt-3 border-t border-red-100 pt-3">
+          <p className="font-semibold text-[#7f2630]">{presentation.title}</p>
           <p className="text-sm text-[#7f2630]">{presentation.consequence}.</p>
           <div className="mt-3 flex gap-2">
             <button

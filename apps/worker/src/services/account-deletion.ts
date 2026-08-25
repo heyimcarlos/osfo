@@ -1,6 +1,6 @@
 import { Context, DateTime, Effect, Layer, Predicate, Schema } from "effect";
 
-import type { AgentId, PlanPolicyVersion, UserId } from "../domain";
+import { type AgentId, type PlanPolicyVersion, UserId } from "../domain";
 import type { AdminActorId, AdminReason } from "../domain/account-administration";
 import type { ActionId } from "../domain/action-execution";
 import type { DeletionCaseId } from "../domain/deletion-case";
@@ -57,6 +57,19 @@ export interface IntegrationAuthorityTarget {
   readonly userId: UserId;
 }
 
+/** One case-owned integration target retained before provider contact. */
+export const IntegrationAuthorityTargetProgress = Schema.Struct({
+  connectionId: IntegrationAuthorityTargetId,
+  status: Schema.Literals(["confirmed", "pending"]),
+  userId: UserId,
+});
+
+/** Case-owned integration targets retained across retries and process loss. */
+export const IntegrationAuthorityTargetProgresses = Schema.Array(
+  IntegrationAuthorityTargetProgress,
+);
+export type IntegrationAuthorityTargetProgress = typeof IntegrationAuthorityTargetProgress.Type;
+
 /** Current mutable facts retained outside the durable Deletion Case authority. */
 export interface CurrentAuthorizationFacts {
   readonly resourceOwnerUserId: UserId;
@@ -108,6 +121,16 @@ export interface PortInterface {
       ReadonlyArray<PendingAccountDeletion>,
       AccountDeletionUnavailable
     >;
+    /** Retain newly discovered targets and return every target still requiring confirmation. */
+    readonly stageIntegrationTargets: (
+      candidate: PendingAccountDeletion,
+      discovered: ReadonlyArray<IntegrationAuthorityTarget>,
+    ) => Effect.Effect<ReadonlyArray<IntegrationAuthorityTarget>, AccountDeletionUnavailable>;
+    /** Mark one exact target confirmed only after the provider proves it absent. */
+    readonly confirmIntegrationTarget: (
+      candidate: PendingAccountDeletion,
+      target: IntegrationAuthorityTarget,
+    ) => Effect.Effect<void, AccountDeletionUnavailable>;
     readonly removeUser: (userId: UserId) => Effect.Effect<void, AccountDeletionUnavailable>;
   };
 }
@@ -208,8 +231,8 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
-    const integrationTargets = yield* dependencies.integrations.pending(candidate.userId);
-    for (const target of integrationTargets) {
+    const discoveredIntegrationTargets = yield* dependencies.integrations.pending(candidate.userId);
+    for (const target of discoveredIntegrationTargets) {
       if (target.userId !== candidate.userId) {
         return yield* new AccountDeletionUnavailable({
           cause: target,
@@ -217,8 +240,22 @@ export const make = Effect.gen(function* () {
           operation: "deleteIntegrationAuthority",
         });
       }
+    }
+    const integrationTargets = yield* dependencies.persistence.stageIntegrationTargets(
+      candidate,
+      discoveredIntegrationTargets,
+    );
+    for (const target of integrationTargets) {
+      if (target.userId !== candidate.userId) {
+        return yield* new AccountDeletionUnavailable({
+          cause: target,
+          message: "Retained integration authority crossed the deleting User fence",
+          operation: "deleteIntegrationAuthority",
+        });
+      }
       yield* requireCurrentAuthority("before an integration authority deletion");
       yield* dependencies.integrations.revoke(target);
+      yield* dependencies.persistence.confirmIntegrationTarget(candidate, target);
     }
     yield* dependencies.objects.remove(
       candidate.userId,

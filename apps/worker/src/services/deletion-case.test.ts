@@ -25,7 +25,7 @@ it.effect(
         userId,
         {
           actionId: ActionId.make("account-delete-1"),
-          presentation: ApprovalPresentation.make("Delete account"),
+          presentation: ApprovalPresentation.make("Delete Account"),
         },
         {
           authSessionId: AuthSessionId.make("session-1"),
@@ -55,7 +55,7 @@ it.effect(
             Effect.sync(() => {
               expect(approval).toEqual({
                 actionId: "account-delete-1",
-                presentation: "Delete account",
+                presentation: "Delete Account",
               });
               expect(authority).toEqual({
                 authSessionId: "session-1",

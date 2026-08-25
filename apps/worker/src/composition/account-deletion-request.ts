@@ -126,7 +126,7 @@ const accountDeletionActionDefinition = {
   confirmation: "delete-my-account",
   consequence: "Permanently delete this account and all of its data",
   operation: "account.delete",
-  title: "Delete account",
+  title: "Delete Account",
 } as const;
 
 const ExactAccountDeletionActionPresentation = Schema.Struct({

@@ -1,0 +1,1 @@
+ALTER TABLE "deletion_cases" ADD COLUMN "integration_targets" jsonb DEFAULT '[]'::jsonb NOT NULL;

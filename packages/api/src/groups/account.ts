@@ -65,7 +65,7 @@ export const AccountGroup = HttpApiGroup.make("account")
         OpenApi.annotations({
           description: "Fence normal access and permanently delete the authenticated account.",
           identifier: "account.delete",
-          summary: "Delete account",
+          summary: "Delete Account",
         }),
       ),
   );

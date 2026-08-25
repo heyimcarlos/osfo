@@ -17,6 +17,7 @@ import { AdminActorId, AdminReason } from "../../src/domain/account-administrati
 import { DeletionCaseId } from "../../src/domain/deletion-case";
 import { ActionId } from "../../src/domain/action-execution";
 import { ApprovalPresentation } from "../../src/services/authorization";
+import { AccountDeletion } from "../../src/services/account-deletion";
 import { AccountAuthorities } from "../../src/composition/account-authorities";
 import { AccountDeletionPostgres } from "../../src/integrations/postgres/account-deletion";
 import { DeletionCasePostgres } from "../../src/integrations/postgres/deletion-case";
@@ -43,7 +44,7 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
       if (authSession === undefined) return yield* Effect.die(new Error("AuthSession missing"));
       const approval = {
         actionId: ActionId.make("account-delete-1"),
-        presentation: ApprovalPresentation.make("Delete account"),
+        presentation: ApprovalPresentation.make("Delete Account"),
       };
       const authority = {
         authSessionId: AuthSessionId.make(authSession.id),
@@ -212,9 +213,39 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
         reason: "Required administrative erasure",
         userId,
       });
+      const firstTarget = {
+        connectionId: AccountDeletion.IntegrationAuthorityTargetId.make("connection-1"),
+        userId,
+      };
+      const secondTarget = {
+        connectionId: AccountDeletion.IntegrationAuthorityTargetId.make("connection-2"),
+        userId,
+      };
+      expect(
+        yield* accountDeletion.stageIntegrationTargets(candidate, [
+          firstTarget,
+          firstTarget,
+          secondTarget,
+        ]),
+      ).toEqual([firstTarget, secondTarget]);
+      yield* accountDeletion.confirmIntegrationTarget(candidate, firstTarget);
+      expect(yield* accountDeletion.stageIntegrationTargets(candidate, [])).toEqual([secondTarget]);
+      expect(yield* accountDeletion.stageIntegrationTargets(candidate, [firstTarget])).toEqual([
+        firstTarget,
+        secondTarget,
+      ]);
       expect(
         yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate),
       ).toMatchObject({ resourceOwnerUserId: userId });
+      yield* Effect.promise(() =>
+        database.delete(billingSubscriptions).where(eq(billingSubscriptions.user_id, userId)),
+      );
+      expect(
+        yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate),
+      ).toMatchObject({
+        resourceOwnerUserId: userId,
+        subscription: { plan: "free" },
+      });
       expect(
         yield* AccountDeletionPostgres.inspectAuthorization(database)({
           ...candidate,

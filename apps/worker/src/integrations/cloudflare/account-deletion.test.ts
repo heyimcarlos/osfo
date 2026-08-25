@@ -1,6 +1,6 @@
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 
 import { AllowancePeriodId, UserId } from "../../domain";
 import { ContentId } from "../../domain/client-content";
@@ -75,6 +75,67 @@ it.effect("removes an owned document body and its attempt sidecar through shared
     );
 });
 
+it.effect("preserves canonically owned unrelated document evidence", () => {
+  const deleted: Array<string> = [];
+  const files = bucketStub({ deleted });
+  const artifacts = bucketStub({
+    deleted,
+    objectsByPrefix: {
+      [documentContentPrefix]: [
+        {
+          customMetadata: { osfo: JSON.stringify({ userId: "user-2" }) },
+          key: contentKeyFor(ContentId.make("unrelated-content")),
+        },
+      ],
+      [documentAttemptPrefix]: [
+        {
+          customMetadata: {
+            osfo: JSON.stringify({
+              cost: { allowancePeriodId: "unrelated-period" },
+              userId: "user-2",
+            }),
+          },
+          key: attemptKeyFor(ContentId.make("unrelated-content")),
+        },
+      ],
+    },
+  });
+
+  return make(files, artifacts, () => Effect.succeed(new Set()))
+    .remove(UserId.make("user-1"), Effect.void)
+    .pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(deleted).toEqual([]);
+        }),
+      ),
+    );
+});
+
+it.effect("fails closed on malformed artifact ownership metadata", () =>
+  expectOwnershipFailure({
+    prefix: documentContentPrefix,
+    object: { customMetadata: { osfo: "not-json" }, key: contentKeyFor(ContentId.make("bad")) },
+  }),
+);
+
+it.effect("fails closed when an owned artifact key is not canonical", () =>
+  expectOwnershipFailure({
+    prefix: documentContentPrefix,
+    object: {
+      customMetadata: { osfo: JSON.stringify({ userId: "user-1" }) },
+      key: "documents/not-a-content-key",
+    },
+  }),
+);
+
+it.effect("fails closed on malformed attempt ownership metadata", () =>
+  expectOwnershipFailure({
+    prefix: documentAttemptPrefix,
+    object: { customMetadata: { osfo: "{}" }, key: "document-attempts/bad" },
+  }),
+);
+
 it.effect("rechecks authority before every paginated R2 delete", () => {
   const deleted: Array<string> = [];
   const userId = UserId.make("user-1");
@@ -132,6 +193,29 @@ const bucketStub = (options: {
   // SAFETY: Account deletion uses only the list and delete methods supplied above.
   // oxlint-disable-next-line osfo/no-chained-type-assertions, typescript/no-unsafe-type-assertion -- The fake intentionally implements this test's narrow R2 seam only.
   return bucket as unknown as R2Bucket;
+};
+
+const expectOwnershipFailure = (input: {
+  readonly object: Partial<R2Object>;
+  readonly prefix: string;
+}) => {
+  const deleted: Array<string> = [];
+  const files = bucketStub({ deleted });
+  const artifacts = bucketStub({
+    deleted,
+    objectsByPrefix: { [input.prefix]: [input.object] },
+  });
+  return make(files, artifacts, () => Effect.succeed(new Set()))
+    .remove(UserId.make("user-1"), Effect.void)
+    .pipe(
+      Effect.result,
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          expect(Result.isFailure(result)).toBe(true);
+          expect(deleted).toEqual([]);
+        }),
+      ),
+    );
 };
 
 const paginatedBucketStub = (deleted: Array<string>, afterFirstDelete: () => void) => {

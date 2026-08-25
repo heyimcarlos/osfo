@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { AllowancePeriodId, UserId } from "../../domain";
 import { AccountDeletion } from "../../services/account-deletion";
@@ -79,15 +79,17 @@ const deleteArtifacts: (
         : { cursor, include: ["customMetadata"], prefix: documentContentPrefix },
     ),
   );
-  const keys = page.objects.flatMap((object) => {
-    const metadata = Option.flatMap(
-      Option.fromNullishOr(object.customMetadata?.osfo),
-      Schema.decodeUnknownOption(ArtifactMetadata),
-    );
-    if (Option.isNone(metadata) || metadata.value.userId !== userId) return [];
-    const attemptKey = attemptKeyForContentKey(object.key);
-    return attemptKey === undefined ? [] : [object.key, attemptKey];
-  });
+  const keyGroups = yield* Effect.forEach(page.objects, (object) =>
+    decodeArtifactMetadata(object).pipe(
+      Effect.flatMap((metadata) => {
+        if (metadata.userId !== userId) return Effect.succeed([]);
+        const attemptKey = attemptKeyForContentKey(object.key);
+        if (attemptKey !== undefined) return Effect.succeed([object.key, attemptKey]);
+        return Effect.fail(ambiguousObjectOwnership(object.key, "malformed artifact key"));
+      }),
+    ),
+  );
+  const keys = keyGroups.flat();
   if (keys.length > 0) {
     yield* authorizeDelete;
     yield* attempt("removeObjects", () => bucket.delete(keys));
@@ -121,17 +123,16 @@ const deleteAttemptEvidence: (
         : { cursor, include: ["customMetadata"], prefix: documentAttemptPrefix },
     ),
   );
-  const keys = page.objects.flatMap((object) => {
-    const metadata = Option.flatMap(
-      Option.fromNullishOr(object.customMetadata?.osfo),
-      Schema.decodeUnknownOption(AttemptMetadata),
-    );
-    return Option.isSome(metadata) &&
-      (metadata.value.userId === userId ||
-        allowancePeriodIds.has(metadata.value.cost.allowancePeriodId))
-      ? [object.key]
-      : [];
-  });
+  const keyGroups = yield* Effect.forEach(page.objects, (object) =>
+    decodeAttemptMetadata(object).pipe(
+      Effect.map((metadata) =>
+        metadata.userId === userId || allowancePeriodIds.has(metadata.cost.allowancePeriodId)
+          ? [object.key]
+          : [],
+      ),
+    ),
+  );
+  const keys = keyGroups.flat();
   if (keys.length > 0) {
     yield* authorizeDelete;
     yield* attempt("removeObjects", () => bucket.delete(keys));
@@ -140,6 +141,23 @@ const deleteAttemptEvidence: (
     yield* deleteAttemptEvidence(bucket, userId, allowancePeriodIds, authorizeDelete, page.cursor);
   }
 });
+
+const decodeArtifactMetadata = (object: R2Object) =>
+  Schema.decodeUnknownEffect(ArtifactMetadata)(object.customMetadata?.osfo).pipe(
+    Effect.mapError((cause) => ambiguousObjectOwnership(object.key, cause)),
+  );
+
+const decodeAttemptMetadata = (object: R2Object) =>
+  Schema.decodeUnknownEffect(AttemptMetadata)(object.customMetadata?.osfo).pipe(
+    Effect.mapError((cause) => ambiguousObjectOwnership(object.key, cause)),
+  );
+
+const ambiguousObjectOwnership = (key: string, cause: unknown) =>
+  new AccountDeletion.AccountDeletionUnavailable({
+    cause,
+    message: `R2 ownership evidence is invalid for ${key}`,
+    operation: "removeObjects",
+  });
 
 const attempt = <A>(operation: string, run: () => Promise<A>) =>
   Effect.tryPromise({

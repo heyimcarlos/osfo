@@ -35,7 +35,7 @@ const AccountDeletionPresentation = Schema.Struct({
   confirmation: Schema.Literal("delete-my-account"),
   consequence: Schema.Literal("Permanently delete this account and all of its data"),
   operation: Schema.Literal("account.delete"),
-  title: Schema.Literal("Delete account"),
+  title: Schema.Literal("Delete Account"),
 });
 type AccountDeletionPresentation = typeof AccountDeletionPresentation.Type;
 

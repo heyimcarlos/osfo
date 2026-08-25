@@ -8,13 +8,14 @@ import {
 import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { webhookEvents } from "@osfo/db/schema/webhooks";
 import { eq, inArray, sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
 import { AgentId, PlanPolicyVersion, UserId } from "../../domain";
 import { AdminActorId, AdminReason } from "../../domain/account-administration";
 import { ActionId } from "../../domain/action-execution";
 import { DeletionCaseId } from "../../domain/deletion-case";
+import { retainedCatalog } from "../../domain/plan-policy";
 import { AccountDeletion } from "../../services/account-deletion";
 import { ApprovalPresentation } from "../../services/authorization";
 
@@ -132,9 +133,94 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
       }),
     );
   });
+  const stageIntegrationTargets = Effect.fn("AccountDeletionPostgres.stageIntegrationTargets")(
+    function* (
+      candidate: AccountDeletion.PendingAccountDeletion,
+      discovered: ReadonlyArray<AccountDeletion.IntegrationAuthorityTarget>,
+    ) {
+      return yield* attempt("stageIntegrationTargets", () =>
+        database.transaction(async (transaction) => {
+          const [row] = await transaction
+            .select({ targets: deletionCases.integration_targets })
+            .from(deletionCases)
+            .where(
+              sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
+                and ${deletionCases.user_id} = ${candidate.userId}`,
+            )
+            .limit(1)
+            .for("update");
+          if (row === undefined) throw new Error("Deletion Case integration progress is missing");
+          const retained = Schema.decodeUnknownSync(
+            AccountDeletion.IntegrationAuthorityTargetProgresses,
+          )(row.targets);
+          const targets = new Map(retained.map((target) => [target.connectionId, target]));
+          for (const target of discovered) {
+            targets.set(target.connectionId, { ...target, status: "pending" });
+          }
+          const progress = [...targets.values()];
+          await transaction
+            .update(deletionCases)
+            .set({ integration_targets: progress })
+            .where(
+              sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
+                and ${deletionCases.user_id} = ${candidate.userId}`,
+            );
+          return progress.flatMap(({ connectionId, status, userId }) =>
+            status === "pending" ? [{ connectionId, userId }] : [],
+          );
+        }),
+      );
+    },
+  );
+  const confirmIntegrationTarget = Effect.fn("AccountDeletionPostgres.confirmIntegrationTarget")(
+    function* (
+      candidate: AccountDeletion.PendingAccountDeletion,
+      target: AccountDeletion.IntegrationAuthorityTarget,
+    ) {
+      yield* attempt("confirmIntegrationTarget", () =>
+        database.transaction(async (transaction) => {
+          const [row] = await transaction
+            .select({ targets: deletionCases.integration_targets })
+            .from(deletionCases)
+            .where(
+              sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
+              and ${deletionCases.user_id} = ${candidate.userId}`,
+            )
+            .limit(1)
+            .for("update");
+          if (row === undefined) throw new Error("Deletion Case integration progress is missing");
+          const retained = Schema.decodeUnknownSync(
+            AccountDeletion.IntegrationAuthorityTargetProgresses,
+          )(row.targets);
+          let found = false;
+          const progress = retained.map((item) => {
+            if (item.connectionId !== target.connectionId || item.userId !== target.userId) {
+              return item;
+            }
+            found = true;
+            return {
+              connectionId: item.connectionId,
+              status: "confirmed" as const,
+              userId: item.userId,
+            };
+          });
+          if (!found) throw new Error("Integration target was not staged before confirmation");
+          await transaction
+            .update(deletionCases)
+            .set({ integration_targets: progress })
+            .where(
+              sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
+              and ${deletionCases.user_id} = ${candidate.userId}`,
+            );
+        }),
+      );
+    },
+  );
   return {
+    confirmIntegrationTarget,
     pending: pending(),
     removeUser,
+    stageIntegrationTargets,
   };
 };
 
@@ -170,7 +256,7 @@ export const inspectAuthorization = (
         })
         .from(deletionCases)
         .innerJoin(users, eq(users.id, deletionCases.user_id))
-        .innerJoin(billingSubscriptions, eq(billingSubscriptions.user_id, deletionCases.user_id))
+        .leftJoin(billingSubscriptions, eq(billingSubscriptions.user_id, deletionCases.user_id))
         .where(
           sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
             and ${deletionCases.user_id} = ${candidate.userId}
@@ -180,12 +266,17 @@ export const inspectAuthorization = (
     );
     const row = rows[0];
     if (row === undefined) return null;
+    if (candidate._tag === "SelfService" && (row.plan === null || row.planPolicyVersion === null)) {
+      return null;
+    }
     const userId = UserId.make(row.userId);
     return {
       resourceOwnerUserId: userId,
       subscription: {
-        plan: row.plan,
-        planPolicyVersion: PlanPolicyVersion.make(row.planPolicyVersion),
+        plan: row.plan ?? "free",
+        planPolicyVersion: PlanPolicyVersion.make(
+          row.planPolicyVersion ?? retainedCatalog.currentVersion,
+        ),
       },
       user:
         row.suspensionAction === "suspended"
