@@ -32,6 +32,7 @@ type RawConfigBinding =
   | "STRIPE_WEBHOOK_SECRET"
   | "SUPERMEMORY_API_BASE_URL"
   | "SUPERMEMORY_API_KEY"
+  | "TELEGRAM_API_BASE_URL"
   | "TELEGRAM_BOT_TOKEN"
   | "TELEGRAM_BOT_USERNAME"
   | "TELEGRAM_WEBHOOK_SECRET_TOKEN"
@@ -65,6 +66,7 @@ export interface CloudflareEnv extends GeneratedCloudflareBindings {
   readonly STRIPE_WEBHOOK_SECRET?: string;
   readonly SUPERMEMORY_API_BASE_URL?: string;
   readonly SUPERMEMORY_API_KEY?: string;
+  readonly TELEGRAM_API_BASE_URL?: string;
   readonly TELEGRAM_BOT_TOKEN?: string;
   readonly TELEGRAM_BOT_USERNAME?: string;
   readonly TELEGRAM_WEBHOOK_SECRET_TOKEN?: string;
@@ -128,6 +130,8 @@ export interface SupermemoryConfig {
 
 /** Telegram linking and delivery configuration. */
 export interface TelegramConfig {
+  /** API origin override for emulated or proxied Telegram Bot API deployments. */
+  readonly apiBaseURL?: string | undefined;
   readonly botToken: Redacted.Redacted;
   readonly botUsername: string;
   readonly webhookSecret: Redacted.Redacted;
@@ -217,6 +221,7 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
       apiKey: Redacted.make(required(env, "SUPERMEMORY_API_KEY")),
     },
     telegram: {
+      apiBaseURL: optionalUrl(env, "TELEGRAM_API_BASE_URL"),
       botToken: Redacted.make(required(env, "TELEGRAM_BOT_TOKEN")),
       botUsername: required(env, "TELEGRAM_BOT_USERNAME").trim(),
       webhookSecret: Redacted.make(required(env, "TELEGRAM_WEBHOOK_SECRET_TOKEN")),
@@ -243,6 +248,7 @@ type RequiredBinding = Exclude<
   | "OSFO_STAGE"
   | "STRIPE_API_BASE_URL"
   | "SUPERMEMORY_API_BASE_URL"
+  | "TELEGRAM_API_BASE_URL"
   | "TWILIO_VERIFY_API_BASE_URL"
 >;
 
@@ -276,6 +282,7 @@ const optionalUrl = (
     | "BETTER_AUTH_API_URL"
     | "STRIPE_API_BASE_URL"
     | "SUPERMEMORY_API_BASE_URL"
+    | "TELEGRAM_API_BASE_URL"
     | "TWILIO_VERIFY_API_BASE_URL",
 ): string | undefined => {
   const value = env[binding];

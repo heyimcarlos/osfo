@@ -59,7 +59,11 @@ export default defineConfig({
   test: {
     fileParallelism: false,
     globalSetup: ["./test/support/journey.globalsetup.ts"],
-    include: ["test/{contracts,journeys,postgres}/**/*.test.ts"],
+    include: [
+      "test/contracts/**/*.test.ts",
+      "test/journeys/**/*.test.ts",
+      "test/postgres/**/*.test.ts",
+    ],
     // postgres.js may cancel its Cloudflare socket stream after the request has
     // completed. Ignore only that known teardown message from its polyfill.
     onUnhandledError: (error) =>
