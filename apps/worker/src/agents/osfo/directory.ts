@@ -2,7 +2,7 @@ import { BrowserCrypto } from "@effect/platform-browser";
 import { Think, type StreamCallback, type ThinkChannels } from "@cloudflare/think";
 import type { MessengerContext } from "@cloudflare/think/messengers";
 import type { UIMessage } from "ai";
-import { Effect, Layer, Option } from "effect";
+import { Effect, Layer, Option, Redacted } from "effect";
 
 import { loadConfig } from "../../config";
 import { Db } from "../../db";
@@ -32,6 +32,7 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
 
   /** Configure the shared messenger webhooks and their conversation resolvers. */
   override configureChannels(): ThinkChannels {
+    const config = loadConfig(this.env);
     const conversation = makeOsfoMessengerRouter({
       hasAgent: (agentId) => this.hasSubAgent(OsfoAgent, agentId),
       resolveAddress: (address) =>
@@ -43,10 +44,11 @@ export class OsfoDirectory extends Think<Env & RuntimeSecrets> {
     });
     return {
       telegram: makeTelegramChannel({
+        apiBaseURL: config.telegram.apiBaseURL,
         conversation,
-        secretToken: this.env.TELEGRAM_WEBHOOK_SECRET_TOKEN,
-        token: this.env.TELEGRAM_BOT_TOKEN,
-        userName: this.env.TELEGRAM_BOT_USERNAME,
+        secretToken: Redacted.value(config.telegram.webhookSecret),
+        token: Redacted.value(config.telegram.botToken),
+        userName: config.telegram.botUsername,
       }),
       whatsapp: makeWhatsAppChannel({
         accessToken: this.env.WHATSAPP_ACCESS_TOKEN,

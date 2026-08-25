@@ -8,23 +8,15 @@ it.effect("starts Adventurer Checkout for a newly registered User", () =>
     const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
       Effect.promise(client.dispose),
     );
-    const phoneNumber = "+15550004321";
-
-    expect((yield* Effect.promise(() => app.auth.sendPhoneOtp(phoneNumber))).status).toBe(200);
-    expect(
-      (yield* Effect.promise(() => app.auth.verifyPhoneOtp(phoneNumber, "424242"))).status,
-    ).toBe(200);
-    const registration = yield* Effect.promise(() =>
-      app.registration.complete({
-        helpAreas: ["money-planning"],
-        locale: "en",
-        preferredName: "Grace",
+    const identity = yield* Effect.promise(() =>
+      app.auth.mintVerifiedUser({
+        profile: {
+          helpAreas: ["money-planning"],
+          locale: "en",
+          preferredName: "Grace",
+        },
       }),
     );
-    expect(registration.response.status).toBe(200);
-    const identity = yield* registration.body === undefined
-      ? Effect.die(new Error("Missing identity"))
-      : Effect.succeed(registration.body);
 
     const checkout = yield* Effect.promise(app.billing.checkout);
     expect(checkout.response.status).toBe(200);

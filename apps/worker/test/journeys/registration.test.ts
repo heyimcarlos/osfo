@@ -8,36 +8,27 @@ it.effect("registers a new User through SMS and provisions the committed free ac
     const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
       Effect.promise(client.dispose),
     );
-    const phoneNumber = "+15550001234";
-
-    const sent = yield* Effect.promise(() => app.auth.sendPhoneOtp(phoneNumber));
-    expect(sent.status).toBe(200);
-
-    const verified = yield* Effect.promise(() => app.auth.verifyPhoneOtp(phoneNumber, "424242"));
-    expect(verified.status).toBe(200);
+    const identity = yield* Effect.promise(() =>
+      app.auth.mintVerifiedUser({
+        profile: {
+          helpAreas: ["research", "files-documents"],
+          locale: "en",
+          preferredName: "Ada",
+        },
+      }),
+    );
 
     const session = yield* Effect.promise(app.auth.session);
     expect(session.status).toBe(200);
     expect(yield* Effect.promise(() => session.json())).toMatchObject({
-      user: { phoneNumber },
+      user: { phoneNumber: identity.phoneNumber },
     });
-
-    const completed = yield* Effect.promise(() =>
-      app.registration.complete({
-        helpAreas: ["research", "files-documents"],
-        locale: "en",
-        preferredName: "Ada",
-      }),
-    );
-    expect(completed.response.status).toBe(200);
-    expect(completed.body).toMatchObject({
+    expect(identity).toMatchObject({
       agentId: expect.stringMatching(/^agent-/u),
       completedAt: expect.any(String),
+      phoneNumber: expect.stringMatching(/^\+1555\d{7}$/u),
       userId: expect.any(String),
     });
-    const identity = yield* completed.body === undefined
-      ? Effect.die(new Error("Missing identity"))
-      : Effect.succeed(completed.body);
 
     const registration = yield* Effect.promise(() => app.database.registration(identity.userId));
     expect(registration).toMatchObject({
@@ -55,12 +46,12 @@ it.effect("registers a new User through SMS and provisions the committed free ac
       expect.objectContaining({
         code: null,
         path: expect.stringMatching(/\/Verifications$/u),
-        to: phoneNumber,
+        to: identity.phoneNumber,
       }),
       expect.objectContaining({
         code: "424242",
         path: expect.stringMatching(/\/VerificationCheck$/u),
-        to: phoneNumber,
+        to: identity.phoneNumber,
       }),
     ]);
   }),

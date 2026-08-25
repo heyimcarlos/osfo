@@ -8,6 +8,7 @@
 node_modules/
 dist/
 coverage/
+artifacts/verification/
 .typescript/
 .alchemy/
 .turbo/

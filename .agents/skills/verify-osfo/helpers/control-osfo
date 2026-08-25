@@ -1,0 +1,804 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/../../../.." && pwd)"
+state_parent="${TMPDIR:-/tmp}/osfo-verification"
+artifact_parent="$repo_root/artifacts/verification/osfo"
+twilio_code="424242"
+telegram_secret="osfo-verification-telegram-secret"
+
+usage() {
+  printf '%s\n' \
+    'Usage:' \
+    '  control-osfo start <run-id>' \
+    '  control-osfo doctor <run-id>' \
+    '  control-osfo identity <run-id>' \
+    '  control-osfo journeys <run-id>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|billing> start' \
+    '  control-osfo record <run-id> <registration|channel-linking|billing> <action|result> <summary>' \
+    '  control-osfo observe <run-id> <registration|channel-linking|billing>' \
+    '  control-osfo channel-invite <run-id>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|billing> finish' \
+    '  control-osfo cleanup <run-id>'
+}
+
+require_run_id() {
+  local run_id="${1:-}"
+  if [[ ! "$run_id" =~ ^[a-z0-9][a-z0-9-]{0,47}$ ]]; then
+    printf 'Invalid run ID: %s\n' "$run_id" >&2
+    exit 2
+  fi
+}
+
+require_feature() {
+  case "${1:-}" in
+    registration|channel-linking|billing) ;;
+    *)
+      printf 'Unknown browser feature: %s\n' "${1:-}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+state_dir_for() {
+  printf '%s/%s\n' "$state_parent" "$1"
+}
+
+artifact_dir_for() {
+  printf '%s/%s\n' "$artifact_parent" "$1"
+}
+
+feature_artifact_dir_for() {
+  printf '%s/%s/%s\n' "$artifact_parent" "$1" "$2"
+}
+
+state_value() {
+  local state_dir key
+  state_dir="$(state_dir_for "$1")"
+  key="$2"
+  if [[ ! -s "$state_dir/$key" ]]; then
+    printf 'Missing run state %s for %s\n' "$key" "$1" >&2
+    exit 1
+  fi
+  printf '%s\n' "$(<"$state_dir/$key")"
+}
+
+doctor_tools() {
+  local tool
+  for tool in bun node docker curl flock git jq ps setsid tr; do
+    if ! command -v "$tool" >/dev/null; then
+      printf 'Required tool is missing: %s\n' "$tool" >&2
+      exit 1
+    fi
+  done
+  if [[ "$(bun --version)" != '1.3.14' ]]; then
+    printf 'Expected Bun 1.3.14, found %s\n' "$(bun --version)" >&2
+    exit 1
+  fi
+  if [[ "$(node --version)" != 'v24.18.0' ]]; then
+    printf 'Expected Node v24.18.0, found %s\n' "$(node --version)" >&2
+    exit 1
+  fi
+  if [[ ! -x "$repo_root/apps/worker/node_modules/.bin/wrangler" || \
+    ! -x "$repo_root/apps/web/node_modules/.bin/vite" ]]; then
+    printf 'Dependencies are missing. Run bun install --frozen-lockfile.\n' >&2
+    exit 1
+  fi
+  docker info >/dev/null
+}
+
+pick_port() {
+  bun -e '
+    import { createServer } from "node:net";
+    const server = createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (address === null || typeof address === "string") process.exit(1);
+      console.log(address.port);
+      server.close();
+    });
+  '
+}
+
+process_start_time() {
+  awk '{ print $22 }' "/proc/$1/stat"
+}
+
+record_process() {
+  local state_dir name pid
+  state_dir="$1"
+  name="$2"
+  pid="$3"
+  printf '%s\n' "$pid" >"$state_dir/$name-pid"
+  process_start_time "$pid" >"$state_dir/$name-start-time"
+}
+
+process_is_owned() {
+  local state_dir name pid expected_start current_start
+  state_dir="$1"
+  name="$2"
+  if [[ ! -s "$state_dir/$name-pid" || ! -s "$state_dir/$name-start-time" ]]; then
+    return 1
+  fi
+  pid="$(<"$state_dir/$name-pid")"
+  expected_start="$(<"$state_dir/$name-start-time")"
+  if [[ ! -r "/proc/$pid/stat" ]]; then
+    return 1
+  fi
+  current_start="$(process_start_time "$pid")"
+  [[ "$current_start" == "$expected_start" ]]
+}
+
+process_group_members() {
+  local process_group_id
+  process_group_id="$1"
+  ps -eo pid=,pgid= | awk -v group="$process_group_id" '$2 == group { print $1 }'
+}
+
+process_group_is_alive() {
+  [[ -n "$(process_group_members "$1")" ]]
+}
+
+process_group_is_owned() {
+  local state_dir name process_group_id run_id member found
+  state_dir="$1"
+  name="$2"
+  if [[ ! -s "$state_dir/$name-pid" ]]; then
+    return 1
+  fi
+  process_group_id="$(<"$state_dir/$name-pid")"
+  run_id="${state_dir##*/}"
+  found=false
+  while read -r member; do
+    [[ -n "$member" ]] || continue
+    found=true
+    if ! tr '\0' '\n' <"/proc/$member/environ" \
+      | rg --fixed-strings --line-regexp --quiet "OSFO_VERIFICATION_RUN_ID=$run_id"; then
+      return 1
+    fi
+  done < <(process_group_members "$process_group_id")
+  [[ "$found" == true ]]
+}
+
+stop_process() {
+  local state_dir name process_group_id attempt
+  state_dir="$1"
+  name="$2"
+  if [[ ! -s "$state_dir/$name-pid" ]]; then
+    return 0
+  fi
+  process_group_id="$(<"$state_dir/$name-pid")"
+  if ! process_group_is_alive "$process_group_id"; then
+    return 0
+  fi
+  if ! process_group_is_owned "$state_dir" "$name"; then
+    printf 'Refusing to stop unowned process group %s recorded for %s\n' \
+      "$process_group_id" "$name" >&2
+    return 1
+  fi
+  kill -TERM -- "-$process_group_id" 2>/dev/null || true
+  for attempt in {1..40}; do
+    if ! process_group_is_alive "$process_group_id"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  kill -KILL -- "-$process_group_id" 2>/dev/null || true
+  for attempt in {1..20}; do
+    if ! process_group_is_alive "$process_group_id"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  printf 'Process group %s for %s survived teardown\n' "$process_group_id" "$name" >&2
+  return 1
+}
+
+write_wrangler_config() {
+  local run_id state_dir postgres_url provider_origin worker_origin web_origin
+  run_id="$1"
+  state_dir="$2"
+  postgres_url="$3"
+  provider_origin="$4"
+  worker_origin="$5"
+  web_origin="$6"
+  bun "$script_dir/wrangler-config.mjs" \
+    "$repo_root/apps/worker/wrangler.jsonc" "$state_dir/wrangler.json" \
+    "$run_id" "$postgres_url" "$provider_origin" "$worker_origin" "$web_origin"
+}
+
+wait_for_file() {
+  local path label attempt
+  path="$1"
+  label="$2"
+  for attempt in {1..120}; do
+    if [[ -s "$path" ]]; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  printf '%s did not become ready\n' "$label" >&2
+  return 1
+}
+
+wait_for_url() {
+  local url label pid attempt
+  url="$1"
+  label="$2"
+  pid="$3"
+  for attempt in {1..180}; do
+    if curl --fail --silent --show-error --max-time 2 \
+      --header 'accept: text/html' "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    if [[ ! -r "/proc/$pid/stat" ]]; then
+      printf '%s exited before readiness\n' "$label" >&2
+      return 1
+    fi
+    sleep 0.5
+  done
+  printf '%s did not answer %s\n' "$label" "$url" >&2
+  return 1
+}
+
+write_identity() {
+  local run_id state_dir checksum base_slot slot offset suffix phone_national phone_e164 telegram_author
+  local identity_file collision
+  local -a area_codes=(204 250 403 416 506 604 613 709 867 902)
+  run_id="$1"
+  state_dir="$2"
+  checksum="$(printf '%s' "$run_id" | cksum | awk '{ print $1 }')"
+  base_slot="$((checksum % 1000))"
+  for offset in {0..999}; do
+    slot="$(((base_slot + offset) % 1000))"
+    suffix="$((100 + slot % 100))"
+    phone_national="${area_codes[$((slot / 100))]}555$(printf '%04d' "$suffix")"
+    collision=false
+    for identity_file in "$state_parent"/*/phone-national; do
+      [[ -f "$identity_file" ]] || continue
+      if [[ "$(<"$identity_file")" == "$phone_national" ]]; then
+        collision=true
+        break
+      fi
+    done
+    if [[ "$collision" == false ]]; then
+      break
+    fi
+  done
+  if [[ "$collision" == true ]]; then
+    printf 'No fictional phone identity remains for another concurrent run\n' >&2
+    exit 1
+  fi
+  phone_e164="+1$phone_national"
+  telegram_author="$((700000000 + slot))"
+  printf '%s\n' "$phone_national" >"$state_dir/phone-national"
+  printf '%s\n' "$phone_e164" >"$state_dir/phone-e164"
+  printf '%s\n' "$telegram_author" >"$state_dir/telegram-author"
+  printf 'Verify %s\n' "$run_id" >"$state_dir/preferred-name"
+}
+
+start_run() {
+  local run_id state_dir artifact_dir container_id postgres_port postgres_url
+  local provider_origin worker_port web_port inspector_port worker_origin web_origin
+  local provider_pid worker_pid web_pid identity_lock_fd launch_checkout
+  run_id="$1"
+  doctor_tools
+  state_dir="$(state_dir_for "$run_id")"
+  artifact_dir="$(artifact_dir_for "$run_id")"
+  mkdir -p "$state_parent"
+  exec {identity_lock_fd}>"$state_parent/identity.lock"
+  flock "$identity_lock_fd"
+  if [[ -e "$state_dir" ]]; then
+    printf 'Run state already exists: %s\n' "$state_dir" >&2
+    exit 1
+  fi
+  mkdir -p "$state_dir" "$artifact_dir/logs"
+  printf '%s\n' "$(git -C "$repo_root" rev-parse HEAD)" >"$state_dir/commit"
+  if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]]; then
+    launch_checkout=dirty
+  else
+    launch_checkout=clean
+  fi
+  printf '%s\n' "$launch_checkout" >"$state_dir/launch-checkout"
+  write_identity "$run_id" "$state_dir"
+  flock --unlock "$identity_lock_fd"
+  exec {identity_lock_fd}>&-
+  trap 'cleanup_run "$run_id" >/dev/null 2>&1 || true' ERR INT TERM
+
+  container_id="$(docker run --detach \
+    --env POSTGRES_DB=osfo \
+    --env POSTGRES_PASSWORD=osfo \
+    --env POSTGRES_USER=osfo \
+    --label "osfo.verification.run=$run_id" \
+    --name "osfo-verify-postgres-$run_id" \
+    --publish 127.0.0.1::5432 \
+    postgres:17)"
+  printf '%s\n' "$container_id" >"$state_dir/container-id"
+  for attempt in {1..60}; do
+    if docker exec "$container_id" pg_isready --dbname osfo --username osfo >/dev/null 2>&1; then
+      break
+    fi
+    if [[ "$attempt" == '60' ]]; then
+      printf 'PostgreSQL did not become ready\n' >&2
+      return 1
+    fi
+    sleep 0.5
+  done
+  postgres_port="$(docker port "$container_id" 5432/tcp | awk -F: 'END { print $NF }')"
+  printf '%s\n' "$postgres_port" >"$state_dir/postgres-port"
+  postgres_url="postgres://osfo:osfo@127.0.0.1:$postgres_port/osfo"
+  DATABASE_URL="$postgres_url" bun run --cwd "$repo_root/packages/db" db:migrate \
+    >"$artifact_dir/logs/migrations.log" 2>&1
+
+  setsid env OSFO_VERIFICATION_RUN_ID="$run_id" \
+    bun "$script_dir/provider-emulator.mjs" "$state_dir/provider-origin" \
+    >"$artifact_dir/logs/provider.log" 2>&1 &
+  provider_pid="$!"
+  record_process "$state_dir" provider "$provider_pid"
+  wait_for_file "$state_dir/provider-origin" 'Provider emulator'
+  provider_origin="$(<"$state_dir/provider-origin")"
+
+  worker_port="$(pick_port)"
+  web_port="$(pick_port)"
+  inspector_port="$(pick_port)"
+  worker_origin="http://127.0.0.1:$worker_port"
+  web_origin="http://127.0.0.1:$web_port"
+  printf '%s\n' "$worker_origin" >"$state_dir/worker-origin"
+  printf '%s\n' "$web_origin" >"$state_dir/web-origin"
+  write_wrangler_config \
+    "$run_id" "$state_dir" "$postgres_url" "$provider_origin" "$worker_origin" "$web_origin"
+
+  setsid env OSFO_VERIFICATION_RUN_ID="$run_id" \
+    "$repo_root/apps/worker/node_modules/.bin/wrangler" dev \
+    --config "$state_dir/wrangler.json" \
+    --ip 127.0.0.1 \
+    --port "$worker_port" \
+    --inspector-port "$inspector_port" \
+    --persist-to "$state_dir/wrangler-state" \
+    --show-interactive-dev-session false \
+    >"$artifact_dir/logs/worker.log" 2>&1 &
+  worker_pid="$!"
+  record_process "$state_dir" worker "$worker_pid"
+
+  setsid env --chdir="$repo_root/apps/web" \
+    OSFO_VERIFICATION_RUN_ID="$run_id" VITE_API_URL="$worker_origin" \
+    "$repo_root/apps/web/node_modules/.bin/vite" \
+    --host 127.0.0.1 --port "$web_port" --strictPort \
+    >"$artifact_dir/logs/web.log" 2>&1 &
+  web_pid="$!"
+  record_process "$state_dir" web "$web_pid"
+
+  wait_for_url "$worker_origin/auth/get-session" 'Worker' "$worker_pid"
+  wait_for_url "$web_origin/get-started" 'Web UI' "$web_pid"
+  printf 'run_id=%s\nlaunch_commit=%s\nlaunch_checkout=%s\nstarted_at=%s\nworker_origin=%s\nweb_origin=%s\n' \
+    "$run_id" "$(<"$state_dir/commit")" "$launch_checkout" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$worker_origin" "$web_origin" >"$artifact_dir/run-metadata.txt"
+  trap - ERR INT TERM
+  printf 'ready run=%s web=%s worker=%s phone=%s otp=%s evidence=%s\n' \
+    "$run_id" "$web_origin" "$worker_origin" "$(<"$state_dir/phone-e164")" \
+    "$twilio_code" "$artifact_dir"
+}
+
+doctor_run() {
+  local run_id state_dir launch_commit launch_checkout current_commit container_id run_label
+  local provider_origin worker_origin web_origin
+  run_id="$1"
+  doctor_tools
+  state_dir="$(state_dir_for "$run_id")"
+  launch_commit="$(state_value "$run_id" commit)"
+  launch_checkout="$(state_value "$run_id" launch-checkout)"
+  current_commit="$(git -C "$repo_root" rev-parse HEAD)"
+  if [[ "$launch_commit" != "$current_commit" ]]; then
+    printf 'Run commit %s is stale against current %s\n' "$launch_commit" "$current_commit" >&2
+    exit 1
+  fi
+  container_id="$(state_value "$run_id" container-id)"
+  run_label="$(docker inspect --format '{{ index .Config.Labels "osfo.verification.run" }}' "$container_id" 2>/dev/null || true)"
+  if [[ "$run_label" != "$run_id" ]]; then
+    printf 'PostgreSQL container is missing or has the wrong run label\n' >&2
+    exit 1
+  fi
+  docker exec "$container_id" pg_isready --dbname osfo --username osfo >/dev/null
+  for process_name in provider worker web; do
+    if ! process_is_owned "$state_dir" "$process_name"; then
+      printf '%s process is not the one started by this run\n' "$process_name" >&2
+      exit 1
+    fi
+  done
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  worker_origin="$(state_value "$run_id" worker-origin)"
+  web_origin="$(state_value "$run_id" web-origin)"
+  curl --fail --silent --show-error --max-time 3 "$provider_origin/_test/twilio/ledger" >/dev/null
+  curl --fail --silent --show-error --max-time 3 "$worker_origin/auth/get-session" >/dev/null
+  curl --fail --silent --show-error --max-time 3 \
+    --header 'accept: text/html' "$web_origin/get-started" >/dev/null
+  printf 'healthy run=%s commit=%s launch_checkout=%s web=%s worker=%s provider=local postgres_container=%s\n' \
+    "$run_id" "$current_commit" "$launch_checkout" \
+    "$web_origin" "$worker_origin" "$container_id"
+}
+
+show_identity() {
+  local run_id
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  printf 'run_id=%s\npreferred_name=%s\nphone_national=%s\nphone_e164=%s\notp=%s\nweb_origin=%s\n' \
+    "$run_id" "$(state_value "$run_id" preferred-name)" \
+    "$(state_value "$run_id" phone-national)" "$(state_value "$run_id" phone-e164)" \
+    "$twilio_code" "$(state_value "$run_id" web-origin)"
+}
+
+qualify_journeys() {
+  local run_id postgres_port
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  postgres_port="$(state_value "$run_id" postgres-port)"
+  OSFO_TEST_POSTGRES_URL="postgres://osfo:osfo@127.0.0.1:$postgres_port/postgres" \
+    bun run --cwd "$repo_root/apps/worker" test:journeys
+}
+
+evidence_start() {
+  local run_id feature artifact_dir feature_dir
+  run_id="$1"
+  feature="$2"
+  doctor_run "$run_id" >/dev/null
+  artifact_dir="$(artifact_dir_for "$run_id")"
+  feature_dir="$(feature_artifact_dir_for "$run_id" "$feature")"
+  if [[ -e "$feature_dir/metadata.txt" ]]; then
+    printf 'Evidence already started for %s in run %s\n' "$feature" "$run_id" >&2
+    exit 1
+  fi
+  mkdir -p "$feature_dir"
+  printf 'run_id=%s\nfeature=%s\nstarted_at=%s\ncommit=%s\nlaunch_checkout=%s\nweb_origin=%s\nworker_origin=%s\ncommand=%q evidence %q %q start\n' \
+    "$run_id" "$feature" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(state_value "$run_id" commit)" "$(state_value "$run_id" launch-checkout)" \
+    "$(state_value "$run_id" web-origin)" \
+    "$(state_value "$run_id" worker-origin)" "$0" "$run_id" "$feature" \
+    >"$feature_dir/metadata.txt"
+  : >"$feature_dir/browser-actions.txt"
+  printf 'evidence_ready feature=%s action_screenshot=%s result_screenshot=%s\n' \
+    "$feature" "$feature_dir/action.png" "$feature_dir/result.png"
+}
+
+record_browser() {
+  local run_id feature phase summary feature_dir
+  run_id="$1"
+  feature="$2"
+  phase="$3"
+  summary="$4"
+  case "$phase" in action|result) ;; *) printf 'Unknown evidence phase: %s\n' "$phase" >&2; exit 2 ;; esac
+  feature_dir="$(feature_artifact_dir_for "$run_id" "$feature")"
+  if [[ ! -s "$feature_dir/metadata.txt" ]]; then
+    printf 'Start evidence before recording browser actions\n' >&2
+    exit 1
+  fi
+  printf '%s phase=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$phase" "$summary" \
+    >>"$feature_dir/browser-actions.txt"
+}
+
+begin_observation() {
+  rm -f "$1/observation-passed.txt"
+}
+
+complete_observation() {
+  local run_id feature_dir
+  run_id="$1"
+  feature_dir="$2"
+  printf 'observed_at=%s\ncommit=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(state_value "$run_id" commit)" \
+    >"$feature_dir/observation-passed.txt"
+}
+
+observe_registration() {
+  local run_id feature_dir container_id provider_origin phone state_json
+  run_id="$1"
+  feature_dir="$(feature_artifact_dir_for "$run_id" registration)"
+  begin_observation "$feature_dir"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  state_json="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userId', u.id,
+      'phoneNumber', u.phone_number,
+      'phoneNumberVerified', u.phone_number_verified,
+      'preferredName', u.preferred_name,
+      'helpAreas', u.help_areas,
+      'registrationCompletedAt', u.registration_completed_at,
+      'agentId', a.agent_id,
+      'billingPlan', bs.plan,
+      'allowancePlan', ap.plan,
+      'activeSessionCount', (select count(*) from sessions s where s.user_id = u.id and s.expires_at > now())
+    ) from users u
+    join agents a on a.user_id = u.id
+    join billing_subscriptions bs on bs.user_id = u.id
+    join lateral (
+      select plan from allowance_periods where user_id = u.id order by starts_at desc limit 1
+    ) ap on true
+    where u.phone_number = '$phone';")"
+  if [[ -z "$state_json" ]]; then
+    printf 'No committed registration found for the run-owned phone number\n' >&2
+    exit 1
+  fi
+  printf '%s\n' "$state_json" | jq . >"$feature_dir/state.json"
+  curl --fail --silent --show-error "$provider_origin/_test/twilio/ledger" \
+    | jq . >"$feature_dir/provider.json"
+  jq --exit-status \
+    --arg phone "$phone" \
+    '.phoneNumber == $phone and .phoneNumberVerified == true and
+      .registrationCompletedAt != null and (.agentId | startswith("agent-")) and
+      .billingPlan == "free" and .allowancePlan == "free" and .activeSessionCount >= 1' \
+    "$feature_dir/state.json" >/dev/null
+  jq --exit-status --arg phone "$phone" \
+    'length == 2 and .[0].to == $phone and .[0].code == null and
+      .[1].to == $phone and .[1].code == "424242"' \
+    "$feature_dir/provider.json" >/dev/null
+  complete_observation "$run_id" "$feature_dir"
+  printf 'observed registration state=%s provider=%s\n' \
+    "$feature_dir/state.json" "$feature_dir/provider.json"
+}
+
+channel_invite() {
+  local run_id state_dir provider_origin worker_origin web_origin telegram_author
+  local update_id payload response_path http_status invite_url ledger_path attempt
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  state_dir="$(state_dir_for "$run_id")"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  worker_origin="$(state_value "$run_id" worker-origin)"
+  web_origin="$(state_value "$run_id" web-origin)"
+  telegram_author="$(state_value "$run_id" telegram-author)"
+  update_id="$((telegram_author + 100000000))"
+  payload="$(printf '{"update_id":%s,"message":{"message_id":1,"from":{"id":%s,"is_bot":false,"first_name":"Verification"},"chat":{"id":%s,"type":"private","first_name":"Verification"},"date":%s,"text":"I want to try Osfo"}}' \
+    "$update_id" "$telegram_author" "$telegram_author" "$(date +%s)")"
+  response_path="$state_dir/telegram-webhook-response.txt"
+  http_status="$(curl --silent --show-error --max-time 90 \
+    --output "$response_path" --write-out '%{http_code}' \
+    --header 'content-type: application/json' \
+    --header "x-telegram-bot-api-secret-token: $telegram_secret" \
+    --data "$payload" "$worker_origin/webhooks/telegram")"
+  if [[ "$http_status" != '200' ]]; then
+    printf 'Telegram delivery failed with HTTP %s: %s\n' "$http_status" "$(<"$response_path")" >&2
+    exit 1
+  fi
+  ledger_path="$state_dir/telegram-ledger.json"
+  invite_url=''
+  for attempt in {1..60}; do
+    curl --fail --silent --show-error "$provider_origin/_test/telegram/ledger" | jq . >"$ledger_path"
+    invite_url="$(jq --raw-output \
+      '.[].body | fromjson? | (.text? // .rich_message.markdown? // empty)' "$ledger_path" \
+      | rg --only-matching "${web_origin//./\\.}/verify/[A-Za-z0-9_-]+" \
+      | tail -n 1 || true)"
+    if [[ -n "$invite_url" ]]; then
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ -z "$invite_url" ]]; then
+    printf 'The local Telegram path produced no invitation. See %s and %s\n' \
+      "$response_path" "$ledger_path" >&2
+    exit 1
+  fi
+  printf '%s\n' "$invite_url" >"$state_dir/channel-invite-url"
+  printf 'invite_ready url=%s author=%s\n' "$invite_url" "$telegram_author"
+}
+
+observe_channel_linking() {
+  local run_id feature_dir container_id provider_origin phone telegram_author invite_url state_json
+  run_id="$1"
+  feature_dir="$(feature_artifact_dir_for "$run_id" channel-linking)"
+  begin_observation "$feature_dir"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  telegram_author="$(state_value "$run_id" telegram-author)"
+  invite_url="$(state_value "$run_id" channel-invite-url)"
+  state_json="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userId', u.id,
+      'phoneNumber', u.phone_number,
+      'channelLinkId', cl.channel_link_id,
+      'channelId', cl.channel_id,
+      'authorId', cl.author_id,
+      'revokedAt', cl.revoked_at,
+      'inviteState', ci.state,
+      'acceptedAt', ci.accepted_at,
+      'acceptedUserId', ci.accepted_user_id,
+      'acceptedChannelLinkId', ci.accepted_channel_link_id,
+      'acceptedAuditCount', (
+        select count(*) from channel_link_audit_events e
+        where e.channel_link_id = cl.channel_link_id and e.event_type = 'link_accepted'
+      )
+    ) from channel_links cl
+    join users u on u.id = cl.user_id
+    join channel_link_invites ci on ci.accepted_channel_link_id = cl.channel_link_id
+    where cl.channel_id = 'telegram' and cl.author_id = '$telegram_author'
+      and cl.revoked_at is null and u.phone_number = '$phone';")"
+  if [[ -z "$state_json" ]]; then
+    printf 'No committed run-owned Telegram link found\n' >&2
+    exit 1
+  fi
+  printf '%s\n' "$state_json" | jq . >"$feature_dir/state.json"
+  curl --fail --silent --show-error "$provider_origin/_test/telegram/ledger" \
+    | jq . >"$feature_dir/provider.json"
+  jq --exit-status \
+    --arg phone "$phone" --arg author "$telegram_author" \
+    '.phoneNumber == $phone and .channelId == "telegram" and .authorId == $author and
+      .revokedAt == null and .inviteState == "accepted" and .acceptedAt != null and
+      .acceptedUserId == .userId and .acceptedChannelLinkId == .channelLinkId and
+      .acceptedAuditCount == 1' "$feature_dir/state.json" >/dev/null
+  jq --exit-status --arg author "$telegram_author" --arg invite "$invite_url" \
+    'any(.[];
+      (.body | fromjson?) as $body |
+      ($body != null) and (($body.chat_id | tostring) == $author) and
+      (($body.text? // $body.rich_message.markdown? // "") | contains($invite)))' \
+    "$feature_dir/provider.json" >/dev/null
+  complete_observation "$run_id" "$feature_dir"
+  printf 'observed channel-linking state=%s provider=%s\n' \
+    "$feature_dir/state.json" "$feature_dir/provider.json"
+}
+
+observe_billing() {
+  local run_id feature_dir container_id provider_origin phone state_json
+  run_id="$1"
+  feature_dir="$(feature_artifact_dir_for "$run_id" billing)"
+  begin_observation "$feature_dir"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  state_json="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userId', u.id,
+      'phoneNumber', u.phone_number,
+      'billingPlan', bs.plan,
+      'allowancePlan', ap.plan,
+      'allowanceEndsAt', ap.ends_at
+    ) from users u
+    join billing_subscriptions bs on bs.user_id = u.id
+    join lateral (
+      select plan, ends_at from allowance_periods where user_id = u.id order by starts_at desc limit 1
+    ) ap on true
+    where u.phone_number = '$phone';")"
+  if [[ -z "$state_json" ]]; then
+    printf 'No committed billing state found for the run-owned User\n' >&2
+    exit 1
+  fi
+  printf '%s\n' "$state_json" | jq . >"$feature_dir/state.json"
+  curl --fail --silent --show-error "$provider_origin/_test/stripe/ledger" \
+    | jq . >"$feature_dir/provider.json"
+  jq --exit-status --arg phone "$phone" \
+    '.phoneNumber == $phone and .billingPlan == "free" and
+      .allowancePlan == "free" and .allowanceEndsAt != null' \
+    "$feature_dir/state.json" >/dev/null
+  complete_observation "$run_id" "$feature_dir"
+  printf 'observed billing state=%s provider=%s\n' \
+    "$feature_dir/state.json" "$feature_dir/provider.json"
+}
+
+evidence_finish() {
+  local run_id feature feature_dir current_commit launch_commit launch_checkout
+  run_id="$1"
+  feature="$2"
+  feature_dir="$(feature_artifact_dir_for "$run_id" "$feature")"
+  launch_commit="$(state_value "$run_id" commit)"
+  launch_checkout="$(state_value "$run_id" launch-checkout)"
+  current_commit="$(git -C "$repo_root" rev-parse HEAD)"
+  if [[ "$launch_commit" != "$current_commit" ]]; then
+    printf 'Evidence is stale because HEAD changed after launch\n' >&2
+    exit 1
+  fi
+  if [[ "$launch_checkout" != clean ]]; then
+    printf 'Final evidence requires a checkout that was clean at launch. Treat this run as a draft.\n' >&2
+    exit 1
+  fi
+  if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]]; then
+    printf 'Final evidence requires a clean committed checkout. Treat this run as a draft.\n' >&2
+    exit 1
+  fi
+  for required in \
+    metadata.txt browser-actions.txt action.png result.png state.json provider.json \
+    observation-passed.txt; do
+    if [[ ! -s "$feature_dir/$required" ]]; then
+      printf 'Evidence is incomplete: %s\n' "$feature_dir/$required" >&2
+      exit 1
+    fi
+  done
+  if ! rg --quiet 'phase=action ' "$feature_dir/browser-actions.txt" || \
+    ! rg --quiet 'phase=result ' "$feature_dir/browser-actions.txt"; then
+    printf 'Evidence needs both action and result browser records\n' >&2
+    exit 1
+  fi
+  printf 'completed_at=%s\nresult=PASS\ncommit=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$current_commit" >"$feature_dir/result.txt"
+  printf 'verified feature=%s commit=%s evidence=%s\n' "$feature" "$current_commit" "$feature_dir"
+}
+
+cleanup_run() {
+  local run_id state_dir container_id run_label artifact_dir
+  run_id="$1"
+  state_dir="$(state_dir_for "$run_id")"
+  artifact_dir="$(artifact_dir_for "$run_id")"
+  if [[ ! -e "$state_dir" ]]; then
+    printf 'No active state to clean for run %s\n' "$run_id"
+    return 0
+  fi
+  stop_process "$state_dir" web
+  stop_process "$state_dir" worker
+  stop_process "$state_dir" provider
+  if [[ -s "$state_dir/container-id" ]]; then
+    container_id="$(<"$state_dir/container-id")"
+    if docker inspect "$container_id" >/dev/null 2>&1; then
+      run_label="$(docker inspect --format '{{ index .Config.Labels "osfo.verification.run" }}' "$container_id")"
+      if [[ "$run_label" != "$run_id" ]]; then
+        printf 'Refusing to remove container with mismatched run label\n' >&2
+        exit 1
+      fi
+      docker rm --force "$container_id" >/dev/null
+    fi
+  fi
+  rm -r "$state_dir"
+  printf 'cleaned run=%s evidence=%s\n' "$run_id" "$artifact_dir"
+}
+
+command_name="${1:-help}"
+case "$command_name" in
+  start)
+    require_run_id "${2:-}"
+    start_run "$2"
+    ;;
+  doctor)
+    require_run_id "${2:-}"
+    doctor_run "$2"
+    ;;
+  identity)
+    require_run_id "${2:-}"
+    show_identity "$2"
+    ;;
+  journeys)
+    require_run_id "${2:-}"
+    qualify_journeys "$2"
+    ;;
+  evidence)
+    require_run_id "${2:-}"
+    require_feature "${3:-}"
+    case "${4:-}" in
+      start) evidence_start "$2" "$3" ;;
+      finish) evidence_finish "$2" "$3" ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    ;;
+  record)
+    require_run_id "${2:-}"
+    require_feature "${3:-}"
+    record_browser "$2" "$3" "${4:-}" "${5:-}"
+    ;;
+  observe)
+    require_run_id "${2:-}"
+    require_feature "${3:-}"
+    doctor_run "$2" >/dev/null
+    case "$3" in
+      registration) observe_registration "$2" ;;
+      channel-linking) observe_channel_linking "$2" ;;
+      billing) observe_billing "$2" ;;
+    esac
+    ;;
+  channel-invite)
+    require_run_id "${2:-}"
+    channel_invite "$2"
+    ;;
+  cleanup)
+    require_run_id "${2:-}"
+    cleanup_run "$2"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
