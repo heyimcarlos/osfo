@@ -1716,27 +1716,20 @@ export class OsfoAgent extends Think<Env> {
             try: () => this.#activateCurrentSession(),
             catch: sessionDeletionFailure("The replacement Session could not be activated"),
           }),
-          authorizeDeletion: Effect.tryPromise({
-            try: () => {
-              const current = this.#currentApprovedActions.get(deletionAuthorization.actionId);
-              return this.#recheckDeletionAction(
-                deletionAuthorization.actionId,
-                "session.delete",
-                current?.presentation === deletionAuthorization.presentation &&
-                  current !== undefined &&
-                  hasExactSessionDeleteInput(current.actionPresentation, input),
-                "deleteSession",
-              );
-            },
-            catch: sessionDeletionFailure("Session deletion authority could not be loaded"),
-          }).pipe(
-            Effect.flatMap((result) =>
-              Predicate.isTagged(result, "DeletionActionUnavailable") ||
-              Predicate.isTagged(result, "Denied")
-                ? Effect.fail(result)
-                : Effect.void,
+          authorizeDeletion: this.#managedActionAuthorization
+            .recheck(
+              deletionAuthorization.authorityIdentity,
+              { actionId: deletionAuthorization.actionId, kind: "session.delete" },
+              deletionAuthorization.presentation,
+            )
+            .pipe(
+              Effect.mapError(
+                sessionDeletionFailure("Session deletion authority could not be loaded"),
+              ),
+              Effect.flatMap((result) =>
+                Predicate.isTagged(result, "Denied") ? Effect.fail(result) : Effect.void,
+              ),
             ),
-          ),
           clearMessages: (sessionId) =>
             Effect.tryPromise({
               try: () => Session.create(this).forSession(sessionId).clearMessages(),

@@ -7,8 +7,8 @@ Account deletion permanently removes the authenticated User's account and User-s
 - self-service deletion authority and exact Approval;
 - immediate account fencing and signed-out completion;
 - User-scoped Supermemory container deletion;
-- Agent registry and SQLite deletion, including personal Skill state, immutable Skill Versions, indexes, and pending learning obligations owned by that Agent;
-- R2 deletion of trusted personal Skill evidence under the User prefix;
+- whole Agent registry and SQLite facet deletion, observed through the current initialization record and registry entry;
+- R2 deletion of a run-owned trusted-evidence object under the User prefix;
 - PostgreSQL deletion of the User, session, Agent route, Channel Link, billing, allowance, and pending Deletion Case;
 - survival of unrelated provider and R2 sentinels.
 
@@ -32,6 +32,6 @@ PASS requires the signed-out home result; no run-owned PostgreSQL User graph, ac
 
 - The first `Delete My Data` button fetches and renders the server-owned immutable Action Presentation. The irreversible action consumes the exact Approval at `Confirm account deletion`; pause at that boundary.
 - Use a fresh run after any deletion attempt. There is no restore or rejected-deletion receipt path.
-- The target R2 object represents trusted evidence referenced by personal Skills. Agent SQLite deletion covers the co-located Skill, immutable Version, index, and post-turn learning state even before those schemas gain a public browser editor.
+- The current Agent schema has no personal Skill, Skill Version, Skill index, or learning-obligation tables to seed directly. This drive proves deletion of the whole Agent SQLite facet and a User-owned R2 trusted-evidence object. It must not be reported as direct row-level Skill lifecycle evidence until those tables exist and the observer seeds them.
 - An HTTP response, empty browser session, or missing PostgreSQL User alone is incomplete. Require every observer assertion and the visible signed-out result.
 - The unrelated provider and R2 objects are run-owned controls. Their survival proves User-scoped deletion; cleanup removes their local run storage afterward.

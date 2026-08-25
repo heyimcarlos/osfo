@@ -3,11 +3,13 @@
 /* oxlint-disable eslint/no-underscore-dangle -- The assertion reads the domain outcome discriminator. */
 import { BrowserCrypto } from "@effect/platform-browser";
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 
 import { PlanPolicyVersion, UserId } from "../domain";
+import { AdminActorId, AdminReason } from "../domain/account-administration";
 import { ActionId } from "../domain/action-execution";
 import { AuthSessionId } from "../domain/auth-session";
+import type { DeletionCaseId } from "../domain/deletion-case";
 import { ApprovalPresentation } from "./authorization";
 import { AuthSession } from "./auth-session";
 import { DeletionCase } from "./deletion-case";
@@ -68,3 +70,63 @@ it.effect(
     );
   },
 );
+
+it.effect("retries the AuthSession fence for a retained administrative Deletion Case", () => {
+  const userId = UserId.make("user-1");
+  let retainedDeletionCaseId: DeletionCaseId | null = null;
+  let revocations = 0;
+  return Effect.gen(function* () {
+    const service = yield* DeletionCase.make;
+    const command = {
+      adminActorId: AdminActorId.make("admin-1"),
+      reason: AdminReason.make("Required erasure"),
+      userId,
+    };
+    const first = yield* service.request(command).pipe(Effect.result);
+    expect(Result.isFailure(first)).toBe(true);
+
+    const second = yield* service.request(command);
+    expect(second).toEqual({
+      _tag: "DeletionAlreadyRequested",
+      deletionCaseId: retainedDeletionCaseId,
+    });
+    expect(revocations).toBe(2);
+  }).pipe(
+    Effect.provide(BrowserCrypto.layer),
+    Effect.provideService(
+      AuthSession.Service,
+      AuthSession.Service.of({
+        inspect: () => Effect.die(new Error("unexpected inspection")),
+        revoke: () => Effect.die(new Error("unexpected single revocation")),
+        revokeAllForUser: () =>
+          Effect.suspend(() => {
+            revocations += 1;
+            return revocations === 1
+              ? Effect.fail(
+                  new AuthSession.AuthSessionUnavailable({
+                    cause: "temporary database failure",
+                    message: "AuthSession fence unavailable",
+                    operation: "revokeAll",
+                  }),
+                )
+              : Effect.void;
+          }),
+      }),
+    ),
+    Effect.provideService(
+      DeletionCase.Persistence,
+      DeletionCase.Persistence.of({
+        inspect: () => Effect.succeed({ _tag: "DeletionAccessAvailable" }),
+        request: (_command, deletionCaseId) =>
+          Effect.sync(() => {
+            if (retainedDeletionCaseId !== null) {
+              return { _tag: "Existing" as const, deletionCaseId: retainedDeletionCaseId };
+            }
+            retainedDeletionCaseId = deletionCaseId;
+            return { _tag: "Created" as const };
+          }),
+        requestSelf: () => Effect.die(new Error("unexpected self-service request")),
+      }),
+    ),
+  );
+});

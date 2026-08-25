@@ -12,12 +12,14 @@ import { Effect } from "effect";
 
 import type { Database } from "@osfo/db";
 import { AgentId, PlanPolicyVersion, UserId } from "../../domain";
+import { AdminActorId, AdminReason } from "../../domain/account-administration";
 import { ActionId } from "../../domain/action-execution";
 import { DeletionCaseId } from "../../domain/deletion-case";
 import { AccountDeletion } from "../../services/account-deletion";
 import { ApprovalPresentation } from "../../services/authorization";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transaction boundaries require async functions. */
+/* oxlint-disable eslint/no-underscore-dangle -- Durable candidate variants use the canonical _tag discriminator. */
 
 /** Build durable pending-account discovery and final PostgreSQL erasure. */
 export const make = (database: Database): AccountDeletion.PortInterface["persistence"] => {
@@ -29,25 +31,53 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
           approvalActionId: deletionCases.approval_action_id,
           approvalPresentation: deletionCases.approval_presentation,
           deletionCaseId: deletionCases.deletion_case_id,
+          reason: deletionCases.reason,
+          requestedByAdminId: deletionCases.requested_by_admin_id,
+          requestedByUserId: deletionCases.requested_by_user_id,
           userId: deletionCases.user_id,
         })
         .from(deletionCases)
-        .leftJoin(agents, eq(agents.user_id, deletionCases.user_id))
-        .where(sql`${deletionCases.requested_by_user_id} = ${deletionCases.user_id}`),
+        .leftJoin(agents, eq(agents.user_id, deletionCases.user_id)),
     );
-    return rows.flatMap(
-      ({ agentId, approvalActionId, approvalPresentation, deletionCaseId, userId }) =>
-        approvalActionId === null || approvalPresentation === null
-          ? []
-          : [
+    return rows.flatMap<AccountDeletion.PendingAccountDeletion>(
+      ({
+        agentId,
+        approvalActionId,
+        approvalPresentation,
+        deletionCaseId,
+        reason,
+        requestedByAdminId,
+        requestedByUserId,
+        userId,
+      }) => {
+        const common = {
+          agentId: agentId === null ? null : AgentId.make(agentId),
+          deletionCaseId: DeletionCaseId.make(deletionCaseId),
+          userId: UserId.make(userId),
+        };
+        if (requestedByAdminId !== null) {
+          return [
+            {
+              ...common,
+              _tag: "Administrative" as const,
+              adminActorId: AdminActorId.make(requestedByAdminId),
+              reason: AdminReason.make(reason),
+            },
+          ];
+        }
+        return requestedByUserId === userId &&
+          approvalActionId !== null &&
+          approvalPresentation !== null
+          ? [
               {
-                agentId: agentId === null ? null : AgentId.make(agentId),
+                ...common,
+                _tag: "SelfService" as const,
                 approvalActionId: ActionId.make(approvalActionId),
                 approvalPresentation: ApprovalPresentation.make(approvalPresentation),
-                deletionCaseId: DeletionCaseId.make(deletionCaseId),
-                userId: UserId.make(userId),
               },
-            ],
+            ]
+          : [];
+      },
     );
   });
   const removeUser = Effect.fn("AccountDeletionPostgres.removeUser")(function* (userId: UserId) {
@@ -113,6 +143,17 @@ export const inspectAuthorization = (
   database: Database,
 ): AccountDeletion.PortInterface["inspectAuthorization"] =>
   Effect.fn("AccountDeletionPostgres.inspectAuthorization")(function* (candidate) {
+    const exactAuthority =
+      candidate._tag === "SelfService"
+        ? sql`${deletionCases.requested_by_user_id} = ${candidate.userId}
+            and ${deletionCases.requested_by_admin_id} is null
+            and ${deletionCases.approval_action_id} = ${candidate.approvalActionId}
+            and ${deletionCases.approval_presentation} = ${candidate.approvalPresentation}`
+        : sql`${deletionCases.requested_by_admin_id} = ${candidate.adminActorId}
+            and ${deletionCases.requested_by_user_id} is null
+            and ${deletionCases.reason} = ${candidate.reason}
+            and ${deletionCases.approval_action_id} is null
+            and ${deletionCases.approval_presentation} is null`;
     const rows = yield* attempt("recheckDeletionAuthority", () =>
       database
         .select({
@@ -133,9 +174,7 @@ export const inspectAuthorization = (
         .where(
           sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
             and ${deletionCases.user_id} = ${candidate.userId}
-            and ${deletionCases.requested_by_user_id} = ${candidate.userId}
-            and ${deletionCases.approval_action_id} = ${candidate.approvalActionId}
-            and ${deletionCases.approval_presentation} = ${candidate.approvalPresentation}`,
+            and ${exactAuthority}`,
         )
         .limit(1),
     );

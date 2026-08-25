@@ -1,19 +1,23 @@
 /* oxlint-disable effecttsgo/strict-effect-provide, vitest/no-standalone-expect -- The PostgreSQL contract test owns its concrete database Layer and assertions execute inside it.effect. */
+/* oxlint-disable eslint/no-underscore-dangle -- Assertions inspect canonical tagged outcomes. */
 import { env } from "cloudflare:workers";
 import { agents } from "@osfo/db/schema/agents";
 import { sessions, users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { expect, it } from "@effect/vitest";
+import { BrowserCrypto } from "@effect/platform-browser";
 import { eq } from "drizzle-orm";
-import { DateTime, Effect } from "effect";
+import { DateTime, Effect, Layer } from "effect";
 
 import { Db } from "../../src/db";
 import { PlanPolicyVersion, UserId } from "../../src/domain";
 import { AuthSessionId } from "../../src/domain/auth-session";
+import { AdminActorId, AdminReason } from "../../src/domain/account-administration";
 import { DeletionCaseId } from "../../src/domain/deletion-case";
 import { ActionId } from "../../src/domain/action-execution";
 import { ApprovalPresentation } from "../../src/services/authorization";
+import { AccountAuthorities } from "../../src/composition/account-authorities";
 import { AccountDeletionPostgres } from "../../src/integrations/postgres/account-deletion";
 import { DeletionCasePostgres } from "../../src/integrations/postgres/deletion-case";
 import { spawnApp } from "../support/spawn-app";
@@ -118,7 +122,9 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
 
       const accountDeletion = AccountDeletionPostgres.make(database);
       const [candidate] = yield* accountDeletion.pending;
-      if (candidate === undefined) return yield* Effect.die(new Error("Deletion Case missing"));
+      if (candidate === undefined || candidate._tag !== "SelfService") {
+        return yield* Effect.die(new Error("Self-service Deletion Case missing"));
+      }
       expect(
         yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate),
       ).toMatchObject({
@@ -175,9 +181,54 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
   ),
 );
 
-const registerUser = (app: Awaited<ReturnType<typeof spawnApp>>) =>
+it.effect("discovers and rechecks an administrator-started deletion after fencing sessions", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
+        Effect.promise(client.dispose),
+      );
+      const userId = yield* registerUser(app, "+15550002523");
+      const database = yield* Db.database;
+      const authorities = yield* AccountAuthorities.make;
+      const requested = yield* authorities.deletionCases.request({
+        adminActorId: AdminActorId.make("admin-1"),
+        reason: AdminReason.make("Required administrative erasure"),
+        userId,
+      });
+      expect(requested._tag).toBe("DeletionRequested");
+      expect(
+        yield* Effect.promise(() =>
+          database.select().from(sessions).where(eq(sessions.userId, userId)),
+        ),
+      ).toEqual([]);
+
+      const accountDeletion = AccountDeletionPostgres.make(database);
+      const candidate = (yield* accountDeletion.pending).find((item) => item.userId === userId);
+      if (candidate === undefined || candidate._tag !== "Administrative") {
+        return yield* Effect.die(new Error("Administrative Deletion Case missing"));
+      }
+      expect(candidate).toMatchObject({
+        adminActorId: "admin-1",
+        reason: "Required administrative erasure",
+        userId,
+      });
+      expect(
+        yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate),
+      ).toMatchObject({ resourceOwnerUserId: userId });
+      expect(
+        yield* AccountDeletionPostgres.inspectAuthorization(database)({
+          ...candidate,
+          reason: AdminReason.make("Changed reason"),
+        }),
+      ).toBeNull();
+      yield* accountDeletion.removeUser(userId);
+      return undefined;
+    }).pipe(Effect.provide(Layer.merge(Db.layer({ db: env.DB }), BrowserCrypto.layer))),
+  ),
+);
+
+const registerUser = (app: Awaited<ReturnType<typeof spawnApp>>, phoneNumber = "+15550002522") =>
   Effect.gen(function* () {
-    const phoneNumber = "+15550002522";
     yield* Effect.promise(() => app.auth.sendPhoneOtp(phoneNumber));
     yield* Effect.promise(() => app.auth.verifyPhoneOtp(phoneNumber, "424242"));
     const completed = yield* Effect.promise(() =>

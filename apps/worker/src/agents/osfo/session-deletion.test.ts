@@ -41,6 +41,62 @@ it.effect(
   },
 );
 
+it.effect("retries a retained Session deletion after the initial local clear fails", () => {
+  const events: Array<string> = [];
+  const deletedSessionId = SessionId.make("session-1");
+  const replacementSessionId = SessionId.make("session-2");
+  let currentSessionId = deletedSessionId;
+  let clearAttempts = 0;
+  let owned = true;
+  const run = () =>
+    deleteLocalSession(
+      { replacementSessionId, sessionId: deletedSessionId },
+      {
+        activateCurrentSession: record(events, "activate"),
+        authorizeDeletion: record(events, "recheck-retained-authorization"),
+        clearMessages: () =>
+          Effect.suspend(() => {
+            clearAttempts += 1;
+            events.push(`clear-${clearAttempts}`);
+            return clearAttempts === 1 ? Effect.fail(new TestLocalClearUnavailable()) : Effect.void;
+          }),
+        inspect: Effect.sync(() => ({
+          currentSessionId,
+          routeId: ConversationRouteId.make("route-1"),
+        })),
+        ownsSession: () => Effect.sync(() => owned),
+        replacedAt: Effect.succeed(DbTimestamp.make("2026-08-25T12:00:00.000Z")),
+        replaceCurrentSession: () =>
+          Effect.sync(() => {
+            currentSessionId = replacementSessionId;
+            events.push("replace");
+          }),
+        settle: () =>
+          Effect.sync(() => {
+            owned = false;
+            events.push("settle");
+          }),
+      },
+    );
+
+  return Effect.gen(function* () {
+    const first = yield* run().pipe(Effect.result);
+    expect(Result.isFailure(first)).toBe(true);
+    yield* run();
+
+    expect(owned).toBe(false);
+    expect(events).toEqual([
+      "replace",
+      "activate",
+      "recheck-retained-authorization",
+      "clear-1",
+      "recheck-retained-authorization",
+      "clear-2",
+      "settle",
+    ]);
+  });
+});
+
 const record = (events: Array<string>, event: string) =>
   Effect.sync(() => {
     events.push(event);
@@ -48,5 +104,10 @@ const record = (events: Array<string>, event: string) =>
 
 class TestAuthorityChanged extends Schema.TaggedError<TestAuthorityChanged>()(
   "TestAuthorityChanged",
+  {},
+) {}
+
+class TestLocalClearUnavailable extends Schema.TaggedError<TestLocalClearUnavailable>()(
+  "TestLocalClearUnavailable",
   {},
 ) {}

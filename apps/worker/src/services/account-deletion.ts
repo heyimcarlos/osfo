@@ -1,6 +1,7 @@
 import { Context, DateTime, Effect, Layer, Predicate, Schema } from "effect";
 
 import type { AgentId, PlanPolicyVersion, UserId } from "../domain";
+import type { AdminActorId, AdminReason } from "../domain/account-administration";
 import type { ActionId } from "../domain/action-execution";
 import type { DeletionCaseId } from "../domain/deletion-case";
 import type { UserAccessFact } from "../domain/user-suspension";
@@ -14,12 +15,45 @@ import {
 } from "./authorization";
 import { MemoryProvider } from "./memory-provider";
 
-/** One fenced account still carrying a durable deletion obligation. */
-export interface PendingAccountDeletion {
+/* oxlint-disable eslint/no-underscore-dangle -- Domain variants use the canonical _tag discriminator. */
+
+interface PendingAccountDeletionBase {
   readonly agentId: AgentId | null;
+  readonly deletionCaseId: DeletionCaseId;
+  readonly userId: UserId;
+}
+
+/** One self-service Deletion Case carrying the exact accepted Approval. */
+export interface PendingSelfAccountDeletion extends PendingAccountDeletionBase {
+  readonly _tag: "SelfService";
   readonly approvalActionId: ActionId;
   readonly approvalPresentation: ApprovalPresentation;
-  readonly deletionCaseId: DeletionCaseId;
+}
+
+/** One administrator-started Deletion Case carrying its immutable manual authority. */
+export interface PendingAdministrativeAccountDeletion extends PendingAccountDeletionBase {
+  readonly _tag: "Administrative";
+  readonly adminActorId: AdminActorId;
+  readonly reason: AdminReason;
+}
+
+/** One fenced account still carrying a durable deletion obligation. */
+export type PendingAccountDeletion =
+  | PendingAdministrativeAccountDeletion
+  | PendingSelfAccountDeletion;
+
+/** One current provider-owned integration authority targeted to the deleting User. */
+export const IntegrationAuthorityTargetId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(500),
+).pipe(Schema.brand("IntegrationAuthorityTargetId"));
+
+/** One current provider-owned integration authority targeted to the deleting User. */
+export type IntegrationAuthorityTargetId = typeof IntegrationAuthorityTargetId.Type;
+
+/** One current provider-owned integration authority targeted to the deleting User. */
+export interface IntegrationAuthorityTarget {
+  readonly connectionId: IntegrationAuthorityTargetId;
   readonly userId: UserId;
 }
 
@@ -52,6 +86,16 @@ export interface PortInterface {
       userId: UserId,
     ) => Effect.Effect<void, AccountDeletionUnavailable>;
     readonly remove: (agentId: AgentId) => Effect.Effect<void, AccountDeletionUnavailable>;
+  };
+  readonly integrations: {
+    /** Discover only connection authorities that still exist for this User. */
+    readonly pending: (
+      userId: UserId,
+    ) => Effect.Effect<ReadonlyArray<IntegrationAuthorityTarget>, AccountDeletionUnavailable>;
+    /** Return only after this exact provider connection is confirmed absent. */
+    readonly revoke: (
+      target: IntegrationAuthorityTarget,
+    ) => Effect.Effect<void, AccountDeletionUnavailable>;
   };
   readonly objects: {
     readonly remove: (
@@ -93,6 +137,9 @@ export const make = Effect.gen(function* () {
   ) {
     const facts = yield* dependencies.inspectAuthorization(candidate);
     if (facts === null) return false;
+    if (candidate._tag === "Administrative") {
+      return facts.resourceOwnerUserId === candidate.userId;
+    }
     const operation = {
       actionId: candidate.approvalActionId,
       kind: "account.delete",
@@ -161,6 +208,18 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
+    const integrationTargets = yield* dependencies.integrations.pending(candidate.userId);
+    for (const target of integrationTargets) {
+      if (target.userId !== candidate.userId) {
+        return yield* new AccountDeletionUnavailable({
+          cause: target,
+          message: "Integration authority discovery crossed the deleting User fence",
+          operation: "deleteIntegrationAuthority",
+        });
+      }
+      yield* requireCurrentAuthority("before an integration authority deletion");
+      yield* dependencies.integrations.revoke(target);
+    }
     yield* dependencies.objects.remove(
       candidate.userId,
       requireCurrentAuthority("before an R2 object deletion"),

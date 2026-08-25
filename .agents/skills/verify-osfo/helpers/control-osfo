@@ -686,13 +686,13 @@ seed_account_deletion() {
 
   files_bucket="$(jq --exit-status --raw-output \
     '.r2_buckets[] | select(.binding == "FILES") | .bucket_name' "$state_dir/wrangler.json")"
-  target_key="users/$user_id/trusted-skill-evidence/$run_id.txt"
-  unrelated_key="users/unrelated-$run_id/trusted-skill-evidence/$run_id.txt"
+  target_key="users/$user_id/trusted-evidence/$run_id.txt"
+  unrelated_key="users/unrelated-$run_id/trusted-evidence/$run_id.txt"
   printf '%s\n' "$files_bucket" >"$state_dir/account-deletion-files-bucket"
   printf '%s\n' "$target_key" >"$state_dir/account-deletion-target-r2-key"
   printf '%s\n' "$unrelated_key" >"$state_dir/account-deletion-unrelated-r2-key"
   put_r2_object "$state_dir" "$files_bucket" "$target_key" \
-    "run-owned personal Skill evidence for $user_id"
+    "run-owned trusted evidence for $user_id"
   put_r2_object "$state_dir" "$files_bucket" "$unrelated_key" \
     "unrelated User sentinel for $run_id"
   r2_object_exists "$state_dir" "$files_bucket" "$target_key"

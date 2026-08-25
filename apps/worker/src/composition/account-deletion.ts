@@ -55,6 +55,19 @@ const makePort = (bindings: Bindings) =>
               }),
           }),
       },
+      integrations: {
+        // No integration provider adapter or connected-account store exists in the current
+        // runtime. The port stays explicit so a delivered provider cannot be skipped silently.
+        pending: () => Effect.succeed([]),
+        revoke: (target) =>
+          Effect.fail(
+            new AccountDeletion.AccountDeletionUnavailable({
+              cause: target,
+              message: "Integration authority deletion is unavailable",
+              operation: "deleteIntegrationAuthority",
+            }),
+          ),
+      },
       objects:
         bindings.FILES === undefined || bindings.ARTIFACTS === undefined
           ? {
