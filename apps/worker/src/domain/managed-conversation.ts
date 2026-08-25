@@ -1,7 +1,8 @@
-import { Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 
 import {
   AllowancePeriodId,
+  CapabilityCatalogVersion,
   ChannelLinkId,
   ConversationRouteId,
   Plan,
@@ -15,8 +16,69 @@ import { ChannelAddress } from "./channel-link";
 import { OriginatingAuthority } from "./authority";
 import { CoreMemoryAuthorizationSnapshotEncoded } from "./core-memory-authorization";
 import { ManagedModelRoute } from "./model-access-policy";
+import {
+  CapabilityId,
+  governedCapabilitiesV1Version,
+  retainedCapabilityCatalogs,
+  resolveCapabilityCatalog,
+} from "./capability-catalog";
+import { FileAnalysisId } from "./file";
 
 const positiveInteger = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThan(0));
+const maximumManagedSkillBodyBytes = Number(
+  Result.getOrThrow(
+    resolveCapabilityCatalog(retainedCapabilityCatalogs, governedCapabilitiesV1Version),
+  ).skillLearning.skillBodyBytes,
+);
+const ManagedSkillBody = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.makeFilter(
+    (instructions) =>
+      new TextEncoder().encode(instructions).byteLength <= maximumManagedSkillBodyBytes ||
+      `Managed Skill bodies must not exceed ${maximumManagedSkillBodyBytes} encoded bytes`,
+  ),
+);
+
+/** Maximum immutable Skill bodies that one managed turn may retain and activate. */
+export const maximumLoadedSkillsPerTurn = 5;
+
+/** Immutable server receipt for one Skill body loaded during an exact managed Submission. */
+export const ManagedLoadedSkillReceipt = Schema.Struct({
+  capabilityIds: Schema.Array(CapabilityId).check(Schema.isMinLength(1), Schema.isMaxLength(22)),
+  catalogVersion: CapabilityCatalogVersion,
+  description: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+  instructions: ManagedSkillBody,
+  skillId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  skillVersion: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  source: Schema.Literals(["personal", "system"]),
+  submissionId: ThinkSubmissionId,
+});
+
+/** Immutable server receipt for one Skill body loaded during an exact managed Submission. */
+export type ManagedLoadedSkillReceipt = typeof ManagedLoadedSkillReceipt.Type;
+
+/** Trusted pending analysis retained for a natural follow-up turn. */
+export const ManagedPendingFileAnalysis = Schema.Struct({
+  analysisId: FileAnalysisId,
+});
+
+/** Trusted pending analysis retained for a natural follow-up turn. */
+export type ManagedPendingFileAnalysis = typeof ManagedPendingFileAnalysis.Type;
+
+/**
+ * Server-owned progressive state stored on the durable managed-turn message.
+ * Component limits keep the complete JSON receipt below Think's metadata row budget.
+ */
+export const ManagedCapabilityTurnState = Schema.Struct({
+  initialized: Schema.Boolean,
+  loadedSkillReceipts: Schema.Array(ManagedLoadedSkillReceipt).check(
+    Schema.isMaxLength(maximumLoadedSkillsPerTurn),
+  ),
+  pendingFileAnalyses: Schema.Array(ManagedPendingFileAnalysis).check(Schema.isMaxLength(20)),
+});
+
+/** Server-owned progressive state stored on the durable managed-turn message. */
+export type ManagedCapabilityTurnState = typeof ManagedCapabilityTurnState.Type;
 
 /** Stable authority identity retained for current protected-effect rechecks. */
 export const ManagedTurnAuthorityIdentity = Schema.Union([
@@ -46,6 +108,14 @@ export const CancelManagedConversationInput = Schema.Struct({
 export const ManagedTurnMetadata = Schema.TaggedStruct("OsfoManagedTurn", {
   allowancePeriodId: AllowancePeriodId,
   authorityIdentity: ManagedTurnAuthorityIdentity,
+  capabilityCatalogVersion: CapabilityCatalogVersion.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(governedCapabilitiesV1Version)),
+  ),
+  capabilityTurnState: ManagedCapabilityTurnState.pipe(
+    Schema.withDecodingDefaultKey(
+      Effect.succeed({ initialized: false, loadedSkillReceipts: [], pendingFileAnalyses: [] }),
+    ),
+  ),
   conservativeVendorUsdMicros: positiveInteger,
   coreMemoryAuthorization: CoreMemoryAuthorizationSnapshotEncoded,
   maxInputTokens: positiveInteger,

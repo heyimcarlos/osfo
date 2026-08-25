@@ -14,6 +14,7 @@ import {
   selectManagedRoute,
 } from "../domain/model-access-policy";
 import { ManagedTurnAuthorityIdentity, ManagedTurnMetadata } from "../domain/managed-conversation";
+import { currentCapabilityCatalog } from "../domain/capability-catalog";
 import {
   AuthorizationContext,
   AuthorizationDenialReason,
@@ -158,6 +159,12 @@ export const admitManagedConversation = (
         _tag: "OsfoManagedTurn",
         allowancePeriodId: admission.allowancePeriod.allowancePeriodId,
         authorityIdentity,
+        capabilityCatalogVersion: currentCapabilityCatalog.version,
+        capabilityTurnState: {
+          initialized: false,
+          loadedSkillReceipts: [],
+          pendingFileAnalyses: [],
+        },
         conservativeVendorUsdMicros: Number(maxVendorUsdMicros),
         coreMemoryAuthorization,
         maxInputTokens: profile.context.maxInputTokens,
