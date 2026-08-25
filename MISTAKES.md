@@ -24,3 +24,6 @@ short, specific, and actionable.
 - A Capability Catalog entry does not prove an existing Tool was migrated. Trace
   every Tool named by an acceptance criterion through its catalog requirement,
   closed registry entry, model-visible schema, and existing execution path.
+- Supermemory rejects an organization `filterPrompt` unless the same settings
+  update enables `shouldLLMFilter`. Qualify coupled provider settings live, not
+  from the generated request type alone.
