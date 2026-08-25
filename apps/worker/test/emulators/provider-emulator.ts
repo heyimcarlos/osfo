@@ -16,6 +16,12 @@ export interface StripeLedgerEntry {
   readonly path: string;
 }
 
+/** One observed Telegram Bot API request. */
+export interface TelegramLedgerEntry {
+  readonly body: string;
+  readonly method: string;
+}
+
 /** Local HTTP providers and their request ledgers for composed Worker journeys. */
 export interface ProviderEmulator {
   readonly close: () => Promise<void>;
@@ -25,11 +31,13 @@ export interface ProviderEmulator {
 export const startProviderEmulator = (): Promise<ProviderEmulator> =>
   new Promise((resolve, reject) => {
     const stripeLedger: Array<StripeLedgerEntry> = [];
+    const telegramLedger: Array<TelegramLedgerEntry> = [];
     const twilioLedger: Array<TwilioLedgerEntry> = [];
     const server = createServer((request, response) => {
       const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
       if (request.method === "POST" && pathname === "/_test/reset") {
         stripeLedger.length = 0;
+        telegramLedger.length = 0;
         twilioLedger.length = 0;
         response.statusCode = 204;
         response.end();
@@ -41,6 +49,10 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
       }
       if (request.method === "GET" && pathname === "/_test/stripe/ledger") {
         respondJson(response, 200, stripeLedger);
+        return;
+      }
+      if (request.method === "GET" && pathname === "/_test/telegram/ledger") {
+        respondJson(response, 200, telegramLedger);
         return;
       }
       if (request.method === "POST" && pathname === "/events/track") {
@@ -69,6 +81,10 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
       }
       if (request.method === "POST" && pathname.startsWith("/v2/Services/")) {
         handleTwilio(request, response, pathname, twilioLedger);
+        return;
+      }
+      if (request.method === "POST" && /^\/bot[^/]+\/[A-Za-z]+$/u.test(pathname)) {
+        handleTelegram(request, response, pathname, telegramLedger);
         return;
       }
       respondJson(response, 404, {
@@ -119,6 +135,70 @@ const handleStripe = (
     .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
 };
 
+const handleTelegram = (
+  request: IncomingMessage,
+  response: ServerResponse,
+  pathname: string,
+  ledger: Array<TelegramLedgerEntry>,
+): void => {
+  readTextBody(request)
+    .then((body) => {
+      const method = pathname.slice(pathname.lastIndexOf("/") + 1);
+      const payload = telegramPayload(body);
+      ledger.push({ body, method });
+      if (method === "getMe") {
+        respondJson(response, 200, {
+          ok: true,
+          result: { first_name: "Osfo", id: 777_000, is_bot: true, username: "osfo_verify_bot" },
+        });
+        return;
+      }
+      if (method === "sendChatAction") {
+        respondJson(response, 200, { ok: true, result: true });
+        return;
+      }
+      respondJson(response, 200, {
+        ok: true,
+        result: {
+          chat: { first_name: "Verification", id: payload.chatId, type: "private" },
+          date: Math.floor(Date.now() / 1_000),
+          message_id: payload.messageId ?? 900_000 + ledger.length,
+          text: payload.text,
+        },
+      });
+    })
+    .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
+};
+
+const telegramPayload = (
+  body: string,
+): { readonly chatId: number | string; readonly messageId?: number; readonly text: string } => {
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    return { chatId: 700_001, text: "Osfo verification reply" };
+  }
+  if (!isUnknownRecord(value)) return { chatId: 700_001, text: "Osfo verification reply" };
+  const chatId =
+    typeof value.chat_id === "number" || typeof value.chat_id === "string"
+      ? value.chat_id
+      : 700_001;
+  const messageId = typeof value.message_id === "number" ? value.message_id : undefined;
+  const richText =
+    isUnknownRecord(value.rich_message) && typeof value.rich_message.markdown === "string"
+      ? value.rich_message.markdown
+      : undefined;
+  return {
+    chatId,
+    ...(messageId === undefined ? {} : { messageId }),
+    text: typeof value.text === "string" ? value.text : (richText ?? "Osfo verification reply"),
+  };
+};
+
+const isUnknownRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
 const handleTwilio = (
   request: IncomingMessage,
   response: ServerResponse,
@@ -160,6 +240,10 @@ const headerValue = (value: string | ReadonlyArray<string> | undefined): string 
 const closeServer = (server: Server): Promise<void> =>
   new Promise((resolve, reject) => {
     server.closeAllConnections();
+    if (!server.listening) {
+      resolve();
+      return;
+    }
     server.close((error) => {
       if (error === undefined) resolve();
       else reject(error);

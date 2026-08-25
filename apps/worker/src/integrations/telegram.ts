@@ -12,6 +12,7 @@ const TELEGRAM_INSTRUCTIONS =
 
 /** Configuration required by the Cloudflare Think Telegram channel. */
 export interface TelegramChannelOptions {
+  readonly apiBaseURL?: string | undefined;
   readonly conversation: MessengerConversationResolver;
   readonly secretToken: string;
   readonly token: string;
@@ -22,6 +23,7 @@ export interface TelegramChannelOptions {
 export const makeTelegramChannel = (options: TelegramChannelOptions): ChannelDefinition => ({
   ...messengerChannel(
     telegramMessenger({
+      ...(options.apiBaseURL === undefined ? {} : { apiBaseUrl: options.apiBaseURL }),
       conversation: options.conversation,
       delivery: {
         errorResponseText: "I could not answer that right now. Please try again.",
