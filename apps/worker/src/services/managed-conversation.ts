@@ -160,6 +160,11 @@ export const admitManagedConversation = (
         allowancePeriodId: admission.allowancePeriod.allowancePeriodId,
         authorityIdentity,
         capabilityCatalogVersion: currentCapabilityCatalog.version,
+        capabilityTurnState: {
+          initialized: false,
+          loadedSkillReceipts: [],
+          pendingFileAnalyses: [],
+        },
         conservativeVendorUsdMicros: Number(maxVendorUsdMicros),
         coreMemoryAuthorization,
         maxInputTokens: profile.context.maxInputTokens,

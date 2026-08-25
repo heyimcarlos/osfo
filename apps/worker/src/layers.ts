@@ -75,7 +75,7 @@ export const makeOsfoAgentRuntime = (
       makeExecutionUnitLayer("osfo-agent", identity, stage),
       Db.layer(database),
       BrowserCrypto.layer,
-      Capabilities.layer(),
+      Capabilities.layer,
       SupermemoryMemoryProvider.layerFromConfig(supermemory),
     ),
   );

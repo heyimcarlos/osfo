@@ -37,10 +37,12 @@ it.effect("publishes a loaded multi-Tool Skill on the next model step", () =>
     });
 
     expect(turn.step().activeToolNames).toEqual(["loadSkill"]);
-    yield* turn.loadSkill({
+    const loaded = yield* turn.loadSkill({
       skillId: "document-production",
       skillVersion: "system-document-production-v1",
     });
+    expect(turn.step().activeToolNames).toEqual(["loadSkill"]);
+    expect(turn.commitLoadedSkill(loaded)).toBe(true);
 
     const nextStep = turn.step();
     expect(nextStep.activeToolNames).toEqual(["exportDocument", "generateDocument", "loadSkill"]);

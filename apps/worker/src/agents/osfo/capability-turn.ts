@@ -1,7 +1,8 @@
 import { Effect } from "effect";
 
 import type { UserId } from "../../domain";
-import type { Capabilities } from "../../services/capabilities";
+import { maximumLoadedSkillsPerTurn } from "../../domain/managed-conversation";
+import { Capabilities } from "../../services/capabilities";
 
 /** Inputs pinned for every model step in one active Think turn. */
 export interface Input extends Omit<
@@ -26,6 +27,7 @@ export interface Step {
 
 /** Active turn controller that merges concurrent Skill loads before the next model step. */
 export interface Interface {
+  readonly commitLoadedSkill: (loaded: Capabilities.LoadedSkill) => boolean;
   readonly loadSkill: (
     pin: Capabilities.SkillPin,
   ) => Effect.Effect<Capabilities.LoadedSkill, Capabilities.SkillNotEligible>;
@@ -37,31 +39,39 @@ export const make = (input: Input): Interface => {
   let loadedSkills = [...input.loadedSkills];
 
   return {
-    loadSkill: Effect.fn("CapabilityTurn.loadSkill")((pin: Capabilities.SkillPin) =>
-      input.capabilities
-        .loadSkill({
-          index: input.index,
-          personalSkills: input.personalSkills,
+    commitLoadedSkill: (loaded) => {
+      if (
+        loadedSkills.some(
+          ({ skillId, skillVersion }) =>
+            skillId === loaded.skillId && skillVersion === loaded.skillVersion,
+        )
+      ) {
+        return true;
+      }
+      if (loadedSkills.length >= maximumLoadedSkillsPerTurn) return false;
+      loadedSkills = [...loadedSkills, loaded];
+      return true;
+    },
+    loadSkill: Effect.fn("CapabilityTurn.loadSkill")(function* (pin: Capabilities.SkillPin) {
+      const retained = loadedSkills.find(
+        ({ skillId, skillVersion }) => skillId === pin.skillId && skillVersion === pin.skillVersion,
+      );
+      if (retained !== undefined) return retained;
+      if (loadedSkills.length >= maximumLoadedSkillsPerTurn) {
+        return yield* new Capabilities.SkillNotEligible({
+          message: "The active turn already loaded its maximum number of Skills",
           skillId: pin.skillId,
           skillVersion: pin.skillVersion,
-          userId: input.userId,
-        })
-        .pipe(
-          Effect.tap((loaded) =>
-            Effect.sync(() => {
-              if (
-                loadedSkills.some(
-                  ({ skillId, skillVersion }) =>
-                    skillId === loaded.skillId && skillVersion === loaded.skillVersion,
-                )
-              ) {
-                return;
-              }
-              loadedSkills = [...loadedSkills, loaded];
-            }),
-          ),
-        ),
-    ),
+        });
+      }
+      return yield* input.capabilities.loadSkill({
+        index: input.index,
+        personalSkills: input.personalSkills,
+        skillId: pin.skillId,
+        skillVersion: pin.skillVersion,
+        userId: input.userId,
+      });
+    }),
     step: () => {
       const bundle = input.capabilities.assembleToolBundle({
         availableToolNames: input.availableToolNames,

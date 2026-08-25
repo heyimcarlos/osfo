@@ -18,9 +18,14 @@ describe("committed conversation projection", () => {
     const { capabilityCatalogVersion: _capabilityCatalogVersion, ...legacy } =
       managedMetadata().turnMetadata;
 
-    expect(Schema.decodeUnknownSync(ManagedTurnMetadata)(legacy).capabilityCatalogVersion).toBe(
-      "governed-capabilities-v1",
-    );
+    expect(Schema.decodeUnknownSync(ManagedTurnMetadata)(legacy)).toMatchObject({
+      capabilityCatalogVersion: "governed-capabilities-v1",
+      capabilityTurnState: {
+        initialized: false,
+        loadedSkillReceipts: [],
+        pendingFileAnalyses: [],
+      },
+    });
   });
 
   it("captures the visible conversation and sanitizes supported outcomes and sources", () => {

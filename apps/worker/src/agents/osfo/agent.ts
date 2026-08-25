@@ -18,16 +18,19 @@ import {
   type TurnContext,
 } from "@cloudflare/think";
 import type { MessengerContext } from "@cloudflare/think/messengers";
-import {
-  asSchema,
-  tool,
-  type ModelMessage,
-  type ToolSet,
-  type UIMessage,
-  type UserModelMessage,
-} from "ai";
+import { tool, type ToolSet, type UIMessage } from "ai";
 import { createCompactFunction } from "agents/experimental/memory/utils";
-import { Cause, DateTime, Effect, Exit, Option, Predicate, Result, Schema } from "effect";
+import {
+  Cause,
+  DateTime,
+  Effect,
+  Exit,
+  Option,
+  Predicate,
+  Result,
+  Schema,
+  Semaphore,
+} from "effect";
 
 import type { ChannelLinkId, UserId } from "../../domain";
 import type { AllowanceItem, AllowanceSource } from "../../domain/allowance";
@@ -51,6 +54,7 @@ import { SessionRecallAuthorizationPostgres } from "../../integrations/postgres/
 import { SupermemoryMemoryProvider } from "../../integrations/supermemory/memory-provider";
 import {
   CancelManagedConversationInput,
+  type ManagedCapabilityTurnState,
   ManagedTurnMetadata,
   type ManagedTurnAuthorityIdentity,
 } from "../../domain/managed-conversation";
@@ -84,7 +88,13 @@ import {
   persistThinkTerminalBeforeCapture,
   withCommittedTurnTerminal,
 } from "./committed-turn-terminal";
-import { FileAnalysisId, FileId, FileName, FileUploadId } from "../../domain/file";
+import {
+  FileAnalysisId,
+  type FileAnalysisRecord,
+  FileId,
+  FileName,
+  FileUploadId,
+} from "../../domain/file";
 import { makeCloudflareFileCompute } from "../../integrations/cloudflare/file-compute";
 import {
   type FileObjectMetadataInvalid,
@@ -104,7 +114,7 @@ import { makeAgentDb } from "./db/client";
 
 type ChannelProvider = "telegram" | "whatsapp";
 import {
-  type FileAnalysisConflict,
+  FileAnalysisConflict,
   type FileNotFound,
   type FileStoreRecordInvalid,
   type FileStoreUnavailable,
@@ -163,6 +173,7 @@ import { makeSessionRecallAuthorization } from "../../services/session-recall-au
 import { PromptAssembly } from "../../services/prompt-assembly";
 import { Capabilities } from "../../services/capabilities";
 import { CapabilityTurn } from "./capability-turn";
+import { CapabilityContext } from "./capability-context";
 import type {
   CurrentSessionActivationUnavailable,
   CurrentSessionReplaced,
@@ -227,6 +238,8 @@ import { makeAgentSessionLifecycle } from "./session-lifecycle";
 import { makeSessionRecallTools, makeThinkSessionRecallSearch } from "./session-recall";
 import { effectToolSchema } from "./effect-tool-schema";
 import { makeFileTools } from "./file-tools";
+import { FileAnalysisReconciliation } from "./file-analysis-reconciliation";
+import { ManagedCapabilityState } from "./managed-capability-turn-state";
 import {
   projectCommittedConversationSnapshot,
   projectTerminalMarkedCommittedTurns,
@@ -242,6 +255,12 @@ const modelCallUsageRetryDelaySeconds = 60;
 const memoryProviderRetryDelaySeconds = 30;
 const gatewayCostMaximumLookups = 3;
 const authorization = Authorization.make(retainedCatalog);
+const capabilityActionNames = [
+  "analyzeFile",
+  "deleteDocument",
+  "generateDocument",
+  "osfoClearCoreMemory",
+] as const satisfies ReadonlyArray<Capabilities.RegisteredToolName>;
 type AgentFilePersistenceError =
   | FileAnalysisConflict
   | FileNotFound
@@ -271,15 +290,6 @@ const GenerateDocumentInput = Schema.Struct({
   format: DocumentArtifact.DocumentFormat,
   source: DocumentGeneration.DocumentSource,
 });
-const LoadSkillToolInput = Schema.Struct({
-  skillId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100)),
-  skillVersion: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100)),
-});
-const LoadedSkillPin = Schema.Struct({
-  skillId: LoadSkillToolInput.fields.skillId,
-  skillVersion: LoadSkillToolInput.fields.skillVersion,
-});
-
 // Think 0.15.1 documents and forwards both fields, but its StepConfig Omit loses
 // them when AI SDK 7's PrepareStepResult union includes undefined.
 type CapabilityStepConfig = StepConfig & {
@@ -338,6 +348,10 @@ export class ThinkSubmissionUnavailable extends Schema.TaggedError<ThinkSubmissi
 export class FileCapabilityUnavailable extends Schema.TaggedError<FileCapabilityUnavailable>()(
   "FileCapabilityUnavailable",
   { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
+) {}
+class CapabilityTurnStateCommitUnavailable extends Schema.TaggedError<CapabilityTurnStateCommitUnavailable>()(
+  "CapabilityTurnStateCommitUnavailable",
+  { cause: Schema.Defect(), message: Schema.String },
 ) {}
 const SessionHistoryMessagePart = Schema.StructWithRest(Schema.Struct({ type: Schema.String }), [
   Schema.Record(Schema.String, Schema.Unknown),
@@ -430,18 +444,94 @@ export class OsfoAgent extends Think<Env> {
     objects: makeR2FileObjects(this.env.FILES),
     store: this.#fileStore,
   });
+  readonly #fileToolAuthorizationContext = Effect.fn("OsfoAgent.fileToolAuthorizationContext")(() =>
+    Effect.tryPromise({
+      try: () => this.#migrationsReady,
+      catch: (cause) =>
+        new FileCapabilityUnavailable({
+          cause,
+          message: "File Tool storage migrations are unavailable",
+          operation: "readToolAuthorization",
+        }),
+    }).pipe(
+      Effect.andThen(this.#readCoreMemoryAuthorization()),
+      Effect.mapError(
+        (cause) =>
+          new FileCapabilityUnavailable({
+            cause,
+            message: "The active turn has no retained file authority",
+            operation: "readToolAuthorization",
+          }),
+      ),
+      Effect.flatMap((base) => {
+        const runtime = Option.getOrUndefined(this.#runtime);
+        if (runtime === undefined) {
+          return Effect.fail(
+            new FileCapabilityUnavailable({
+              cause: invalidOsfoEnvironment,
+              message: "File Tool authorization has no valid Worker runtime",
+              operation: "readToolAuthorization",
+            }),
+          );
+        }
+        return Effect.tryPromise({
+          try: () =>
+            runtime.runPromise(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+                  const database = yield* Db.database;
+                  const allowance = yield* BillingDb.make(database).admit(base.user.userId, now);
+                  return AuthorizationContext.make({
+                    ...base,
+                    allowance: { _tag: "Metered", ...allowance },
+                    now,
+                  });
+                }),
+              ),
+            ),
+          catch: (cause) =>
+            new FileCapabilityUnavailable({
+              cause,
+              message: "Current file Tool allowance facts are unavailable",
+              operation: "readToolAuthorization",
+            }),
+        });
+      }),
+    ),
+  );
+  readonly #reconcileFileAnalysis = FileAnalysisReconciliation.make({
+    analyze: (input) => this.#files.analyze(input),
+    authorize: () => this.#fileToolAuthorizationContext(),
+    find: (analysisId) => this.#fileStore.findAnalysis(analysisId),
+    notFound: (analysisId) =>
+      new FileAnalysisConflict({
+        analysisId,
+        message: "The retained file analysis does not exist",
+      }),
+  });
   readonly #fileTools = makeFileTools({
-    analyze: (input) =>
-      Effect.promise(() => this.#migrationsReady).pipe(
-        Effect.andThen(this.#fileToolAuthorizationContext()),
-        Effect.flatMap((context) => this.#files.analyze({ ...input, context })),
+    reconcileAnalysis: (input) =>
+      this.#reconcileFileAnalysis(input).pipe(
+        Effect.tap((analysis) => this.#recordFileAnalysisState(analysis)),
       ),
     read: (input) =>
-      Effect.promise(() => this.#migrationsReady).pipe(
-        Effect.andThen(this.#fileToolAuthorizationContext()),
+      this.#fileToolAuthorizationContext().pipe(
         Effect.flatMap((context) => this.#files.read({ ...input, context })),
       ),
+    startAnalysis: (input) =>
+      this.#fileToolAuthorizationContext().pipe(
+        Effect.flatMap((context) => this.#files.analyze({ ...input, context })),
+        Effect.tap((analysis) => this.#recordFileAnalysisState(analysis)),
+      ),
   });
+  #capabilityTurnState: ManagedCapabilityTurnState = {
+    initialized: false,
+    loadedSkillReceipts: [],
+    pendingFileAnalyses: [],
+  };
+  #activeCapabilityMetadata: ManagedTurnMetadata | undefined;
+  readonly #capabilityStateSemaphore = Semaphore.makeUnsafe(1);
   #activeModelStepNumber = ModelStepNumber.make(1);
   readonly #completedModelSteps = new Set<number>();
   readonly #currentApprovedActions = new Map<
@@ -560,10 +650,30 @@ export class OsfoAgent extends Think<Env> {
         Schema.decodeUnknownOption(ManagedTurnMetadata)(this.activeTurnMetadata),
       ),
     recall: (request) =>
-      Effect.promise(() => this.#migrationsReady).pipe(
-        Effect.andThen(this.#sessionRecall.recall(request)),
-      ),
+      Effect.tryPromise({
+        try: () => this.#migrationsReady,
+        catch: (cause) =>
+          new SessionRecallStoreUnavailable({
+            cause,
+            message: "Session Recall storage migrations are unavailable",
+          }),
+      }).pipe(Effect.andThen(this.#sessionRecall.recall(request))),
   });
+  readonly #nativeTools = {
+    ...this.#fileTools.tools,
+    ...this.#sessionRecallTools,
+    exportDocument: tool({
+      description: "Export one retained generated PDF or DOCX owned by the current User.",
+      execute: (input, context) => this.#exportDocument(input, context.toolCallId),
+      inputSchema: effectToolSchema(RetainedDocumentInput),
+    }),
+    loadSkill: tool({
+      description:
+        "Load one exact Skill Version from the current turn's validated Skill index. This never grants authority or registers Tools.",
+      execute: (input) => this.#loadSkill(input),
+      inputSchema: effectToolSchema(CapabilityContext.LoadSkillToolInput),
+    }),
+  } satisfies ToolSet;
   /** Resolve a safe model before trusted per-turn metadata selects the exact managed route. */
   override getModel() {
     return launchModelAccessPolicy.plans.free.route;
@@ -754,21 +864,7 @@ export class OsfoAgent extends Think<Env> {
 
   /** Register trusted native Tools; beforeTurn publishes only the selected schemas. */
   override getTools(): ToolSet {
-    return {
-      ...this.#fileTools.tools,
-      ...this.#sessionRecallTools,
-      exportDocument: tool({
-        description: "Export one retained generated PDF or DOCX owned by the current User.",
-        execute: (input, context) => this.#exportDocument(input, context.toolCallId),
-        inputSchema: effectToolSchema(RetainedDocumentInput),
-      }),
-      loadSkill: tool({
-        description:
-          "Load one exact Skill Version from the current turn's validated Skill index. This never grants authority or registers Tools.",
-        execute: (input) => this.#loadSkill(input),
-        inputSchema: effectToolSchema(LoadSkillToolInput),
-      }),
-    };
+    return this.#nativeTools;
   }
 
   /** Keep inherited pending-Approval RPC output client-safe for every registered Action. */
@@ -780,54 +876,64 @@ export class OsfoAgent extends Think<Env> {
   /** Apply only the route and limits pinned to the current durable Think Submission. */
   override async beforeTurn(context: TurnContext): Promise<TurnConfig> {
     const system = await this.session.refreshSystemPrompt();
-    const tools = { ...context.tools, ...coreMemoryTools(this.session) };
     const metadata = await Effect.runPromise(
       Schema.decodeUnknownEffect(ManagedTurnMetadata)(this.activeTurnMetadata),
     );
+    this.#activeCapabilityMetadata = metadata;
+    const capabilityTurnState = ManagedCapabilityState.initialize(this.messages, metadata);
+    await this.#replaceCapabilityTurnState(capabilityTurnState);
+    const trustedToolAssembly = CapabilityContext.trustedToolAssembly({
+      actionNames: capabilityActionNames,
+      allTools: context.tools,
+      nativeTools: { ...this.#nativeTools, ...coreMemoryTools(this.session) },
+      reservedNames: Capabilities.registeredToolNames,
+    });
+    const tools = trustedToolAssembly.tools;
+    const capabilityAvailability = {
+      availableIntegrationToolkits: [],
+      availableRequirements: [
+        "document-renderer",
+        "file-storage",
+        "native-memory",
+        "personal-agent",
+        "session-history",
+      ],
+      availableToolNames: Object.keys(tools),
+    } as const;
     const prompt = await this.#assemblePrompt(context, metadata, system);
-    const taskDescription = currentTaskDescription(context.messages);
-    const index = await Effect.runPromise(
+    const capabilityContext = CapabilityContext.projectTurn(context.messages, {
+      pendingFileAnalysis: capabilityTurnState.pendingFileAnalyses.length > 0,
+    });
+    const baseIndex = await Effect.runPromise(
       this.#capabilities.eligibleIndex({
-        availableIntegrationToolkits: [],
-        availableRequirements: [
-          "document-renderer",
-          "file-storage",
-          "native-memory",
-          "personal-agent",
-          "session-history",
-        ],
-        availableToolNames: Object.keys(tools),
+        ...capabilityAvailability,
         catalogVersion: metadata.capabilityCatalogVersion,
         declaredRequirements: [],
         origin: capabilityTurnOrigin(metadata.authorityIdentity),
         personalSkills: [],
         plan: metadata.plan,
-        taskDescription,
-        taskKinds: capabilityTaskKinds(taskDescription),
+        taskDescription: capabilityContext.taskDescription,
+        taskKinds: capabilityContext.taskKinds,
+        trustedCapabilityIds: capabilityContext.trustedCapabilityIds,
         userId: metadata.authorityIdentity.userId,
       }),
     );
-    const loadedSkills = await Effect.runPromise(
-      Effect.forEach(loadedSkillPins(context.messages), (pin) =>
-        this.#capabilities
-          .loadSkill({
-            index,
-            personalSkills: [],
-            skillId: pin.skillId,
-            skillVersion: pin.skillVersion,
-            userId: metadata.authorityIdentity.userId,
-          })
-          .pipe(Effect.option),
-      ).pipe(Effect.map((skills) => skills.flatMap(Option.toArray))),
-    );
+    const restored = this.#capabilities.restoreLoadedSkillReceipts({
+      ...capabilityAvailability,
+      catalogVersion: metadata.capabilityCatalogVersion,
+      index: baseIndex,
+      receipts: capabilityTurnState.loadedSkillReceipts,
+      submissionId: metadata.submissionId,
+    });
+    const index = restored.index;
     const activeCapabilityTurn = CapabilityTurn.make({
-      availableToolNames: Object.keys(tools),
+      availableToolNames: capabilityAvailability.availableToolNames,
       baseInstructions: prompt.instructions,
       capabilities: this.#capabilities,
       index,
-      loadedSkills,
+      loadedSkills: restored.loadedSkills,
       personalSkills: [],
-      toolSchemas: toolSchemaAccounting(tools),
+      toolSchemas: CapabilityContext.toolSchemaAccounting(trustedToolAssembly),
       userId: metadata.authorityIdentity.userId,
     });
     this.#activeCapabilityTurn = activeCapabilityTurn;
@@ -945,16 +1051,44 @@ export class OsfoAgent extends Think<Env> {
     return super.onChatError(error, context);
   }
 
-  async #loadSkill(input: typeof LoadSkillToolInput.Type) {
+  async #loadSkill(input: typeof CapabilityContext.LoadSkillToolInput.Type) {
     const activeTurn = this.#activeCapabilityTurn;
-    if (activeTurn === undefined) {
+    const metadata = this.#activeCapabilityMetadata;
+    if (activeTurn === undefined || metadata === undefined) {
       return {
         _tag: "SkillUnavailable",
-        message: "The active turn has no validated Skill index",
+        message: "The active turn has no validated Skill index or metadata",
       } as const;
     }
     return Effect.runPromise(
       activeTurn.loadSkill(input).pipe(
+        Effect.flatMap((loaded) =>
+          Effect.tryPromise({
+            try: async () => {
+              const state = await this.#updateCapabilityTurnState((current) =>
+                ManagedCapabilityState.recordLoadedSkill(current, {
+                  ...loaded,
+                  catalogVersion: metadata.capabilityCatalogVersion,
+                  submissionId: metadata.submissionId,
+                }),
+              );
+              const receiptCommitted = state.loadedSkillReceipts.some(
+                ({ skillId, skillVersion }) =>
+                  skillId === loaded.skillId && skillVersion === loaded.skillVersion,
+              );
+              if (!receiptCommitted || !activeTurn.commitLoadedSkill(loaded)) {
+                throw new Error("The active turn reached its loaded Skill limit");
+              }
+              return loaded;
+            },
+            catch: () =>
+              new Capabilities.SkillNotEligible({
+                message: "The Skill receipt could not be committed for this turn",
+                skillId: loaded.skillId,
+                skillVersion: loaded.skillVersion,
+              }),
+          }),
+        ),
         Effect.match({
           onFailure: () => ({
             _tag: "SkillUnavailable" as const,
@@ -966,53 +1100,105 @@ export class OsfoAgent extends Think<Env> {
     );
   }
 
-  #fileToolAuthorizationContext(): Effect.Effect<AuthorizationContext, FileCapabilityUnavailable> {
-    const runtime = Option.getOrUndefined(this.#runtime);
-    if (runtime === undefined) {
+  #recordFileAnalysisState(
+    analysis: ApprovalRequired | Denied | FileAnalysisRecord,
+  ): Effect.Effect<void, CapabilityTurnStateCommitUnavailable> {
+    if (
+      Predicate.isTagged(analysis, "ApprovalRequired") ||
+      Predicate.isTagged(analysis, "Denied")
+    ) {
+      return Effect.void;
+    }
+    const metadata = this.#activeCapabilityMetadata;
+    if (metadata === undefined) {
       return Effect.fail(
-        new FileCapabilityUnavailable({
-          cause: invalidOsfoEnvironment,
-          message: "File Tool authorization has no valid Worker runtime",
-          operation: "readToolAuthorization",
+        new CapabilityTurnStateCommitUnavailable({
+          cause: new Error("The active Capability turn has no retained metadata"),
+          message: "The file analysis receipt has no active Capability submission",
         }),
       );
     }
-    return this.#readCoreMemoryAuthorization().pipe(
-      Effect.mapError(
-        (cause) =>
-          new FileCapabilityUnavailable({
-            cause,
-            message: "The active turn has no retained file authority",
-            operation: "readToolAuthorization",
-          }),
+    return this.#commitCapabilityTurnState(metadata, (state) =>
+      ManagedCapabilityState.recordFileAnalysis(
+        state,
+        { analysisId: analysis.analysisId },
+        analysis.state === "pending" || analysis.state === "ambiguous",
       ),
-      Effect.flatMap((base) =>
-        Effect.tryPromise({
-          try: () =>
-            runtime.runPromise(
-              Effect.scoped(
-                Effect.gen(function* () {
-                  const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
-                  const database = yield* Db.database;
-                  const allowance = yield* BillingDb.make(database).admit(base.user.userId, now);
-                  return AuthorizationContext.make({
-                    ...base,
-                    allowance: { _tag: "Metered", ...allowance },
-                    now,
-                  });
+    ).pipe(Effect.asVoid);
+  }
+
+  async #updateCapabilityTurnState(
+    update: (state: ManagedCapabilityTurnState) => ManagedCapabilityTurnState,
+  ): Promise<ManagedCapabilityTurnState> {
+    const metadata = this.#activeCapabilityMetadata;
+    if (metadata === undefined) {
+      throw new Error("The active Capability turn has no retained metadata");
+    }
+    return Effect.runPromise(this.#commitCapabilityTurnState(metadata, update));
+  }
+
+  async #replaceCapabilityTurnState(
+    state: ManagedCapabilityTurnState,
+  ): Promise<ManagedCapabilityTurnState> {
+    const metadata = this.#activeCapabilityMetadata;
+    if (metadata === undefined) {
+      throw new Error("The active Capability turn has no retained metadata");
+    }
+    return Effect.runPromise(this.#commitCapabilityTurnState(metadata, () => state));
+  }
+
+  readonly #commitCapabilityTurnState = Effect.fn("OsfoAgent.commitCapabilityTurnState")(
+    (
+      metadata: ManagedTurnMetadata,
+      update: (state: ManagedCapabilityTurnState) => ManagedCapabilityTurnState,
+    ) =>
+      this.#capabilityStateSemaphore.withPermit(
+        Effect.sync(() => update(this.#capabilityTurnState)).pipe(
+          Effect.flatMap((state) => {
+            if (state === this.#capabilityTurnState) return Effect.succeed(state);
+            const nextMetadata = { ...metadata, capabilityTurnState: state };
+            const message = ManagedCapabilityState.stampActiveUserMessage(
+              this.messages,
+              nextMetadata,
+            );
+            if (message === null) {
+              return Effect.fail(
+                new CapabilityTurnStateCommitUnavailable({
+                  cause: new Error("The active Submission message was not found"),
+                  message: "The active Capability submission is absent from durable history",
+                }),
+              );
+            }
+            return Effect.tryPromise({
+              try: () => this.updateMessageInHistory(message),
+              catch: (cause) =>
+                new CapabilityTurnStateCommitUnavailable({
+                  cause,
+                  message: "The Capability receipt could not be persisted",
+                }),
+            }).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  this.#capabilityTurnState = state;
+                  this.#activeCapabilityMetadata = nextMetadata;
                 }),
               ),
-            ),
-          catch: (cause) =>
-            new FileCapabilityUnavailable({
-              cause,
-              message: "Current file Tool allowance facts are unavailable",
-              operation: "readToolAuthorization",
-            }),
-        }),
+              Effect.andThen(
+                Effect.tryPromise({
+                  try: () => this.syncMessagesFromStorage(),
+                  catch: (cause) =>
+                    new CapabilityTurnStateCommitUnavailable({
+                      cause,
+                      message: "The persisted Capability receipt could not be synchronized",
+                    }),
+                }),
+              ),
+              Effect.as(state),
+            );
+          }),
+        ),
       ),
-    );
-  }
+  );
 
   #recordCapabilityAccounting(
     bundle: Capabilities.ToolBundle,
@@ -2622,85 +2808,11 @@ const summarizeManagedSession = (prompt: string): Promise<string> => {
   );
 };
 
-const currentTaskDescription = (messages: Array<ModelMessage>): string => {
-  const current = messages.reduceRight<UserModelMessage | undefined>(
-    (found, candidate) => found ?? (candidate.role === "user" ? candidate : undefined),
-    undefined,
-  );
-  if (current?.role !== "user") return "";
-  if (Predicate.isString(current.content)) return current.content.trim();
-  return current.content
-    .filter((part) => part.type === "text")
-    .map(({ text }) => text)
-    .join("\n")
-    .trim();
-};
-
-const capabilityTaskKinds = (description: string): ReadonlyArray<Capabilities.TaskKind> => {
-  const task = description.toLocaleLowerCase("en");
-  const kinds: Array<Capabilities.TaskKind> = [];
-  if (/\b(?:remember|memory|recall|forget)\b/u.test(task)) kinds.push("memory");
-  if (/\b(?:attachment|csv|file|spreadsheet|upload)\b/u.test(task)) kinds.push("file");
-  if (/\b(?:document|docx|pdf|presentation|pptx|report|slides)\b/u.test(task)) {
-    kinds.push("document");
-  }
-  if (/\b(?:image|picture|graphic)\b/u.test(task)) kinds.push("image");
-  if (/\b(?:chart|diagram|flowchart)\b/u.test(task)) kinds.push("diagram");
-  if (/\b(?:current|latest|page|search|url|web|website)\b/u.test(task)) kinds.push("web");
-  if (/\b(?:investigate|research|sources)\b/u.test(task)) kinds.push("research");
-  if (/\b(?:gmail|calendar|drive|email)\b/u.test(task)) kinds.push("integration");
-  if (/\bremind(?:er)?\b/u.test(task)) kinds.push("reminder");
-  if (/\b(?:automate|recurring|workflow)\b/u.test(task)) kinds.push("workflow");
-  if (/\b(?:procedure|skill)\b/u.test(task)) kinds.push("skill");
-  return kinds.length === 0 ? ["conversation"] : kinds;
-};
-
 const capabilityTurnOrigin = (identity: ManagedTurnAuthorityIdentity): Capabilities.TurnOrigin => {
   if (identity._tag === "AuthSession") return "authSession";
   if (identity._tag === "ChannelLink") return "channelLink";
   return identity.triggerType;
 };
-
-const loadedSkillPins = (
-  messages: Array<ModelMessage>,
-): ReadonlyArray<typeof LoadedSkillPin.Type> => {
-  const pins = messages.flatMap((message) =>
-    message.role !== "tool"
-      ? []
-      : message.content.flatMap((part) => {
-          if (
-            part.type !== "tool-result" ||
-            part.toolName !== "loadSkill" ||
-            part.output.type !== "json"
-          ) {
-            return [];
-          }
-          return Option.toArray(Schema.decodeUnknownOption(LoadedSkillPin)(part.output.value));
-        }),
-  );
-  return pins.filter(
-    (pin, index) =>
-      pins.findIndex(
-        ({ skillId, skillVersion }) => skillId === pin.skillId && skillVersion === pin.skillVersion,
-      ) === index,
-  );
-};
-
-const toolSchemaAccounting = (
-  tools: ToolSet,
-): ReadonlyArray<{
-  readonly bytes: number;
-  readonly source: "native";
-  readonly toolName: string;
-}> =>
-  Object.entries(tools).flatMap(([toolName, definition]) => {
-    if (!("inputSchema" in definition)) return [];
-    const serialized = JSON.stringify({
-      description: "description" in definition ? definition.description : undefined,
-      inputSchema: asSchema(definition.inputSchema).jsonSchema,
-    });
-    return [{ bytes: new TextEncoder().encode(serialized).byteLength, source: "native", toolName }];
-  });
 
 const readThinkHistory = (session: Session, sessionId: SessionId) =>
   Effect.tryPromise({

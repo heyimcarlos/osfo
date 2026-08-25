@@ -26,22 +26,33 @@ const boundedAnalysisPrompt = Schema.String.check(
 export const ReadFileToolInput = Schema.Struct({ fileId: FileId });
 
 /** Model input for starting or reconciling one bounded analysis of an owned retained file. */
-export const AnalyzeFileToolInput = Schema.Struct({
-  analysisId: Schema.optionalKey(FileAnalysisId),
-  fileId: FileId,
-  prompt: boundedAnalysisPrompt,
-});
+export const AnalyzeFileToolInput = Schema.Union([
+  Schema.Struct({
+    fileId: FileId,
+    mode: Schema.tag("start"),
+    prompt: boundedAnalysisPrompt,
+  }),
+  Schema.Struct({
+    analysisId: FileAnalysisId,
+    mode: Schema.tag("reconcile"),
+  }),
+]);
 
 interface ReadFileOperationInput {
   readonly actionId: string;
   readonly fileId: FileId;
 }
 
-interface AnalyzeFileOperationInput {
+interface StartFileAnalysisOperationInput {
   readonly actionId: string;
   readonly analysisId: FileAnalysisId;
   readonly fileId: FileId;
   readonly prompt: string;
+}
+
+interface ReconcileFileAnalysisOperationInput {
+  readonly actionId: string;
+  readonly analysisId: FileAnalysisId;
 }
 
 type ReadFileOperationResult =
@@ -57,8 +68,11 @@ type AnalyzeFileOperationResult = ApprovalRequired | Denied | FileAnalysisRecord
 
 /** Deep file Effects adapted once at the model SDK boundary owned by this module. */
 export interface FileToolDependencies<ReadError, AnalyzeError> {
-  readonly analyze: (
-    input: AnalyzeFileOperationInput,
+  readonly reconcileAnalysis: (
+    input: ReconcileFileAnalysisOperationInput,
+  ) => Effect.Effect<AnalyzeFileOperationResult, AnalyzeError>;
+  readonly startAnalysis: (
+    input: StartFileAnalysisOperationInput,
   ) => Effect.Effect<AnalyzeFileOperationResult, AnalyzeError>;
   readonly read: (
     input: ReadFileOperationInput,
@@ -128,20 +142,24 @@ export const makeFileTools = <ReadError, AnalyzeError>(
   actions: {
     analyzeFile: action({
       description:
-        "Analyze one owned normalized file in bounded disposable compute. Pass a returned analysisId to reconcile pending work instead of starting it again.",
+        "Analyze one owned normalized file in bounded disposable compute. Start with mode=start, fileId, and prompt. Reconcile pending work later with only mode=reconcile and the returned analysisId.",
       execute: (input, context) =>
         Effect.runPromise(
-          dependencies
-            .analyze({
-              actionId: context.toolCallId,
-              analysisId: input.analysisId ?? FileAnalysisId.make(context.toolCallId),
-              fileId: input.fileId,
-              prompt: input.prompt,
-            })
-            .pipe(
-              Effect.map(projectAnalysisResult),
-              Effect.orElseSucceed(() => unavailable),
-            ),
+          (input.mode === "start"
+            ? dependencies.startAnalysis({
+                actionId: context.toolCallId,
+                analysisId: FileAnalysisId.make(context.toolCallId),
+                fileId: input.fileId,
+                prompt: input.prompt,
+              })
+            : dependencies.reconcileAnalysis({
+                actionId: context.toolCallId,
+                analysisId: input.analysisId,
+              })
+          ).pipe(
+            Effect.map(projectAnalysisResult),
+            Effect.orElseSucceed(() => unavailable),
+          ),
         ),
       idempotencyKey: ({ ctx }) => `file-analysis:${ctx.toolCallId}`,
       inputSchema: analyzeFileInputSchema,
@@ -208,7 +226,7 @@ const projectAnalysisResult = (outcome: AnalyzeFileOperationResult): AnalyzeFile
       analysisId: outcome.analysisId,
       fileId: outcome.fileId,
       message:
-        "File analysis has not completed yet; call analyzeFile with this analysisId to reconcile it",
+        "File analysis has not completed yet; call analyzeFile with mode=reconcile and this analysisId",
     };
   }
   return unavailable;
