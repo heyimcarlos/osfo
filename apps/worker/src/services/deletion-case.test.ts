@@ -5,49 +5,66 @@ import { BrowserCrypto } from "@effect/platform-browser";
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
-import { UserId } from "../domain";
+import { PlanPolicyVersion, UserId } from "../domain";
 import { ActionId } from "../domain/action-execution";
+import { AuthSessionId } from "../domain/auth-session";
 import { ApprovalPresentation } from "./authorization";
 import { AuthSession } from "./auth-session";
 import { DeletionCase } from "./deletion-case";
 
-it.effect("persists the self-service fence before revoking every AuthSession", () => {
-  const events: Array<string> = [];
-  const userId = UserId.make("user-1");
-  return Effect.gen(function* () {
-    const service = yield* DeletionCase.make;
-    const result = yield* service.requestSelf(userId, {
-      actionId: ActionId.make("account-delete-1"),
-      presentation: ApprovalPresentation.make("Delete account"),
-    });
+it.effect(
+  "delegates the self-service fence and AuthSession revocation to one persistence boundary",
+  () => {
+    const events: Array<string> = [];
+    const userId = UserId.make("user-1");
+    return Effect.gen(function* () {
+      const service = yield* DeletionCase.make;
+      const result = yield* service.requestSelf(
+        userId,
+        {
+          actionId: ActionId.make("account-delete-1"),
+          presentation: ApprovalPresentation.make("Delete account"),
+        },
+        {
+          authSessionId: AuthSessionId.make("session-1"),
+          plan: "free",
+          planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+        },
+      );
 
-    expect(result._tag).toBe("DeletionRequested");
-    expect(events).toEqual(["persist", "revoke"]);
-  }).pipe(
-    Effect.provide(BrowserCrypto.layer),
-    Effect.provideService(
-      AuthSession.Service,
-      AuthSession.Service.of({
-        inspect: () => Effect.die(new Error("unexpected inspection")),
-        revoke: () => Effect.die(new Error("unexpected single revocation")),
-        revokeAllForUser: () => Effect.sync(() => events.push("revoke")),
-      }),
-    ),
-    Effect.provideService(
-      DeletionCase.Persistence,
-      DeletionCase.Persistence.of({
-        inspect: () => Effect.succeed({ _tag: "DeletionAccessAvailable" }),
-        request: () => Effect.die(new Error("unexpected administrative request")),
-        requestSelf: (_userId, _deletionCaseId, approval) =>
-          Effect.sync(() => {
-            expect(approval).toEqual({
-              actionId: "account-delete-1",
-              presentation: "Delete account",
-            });
-            events.push("persist");
-            return { _tag: "Created" as const };
-          }),
-      }),
-    ),
-  );
-});
+      expect(result._tag).toBe("DeletionRequested");
+      expect(events).toEqual(["persist"]);
+    }).pipe(
+      Effect.provide(BrowserCrypto.layer),
+      Effect.provideService(
+        AuthSession.Service,
+        AuthSession.Service.of({
+          inspect: () => Effect.die(new Error("unexpected inspection")),
+          revoke: () => Effect.die(new Error("unexpected single revocation")),
+          revokeAllForUser: () => Effect.die(new Error("self-service fence revoked separately")),
+        }),
+      ),
+      Effect.provideService(
+        DeletionCase.Persistence,
+        DeletionCase.Persistence.of({
+          inspect: () => Effect.succeed({ _tag: "DeletionAccessAvailable" }),
+          request: () => Effect.die(new Error("unexpected administrative request")),
+          requestSelf: (_userId, _deletionCaseId, approval, authority) =>
+            Effect.sync(() => {
+              expect(approval).toEqual({
+                actionId: "account-delete-1",
+                presentation: "Delete account",
+              });
+              expect(authority).toEqual({
+                authSessionId: "session-1",
+                plan: "free",
+                planPolicyVersion: "launch-v1",
+              });
+              events.push("persist");
+              return { _tag: "Created" as const };
+            }),
+        }),
+      ),
+    );
+  },
+);

@@ -573,7 +573,7 @@ it.effect("deletes one Session conversation by its stable provider identity", ()
           body: {
             memories: [
               {
-                containerTags: ["u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
+                containerTags: ["shared_project", "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
                 customId: "s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
                 id: "document-1",
               },
@@ -584,7 +584,7 @@ it.effect("deletes one Session conversation by its stable provider identity", ()
         },
         {
           body: {
-            containerTags: ["u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
+            containerTags: ["shared_project", "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY"],
             customId: "s_rOWDOMu6gfHVler-5_5Pqai1QTLVqrovuxZcQccEncE",
             id: "document-1",
           },
@@ -710,6 +710,41 @@ it.effect("keeps a colliding Session document in another User container", () =>
           path: "/v3/documents/list",
         },
       ]);
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("refuses a Session document shared with another User container", () =>
+  withProvider(({ requests, origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: {
+          memories: [
+            {
+              containerTags: ["u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs", "u_unrelated"],
+              customId: "s_hAl4KPwxqMjSkhDfSJAahd5_0BP2hrF7530b4py3qYs",
+              id: "shared-document",
+            },
+          ],
+          pagination: { currentPage: 1, totalItems: 1, totalPages: 1 },
+        },
+        status: 200,
+      });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .deleteSessionConversation({
+          sessionId: SessionId.make("session-1"),
+          userId: UserId.make("user-1"),
+        })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "identityMismatch",
+        operation: "deleteSessionConversation",
+      });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ method: "POST", path: "/v3/documents/list" });
     }).pipe(Effect.provide(providerLayer(origin))),
   ),
 );

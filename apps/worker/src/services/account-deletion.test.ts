@@ -49,8 +49,11 @@ it.effect("keeps local data pending until provider deletion confirms permanent a
       "quiesce",
       "recheck",
       "provider",
+      "recheck",
       "objects",
+      "recheck",
       "agent",
+      "recheck",
       "postgres",
     ]);
   }).pipe(
@@ -62,6 +65,91 @@ it.effect("keeps local data pending until provider deletion confirms permanent a
     ),
   );
 });
+
+it.effect("stops before object deletion when authority changes during provider deletion", () =>
+  expectStopsWhenAuthorityChangesAfter("provider", [
+    "recheck",
+    "quiesce",
+    "recheck",
+    "provider",
+    "recheck",
+  ]),
+);
+
+it.effect("stops before Agent deletion when authority changes during object deletion", () =>
+  expectStopsWhenAuthorityChangesAfter("objects", [
+    "recheck",
+    "quiesce",
+    "recheck",
+    "provider",
+    "recheck",
+    "objects",
+    "recheck",
+  ]),
+);
+
+it.effect("stops before PostgreSQL deletion when authority changes during Agent deletion", () =>
+  expectStopsWhenAuthorityChangesAfter("agent", [
+    "recheck",
+    "quiesce",
+    "recheck",
+    "provider",
+    "recheck",
+    "objects",
+    "recheck",
+    "agent",
+    "recheck",
+  ]),
+);
+
+const expectStopsWhenAuthorityChangesAfter = (
+  changedAfter: "agent" | "objects" | "provider",
+  expectedCalls: ReadonlyArray<string>,
+) => {
+  const calls: Array<string> = [];
+  let authorized = true;
+  const candidate = {
+    agentId: AgentId.make("agent-1"),
+    approvalActionId: ActionId.make("account-delete-1"),
+    approvalPresentation: ApprovalPresentation.make("Delete account"),
+    deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+    userId: UserId.make("user-1"),
+  };
+  const recordEffect = (operation: "agent" | "objects") =>
+    Effect.sync(() => {
+      calls.push(operation);
+      if (changedAfter === operation) authorized = false;
+    });
+  const port = AccountDeletion.Port.of({
+    inspectAuthorization: () =>
+      Effect.sync(() => {
+        calls.push("recheck");
+        return authorized ? activeFacts(candidate.userId) : null;
+      }),
+    agents: {
+      quiesce: () => Effect.sync(() => calls.push("quiesce")),
+      remove: () => recordEffect("agent"),
+    },
+    objects: { remove: () => recordEffect("objects") },
+    persistence: {
+      pending: Effect.succeed([candidate]),
+      removeUser: () => Effect.die(new Error("Unexpected PostgreSQL deletion")),
+    },
+  });
+  return Effect.gen(function* () {
+    const deletion = yield* AccountDeletion.Service;
+    const result = yield* deletion.reconcileOne(candidate).pipe(Effect.result);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(calls).toEqual(expectedCalls);
+  }).pipe(
+    Effect.provide(
+      accountDeletionLayer(port, calls, () => {
+        if (changedAfter === "provider") authorized = false;
+        return "deleted";
+      }),
+    ),
+  );
+};
 
 it.effect("does not delete provider knowledge when authority changes during quiescence", () => {
   const calls: Array<string> = [];

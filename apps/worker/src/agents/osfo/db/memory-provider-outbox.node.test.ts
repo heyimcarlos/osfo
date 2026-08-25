@@ -444,6 +444,7 @@ it.effect("settles pending append work while deleting historical Session ownersh
         },
         {
           activateCurrentSession: Effect.die(new Error("Historical deletion activated Session")),
+          authorizeDeletion: Effect.void,
           clearMessages: () => Effect.promise(() => historical.clearMessages()),
           inspect: store.inspect().pipe(Effect.orDie),
           ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
@@ -556,6 +557,7 @@ it.effect("creates a replacement before clearing and settling the current Sessio
         },
         {
           activateCurrentSession: Effect.sync(() => events.push("activate")).pipe(Effect.asVoid),
+          authorizeDeletion: Effect.sync(() => events.push("recheck")),
           clearMessages: () =>
             Effect.sync(() => events.push("clear")).pipe(
               Effect.andThen(Effect.promise(() => current.clearMessages())),
@@ -585,7 +587,7 @@ it.effect("creates a replacement before clearing and settling the current Sessio
         },
       );
 
-      expect(events).toEqual(["replace", "activate", "clear", "settle"]);
+      expect(events).toEqual(["replace", "activate", "recheck", "clear", "settle"]);
       expect(yield* store.inspect()).toMatchObject({ currentSessionId: "session-2" });
       expect(thinkSessionCounts(database, "session-1")).toEqual({
         compactions: 0,

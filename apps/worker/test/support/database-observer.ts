@@ -101,6 +101,10 @@ const findAccountDeletion = async (options: DatabaseObserverOptions, userId: str
         exists(select 1 from agents where user_id = ${userId}) as agent_exists,
         exists(select 1 from sessions where user_id = ${userId}) as auth_session_exists,
         exists(select 1 from deletion_cases where user_id = ${userId}) as deletion_case_exists
+      where exists(select 1 from users where id = ${userId})
+        or exists(select 1 from agents where user_id = ${userId})
+        or exists(select 1 from sessions where user_id = ${userId})
+        or exists(select 1 from deletion_cases where user_id = ${userId})
     `;
     return row;
   });

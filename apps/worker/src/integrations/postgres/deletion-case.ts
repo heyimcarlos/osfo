@@ -1,6 +1,7 @@
-import { deletionCases } from "@osfo/db/schema/user-lifecycle";
-import { users } from "@osfo/db/schema/auth";
-import { eq } from "drizzle-orm";
+import { sessions, users } from "@osfo/db/schema/auth";
+import { billingSubscriptions } from "@osfo/db/schema/billing";
+import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 
 import { Db } from "../../db";
@@ -16,6 +17,7 @@ export const make = Effect.gen(function* () {
     userId: Parameters<DeletionCase.PersistencePort["requestSelf"]>[0],
     deletion_case_id: Parameters<DeletionCase.PersistencePort["requestSelf"]>[1],
     approval: Parameters<DeletionCase.PersistencePort["requestSelf"]>[2],
+    authority: Parameters<DeletionCase.PersistencePort["requestSelf"]>[3],
   ) {
     return yield* Db.execute("requestDeletion", () =>
       database.transaction(async (transaction) => {
@@ -26,6 +28,44 @@ export const make = Effect.gen(function* () {
           .for("update")
           .limit(1);
         if (user === undefined) return { _tag: "MissingUser" } as const;
+        const [[authSession], [subscription], [latestSuspension]] = await Promise.all([
+          transaction
+            .select({ id: sessions.id })
+            .from(sessions)
+            .where(
+              and(
+                eq(sessions.id, authority.authSessionId),
+                eq(sessions.userId, userId),
+                gt(sessions.expiresAt, sql`clock_timestamp()`),
+              ),
+            )
+            .for("update")
+            .limit(1),
+          transaction
+            .select({
+              plan: billingSubscriptions.plan,
+              planPolicyVersion: billingSubscriptions.plan_policy_version,
+            })
+            .from(billingSubscriptions)
+            .where(eq(billingSubscriptions.user_id, userId))
+            .for("update")
+            .limit(1),
+          transaction
+            .select({ action: userSuspensionEvents.action })
+            .from(userSuspensionEvents)
+            .where(eq(userSuspensionEvents.user_id, userId))
+            .orderBy(desc(userSuspensionEvents.occurred_at), desc(userSuspensionEvents.event_id))
+            .limit(1),
+        ]);
+        if (
+          authSession === undefined ||
+          subscription === undefined ||
+          subscription.plan !== authority.plan ||
+          subscription.planPolicyVersion !== authority.planPolicyVersion ||
+          latestSuspension?.action === "suspended"
+        ) {
+          return { _tag: "AuthorityChanged" } as const;
+        }
         const [existing] = await transaction
           .select({ deletionCaseId: deletionCases.deletion_case_id })
           .from(deletionCases)
@@ -45,6 +85,7 @@ export const make = Effect.gen(function* () {
           requested_by_user_id: userId,
           user_id: userId,
         });
+        await transaction.delete(sessions).where(eq(sessions.userId, userId));
         return { _tag: "Created" } as const;
       }),
     );

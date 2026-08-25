@@ -1,8 +1,9 @@
 import { Context, Crypto, Effect, Layer, Schema } from "effect";
 
 import type { DbUnavailable } from "../db";
-import type { UserId } from "../domain";
+import type { PlanPolicyVersion, UserId } from "../domain";
 import type { AdminActorId, AdminReason } from "../domain/account-administration";
+import type { AuthSessionId } from "../domain/auth-session";
 import { type DeletionAccessFact, DeletionCaseId } from "../domain/deletion-case";
 import type { AuthSessionUnavailable } from "./auth-session";
 import { AuthSession } from "./auth-session";
@@ -30,8 +31,16 @@ export interface SelfDeletionApproval {
   readonly presentation: ApprovalPresentation;
 }
 
+/** Exact current facts that must remain locked through the self-service access fence. */
+export interface SelfDeletionAuthority {
+  readonly authSessionId: AuthSessionId;
+  readonly plan: "adventurer" | "free";
+  readonly planPolicyVersion: PlanPolicyVersion;
+}
+
 /** Persistence result for one Deletion Case request. */
 export type RequestResult =
+  | { readonly _tag: "AuthorityChanged" }
   | { readonly _tag: "Created" }
   | { readonly _tag: "Existing"; readonly deletionCaseId: DeletionCaseId }
   | { readonly _tag: "MissingUser" };
@@ -47,6 +56,7 @@ export interface PersistencePort {
     userId: UserId,
     deletionCaseId: DeletionCaseId,
     approval: SelfDeletionApproval,
+    authority: SelfDeletionAuthority,
   ) => Effect.Effect<RequestResult, DbUnavailable>;
 }
 
@@ -69,8 +79,10 @@ export interface Interface {
   readonly requestSelf: (
     userId: UserId,
     approval: SelfDeletionApproval,
+    authority: SelfDeletionAuthority,
   ) => Effect.Effect<
     | { readonly _tag: "DeletionAlreadyRequested"; readonly deletionCaseId: DeletionCaseId }
+    | { readonly _tag: "DeletionAuthorityChanged" }
     | { readonly _tag: "DeletionRequested"; readonly deletionCaseId: DeletionCaseId }
     | { readonly _tag: "UserMissing" },
     AuthSessionUnavailable | DbUnavailable | DeletionCaseIdentityUnavailable
@@ -96,11 +108,12 @@ export const make = Effect.gen(function* () {
   const requestSelf = Effect.fn("DeletionCase.requestSelf")(function* (
     userId: UserId,
     approval: SelfDeletionApproval,
+    authority: SelfDeletionAuthority,
   ) {
     const deletionCaseId = DeletionCaseId.make(yield* secureId);
-    const result = yield* persistence.requestSelf(userId, deletionCaseId, approval);
+    const result = yield* persistence.requestSelf(userId, deletionCaseId, approval, authority);
+    if (result._tag === "AuthorityChanged") return { _tag: "DeletionAuthorityChanged" } as const;
     if (result._tag === "MissingUser") return { _tag: "UserMissing" } as const;
-    yield* authSessions.revokeAllForUser(userId);
     return result._tag === "Existing"
       ? ({
           _tag: "DeletionAlreadyRequested",

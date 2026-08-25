@@ -46,12 +46,7 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
     const response = yield* Effect.promise(() => app.account.delete(presentation));
     expect(response.status).toBe(200);
     expect(yield* Effect.promise(() => response.json())).toEqual({ status: "deletion-pending" });
-    expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
-      agent_exists: false,
-      auth_session_exists: false,
-      deletion_case_exists: false,
-      user_exists: false,
-    });
+    expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toBeNull();
     expect(yield* Effect.promise(app.supermemory.ledger)).toEqual([
       {
         method: "DELETE",

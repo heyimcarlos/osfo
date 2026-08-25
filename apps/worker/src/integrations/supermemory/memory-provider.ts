@@ -41,12 +41,12 @@ const GetConversationStatusResponse = Schema.Struct({
   status: Schema.optionalKey(Schema.Unknown),
 });
 const SessionConversationDocument = Schema.Struct({
-  containerTags: Schema.Tuple([NonEmptyString]),
+  containerTags: Schema.NonEmptyArray(NonEmptyString),
   customId: NonEmptyString,
   id: MemoryProvider.ProviderDocumentId,
 });
 const SessionConversationDocumentSummary = Schema.Struct({
-  containerTags: Schema.Tuple([NonEmptyString]),
+  containerTags: Schema.NonEmptyArray(NonEmptyString),
   customId: Schema.NullOr(NonEmptyString),
   id: MemoryProvider.ProviderDocumentId,
 });
@@ -511,7 +511,7 @@ const make = (options: Options) =>
         if (
           matches.length > 1 ||
           (candidate !== undefined && matches.length === 1) ||
-          matches.some((document) => document.containerTags[0] !== containerTag)
+          matches.some((document) => !belongsOnlyToUser(document.containerTags, containerTag))
         ) {
           return yield* providerUnavailable("deleteSessionConversation", "identityMismatch");
         }
@@ -532,7 +532,7 @@ const make = (options: Options) =>
       if (
         document.id !== candidate.id ||
         document.customId !== customId ||
-        document.containerTags[0] !== containerTag
+        !belongsOnlyToUser(document.containerTags, containerTag)
       ) {
         return yield* providerUnavailable("deleteSessionConversation", "identityMismatch");
       }
@@ -603,6 +603,12 @@ export const layerFromConfig = (config: SupermemoryConfig) =>
     apiKey: config.apiKey,
     rateCard: publicRateCard,
   });
+
+const belongsOnlyToUser = (containerTags: ReadonlyArray<string>, expectedUserTag: string) => {
+  // Stable Osfo User containers are `u_` identities; other non-User grouping tags do not own data.
+  const userTags = containerTags.filter((containerTag) => containerTag.startsWith("u_"));
+  return userTags.length === 1 && userTags[0] === expectedUserTag;
+};
 
 const providerIdentity = (
   crypto: Crypto.Crypto,

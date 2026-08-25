@@ -130,25 +130,24 @@ export const make = Effect.gen(function* () {
   const reconcileOne = Effect.fn("AccountDeletion.reconcileOne")(function* (
     candidate: PendingAccountDeletion,
   ) {
-    const authorized = yield* recheck(candidate);
-    if (!authorized) {
-      return yield* new AccountDeletionUnavailable({
-        cause: candidate.userId,
-        message: "The durable account-deletion authority is no longer current",
-        operation: "recheckDeletionAuthority",
-      });
-    }
+    const requireCurrentAuthority = (changedDuring: string) =>
+      recheck(candidate).pipe(
+        Effect.filterOrFail(
+          (authorized) => authorized,
+          () =>
+            new AccountDeletionUnavailable({
+              cause: candidate.userId,
+              message: `The durable account-deletion authority changed ${changedDuring}`,
+              operation: "recheckDeletionAuthority",
+            }),
+        ),
+        Effect.asVoid,
+      );
     if (candidate.agentId !== null) {
+      yield* requireCurrentAuthority("before provider quiescence");
       yield* dependencies.agents.quiesce(candidate.agentId, candidate.userId);
     }
-    const stillAuthorized = yield* recheck(candidate);
-    if (!stillAuthorized) {
-      return yield* new AccountDeletionUnavailable({
-        cause: candidate.userId,
-        message: "The durable account-deletion authority changed during provider quiescence",
-        operation: "recheckDeletionAuthority",
-      });
-    }
+    yield* requireCurrentAuthority("before provider knowledge deletion");
     yield* provider.deleteUserKnowledge({ userId: candidate.userId }).pipe(
       Effect.mapError(
         (cause) =>
@@ -159,8 +158,13 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
+    yield* requireCurrentAuthority("before object deletion");
     yield* dependencies.objects.remove(candidate.userId);
-    if (candidate.agentId !== null) yield* dependencies.agents.remove(candidate.agentId);
+    if (candidate.agentId !== null) {
+      yield* requireCurrentAuthority("before Agent deletion");
+      yield* dependencies.agents.remove(candidate.agentId);
+    }
+    yield* requireCurrentAuthority("before PostgreSQL deletion");
     yield* dependencies.persistence.removeUser(candidate.userId);
     return undefined;
   });

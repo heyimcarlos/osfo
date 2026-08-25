@@ -40,6 +40,12 @@ const matchesClosedIntent =
   (task) =>
     patterns.some((pattern) => pattern.test(normalizeIntentText(task)));
 
+/** Exact launch-only intent that keeps destructive and data-rights help reachable after exhaustion. */
+export const isDeletionOrDataRightsIntent = matchesClosedIntent(
+  /^(can you |could you |how do i |i need to |i want to |please )?(delete|erase|remove) (my |the |this )?(account|conversation|conversation history|current session|data|memory|session)$/,
+  /^(can you |could you |how do i |i need to |i want to |please )?(exercise|request) (my )?(data rights|privacy rights)$/,
+);
+
 export const capabilityIntentPolicy = {
   conversation: { matches: () => true, taskKinds: ["conversation"] },
   "core-memory": {

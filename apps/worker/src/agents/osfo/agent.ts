@@ -1684,6 +1684,28 @@ export class OsfoAgent extends Think<Env> {
             try: () => this.#activateCurrentSession(),
             catch: sessionDeletionFailure("The replacement Session could not be activated"),
           }),
+          authorizeDeletion: Effect.tryPromise({
+            try: async () => {
+              const current = this.#currentApprovedActions.get(deletionAuthorization.actionId);
+              const result = await this.#recheckDeletionAction(
+                deletionAuthorization.actionId,
+                "session.delete",
+                current?.presentation === deletionAuthorization.presentation &&
+                  current !== undefined &&
+                  hasExactSessionDeleteInput(current.actionPresentation, input),
+                "deleteSession",
+              );
+              if (
+                Predicate.isTagged(result, "DeletionActionUnavailable") ||
+                Predicate.isTagged(result, "Denied")
+              ) {
+                throw result;
+              }
+            },
+            catch: sessionDeletionFailure(
+              "Session deletion authority changed before local history deletion",
+            ),
+          }),
           clearMessages: (sessionId) =>
             Effect.tryPromise({
               try: () => Session.create(this).forSession(sessionId).clearMessages(),

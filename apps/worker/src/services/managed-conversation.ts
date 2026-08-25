@@ -23,6 +23,7 @@ import {
   snapshotCoreMemoryAuthorization,
 } from "./authorization";
 import { CoreMemoryAuthorizationSnapshot } from "../domain/core-memory-authorization";
+import { isDeletionOrDataRightsIntent } from "./capability-intent-policy";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Authority identities use the _tag discriminator. */
 
@@ -126,10 +127,12 @@ export const admitManagedConversation = (
     const exhaustedLimits = currentCapabilityCatalog.exhaustedConversation;
     const admission =
       Predicate.isTagged(ordinaryAdmission, "Denied") &&
-      ordinaryAdmission.reason === "allowanceExhausted"
+      ordinaryAdmission.reason === "allowanceExhausted" &&
+      isDeletionOrDataRightsIntent(input.message)
         ? authorization.admit(authorizationContext, {
             actionId: input.submissionId,
             documentChunks: 0n,
+            exhaustedContinuity: "deletionOrDataRights",
             inputTokens: BigInt(exhaustedLimits.inputTokens),
             kind: "conversation.run",
             memoryDeadlineMilliseconds: BigInt(exhaustedLimits.memoryDeadlineMilliseconds),

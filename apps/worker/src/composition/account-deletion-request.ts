@@ -89,11 +89,23 @@ export const make = Effect.gen(function* () {
       operation,
     );
     if (!Predicate.isTagged(admission, "Admitted")) return yield* unavailable("authorize");
-    const requested = yield* authorities.deletionCases.requestSelf(userId, {
-      actionId: operation.actionId,
-      presentation,
-    });
-    if (Predicate.isTagged(requested, "UserMissing")) return yield* unavailable("fence");
+    const requested = yield* authorities.deletionCases.requestSelf(
+      userId,
+      {
+        actionId: operation.actionId,
+        presentation,
+      },
+      {
+        authSessionId,
+        plan: subscription.plan,
+        planPolicyVersion: PlanPolicyVersion.make(subscription.planPolicyVersion),
+      },
+    );
+    if (
+      Predicate.isTagged(requested, "UserMissing") ||
+      Predicate.isTagged(requested, "DeletionAuthorityChanged")
+    )
+      return yield* unavailable("fence");
     yield* deletion
       .reconcileUser(userId)
       .pipe(

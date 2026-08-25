@@ -468,6 +468,7 @@ const authorize = (
   if (allowanceExhausted) {
     if (
       operation.kind === "conversation.run" &&
+      operation.exhaustedContinuity === "deletionOrDataRights" &&
       context.liveFacts.concurrentExhaustedConversations <
         BigInt(capabilityCatalog.exhaustedConversation.concurrentOperations) &&
       !exceedsExhaustedConversationLimit(operation, capabilityCatalog)

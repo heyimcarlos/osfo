@@ -68,6 +68,26 @@ it.effect("admits a bounded unmetered deletion-request turn after ordinary exhau
   }),
 );
 
+it.effect("denies an ordinary conversation turn after ordinary exhaustion", () =>
+  Effect.gen(function* () {
+    const result = yield* admitManagedConversation(
+      {
+        authorization: exhaustedAuthorization(),
+        idempotencyKey: "ordinary-request-1",
+        message: "Tell me a joke",
+        routeId,
+        submissionId: ThinkSubmissionId.make("ordinary-submission-1"),
+      },
+      { currentSessionId: SessionId.make("session-1"), routeId },
+    );
+
+    expect(result).toMatchObject({
+      _tag: "ManagedConversationDenied",
+      reason: "allowanceExhausted",
+    });
+  }),
+);
+
 const exhaustedAuthorization = (): AuthorizationContext => {
   const userId = UserId.make("user-1");
   const authSessionId = AuthSessionId.make("auth-session-1");
