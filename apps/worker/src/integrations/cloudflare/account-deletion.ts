@@ -2,6 +2,11 @@ import { Effect, Option, Schema } from "effect";
 
 import { AllowancePeriodId, UserId } from "../../domain";
 import { AccountDeletion } from "../../services/account-deletion";
+import {
+  attemptKeyForContentKey,
+  documentAttemptPrefix,
+  documentContentPrefix,
+} from "./document-storage-keys";
 
 const ArtifactMetadata = Schema.fromJsonString(Schema.Struct({ userId: UserId }));
 const AttemptMetadata = Schema.fromJsonString(
@@ -70,8 +75,8 @@ const deleteArtifacts: (
   const page = yield* attempt("removeObjects", () =>
     bucket.list(
       cursor === undefined
-        ? { include: ["customMetadata"], prefix: "client-content/" }
-        : { cursor, include: ["customMetadata"], prefix: "client-content/" },
+        ? { include: ["customMetadata"], prefix: documentContentPrefix }
+        : { cursor, include: ["customMetadata"], prefix: documentContentPrefix },
     ),
   );
   const keys = page.objects.flatMap((object) => {
@@ -80,8 +85,8 @@ const deleteArtifacts: (
       Schema.decodeUnknownOption(ArtifactMetadata),
     );
     if (Option.isNone(metadata) || metadata.value.userId !== userId) return [];
-    const encodedContentId = object.key.slice("client-content/".length);
-    return [object.key, `document-attempts/${encodedContentId}`];
+    const attemptKey = attemptKeyForContentKey(object.key);
+    return attemptKey === undefined ? [] : [object.key, attemptKey];
   });
   if (keys.length > 0) {
     yield* authorizeDelete;
@@ -112,8 +117,8 @@ const deleteAttemptEvidence: (
   const page = yield* attempt("removeObjects", () =>
     bucket.list(
       cursor === undefined
-        ? { include: ["customMetadata"], prefix: "document-attempts/" }
-        : { cursor, include: ["customMetadata"], prefix: "document-attempts/" },
+        ? { include: ["customMetadata"], prefix: documentAttemptPrefix }
+        : { cursor, include: ["customMetadata"], prefix: documentAttemptPrefix },
     ),
   );
   const keys = page.objects.flatMap((object) => {

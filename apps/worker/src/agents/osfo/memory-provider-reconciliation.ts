@@ -336,6 +336,8 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
           retryDelaySeconds,
         );
       }
+      const claimIsCurrent = yield* store.isClaimCurrent(claim);
+      if (!claimIsCurrent) return undefined;
       const saved = yield* provider
         .saveConversation({
           conversation: projection.conversation,

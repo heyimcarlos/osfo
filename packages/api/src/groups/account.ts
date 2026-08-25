@@ -3,16 +3,18 @@ import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 
 import { Auth } from "../middleware/auth";
 
-/** Server-owned immutable presentation for one permanent account-deletion Action. */
+const BoundedActionText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_000));
+
+/** Bounded wire representation of a server-owned account-deletion Action. */
 export const AccountDeletionActionPresentation = Schema.Struct({
-  actionId: Schema.String,
-  confirmation: Schema.Literal("delete-my-account"),
-  consequence: Schema.Literal("Permanently delete this account and all of its data"),
-  operation: Schema.Literal("account.delete"),
-  title: Schema.Literal("Delete account"),
+  actionId: BoundedActionText,
+  confirmation: BoundedActionText,
+  consequence: BoundedActionText,
+  operation: BoundedActionText,
+  title: BoundedActionText,
 });
 
-/** Server-owned immutable presentation for one permanent account-deletion Action. */
+/** Bounded wire representation of a server-owned account-deletion Action. */
 export type AccountDeletionActionPresentation = typeof AccountDeletionActionPresentation.Type;
 
 /** Exact caller decision over the last server-owned account-deletion presentation. */
@@ -21,7 +23,7 @@ export const AccountDeletionRequest = Schema.Struct({
     decision: Schema.Literal("approved"),
     presentation: AccountDeletionActionPresentation,
   }),
-  confirmation: Schema.Literal("delete-my-account"),
+  confirmation: BoundedActionText,
 });
 
 /** Accepted account deletion that has already fenced normal access. */

@@ -3,8 +3,15 @@ import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { AllowancePeriodId, UserId } from "../../domain";
+import { ContentId } from "../../domain/client-content";
 import { AccountDeletion } from "../../services/account-deletion";
 import { make } from "./account-deletion";
+import {
+  attemptKeyFor,
+  contentKeyFor,
+  documentAttemptPrefix,
+  documentContentPrefix,
+} from "./document-storage-keys";
 
 it.effect("removes an interrupted document attempt without a retained artifact", () => {
   const deleted: Array<string> = [];
@@ -13,7 +20,7 @@ it.effect("removes an interrupted document attempt without a retained artifact",
   const artifacts = bucketStub({
     deleted,
     objectsByPrefix: {
-      "document-attempts/": [
+      [documentAttemptPrefix]: [
         {
           customMetadata: {
             osfo: JSON.stringify({
@@ -32,6 +39,37 @@ it.effect("removes an interrupted document attempt without a retained artifact",
       Effect.andThen(
         Effect.sync(() => {
           expect(deleted).toContain("document-attempts/orphaned-content");
+        }),
+      ),
+    );
+});
+
+it.effect("removes an owned document body and its attempt sidecar through shared keys", () => {
+  const deleted: Array<string> = [];
+  const userId = UserId.make("user-1");
+  const contentId = ContentId.make("content-1");
+  const contentKey = contentKeyFor(contentId);
+  const attemptKey = attemptKeyFor(contentId);
+  const files = bucketStub({ deleted });
+  const artifacts = bucketStub({
+    deleted,
+    objectsByPrefix: {
+      [documentContentPrefix]: [
+        {
+          customMetadata: { osfo: JSON.stringify({ userId }) },
+          key: contentKey,
+        },
+      ],
+    },
+  });
+
+  return make(files, artifacts, () => Effect.succeed(new Set()))
+    .remove(userId, Effect.void)
+    .pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(deleted).toContain(contentKey);
+          expect(deleted).toContain(attemptKey);
         }),
       ),
     );

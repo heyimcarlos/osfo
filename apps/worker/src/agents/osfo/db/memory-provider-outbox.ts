@@ -11,7 +11,7 @@ import { ConversationSnapshotProjection } from "../memory-provider-projection";
 import type { ConversationSnapshotProjection as ConversationSnapshotProjectionType } from "../memory-provider-projection";
 import type { AgentDb } from "./client";
 import { AgentStoreRecordInvalid, AgentStoreUnavailable } from "./errors";
-import { memoryProviderConfiguration, memoryProviderOutbox } from "./schema";
+import { memoryProviderConfiguration, memoryProviderOutbox, sessionOwnership } from "./schema";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect tagged payloads use the canonical _tag discriminator. */
 
@@ -579,6 +579,33 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     ).pipe(Effect.asVoid),
   );
 
+  const isClaimCurrent = Effect.fn("MemoryProviderOutbox.isClaimCurrent")(
+    (claim: ClaimedMemoryProviderWork) =>
+      execute("inspectMemoryProviderOutbox", () =>
+        db.transaction((transaction) => {
+          const current = transaction
+            .select({
+              claimToken: memoryProviderOutbox.claim_token,
+              status: memoryProviderOutbox.status,
+            })
+            .from(memoryProviderOutbox)
+            .where(eq(memoryProviderOutbox.outbox_id, claim.outboxId))
+            .limit(1)
+            .get();
+          if (current?.status !== "claimed" || current.claimToken !== claim.claimToken)
+            return false;
+          if (claim.payload._tag !== "SaveConversation") return false;
+          const session = transaction
+            .select({ sessionId: sessionOwnership.session_id })
+            .from(sessionOwnership)
+            .where(eq(sessionOwnership.session_id, claim.payload.projection.sessionId))
+            .limit(1)
+            .get();
+          return session !== undefined;
+        }),
+      ),
+  );
+
   const updateClaim = Effect.fn("MemoryProviderOutbox.updateClaim")(function* (
     operation: "completeMemoryProviderOutbox" | "retryMemoryProviderOutbox",
     claim: ClaimedMemoryProviderWork,
@@ -617,6 +644,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     hasProcessingConversationWork,
     hasRetryableWork,
     inspectConfiguration,
+    isClaimCurrent,
     awaitProvider,
     markProviderAccepted,
     markProviderStatus,

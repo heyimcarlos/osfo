@@ -12,7 +12,7 @@ import { Session, type SqlProvider } from "agents/experimental/memory/session";
 
 import { expect, it } from "@effect/vitest";
 import { BrowserCrypto } from "@effect/platform-browser";
-import { Effect, Option, Result } from "effect";
+import { Deferred, Effect, Fiber, Option, Result } from "effect";
 import { TestClock } from "effect/testing";
 
 import { Db, DbTimestamp } from "../../../db";
@@ -540,6 +540,7 @@ it.effect("terminalizes claimed append work while deleting historical Session ow
       ]);
 
       expect(yield* outbox.hasProcessingConversationWork).toBe(false);
+      expect(yield* outbox.isClaimCurrent(staleAppendClaim)).toBe(false);
       yield* outbox.expediteProcessingConversationWork(now);
       expect(
         database
@@ -558,6 +559,105 @@ it.effect("terminalizes claimed append work while deleting historical Session ow
       expect(yield* outbox.awaitProvider(staleAppendClaim, "processing", now)).toBe(false);
       const next = Option.getOrThrow(yield* outbox.claimNext(now, liveLease, "deletion-claim"));
       expect(next.payload._tag).toBe("DeleteSessionConversation");
+    }),
+  ),
+);
+
+it.effect("does not save a claimed append after historical Session deletion terminalizes it", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const store = makeAgentStore(db);
+      yield* store.initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: SessionId.make("session-1"),
+      });
+      yield* store.replaceCurrentSession({
+        expectedCurrentSessionId: SessionId.make("session-1"),
+        replacedAt: now,
+        replacementSessionId: SessionId.make("session-2"),
+        routeId: ConversationRouteId.make("route-1"),
+      });
+      yield* store.recordCommittedTurn(
+        committedTurn("assistant-1", "request-1"),
+        conversationProjection("assistant-1"),
+      );
+      database.exec(
+        "UPDATE osfo_memory_provider_outbox SET available_at = '1960-01-01T00:00:00.000Z'",
+      );
+      const outbox = makeMemoryProviderOutboxStore(db);
+      const reachedDeletionFence = yield* Deferred.make<void>();
+      const resumeAfterDeletion = yield* Deferred.make<void>();
+      let providerCalls = 0;
+      const provider = providerStub({
+        saveConversation: () => {
+          providerCalls += 1;
+          return Effect.die(new Error("A deleted Session was recreated at the provider"));
+        },
+      });
+      const reconciliation = Effect.scoped(
+        reconcileMemoryProviderOutbox(outbox, {
+          canSaveConversation: () =>
+            Deferred.succeed(reachedDeletionFence, undefined).pipe(
+              Effect.andThen(Deferred.await(resumeAfterDeletion)),
+              Effect.as(true),
+            ),
+        }),
+      ).pipe(
+        Effect.provideService(MemoryProvider.Service, provider),
+        Effect.provideService(Db.Service, unavailableDatabase),
+        Effect.provide(BrowserCrypto.layer),
+      );
+      const reconciler = yield* reconciliation.pipe(Effect.forkChild);
+      yield* Deferred.await(reachedDeletionFence);
+
+      yield* deleteLocalSession(
+        {
+          replacementSessionId: SessionId.make("unused-replacement"),
+          sessionId: SessionId.make("session-1"),
+        },
+        {
+          activateCurrentSession: Effect.die(new Error("Historical deletion activated Session")),
+          authorizeDeletion: Effect.void,
+          clearMessages: () => Effect.void,
+          inspect: store.inspect().pipe(Effect.orDie),
+          ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+          replacedAt: Effect.succeed(now),
+          replaceCurrentSession: () =>
+            Effect.die(new Error("Historical deletion replaced current Session")),
+          settle: (sessionId) =>
+            store
+              .deleteHistoricalSession({
+                authorization: authorizedDeletion("delete-session-1", sessionId).payload
+                  .authorization,
+                deletedAt: now,
+                outboxId: MemoryProviderOutboxId.make("delete-session-1"),
+                sessionId,
+                userId: UserId.make("user-1"),
+              })
+              .pipe(Effect.orDie),
+        },
+      );
+      yield* Deferred.succeed(resumeAfterDeletion, undefined);
+      yield* Fiber.join(reconciler);
+
+      expect(providerCalls).toBe(0);
+      expect(
+        database
+          .prepare(
+            `SELECT provider_document_id, status FROM osfo_memory_provider_outbox
+            WHERE operation_type = 'saveConversation'`,
+          )
+          .get(),
+      ).toEqual({ provider_document_id: null, status: "completed" });
+      expect(
+        database
+          .prepare("SELECT session_id FROM osfo_session_ownership WHERE session_id = 'session-1'")
+          .get(),
+      ).toBeUndefined();
     }),
   ),
 );

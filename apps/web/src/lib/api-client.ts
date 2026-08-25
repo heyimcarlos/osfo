@@ -95,7 +95,7 @@ export const requestAccountDeletion = (presentation: AccountDeletionActionPresen
     return yield* client.account.deleteAccount({
       payload: {
         approval: { decision: "approved", presentation },
-        confirmation: "delete-my-account",
+        confirmation: presentation.confirmation,
       },
     });
   });

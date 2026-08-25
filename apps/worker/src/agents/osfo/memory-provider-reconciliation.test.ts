@@ -3,7 +3,7 @@
 /* oxlint-disable eslint/no-underscore-dangle -- Assertions inspect canonical tagged outcomes. */
 import { expect, it } from "@effect/vitest";
 import { BrowserCrypto } from "@effect/platform-browser";
-import { Effect, Option } from "effect";
+import { Deferred, Effect, Fiber, Option } from "effect";
 
 import { Db } from "../../db";
 import {
@@ -417,6 +417,50 @@ it.effect("does not start a provider append after account deletion fences the Us
   );
 });
 
+it.effect("rechecks a claimed append after Session deletion terminalizes it", () =>
+  Effect.gen(function* () {
+    const claim = conversationClaim();
+    const checkedDeletionFence = yield* Deferred.make<void>();
+    const continueAfterDeletion = yield* Deferred.make<void>();
+    let claimIsCurrent = true;
+    let providerCalled = false;
+    const { completed, retried, store: baseStore } = testStore(claim);
+    const store = {
+      ...baseStore,
+      isClaimCurrent: () => Effect.sync(() => claimIsCurrent),
+    };
+    const provider = providerStub({
+      saveConversation: () => {
+        providerCalled = true;
+        return Effect.die(new Error("A terminalized Session append reached the provider"));
+      },
+    });
+    const reconciliation = Effect.scoped(
+      reconcileMemoryProviderOutbox(store, {
+        canSaveConversation: () =>
+          Deferred.succeed(checkedDeletionFence, undefined).pipe(
+            Effect.andThen(Deferred.await(continueAfterDeletion)),
+            Effect.as(true),
+          ),
+      }),
+    ).pipe(
+      Effect.provideService(MemoryProvider.Service, provider),
+      Effect.provideService(Db.Service, unavailableDatabase),
+      Effect.provide(BrowserCrypto.layer),
+    );
+    const fiber = yield* reconciliation.pipe(Effect.forkChild);
+
+    yield* Deferred.await(checkedDeletionFence);
+    claimIsCurrent = false;
+    yield* Deferred.succeed(continueAfterDeletion, undefined);
+    yield* Fiber.join(fiber);
+
+    expect(providerCalled).toBe(false);
+    expect(retried).toEqual([]);
+    expect(completed).toEqual([]);
+  }),
+);
+
 it.effect("configures organization and User guidance before first ingest", () => {
   const claim = conversationClaim();
   const calls: Array<string> = [];
@@ -792,6 +836,7 @@ const testStore = (
     hasProcessingConversationWork: Effect.succeed(false),
     hasRetryableWork: Effect.succeed(false),
     inspectConfiguration: () => Effect.succeed(Option.none()),
+    isClaimCurrent: () => Effect.succeed(true),
     markProviderAccepted: () => Effect.succeed(options.providerAccepted ?? true),
     markProviderStatus: () => Effect.succeed(true),
     readRecentTurnBridge: () => Effect.succeed([]),

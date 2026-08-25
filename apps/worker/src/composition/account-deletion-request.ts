@@ -1,7 +1,7 @@
-import { AccountDeletionActionPresentation } from "@osfo/api";
+import type { AccountDeletionActionPresentation } from "@osfo/api";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { eq } from "drizzle-orm";
-import { DateTime, Effect, Predicate, Schema } from "effect";
+import { DateTime, Effect, Option, Predicate, Schema } from "effect";
 
 import { Db } from "../db";
 import { PlanPolicyVersion, UserId } from "../domain";
@@ -33,13 +33,13 @@ export const make = Effect.gen(function* () {
       readonly presentation: AccountDeletionPresentation;
     };
     readonly authSessionId: string;
-    readonly confirmation: "delete-my-account";
+    readonly confirmation: string;
     readonly userId: string;
   }) {
     const userId = UserId.make(input.userId);
     const authSessionId = AuthSessionId.make(input.authSessionId);
     const expectedPresentation = accountDeletionPresentation(authSessionId);
-    if (!samePresentation(input.approval.presentation, expectedPresentation)) {
+    if (!isExactApproval(input, expectedPresentation)) {
       return yield* unavailable("approvalPresentation");
     }
     const presentation = ApprovalPresentation.make(
@@ -122,29 +122,44 @@ export const make = Effect.gen(function* () {
 
 type AccountDeletionPresentation = AccountDeletionActionPresentation;
 
-const encodeAccountDeletionPresentation = Schema.encodeSync(
-  Schema.fromJsonString(AccountDeletionActionPresentation),
-);
-
-const accountDeletionPresentation = (
-  authSessionId: AuthSessionId,
-): AccountDeletionPresentation => ({
-  actionId: `account-delete:${authSessionId}`,
+const accountDeletionActionDefinition = {
   confirmation: "delete-my-account",
   consequence: "Permanently delete this account and all of its data",
   operation: "account.delete",
   title: "Delete account",
+} as const;
+
+const ExactAccountDeletionActionPresentation = Schema.Struct({
+  actionId: Schema.String,
+  confirmation: Schema.Literal(accountDeletionActionDefinition.confirmation),
+  consequence: Schema.Literal(accountDeletionActionDefinition.consequence),
+  operation: Schema.Literal(accountDeletionActionDefinition.operation),
+  title: Schema.Literal(accountDeletionActionDefinition.title),
 });
 
-const samePresentation = (
-  received: AccountDeletionPresentation,
+const encodeAccountDeletionPresentation = Schema.encodeSync(
+  Schema.fromJsonString(ExactAccountDeletionActionPresentation),
+);
+
+export const accountDeletionPresentation = (authSessionId: AuthSessionId) => ({
+  actionId: `account-delete:${authSessionId}`,
+  ...accountDeletionActionDefinition,
+});
+
+export const isExactApproval = (
+  received: {
+    readonly approval: { readonly presentation: AccountDeletionPresentation };
+    readonly confirmation: string;
+  },
   expected: AccountDeletionPresentation,
 ) =>
-  received.actionId === expected.actionId &&
-  received.confirmation === expected.confirmation &&
-  received.consequence === expected.consequence &&
-  received.operation === expected.operation &&
-  received.title === expected.title;
+  received.confirmation === accountDeletionActionDefinition.confirmation &&
+  Option.isSome(
+    Schema.decodeUnknownOption(ExactAccountDeletionActionPresentation)(
+      received.approval.presentation,
+    ),
+  ) &&
+  received.approval.presentation.actionId === expected.actionId;
 
 const unavailable = (operation: string) =>
   new AccountDeletion.AccountDeletionUnavailable({
