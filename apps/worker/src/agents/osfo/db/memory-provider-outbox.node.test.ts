@@ -831,7 +831,7 @@ it.effect("drains an in-flight provider save before terminalizing Session append
   ),
 );
 
-it.effect("creates a replacement before clearing and settling the current Session", () =>
+it.effect("rechecks before replacing, clearing, and settling the current Session", () =>
   withDatabase(({ database, storage }) =>
     Effect.gen(function* () {
       const db = makeAgentDb(asDurableObjectStorage(storage));
@@ -884,7 +884,15 @@ it.effect("creates a replacement before clearing and settling the current Sessio
         },
       );
 
-      expect(events).toEqual(["replace", "activate", "recheck", "clear", "recheck", "settle"]);
+      expect(events).toEqual([
+        "recheck",
+        "replace",
+        "activate",
+        "recheck",
+        "clear",
+        "recheck",
+        "settle",
+      ]);
       expect(yield* store.inspect()).toMatchObject({ currentSessionId: "session-2" });
       expect(thinkSessionCounts(database, "session-1")).toEqual({
         compactions: 0,

@@ -33,6 +33,7 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
   const agent = yield* dependencies.inspect;
   if (agent.currentSessionId === input.sessionId) {
     const replacedAt = yield* dependencies.replacedAt;
+    yield* dependencies.authorizeDeletion();
     yield* dependencies.replaceCurrentSession({
       expectedCurrentSessionId: input.sessionId,
       replacedAt,
