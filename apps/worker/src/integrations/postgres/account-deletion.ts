@@ -5,21 +5,22 @@ import {
   billingCustomers,
   billingSubscriptions,
 } from "@osfo/db/schema/billing";
-import { deletionCases } from "@osfo/db/schema/user-lifecycle";
+import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { webhookEvents } from "@osfo/db/schema/webhooks";
 import { eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 
 import type { Database } from "@osfo/db";
-import { AgentId, UserId } from "../../domain";
+import { AgentId, PlanPolicyVersion, UserId } from "../../domain";
 import { ActionId } from "../../domain/action-execution";
+import { DeletionCaseId } from "../../domain/deletion-case";
 import { AccountDeletion } from "../../services/account-deletion";
 import { ApprovalPresentation } from "../../services/authorization";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transaction boundaries require async functions. */
 
 /** Build durable pending-account discovery and final PostgreSQL erasure. */
-export const make = (database: Database): AccountDeletion.Dependencies["persistence"] => {
+export const make = (database: Database): AccountDeletion.PortInterface["persistence"] => {
   const pending = Effect.fn("AccountDeletionPostgres.listPending")(function* () {
     const rows = yield* attempt("listPending", () =>
       database
@@ -27,23 +28,26 @@ export const make = (database: Database): AccountDeletion.Dependencies["persiste
           agentId: agents.agent_id,
           approvalActionId: deletionCases.approval_action_id,
           approvalPresentation: deletionCases.approval_presentation,
+          deletionCaseId: deletionCases.deletion_case_id,
           userId: deletionCases.user_id,
         })
         .from(deletionCases)
         .leftJoin(agents, eq(agents.user_id, deletionCases.user_id))
         .where(sql`${deletionCases.requested_by_user_id} = ${deletionCases.user_id}`),
     );
-    return rows.flatMap(({ agentId, approvalActionId, approvalPresentation, userId }) =>
-      approvalActionId === null || approvalPresentation === null
-        ? []
-        : [
-            {
-              agentId: agentId === null ? null : AgentId.make(agentId),
-              approvalActionId: ActionId.make(approvalActionId),
-              approvalPresentation: ApprovalPresentation.make(approvalPresentation),
-              userId: UserId.make(userId),
-            },
-          ],
+    return rows.flatMap(
+      ({ agentId, approvalActionId, approvalPresentation, deletionCaseId, userId }) =>
+        approvalActionId === null || approvalPresentation === null
+          ? []
+          : [
+              {
+                agentId: agentId === null ? null : AgentId.make(agentId),
+                approvalActionId: ActionId.make(approvalActionId),
+                approvalPresentation: ApprovalPresentation.make(approvalPresentation),
+                deletionCaseId: DeletionCaseId.make(deletionCaseId),
+                userId: UserId.make(userId),
+              },
+            ],
     );
   });
   const removeUser = Effect.fn("AccountDeletionPostgres.removeUser")(function* (userId: UserId) {
@@ -104,22 +108,51 @@ export const make = (database: Database): AccountDeletion.Dependencies["persiste
   };
 };
 
-/** Recheck the immutable self-service Deletion Case used as durable deletion authority. */
-export const authorize = (database: Database): AccountDeletion.Dependencies["authorize"] =>
-  Effect.fn("AccountDeletionPostgres.authorize")(function* (candidate) {
+/** Read current facts only while the exact Deletion Case remains the durable authority. */
+export const inspectAuthorization = (
+  database: Database,
+): AccountDeletion.PortInterface["inspectAuthorization"] =>
+  Effect.fn("AccountDeletionPostgres.inspectAuthorization")(function* (candidate) {
     const rows = yield* attempt("recheckDeletionAuthority", () =>
       database
-        .select({ deletionCaseId: deletionCases.deletion_case_id })
+        .select({
+          plan: billingSubscriptions.plan,
+          planPolicyVersion: billingSubscriptions.plan_policy_version,
+          suspensionAction: sql<string | null>`(
+            select ${userSuspensionEvents.action}
+            from ${userSuspensionEvents}
+            where ${userSuspensionEvents.user_id} = ${candidate.userId}
+            order by ${userSuspensionEvents.occurred_at} desc, ${userSuspensionEvents.event_id} desc
+            limit 1
+          )`,
+          userId: users.id,
+        })
         .from(deletionCases)
+        .innerJoin(users, eq(users.id, deletionCases.user_id))
+        .innerJoin(billingSubscriptions, eq(billingSubscriptions.user_id, deletionCases.user_id))
         .where(
-          sql`${deletionCases.user_id} = ${candidate.userId}
+          sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
+            and ${deletionCases.user_id} = ${candidate.userId}
             and ${deletionCases.requested_by_user_id} = ${candidate.userId}
             and ${deletionCases.approval_action_id} = ${candidate.approvalActionId}
             and ${deletionCases.approval_presentation} = ${candidate.approvalPresentation}`,
         )
         .limit(1),
     );
-    return rows.length === 1;
+    const row = rows[0];
+    if (row === undefined) return null;
+    const userId = UserId.make(row.userId);
+    return {
+      resourceOwnerUserId: userId,
+      subscription: {
+        plan: row.plan,
+        planPolicyVersion: PlanPolicyVersion.make(row.planPolicyVersion),
+      },
+      user:
+        row.suspensionAction === "suspended"
+          ? ({ _tag: "SuspendedUser", userId } as const)
+          : ({ _tag: "ActiveUser", userId } as const),
+    };
   });
 
 const attempt = <A>(operation: string, run: () => Promise<A>) =>

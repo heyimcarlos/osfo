@@ -3,8 +3,9 @@
 import { expect, it } from "@effect/vitest";
 import { Effect, Layer, Result } from "effect";
 
-import { AgentId, UserId } from "../domain";
+import { AgentId, PlanPolicyVersion, UserId } from "../domain";
 import { ActionId } from "../domain/action-execution";
+import { DeletionCaseId } from "../domain/deletion-case";
 import { AccountDeletion } from "./account-deletion";
 import { ApprovalPresentation } from "./authorization";
 import { MemoryProvider } from "./memory-provider";
@@ -15,10 +16,13 @@ it.effect("keeps local data pending until provider deletion confirms permanent a
     agentId: AgentId.make("agent-1"),
     approvalActionId: ActionId.make("account-delete-1"),
     approvalPresentation: ApprovalPresentation.make("Delete account"),
+    deletionCaseId: DeletionCaseId.make("deletion-case-1"),
     userId: UserId.make("user-1"),
   };
-  const deletion = AccountDeletion.make({
-    authorize: () => Effect.sync(() => calls.push("authorize")).pipe(Effect.as(true)),
+  let providerAttempts = 0;
+  const port = AccountDeletion.Port.of({
+    inspectAuthorization: () =>
+      Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
     agents: {
       quiesce: () => Effect.sync(() => calls.push("quiesce")),
       remove: () => Effect.sync(() => calls.push("agent")),
@@ -30,27 +34,33 @@ it.effect("keeps local data pending until provider deletion confirms permanent a
     },
   });
   return Effect.gen(function* () {
-    const unavailable = yield* deletion
-      .reconcileOne(candidate)
-      .pipe(Effect.provide(providerLayer("unavailable", calls)), Effect.result);
+    const deletion = yield* AccountDeletion.Service;
+    const unavailable = yield* deletion.reconcileOne(candidate).pipe(Effect.result);
     expect(Result.isFailure(unavailable)).toBe(true);
-    expect(calls).toEqual(["authorize", "quiesce", "authorize", "provider"]);
+    expect(calls).toEqual(["recheck", "quiesce", "recheck", "provider"]);
 
-    yield* deletion.reconcileOne(candidate).pipe(Effect.provide(providerLayer("deleted", calls)));
+    yield* deletion.reconcileOne(candidate);
     expect(calls).toEqual([
-      "authorize",
+      "recheck",
       "quiesce",
-      "authorize",
+      "recheck",
       "provider",
-      "authorize",
+      "recheck",
       "quiesce",
-      "authorize",
+      "recheck",
       "provider",
       "objects",
       "agent",
       "postgres",
     ]);
-  });
+  }).pipe(
+    Effect.provide(
+      accountDeletionLayer(port, calls, () => {
+        providerAttempts += 1;
+        return providerAttempts === 1 ? "unavailable" : "deleted";
+      }),
+    ),
+  );
 });
 
 it.effect("does not delete provider knowledge when authority changes during quiescence", () => {
@@ -60,14 +70,18 @@ it.effect("does not delete provider knowledge when authority changes during quie
     agentId: AgentId.make("agent-1"),
     approvalActionId: ActionId.make("account-delete-1"),
     approvalPresentation: ApprovalPresentation.make("Delete account"),
+    deletionCaseId: DeletionCaseId.make("deletion-case-1"),
     userId: UserId.make("user-1"),
   };
-  const deletion = AccountDeletion.make({
-    authorize: () =>
+  const port = AccountDeletion.Port.of({
+    inspectAuthorization: () =>
       Effect.sync(() => {
-        calls.push("authorize");
+        calls.push("recheck");
         checks += 1;
-        return checks === 1;
+        const facts = activeFacts(candidate.userId);
+        return checks === 1
+          ? facts
+          : { ...facts, user: { _tag: "SuspendedUser", userId: candidate.userId } as const };
       }),
     agents: {
       quiesce: () => Effect.sync(() => calls.push("quiesce")),
@@ -80,18 +94,31 @@ it.effect("does not delete provider knowledge when authority changes during quie
     },
   });
 
-  return deletion.reconcileOne(candidate).pipe(
-    Effect.provide(providerLayer("deleted", calls)),
-    Effect.result,
-    Effect.andThen(
-      Effect.sync(() => {
-        expect(calls).toEqual(["authorize", "quiesce", "authorize"]);
-      }),
-    ),
-  );
+  return Effect.gen(function* () {
+    const deletion = yield* AccountDeletion.Service;
+    yield* deletion.reconcileOne(candidate).pipe(Effect.result);
+    expect(calls).toEqual(["recheck", "quiesce", "recheck"]);
+  }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
 });
 
-const providerLayer = (result: "deleted" | "unavailable", calls: Array<string>) =>
+const accountDeletionLayer = (
+  port: AccountDeletion.PortInterface,
+  calls: Array<string>,
+  result: () => "deleted" | "unavailable",
+) =>
+  AccountDeletion.layerWithoutDependencies.pipe(
+    Layer.provide(
+      Layer.merge(Layer.succeed(AccountDeletion.Port, port), providerLayer(result, calls)),
+    ),
+  );
+
+const activeFacts = (userId: UserId): AccountDeletion.CurrentAuthorizationFacts => ({
+  resourceOwnerUserId: userId,
+  subscription: { plan: "free", planPolicyVersion: PlanPolicyVersion.make("launch-v1") },
+  user: { _tag: "ActiveUser", userId },
+});
+
+const providerLayer = (result: () => "deleted" | "unavailable", calls: Array<string>) =>
   Layer.succeed(
     MemoryProvider.Service,
     MemoryProvider.Service.of({
@@ -104,7 +131,7 @@ const providerLayer = (result: "deleted" | "unavailable", calls: Array<string>) 
       deleteSessionConversation: () => Effect.die(new Error("unexpected Session deletion")),
       deleteUserKnowledge: () => {
         calls.push("provider");
-        return result === "deleted"
+        return result() === "deleted"
           ? Effect.succeed({ _tag: "Deleted" as const })
           : Effect.fail(
               new MemoryProvider.MemoryProviderUnavailable({

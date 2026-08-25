@@ -26,7 +26,24 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
     expectedContainers.sort();
     expect(yield* Effect.promise(app.supermemory.containers)).toEqual(expectedContainers);
 
-    const response = yield* Effect.promise(app.account.delete);
+    const presented = yield* Effect.promise(app.account.present);
+    expect(presented.response.status).toBe(200);
+    if (presented.body === undefined) {
+      return yield* Effect.die(new Error("Account deletion was not presented"));
+    }
+    const presentation = presented.body;
+    const staleApproval = yield* Effect.promise(() =>
+      app.account.delete({ ...presentation, actionId: `${presentation.actionId}:changed` }),
+    );
+    expect(staleApproval.status).toBe(503);
+    expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
+      agent_exists: true,
+      auth_session_exists: true,
+      deletion_case_exists: false,
+      user_exists: true,
+    });
+
+    const response = yield* Effect.promise(() => app.account.delete(presentation));
     expect(response.status).toBe(200);
     expect(yield* Effect.promise(() => response.json())).toEqual({ status: "deletion-pending" });
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
@@ -48,5 +65,6 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
     const session = yield* Effect.promise(app.auth.session);
     expect(session.status).toBe(200);
     expect(yield* Effect.promise(() => session.json())).toBeNull();
+    return undefined;
   }),
 );

@@ -1,8 +1,17 @@
-import { Effect, Schema } from "effect";
+import { Context, DateTime, Effect, Layer, Predicate, Schema } from "effect";
 
-import type { AgentId, UserId } from "../domain";
+import type { AgentId, PlanPolicyVersion, UserId } from "../domain";
 import type { ActionId } from "../domain/action-execution";
-import type { ApprovalPresentation } from "./authorization";
+import type { DeletionCaseId } from "../domain/deletion-case";
+import type { UserAccessFact } from "../domain/user-suspension";
+import { retainedCatalog } from "../domain/plan-policy";
+import {
+  approvalFor,
+  type ApprovalPresentation,
+  Authorization,
+  AuthorizationContext,
+  emptyLiveResourceFacts,
+} from "./authorization";
 import { MemoryProvider } from "./memory-provider";
 
 /** One fenced account still carrying a durable deletion obligation. */
@@ -10,7 +19,18 @@ export interface PendingAccountDeletion {
   readonly agentId: AgentId | null;
   readonly approvalActionId: ActionId;
   readonly approvalPresentation: ApprovalPresentation;
+  readonly deletionCaseId: DeletionCaseId;
   readonly userId: UserId;
+}
+
+/** Current mutable facts retained outside the durable Deletion Case authority. */
+export interface CurrentAuthorizationFacts {
+  readonly resourceOwnerUserId: UserId;
+  readonly subscription: {
+    readonly plan: "adventurer" | "free";
+    readonly planPolicyVersion: PlanPolicyVersion;
+  };
+  readonly user: UserAccessFact;
 }
 
 /** Classified retryable failure in the broader account deletion flow. */
@@ -20,11 +40,11 @@ export class AccountDeletionUnavailable extends Schema.TaggedError<AccountDeleti
 ) {}
 
 /** Deletion-owned boundaries applied only after provider knowledge confirms permanent absence. */
-export interface Dependencies {
-  /** Recheck the still-pending self-service Deletion Case immediately before provider use. */
-  readonly authorize: (
+export interface PortInterface {
+  /** Read current facts only while the exact self-service Deletion Case remains authoritative. */
+  readonly inspectAuthorization: (
     candidate: PendingAccountDeletion,
-  ) => Effect.Effect<boolean, AccountDeletionUnavailable>;
+  ) => Effect.Effect<CurrentAuthorizationFacts | null, AccountDeletionUnavailable>;
   readonly agents: {
     /** Fence new provider appends and wait for any provider append already in flight. */
     readonly quiesce: (
@@ -45,12 +65,72 @@ export interface Dependencies {
   };
 }
 
+/** Runtime boundaries owned by the account-deletion workflow. */
+export class Port extends Context.Service<Port, PortInterface>()("@osfo/AccountDeletion/Port") {}
+
+/** Caller-oriented account-deletion capability. */
+export interface Interface {
+  readonly reconcileOne: (
+    candidate: PendingAccountDeletion,
+  ) => Effect.Effect<void, AccountDeletionUnavailable>;
+  readonly reconcilePending: Effect.Effect<void, AccountDeletionUnavailable>;
+  readonly reconcileUser: (userId: UserId) => Effect.Effect<void, AccountDeletionUnavailable>;
+}
+
+/** Shared provider-first account-deletion service. */
+export class Service extends Context.Service<Service, Interface>()("@osfo/AccountDeletion") {}
+
 /** Construct the idempotent provider-first account deletion reconciler. */
-export const make = (dependencies: Dependencies) => {
+export const make = Effect.gen(function* () {
+  const dependencies = yield* Port;
+  const provider = yield* MemoryProvider.Service;
+
+  const recheck = Effect.fn("AccountDeletion.recheck")(function* (
+    candidate: PendingAccountDeletion,
+  ) {
+    const facts = yield* dependencies.inspectAuthorization(candidate);
+    if (facts === null) return false;
+    const operation = {
+      actionId: candidate.approvalActionId,
+      kind: "account.delete",
+    } as const;
+    const triggerId = candidate.deletionCaseId;
+    const authority = {
+      _tag: "DurableTrigger",
+      triggerId,
+      triggerType: "deletionCase",
+      userId: candidate.userId,
+    } as const;
+    const now = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+    const result = Authorization.make(retainedCatalog).recheck(
+      AuthorizationContext.make({
+        allowance: { _tag: "Unavailable" },
+        approval: approvalFor(candidate.userId, operation, candidate.approvalPresentation),
+        authority,
+        deletionAccess: { _tag: "DeletionAccessRevoked" },
+        gmailConnection: null,
+        integrationConnections: [],
+        liveFacts: emptyLiveResourceFacts,
+        now,
+        originatingAuthority: {
+          _tag: "DurableTrigger",
+          triggerId,
+          triggerType: "deletionCase",
+        },
+        requestVendorUsdMicros: 0n,
+        resourceOwnerUserId: facts.resourceOwnerUserId,
+        subscription: facts.subscription,
+        user: facts.user,
+      }),
+      operation,
+    );
+    return Predicate.isTagged(result, "Permitted");
+  });
+
   const reconcileOne = Effect.fn("AccountDeletion.reconcileOne")(function* (
     candidate: PendingAccountDeletion,
   ) {
-    const authorized = yield* dependencies.authorize(candidate);
+    const authorized = yield* recheck(candidate);
     if (!authorized) {
       return yield* new AccountDeletionUnavailable({
         cause: candidate.userId,
@@ -61,7 +141,7 @@ export const make = (dependencies: Dependencies) => {
     if (candidate.agentId !== null) {
       yield* dependencies.agents.quiesce(candidate.agentId, candidate.userId);
     }
-    const stillAuthorized = yield* dependencies.authorize(candidate);
+    const stillAuthorized = yield* recheck(candidate);
     if (!stillAuthorized) {
       return yield* new AccountDeletionUnavailable({
         cause: candidate.userId,
@@ -69,7 +149,6 @@ export const make = (dependencies: Dependencies) => {
         operation: "recheckDeletionAuthority",
       });
     }
-    const provider = yield* MemoryProvider.Service;
     yield* provider.deleteUserKnowledge({ userId: candidate.userId }).pipe(
       Effect.mapError(
         (cause) =>
@@ -110,7 +189,10 @@ export const make = (dependencies: Dependencies) => {
     return undefined;
   });
 
-  return { reconcileOne, reconcilePending, reconcileUser };
-};
+  return Service.of({ reconcileOne, reconcilePending, reconcileUser });
+});
+
+/** Account-deletion Layer that preserves provider and runtime-port requirements. */
+export const layerWithoutDependencies = Layer.effect(Service, make);
 
 export * as AccountDeletion from "./account-deletion";

@@ -7,7 +7,7 @@ import { HealthHandlers } from "./handlers/health";
 import { RegistrationHandlers } from "./handlers/registration";
 import type { ExecutionUnit } from "./layers";
 import type { CloudflareConfig } from "./config";
-import type { AccountDeletionComposition } from "./composition/account-deletion";
+import { AccountDeletionComposition } from "./composition/account-deletion";
 import { SupermemoryMemoryProvider } from "./integrations/supermemory/memory-provider";
 
 /** Implement every typed Osfo API group. */
@@ -17,7 +17,8 @@ export const layer = (
   bindings: AccountDeletionComposition.Bindings,
 ) =>
   Layer.mergeAll(
-    AccountHandlers.layer(bindings).pipe(
+    AccountHandlers.layer.pipe(
+      Layer.provide(AccountDeletionComposition.layer(bindings)),
       Layer.provide(SupermemoryMemoryProvider.layerFromConfig(config.supermemory)),
     ),
     BillingHandlers.layer(config),

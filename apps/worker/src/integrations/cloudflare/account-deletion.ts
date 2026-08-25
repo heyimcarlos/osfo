@@ -18,7 +18,7 @@ export const make = (
   readAllowancePeriodIds: (
     userId: UserId,
   ) => Effect.Effect<ReadonlySet<AllowancePeriodId>, AccountDeletion.AccountDeletionUnavailable>,
-): AccountDeletion.Dependencies["objects"] => ({
+): AccountDeletion.PortInterface["objects"] => ({
   remove: (userId) =>
     readAllowancePeriodIds(userId).pipe(
       Effect.flatMap((allowancePeriodIds) =>

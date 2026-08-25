@@ -30,6 +30,14 @@ const SupermemoryLedger = Schema.Array(
 );
 const SupermemoryContainers = Schema.Array(Schema.String);
 const SupermemorySeedResponse = Schema.Struct({ containerTag: Schema.String });
+const AccountDeletionPresentation = Schema.Struct({
+  actionId: Schema.String,
+  confirmation: Schema.Literal("delete-my-account"),
+  consequence: Schema.Literal("Permanently delete this account and all of its data"),
+  operation: Schema.Literal("account.delete"),
+  title: Schema.Literal("Delete account"),
+});
+type AccountDeletionPresentation = typeof AccountDeletionPresentation.Type;
 
 const StoredAccountDeletion = Schema.Struct({
   agent_exists: Schema.Boolean,
@@ -81,7 +89,13 @@ type JsonRequestBody =
   | PhoneOtpVerificationRequest
   | RegistrationProfile
   | { readonly userId: string }
-  | { readonly confirmation: "delete-my-account" };
+  | {
+      readonly approval: {
+        readonly decision: "approved";
+        readonly presentation: AccountDeletionPresentation;
+      };
+      readonly confirmation: "delete-my-account";
+    };
 
 interface MintVerifiedUserOptions {
   readonly phoneNumber?: string;
@@ -143,10 +157,20 @@ export const spawnApp = async () => {
   return {
     fetch: request,
     account: {
-      delete: () =>
+      delete: (presentation: AccountDeletionPresentation) =>
         jsonRequest(request, "/v1/account", "DELETE", {
+          approval: { decision: "approved", presentation },
           confirmation: "delete-my-account",
         }),
+      present: async () => {
+        const response = await request("/v1/account/deletion-action");
+        return {
+          body: response.ok
+            ? await Schema.decodeUnknownPromise(AccountDeletionPresentation)(await response.json())
+            : undefined,
+          response,
+        };
+      },
     },
     auth: {
       mintVerifiedUser,

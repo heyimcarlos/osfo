@@ -2,7 +2,8 @@
 import { env } from "cloudflare:workers";
 import { agents } from "@osfo/db/schema/agents";
 import { users } from "@osfo/db/schema/auth";
-import { deletionCases } from "@osfo/db/schema/user-lifecycle";
+import { billingSubscriptions } from "@osfo/db/schema/billing";
+import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
 import { expect, it } from "@effect/vitest";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
@@ -42,7 +43,43 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
       const accountDeletion = AccountDeletionPostgres.make(database);
       const [candidate] = yield* accountDeletion.pending;
       if (candidate === undefined) return yield* Effect.die(new Error("Deletion Case missing"));
-      expect(yield* AccountDeletionPostgres.authorize(database)(candidate)).toBe(true);
+      expect(
+        yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate),
+      ).toMatchObject({
+        resourceOwnerUserId: userId,
+        subscription: { plan: "free" },
+        user: { _tag: "ActiveUser", userId },
+      });
+      expect(
+        yield* AccountDeletionPostgres.inspectAuthorization(database)({
+          ...candidate,
+          approvalPresentation: ApprovalPresentation.make("Changed presentation"),
+        }),
+      ).toBeNull();
+      expect(
+        yield* AccountDeletionPostgres.inspectAuthorization(database)({
+          ...candidate,
+          deletionCaseId: DeletionCaseId.make("changed-case"),
+        }),
+      ).toBeNull();
+
+      yield* Effect.promise(() =>
+        database.insert(userSuspensionEvents).values({
+          action: "suspended",
+          admin_actor_id: "admin-1",
+          event_id: "suspension-1",
+          reason: "Security hold",
+          user_id: userId,
+        }),
+      );
+      expect(
+        yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate),
+      ).toMatchObject({ user: { _tag: "SuspendedUser", userId } });
+
+      yield* Effect.promise(() =>
+        database.delete(billingSubscriptions).where(eq(billingSubscriptions.user_id, userId)),
+      );
+      expect(yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate)).toBeNull();
 
       yield* accountDeletion.removeUser(userId);
 

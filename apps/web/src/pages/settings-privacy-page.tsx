@@ -1,9 +1,10 @@
 import { Link } from "@tanstack/react-router";
+import type { AccountDeletionActionPresentation } from "@osfo/api";
 import { BriefcaseBusiness, Database, Download, ShieldCheck, Trash2 } from "lucide-react";
 import { Effect } from "effect";
 import { useState } from "react";
 
-import { requestAccountDeletion } from "../lib/api-client";
+import { presentAccountDeletion, requestAccountDeletion } from "../lib/api-client";
 
 const privacyPreferences = [
   {
@@ -30,16 +31,24 @@ const privacyPreferences = [
 
 /** Route-owned privacy controls and policy access. */
 export function SettingsPrivacyPage() {
-  return <SettingsPrivacyContent onDelete={deleteAccount} />;
+  return <SettingsPrivacyContent onDelete={deleteAccount} onPresent={presentDeletion} />;
 }
 
-const deleteAccount = () =>
-  Effect.runPromise(requestAccountDeletion).then(() => {
+const presentDeletion = () => Effect.runPromise(presentAccountDeletion);
+
+const deleteAccount = (presentation: AccountDeletionActionPresentation) =>
+  Effect.runPromise(requestAccountDeletion(presentation)).then(() => {
     globalThis.location.assign("/");
   });
 
 /** Privacy settings content with an injectable destructive boundary for focused UI tests. */
-export function SettingsPrivacyContent({ onDelete }: { readonly onDelete: () => Promise<void> }) {
+export function SettingsPrivacyContent({
+  onDelete,
+  onPresent,
+}: {
+  readonly onDelete: (presentation: AccountDeletionActionPresentation) => Promise<void>;
+  readonly onPresent: () => Promise<AccountDeletionActionPresentation>;
+}) {
   return (
     <div className="space-y-6">
       <section aria-labelledby="data-controls-title">
@@ -69,7 +78,7 @@ export function SettingsPrivacyContent({ onDelete }: { readonly onDelete: () => 
             icon={Download}
             label="Export My Data"
           />
-          <DeleteAccountControl onDelete={onDelete} />
+          <DeleteAccountControl onDelete={onDelete} onPresent={onPresent} />
         </div>
       </section>
 
@@ -119,14 +128,34 @@ export function SettingsPrivacyContent({ onDelete }: { readonly onDelete: () => 
 }
 
 /** One explicit confirmation before the irreversible account deletion request. */
-export function DeleteAccountControl({ onDelete }: { readonly onDelete: () => Promise<void> }) {
-  const [confirming, setConfirming] = useState(false);
+export function DeleteAccountControl({
+  onDelete,
+  onPresent,
+}: {
+  readonly onDelete: (presentation: AccountDeletionActionPresentation) => Promise<void>;
+  readonly onPresent: () => Promise<AccountDeletionActionPresentation>;
+}) {
+  const [presentation, setPresentation] = useState<AccountDeletionActionPresentation | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
-  const remove = () => {
+  const begin = () => {
     setBusy(true);
     setError(false);
-    void onDelete().catch(() => {
+    void onPresent()
+      .then((presented) => {
+        setPresentation(presented);
+        setBusy(false);
+      })
+      .catch(() => {
+        setBusy(false);
+        setError(true);
+      });
+  };
+  const remove = () => {
+    if (presentation === null) return;
+    setBusy(true);
+    setError(false);
+    void onDelete(presentation).catch(() => {
       setBusy(false);
       setError(true);
     });
@@ -141,17 +170,19 @@ export function DeleteAccountControl({ onDelete }: { readonly onDelete: () => Pr
         </span>
         <button
           className="min-h-11 rounded-full px-3 text-sm font-semibold text-[#c83242] hover:bg-red-50 focus-visible:ring-2 focus-visible:ring-[#e54858] focus-visible:outline-none"
+          disabled={busy}
           type="button"
-          onClick={() => setConfirming(true)}
+          onClick={begin}
         >
-          Delete My Data
+          {busy && presentation === null ? "Preparing…" : "Delete My Data"}
         </button>
       </div>
-      {confirming ? (
+      {presentation === null && error ? (
+        <p role="alert">Account deletion could not be presented. Please try again.</p>
+      ) : null}
+      {presentation !== null ? (
         <div className="mt-3 border-t border-red-100 pt-3">
-          <p className="text-sm text-[#7f2630]">
-            This permanently deletes your account and all of its data.
-          </p>
+          <p className="text-sm text-[#7f2630]">{presentation.consequence}.</p>
           <div className="mt-3 flex gap-2">
             <button
               className="min-h-11 rounded-full bg-[#d63243] px-4 text-sm font-semibold text-white disabled:opacity-60"
@@ -165,7 +196,7 @@ export function DeleteAccountControl({ onDelete }: { readonly onDelete: () => Pr
               className="min-h-11 rounded-full px-4 text-sm font-semibold"
               disabled={busy}
               type="button"
-              onClick={() => setConfirming(false)}
+              onClick={() => setPresentation(null)}
             >
               Cancel
             </button>

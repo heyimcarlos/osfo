@@ -49,7 +49,7 @@ const ActingAuthority = Schema.Union([
   ChannelLinkAuthorityFact,
   Schema.TaggedStruct("DurableTrigger", {
     triggerId: Schema.String,
-    triggerType: Schema.Literals(["scheduledTask", "workflow"]),
+    triggerType: Schema.Literals(["deletionCase", "scheduledTask", "workflow"]),
     userId: UserId,
   }),
 ]);
@@ -60,7 +60,7 @@ export const OriginatingAuthority = Schema.Union([
   Schema.TaggedStruct("ChannelLink", { channelLinkId: ChannelLinkId }),
   Schema.TaggedStruct("DurableTrigger", {
     triggerId: Schema.String,
-    triggerType: Schema.Literals(["scheduledTask", "workflow"]),
+    triggerType: Schema.Literals(["deletionCase", "scheduledTask", "workflow"]),
   }),
 ]);
 
@@ -378,7 +378,14 @@ const authorize = (
     return denied("authorityMismatch");
   }
   if (Predicate.isTagged(context.user, "SuspendedUser")) return denied("userSuspended");
-  if (Predicate.isTagged(context.deletionAccess, "DeletionAccessRevoked")) {
+  const continuesExactDeletionCase =
+    operation.kind === "account.delete" &&
+    Predicate.isTagged(authority, "DurableTrigger") &&
+    authority.triggerType === "deletionCase";
+  if (
+    Predicate.isTagged(context.deletionAccess, "DeletionAccessRevoked") &&
+    !continuesExactDeletionCase
+  ) {
     return denied("deletionAccessRevoked");
   }
   if (requiresOwnership(operation) && context.resourceOwnerUserId !== context.user.userId) {

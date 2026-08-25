@@ -3,8 +3,24 @@ import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 
 import { Auth } from "../middleware/auth";
 
-/** Exact settings confirmation accepted for permanent account deletion. */
+/** Server-owned immutable presentation for one permanent account-deletion Action. */
+export const AccountDeletionActionPresentation = Schema.Struct({
+  actionId: Schema.String,
+  confirmation: Schema.Literal("delete-my-account"),
+  consequence: Schema.Literal("Permanently delete this account and all of its data"),
+  operation: Schema.Literal("account.delete"),
+  title: Schema.Literal("Delete account"),
+});
+
+/** Server-owned immutable presentation for one permanent account-deletion Action. */
+export type AccountDeletionActionPresentation = typeof AccountDeletionActionPresentation.Type;
+
+/** Exact caller decision over the last server-owned account-deletion presentation. */
 export const AccountDeletionRequest = Schema.Struct({
+  approval: Schema.Struct({
+    decision: Schema.Literal("approved"),
+    presentation: AccountDeletionActionPresentation,
+  }),
   confirmation: Schema.Literal("delete-my-account"),
 });
 
@@ -21,18 +37,33 @@ export class AccountDeletionUnavailable extends Schema.TaggedError<AccountDeleti
 ) {}
 
 /** Authenticated account lifecycle contract. */
-export const AccountGroup = HttpApiGroup.make("account").add(
-  HttpApiEndpoint.delete("deleteAccount", "/v1/account", {
-    error: AccountDeletionUnavailable,
-    payload: AccountDeletionRequest,
-    success: AccountDeletionResponse,
-  })
-    .middleware(Auth)
-    .annotateMerge(
-      OpenApi.annotations({
-        description: "Fence normal access and permanently delete the authenticated account.",
-        identifier: "account.delete",
-        summary: "Delete account",
-      }),
-    ),
-);
+export const AccountGroup = HttpApiGroup.make("account")
+  .add(
+    HttpApiEndpoint.get("presentAccountDeletion", "/v1/account/deletion-action", {
+      error: AccountDeletionUnavailable,
+      success: AccountDeletionActionPresentation,
+    })
+      .middleware(Auth)
+      .annotateMerge(
+        OpenApi.annotations({
+          description: "Present the exact immutable Action that can delete this account.",
+          identifier: "account.delete.present",
+          summary: "Present account deletion",
+        }),
+      ),
+  )
+  .add(
+    HttpApiEndpoint.delete("deleteAccount", "/v1/account", {
+      error: AccountDeletionUnavailable,
+      payload: AccountDeletionRequest,
+      success: AccountDeletionResponse,
+    })
+      .middleware(Auth)
+      .annotateMerge(
+        OpenApi.annotations({
+          description: "Fence normal access and permanently delete the authenticated account.",
+          identifier: "account.delete",
+          summary: "Delete account",
+        }),
+      ),
+  );

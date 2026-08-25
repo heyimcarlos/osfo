@@ -1,7 +1,6 @@
-import type { Database } from "@osfo/db";
 import { allowancePeriods } from "@osfo/db/schema/allowances";
 import { eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 
 import { OSFO_DIRECTORY_NAME } from "../agents/osfo/identity";
 import { AllowancePeriodId, type AgentId } from "../domain";
@@ -25,71 +24,84 @@ export interface Bindings {
 }
 
 /** Compose provider-independent local account erasure boundaries. */
-export const make = (database: Database, bindings: Bindings) =>
-  AccountDeletion.make({
-    authorize: AccountDeletionPostgres.authorize(database),
-    agents: {
-      quiesce: (agentId: AgentId, userId) =>
-        Effect.tryPromise({
-          try: () =>
-            bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).quiesceAgentMemoryProvider(
-              agentId,
-              userId,
-            ),
-          catch: (cause) =>
-            new AccountDeletion.AccountDeletionUnavailable({
-              cause,
-              message: "Agent provider activity could not be quiesced",
-              operation: "quiesceAgentMemoryProvider",
-            }),
-        }),
-      remove: (agentId: AgentId) =>
-        Effect.tryPromise({
-          try: () => bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).deleteAgent(agentId),
-          catch: (cause) =>
-            new AccountDeletion.AccountDeletionUnavailable({
-              cause,
-              message: "Agent SQLite deletion is unavailable",
-              operation: "deleteAgent",
-            }),
-        }),
-    },
-    objects:
-      bindings.FILES === undefined || bindings.ARTIFACTS === undefined
-        ? {
-            remove: () =>
-              Effect.fail(
-                new AccountDeletion.AccountDeletionUnavailable({
-                  cause: "missing R2 bindings",
-                  message: "R2 account deletion is unavailable",
-                  operation: "removeObjects",
-                }),
+const makePort = (bindings: Bindings) =>
+  Effect.gen(function* () {
+    const database = yield* Db.database;
+    return AccountDeletion.Port.of({
+      inspectAuthorization: AccountDeletionPostgres.inspectAuthorization(database),
+      agents: {
+        quiesce: (agentId: AgentId, userId) =>
+          Effect.tryPromise({
+            try: () =>
+              bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).quiesceAgentMemoryProvider(
+                agentId,
+                userId,
               ),
-          }
-        : AccountDeletionCloudflare.make(bindings.FILES, bindings.ARTIFACTS, (userId) =>
-            Db.execute("inspectAccountDeletionObjects", () =>
-              database
-                .select({ allowancePeriodId: allowancePeriods.allowance_period_id })
-                .from(allowancePeriods)
-                .where(eq(allowancePeriods.user_id, userId)),
-            ).pipe(
-              Effect.map(
-                (rows) =>
-                  new Set(
-                    rows.map(({ allowancePeriodId }) => AllowancePeriodId.make(allowancePeriodId)),
-                  ),
-              ),
-              Effect.mapError(
-                (cause) =>
+            catch: (cause) =>
+              new AccountDeletion.AccountDeletionUnavailable({
+                cause,
+                message: "Agent provider activity could not be quiesced",
+                operation: "quiesceAgentMemoryProvider",
+              }),
+          }),
+        remove: (agentId: AgentId) =>
+          Effect.tryPromise({
+            try: () => bindings.OSFO_DIRECTORY.getByName(OSFO_DIRECTORY_NAME).deleteAgent(agentId),
+            catch: (cause) =>
+              new AccountDeletion.AccountDeletionUnavailable({
+                cause,
+                message: "Agent SQLite deletion is unavailable",
+                operation: "deleteAgent",
+              }),
+          }),
+      },
+      objects:
+        bindings.FILES === undefined || bindings.ARTIFACTS === undefined
+          ? {
+              remove: () =>
+                Effect.fail(
                   new AccountDeletion.AccountDeletionUnavailable({
-                    cause,
-                    message: "Document ownership evidence is unavailable",
-                    operation: "inspectAccountDeletionObjects",
+                    cause: "missing R2 bindings",
+                    message: "R2 account deletion is unavailable",
+                    operation: "removeObjects",
                   }),
+                ),
+            }
+          : AccountDeletionCloudflare.make(bindings.FILES, bindings.ARTIFACTS, (userId) =>
+              Db.execute("inspectAccountDeletionObjects", () =>
+                database
+                  .select({ allowancePeriodId: allowancePeriods.allowance_period_id })
+                  .from(allowancePeriods)
+                  .where(eq(allowancePeriods.user_id, userId)),
+              ).pipe(
+                Effect.map(
+                  (rows) =>
+                    new Set(
+                      rows.map(({ allowancePeriodId }) =>
+                        AllowancePeriodId.make(allowancePeriodId),
+                      ),
+                    ),
+                ),
+                Effect.mapError(
+                  (cause) =>
+                    new AccountDeletion.AccountDeletionUnavailable({
+                      cause,
+                      message: "Document ownership evidence is unavailable",
+                      operation: "inspectAccountDeletionObjects",
+                    }),
+                ),
               ),
             ),
-          ),
-    persistence: AccountDeletionPostgres.make(database),
+      persistence: AccountDeletionPostgres.make(database),
+    });
   });
+
+/** Runtime account-deletion boundaries backed by PostgreSQL, Durable Objects, and R2. */
+export const portLayer = (bindings: Bindings) =>
+  Layer.effect(AccountDeletion.Port, makePort(bindings));
+
+/** Shared account-deletion capability used by HTTP and scheduled entry points. */
+export const layer = (bindings: Bindings) =>
+  AccountDeletion.layerWithoutDependencies.pipe(Layer.provide(portLayer(bindings)));
 
 export * as AccountDeletionComposition from "./account-deletion";

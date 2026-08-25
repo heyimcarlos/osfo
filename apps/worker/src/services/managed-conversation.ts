@@ -171,15 +171,30 @@ export const admitManagedConversation = (
       snapshotCoreMemoryAuthorization(input.authorization),
     ).pipe(Effect.orDie);
     const origin = input.authorization.originatingAuthority;
-    const authorityIdentity =
-      origin._tag !== "ChannelLink"
-        ? ManagedTurnAuthorityIdentity.make({
+    if (origin._tag === "DurableTrigger" && origin.triggerType === "deletionCase") {
+      return yield* Effect.die(
+        new Error("A Deletion Case authority cannot originate a managed conversation"),
+      );
+    }
+    const managedOrigin =
+      origin._tag === "DurableTrigger"
+        ? {
             ...origin,
+            triggerType:
+              origin.triggerType === "scheduledTask"
+                ? ("scheduledTask" as const)
+                : ("workflow" as const),
+          }
+        : origin;
+    const authorityIdentity =
+      managedOrigin._tag !== "ChannelLink"
+        ? ManagedTurnAuthorityIdentity.make({
+            ...managedOrigin,
             userId: input.authorization.user.userId,
           })
         : Predicate.isTagged(input.authorization.authority, "ChannelLink")
           ? ManagedTurnAuthorityIdentity.make({
-              ...origin,
+              ...managedOrigin,
               address: input.authorization.authority.address,
               userId: input.authorization.user.userId,
             })

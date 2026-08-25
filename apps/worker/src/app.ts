@@ -12,6 +12,7 @@ import { ChannelLinks } from "./services/channel-links";
 import { OSFO_DIRECTORY_NAME } from "./agents/osfo/identity";
 import { AccountDeletionComposition } from "./composition/account-deletion";
 import { SupermemoryMemoryProvider } from "./integrations/supermemory/memory-provider";
+import { AccountDeletion } from "./services/account-deletion";
 
 /* oxlint-disable effecttsgo/async-function -- Cloudflare RPC adapters expose Promise-based interfaces. */
 
@@ -96,15 +97,15 @@ export const reconcileAccountDeletions = (env: CloudflareEnv) => {
     Db.layer({ db: env.DB }),
     SupermemoryMemoryProvider.layerFromConfig(config.supermemory),
   );
+  const deletionLayer = AccountDeletionComposition.layer(adaptBindings(env)).pipe(
+    Layer.provide(base),
+  );
   return Effect.runPromise(
     Effect.scoped(
-      Db.database.pipe(
-        Effect.flatMap(
-          (database) =>
-            AccountDeletionComposition.make(database, adaptBindings(env)).reconcilePending,
-        ),
+      AccountDeletion.Service.pipe(
+        Effect.flatMap((deletion) => deletion.reconcilePending),
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Scheduled maintenance is an application entry point.
-        Effect.provide(base),
+        Effect.provide(deletionLayer),
       ),
     ),
   );

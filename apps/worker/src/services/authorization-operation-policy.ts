@@ -159,7 +159,8 @@ export const requiresOwnership = (operation: AuthorizationOperation) =>
   operation.kind.startsWith("skill.") ||
   operation.kind.startsWith("integration.") ||
   operation.kind.startsWith("artifact.") ||
-  operation.kind === "support.gmSummon";
+  operation.kind === "support.gmSummon" ||
+  operation.kind === "account.delete";
 
 export const requiresGmailConnection = (operation: AuthorizationOperation) =>
   operation.kind.startsWith("gmail.") && operation.kind !== "gmail.connection.manage";
@@ -169,6 +170,7 @@ export const authorityPermits = (
   operation: AuthorizationOperation,
 ) => {
   if (!Predicate.isTagged(authority, "DurableTrigger")) return true;
+  if (authority.triggerType === "deletionCase") return operation.kind === "account.delete";
   if (authority.triggerType === "scheduledTask") return operation.kind === "reminder.deliver";
   return (
     operation.kind.startsWith("workflow.") ||

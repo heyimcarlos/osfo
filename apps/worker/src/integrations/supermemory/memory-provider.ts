@@ -40,6 +40,25 @@ const GetConversationStatusResponse = Schema.Struct({
   id: MemoryProvider.ProviderDocumentId,
   status: Schema.optionalKey(Schema.Unknown),
 });
+const SessionConversationDocument = Schema.Struct({
+  containerTags: Schema.Tuple([NonEmptyString]),
+  customId: NonEmptyString,
+  id: MemoryProvider.ProviderDocumentId,
+});
+const SessionConversationDocumentSummary = Schema.Struct({
+  containerTags: Schema.Tuple([NonEmptyString]),
+  customId: Schema.NullOr(NonEmptyString),
+  id: MemoryProvider.ProviderDocumentId,
+});
+type SessionConversationDocumentSummary = typeof SessionConversationDocumentSummary.Type;
+const SessionConversationDocumentsPage = Schema.Struct({
+  memories: Schema.Array(SessionConversationDocumentSummary),
+  pagination: Schema.Struct({
+    currentPage: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+    totalItems: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    totalPages: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
+});
 const ForgetResponse = Schema.Struct({
   forgotten: Schema.Literal(true),
   id: NonEmptyString,
@@ -467,14 +486,58 @@ const make = (options: Options) =>
     const deleteSessionConversation = Effect.fn(
       "SupermemoryMemoryProvider.deleteSessionConversation",
     )(function* (input: MemoryProvider.DeleteSessionConversationInput) {
-      const customId = yield* providerIdentity(
-        crypto,
-        "s",
-        input.sessionId,
-        "deleteSessionConversation",
+      const [containerTag, customId] = yield* Effect.all([
+        providerIdentity(crypto, "u", input.userId, "deleteSessionConversation"),
+        providerIdentity(crypto, "s", input.sessionId, "deleteSessionConversation"),
+      ]);
+      let candidate: SessionConversationDocumentSummary | undefined;
+      let page = 1;
+      while (true) {
+        const response = yield* sdk.use("deleteSessionConversation", (client, signal) =>
+          client.documents.list({ containerTags: [containerTag], limit: 100, page }, { signal }),
+        );
+        const decoded = yield* decodeResponse(
+          "deleteSessionConversation",
+          SessionConversationDocumentsPage,
+          response,
+        );
+        if (
+          decoded.pagination.currentPage !== page ||
+          (decoded.pagination.totalPages > 0 && decoded.pagination.totalPages < page)
+        ) {
+          return yield* providerUnavailable("deleteSessionConversation", "responseDecoding");
+        }
+        const matches = decoded.memories.filter((document) => document.customId === customId);
+        if (
+          matches.length > 1 ||
+          (candidate !== undefined && matches.length === 1) ||
+          matches.some((document) => document.containerTags[0] !== containerTag)
+        ) {
+          return yield* providerUnavailable("deleteSessionConversation", "identityMismatch");
+        }
+        candidate = matches[0] ?? candidate;
+        if (page >= decoded.pagination.totalPages) break;
+        page += 1;
+      }
+      if (candidate === undefined) return { _tag: "AlreadyAbsent" } as const;
+      const lookup = yield* sdk.useDeletion("deleteSessionConversation", [404], (client, signal) =>
+        client.documents.get(candidate.id, { signal }),
       );
+      if (lookup._tag === "AlreadyAbsent") return lookup;
+      const document = yield* decodeResponse(
+        "deleteSessionConversation",
+        SessionConversationDocument,
+        lookup.response,
+      );
+      if (
+        document.id !== candidate.id ||
+        document.customId !== customId ||
+        document.containerTags[0] !== containerTag
+      ) {
+        return yield* providerUnavailable("deleteSessionConversation", "identityMismatch");
+      }
       const result = yield* sdk.useDeletion("deleteSessionConversation", [404], (client, signal) =>
-        client.documents.delete(customId, { signal }),
+        client.documents.delete(document.id, { signal }),
       );
       return result._tag === "AlreadyAbsent" ? result : ({ _tag: "Deleted" } as const);
     });
