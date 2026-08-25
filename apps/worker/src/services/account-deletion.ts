@@ -54,7 +54,10 @@ export interface PortInterface {
     readonly remove: (agentId: AgentId) => Effect.Effect<void, AccountDeletionUnavailable>;
   };
   readonly objects: {
-    readonly remove: (userId: UserId) => Effect.Effect<void, AccountDeletionUnavailable>;
+    readonly remove: (
+      userId: UserId,
+      authorizeDelete: Effect.Effect<void, AccountDeletionUnavailable>,
+    ) => Effect.Effect<void, AccountDeletionUnavailable>;
   };
   readonly persistence: {
     readonly pending: Effect.Effect<
@@ -158,8 +161,10 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
-    yield* requireCurrentAuthority("before object deletion");
-    yield* dependencies.objects.remove(candidate.userId);
+    yield* dependencies.objects.remove(
+      candidate.userId,
+      requireCurrentAuthority("before an R2 object deletion"),
+    );
     if (candidate.agentId !== null) {
       yield* requireCurrentAuthority("before Agent deletion");
       yield* dependencies.agents.remove(candidate.agentId);

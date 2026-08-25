@@ -19,11 +19,11 @@ export const make = (
     userId: UserId,
   ) => Effect.Effect<ReadonlySet<AllowancePeriodId>, AccountDeletion.AccountDeletionUnavailable>,
 ): AccountDeletion.PortInterface["objects"] => ({
-  remove: (userId) =>
+  remove: (userId, authorizeDelete) =>
     readAllowancePeriodIds(userId).pipe(
       Effect.flatMap((allowancePeriodIds) =>
-        deletePrefix(files, `users/${encodeURIComponent(userId)}/`).pipe(
-          Effect.andThen(deleteArtifacts(artifacts, userId, allowancePeriodIds)),
+        deletePrefix(files, `users/${encodeURIComponent(userId)}/`, authorizeDelete).pipe(
+          Effect.andThen(deleteArtifacts(artifacts, userId, allowancePeriodIds, authorizeDelete)),
         ),
       ),
     ),
@@ -32,23 +32,31 @@ export const make = (
 const deletePrefix: (
   bucket: R2Bucket,
   prefix: string,
+  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
   cursor?: string,
 ) => Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable> = Effect.fn(
   "AccountDeletionCloudflare.deletePrefix",
-)(function* (bucket: R2Bucket, prefix: string, cursor?: string) {
+)(function* (
+  bucket: R2Bucket,
+  prefix: string,
+  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
+  cursor?: string,
+) {
   const page = yield* attempt("removeObjects", () =>
     bucket.list(cursor === undefined ? { prefix } : { cursor, prefix }),
   );
   if (page.objects.length > 0) {
+    yield* authorizeDelete;
     yield* attempt("removeObjects", () => bucket.delete(page.objects.map(({ key }) => key)));
   }
-  if (page.truncated) yield* deletePrefix(bucket, prefix, page.cursor);
+  if (page.truncated) yield* deletePrefix(bucket, prefix, authorizeDelete, page.cursor);
 });
 
 const deleteArtifacts: (
   bucket: R2Bucket,
   userId: UserId,
   allowancePeriodIds: ReadonlySet<AllowancePeriodId>,
+  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
   cursor?: string,
 ) => Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable> = Effect.fn(
   "AccountDeletionCloudflare.deleteArtifacts",
@@ -56,6 +64,7 @@ const deleteArtifacts: (
   bucket: R2Bucket,
   userId: UserId,
   allowancePeriodIds: ReadonlySet<AllowancePeriodId>,
+  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
   cursor?: string,
 ) {
   const page = yield* attempt("removeObjects", () =>
@@ -74,18 +83,22 @@ const deleteArtifacts: (
     const encodedContentId = object.key.slice("client-content/".length);
     return [object.key, `document-attempts/${encodedContentId}`];
   });
-  if (keys.length > 0) yield* attempt("removeObjects", () => bucket.delete(keys));
+  if (keys.length > 0) {
+    yield* authorizeDelete;
+    yield* attempt("removeObjects", () => bucket.delete(keys));
+  }
   if (page.truncated) {
-    yield* deleteArtifacts(bucket, userId, allowancePeriodIds, page.cursor);
+    yield* deleteArtifacts(bucket, userId, allowancePeriodIds, authorizeDelete, page.cursor);
     return;
   }
-  yield* deleteAttemptEvidence(bucket, userId, allowancePeriodIds);
+  yield* deleteAttemptEvidence(bucket, userId, allowancePeriodIds, authorizeDelete);
 });
 
 const deleteAttemptEvidence: (
   bucket: R2Bucket,
   userId: UserId,
   allowancePeriodIds: ReadonlySet<AllowancePeriodId>,
+  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
   cursor?: string,
 ) => Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable> = Effect.fn(
   "AccountDeletionCloudflare.deleteAttemptEvidence",
@@ -93,6 +106,7 @@ const deleteAttemptEvidence: (
   bucket: R2Bucket,
   userId: UserId,
   allowancePeriodIds: ReadonlySet<AllowancePeriodId>,
+  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
   cursor?: string,
 ) {
   const page = yield* attempt("removeObjects", () =>
@@ -113,9 +127,12 @@ const deleteAttemptEvidence: (
       ? [object.key]
       : [];
   });
-  if (keys.length > 0) yield* attempt("removeObjects", () => bucket.delete(keys));
+  if (keys.length > 0) {
+    yield* authorizeDelete;
+    yield* attempt("removeObjects", () => bucket.delete(keys));
+  }
   if (page.truncated) {
-    yield* deleteAttemptEvidence(bucket, userId, allowancePeriodIds, page.cursor);
+    yield* deleteAttemptEvidence(bucket, userId, allowancePeriodIds, authorizeDelete, page.cursor);
   }
 });
 

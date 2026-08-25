@@ -548,6 +548,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
         and(
           eq(memoryProviderOutbox.operation_type, "saveConversation"),
           eq(memoryProviderOutbox.provider_status, "processing"),
+          ne(memoryProviderOutbox.status, "completed"),
         ),
       )
       .limit(1)
@@ -571,6 +572,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
           and(
             eq(memoryProviderOutbox.operation_type, "saveConversation"),
             eq(memoryProviderOutbox.provider_status, "processing"),
+            ne(memoryProviderOutbox.status, "completed"),
           ),
         )
         .run(),

@@ -427,7 +427,7 @@ it.effect("orders User deletion behind earlier Session conversation work", () =>
   ),
 );
 
-it.effect("settles pending append work while deleting historical Session ownership", () =>
+it.effect("terminalizes claimed append work while deleting historical Session ownership", () =>
   withDatabase(({ database, storage }) =>
     Effect.gen(function* () {
       const db = makeAgentDb(asDurableObjectStorage(storage));
@@ -458,6 +458,11 @@ it.effect("settles pending append work while deleting historical Session ownersh
           WHERE operation_type = 'saveConversation'`,
         )
         .run(now);
+      const outbox = makeMemoryProviderOutboxStore(db);
+      const staleAppendClaim = Option.getOrThrow(
+        yield* outbox.claimNext(now, liveLease, "stale-append-claim"),
+      );
+      expect(staleAppendClaim.payload._tag).toBe("SaveConversation");
       const historical = Session.create(thinkSqlProvider(database)).forSession("session-1");
       const current = Session.create(thinkSqlProvider(database)).forSession("session-2");
       yield* seedThinkHistory(historical, "historical");
@@ -534,8 +539,7 @@ it.effect("settles pending append work while deleting historical Session ownersh
         },
       ]);
 
-      const outbox = makeMemoryProviderOutboxStore(db);
-      expect(yield* outbox.hasProcessingConversationWork).toBe(true);
+      expect(yield* outbox.hasProcessingConversationWork).toBe(false);
       yield* outbox.expediteProcessingConversationWork(now);
       expect(
         database
@@ -548,14 +552,12 @@ it.effect("settles pending append work while deleting historical Session ownersh
       ).toEqual({
         claim_expires_at: null,
         claim_token: null,
-        completed_at: null,
-        status: "pending",
+        completed_at: now,
+        status: "completed",
       });
-      const resumed = Option.getOrThrow(yield* outbox.claimNext(now, liveLease, "resume-claim"));
-      expect(resumed.providerAcceptance).toEqual({
-        documentId: "document-1",
-        processingStatus: "processing",
-      });
+      expect(yield* outbox.awaitProvider(staleAppendClaim, "processing", now)).toBe(false);
+      const next = Option.getOrThrow(yield* outbox.claimNext(now, liveLease, "deletion-claim"));
+      expect(next.payload._tag).toBe("DeleteSessionConversation");
     }),
   ),
 );

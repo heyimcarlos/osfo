@@ -27,7 +27,10 @@ it.effect("keeps local data pending until provider deletion confirms permanent a
       quiesce: () => Effect.sync(() => calls.push("quiesce")),
       remove: () => Effect.sync(() => calls.push("agent")),
     },
-    objects: { remove: () => Effect.sync(() => calls.push("objects")) },
+    objects: {
+      remove: (_, authorizeDelete) =>
+        authorizeDelete.pipe(Effect.andThen(Effect.sync(() => calls.push("objects")))),
+    },
     persistence: {
       pending: Effect.succeed([candidate]),
       removeUser: () => Effect.sync(() => calls.push("postgres")),
@@ -130,7 +133,9 @@ const expectStopsWhenAuthorityChangesAfter = (
       quiesce: () => Effect.sync(() => calls.push("quiesce")),
       remove: () => recordEffect("agent"),
     },
-    objects: { remove: () => recordEffect("objects") },
+    objects: {
+      remove: (_, authorizeDelete) => authorizeDelete.pipe(Effect.andThen(recordEffect("objects"))),
+    },
     persistence: {
       pending: Effect.succeed([candidate]),
       removeUser: () => Effect.die(new Error("Unexpected PostgreSQL deletion")),

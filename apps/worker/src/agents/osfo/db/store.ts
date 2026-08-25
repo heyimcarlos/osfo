@@ -721,7 +721,6 @@ export const makeAgentStore = (db: AgentDb) => {
           .where(
             and(
               eq(memoryProviderOutbox.operation_type, "saveConversation"),
-              inArray(memoryProviderOutbox.status, ["failed", "pending"]),
               sql`json_extract(${memoryProviderOutbox.payload_json}, '$.projection.sessionId') = ${input.sessionId}`,
             ),
           )
