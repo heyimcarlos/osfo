@@ -97,7 +97,10 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
       ).toHaveLength(1);
       expect(
         yield* Effect.promise(() =>
-          database.select().from(deletionCases).where(eq(deletionCases.user_id, userId)),
+          database
+            .select({ accessFencedAt: deletionCases.access_fenced_at })
+            .from(deletionCases)
+            .where(eq(deletionCases.user_id, userId)),
         ),
       ).toEqual([]);
       yield* Effect.promise(() =>
@@ -124,6 +127,14 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
           database.select().from(sessions).where(eq(sessions.userId, userId)),
         ),
       ).toEqual([]);
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ accessFencedAt: deletionCases.access_fenced_at })
+            .from(deletionCases)
+            .where(eq(deletionCases.user_id, userId)),
+        ),
+      ).toEqual([{ accessFencedAt: expect.any(Date) }]);
 
       const accountDeletion = AccountDeletionPostgres.make(database);
       const [candidate] = yield* accountDeletion.pending;
@@ -218,6 +229,14 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
           database.select().from(sessions).where(eq(sessions.userId, userId)),
         ),
       ).toEqual([]);
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ accessFencedAt: deletionCases.access_fenced_at })
+            .from(deletionCases)
+            .where(eq(deletionCases.user_id, userId)),
+        ),
+      ).toEqual([{ accessFencedAt: expect.any(Date) }]);
 
       const accountDeletion = AccountDeletionPostgres.make(database);
       const candidate = (yield* accountDeletion.pending).find((item) => item.userId === userId);
@@ -229,6 +248,33 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
         reason: "Required administrative erasure",
         userId,
       });
+      yield* Effect.promise(() =>
+        database
+          .update(deletionCases)
+          .set({ access_fenced_at: null })
+          .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId)),
+      );
+      const wrongCaseFence = yield* accountDeletion
+        .ensureAccessFence({ ...candidate, deletionCaseId: DeletionCaseId.make("wrong-case") })
+        .pipe(Effect.result);
+      expect(Result.isFailure(wrongCaseFence)).toBe(true);
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ accessFencedAt: deletionCases.access_fenced_at })
+            .from(deletionCases)
+            .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId)),
+        ),
+      ).toEqual([{ accessFencedAt: null }]);
+      yield* accountDeletion.ensureAccessFence(candidate);
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ accessFencedAt: deletionCases.access_fenced_at })
+            .from(deletionCases)
+            .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId)),
+        ),
+      ).toEqual([{ accessFencedAt: expect.any(Date) }]);
       const firstTarget = {
         connectionId: AccountDeletion.IntegrationAuthorityTargetId.make("connection-1"),
         userId,

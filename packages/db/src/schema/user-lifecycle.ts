@@ -56,6 +56,7 @@ export const deletionCases = pgTable(
     requested_by_user_id: text().references(() => users.id, { onDelete: "cascade" }),
     approval_action_id: text(),
     approval_presentation: text(),
+    access_fenced_at: timestamp({ withTimezone: true }),
     integration_targets: jsonb().default([]).notNull(),
     reason: text().notNull(),
     requested_at: timestamp({ withTimezone: true }).defaultNow().notNull(),

@@ -1,0 +1,1 @@
+ALTER TABLE "deletion_cases" ADD COLUMN "access_fenced_at" timestamp with time zone;

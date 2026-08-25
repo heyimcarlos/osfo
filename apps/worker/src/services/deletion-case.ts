@@ -45,9 +45,16 @@ export type RequestResult =
   | { readonly _tag: "Existing"; readonly deletionCaseId: DeletionCaseId }
   | { readonly _tag: "MissingUser" };
 
+/** Exact administrative access-fence persistence result. */
+export type AccessFenceResult = { readonly _tag: "AuthorityChanged" } | { readonly _tag: "Fenced" };
+
 /** Deletion Case persistence interface. */
 export interface PersistencePort {
   readonly inspect: (userId: UserId) => Effect.Effect<DeletionAccessFact, DbUnavailable>;
+  readonly markAccessFenced: (
+    command: RequestCommand,
+    deletionCaseId: DeletionCaseId,
+  ) => Effect.Effect<AccessFenceResult, DbUnavailable>;
   readonly request: (
     command: RequestCommand,
     deletionCaseId: DeletionCaseId,
@@ -133,6 +140,12 @@ export const make = Effect.gen(function* () {
         }
         if (result._tag === "MissingUser") return { _tag: "UserMissing" } as const;
         yield* authSessions.revokeAllForUser(command.userId);
+        const retainedDeletionCaseId =
+          result._tag === "Existing" ? result.deletionCaseId : deletionCaseId;
+        const fence = yield* persistence.markAccessFenced(command, retainedDeletionCaseId);
+        if (fence._tag === "AuthorityChanged") {
+          return { _tag: "DeletionAuthorityChanged" } as const;
+        }
         return result._tag === "Existing"
           ? ({
               _tag: "DeletionAlreadyRequested",

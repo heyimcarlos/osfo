@@ -76,12 +76,23 @@ export const make = Effect.gen(function* () {
           .where(eq(deletionCases.user_id, userId))
           .limit(1);
         if (existing !== undefined) {
+          await transaction.delete(sessions).where(eq(sessions.userId, userId));
+          await transaction
+            .update(deletionCases)
+            .set({ access_fenced_at: sql`clock_timestamp()` })
+            .where(
+              and(
+                eq(deletionCases.deletion_case_id, existing.deletionCaseId),
+                eq(deletionCases.user_id, userId),
+              ),
+            );
           return {
             _tag: "Existing",
             deletionCaseId: DeletionCaseId.make(existing.deletionCaseId),
           } as const;
         }
         await transaction.insert(deletionCases).values({
+          access_fenced_at: sql`clock_timestamp()`,
           approval_action_id: approval.actionId,
           approval_presentation: approval.presentation,
           deletion_case_id,
@@ -109,6 +120,36 @@ export const make = Effect.gen(function* () {
             : ({ _tag: "DeletionAccessRevoked" } as const),
         ),
       ),
+    markAccessFenced: (command, deletionCaseId) =>
+      Db.execute("requestDeletion", async () => {
+        const fenced = await database
+          .update(deletionCases)
+          .set({ access_fenced_at: sql`clock_timestamp()` })
+          .where(
+            and(
+              eq(deletionCases.deletion_case_id, deletionCaseId),
+              eq(deletionCases.user_id, command.userId),
+              eq(deletionCases.requested_by_admin_id, command.adminActorId),
+              eq(deletionCases.reason, command.reason),
+              sql`${deletionCases.requested_by_user_id} is null`,
+              sql`${deletionCases.approval_action_id} is null`,
+              sql`${deletionCases.approval_presentation} is null`,
+              sql`not exists (
+                select 1 from ${sessions}
+                where ${sessions.userId} = ${command.userId}
+              )`,
+              sql`exists (
+                select 1 from ${administrativeAuthorities}
+                where ${administrativeAuthorities.admin_actor_id} = ${command.adminActorId}
+                  and ${administrativeAuthorities.revoked_at} is null
+              )`,
+            ),
+          )
+          .returning({ deletionCaseId: deletionCases.deletion_case_id });
+        return fenced.length === 1
+          ? ({ _tag: "Fenced" } as const)
+          : ({ _tag: "AuthorityChanged" } as const);
+      }),
     request: (command, deletion_case_id) =>
       Db.execute("requestDeletion", () =>
         database.transaction(async (transaction) => {

@@ -30,6 +30,13 @@ describe("Postgres migrations", () => {
                 ORDER BY table_name
               `),
           );
+          const deletionCaseColumns = yield* Effect.promise(() =>
+            client.query<{ readonly column_name: string }>(`
+              SELECT column_name
+              FROM information_schema.columns
+              WHERE table_schema = 'public' AND table_name = 'deletion_cases'
+            `),
+          );
 
           expect(applied.rows.length).toBe(migrations.length);
           expect(tables.rows.map(({ table_name }) => table_name)).toEqual([
@@ -57,6 +64,9 @@ describe("Postgres migrations", () => {
             "webhook_events",
             "webhook_jobs",
           ]);
+          expect(deletionCaseColumns.rows.map(({ column_name }) => column_name)).toContain(
+            "access_fenced_at",
+          );
         }),
       closeTestDatabase,
     ),

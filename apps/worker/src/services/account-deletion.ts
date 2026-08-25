@@ -37,7 +37,7 @@ export interface PendingAdministrativeAccountDeletion extends PendingAccountDele
   readonly reason: AdminReason;
 }
 
-/** One fenced account still carrying a durable deletion obligation. */
+/** One retained Deletion Case awaiting access fencing or destructive reconciliation. */
 export type PendingAccountDeletion =
   | PendingAdministrativeAccountDeletion
   | PendingSelfAccountDeletion;
@@ -118,6 +118,10 @@ export interface PortInterface {
     ) => Effect.Effect<void, AccountDeletionUnavailable>;
   };
   readonly persistence: {
+    /** Confirm the exact Deletion Case has revoked every AuthSession before destructive work. */
+    readonly ensureAccessFence: (
+      candidate: PendingAccountDeletion,
+    ) => Effect.Effect<void, AccountDeletionUnavailable>;
     readonly pending: Effect.Effect<
       ReadonlyArray<PendingAccountDeletion>,
       AccountDeletionUnavailable
@@ -220,6 +224,7 @@ export const make = Effect.gen(function* () {
         ),
         Effect.asVoid,
       );
+    yield* dependencies.persistence.ensureAccessFence(candidate);
     if (candidate.agentId !== null) {
       yield* requireCurrentAuthority("before provider quiescence");
       yield* dependencies.agents.quiesce(candidate.agentId, candidate.userId);

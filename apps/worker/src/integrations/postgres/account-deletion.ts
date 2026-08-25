@@ -1,5 +1,5 @@
 import { agents } from "@osfo/db/schema/agents";
-import { users, verifications } from "@osfo/db/schema/auth";
+import { sessions, users, verifications } from "@osfo/db/schema/auth";
 import {
   billingCheckoutSessions,
   billingCustomers,
@@ -84,6 +84,39 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
           : [];
       },
     );
+  });
+  const ensureAccessFence = Effect.fn("AccountDeletionPostgres.ensureAccessFence")(function* (
+    candidate: AccountDeletion.PendingAccountDeletion,
+  ) {
+    const fenced = yield* attempt("ensureAccessFence", () =>
+      database.transaction(async (transaction) => {
+        const caseIdentity = sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
+          and ${deletionCases.user_id} = ${candidate.userId}
+          and ${exactDeletionAuthority(candidate)}`;
+        const [retained] = await transaction
+          .select({ deletionCaseId: deletionCases.deletion_case_id })
+          .from(deletionCases)
+          .where(caseIdentity)
+          .limit(1)
+          .for("update");
+        if (retained === undefined) return false;
+        await transaction.delete(sessions).where(eq(sessions.userId, candidate.userId));
+        const updated = await transaction
+          .update(deletionCases)
+          .set({ access_fenced_at: sql`clock_timestamp()` })
+          .where(caseIdentity)
+          .returning({ deletionCaseId: deletionCases.deletion_case_id });
+        return updated.length === 1;
+      }),
+    );
+    if (!fenced) {
+      return yield* new AccountDeletion.AccountDeletionUnavailable({
+        cause: candidate.deletionCaseId,
+        message: "The exact Deletion Case access fence could not be confirmed",
+        operation: "ensureAccessFence",
+      });
+    }
+    return undefined;
   });
   const removeUser = Effect.fn("AccountDeletionPostgres.removeUser")(function* (userId: UserId) {
     yield* attempt("removeUser", () =>
@@ -244,6 +277,7 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
   );
   return {
     confirmIntegrationTarget,
+    ensureAccessFence,
     pending: pending(),
     removeUser,
     stageIntegrationTargets,

@@ -73,6 +73,80 @@ it.effect("keeps local data pending until provider deletion confirms permanent a
   );
 });
 
+it.effect(
+  "does not begin destructive reconciliation until the exact access fence is durable",
+  () => {
+    const calls: Array<string> = [];
+    const candidate = {
+      _tag: "Administrative" as const,
+      adminActorId: AdminActorId.make("admin-1"),
+      agentId: AgentId.make("agent-1"),
+      deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+      reason: AdminReason.make("Required erasure"),
+      userId: UserId.make("user-1"),
+    };
+    let fenceAttempts = 0;
+    const port = AccountDeletion.Port.of({
+      inspectAuthorization: () =>
+        Effect.sync(() => calls.push("recheck")).pipe(
+          Effect.as({
+            ...activeFacts(candidate.userId),
+            administrativeAuthority: { adminActorId: candidate.adminActorId },
+          }),
+        ),
+      agents: {
+        quiesce: () => Effect.sync(() => calls.push("quiesce")),
+        remove: () => Effect.sync(() => calls.push("agent")),
+      },
+      integrations: { pending: () => Effect.succeed([]), revoke: () => Effect.void },
+      objects: {
+        remove: (_, authorizeDelete) =>
+          authorizeDelete.pipe(Effect.andThen(Effect.sync(() => calls.push("objects")))),
+      },
+      persistence: {
+        ...passthroughIntegrationProgress,
+        ensureAccessFence: () =>
+          Effect.suspend(() => {
+            calls.push("fence");
+            fenceAttempts += 1;
+            return fenceAttempts === 1
+              ? Effect.fail(
+                  new AccountDeletion.AccountDeletionUnavailable({
+                    cause: "session revocation unavailable",
+                    message: "Access fence remains pending",
+                    operation: "ensureAccessFence",
+                  }),
+                )
+              : Effect.void;
+          }),
+        pending: Effect.succeed([candidate]),
+        removeUser: () => Effect.sync(() => calls.push("postgres")),
+      },
+    });
+    return Effect.gen(function* () {
+      const deletion = yield* AccountDeletion.Service;
+      yield* deletion.reconcilePending;
+      expect(calls).toEqual(["fence"]);
+
+      yield* deletion.reconcilePending;
+      expect(calls).toEqual([
+        "fence",
+        "fence",
+        "recheck",
+        "quiesce",
+        "recheck",
+        "provider",
+        "recheck",
+        "objects",
+        "recheck",
+        "agent",
+        "recheck",
+        "postgres",
+      ]);
+    }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
+  },
+);
+
 it.effect("stops before object deletion when authority changes during provider deletion", () =>
   expectStopsWhenAuthorityChangesAfter("provider", [
     "recheck",
@@ -377,6 +451,7 @@ it.effect(
             progress.set(target.connectionId, { ...retained, status: "confirmed" });
             return Effect.void;
           }),
+        ensureAccessFence: () => Effect.void,
         pending: Effect.succeed([candidate]),
         removeUser: () => Effect.sync(() => calls.push("postgres")),
         stageIntegrationTargets: (_, discovered) =>
@@ -550,6 +625,7 @@ const activeFacts = (userId: UserId): AccountDeletion.CurrentAuthorizationFacts 
 
 const passthroughIntegrationProgress = {
   confirmIntegrationTarget: () => Effect.void,
+  ensureAccessFence: () => Effect.void,
   stageIntegrationTargets: (
     _candidate: AccountDeletion.PendingAccountDeletion,
     targets: ReadonlyArray<AccountDeletion.IntegrationAuthorityTarget>,

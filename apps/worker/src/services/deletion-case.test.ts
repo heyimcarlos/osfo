@@ -50,6 +50,7 @@ it.effect(
         DeletionCase.Persistence,
         DeletionCase.Persistence.of({
           inspect: () => Effect.succeed({ _tag: "DeletionAccessAvailable" }),
+          markAccessFenced: () => Effect.die(new Error("unexpected administrative fence")),
           request: () => Effect.die(new Error("unexpected administrative request")),
           requestSelf: (_userId, _deletionCaseId, approval, authority) =>
             Effect.sync(() => {
@@ -75,6 +76,7 @@ it.effect("retries the AuthSession fence for a retained administrative Deletion 
   const userId = UserId.make("user-1");
   let retainedDeletionCaseId: DeletionCaseId | null = null;
   let revocations = 0;
+  const fencedCases: Array<DeletionCaseId> = [];
   return Effect.gen(function* () {
     const service = yield* DeletionCase.make;
     const command = {
@@ -91,6 +93,7 @@ it.effect("retries the AuthSession fence for a retained administrative Deletion 
       deletionCaseId: retainedDeletionCaseId,
     });
     expect(revocations).toBe(2);
+    expect(fencedCases).toEqual([retainedDeletionCaseId]);
   }).pipe(
     Effect.provide(BrowserCrypto.layer),
     Effect.provideService(
@@ -117,6 +120,11 @@ it.effect("retries the AuthSession fence for a retained administrative Deletion 
       DeletionCase.Persistence,
       DeletionCase.Persistence.of({
         inspect: () => Effect.succeed({ _tag: "DeletionAccessAvailable" }),
+        markAccessFenced: (_command, deletionCaseId) =>
+          Effect.sync(() => {
+            fencedCases.push(deletionCaseId);
+            return { _tag: "Fenced" as const };
+          }),
         request: (_command, deletionCaseId) =>
           Effect.sync(() => {
             if (retainedDeletionCaseId !== null) {
