@@ -167,7 +167,7 @@ export function DeleteAccountControl({
         <span className="min-w-0 flex-1">
           <span className="block font-semibold text-[#e54858]">Account Deletion</span>
           <span className="block text-xs text-[#687896]">
-            Permanently delete this account and all of its data.
+            Permanent account removal requires confirmation.
           </span>
         </span>
         <button
