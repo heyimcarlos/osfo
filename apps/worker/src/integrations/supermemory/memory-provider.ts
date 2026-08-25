@@ -63,7 +63,12 @@ const ForgetResponse = Schema.Struct({
   forgotten: Schema.Literal(true),
   id: NonEmptyString,
 });
-const DeleteUserKnowledgeResponse = Schema.Struct({ success: Schema.Literal(true) });
+const DeleteUserKnowledgeResponse = Schema.Struct({
+  containerTag: NonEmptyString,
+  deletedDocumentsCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  deletedMemoriesCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  success: Schema.Literal(true),
+});
 const ProfileResponse = Schema.Struct({
   profile: Schema.Struct({
     dynamic: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -573,9 +578,14 @@ const make = (options: Options) =>
         );
         if (response.status === 404) return { _tag: "AlreadyAbsent" } as const;
         if (response.status >= 200 && response.status < 300) {
-          yield* HttpClientResponse.schemaBodyJson(DeleteUserKnowledgeResponse)(response).pipe(
+          const confirmation = yield* HttpClientResponse.schemaBodyJson(
+            DeleteUserKnowledgeResponse,
+          )(response).pipe(
             Effect.mapError(() => providerUnavailable("deleteUserKnowledge", "responseDecoding")),
           );
+          if (confirmation.containerTag !== containerTag) {
+            return yield* providerUnavailable("deleteUserKnowledge", "identityMismatch");
+          }
           return { _tag: "Deleted" } as const;
         }
         return yield* providerStatusFailure("deleteUserKnowledge", response.status);

@@ -72,6 +72,7 @@ export type IntegrationAuthorityTargetProgress = typeof IntegrationAuthorityTarg
 
 /** Current mutable facts retained outside the durable Deletion Case authority. */
 export interface CurrentAuthorizationFacts {
+  readonly administrativeAuthority: { readonly adminActorId: AdminActorId } | null;
   readonly resourceOwnerUserId: UserId;
   readonly subscription: {
     readonly plan: "adventurer" | "free";
@@ -161,7 +162,10 @@ export const make = Effect.gen(function* () {
     const facts = yield* dependencies.inspectAuthorization(candidate);
     if (facts === null) return false;
     if (candidate._tag === "Administrative") {
-      return facts.resourceOwnerUserId === candidate.userId;
+      return (
+        facts.administrativeAuthority?.adminActorId === candidate.adminActorId &&
+        facts.resourceOwnerUserId === candidate.userId
+      );
     }
     const operation = {
       actionId: candidate.approvalActionId,

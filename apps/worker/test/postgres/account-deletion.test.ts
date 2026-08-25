@@ -4,7 +4,11 @@ import { env } from "cloudflare:workers";
 import { agents } from "@osfo/db/schema/agents";
 import { sessions, users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
-import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
+import {
+  administrativeAuthorities,
+  deletionCases,
+  userSuspensionEvents,
+} from "@osfo/db/schema/user-lifecycle";
 import { expect, it } from "@effect/vitest";
 import { BrowserCrypto } from "@effect/platform-browser";
 import { eq } from "drizzle-orm";
@@ -191,11 +195,23 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
       const userId = yield* registerUser(app, "+15550002523");
       const database = yield* Db.database;
       const authorities = yield* AccountAuthorities.make;
-      const requested = yield* authorities.deletionCases.request({
+      const command = {
         adminActorId: AdminActorId.make("admin-1"),
         reason: AdminReason.make("Required administrative erasure"),
         userId,
+      };
+      expect(yield* authorities.deletionCases.request(command)).toEqual({
+        _tag: "DeletionAuthorityChanged",
       });
+      expect(
+        yield* Effect.promise(() =>
+          database.select().from(sessions).where(eq(sessions.userId, userId)),
+        ),
+      ).toHaveLength(1);
+      yield* Effect.promise(() =>
+        database.insert(administrativeAuthorities).values({ admin_actor_id: "admin-1" }),
+      );
+      const requested = yield* authorities.deletionCases.request(command);
       expect(requested._tag).toBe("DeletionRequested");
       expect(
         yield* Effect.promise(() =>
@@ -243,6 +259,7 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
       expect(
         yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate),
       ).toMatchObject({
+        administrativeAuthority: { adminActorId: "admin-1" },
         resourceOwnerUserId: userId,
         subscription: { plan: "free" },
       });
@@ -252,6 +269,14 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
           reason: AdminReason.make("Changed reason"),
         }),
       ).toBeNull();
+      const revokedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+      yield* Effect.promise(() =>
+        database
+          .update(administrativeAuthorities)
+          .set({ revoked_at: revokedAt })
+          .where(eq(administrativeAuthorities.admin_actor_id, "admin-1")),
+      );
+      expect(yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate)).toBeNull();
       yield* accountDeletion.removeUser(userId);
       return undefined;
     }).pipe(Effect.provide(Layer.merge(Db.layer({ db: env.DB }), BrowserCrypto.layer))),

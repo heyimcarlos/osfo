@@ -3,6 +3,22 @@ import { check, index, jsonb, pgTable, text, timestamp, uniqueIndex } from "driz
 
 import { users } from "./auth";
 
+/** Current trusted authority for one v1 administrator. Missing and revoked records fail closed. */
+export const administrativeAuthorities = pgTable(
+  "administrative_authorities",
+  {
+    admin_actor_id: text().primaryKey(),
+    granted_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
+    revoked_at: timestamp({ withTimezone: true }),
+  },
+  (table) => [
+    check(
+      "administrative_authorities_actor_check",
+      sql`length(btrim(${table.admin_actor_id})) > 0`,
+    ),
+  ],
+);
+
 /** Append-only administrative suspension and restoration history. */
 export const userSuspensionEvents = pgTable(
   "user_suspension_events",
@@ -36,7 +52,7 @@ export const deletionCases = pgTable(
     user_id: text()
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    requested_by_admin_id: text(),
+    requested_by_admin_id: text().references(() => administrativeAuthorities.admin_actor_id),
     requested_by_user_id: text().references(() => users.id, { onDelete: "cascade" }),
     approval_action_id: text(),
     approval_presentation: text(),

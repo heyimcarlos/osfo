@@ -5,7 +5,11 @@ import {
   billingCustomers,
   billingSubscriptions,
 } from "@osfo/db/schema/billing";
-import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
+import {
+  administrativeAuthorities,
+  deletionCases,
+  userSuspensionEvents,
+} from "@osfo/db/schema/user-lifecycle";
 import { webhookEvents } from "@osfo/db/schema/webhooks";
 import { eq, inArray, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
@@ -239,10 +243,13 @@ export const inspectAuthorization = (
             and ${deletionCases.requested_by_user_id} is null
             and ${deletionCases.reason} = ${candidate.reason}
             and ${deletionCases.approval_action_id} is null
-            and ${deletionCases.approval_presentation} is null`;
+            and ${deletionCases.approval_presentation} is null
+            and ${administrativeAuthorities.admin_actor_id} = ${candidate.adminActorId}
+            and ${administrativeAuthorities.revoked_at} is null`;
     const rows = yield* attempt("recheckDeletionAuthority", () =>
       database
         .select({
+          adminActorId: administrativeAuthorities.admin_actor_id,
           plan: billingSubscriptions.plan,
           planPolicyVersion: billingSubscriptions.plan_policy_version,
           suspensionAction: sql<string | null>`(
@@ -256,6 +263,10 @@ export const inspectAuthorization = (
         })
         .from(deletionCases)
         .innerJoin(users, eq(users.id, deletionCases.user_id))
+        .leftJoin(
+          administrativeAuthorities,
+          eq(administrativeAuthorities.admin_actor_id, deletionCases.requested_by_admin_id),
+        )
         .leftJoin(billingSubscriptions, eq(billingSubscriptions.user_id, deletionCases.user_id))
         .where(
           sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
@@ -271,6 +282,8 @@ export const inspectAuthorization = (
     }
     const userId = UserId.make(row.userId);
     return {
+      administrativeAuthority:
+        row.adminActorId === null ? null : { adminActorId: AdminActorId.make(row.adminActorId) },
       resourceOwnerUserId: userId,
       subscription: {
         plan: row.plan ?? "free",

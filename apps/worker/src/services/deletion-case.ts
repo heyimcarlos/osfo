@@ -72,6 +72,7 @@ export interface Interface {
     command: RequestCommand,
   ) => Effect.Effect<
     | { readonly _tag: "DeletionAlreadyRequested"; readonly deletionCaseId: DeletionCaseId }
+    | { readonly _tag: "DeletionAuthorityChanged" }
     | { readonly _tag: "DeletionRequested"; readonly deletionCaseId: DeletionCaseId }
     | { readonly _tag: "UserMissing" },
     AuthSessionUnavailable | DbUnavailable | DeletionCaseIdentityUnavailable
@@ -127,6 +128,9 @@ export const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const deletionCaseId = DeletionCaseId.make(yield* secureId);
         const result = yield* persistence.request(command, deletionCaseId);
+        if (result._tag === "AuthorityChanged") {
+          return { _tag: "DeletionAuthorityChanged" } as const;
+        }
         if (result._tag === "MissingUser") return { _tag: "UserMissing" } as const;
         yield* authSessions.revokeAllForUser(command.userId);
         return result._tag === "Existing"

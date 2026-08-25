@@ -1,6 +1,10 @@
 import { sessions, users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
-import { deletionCases, userSuspensionEvents } from "@osfo/db/schema/user-lifecycle";
+import {
+  administrativeAuthorities,
+  deletionCases,
+  userSuspensionEvents,
+} from "@osfo/db/schema/user-lifecycle";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 
@@ -108,6 +112,18 @@ export const make = Effect.gen(function* () {
     request: (command, deletion_case_id) =>
       Db.execute("requestDeletion", () =>
         database.transaction(async (transaction) => {
+          const [administrator] = await transaction
+            .select({ adminActorId: administrativeAuthorities.admin_actor_id })
+            .from(administrativeAuthorities)
+            .where(
+              and(
+                eq(administrativeAuthorities.admin_actor_id, command.adminActorId),
+                sql`${administrativeAuthorities.revoked_at} is null`,
+              ),
+            )
+            .for("update")
+            .limit(1);
+          if (administrator === undefined) return { _tag: "AuthorityChanged" } as const;
           const [user] = await transaction
             .select({ id: users.id })
             .from(users)

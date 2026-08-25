@@ -34,6 +34,7 @@ describe("Postgres migrations", () => {
           expect(applied.rows.length).toBe(migrations.length);
           expect(tables.rows.map(({ table_name }) => table_name)).toEqual([
             "accounts",
+            "administrative_authorities",
             "agents",
             "allowance_periods",
             "allowance_usage",
@@ -203,6 +204,8 @@ describe("Postgres migrations", () => {
                 'period-1', 'user-1', 'subscription-1',
                 'free', 'launch-v1', '2026-08-01T00:00:00Z', '2026-09-01T00:00:00Z'
               );
+              INSERT INTO administrative_authorities (admin_actor_id)
+              VALUES ('admin-1');
               INSERT INTO deletion_cases (
                 deletion_case_id, user_id, requested_by_admin_id, reason
               ) VALUES ('deletion-case-1', 'user-1', 'admin-1', 'User request');
@@ -249,9 +252,14 @@ describe("Postgres migrations", () => {
               `INSERT INTO user_suspension_events
                (event_id, user_id, action, admin_actor_id, reason)
              VALUES ('event-blank-reason', 'user-1', 'suspended', 'admin-1', '   ')`,
+              `INSERT INTO administrative_authorities (admin_actor_id)
+             VALUES ('   ')`,
               `INSERT INTO deletion_cases
                (deletion_case_id, user_id, requested_by_admin_id, reason)
              VALUES ('deletion-case-blank-actor', 'user-2', '   ', 'Valid reason')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_admin_id, reason)
+             VALUES ('deletion-case-untrusted-admin', 'user-2', 'admin-2', 'Valid reason')`,
               `INSERT INTO deletion_cases
                (deletion_case_id, user_id, requested_by_admin_id, reason)
              VALUES ('deletion-case-blank-reason', 'user-2', 'admin-1', '   ')`,

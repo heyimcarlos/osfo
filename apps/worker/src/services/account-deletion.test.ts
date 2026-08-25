@@ -438,6 +438,7 @@ it.effect("rechecks a retained administrative case through every protected stage
       Effect.sync(() => calls.push("recheck")).pipe(
         Effect.as({
           ...activeFacts(userId),
+          administrativeAuthority: { adminActorId: candidate.adminActorId },
           user: { _tag: "SuspendedUser" as const, userId },
         }),
       ),
@@ -475,6 +476,60 @@ it.effect("rechecks a retained administrative case through every protected stage
   }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
 });
 
+it.effect("keeps an administrative case pending when its exact administrator is revoked", () => {
+  const calls: Array<string> = [];
+  const userId = UserId.make("user-1");
+  const candidate = {
+    _tag: "Administrative" as const,
+    adminActorId: AdminActorId.make("admin-1"),
+    agentId: AgentId.make("agent-1"),
+    deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+    reason: AdminReason.make("Required administrative erasure"),
+    userId,
+  };
+  let administratorActive = true;
+  const port = AccountDeletion.Port.of({
+    inspectAuthorization: () =>
+      Effect.sync(() => {
+        calls.push("recheck");
+        return administratorActive
+          ? {
+              ...activeFacts(userId),
+              administrativeAuthority: { adminActorId: candidate.adminActorId },
+            }
+          : null;
+      }),
+    agents: {
+      quiesce: () => Effect.sync(() => calls.push("quiesce")),
+      remove: () => Effect.sync(() => calls.push("agent")),
+    },
+    integrations: { pending: () => Effect.succeed([]), revoke: () => Effect.void },
+    objects: {
+      remove: (_, authorizeDelete) =>
+        authorizeDelete.pipe(Effect.andThen(Effect.sync(() => calls.push("objects")))),
+    },
+    persistence: {
+      ...passthroughIntegrationProgress,
+      pending: Effect.succeed([candidate]),
+      removeUser: () => Effect.sync(() => calls.push("postgres")),
+    },
+  });
+
+  return Effect.gen(function* () {
+    const deletion = yield* AccountDeletion.Service;
+    const result = yield* deletion.reconcileOne(candidate).pipe(Effect.result);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(calls).toEqual(["recheck", "quiesce", "recheck", "provider", "recheck"]);
+  }).pipe(
+    Effect.provide(
+      accountDeletionLayer(port, calls, () => {
+        administratorActive = false;
+        return "deleted";
+      }),
+    ),
+  );
+});
+
 const accountDeletionLayer = (
   port: AccountDeletion.PortInterface,
   calls: Array<string>,
@@ -487,6 +542,7 @@ const accountDeletionLayer = (
   );
 
 const activeFacts = (userId: UserId): AccountDeletion.CurrentAuthorizationFacts => ({
+  administrativeAuthority: null,
   resourceOwnerUserId: userId,
   subscription: { plan: "free", planPolicyVersion: PlanPolicyVersion.make("launch-v1") },
   user: { _tag: "ActiveUser", userId },

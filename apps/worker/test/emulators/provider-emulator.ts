@@ -107,7 +107,14 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         respondJson(
           response,
           removed ? 200 : 404,
-          removed ? { success: true } : { error: "absent" },
+          removed
+            ? {
+                containerTag,
+                deletedDocumentsCount: 0,
+                deletedMemoriesCount: 0,
+                success: true,
+              }
+            : { error: "absent" },
         );
         return;
       }

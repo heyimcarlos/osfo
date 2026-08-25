@@ -831,7 +831,15 @@ it.effect("refuses deletion when Session document ownership changes after lookup
 it.effect("deletes every Knowledge Base item in one User container", () =>
   withProvider(({ requests, origin, respondWith }) =>
     Effect.gen(function* () {
-      respondWith({ body: { success: true }, status: 200 });
+      respondWith({
+        body: {
+          containerTag: "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY",
+          deletedDocumentsCount: 2,
+          deletedMemoriesCount: 3,
+          success: true,
+        },
+        status: 200,
+      });
       const memory = yield* MemoryProvider.Service;
       const result = yield* memory.deleteUserKnowledge({
         userId: UserId.make("user:with/provider-invalid characters"),
@@ -850,10 +858,57 @@ it.effect("deletes every Knowledge Base item in one User container", () =>
   ),
 );
 
+it.effect("keeps account deletion pending when provider confirmation names another User", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: {
+          containerTag: "u_unrelated",
+          deletedDocumentsCount: 2,
+          deletedMemoriesCount: 3,
+          success: true,
+        },
+        status: 200,
+      });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .deleteUserKnowledge({ userId: UserId.make("user:with/provider-invalid characters") })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "identityMismatch",
+        operation: "deleteUserKnowledge",
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
 it.effect("keeps account deletion pending when the provider does not confirm success", () =>
   withProvider(({ origin, respondWith }) =>
     Effect.gen(function* () {
       respondWith({ body: { success: false }, status: 200 });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .deleteUserKnowledge({ userId: UserId.make("user-1") })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "responseDecoding",
+        operation: "deleteUserKnowledge",
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("rejects an incomplete successful User deletion confirmation", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: { deletedDocumentsCount: 2, deletedMemoriesCount: 3, success: true },
+        status: 200,
+      });
       const memory = yield* MemoryProvider.Service;
       const failure = yield* memory
         .deleteUserKnowledge({ userId: UserId.make("user-1") })
