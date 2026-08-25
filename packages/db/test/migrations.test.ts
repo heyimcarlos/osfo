@@ -40,6 +40,7 @@ describe("Postgres migrations", () => {
 
           expect(applied.rows.length).toBe(migrations.length);
           expect(tables.rows.map(({ table_name }) => table_name)).toEqual([
+            "account_deletion_actions",
             "accounts",
             "administrative_authorities",
             "agents",

@@ -1,7 +1,7 @@
 import type { AccountDeletionActionPresentation } from "@osfo/api";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { eq } from "drizzle-orm";
-import { DateTime, Effect, Option, Predicate, Schema } from "effect";
+import { Crypto, DateTime, Effect, Option, Predicate, Schema } from "effect";
 
 import { Db } from "../db";
 import { PlanPolicyVersion, UserId } from "../domain";
@@ -22,11 +22,31 @@ import { AccountAuthorities } from "./account-authorities";
 export const make = Effect.gen(function* () {
   const database = yield* Db.database;
   const authorities = yield* AccountAuthorities.make;
+  const crypto = yield* Crypto.Crypto;
   const deletion = yield* AccountDeletion.Service;
-  const present = Effect.fn("AccountDeletionRequest.present")(
-    (input: { readonly authSessionId: string }) =>
-      Effect.succeed(accountDeletionPresentation(AuthSessionId.make(input.authSessionId))),
-  );
+  const present = Effect.fn("AccountDeletionRequest.present")(function* (input: {
+    readonly authSessionId: string;
+    readonly userId: string;
+  }) {
+    const userId = UserId.make(input.userId);
+    const authSessionId = AuthSessionId.make(input.authSessionId);
+    const actionId = ActionId.make(
+      `account-delete:${yield* crypto.randomUUIDv7.pipe(
+        Effect.mapError(() => unavailable("presentIdentity")),
+      )}`,
+    );
+    const presentation = accountDeletionPresentation(actionId);
+    const now = yield* DateTime.now;
+    const result = yield* authorities.deletionCases.presentSelf(userId, {
+      actionId,
+      authSessionId,
+      expiresAt: DateTime.toDateUtc(DateTime.add(now, { minutes: 5 })),
+      presentation: ApprovalPresentation.make(encodeAccountDeletionPresentation(presentation)),
+      presentationVersion: accountDeletionPresentationVersion,
+    });
+    if (!Predicate.isTagged(result, "Presented")) return yield* unavailable("presentAuthority");
+    return presentation;
+  });
   const request = Effect.fn("AccountDeletionRequest.request")(function* (input: {
     readonly approval: {
       readonly decision: "approved";
@@ -38,10 +58,14 @@ export const make = Effect.gen(function* () {
   }) {
     const userId = UserId.make(input.userId);
     const authSessionId = AuthSessionId.make(input.authSessionId);
-    const expectedPresentation = accountDeletionPresentation(authSessionId);
-    if (!isExactApproval(input, expectedPresentation)) {
+    const exactPresentation = decodeExactPresentation(input.approval.presentation);
+    if (
+      input.confirmation !== accountDeletionActionDefinition.confirmation ||
+      Option.isNone(exactPresentation)
+    ) {
       return yield* unavailable("approvalPresentation");
     }
+    const expectedPresentation = exactPresentation.value;
     const presentation = ApprovalPresentation.make(
       encodeAccountDeletionPresentation(expectedPresentation),
     );
@@ -94,6 +118,7 @@ export const make = Effect.gen(function* () {
       {
         actionId: operation.actionId,
         presentation,
+        presentationVersion: accountDeletionPresentationVersion,
       },
       {
         authSessionId,
@@ -129,6 +154,8 @@ const accountDeletionActionDefinition = {
   title: "Delete Account",
 } as const;
 
+export const accountDeletionPresentationVersion = "account-deletion-v1";
+
 const ExactAccountDeletionActionPresentation = Schema.Struct({
   actionId: Schema.String,
   confirmation: Schema.Literal(accountDeletionActionDefinition.confirmation),
@@ -141,25 +168,19 @@ const encodeAccountDeletionPresentation = Schema.encodeSync(
   Schema.fromJsonString(ExactAccountDeletionActionPresentation),
 );
 
-export const accountDeletionPresentation = (authSessionId: AuthSessionId) => ({
-  actionId: `account-delete:${authSessionId}`,
+export const accountDeletionPresentation = (actionId: ActionId) => ({
+  actionId,
   ...accountDeletionActionDefinition,
 });
 
-export const isExactApproval = (
-  received: {
-    readonly approval: { readonly presentation: AccountDeletionPresentation };
-    readonly confirmation: string;
-  },
-  expected: AccountDeletionPresentation,
-) =>
+export const isExactApproval = (received: {
+  readonly approval: { readonly presentation: AccountDeletionPresentation };
+  readonly confirmation: string;
+}) =>
   received.confirmation === accountDeletionActionDefinition.confirmation &&
-  Option.isSome(
-    Schema.decodeUnknownOption(ExactAccountDeletionActionPresentation)(
-      received.approval.presentation,
-    ),
-  ) &&
-  received.approval.presentation.actionId === expected.actionId;
+  Option.isSome(decodeExactPresentation(received.approval.presentation));
+
+const decodeExactPresentation = Schema.decodeUnknownOption(ExactAccountDeletionActionPresentation);
 
 const unavailable = (operation: string) =>
   new AccountDeletion.AccountDeletionUnavailable({

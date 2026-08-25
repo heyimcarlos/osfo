@@ -1,10 +1,14 @@
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
 import { env } from "cloudflare:workers";
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import { OSFO_DIRECTORY_NAME } from "../../src/agents/osfo/identity";
 import { spawnApp } from "../support/spawn-app";
+
+const AuthSessionResponse = Schema.Struct({
+  session: Schema.Struct({ id: Schema.String }),
+});
 
 it.effect("deletes a registered User through the authenticated Worker endpoint", () =>
   Effect.gen(function* () {
@@ -37,12 +41,44 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
     expect(yield* Effect.promise(() => env.FILES.head(targetR2Key))).not.toBeNull();
     expect(yield* Effect.promise(() => env.FILES.head(unrelatedR2Key))).not.toBeNull();
 
+    const liveSession = yield* Effect.promise(app.auth.session);
+    const liveSessionJson = yield* Effect.promise(() => liveSession.json());
+    const liveSessionBody = yield* Schema.decodeUnknownEffect(AuthSessionResponse)(liveSessionJson);
+    const liveSessionId = liveSessionBody.session.id;
+    const forgedWithoutPresentation = yield* Effect.promise(() =>
+      app.account.delete({
+        actionId: `account-delete:${liveSessionId}`,
+        confirmation: "delete-my-account",
+        consequence: "Permanently delete this account and all of its data.",
+        operation: "account.delete",
+        title: "Delete Account",
+      }),
+    );
+    expect(forgedWithoutPresentation.status).toBe(503);
+    expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
+      agent_exists: true,
+      auth_session_exists: true,
+      deletion_case_exists: false,
+      user_exists: true,
+    });
+
+    const firstPresented = yield* Effect.promise(app.account.present);
+    expect(firstPresented.response.status).toBe(200);
+    if (firstPresented.body === undefined) {
+      return yield* Effect.die(new Error("First account deletion Action was not presented"));
+    }
+    const firstPresentation = firstPresented.body;
     const presented = yield* Effect.promise(app.account.present);
     expect(presented.response.status).toBe(200);
     if (presented.body === undefined) {
       return yield* Effect.die(new Error("Account deletion was not presented"));
     }
     const presentation = presented.body;
+    expect(presentation.actionId).not.toBe(firstPresentation.actionId);
+    const invalidatedPresentation = yield* Effect.promise(() =>
+      app.account.delete(firstPresentation),
+    );
+    expect(invalidatedPresentation.status).toBe(503);
     const staleApproval = yield* Effect.promise(() =>
       app.account.delete({ ...presentation, actionId: `${presentation.actionId}:changed` }),
     );

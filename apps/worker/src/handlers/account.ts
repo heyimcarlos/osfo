@@ -13,7 +13,10 @@ export const layer = Layer.unwrap(
         .handle("presentAccountDeletion", () =>
           Effect.gen(function* () {
             const currentUser = yield* CurrentUser;
-            return yield* deletion.present({ authSessionId: currentUser.authSessionId });
+            return yield* deletion.present({
+              authSessionId: currentUser.authSessionId,
+              userId: currentUser.userId,
+            });
           }).pipe(
             Effect.mapError(
               () =>

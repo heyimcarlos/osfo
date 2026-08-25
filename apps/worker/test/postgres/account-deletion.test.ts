@@ -5,6 +5,7 @@ import { agents } from "@osfo/db/schema/agents";
 import { sessions, users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import {
+  accountDeletionActions,
   administrativeAuthorities,
   deletionCases,
   userSuspensionEvents,
@@ -49,6 +50,7 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
       const approval = {
         actionId: ActionId.make("account-delete-1"),
         presentation: ApprovalPresentation.make("Delete Account"),
+        presentationVersion: "account-deletion-v1",
       };
       const authority = {
         authSessionId: AuthSessionId.make(authSession.id),
@@ -115,6 +117,14 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
       );
 
       expect(
+        yield* deletionCasesPersistence.presentSelf(userId, {
+          ...approval,
+          authSessionId: authority.authSessionId,
+          expiresAt: retrySessionExpiresAt,
+        }),
+      ).toEqual({ _tag: "Presented" });
+
+      expect(
         yield* deletionCasesPersistence.requestSelf(
           userId,
           DeletionCaseId.make("self-delete-case-1"),
@@ -139,7 +149,7 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
       yield* Effect.promise(() =>
         database.insert(sessions).values({
           expiresAt: retrySessionExpiresAt,
-          id: "exact-retry-session",
+          id: authSession.id,
           token: "exact-retry-token",
           updatedAt: retrySessionUpdatedAt,
           userId,
@@ -150,14 +160,15 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
           userId,
           DeletionCaseId.make("unused-retry-case"),
           approval,
-          { ...authority, authSessionId: AuthSessionId.make("exact-retry-session") },
+          authority,
         ),
-      ).toEqual({ _tag: "Existing", deletionCaseId: "self-delete-case-1" });
+      ).toEqual({ _tag: "AuthorityChanged" });
       expect(
         yield* Effect.promise(() =>
           database.select().from(sessions).where(eq(sessions.userId, userId)),
         ),
-      ).toEqual([]);
+      ).toEqual([expect.objectContaining({ id: authSession.id })]);
+      yield* Effect.promise(() => database.delete(sessions).where(eq(sessions.id, authSession.id)));
 
       yield* Effect.promise(() =>
         Promise.all([
@@ -259,6 +270,211 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
   ),
 );
 
+it.effect("consumes only one exact current server-owned self-service deletion Action", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
+        Effect.promise(client.dispose),
+      );
+      const userId = yield* registerUser(app, "+15550002531");
+      const database = yield* Db.database;
+      const persistence = yield* DeletionCasePostgres.make;
+      const [registeredSession] = yield* Effect.promise(() =>
+        database
+          .select({ id: sessions.id })
+          .from(sessions)
+          .where(eq(sessions.userId, userId))
+          .limit(1),
+      );
+      if (registeredSession === undefined) {
+        return yield* Effect.die(new Error("Registered AuthSession missing"));
+      }
+      const initialAuthority = {
+        authSessionId: AuthSessionId.make(registeredSession.id),
+        plan: "free" as const,
+        planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+      };
+      const forgedApproval = selfDeletionApproval("forged");
+
+      expect(
+        yield* persistence.requestSelf(
+          userId,
+          DeletionCaseId.make("forged-case"),
+          forgedApproval,
+          initialAuthority,
+        ),
+      ).toEqual({ _tag: "AuthorityChanged" });
+
+      const expiredApproval = selfDeletionApproval("expired");
+      expect(
+        yield* persistence.presentSelf(userId, {
+          ...expiredApproval,
+          authSessionId: initialAuthority.authSessionId,
+          expiresAt: retrySessionExpiresAt,
+        }),
+      ).toEqual({ _tag: "Presented" });
+      yield* Effect.promise(() =>
+        database
+          .update(accountDeletionActions)
+          .set({
+            created_at: expiredActionCreatedAt,
+            expires_at: expiredActionExpiresAt,
+          })
+          .where(eq(accountDeletionActions.action_id, expiredApproval.actionId)),
+      );
+      expect(
+        yield* persistence.requestSelf(
+          userId,
+          DeletionCaseId.make("expired-case"),
+          expiredApproval,
+          initialAuthority,
+        ),
+      ).toEqual({ _tag: "AuthorityChanged" });
+
+      const versionApproval = selfDeletionApproval("version");
+      yield* persistence.presentSelf(userId, {
+        ...versionApproval,
+        authSessionId: initialAuthority.authSessionId,
+        expiresAt: retrySessionExpiresAt,
+      });
+      expect(
+        yield* persistence.requestSelf(
+          userId,
+          DeletionCaseId.make("changed-version-case"),
+          { ...versionApproval, presentationVersion: "account-deletion-v2" },
+          initialAuthority,
+        ),
+      ).toEqual({ _tag: "AuthorityChanged" });
+
+      const presentationApproval = selfDeletionApproval("presentation");
+      yield* persistence.presentSelf(userId, {
+        ...presentationApproval,
+        authSessionId: initialAuthority.authSessionId,
+        expiresAt: retrySessionExpiresAt,
+      });
+      expect(
+        yield* persistence.requestSelf(
+          userId,
+          DeletionCaseId.make("changed-presentation-case"),
+          {
+            ...presentationApproval,
+            presentation: ApprovalPresentation.make("changed-presentation"),
+          },
+          initialAuthority,
+        ),
+      ).toEqual({ _tag: "AuthorityChanged" });
+
+      const revokedApproval = selfDeletionApproval("revoked-session");
+      yield* persistence.presentSelf(userId, {
+        ...revokedApproval,
+        authSessionId: initialAuthority.authSessionId,
+        expiresAt: retrySessionExpiresAt,
+      });
+      yield* Effect.promise(() =>
+        database.delete(sessions).where(eq(sessions.id, initialAuthority.authSessionId)),
+      );
+      expect(
+        yield* persistence.requestSelf(
+          userId,
+          DeletionCaseId.make("revoked-session-case"),
+          revokedApproval,
+          initialAuthority,
+        ),
+      ).toEqual({ _tag: "AuthorityChanged" });
+
+      const replacementSessionId = AuthSessionId.make("retained-action-replacement-session");
+      yield* Effect.promise(() =>
+        database.insert(sessions).values({
+          expiresAt: retrySessionExpiresAt,
+          id: replacementSessionId,
+          token: "retained-action-replacement-token",
+          updatedAt: retrySessionUpdatedAt,
+          userId,
+        }),
+      );
+      const currentAuthority = { ...initialAuthority, authSessionId: replacementSessionId };
+      const invalidatedApproval = selfDeletionApproval("invalidated");
+      yield* persistence.presentSelf(userId, {
+        ...invalidatedApproval,
+        authSessionId: currentAuthority.authSessionId,
+        expiresAt: retrySessionExpiresAt,
+      });
+      const exactApproval = selfDeletionApproval("exact");
+      yield* persistence.presentSelf(userId, {
+        ...exactApproval,
+        authSessionId: currentAuthority.authSessionId,
+        expiresAt: retrySessionExpiresAt,
+      });
+      expect(
+        yield* persistence.requestSelf(
+          userId,
+          DeletionCaseId.make("invalidated-case"),
+          invalidatedApproval,
+          currentAuthority,
+        ),
+      ).toEqual({ _tag: "AuthorityChanged" });
+
+      const concurrent = yield* Effect.all(
+        [
+          persistence.requestSelf(
+            userId,
+            DeletionCaseId.make("exact-case-a"),
+            exactApproval,
+            currentAuthority,
+          ),
+          persistence.requestSelf(
+            userId,
+            DeletionCaseId.make("exact-case-b"),
+            exactApproval,
+            currentAuthority,
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(concurrent.filter(({ _tag }) => _tag === "Created")).toHaveLength(1);
+      expect(concurrent.filter(({ _tag }) => _tag === "AuthorityChanged")).toHaveLength(1);
+      expect(
+        yield* Effect.promise(() =>
+          database.select().from(sessions).where(eq(sessions.userId, userId)),
+        ),
+      ).toEqual([]);
+      const [retainedCase] = yield* Effect.promise(() =>
+        database.select().from(deletionCases).where(eq(deletionCases.user_id, userId)),
+      );
+      const [consumedAction] = yield* Effect.promise(() =>
+        database
+          .select({
+            consumedAt: accountDeletionActions.consumed_at,
+            deletionCaseId: accountDeletionActions.deletion_case_id,
+          })
+          .from(accountDeletionActions)
+          .where(eq(accountDeletionActions.action_id, exactApproval.actionId)),
+      );
+      expect(retainedCase).toEqual(expect.objectContaining({ access_fenced_at: expect.any(Date) }));
+      expect(consumedAction).toEqual({
+        consumedAt: expect.any(Date),
+        deletionCaseId: retainedCase?.deletion_case_id,
+      });
+
+      const accountDeletion = AccountDeletionPostgres.make(database);
+      const candidate = (yield* accountDeletion.pending).find((item) => item.userId === userId);
+      if (candidate === undefined) {
+        return yield* Effect.die(new Error("Durable self-service Deletion Case missing"));
+      }
+      yield* accountDeletion.ensureAccessFence(candidate);
+      expect(
+        yield* persistence.requestSelf(
+          userId,
+          DeletionCaseId.make("replay-case"),
+          exactApproval,
+          currentAuthority,
+        ),
+      ).toEqual({ _tag: "AuthorityChanged" });
+      return undefined;
+    }).pipe(Effect.provide(Db.layer({ db: env.DB }))),
+  ),
+);
+
 it.effect("discovers and rechecks an administrator-started deletion after fencing sessions", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -333,6 +549,7 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
           {
             actionId: ActionId.make("self-action-over-admin-case"),
             presentation: ApprovalPresentation.make("Delete Account"),
+            presentationVersion: "account-deletion-v1",
           },
           {
             authSessionId: AuthSessionId.make("admin-case-self-session"),
@@ -627,8 +844,24 @@ const registerUser = (app: Awaited<ReturnType<typeof spawnApp>>, phoneNumber = "
     return UserId.make(completed.body.userId);
   });
 
+const selfDeletionApproval = (identity: string) => ({
+  actionId: ActionId.make(`account-delete:${identity}`),
+  presentation: ApprovalPresentation.make(
+    JSON.stringify({
+      actionId: `account-delete:${identity}`,
+      confirmation: "delete-my-account",
+      consequence: "Permanently delete this account and all of its data.",
+      operation: "account.delete",
+      title: "Delete Account",
+    }),
+  ),
+  presentationVersion: "account-deletion-v1",
+});
+
 const suspendedBeforeCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:00:00.000Z"));
 const restoredBeforeCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:01:00.000Z"));
 const suspendedAfterCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:02:00.000Z"));
 const retrySessionExpiresAt = DateTime.toDateUtc(DateTime.makeUnsafe("2027-08-25T12:00:00.000Z"));
 const retrySessionUpdatedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:03:00.000Z"));
+const expiredActionCreatedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2025-08-25T12:00:00.000Z"));
+const expiredActionExpiresAt = DateTime.toDateUtc(DateTime.makeUnsafe("2025-08-25T12:05:00.000Z"));

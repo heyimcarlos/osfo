@@ -26,6 +26,7 @@ it.effect(
         {
           actionId: ActionId.make("account-delete-1"),
           presentation: ApprovalPresentation.make("Delete Account"),
+          presentationVersion: "account-deletion-v1",
         },
         {
           authSessionId: AuthSessionId.make("session-1"),
@@ -51,12 +52,14 @@ it.effect(
         DeletionCase.Persistence.of({
           inspect: () => Effect.succeed({ _tag: "DeletionAccessAvailable" }),
           markAccessFenced: () => Effect.die(new Error("unexpected administrative fence")),
+          presentSelf: () => Effect.die(new Error("unexpected presentation")),
           request: () => Effect.die(new Error("unexpected administrative request")),
           requestSelf: (_userId, _deletionCaseId, approval, authority) =>
             Effect.sync(() => {
               expect(approval).toEqual({
                 actionId: "account-delete-1",
                 presentation: "Delete Account",
+                presentationVersion: "account-deletion-v1",
               });
               expect(authority).toEqual({
                 authSessionId: "session-1",
@@ -81,6 +84,7 @@ it.effect("leaves AuthSessions untouched when a retained self-service case is no
       {
         actionId: ActionId.make("new-action"),
         presentation: ApprovalPresentation.make("new-presentation"),
+        presentationVersion: "account-deletion-v1",
       },
       {
         authSessionId: AuthSessionId.make("session-1"),
@@ -113,6 +117,7 @@ it.effect("leaves AuthSessions untouched when a retained self-service case is no
             events.push("fence");
             return { _tag: "Fenced" as const };
           }),
+        presentSelf: () => Effect.die(new Error("unexpected presentation")),
         request: () => Effect.die(new Error("unexpected administrative request")),
         requestSelf: () =>
           Effect.sync(() => {
@@ -157,6 +162,7 @@ it.effect("leaves AuthSessions to the exact administrative persistence fence", (
             events.push("fence");
             return { _tag: "AuthorityChanged" as const };
           }),
+        presentSelf: () => Effect.die(new Error("unexpected presentation")),
         request: () =>
           Effect.sync(() => {
             events.push("request");

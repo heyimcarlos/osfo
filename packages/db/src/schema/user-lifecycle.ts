@@ -44,6 +44,45 @@ export const userSuspensionEvents = pgTable(
   ],
 );
 
+/** One expiring server-owned capability for approving self-service account deletion. */
+export const accountDeletionActions = pgTable(
+  "account_deletion_actions",
+  {
+    action_id: text().primaryKey(),
+    user_id: text()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    auth_session_id: text().notNull(),
+    presentation: text().notNull(),
+    presentation_version: text().notNull(),
+    expires_at: timestamp({ withTimezone: true }).notNull(),
+    consumed_at: timestamp({ withTimezone: true }),
+    deletion_case_id: text(),
+    invalidated_at: timestamp({ withTimezone: true }),
+    created_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("account_deletion_actions_user_index").on(table.user_id),
+    check(
+      "account_deletion_actions_identity_check",
+      sql`length(btrim(${table.action_id})) > 0 and length(btrim(${table.auth_session_id})) > 0`,
+    ),
+    check(
+      "account_deletion_actions_presentation_check",
+      sql`length(btrim(${table.presentation})) > 0 and length(btrim(${table.presentation_version})) > 0`,
+    ),
+    check(
+      "account_deletion_actions_lifecycle_check",
+      sql`${table.expires_at} > ${table.created_at}
+        and (${table.consumed_at} is null or ${table.consumed_at} >= ${table.created_at})
+        and (${table.invalidated_at} is null or ${table.invalidated_at} >= ${table.created_at})
+        and (${table.consumed_at} is null or ${table.invalidated_at} is null)
+        and ((${table.consumed_at} is null and ${table.deletion_case_id} is null)
+          or (${table.consumed_at} is not null and length(btrim(${table.deletion_case_id})) > 0))`,
+    ),
+  ],
+);
+
 /** One User- or administrator-requested deletion that immediately ends User access. */
 export const deletionCases = pgTable(
   "deletion_cases",

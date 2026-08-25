@@ -1,23 +1,79 @@
 import { sessions, users } from "@osfo/db/schema/auth";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import {
+  accountDeletionActions,
   administrativeAuthorities,
   deletionCases,
   userSuspensionEvents,
 } from "@osfo/db/schema/user-lifecycle";
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 
 import { Db } from "../../db";
 import { DeletionCaseId } from "../../domain/deletion-case";
 import { DeletionCase } from "../../services/deletion-case";
-import { exactDeletionAuthority, fenceDeletionCaseAccess } from "./deletion-case-authority";
+import { fenceDeletionCaseAccess } from "./deletion-case-authority";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transaction boundaries require async functions. */
 
 /** Build the Deletion Case persistence adapter from Postgres. */
 export const make = Effect.gen(function* () {
   const database = yield* Db.database;
+  const presentSelf = Effect.fn("DeletionCasePostgres.presentSelf")(function* (
+    userId: Parameters<DeletionCase.PersistencePort["presentSelf"]>[0],
+    action: Parameters<DeletionCase.PersistencePort["presentSelf"]>[1],
+  ) {
+    return yield* Db.execute("requestDeletion", () =>
+      database.transaction(async (transaction) => {
+        const [user] = await transaction
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.id, userId))
+          .for("update")
+          .limit(1);
+        if (user === undefined) return { _tag: "MissingUser" } as const;
+        const [authSession] = await transaction
+          .select({ id: sessions.id })
+          .from(sessions)
+          .where(
+            and(
+              eq(sessions.id, action.authSessionId),
+              eq(sessions.userId, userId),
+              gt(sessions.expiresAt, sql`clock_timestamp()`),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        const [existingCase] = await transaction
+          .select({ deletionCaseId: deletionCases.deletion_case_id })
+          .from(deletionCases)
+          .where(eq(deletionCases.user_id, userId))
+          .limit(1);
+        if (authSession === undefined || existingCase !== undefined) {
+          return { _tag: "AuthorityChanged" } as const;
+        }
+        await transaction
+          .update(accountDeletionActions)
+          .set({ invalidated_at: sql`clock_timestamp()` })
+          .where(
+            and(
+              eq(accountDeletionActions.user_id, userId),
+              isNull(accountDeletionActions.consumed_at),
+              isNull(accountDeletionActions.invalidated_at),
+            ),
+          );
+        await transaction.insert(accountDeletionActions).values({
+          action_id: action.actionId,
+          auth_session_id: action.authSessionId,
+          expires_at: action.expiresAt,
+          presentation: action.presentation,
+          presentation_version: action.presentationVersion,
+          user_id: userId,
+        });
+        return { _tag: "Presented" } as const;
+      }),
+    );
+  });
   const requestSelf = Effect.fn("DeletionCasePostgres.requestSelf")(function* (
     userId: Parameters<DeletionCase.PersistencePort["requestSelf"]>[0],
     deletion_case_id: Parameters<DeletionCase.PersistencePort["requestSelf"]>[1],
@@ -71,39 +127,31 @@ export const make = Effect.gen(function* () {
         ) {
           return { _tag: "AuthorityChanged" } as const;
         }
-        const selfAuthority = {
-          _tag: "SelfService" as const,
-          approvalActionId: approval.actionId,
-          approvalPresentation: approval.presentation,
-          userId,
-        };
+        const [retainedAction] = await transaction
+          .select({ actionId: accountDeletionActions.action_id })
+          .from(accountDeletionActions)
+          .where(
+            and(
+              eq(accountDeletionActions.action_id, approval.actionId),
+              eq(accountDeletionActions.user_id, userId),
+              eq(accountDeletionActions.auth_session_id, authority.authSessionId),
+              eq(accountDeletionActions.presentation, approval.presentation),
+              eq(accountDeletionActions.presentation_version, approval.presentationVersion),
+              gt(accountDeletionActions.expires_at, sql`clock_timestamp()`),
+              isNull(accountDeletionActions.consumed_at),
+              isNull(accountDeletionActions.invalidated_at),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (retainedAction === undefined) return { _tag: "AuthorityChanged" } as const;
         const [existing] = await transaction
           .select({ deletionCaseId: deletionCases.deletion_case_id })
           .from(deletionCases)
           .where(eq(deletionCases.user_id, userId))
           .limit(1);
         if (existing !== undefined) {
-          const exactCase = sql`${deletionCases.deletion_case_id} = ${existing.deletionCaseId}
-            and ${deletionCases.user_id} = ${userId}
-            and ${exactDeletionAuthority(selfAuthority)}`;
-          const retained = await transaction
-            .select({ deletionCaseId: deletionCases.deletion_case_id })
-            .from(deletionCases)
-            .where(exactCase)
-            .limit(1)
-            .for("update");
-          if (retained.length !== 1) return { _tag: "AuthorityChanged" } as const;
-          const fenced = await transaction
-            .update(deletionCases)
-            .set({ access_fenced_at: sql`clock_timestamp()` })
-            .where(exactCase)
-            .returning({ deletionCaseId: deletionCases.deletion_case_id });
-          if (fenced.length !== 1) return { _tag: "AuthorityChanged" } as const;
-          await transaction.delete(sessions).where(eq(sessions.userId, userId));
-          return {
-            _tag: "Existing",
-            deletionCaseId: DeletionCaseId.make(existing.deletionCaseId),
-          } as const;
+          return { _tag: "AuthorityChanged" } as const;
         }
         await transaction.insert(deletionCases).values({
           access_fenced_at: sql`clock_timestamp()`,
@@ -114,6 +162,23 @@ export const make = Effect.gen(function* () {
           requested_by_user_id: userId,
           user_id: userId,
         });
+        const consumed = await transaction
+          .update(accountDeletionActions)
+          .set({
+            consumed_at: sql`clock_timestamp()`,
+            deletion_case_id,
+          })
+          .where(
+            and(
+              eq(accountDeletionActions.action_id, approval.actionId),
+              isNull(accountDeletionActions.consumed_at),
+              isNull(accountDeletionActions.invalidated_at),
+            ),
+          )
+          .returning({ actionId: accountDeletionActions.action_id });
+        if (consumed.length !== 1) {
+          throw new Error("The retained account-deletion Action was not consumed");
+        }
         await transaction.delete(sessions).where(eq(sessions.userId, userId));
         return { _tag: "Created" } as const;
       }),
@@ -187,6 +252,7 @@ export const make = Effect.gen(function* () {
           return { _tag: "Created" } as const;
         }),
       ),
+    presentSelf,
     requestSelf,
   });
 });

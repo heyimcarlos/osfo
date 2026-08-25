@@ -27,6 +27,13 @@ export interface RequestCommand {
 export interface SelfDeletionApproval {
   readonly actionId: ActionId;
   readonly presentation: ApprovalPresentation;
+  readonly presentationVersion: string;
+}
+
+/** Retained server-owned Action that can approve one exact self-service deletion. */
+export interface SelfDeletionAction extends SelfDeletionApproval {
+  readonly authSessionId: AuthSessionId;
+  readonly expiresAt: Date;
 }
 
 /** Exact current facts that must remain locked through the self-service access fence. */
@@ -43,6 +50,12 @@ export type RequestResult =
   | { readonly _tag: "Existing"; readonly deletionCaseId: DeletionCaseId }
   | { readonly _tag: "MissingUser" };
 
+/** Persistence result when presenting one server-owned self-service deletion Action. */
+export type PresentSelfResult =
+  | { readonly _tag: "AuthorityChanged" }
+  | { readonly _tag: "Presented" }
+  | { readonly _tag: "MissingUser" };
+
 /** Exact administrative access-fence persistence result. */
 export type AccessFenceResult = { readonly _tag: "AuthorityChanged" } | { readonly _tag: "Fenced" };
 
@@ -57,6 +70,10 @@ export interface PersistencePort {
     command: RequestCommand,
     deletionCaseId: DeletionCaseId,
   ) => Effect.Effect<RequestResult, DbUnavailable>;
+  readonly presentSelf: (
+    userId: UserId,
+    action: SelfDeletionAction,
+  ) => Effect.Effect<PresentSelfResult, DbUnavailable>;
   readonly requestSelf: (
     userId: UserId,
     deletionCaseId: DeletionCaseId,
@@ -73,6 +90,7 @@ export class Persistence extends Context.Service<Persistence, PersistencePort>()
 /** Public Deletion Case authority. */
 export interface Interface {
   readonly inspect: PersistencePort["inspect"];
+  readonly presentSelf: PersistencePort["presentSelf"];
   readonly request: (
     command: RequestCommand,
   ) => Effect.Effect<
@@ -128,6 +146,7 @@ export const make = Effect.gen(function* () {
   });
   return Service.of({
     inspect: persistence.inspect,
+    presentSelf: persistence.presentSelf,
     request: (command) =>
       Effect.gen(function* () {
         const deletionCaseId = DeletionCaseId.make(yield* secureId);
