@@ -52,11 +52,11 @@ export const quiesceProcessingConversations = Effect.fn(
   pollMilliseconds: number,
 ) {
   const poll = Effect.gen(function* () {
-    if (!(yield* store.hasProcessingConversationWork)) return false;
+    if (!(yield* store.hasUnsettledProviderConversationWork)) return false;
     const now = yield* DateTime.now;
     yield* store.expediteProcessingConversationWork(toDbTimestamp(now));
     yield* reconcile();
-    return yield* store.hasProcessingConversationWork;
+    return yield* store.hasUnsettledProviderConversationWork;
   });
   yield* Effect.repeat(poll, {
     schedule: Schedule.spaced(pollMilliseconds),
@@ -356,7 +356,11 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
             yield* store.failProviderAcceptance(claim, saved.failure, toDbTimestamp(acceptedAt));
             return undefined;
           }
-          yield* settleProviderFailure(store, claim, saved.failure, false);
+          if (Predicate.isTagged(saved.failure, "MemoryProviderUnavailable")) {
+            yield* store.retainAmbiguousProviderSubmission(claim, saved.failure.message);
+            return undefined;
+          }
+          yield* store.fail(claim, saved.failure.message);
           return undefined;
         }
         const acceptedAt = yield* DateTime.now;

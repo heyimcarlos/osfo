@@ -161,6 +161,50 @@ it.effect("atomically records a committed turn and its provider conversation sna
   ),
 );
 
+it.effect("keeps an unaccepted leased provider save visible across Agent activation", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      seedSession(database);
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const agentStore = makeAgentStore(db);
+      const outbox = makeMemoryProviderOutboxStore(db);
+      yield* agentStore.recordCommittedTurn(
+        committedTurn("assistant-1", "request-1"),
+        conversationProjection("assistant-1"),
+      );
+
+      const claimed = yield* outbox.claimNext(now, liveLease, "ambiguous-provider-save");
+
+      expect(Option.isSome(claimed)).toBe(true);
+      yield* outbox.retainAmbiguousProviderSubmission(
+        Option.getOrThrow(claimed),
+        "The provider response was lost",
+      );
+      const reactivated = makeMemoryProviderOutboxStore(
+        makeAgentDb(asDurableObjectStorage(storage)),
+      );
+      expect(yield* reactivated.hasUnsettledProviderConversationWork).toBe(true);
+      expect(
+        database
+          .prepare(
+            "SELECT last_error, status FROM osfo_memory_provider_outbox WHERE operation_type = 'saveConversation'",
+          )
+          .get(),
+      ).toEqual({ last_error: "The provider response was lost", status: "claimed" });
+      expect(yield* reactivated.claimNext(now, extendedLease, "duplicate-save")).toEqual(
+        Option.none(),
+      );
+      const reclaimed = yield* reactivated.claimNext(
+        liveLease,
+        extendedLease,
+        "expired-save-retry",
+      );
+      expect(Option.isSome(reclaimed)).toBe(true);
+      expect(yield* reactivated.hasUnsettledProviderConversationWork).toBe(true);
+    }),
+  ),
+);
+
 it.effect("retains versioned provider configuration status across retries and migration", () =>
   withDatabase(({ storage }) =>
     Effect.gen(function* () {
@@ -476,7 +520,7 @@ it.effect("terminalizes claimed append work while deleting historical Session ow
         },
         {
           activateCurrentSession: Effect.die(new Error("Historical deletion activated Session")),
-          authorizeDeletion: Effect.void,
+          authorizeDeletion: () => Effect.void,
           clearMessages: () => Effect.promise(() => historical.clearMessages()),
           inspect: store.inspect().pipe(Effect.orDie),
           ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
@@ -540,7 +584,7 @@ it.effect("terminalizes claimed append work while deleting historical Session ow
         },
       ]);
 
-      expect(yield* outbox.hasProcessingConversationWork).toBe(false);
+      expect(yield* outbox.hasUnsettledProviderConversationWork).toBe(false);
       expect(yield* outbox.isClaimCurrent(staleAppendClaim)).toBe(false);
       yield* outbox.expediteProcessingConversationWork(now);
       expect(
@@ -622,7 +666,7 @@ it.effect("does not save a claimed append after historical Session deletion term
         },
         {
           activateCurrentSession: Effect.die(new Error("Historical deletion activated Session")),
-          authorizeDeletion: Effect.void,
+          authorizeDeletion: () => Effect.void,
           clearMessages: () => Effect.void,
           inspect: store.inspect().pipe(Effect.orDie),
           ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
@@ -732,7 +776,7 @@ it.effect("drains an in-flight provider save before terminalizing Session append
                 activateCurrentSession: Effect.die(
                   new Error("Historical deletion activated Session"),
                 ),
-                authorizeDeletion: Effect.void,
+                authorizeDeletion: () => Effect.void,
                 clearMessages: () => Effect.void,
                 inspect: store.inspect().pipe(Effect.orDie),
                 ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
@@ -810,7 +854,7 @@ it.effect("creates a replacement before clearing and settling the current Sessio
         },
         {
           activateCurrentSession: Effect.sync(() => events.push("activate")).pipe(Effect.asVoid),
-          authorizeDeletion: Effect.sync(() => events.push("recheck")),
+          authorizeDeletion: () => Effect.sync(() => events.push("recheck")),
           clearMessages: () =>
             Effect.sync(() => events.push("clear")).pipe(
               Effect.andThen(Effect.promise(() => current.clearMessages())),
@@ -840,13 +884,104 @@ it.effect("creates a replacement before clearing and settling the current Sessio
         },
       );
 
-      expect(events).toEqual(["replace", "activate", "recheck", "clear", "settle"]);
+      expect(events).toEqual(["replace", "activate", "recheck", "clear", "recheck", "settle"]);
       expect(yield* store.inspect()).toMatchObject({ currentSessionId: "session-2" });
       expect(thinkSessionCounts(database, "session-1")).toEqual({
         compactions: 0,
         fts: 0,
         messages: 0,
       });
+    }),
+  ),
+);
+
+it.effect("retains SQLite Session ownership when authority changes after history clearing", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const store = makeAgentStore(db);
+      yield* store.initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId: ConversationRouteId.make("route-1"),
+        sessionId: SessionId.make("session-1"),
+      });
+      yield* store.replaceCurrentSession({
+        expectedCurrentSessionId: SessionId.make("session-1"),
+        replacedAt: now,
+        replacementSessionId: SessionId.make("session-2"),
+        routeId: ConversationRouteId.make("route-1"),
+      });
+      const historical = Session.create(thinkSqlProvider(database)).forSession("session-1");
+      yield* seedThinkHistory(historical, "historical");
+      let recheckCount = 0;
+
+      const deletion = (authorizeDeletion: () => Effect.Effect<void, string>) =>
+        deleteLocalSession(
+          {
+            replacementSessionId: SessionId.make("unused-replacement"),
+            sessionId: SessionId.make("session-1"),
+          },
+          {
+            activateCurrentSession: Effect.die(new Error("Historical Session was activated")),
+            authorizeDeletion,
+            clearMessages: () => Effect.promise(() => historical.clearMessages()),
+            inspect: store.inspect().pipe(Effect.orDie),
+            ownsSession: (sessionId) => store.ownsSession(sessionId).pipe(Effect.orDie),
+            replacedAt: Effect.succeed(now),
+            replaceCurrentSession: () =>
+              Effect.die(new Error("Historical Session was replaced as current")),
+            settle: (sessionId) =>
+              store
+                .deleteHistoricalSession({
+                  authorization: authorizedDeletion("delete-session-authority-drift", sessionId)
+                    .payload.authorization,
+                  deletedAt: now,
+                  outboxId: MemoryProviderOutboxId.make("delete-session-authority-drift"),
+                  sessionId,
+                  userId: UserId.make("user-1"),
+                })
+                .pipe(Effect.orDie),
+          },
+        );
+
+      const denied = yield* deletion(() => {
+        recheckCount += 1;
+        return recheckCount === 1 ? Effect.void : Effect.fail("authority changed");
+      }).pipe(Effect.result);
+      expect(Result.isFailure(denied)).toBe(true);
+      expect(thinkSessionCounts(database, "session-1")).toEqual({
+        compactions: 0,
+        fts: 0,
+        messages: 0,
+      });
+      expect(
+        database
+          .prepare("SELECT session_id FROM osfo_session_ownership WHERE session_id = 'session-1'")
+          .get(),
+      ).toEqual({ session_id: "session-1" });
+      expect(
+        database
+          .prepare(
+            "SELECT status FROM osfo_memory_provider_outbox WHERE outbox_id = 'delete-session-authority-drift'",
+          )
+          .get(),
+      ).toBeUndefined();
+
+      yield* deletion(() => Effect.void);
+      expect(
+        database
+          .prepare("SELECT session_id FROM osfo_session_ownership WHERE session_id = 'session-1'")
+          .get(),
+      ).toBeUndefined();
+      expect(
+        database
+          .prepare(
+            "SELECT status FROM osfo_memory_provider_outbox WHERE outbox_id = 'delete-session-authority-drift'",
+          )
+          .get(),
+      ).toEqual({ status: "pending" });
     }),
   ),
 );

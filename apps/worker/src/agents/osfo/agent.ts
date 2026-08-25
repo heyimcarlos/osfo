@@ -827,42 +827,86 @@ export class OsfoAgent extends Think<Env> {
       );
       return;
     }
-    if (Predicate.isTagged(result.value.admission, "ManagedSessionReplacementAdmitted")) {
-      const recorded = await this.#recordMessengerAcceptedMessage(
-        result.value.currentAuthorization,
-        provider,
-        message.providerMessageId,
-      );
-      if (!recorded) {
-        await this.#completeMessengerPolicyReply(
-          callback,
-          context,
-          "I could not reserve this message in your allowance. Please try again.",
-        );
-        return;
-      }
-      await this.#completeMessengerPolicyReply(callback, context, "Started a new Osfo session.");
-      return;
-    }
+    const admission: ManagedConversationAdmitted | ManagedSessionReplacementAdmitted =
+      result.value.admission;
+    const continuation = (signal: AbortSignal) =>
+      Effect.tryPromise({
+        try: async () => {
+          if (Predicate.isTagged(admission, "ManagedSessionReplacementAdmitted")) {
+            const recorded = await this.#recordMessengerAcceptedMessage(
+              result.value.currentAuthorization,
+              provider,
+              message.providerMessageId,
+            );
+            if (signal.aborted) return;
+            if (!recorded) {
+              await this.#completeMessengerPolicyReply(
+                callback,
+                context,
+                "I could not reserve this message in your allowance. Please try again.",
+              );
+              return;
+            }
+            await this.#completeMessengerPolicyReply(
+              callback,
+              context,
+              "Started a new Osfo session.",
+            );
+            return;
+          }
 
-    const recorded =
-      result.value.admission.metadata.executionMode === "exhaustedConversation" ||
-      (await this.#recordMessengerAcceptedMessage(
-        result.value.currentAuthorization,
-        provider,
-        message.providerMessageId,
-      ));
-    if (!recorded) {
-      await this.#completeMessengerPolicyReply(
-        callback,
-        context,
-        "I could not reserve this message in your allowance. Please try again.",
-      );
-      return;
-    }
-    await super.chatWithMessengerContext(userMessage, callback, context, {
-      metadata: result.value.admission.metadata,
+          const recorded =
+            admission.metadata.executionMode === "exhaustedConversation" ||
+            (await this.#recordMessengerAcceptedMessage(
+              result.value.currentAuthorization,
+              provider,
+              message.providerMessageId,
+            ));
+          if (signal.aborted) return;
+          if (!recorded) {
+            await this.#completeMessengerPolicyReply(
+              callback,
+              context,
+              "I could not reserve this message in your allowance. Please try again.",
+            );
+            return;
+          }
+          await super.chatWithMessengerContext(userMessage, callback, context, {
+            metadata: admission.metadata,
+            signal,
+          });
+        },
+        catch: (cause) =>
+          new ThinkSubmissionUnavailable({
+            cause,
+            message: "The admitted messenger turn could not continue",
+            operation: "chatWithMessengerContext",
+          }),
+      });
+    const continued = await Effect.runPromiseExit(
+      this.#accountDeletionFence.runTracked(
+        continuation,
+        () =>
+          new ThinkSubmissionUnavailable({
+            cause: admission,
+            message: "Account deletion fenced this messenger turn",
+            operation: "chatWithMessengerContext",
+          }),
+      ),
+    );
+    if (Exit.isSuccess(continued)) return;
+    const failureTag = Option.match(Cause.findErrorOption(continued.cause), {
+      onNone: () => "DefectOrInterruption",
+      onSome: (value) => value._tag,
     });
+    await Effect.runPromise(
+      Effect.logError("Messenger continuation failed").pipe(Effect.annotateLogs({ failureTag })),
+    );
+    await this.#completeMessengerPolicyReply(
+      callback,
+      context,
+      "I could not authorize that message right now. Please try again.",
+    );
   }
 
   /** Register document and test actions in their owning stages. */
@@ -1670,38 +1714,13 @@ export class OsfoAgent extends Think<Env> {
       operation: "session.delete",
       presentation: current.presentation,
     };
-    const enqueuedAt = await Effect.runPromise(currentDbTimestamp);
-    const enqueued = await runRpc(
-      this.#memoryProviderOutbox
-        .enqueueDeletion({
-          enqueuedAt,
-          outboxId: MemoryProviderOutboxId.make(`delete-session:${actionId}`),
-          payload: {
-            _tag: "DeleteSessionConversation",
-            authorization: deletionAuthorization,
-            sessionId: input.sessionId,
-            userId: owner,
-          },
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new DeletionActionUnavailable({
-                cause,
-                message: "Session deletion could not be retained for provider retry",
-                operation: "deleteSession",
-              }),
-          ),
-        ),
-    );
-    if (Predicate.isTagged(enqueued, "DeletionActionUnavailable")) return enqueued;
-    this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
     const deleted = await this.#deleteSessionLocally(input, deletionAuthorization, owner);
     if (
       Predicate.isTagged(deleted, "DeletionActionUnavailable") ||
       Predicate.isTagged(deleted, "Denied")
     )
       return deleted;
+    this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
     return { _tag: "SessionDeletionPending", sessionId: input.sessionId } as const;
   }
 
@@ -1724,20 +1743,21 @@ export class OsfoAgent extends Think<Env> {
               try: () => this.#activateCurrentSession(),
               catch: sessionDeletionFailure("The replacement Session could not be activated"),
             }),
-            authorizeDeletion: this.#managedActionAuthorization
-              .recheck(
-                deletionAuthorization.authorityIdentity,
-                { actionId: deletionAuthorization.actionId, kind: "session.delete" },
-                deletionAuthorization.presentation,
-              )
-              .pipe(
-                Effect.mapError(
-                  sessionDeletionFailure("Session deletion authority could not be loaded"),
+            authorizeDeletion: () =>
+              this.#managedActionAuthorization
+                .recheck(
+                  deletionAuthorization.authorityIdentity,
+                  { actionId: deletionAuthorization.actionId, kind: "session.delete" },
+                  deletionAuthorization.presentation,
+                )
+                .pipe(
+                  Effect.mapError(
+                    sessionDeletionFailure("Session deletion authority could not be loaded"),
+                  ),
+                  Effect.flatMap((result) =>
+                    Predicate.isTagged(result, "Denied") ? Effect.fail(result) : Effect.void,
+                  ),
                 ),
-                Effect.flatMap((result) =>
-                  Predicate.isTagged(result, "Denied") ? Effect.fail(result) : Effect.void,
-                ),
-              ),
             clearMessages: (sessionId) =>
               Effect.tryPromise({
                 try: () => Session.create(this).forSession(sessionId).clearMessages(),

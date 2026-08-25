@@ -45,3 +45,84 @@ it.effect("drains an in-flight document writer and prevents resurrection after R
     expect(writes).toEqual([]);
   }),
 );
+
+it.effect("cancels an admitted messenger turn after its allowance write before closing", () =>
+  Effect.gen(function* () {
+    const fence = makeAccountDeletionFence();
+    const allowanceStarted = yield* Deferred.make<void>();
+    const releaseAllowance = yield* Deferred.make<void>();
+    const events: Array<string> = [];
+    const admittedTurn = yield* fence
+      .runTracked(
+        (signal) =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(allowanceStarted, undefined);
+            yield* Deferred.await(releaseAllowance);
+            events.push("allowance-recorded");
+            if (signal.aborted) return;
+            events.push("provider-send");
+          }),
+        () => "account deletion fenced" as const,
+      )
+      .pipe(Effect.forkChild);
+
+    yield* Deferred.await(allowanceStarted);
+    const closing = yield* fence.close.pipe(
+      Effect.andThen(Effect.sync(() => events.push("closed"))),
+      Effect.forkChild,
+    );
+    yield* Effect.yieldNow;
+    expect(events).toEqual([]);
+
+    yield* Deferred.succeed(releaseAllowance, undefined);
+    yield* Fiber.join(admittedTurn);
+    yield* Fiber.join(closing);
+    expect(events).toEqual(["allowance-recorded", "closed"]);
+
+    const lateTurn = yield* fence
+      .runTracked(
+        () => Effect.sync(() => events.push("late-provider-send")),
+        () => "account deletion fenced" as const,
+      )
+      .pipe(Effect.flip);
+    expect(lateTurn).toBe("account deletion fenced");
+    expect(events).toEqual(["allowance-recorded", "closed"]);
+  }),
+);
+
+it.effect("waits for an already-started messenger provider call to observe cancellation", () =>
+  Effect.gen(function* () {
+    const fence = makeAccountDeletionFence();
+    const providerStarted = yield* Deferred.make<void>();
+    const events: Array<string> = [];
+    const admittedTurn = yield* fence
+      .runTracked(
+        (signal) =>
+          Deferred.succeed(providerStarted, undefined).pipe(
+            Effect.andThen(
+              Effect.callback<void>((resume) => {
+                const onAbort = () => {
+                  events.push("provider-aborted");
+                  resume(Effect.void);
+                };
+                if (signal.aborted) {
+                  onAbort();
+                  return Effect.void;
+                }
+                signal.addEventListener("abort", onAbort, { once: true });
+                return Effect.sync(() => signal.removeEventListener("abort", onAbort));
+              }),
+            ),
+          ),
+        () => "account deletion fenced" as const,
+      )
+      .pipe(Effect.forkChild);
+
+    yield* Deferred.await(providerStarted);
+    yield* fence.close;
+    events.push("closed");
+    yield* Fiber.join(admittedTurn);
+
+    expect(events).toEqual(["provider-aborted", "closed"]);
+  }),
+);

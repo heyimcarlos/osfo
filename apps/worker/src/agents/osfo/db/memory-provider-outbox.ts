@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, max, ne } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, max, ne, or } from "drizzle-orm";
 import { Array, Effect, Option, Schema } from "effect";
 
 import { ResourcePriceVersion, SessionId, UserId } from "../../../domain";
@@ -441,6 +441,12 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
       }),
   );
 
+  const retainAmbiguousProviderSubmission = Effect.fn(
+    "MemoryProviderOutbox.retainAmbiguousProviderSubmission",
+  )((claim: ClaimedMemoryProviderWork, message: string) =>
+    updateClaim("retryMemoryProviderOutbox", claim, { last_error: message }),
+  );
+
   const markProviderStatus = Effect.fn("MemoryProviderOutbox.markProviderStatus")(
     (claim: ClaimedMemoryProviderWork, status: MemoryProvider.ConversationProcessingStatus) =>
       updateClaim("completeMemoryProviderOutbox", claim, { provider_status: status }),
@@ -540,15 +546,21 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     );
   });
 
-  const hasProcessingConversationWork = execute("inspectMemoryProviderOutbox", () =>
+  const hasUnsettledProviderConversationWork = execute("inspectMemoryProviderOutbox", () =>
     db
       .select({ outboxId: memoryProviderOutbox.outbox_id })
       .from(memoryProviderOutbox)
       .where(
         and(
           eq(memoryProviderOutbox.operation_type, "saveConversation"),
-          eq(memoryProviderOutbox.provider_status, "processing"),
           ne(memoryProviderOutbox.status, "completed"),
+          or(
+            eq(memoryProviderOutbox.provider_status, "processing"),
+            and(
+              eq(memoryProviderOutbox.status, "claimed"),
+              isNull(memoryProviderOutbox.provider_accepted_at),
+            ),
+          ),
         ),
       )
       .limit(1)
@@ -641,7 +653,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     fail,
     failProviderAcceptance,
     expediteProcessingConversationWork,
-    hasProcessingConversationWork,
+    hasUnsettledProviderConversationWork,
     hasRetryableWork,
     inspectConfiguration,
     isClaimCurrent,
@@ -649,6 +661,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     markProviderAccepted,
     markProviderStatus,
     recordDeletionProgress,
+    retainAmbiguousProviderSubmission,
     readRecentTurnBridge,
     requireConfiguration,
     retry,

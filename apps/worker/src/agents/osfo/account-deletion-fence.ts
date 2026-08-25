@@ -1,14 +1,30 @@
-import { Effect, Semaphore } from "effect";
+import { Deferred, Effect, Semaphore } from "effect";
 
 /** Agent-local fence that drains R2 writers before account cleanup starts. */
 export const makeAccountDeletionFence = () => {
   const semaphore = Semaphore.makeUnsafe(1);
+  const trackedExecutions = new Map<AbortController, Deferred.Deferred<void>>();
   let closed = false;
 
   return {
     close: Effect.suspend(() => {
       closed = true;
-      return semaphore.withPermit(Effect.void);
+      return semaphore
+        .withPermit(
+          Effect.sync(() => {
+            const completions = [...trackedExecutions.entries()].map(([controller, completion]) => {
+              controller.abort("Account deletion fenced ordinary Agent execution");
+              return completion;
+            });
+            return completions;
+          }),
+        )
+        .pipe(
+          Effect.flatMap((completions) =>
+            Effect.forEach(completions, Deferred.await, { concurrency: "unbounded" }),
+          ),
+          Effect.asVoid,
+        );
     }),
     run: <A, E, R, E2>(
       effect: Effect.Effect<A, E, R>,
@@ -19,6 +35,34 @@ export const makeAccountDeletionFence = () => {
           closed ? Effect.fail(onClosed()) : effect,
         ),
       ),
+    runTracked: <A, E, R, E2>(
+      effect: (signal: AbortSignal) => Effect.Effect<A, E, R>,
+      onClosed: () => E2,
+    ): Effect.Effect<A, E | E2, R> =>
+      Effect.gen(function* () {
+        // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- Deletion aborts tracked work without interrupting its in-flight Promise boundary; close still waits for completion.
+        const controller = new AbortController();
+        const completion = yield* Deferred.make<void>();
+        const admitted = yield* semaphore.withPermit(
+          Effect.sync(() => {
+            if (closed) return false;
+            trackedExecutions.set(controller, completion);
+            return true;
+          }),
+        );
+        if (!admitted) return yield* Effect.fail(onClosed());
+        return yield* effect(controller.signal).pipe(
+          Effect.ensuring(
+            semaphore
+              .withPermit(
+                Effect.sync(() => {
+                  trackedExecutions.delete(controller);
+                }),
+              )
+              .pipe(Effect.andThen(Deferred.succeed(completion, undefined)), Effect.asVoid),
+          ),
+        );
+      }),
   };
 };
 

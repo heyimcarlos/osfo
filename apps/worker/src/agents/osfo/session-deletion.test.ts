@@ -18,9 +18,8 @@ it.effect(
         },
         {
           activateCurrentSession: record(events, "activate"),
-          authorizeDeletion: record(events, "recheck").pipe(
-            Effect.andThen(Effect.fail(new TestAuthorityChanged())),
-          ),
+          authorizeDeletion: () =>
+            record(events, "recheck").pipe(Effect.andThen(Effect.fail(new TestAuthorityChanged()))),
           clearMessages: () => record(events, "clear"),
           inspect: record(events, "inspect").pipe(
             Effect.as({
@@ -53,7 +52,7 @@ it.effect("retries a retained Session deletion after the initial local clear fai
       { replacementSessionId, sessionId: deletedSessionId },
       {
         activateCurrentSession: record(events, "activate"),
-        authorizeDeletion: record(events, "recheck-retained-authorization"),
+        authorizeDeletion: () => record(events, "recheck-retained-authorization"),
         clearMessages: () =>
           Effect.suspend(() => {
             clearAttempts += 1;
@@ -92,8 +91,46 @@ it.effect("retries a retained Session deletion after the initial local clear fai
       "clear-1",
       "recheck-retained-authorization",
       "clear-2",
+      "recheck-retained-authorization",
       "settle",
     ]);
+  });
+});
+
+it.effect("retains Session ownership when authority changes after history clearing", () => {
+  const events: Array<string> = [];
+  let authorized = true;
+  return Effect.gen(function* () {
+    const result = yield* deleteLocalSession(
+      {
+        replacementSessionId: SessionId.make("unused-replacement"),
+        sessionId: SessionId.make("session-1"),
+      },
+      {
+        activateCurrentSession: Effect.die(new Error("Historical Session was activated")),
+        authorizeDeletion: () =>
+          Effect.suspend(() => {
+            events.push("recheck");
+            return authorized ? Effect.void : Effect.fail(new TestAuthorityChanged());
+          }),
+        clearMessages: () =>
+          Effect.sync(() => {
+            events.push("clear");
+            authorized = false;
+          }),
+        inspect: Effect.succeed({
+          currentSessionId: SessionId.make("session-2"),
+          routeId: ConversationRouteId.make("route-1"),
+        }),
+        ownsSession: () => Effect.succeed(true),
+        replacedAt: Effect.die(new Error("Historical Session requested replacement time")),
+        replaceCurrentSession: () => Effect.die(new Error("Historical Session was replaced")),
+        settle: () => record(events, "settle"),
+      },
+    ).pipe(Effect.result);
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(events).toEqual(["recheck", "clear", "recheck"]);
   });
 });
 

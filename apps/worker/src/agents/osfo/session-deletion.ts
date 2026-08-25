@@ -5,7 +5,8 @@ import type { DbTimestamp } from "../../db";
 
 export interface LocalSessionDeletionDependencies<A, E> {
   readonly activateCurrentSession: Effect.Effect<void, E>;
-  readonly authorizeDeletion: Effect.Effect<void, E>;
+  // oxlint-disable-next-line effecttsgo/lazy-effect -- Each destructive boundary must construct and execute a fresh current-authority recheck.
+  readonly authorizeDeletion: () => Effect.Effect<void, E>;
   readonly clearMessages: (sessionId: SessionId) => Effect.Effect<void, E>;
   readonly inspect: Effect.Effect<
     { readonly currentSessionId: SessionId; readonly routeId: ConversationRouteId },
@@ -40,8 +41,9 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
     });
     yield* dependencies.activateCurrentSession;
   }
-  yield* dependencies.authorizeDeletion;
+  yield* dependencies.authorizeDeletion();
   yield* dependencies.clearMessages(input.sessionId);
+  yield* dependencies.authorizeDeletion();
   return yield* dependencies.settle(input.sessionId);
 });
 

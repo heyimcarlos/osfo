@@ -346,10 +346,10 @@ it.effect("rechecks authority between Session ownership verification and deletio
   );
 });
 
-it.effect("retries the exact conversation snapshot during a provider outage", () => {
+it.effect("retains the exact conversation snapshot after an ambiguous provider outage", () => {
   const claim = conversationClaim();
   const observed: Array<MemoryProvider.SaveConversationInput> = [];
-  const { completed, retried, store } = testStore(claim);
+  const { ambiguous, completed, retried, store } = testStore(claim);
   const provider = providerStub({
     saveConversation: (input) => {
       observed.push(input);
@@ -381,7 +381,8 @@ it.effect("retries the exact conversation snapshot during a provider outage", ()
             userId: "user-1",
           },
         ]);
-        expect(retried).toEqual([claim.outboxId]);
+        expect(ambiguous).toEqual([claim.outboxId]);
+        expect(retried).toEqual([]);
         expect(completed).toEqual([]);
       }),
     ),
@@ -540,6 +541,34 @@ it.effect("does not ingest when the User container cannot be configured", () => 
   );
 });
 
+it.effect("retains an ambiguous provider submission until its claim lease expires", () => {
+  const claim = conversationClaim();
+  const { ambiguous, completed, failed, retried, store } = testStore(claim);
+  const provider = providerStub({
+    saveConversation: () =>
+      Effect.fail(
+        new MemoryProvider.MemoryProviderUnavailable({
+          message: "The provider response was lost",
+          operation: "saveConversation",
+        }),
+      ),
+  });
+
+  return Effect.scoped(reconcileMemoryProviderOutbox(store)).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(ambiguous).toEqual([claim.outboxId]);
+        expect(retried).toEqual([]);
+        expect(failed).toEqual([]);
+        expect(completed).toEqual([]);
+      }),
+    ),
+  );
+});
+
 it.effect("waits for an accepted provider conversation to leave processing", () => {
   const events: Array<string> = [];
   let processing = true;
@@ -547,7 +576,7 @@ it.effect("waits for an accepted provider conversation to leave processing", () 
   const store: MemoryProviderOutboxStore = {
     ...base,
     expediteProcessingConversationWork: () => Effect.sync(() => events.push("expedite")),
-    hasProcessingConversationWork: Effect.sync(() => processing),
+    hasUnsettledProviderConversationWork: Effect.sync(() => processing),
   };
 
   return quiesceProcessingConversations(
@@ -798,6 +827,7 @@ const testStore = (
   const retried: Array<MemoryProviderOutboxId> = [];
   const awaited: Array<MemoryProvider.ConversationProcessingStatus> = [];
   const deletionProgress: Array<MemoryProviderDeletionProgress> = [];
+  const ambiguous: Array<MemoryProviderOutboxId> = [];
   let available = true;
   const store = {
     awaitProvider: (
@@ -833,7 +863,7 @@ const testStore = (
         return true;
       }),
     expediteProcessingConversationWork: () => Effect.void,
-    hasProcessingConversationWork: Effect.succeed(false),
+    hasUnsettledProviderConversationWork: Effect.succeed(false),
     hasRetryableWork: Effect.succeed(false),
     inspectConfiguration: () => Effect.succeed(Option.none()),
     isClaimCurrent: () => Effect.succeed(true),
@@ -845,6 +875,11 @@ const testStore = (
         deletionProgress.push(progress);
         return true;
       }),
+    retainAmbiguousProviderSubmission: (work: ClaimedMemoryProviderWork) =>
+      Effect.sync(() => {
+        ambiguous.push(work.outboxId);
+        return true;
+      }),
     retry: (work: ClaimedMemoryProviderWork) =>
       Effect.sync(() => {
         retried.push(work.outboxId);
@@ -852,7 +887,7 @@ const testStore = (
       }),
     requireConfiguration: () => Effect.succeed(options.configurationCurrent ?? true),
   } satisfies MemoryProviderOutboxStore;
-  return { awaited, completed, deletionProgress, failed, retried, store };
+  return { ambiguous, awaited, completed, deletionProgress, failed, retried, store };
 };
 
 const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvider.Interface => ({
