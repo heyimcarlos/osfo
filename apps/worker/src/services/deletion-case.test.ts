@@ -72,6 +72,58 @@ it.effect(
   },
 );
 
+it.effect("leaves AuthSessions untouched when a retained self-service case is not exact", () => {
+  const events: Array<string> = [];
+  return Effect.gen(function* () {
+    const service = yield* DeletionCase.make;
+    const result = yield* service.requestSelf(
+      UserId.make("user-1"),
+      {
+        actionId: ActionId.make("new-action"),
+        presentation: ApprovalPresentation.make("new-presentation"),
+      },
+      {
+        authSessionId: AuthSessionId.make("session-1"),
+        plan: "free",
+        planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+      },
+    );
+
+    expect(result).toEqual({ _tag: "DeletionAuthorityChanged" });
+    expect(events).toEqual(["persist"]);
+  }).pipe(
+    Effect.provide(BrowserCrypto.layer),
+    Effect.provideService(
+      AuthSession.Service,
+      AuthSession.Service.of({
+        inspect: () => Effect.die(new Error("unexpected inspection")),
+        revoke: () => Effect.die(new Error("unexpected single revocation")),
+        revokeAllForUser: () =>
+          Effect.sync(() => {
+            events.push("revoke");
+          }),
+      }),
+    ),
+    Effect.provideService(
+      DeletionCase.Persistence,
+      DeletionCase.Persistence.of({
+        inspect: () => Effect.succeed({ _tag: "DeletionAccessRevoked" }),
+        markAccessFenced: () =>
+          Effect.sync(() => {
+            events.push("fence");
+            return { _tag: "Fenced" as const };
+          }),
+        request: () => Effect.die(new Error("unexpected administrative request")),
+        requestSelf: () =>
+          Effect.sync(() => {
+            events.push("persist");
+            return { _tag: "AuthorityChanged" as const };
+          }),
+      }),
+    ),
+  );
+});
+
 it.effect("retries the AuthSession fence for a retained administrative Deletion Case", () => {
   const userId = UserId.make("user-1");
   let retainedDeletionCaseId: DeletionCaseId | null = null;

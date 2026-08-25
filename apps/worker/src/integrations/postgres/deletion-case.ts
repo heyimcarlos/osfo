@@ -11,6 +11,7 @@ import { Effect, Layer } from "effect";
 import { Db } from "../../db";
 import { DeletionCaseId } from "../../domain/deletion-case";
 import { DeletionCase } from "../../services/deletion-case";
+import { exactDeletionAuthority } from "./deletion-case-authority";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transaction boundaries require async functions. */
 
@@ -70,22 +71,35 @@ export const make = Effect.gen(function* () {
         ) {
           return { _tag: "AuthorityChanged" } as const;
         }
+        const selfAuthority = {
+          _tag: "SelfService" as const,
+          approvalActionId: approval.actionId,
+          approvalPresentation: approval.presentation,
+          userId,
+        };
         const [existing] = await transaction
           .select({ deletionCaseId: deletionCases.deletion_case_id })
           .from(deletionCases)
           .where(eq(deletionCases.user_id, userId))
           .limit(1);
         if (existing !== undefined) {
-          await transaction.delete(sessions).where(eq(sessions.userId, userId));
-          await transaction
+          const exactCase = sql`${deletionCases.deletion_case_id} = ${existing.deletionCaseId}
+            and ${deletionCases.user_id} = ${userId}
+            and ${exactDeletionAuthority(selfAuthority)}`;
+          const retained = await transaction
+            .select({ deletionCaseId: deletionCases.deletion_case_id })
+            .from(deletionCases)
+            .where(exactCase)
+            .limit(1)
+            .for("update");
+          if (retained.length !== 1) return { _tag: "AuthorityChanged" } as const;
+          const fenced = await transaction
             .update(deletionCases)
             .set({ access_fenced_at: sql`clock_timestamp()` })
-            .where(
-              and(
-                eq(deletionCases.deletion_case_id, existing.deletionCaseId),
-                eq(deletionCases.user_id, userId),
-              ),
-            );
+            .where(exactCase)
+            .returning({ deletionCaseId: deletionCases.deletion_case_id });
+          if (fenced.length !== 1) return { _tag: "AuthorityChanged" } as const;
+          await transaction.delete(sessions).where(eq(sessions.userId, userId));
           return {
             _tag: "Existing",
             deletionCaseId: DeletionCaseId.make(existing.deletionCaseId),

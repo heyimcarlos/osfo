@@ -22,6 +22,7 @@ import { DeletionCaseId } from "../../domain/deletion-case";
 import { retainedCatalog } from "../../domain/plan-policy";
 import { AccountDeletion } from "../../services/account-deletion";
 import { ApprovalPresentation } from "../../services/authorization";
+import { exactDeletionAuthority } from "./deletion-case-authority";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transaction boundaries require async functions. */
 /* oxlint-disable eslint/no-underscore-dangle -- Durable candidate variants use the canonical _tag discriminator. */
@@ -345,24 +346,6 @@ export const inspectAuthorization = (
           : ({ _tag: "ActiveUser", userId } as const),
     };
   });
-
-const exactDeletionAuthority = (candidate: AccountDeletion.PendingAccountDeletion) =>
-  candidate._tag === "SelfService"
-    ? sql`${deletionCases.requested_by_user_id} = ${candidate.userId}
-        and ${deletionCases.requested_by_admin_id} is null
-        and ${deletionCases.approval_action_id} = ${candidate.approvalActionId}
-        and ${deletionCases.approval_presentation} = ${candidate.approvalPresentation}`
-    : sql`${deletionCases.requested_by_admin_id} = ${candidate.adminActorId}
-        and ${deletionCases.requested_by_user_id} is null
-        and ${deletionCases.reason} = ${candidate.reason}
-        and ${deletionCases.approval_action_id} is null
-        and ${deletionCases.approval_presentation} is null
-        and exists (
-          select 1
-          from ${administrativeAuthorities}
-          where ${administrativeAuthorities.admin_actor_id} = ${candidate.adminActorId}
-            and ${administrativeAuthorities.revoked_at} is null
-        )`;
 
 const attempt = <A>(operation: string, run: () => Promise<A>) =>
   Effect.tryPromise({

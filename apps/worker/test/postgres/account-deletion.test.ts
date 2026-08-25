@@ -136,6 +136,67 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
         ),
       ).toEqual([{ accessFencedAt: expect.any(Date) }]);
 
+      yield* Effect.promise(() =>
+        database.insert(sessions).values({
+          expiresAt: retrySessionExpiresAt,
+          id: "exact-retry-session",
+          token: "exact-retry-token",
+          updatedAt: retrySessionUpdatedAt,
+          userId,
+        }),
+      );
+      expect(
+        yield* deletionCasesPersistence.requestSelf(
+          userId,
+          DeletionCaseId.make("unused-retry-case"),
+          approval,
+          { ...authority, authSessionId: AuthSessionId.make("exact-retry-session") },
+        ),
+      ).toEqual({ _tag: "Existing", deletionCaseId: "self-delete-case-1" });
+      expect(
+        yield* Effect.promise(() =>
+          database.select().from(sessions).where(eq(sessions.userId, userId)),
+        ),
+      ).toEqual([]);
+
+      yield* Effect.promise(() =>
+        Promise.all([
+          database.insert(sessions).values({
+            expiresAt: retrySessionExpiresAt,
+            id: "stale-approval-session",
+            token: "stale-approval-token",
+            updatedAt: retrySessionUpdatedAt,
+            userId,
+          }),
+          database
+            .update(deletionCases)
+            .set({ access_fenced_at: null })
+            .where(eq(deletionCases.user_id, userId)),
+        ]),
+      );
+      expect(
+        yield* deletionCasesPersistence.requestSelf(
+          userId,
+          DeletionCaseId.make("stale-approval-case"),
+          { ...approval, actionId: ActionId.make("changed-action") },
+          { ...authority, authSessionId: AuthSessionId.make("stale-approval-session") },
+        ),
+      ).toEqual({ _tag: "AuthorityChanged" });
+      expect(
+        yield* Effect.promise(() =>
+          Promise.all([
+            database.select().from(sessions).where(eq(sessions.userId, userId)),
+            database
+              .select({ accessFencedAt: deletionCases.access_fenced_at })
+              .from(deletionCases)
+              .where(eq(deletionCases.user_id, userId)),
+          ]),
+        ),
+      ).toEqual([
+        [expect.objectContaining({ id: "stale-approval-session" })],
+        [{ accessFencedAt: null }],
+      ]);
+
       const accountDeletion = AccountDeletionPostgres.make(database);
       const [candidate] = yield* accountDeletion.pending;
       if (candidate === undefined || candidate._tag !== "SelfService") {
@@ -206,6 +267,7 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
       const userId = yield* registerUser(app, "+15550002523");
       const database = yield* Db.database;
       const authorities = yield* AccountAuthorities.make;
+      const deletionCasesPersistence = yield* DeletionCasePostgres.make;
       const command = {
         adminActorId: AdminActorId.make("admin-1"),
         reason: AdminReason.make("Required administrative erasure"),
@@ -249,15 +311,44 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
         userId,
       });
       yield* Effect.promise(() =>
-        database
-          .update(deletionCases)
-          .set({ access_fenced_at: null })
-          .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId)),
+        Promise.all([
+          database
+            .update(deletionCases)
+            .set({ access_fenced_at: null })
+            .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId)),
+          database.insert(sessions).values({
+            expiresAt: retrySessionExpiresAt,
+            id: "admin-case-self-session",
+            token: "admin-case-self-token",
+            updatedAt: retrySessionUpdatedAt,
+            userId,
+          }),
+        ]),
       );
+      expect(
+        yield* deletionCasesPersistence.requestSelf(
+          userId,
+          DeletionCaseId.make("self-case-over-admin-case"),
+          {
+            actionId: ActionId.make("self-action-over-admin-case"),
+            presentation: ApprovalPresentation.make("Delete Account"),
+          },
+          {
+            authSessionId: AuthSessionId.make("admin-case-self-session"),
+            plan: "free",
+            planPolicyVersion: PlanPolicyVersion.make("launch-v1"),
+          },
+        ),
+      ).toEqual({ _tag: "AuthorityChanged" });
       const wrongCaseFence = yield* accountDeletion
         .ensureAccessFence({ ...candidate, deletionCaseId: DeletionCaseId.make("wrong-case") })
         .pipe(Effect.result);
       expect(Result.isFailure(wrongCaseFence)).toBe(true);
+      expect(
+        yield* Effect.promise(() =>
+          database.select().from(sessions).where(eq(sessions.userId, userId)),
+        ),
+      ).toEqual([expect.objectContaining({ id: "admin-case-self-session" })]);
       expect(
         yield* Effect.promise(() =>
           database
@@ -438,3 +529,5 @@ const registerUser = (app: Awaited<ReturnType<typeof spawnApp>>, phoneNumber = "
 const suspendedBeforeCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:00:00.000Z"));
 const restoredBeforeCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:01:00.000Z"));
 const suspendedAfterCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:02:00.000Z"));
+const retrySessionExpiresAt = DateTime.toDateUtc(DateTime.makeUnsafe("2027-08-25T12:00:00.000Z"));
+const retrySessionUpdatedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:03:00.000Z"));
