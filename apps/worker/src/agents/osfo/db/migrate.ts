@@ -9,6 +9,7 @@ import transportReceiptRemovalMigrationSql from "./migrations/0005_tidy_james_ho
 import memoryProviderOutboxMigrationSql from "./migrations/0006_perpetual_skaar.sql";
 import structuredConversationIngestionMigrationSql from "./migrations/0007_red_fantastic_four.sql";
 import conversationProcessingBarrierMigrationSql from "./migrations/0008_little_adam_warlock.sql";
+import memoryProviderConfigurationMigrationSql from "./migrations/0009_absent_typhoid_mary.sql";
 import {
   AgentMigrationDefinitionMismatch,
   AgentMigrationDigestMismatch,
@@ -70,6 +71,11 @@ export const agentMigrations: ReadonlyArray<AgentMigration> = [
     digest: "sha256:11a8848f681535447f4d6d424a2d13f6f474c0f2f949b14fb89ab785ddd873f5",
     sql: conversationProcessingBarrierMigrationSql,
     version: 9,
+  },
+  {
+    digest: "sha256:d2db4bb6439c7099be0200c707b1accb481ebb4a5e542c18fc5692fc7824903e",
+    sql: memoryProviderConfigurationMigrationSql,
+    version: 10,
   },
 ];
 

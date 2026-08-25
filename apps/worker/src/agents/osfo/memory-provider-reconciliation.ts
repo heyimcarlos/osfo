@@ -1,9 +1,6 @@
 import { Crypto, DateTime, Effect, Option, Predicate, Result, Schema } from "effect";
 
-import { BillingDb } from "../../db/billing";
 import { Db } from "../../db";
-import { retainedCatalog } from "../../domain/plan-policy";
-import { Allowances } from "../../services/allowances";
 import { MemoryProvider } from "../../services/memory-provider";
 import type { RecheckResult } from "../../services/authorization";
 import type { DeletionAuthorization } from "./deletion-actions";
@@ -179,6 +176,26 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
       return yield* Effect.die(new Error("Conversation processing received deletion work"));
     }
 
+    const organizationConfigured = yield* ensureConfiguration(
+      store,
+      claim,
+      "organization",
+      MemoryProvider.organizationGuidanceVersion,
+      provider.configureOrganizationGuidance,
+      claim.providerAcceptance !== null,
+    );
+    if (!organizationConfigured) return undefined;
+
+    const userConfigured = yield* ensureConfiguration(
+      store,
+      claim,
+      "user",
+      MemoryProvider.userGuidanceVersion,
+      provider.configureUserGuidance({ userId: projection.userId }),
+      claim.providerAcceptance !== null,
+    );
+    if (!userConfigured) return undefined;
+
     let acceptance = claim.providerAcceptance;
     let usage = claim.usage;
     if (acceptance === null) {
@@ -251,40 +268,73 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
       if (!updated) return undefined;
     }
 
-    const allowancePeriodId = claim.allowancePeriodId;
-    if (usage === null || allowancePeriodId === null) {
-      return yield* store.fail(claim, "MemoryProvider usage attribution is invalid");
+    const searchable = yield* provider
+      .checkConversationSearchability({
+        expectedSource: conversationSearchSource(projection.conversation.messages),
+        userId: projection.userId,
+      })
+      .pipe(Effect.result);
+    if (Result.isFailure(searchable)) {
+      return yield* settleProviderFailure(store, claim, searchable.failure, true);
+    }
+    if (!searchable.success) {
+      return yield* awaitProvider(store, claim, "done");
     }
 
-    const recorded = yield* Effect.scoped(
-      Db.database.pipe(
-        Effect.flatMap((database) => {
-          const allowances = Allowances.make({
-            billing: BillingDb.make(database),
-            catalog: retainedCatalog,
-            now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-          });
-          return allowances.record(
-            allowancePeriodId,
-            { sourceId: claim.outboxId, sourceType: "MemoryProviderOutbox" },
-            usage.items,
-          );
-        }),
-      ),
-    ).pipe(Effect.result);
-    if (Result.isFailure(recorded)) {
-      return yield* retryClaim(
-        store,
-        claim,
-        "MemoryProvider usage recording is unavailable",
-        retryDelaySeconds,
-      );
+    if (usage === null || claim.allowancePeriodId === null) {
+      return yield* store.fail(claim, "MemoryProvider cost attribution is invalid");
     }
+    const summary = MemoryProvider.summarizeUsageEvidence(usage);
+    yield* Effect.logInfo("MemoryProvider conversation work completed").pipe(
+      Effect.annotateLogs({
+        allowancePeriodId: claim.allowancePeriodId,
+        companyCostContinuity: claim.attemptCount > 1,
+        outboxId: claim.outboxId,
+        providerDocumentId: acceptance.documentId,
+        providerStatus: "done",
+        ratedCostUsdMicros: String(summary.ratedCostUsdMicros),
+        resourcePriceVersions: summary.resourcePriceVersions.join(","),
+      }),
+    );
     const completedAt = yield* DateTime.now;
     yield* store.complete(claim, toDbTimestamp(completedAt));
     return undefined;
   },
 );
+
+const conversationSearchSource = (
+  messages: MemoryProvider.ConversationSnapshot["messages"],
+): string => {
+  const source =
+    messages.reduceRight<string | undefined>(
+      (query, message) => query ?? (message.role === "user" ? message.content : undefined),
+      undefined,
+    ) ?? messages[0].content;
+  return Array.from(source).slice(0, 256).join("");
+};
+
+const ensureConfiguration = Effect.fn("MemoryProviderOutbox.ensureConfiguration")(function* (
+  store: MemoryProviderOutboxStore,
+  claim: ClaimedMemoryProviderWork,
+  scope: "organization" | "user",
+  version: MemoryProvider.ConfigurationVersion,
+  configure: Effect.Effect<
+    void,
+    MemoryProvider.MemoryProviderRejected | MemoryProvider.MemoryProviderUnavailable
+  >,
+  accepted: boolean,
+) {
+  const requiredAt = yield* DateTime.now;
+  const current = yield* store.requireConfiguration(scope, version, toDbTimestamp(requiredAt));
+  if (current) return true;
+  const configured = yield* configure.pipe(Effect.result);
+  if (Result.isFailure(configured)) {
+    yield* settleProviderFailure(store, claim, configured.failure, accepted);
+    return false;
+  }
+  const configuredAt = yield* DateTime.now;
+  return yield* store.completeConfiguration(scope, version, toDbTimestamp(configuredAt));
+});
 
 const executeDeletionClaim = Effect.fn("MemoryProviderOutbox.executeDeletionClaim")(function* (
   claim: ClaimedMemoryProviderWork,

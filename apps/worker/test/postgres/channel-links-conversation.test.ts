@@ -18,19 +18,15 @@ it.effect("advances the unlinked conversation attempt after acceptance and revoc
       const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
         Effect.promise(client.dispose),
       );
-      const phoneNumber = "+15550002470";
-      yield* Effect.promise(() => app.auth.sendPhoneOtp(phoneNumber));
-      yield* Effect.promise(() => app.auth.verifyPhoneOtp(phoneNumber, "424242"));
-      const completed = yield* Effect.promise(() =>
-        app.registration.complete({
-          helpAreas: ["research"],
-          locale: "en",
-          preferredName: "Ada",
+      const identity = yield* Effect.promise(() =>
+        app.auth.mintVerifiedUser({
+          profile: {
+            helpAreas: ["research"],
+            locale: "en",
+            preferredName: "Ada",
+          },
         }),
       );
-      const identity = yield* completed.body === undefined
-        ? Effect.die(new Error("Registration did not return an identity"))
-        : Effect.succeed(completed.body);
 
       const address = ChannelLinks.ChannelAddress.make({
         authorId: ChannelLinks.ChannelAuthorId.make("company-attempt-author"),

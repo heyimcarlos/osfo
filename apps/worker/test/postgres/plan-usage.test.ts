@@ -168,15 +168,13 @@ const registerUser = (
   preferredName: string,
 ) =>
   Effect.gen(function* () {
-    yield* Effect.promise(() => app.auth.sendPhoneOtp(phoneNumber));
-    yield* Effect.promise(() => app.auth.verifyPhoneOtp(phoneNumber, "424242"));
-    const completed = yield* Effect.promise(() =>
-      app.registration.complete({ helpAreas: [], locale: "en", preferredName }),
+    const identity = yield* Effect.promise(() =>
+      app.auth.mintVerifiedUser({
+        phoneNumber,
+        profile: { helpAreas: [], locale: "en", preferredName },
+      }),
     );
-    if (completed.body === undefined) {
-      return yield* Effect.die(new Error("Registration did not return an identity"));
-    }
-    return UserId.make(completed.body.userId);
+    return UserId.make(identity.userId);
   });
 
 const activateSharedUsage = (database: Db.Database, userId: UserId, plan: "free" | "adventurer") =>

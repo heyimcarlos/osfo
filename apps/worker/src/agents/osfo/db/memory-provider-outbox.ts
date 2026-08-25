@@ -1,17 +1,17 @@
-import { and, asc, eq, max, ne } from "drizzle-orm";
-import { Effect, Option, Schema } from "effect";
+import { and, asc, desc, eq, max, ne } from "drizzle-orm";
+import { Array, Effect, Option, Schema } from "effect";
 
-import { SessionId, UserId } from "../../../domain";
+import { ResourcePriceVersion, SessionId, UserId } from "../../../domain";
 import type { AllowancePeriodId, AssistantMessageId } from "../../../domain";
 import type { DbTimestamp } from "../../../db";
-import { AllowanceKind, ConsumptionBasis } from "../../../domain/allowance";
+import { UsageActivity } from "../../../domain/usage";
 import { MemoryProvider } from "../../../services/memory-provider";
 import { CoreMemoryReplacement, DeletionAuthorization } from "../deletion-actions";
 import { ConversationSnapshotProjection } from "../memory-provider-projection";
 import type { ConversationSnapshotProjection as ConversationSnapshotProjectionType } from "../memory-provider-projection";
 import type { AgentDb } from "./client";
 import { AgentStoreRecordInvalid, AgentStoreUnavailable } from "./errors";
-import { memoryProviderOutbox } from "./schema";
+import { memoryProviderConfiguration, memoryProviderOutbox } from "./schema";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Effect tagged payloads use the canonical _tag discriminator. */
 
@@ -63,15 +63,31 @@ export interface EnqueueMemoryProviderDeletion {
 }
 
 const StoredUsageEvidence = Schema.Struct({
-  items: Schema.Array(
+  completedNonModelCost: Schema.NonEmptyArray(
     Schema.Struct({
-      allowanceKind: AllowanceKind,
-      basis: ConsumptionBasis,
-      quantity: Schema.BigIntFromString,
+      activity: UsageActivity,
+      ratedCostUsdMicros: Schema.BigIntFromString,
+      resourcePriceVersion: ResourcePriceVersion,
     }),
   ),
-  rateCardVersion: NonEmptyString,
 });
+
+export const MemoryProviderConfigurationScope = Schema.Literals(["organization", "user"]);
+export type MemoryProviderConfigurationScope = typeof MemoryProviderConfigurationScope.Type;
+
+export interface MemoryProviderConfigurationStatus {
+  readonly configuredAt: DbTimestamp | null;
+  readonly scope: MemoryProviderConfigurationScope;
+  readonly status: "configured" | "pending";
+  readonly version: MemoryProvider.ConfigurationVersion;
+}
+
+/** Newest committed turn evidence retained until its provider document is searchable. */
+export interface RecentTurnBridgeEvidence {
+  readonly messages: ReadonlyArray<MemoryProvider.ConversationMessage>;
+  readonly recordedAt: DbTimestamp;
+  readonly sourceId: MemoryProviderOutboxId;
+}
 
 const StoredProviderStatus = Schema.Union([
   MemoryProvider.ConversationProcessingStatus,
@@ -203,6 +219,141 @@ export const inspectConversationSnapshotTransaction = (
 
 /** Construct the durable claim and settlement operations for provider reconciliation. */
 export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
+  const readRecentTurnBridge = Effect.fn("MemoryProviderOutbox.readRecentTurnBridge")(function* (
+    userId: UserId,
+  ) {
+    const rows = yield* execute("inspectMemoryProviderOutbox", () =>
+      db
+        .select({
+          enqueuedAt: memoryProviderOutbox.enqueued_at,
+          outboxId: memoryProviderOutbox.outbox_id,
+          payloadJson: memoryProviderOutbox.payload_json,
+          sequence: memoryProviderOutbox.sequence,
+        })
+        .from(memoryProviderOutbox)
+        .where(
+          and(
+            eq(memoryProviderOutbox.operation_type, "saveConversation"),
+            ne(memoryProviderOutbox.status, "completed"),
+          ),
+        )
+        .orderBy(desc(memoryProviderOutbox.sequence))
+        .limit(20)
+        .all(),
+    );
+    const decoded = yield* Effect.forEach(rows, (row) =>
+      Schema.decodeEffect(Schema.fromJsonString(SaveConversationPayload))(row.payloadJson).pipe(
+        Effect.mapError(() => invalidRecord("inspectMemoryProviderOutbox")),
+        Effect.map((payload) => ({ payload, row })),
+      ),
+    );
+    const seenMessages = new Set<string>();
+    const newest = decoded.flatMap(({ payload, row }) => {
+      const projection = payload.projection;
+      if (projection.userId !== userId) return [];
+      const messages = projection.conversation.messages
+        .slice(projection.conversation.usageStartIndex)
+        .filter((message) => {
+          const fingerprint = `${message.role}\u0000${message.content}`;
+          if (seenMessages.has(fingerprint)) return false;
+          seenMessages.add(fingerprint);
+          return true;
+        });
+      if (messages.length === 0) return [];
+      return [
+        {
+          messages,
+          recordedAt: row.enqueuedAt,
+          sourceId: MemoryProviderOutboxId.make(row.outboxId),
+        } satisfies RecentTurnBridgeEvidence,
+      ];
+    });
+    return Array.reverse(newest);
+  });
+
+  const requireConfiguration = Effect.fn("MemoryProviderOutbox.requireConfiguration")(
+    (
+      scope: MemoryProviderConfigurationScope,
+      version: MemoryProvider.ConfigurationVersion,
+      updatedAt: DbTimestamp,
+    ) =>
+      execute("inspectMemoryProviderOutbox", () =>
+        db.transaction((transaction) => {
+          const current = transaction
+            .select({
+              status: memoryProviderConfiguration.status,
+              version: memoryProviderConfiguration.version,
+            })
+            .from(memoryProviderConfiguration)
+            .where(eq(memoryProviderConfiguration.scope, scope))
+            .limit(1)
+            .get();
+          if (current?.status === "configured" && current.version === version) return true;
+          transaction
+            .insert(memoryProviderConfiguration)
+            .values({
+              configured_at: null,
+              scope,
+              status: "pending",
+              updated_at: updatedAt,
+              version,
+            })
+            .onConflictDoUpdate({
+              set: {
+                configured_at: null,
+                status: "pending",
+                updated_at: updatedAt,
+                version,
+              },
+              target: memoryProviderConfiguration.scope,
+            })
+            .run();
+          return false;
+        }),
+      ),
+  );
+
+  const completeConfiguration = Effect.fn("MemoryProviderOutbox.completeConfiguration")(
+    (
+      scope: MemoryProviderConfigurationScope,
+      version: MemoryProvider.ConfigurationVersion,
+      configuredAt: DbTimestamp,
+    ) =>
+      execute("completeMemoryProviderOutbox", () => {
+        const current = db
+          .select({ version: memoryProviderConfiguration.version })
+          .from(memoryProviderConfiguration)
+          .where(eq(memoryProviderConfiguration.scope, scope))
+          .limit(1)
+          .get();
+        if (current?.version !== version) return false;
+        db.update(memoryProviderConfiguration)
+          .set({ configured_at: configuredAt, status: "configured", updated_at: configuredAt })
+          .where(eq(memoryProviderConfiguration.scope, scope))
+          .run();
+        return true;
+      }),
+  );
+
+  const inspectConfiguration = Effect.fn("MemoryProviderOutbox.inspectConfiguration")(
+    (scope: MemoryProviderConfigurationScope) =>
+      execute("inspectMemoryProviderOutbox", () => {
+        const row = db
+          .select()
+          .from(memoryProviderConfiguration)
+          .where(eq(memoryProviderConfiguration.scope, scope))
+          .limit(1)
+          .get();
+        if (row === undefined) return Option.none<MemoryProviderConfigurationStatus>();
+        return Option.some({
+          configuredAt: row.configured_at,
+          scope: row.scope,
+          status: row.status,
+          version: MemoryProvider.ConfigurationVersion.make(row.version),
+        } satisfies MemoryProviderConfigurationStatus);
+      }),
+  );
+
   const enqueueDeletion = Effect.fn("MemoryProviderOutbox.enqueueDeletion")(function* (
     input: EnqueueMemoryProviderDeletion,
   ) {
@@ -437,6 +588,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
 
   return {
     claimNext,
+    completeConfiguration,
     complete,
     enqueueDeletion,
     fail,
@@ -444,9 +596,12 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
     expediteProcessingConversationWork,
     hasProcessingConversationWork,
     hasRetryableWork,
+    inspectConfiguration,
     awaitProvider,
     markProviderAccepted,
     markProviderStatus,
+    readRecentTurnBridge,
+    requireConfiguration,
     retry,
   };
 };
@@ -592,7 +747,8 @@ const decodeUsage = (json: string) =>
 const invalidRecord = (
   operation:
     | "claimMemoryProviderOutbox"
-    | "enqueueMemoryProviderOutbox" = "claimMemoryProviderOutbox",
+    | "enqueueMemoryProviderOutbox"
+    | "inspectMemoryProviderOutbox" = "claimMemoryProviderOutbox",
 ) =>
   new AgentStoreRecordInvalid({
     message: "Agent SQLite returned an invalid MemoryProvider outbox record",

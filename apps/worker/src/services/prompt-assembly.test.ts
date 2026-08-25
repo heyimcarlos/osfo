@@ -7,11 +7,13 @@ import { TestClock } from "effect/testing";
 import { estimateStringTokens } from "agents/experimental/memory/utils";
 import type { ModelMessage } from "ai";
 
-import { ThinkSubmissionId, UserId } from "../domain";
+import { ResourcePriceVersion, ThinkSubmissionId, UserId } from "../domain";
 import { MemoryProvider } from "./memory-provider";
 import { PromptAssembly } from "./prompt-assembly";
 
 const userId = UserId.make("user-209");
+const evidenceTimestamp = (day: number) =>
+  MemoryProvider.EvidenceUpdatedAt.make(`2026-08-${String(day).padStart(2, "0")}T12:00:00.000Z`);
 
 it.effect("orders bounded provider evidence after Native Memory policy", () => {
   const recalledQueries: Array<string> = [];
@@ -24,6 +26,13 @@ it.effect("orders bounded provider evidence after Native Memory policy", () => {
         "## Agent Notes",
         "Shipping Ticket 209",
       ].join("\n"),
+      recentTurns: [
+        {
+          messages: [{ content: "Approval is no longer required", role: "user" }],
+          recordedAt: "2026-08-24T10:00:00.000Z",
+          sourceId: "conversation-2",
+        },
+      ],
       query: "What should I remember about the deploy?",
       userId,
     });
@@ -36,17 +45,19 @@ it.effect("orders bounded provider evidence after Native Memory policy", () => {
     expect(result.instructions).toContain(
       "current User correction > current direct User statement > User Context > provider recall > weak behavioral inference",
     );
-    expect(result.providerContext.indexOf("## Provider profile")).toBeLessThan(
-      result.providerContext.indexOf("## Query-relevant provider recall"),
+    expect(result.providerContext.indexOf("## Derived provider memory evidence")).toBeLessThan(
+      result.providerContext.indexOf("## Recent unindexed conversation source evidence"),
     );
     expect(result.providerContext).toContain('"Prefers small releases"');
-    expect(result.providerContext).toContain('"Production deploys require approval"');
-    expect(result.providerContext).toContain('"id":"memory-1"');
-    expect(result.usage.items).toEqual([
+    expect(result.providerContext).toContain("Production deploys require approval");
+    expect(result.providerContext).toContain("id=memory-1");
+    expect(result.providerContext).toContain("Approval is no longer required");
+    expect(result.providerContext).toContain("Indexed conversation source evidence");
+    expect(result.usage.completedNonModelCost).toEqual([
       {
-        allowanceKind: "supermemoryRetrievals",
-        basis: "known_at_start",
-        quantity: 1n,
+        activity: "conversationsAndMemory",
+        ratedCostUsdMicros: 10n,
+        resourcePriceVersion: "resource-prices-2026-08-22",
       },
     ]);
   }).pipe(
@@ -63,18 +74,18 @@ it.effect("orders bounded provider evidence after Native Memory policy", () => {
               content: "Production deploys require approval",
               id: MemoryProvider.KnowledgeMemoryId.make("memory-1"),
               similarity: 0.91,
+              updatedAt: MemoryProvider.EvidenceUpdatedAt.make("2026-08-22T12:00:00.000Z"),
             },
           ],
-          usage: {
-            items: [
-              {
-                allowanceKind: "supermemoryRetrievals",
-                basis: "known_at_start",
-                quantity: 1n,
-              },
-            ],
-            rateCardVersion: "test-rate-card",
-          },
+          sourceChunks: [
+            {
+              content: "user: Approval is no longer required",
+              id: MemoryProvider.SourceChunkId.make("chunk-1"),
+              similarity: 0.95,
+              updatedAt: MemoryProvider.EvidenceUpdatedAt.make("2026-08-23T12:00:00.000Z"),
+            },
+          ],
+          usage: testUsage,
         });
       }),
     ),
@@ -97,12 +108,13 @@ it.effect("bounds provider profile and recall independently", () =>
       if (result._tag !== "ProviderRecallAvailable") return result;
       const profile = between(
         result.providerContext,
-        "## Provider profile\n\n",
-        "\n\n## Query-relevant provider recall",
+        "## Provider profile evidence\n\n",
+        "\n\n## Derived provider memory evidence",
       );
-      const recall = result.providerContext.slice(
-        result.providerContext.indexOf("## Query-relevant provider recall\n\n") +
-          "## Query-relevant provider recall\n\n".length,
+      const recall = between(
+        result.providerContext,
+        "## Derived provider memory evidence\n\n",
+        "\n\n## Indexed conversation source evidence",
       );
 
       expect(estimateStringTokens(profile)).toBeLessThanOrEqual(30);
@@ -130,8 +142,10 @@ it.effect("bounds provider profile and recall independently", () =>
             content: `${"recalled ".repeat(100)}recall-tail`,
             id: MemoryProvider.KnowledgeMemoryId.make("memory-large"),
             similarity: 0.9,
+            updatedAt: MemoryProvider.EvidenceUpdatedAt.make("2026-08-22T12:00:00.000Z"),
           },
         ],
+        sourceChunks: [],
       }),
     ),
   ),
@@ -187,6 +201,113 @@ it.effect("fails open when provider recall exceeds its strict deadline", () =>
     expect(result.instructions).toContain("The external Knowledge Base is unavailable");
   }).pipe(Effect.provide(memoryLayerWithRecall(() => Effect.never))),
 );
+
+it.effect("uses the bounded profile-and-query path without source retrieval when exhausted", () => {
+  const recalledModes: Array<MemoryProvider.RecallMode> = [];
+  return PromptAssembly.assemble({
+    agentInstructions: "Agent instructions",
+    mode: "exhausted",
+    recentTurns: [
+      {
+        messages: [{ content: "Local bridge must not be used", role: "user" }],
+        recordedAt: "2026-08-24T10:00:00.000Z",
+        sourceId: "conversation-2",
+      },
+    ],
+    query: "deployment",
+    userId,
+  }).pipe(
+    Effect.map((result) => {
+      expect(recalledModes).toEqual(["exhausted"]);
+      expect(result.providerContext).not.toContain("Local bridge must not be used");
+      expect(result.providerContext).not.toContain("Indexed conversation source evidence");
+    }),
+    Effect.provide(
+      memoryLayerWithRecall((input) => {
+        recalledModes.push(input.mode);
+        return Effect.succeed({
+          profile: { dynamic: [], static: ["Profile fact"] },
+          relevantMemories: [],
+          sourceChunks: [],
+          usage: testUsage,
+        });
+      }),
+    ),
+  );
+});
+
+it.effect("keeps the newest provider and bridge evidence when item bounds are reached", () => {
+  const oldMemories = Array.from({ length: 20 }, (_, index) => ({
+    content: `old-memory-${index}`,
+    id: MemoryProvider.KnowledgeMemoryId.make(`memory-${index}`),
+    similarity: 0.5,
+    updatedAt: evidenceTimestamp(index + 1),
+  }));
+  const oldSources = Array.from({ length: 20 }, (_, index) => ({
+    content: `old-source-${index}`,
+    id: MemoryProvider.SourceChunkId.make(`source-${index}`),
+    similarity: 0.5,
+    updatedAt: evidenceTimestamp(index + 1),
+  }));
+  const oldBridge = Array.from({ length: 20 }, (_, index) => ({
+    messages: [{ content: `old-bridge-${index}`, role: "user" as const }],
+    recordedAt: evidenceTimestamp(index + 1),
+    sourceId: `bridge-${index}`,
+  }));
+
+  return PromptAssembly.assemble({
+    agentInstructions: "Agent instructions",
+    limits: {
+      providerBridgeMaxTokens: 5_000,
+      providerProfileMaxTokens: 100,
+      providerRecallMaxTokens: 5_000,
+      providerSourceMaxTokens: 5_000,
+      recallDeadlineMillis: 1_000,
+    },
+    query: "current facts",
+    recentTurns: [
+      ...oldBridge,
+      {
+        messages: [{ content: "newest-bridge", role: "user" }],
+        recordedAt: evidenceTimestamp(21),
+        sourceId: "bridge-newest",
+      },
+    ],
+    userId,
+  }).pipe(
+    Effect.map((result) => {
+      expect(result.providerContext).toContain("newest-memory");
+      expect(result.providerContext).toContain("newest-source");
+      expect(result.providerContext).toContain("newest-bridge");
+      expect(result.providerContext).not.toContain("old-memory-0");
+      expect(result.providerContext).not.toContain("old-source-0");
+      expect(result.providerContext).not.toContain("old-bridge-0");
+    }),
+    Effect.provide(
+      memoryLayer({
+        profile: { dynamic: [], static: [] },
+        relevantMemories: [
+          ...oldMemories,
+          {
+            content: "newest-memory",
+            id: MemoryProvider.KnowledgeMemoryId.make("memory-newest"),
+            similarity: 1,
+            updatedAt: evidenceTimestamp(21),
+          },
+        ],
+        sourceChunks: [
+          ...oldSources,
+          {
+            content: "newest-source",
+            id: MemoryProvider.SourceChunkId.make("source-newest"),
+            similarity: 1,
+            updatedAt: evidenceTimestamp(21),
+          },
+        ],
+      }),
+    ),
+  );
+});
 
 it.effect("retains provider evidence when a tool result extends the Think turn", () => {
   let recalls = 0;
@@ -315,7 +436,8 @@ it.effect("hands retained evidence to continuations and recalls after Agent evic
         return Effect.succeed({
           profile: { dynamic: [], static: ["retained fact"] },
           relevantMemories: [],
-          usage: { items: [], rateCardVersion: "test-rate-card" },
+          sourceChunks: [],
+          usage: testUsage,
         });
       }),
     ),
@@ -362,9 +484,11 @@ it.effect("places provider evidence after rolling context and before current Use
               content: "Provider recall fact",
               id: MemoryProvider.KnowledgeMemoryId.make("memory-order"),
               similarity: 0.8,
+              updatedAt: MemoryProvider.EvidenceUpdatedAt.make("2026-08-22T12:00:00.000Z"),
             },
           ],
-          usage: { items: [], rateCardVersion: "test-rate-card" },
+          sourceChunks: [],
+          usage: testUsage,
         });
       }),
     ),
@@ -376,11 +500,13 @@ const between = (value: string, start: string, end: string): string => {
   return value.slice(startIndex, value.indexOf(end, startIndex));
 };
 
-const memoryLayer = (result: Pick<MemoryProvider.RecallResult, "profile" | "relevantMemories">) =>
+const memoryLayer = (
+  result: Pick<MemoryProvider.RecallResult, "profile" | "relevantMemories" | "sourceChunks">,
+) =>
   memoryLayerWithRecall(() =>
     Effect.succeed({
       ...result,
-      usage: { items: [], rateCardVersion: "test-rate-card" },
+      usage: testUsage,
     }),
   );
 
@@ -388,6 +514,10 @@ const memoryLayerWithRecall = (recall: MemoryProvider.Interface["recall"]) =>
   Layer.succeed(
     MemoryProvider.Service,
     MemoryProvider.Service.of({
+      checkConversationSearchability: () =>
+        Effect.die(new Error("unexpected conversation searchability check")),
+      configureOrganizationGuidance: Effect.die(new Error("unexpected organization configuration")),
+      configureUserGuidance: () => Effect.die(new Error("unexpected User configuration")),
       deleteSessionConversation: () => Effect.die(new Error("unexpected Session delete")),
       deleteUserKnowledge: () => Effect.die(new Error("unexpected User delete")),
       forgetKnowledge: () => Effect.die(new Error("unexpected forget")),
@@ -400,3 +530,13 @@ const memoryLayerWithRecall = (recall: MemoryProvider.Interface["recall"]) =>
 const memoryFailureLayer = (
   failure: MemoryProvider.MemoryProviderRejected | MemoryProvider.MemoryProviderUnavailable,
 ) => memoryLayerWithRecall(() => Effect.fail(failure));
+
+const testUsage: MemoryProvider.UsageEvidence = {
+  completedNonModelCost: [
+    {
+      activity: "conversationsAndMemory",
+      ratedCostUsdMicros: 10n,
+      resourcePriceVersion: ResourcePriceVersion.make("resource-prices-2026-08-22"),
+    },
+  ],
+};

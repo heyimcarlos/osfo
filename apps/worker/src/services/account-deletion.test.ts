@@ -95,6 +95,12 @@ const providerLayer = (result: "deleted" | "unavailable", calls: Array<string>) 
   Layer.succeed(
     MemoryProvider.Service,
     MemoryProvider.Service.of({
+      checkConversationSearchability: () =>
+        Effect.die(new Error("unexpected conversation searchability check")),
+      configureOrganizationGuidance: Effect.die(
+        new Error("unexpected organization guidance configuration"),
+      ),
+      configureUserGuidance: () => Effect.die(new Error("unexpected User guidance configuration")),
       deleteSessionConversation: () => Effect.die(new Error("unexpected Session deletion")),
       deleteUserKnowledge: () => {
         calls.push("provider");

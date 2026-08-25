@@ -1,7 +1,7 @@
-import { Context, type Effect, Schema } from "effect";
+import { Array, Context, DateTime, type Effect, Option, Order, Schema } from "effect";
 
 import type { SessionId, UserId } from "../domain";
-import { AllowanceItem } from "../domain/allowance";
+import { CompletedNonModelCost } from "../domain/usage";
 
 /** Opaque provider-assigned identity for one recalled Knowledge Base memory. */
 export const KnowledgeMemoryId = Schema.String.check(Schema.isMinLength(1)).pipe(
@@ -10,6 +10,26 @@ export const KnowledgeMemoryId = Schema.String.check(Schema.isMinLength(1)).pipe
 
 /** Opaque provider-assigned identity for one recalled Knowledge Base memory. */
 export type KnowledgeMemoryId = typeof KnowledgeMemoryId.Type;
+
+/** Opaque provider-assigned identity for one indexed source chunk. */
+export const SourceChunkId = Schema.String.check(Schema.isMinLength(1)).pipe(
+  Schema.brand("SourceChunkId"),
+);
+
+/** Opaque provider-assigned identity for one indexed source chunk. */
+export type SourceChunkId = typeof SourceChunkId.Type;
+
+/** Provider evidence time validated as a UTC ISO 8601 timestamp before ordering. */
+export const EvidenceUpdatedAt = Schema.String.check(
+  Schema.makeFilter(
+    (value) =>
+      (value.endsWith("Z") && Option.isSome(DateTime.make(value))) ||
+      "must be a valid UTC ISO 8601 timestamp",
+  ),
+).pipe(Schema.brand("MemoryProviderEvidenceUpdatedAt"));
+
+/** Provider evidence time validated as a UTC ISO 8601 timestamp before ordering. */
+export type EvidenceUpdatedAt = typeof EvidenceUpdatedAt.Type;
 
 /** Opaque provider-assigned identity for one accepted conversation document. */
 export const ProviderDocumentId = Schema.String.check(Schema.isMinLength(1)).pipe(
@@ -56,17 +76,37 @@ export const ConversationSnapshot = Schema.Struct({
 /** Full conversation plus the first message included in conservative usage for this turn. */
 export type ConversationSnapshot = typeof ConversationSnapshot.Type;
 
-/** Normalized allowance evidence returned without provider billing objects. */
+/** Generic normalized non-model cost returned without provider billing objects. */
 export const UsageEvidence = Schema.Struct({
-  items: Schema.Array(AllowanceItem),
-  rateCardVersion: Schema.String.check(Schema.isMinLength(1)),
+  completedNonModelCost: Schema.NonEmptyArray(CompletedNonModelCost),
 });
 
-/** Normalized allowance evidence returned without provider billing objects. */
+/** Generic normalized non-model cost returned without provider billing objects. */
 export type UsageEvidence = typeof UsageEvidence.Type;
+
+/** Versioned extraction guidance retained by the Agent-local repair workflow. */
+export const ConfigurationVersion = Schema.String.check(Schema.isMinLength(1)).pipe(
+  Schema.brand("MemoryProviderConfigurationVersion"),
+);
+
+/** Versioned extraction guidance retained by the Agent-local repair workflow. */
+export type ConfigurationVersion = typeof ConfigurationVersion.Type;
+
+/** Current organization-wide extraction guidance version. */
+export const organizationGuidanceVersion = ConfigurationVersion.make("osfo-filter-prompt-v1");
+
+/** Current per-User extraction guidance version. */
+export const userGuidanceVersion = ConfigurationVersion.make("osfo-entity-context-v1");
+
+/** Provider recall allowed by the current Plan Usage execution mode. */
+export const RecallMode = Schema.Literals(["normal", "exhausted"]);
+
+/** Provider recall allowed by the current Plan Usage execution mode. */
+export type RecallMode = typeof RecallMode.Type;
 
 /** User-scoped Knowledge Base recall request. */
 export interface RecallInput {
+  readonly mode: RecallMode;
   readonly query: string;
   readonly userId: UserId;
 }
@@ -76,6 +116,15 @@ export interface RelevantMemory {
   readonly content: string;
   readonly id: KnowledgeMemoryId;
   readonly similarity: number;
+  readonly updatedAt: EvidenceUpdatedAt;
+}
+
+/** One query-relevant indexed source chunk from a Session conversation. */
+export interface RelevantSourceChunk {
+  readonly content: string;
+  readonly id: SourceChunkId;
+  readonly similarity: number;
+  readonly updatedAt: EvidenceUpdatedAt;
 }
 
 /** Current provider profile and query-relevant Knowledge Base evidence. */
@@ -85,7 +134,25 @@ export interface RecallResult {
     readonly static: ReadonlyArray<string>;
   };
   readonly relevantMemories: ReadonlyArray<RelevantMemory>;
+  readonly sourceChunks: ReadonlyArray<RelevantSourceChunk>;
   readonly usage: UsageEvidence;
+}
+
+/** Stable safe aggregate used by provider cost observability paths. */
+export const summarizeUsageEvidence = (usage: UsageEvidence) => ({
+  ratedCostUsdMicros: usage.completedNonModelCost.reduce(
+    (total, cost) => total + cost.ratedCostUsdMicros,
+    0n,
+  ),
+  resourcePriceVersions: Array.sort(
+    new Set(usage.completedNonModelCost.map(({ resourcePriceVersion }) => resourcePriceVersion)),
+    Order.String,
+  ),
+});
+
+/** One User container whose extraction guidance must exist before first ingest. */
+export interface ConfigureUserGuidanceInput {
+  readonly userId: UserId;
 }
 
 /** One ordered conversation snapshot ending at a committed Session turn. */
@@ -112,9 +179,15 @@ export interface GetConversationStatusResult {
   readonly processingStatus: ConversationProcessingStatus;
 }
 
+/** A processed conversation whose indexed source must be visible before its bridge is released. */
+export interface CheckConversationSearchabilityInput {
+  readonly expectedSource: string;
+  readonly userId: UserId;
+}
+
 /** Exact approved derived memories to forget within one User scope. */
 export interface ForgetKnowledgeInput {
-  readonly memoryIds: readonly [KnowledgeMemoryId, ...Array<KnowledgeMemoryId>];
+  readonly memoryIds: readonly [KnowledgeMemoryId, ...ReadonlyArray<KnowledgeMemoryId>];
   readonly userId: UserId;
 }
 
@@ -134,9 +207,12 @@ export type DeletionResult = { readonly _tag: "AlreadyAbsent" } | { readonly _ta
 
 /** MemoryProvider operations used in safe failures and telemetry. */
 export const MemoryProviderOperation = Schema.Literals([
+  "configureOrganizationGuidance",
+  "configureUserGuidance",
   "recall",
   "saveConversation",
   "getConversationStatus",
+  "checkConversationSearchability",
   "forgetKnowledge",
   "deleteSessionConversation",
   "deleteUserKnowledge",
@@ -190,12 +266,22 @@ export class MemoryProviderAcceptanceStatusInvalid extends Schema.TaggedError<Me
 
 /** Application-owned Knowledge Base operations independent of provider SDK types. */
 export interface Interface {
+  readonly configureOrganizationGuidance: Effect.Effect<
+    void,
+    MemoryProviderRejected | MemoryProviderUnavailable
+  >;
+  readonly configureUserGuidance: (
+    input: ConfigureUserGuidanceInput,
+  ) => Effect.Effect<void, MemoryProviderRejected | MemoryProviderUnavailable>;
   readonly getConversationStatus: (
     input: GetConversationStatusInput,
   ) => Effect.Effect<
     GetConversationStatusResult,
     MemoryProviderRejected | MemoryProviderUnavailable
   >;
+  readonly checkConversationSearchability: (
+    input: CheckConversationSearchabilityInput,
+  ) => Effect.Effect<boolean, MemoryProviderRejected | MemoryProviderUnavailable>;
   readonly saveConversation: (
     input: SaveConversationInput,
   ) => Effect.Effect<

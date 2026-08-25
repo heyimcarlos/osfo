@@ -2,6 +2,45 @@ import { Result, Schema } from "effect";
 
 import { CapabilityCatalogVersion } from "../domain";
 
+const capabilityIdValues = [
+  "conversation",
+  "core-memory",
+  "memory-clear",
+  "session-recall",
+  "file-read",
+  "file-analysis",
+  "document-generation",
+  "document-read",
+  "document-delete",
+  "web-search",
+  "page-read",
+  "research-report",
+  "presentation-generation",
+  "image-generation",
+  "diagram-generation",
+  "skill-management",
+  "reminders",
+  "workflows",
+  "gmail",
+  "google-calendar",
+  "google-drive",
+  "usage-management",
+] as const;
+
+/** Closed self-serve capability identity retained in catalogs and managed turns. */
+export const CapabilityId = Schema.Literals(capabilityIdValues);
+
+/** Closed self-serve capability identity retained in catalogs and managed turns. */
+export type CapabilityId = typeof CapabilityId.Type;
+
+/** Closed self-serve capability identities in deterministic catalog order. */
+export const closedCapabilityIds: ReadonlyArray<CapabilityId> = capabilityIdValues;
+
+/** Stable identity shared by every retained governed-capabilities-v1 snapshot. */
+export const governedCapabilitiesV1Version = CapabilityCatalogVersion.make(
+  "governed-capabilities-v1",
+);
+
 const positiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const nonNegativeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const positiveBytes = Schema.BigInt.check(Schema.isGreaterThanBigInt(0n));
@@ -351,13 +390,13 @@ const governedCapabilitiesV1 = {
     skillVersionBytes: 16_384n,
     skillsChangedPerJob: 1,
   },
-  version: "governed-capabilities-v1",
+  version: governedCapabilitiesV1Version,
 };
 
 /** Source-controlled immutable Capability Catalog history. */
 export const retainedCapabilityCatalogs = Schema.decodeUnknownSync(CapabilityCatalogCollection)({
   catalogs: [governedCapabilitiesV1],
-  currentVersion: "governed-capabilities-v1",
+  currentVersion: governedCapabilitiesV1Version,
 });
 
 /** Current Capability Catalog selected only at operation admission. */

@@ -9,7 +9,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { expect, it } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 
-import { SessionId, UserId } from "../../domain";
+import { ResourcePriceVersion, SessionId, UserId } from "../../domain";
 import { MemoryProvider } from "../../services/memory-provider";
 import { PromptAssembly } from "../../services/prompt-assembly";
 import { SupermemoryMemoryProvider } from "./memory-provider";
@@ -17,13 +17,18 @@ import { SupermemoryMemoryProvider } from "./memory-provider";
 it.effect("recalls User-scoped profile and relevant Knowledge Base evidence", () =>
   withProvider(({ requests, origin, respondWith }) =>
     Effect.gen(function* () {
-      respondWith({
-        body: {
-          profile: {
-            dynamic: ["Deploying the first service"],
-            static: ["Prefers small releases"],
+      respondWith(
+        {
+          body: {
+            profile: {
+              dynamic: ["Deploying the first service"],
+              static: ["Prefers small releases"],
+            },
           },
-          searchResults: {
+          status: 200,
+        },
+        {
+          body: {
             results: [
               {
                 id: "memory-1",
@@ -33,15 +38,23 @@ it.effect("recalls User-scoped profile and relevant Knowledge Base evidence", ()
                 updatedAt: "2026-08-22T12:00:00.000Z",
                 version: 1,
               },
+              {
+                chunk: "user: Production approval is no longer required",
+                id: "chunk-1",
+                metadata: { documentId: "document-1" },
+                similarity: 0.94,
+                updatedAt: "2026-08-23T12:00:00.000Z",
+              },
             ],
             timing: 12,
-            total: 1,
+            total: 2,
           },
+          status: 200,
         },
-        status: 200,
-      });
+      );
       const memory = yield* MemoryProvider.Service;
       const result = yield* memory.recall({
+        mode: "normal",
         query: "What should I remember about deployment?",
         userId: UserId.make("user:with/provider-invalid characters"),
       });
@@ -56,22 +69,25 @@ it.effect("recalls User-scoped profile and relevant Knowledge Base evidence", ()
             content: "Production deploys require approval",
             id: "memory-1",
             similarity: 0.91,
+            updatedAt: "2026-08-22T12:00:00.000Z",
+          },
+        ],
+        sourceChunks: [
+          {
+            content: "user: Production approval is no longer required",
+            id: "chunk-1",
+            similarity: 0.94,
+            updatedAt: "2026-08-23T12:00:00.000Z",
           },
         ],
         usage: {
-          items: [
+          completedNonModelCost: [
             {
-              allowanceKind: "supermemoryRetrievals",
-              basis: "known_at_start",
-              quantity: 1n,
-            },
-            {
-              allowanceKind: "vendorUsdMicros",
-              basis: "known_at_start",
-              quantity: 5n,
+              activity: "conversationsAndMemory",
+              ratedCostUsdMicros: 10n,
+              resourcePriceVersion: "resource-prices-2026-08-22",
             },
           ],
-          rateCardVersion: "supermemory-public-2026-08-22",
         },
       });
       expect(requests).toEqual([
@@ -79,12 +95,127 @@ it.effect("recalls User-scoped profile and relevant Knowledge Base evidence", ()
           authorization: "Bearer test-api-key",
           body: {
             containerTag: "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY",
+          },
+          method: "POST",
+          path: "/v4/profile",
+        },
+        {
+          authorization: "Bearer test-api-key",
+          body: {
+            containerTag: "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY",
+            limit: 20,
             q: "What should I remember about deployment?",
+            rerank: false,
+            rewriteQuery: false,
+            searchMode: "hybrid",
+          },
+          method: "POST",
+          path: "/v4/search",
+        },
+      ]);
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("uses one profile-and-query call without hybrid chunks in exhausted mode", () =>
+  withProvider(({ requests, origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: {
+          profile: { dynamic: [], static: ["Prefers small releases"] },
+          searchResults: {
+            results: [
+              {
+                id: "memory-1",
+                memory: "Production deploys require approval",
+                similarity: 0.91,
+                updatedAt: "2026-08-22T12:00:00.000Z",
+              },
+            ],
+            timing: 8,
+            total: 1,
+          },
+        },
+        status: 200,
+      });
+      const memory = yield* MemoryProvider.Service;
+      const result = yield* memory.recall({
+        mode: "exhausted",
+        query: "deployment",
+        userId: UserId.make("user-1"),
+      });
+
+      expect(result.sourceChunks).toEqual([]);
+      expect(result.relevantMemories).toHaveLength(1);
+      expect(result.usage.completedNonModelCost[0]?.ratedCostUsdMicros).toBe(5n);
+      expect(requests).toEqual([
+        {
+          authorization: "Bearer test-api-key",
+          body: {
+            containerTag: "u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs",
+            q: "deployment",
           },
           method: "POST",
           path: "/v4/profile",
         },
       ]);
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("configures versioned organization and per-User extraction guidance", () =>
+  withProvider(({ requests, origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith(
+        { body: { updated: true }, status: 200 },
+        { body: { updated: true }, status: 200 },
+      );
+      const memory = yield* MemoryProvider.Service;
+
+      yield* memory.configureOrganizationGuidance;
+      yield* memory.configureUserGuidance({
+        userId: UserId.make("user:with/provider-invalid characters"),
+      });
+
+      expect(requests).toEqual([
+        {
+          authorization: "Bearer test-api-key",
+          body: {
+            filterPrompt:
+              "Learn durable facts supported by User-authored or User-confirmed statements. Treat assistant messages only as conversational context, never as independent evidence about the User. Reject hypothetical examples and quoted material as User facts. Prefer newer explicit User corrections while retaining temporal context.",
+            shouldLLMFilter: true,
+          },
+          method: "PATCH",
+          path: "/v3/settings",
+        },
+        {
+          authorization: "Bearer test-api-key",
+          body: {
+            entityContext:
+              "This container represents one Osfo User speaking with Osfo. Attribute first-person User statements to that User. Treat named people, organizations, projects, opportunities, and ideas as entities related to the User.",
+          },
+          method: "PATCH",
+          path: "/v3/container-tags/u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY",
+        },
+      ]);
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("keeps a failed User-container upsert retryable", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({ body: { error: "Container not found" }, status: 404 });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .configureUserGuidance({ userId: UserId.make("user-1") })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        operation: "configureUserGuidance",
+        status: 404,
+      });
     }).pipe(Effect.provide(providerLayer(origin))),
   ),
 );
@@ -119,19 +250,13 @@ it.effect("saves one structured Session conversation with conservative usage evi
         documentId: "document-1",
         processingStatus: "processing",
         usage: {
-          items: [
+          completedNonModelCost: [
             {
-              allowanceKind: "supermemoryIngestionTokens",
-              basis: "conservative",
-              quantity: 27n,
-            },
-            {
-              allowanceKind: "vendorUsdMicros",
-              basis: "conservative",
-              quantity: 135n,
+              activity: "conversationsAndMemory",
+              ratedCostUsdMicros: 135n,
+              resourcePriceVersion: "resource-prices-2026-08-22",
             },
           ],
-          rateCardVersion: "supermemory-public-2026-08-22",
         },
       });
       expect(requests).toEqual([
@@ -155,6 +280,38 @@ it.effect("saves one structured Session conversation with conservative usage evi
   ),
 );
 
+it.effect("sends a long Session as one unchanged structured conversation", () =>
+  withProvider(({ requests, origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: {
+          conversationId: "s_hAl4KPwxqMjSkhDfSJAahd5_0BP2hrF7530b4py3qYs",
+          id: "document-long",
+          status: "queued",
+        },
+        status: 200,
+      });
+      const messages = [
+        { content: "Long Session message 1", role: "user" as const },
+        ...Array.from({ length: 79 }, (_, index) => ({
+          content: `Long Session message ${index + 2}`,
+          role: index % 2 === 0 ? ("assistant" as const) : ("user" as const),
+        })),
+      ] as const;
+      const memory = yield* MemoryProvider.Service;
+
+      yield* memory.saveConversation({
+        conversation: MemoryProvider.ConversationSnapshot.make({ messages, usageStartIndex: 78 }),
+        sessionId: SessionId.make("session-1"),
+        userId: UserId.make("user-1"),
+      });
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.body).toMatchObject({ messages });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
 it.effect("reads the accepted conversation processing status by provider document identity", () =>
   withProvider(({ requests, origin, respondWith }) =>
     Effect.gen(function* () {
@@ -173,6 +330,83 @@ it.effect("reads the accepted conversation processing status by provider documen
           path: "/v3/documents/document-1",
         },
       ]);
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("confirms the expected processed source is searchable", () =>
+  withProvider(({ requests, origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: {
+          results: [
+            {
+              chunk: "user: Remember this",
+              documents: [{ id: "document-1" }],
+              id: "chunk-1",
+              similarity: 0.99,
+              updatedAt: "2026-08-24T12:00:00.000Z",
+            },
+          ],
+          timing: 9,
+          total: 1,
+        },
+        status: 200,
+      });
+      const memory = yield* MemoryProvider.Service;
+      const searchable = yield* memory.checkConversationSearchability({
+        expectedSource: "Remember this",
+        userId: UserId.make("user:with/provider-invalid characters"),
+      });
+
+      expect(searchable).toBe(true);
+      expect(requests).toEqual([
+        {
+          authorization: "Bearer test-api-key",
+          body: {
+            containerTag: "u_CN_bqBGF_Sjn1wLJTEEz0iNzeYptAcuA8GQ86omt5HY",
+            limit: 20,
+            q: "Remember this",
+            rerank: false,
+            rewriteQuery: false,
+            searchMode: "documents",
+            threshold: 0,
+          },
+          method: "POST",
+          path: "/v4/search",
+        },
+      ]);
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("keeps a processed conversation pending when search only returns stale source", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({
+        body: {
+          results: [
+            {
+              chunk: "user: An older statement",
+              documents: [{ id: "document-1" }],
+              id: "chunk-1",
+              similarity: 0.99,
+              updatedAt: "2026-08-24T12:00:00.000Z",
+            },
+          ],
+          timing: 9,
+          total: 1,
+        },
+        status: 200,
+      });
+      const memory = yield* MemoryProvider.Service;
+
+      expect(
+        yield* memory.checkConversationSearchability({
+          expectedSource: "The corrected statement",
+          userId: UserId.make("user-1"),
+        }),
+      ).toBe(false);
     }).pipe(Effect.provide(providerLayer(origin))),
   ),
 );
@@ -446,7 +680,7 @@ it.effect("keeps authorization and transient provider failures distinct", () =>
         .deleteUserKnowledge({ userId: UserId.make("user-1") })
         .pipe(Effect.flip);
       const unavailable = yield* memory
-        .recall({ query: "deployment", userId: UserId.make("user-1") })
+        .recall({ mode: "normal", query: "deployment", userId: UserId.make("user-1") })
         .pipe(Effect.flip);
 
       expect(rejected).toMatchObject({
@@ -469,13 +703,48 @@ it.effect("rejects malformed provider payloads at the adapter boundary", () =>
       respondWith({ body: { profile: "not-a-profile" }, status: 200 });
       const memory = yield* MemoryProvider.Service;
       const failure = yield* memory
-        .recall({ query: "deployment", userId: UserId.make("user-1") })
+        .recall({ mode: "normal", query: "deployment", userId: UserId.make("user-1") })
         .pipe(Effect.flip);
 
       expect(failure).toMatchObject({
         _tag: "MemoryProviderUnavailable",
         diagnostic: "responseDecoding",
         message: "The MemoryProvider returned an invalid response",
+        operation: "recall",
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("rejects provider evidence with a non-UTC update timestamp", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith(
+        { body: { profile: { dynamic: [], static: [] } }, status: 200 },
+        {
+          body: {
+            results: [
+              {
+                id: "memory-1",
+                memory: "A fact with an invalid time",
+                similarity: 0.8,
+                updatedAt: "not-a-time",
+              },
+            ],
+            timing: 1,
+            total: 1,
+          },
+          status: 200,
+        },
+      );
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .recall({ mode: "normal", query: "fact", userId: UserId.make("user-1") })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "responseDecoding",
         operation: "recall",
       });
     }).pipe(Effect.provide(providerLayer(origin))),
@@ -545,7 +814,7 @@ const providerLayer = (apiBaseURL: string) =>
     rateCard: {
       ingestionTokenUsdMicros: 5n,
       retrievalUsdMicros: 5n,
-      version: "supermemory-public-2026-08-22",
+      version: ResourcePriceVersion.make("resource-prices-2026-08-22"),
     },
   });
 

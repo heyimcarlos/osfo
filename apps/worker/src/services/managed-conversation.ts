@@ -194,6 +194,12 @@ export const admitManagedConversation = (
         _tag: "OsfoManagedTurn",
         allowancePeriodId: input.authorization.allowance.allowancePeriodId,
         authorityIdentity,
+        capabilityCatalogVersion: currentCapabilityCatalog.version,
+        capabilityTurnState: {
+          initialized: false,
+          loadedSkillReceipts: [],
+          pendingFileAnalyses: [],
+        },
         conservativeVendorUsdMicros: Number(maxVendorUsdMicros),
         coreMemoryAuthorization,
         executionMode: exhausted ? "exhaustedConversation" : "normalPlanUsage",

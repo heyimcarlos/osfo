@@ -9,12 +9,14 @@ import {
 } from "effect/unstable/http";
 
 import type { SupermemoryConfig } from "../../config";
+import { ResourcePriceVersion } from "../../domain";
 import { MemoryProvider } from "../../services/memory-provider";
 
 /* oxlint-disable eslint/no-underscore-dangle -- Application-owned outcomes use the _tag discriminator. */
 
 const NonEmptyString = Schema.String.check(Schema.isMinLength(1));
 const SaveConversationRequest = Schema.Struct({
+  // Supermemory applies entity context and update deduplication only for this exact stable tag set.
   containerTags: Schema.Tuple([NonEmptyString]),
   conversationId: NonEmptyString,
   messages: Schema.NonEmptyArray(MemoryProvider.ConversationMessage),
@@ -48,31 +50,69 @@ const ProfileResponse = Schema.Struct({
     dynamic: Schema.optionalKey(Schema.Array(Schema.String)),
     static: Schema.optionalKey(Schema.Array(Schema.String)),
   }),
-  searchResults: Schema.Struct({
-    results: Schema.Array(
-      Schema.Struct({
-        id: NonEmptyString,
-        memory: NonEmptyString,
-        similarity: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
-      }),
-    ),
-    timing: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
-    total: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  }),
+  searchResults: Schema.optionalKey(
+    Schema.Struct({
+      results: Schema.Array(
+        Schema.Struct({
+          id: NonEmptyString,
+          memory: NonEmptyString,
+          similarity: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
+          updatedAt: MemoryProvider.EvidenceUpdatedAt,
+        }),
+      ),
+      timing: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+      total: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    }),
+  ),
 });
+const HybridSearchResult = Schema.Struct({
+  chunk: Schema.optionalKey(NonEmptyString),
+  id: NonEmptyString,
+  memory: Schema.optionalKey(NonEmptyString),
+  similarity: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
+  updatedAt: MemoryProvider.EvidenceUpdatedAt,
+}).check(
+  Schema.makeFilter(
+    ({ chunk, memory }) =>
+      (chunk === undefined) !== (memory === undefined) ||
+      "must contain exactly one memory or source chunk",
+  ),
+);
+const HybridSearchResponse = Schema.Struct({
+  results: Schema.Array(HybridSearchResult),
+  timing: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  total: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+const ConversationSearchabilityResponse = Schema.Struct({
+  results: Schema.Array(
+    Schema.Struct({
+      chunk: NonEmptyString,
+    }),
+  ),
+});
+const OrganizationGuidanceRequest = Schema.Struct({
+  filterPrompt: NonEmptyString,
+  shouldLLMFilter: Schema.Literal(true),
+});
+const UserGuidanceRequest = Schema.Struct({ entityContext: NonEmptyString });
+
+const organizationFilterPrompt =
+  "Learn durable facts supported by User-authored or User-confirmed statements. Treat assistant messages only as conversational context, never as independent evidence about the User. Reject hypothetical examples and quoted material as User facts. Prefer newer explicit User corrections while retaining temporal context.";
+const userEntityContext =
+  "This container represents one Osfo User speaking with Osfo. Attribute first-person User statements to that User. Treat named people, organizations, projects, opportunities, and ideas as entities related to the User.";
 
 /** Versioned Supermemory public prices used when per-call evidence is unavailable. */
 export interface RateCard {
   readonly ingestionTokenUsdMicros: bigint;
   readonly retrievalUsdMicros: bigint;
-  readonly version: string;
+  readonly version: ResourcePriceVersion;
 }
 
 /** Published Supermemory text-ingestion and retrieval prices pinned for usage evidence. */
 export const publicRateCard: RateCard = {
   ingestionTokenUsdMicros: 5n,
   retrievalUsdMicros: 5n,
-  version: "supermemory-public-2026-08-22",
+  version: ResourcePriceVersion.make("resource-prices-2026-08-22"),
 };
 
 /** Runtime configuration for the Supermemory MemoryProvider adapter. */
@@ -130,38 +170,144 @@ const make = (options: Options) =>
     const apiBaseURL = (options.apiBaseURL ?? "https://api.supermemory.ai").replace(/\/+$/u, "");
     const sdk = makeSdkClient({ apiBaseURL, apiKey: options.apiKey });
 
+    const configure = Effect.fn("SupermemoryMemoryProvider.configure")(function* <
+      S extends Schema.Top,
+    >(
+      operation: Extract<
+        MemoryProvider.MemoryProviderOperation,
+        "configureOrganizationGuidance" | "configureUserGuidance"
+      >,
+      url: string,
+      schema: S,
+      body: S["Type"],
+    ) {
+      const request = yield* HttpClientRequest.patch(url).pipe(
+        HttpClientRequest.bearerToken(options.apiKey),
+        HttpClientRequest.schemaBodyJson(schema)(body),
+        Effect.mapError(() => providerUnavailable(operation, "requestEncoding")),
+      );
+      const response = yield* httpClient
+        .execute(request)
+        .pipe(Effect.mapError(() => providerUnavailable(operation, "transport")));
+      if (response.status >= 200 && response.status < 300) return;
+      if (operation === "configureUserGuidance" && response.status === 404) {
+        // oxlint-disable-next-line typescript/consistent-return -- The yieldable error is a definitive failure exit, not a success value.
+        return yield* new MemoryProvider.MemoryProviderUnavailable({
+          message: "The MemoryProvider did not upsert the User container",
+          operation,
+          status: response.status,
+        });
+      }
+      // oxlint-disable-next-line typescript/consistent-return -- The yieldable error is a definitive failure exit, not a success value.
+      return yield* providerStatusFailure(operation, response.status);
+    });
+
+    const configureOrganizationGuidance = configure(
+      "configureOrganizationGuidance",
+      `${apiBaseURL}/v3/settings`,
+      OrganizationGuidanceRequest,
+      { filterPrompt: organizationFilterPrompt, shouldLLMFilter: true },
+    );
+
+    const configureUserGuidance = Effect.fn("SupermemoryMemoryProvider.configureUserGuidance")(
+      function* (input: MemoryProvider.ConfigureUserGuidanceInput) {
+        const containerTag = yield* providerIdentity(
+          crypto,
+          "u",
+          input.userId,
+          "configureUserGuidance",
+        );
+        return yield* configure(
+          "configureUserGuidance",
+          `${apiBaseURL}/v3/container-tags/${encodeURIComponent(containerTag)}`,
+          UserGuidanceRequest,
+          { entityContext: userEntityContext },
+        );
+      },
+    );
+
     const recall = Effect.fn("SupermemoryMemoryProvider.recall")(function* (
       input: MemoryProvider.RecallInput,
     ) {
       const containerTag = yield* providerIdentity(crypto, "u", input.userId, "recall");
-      const response = yield* sdk.use("recall", (client, signal) =>
-        client.profile({ containerTag, q: input.query }, { signal }),
+      const profileResponse = yield* sdk.use("recall", (client, signal) =>
+        client.profile(
+          input.mode === "normal" ? { containerTag } : { containerTag, q: input.query },
+          { signal },
+        ),
       );
-      const decoded = yield* decodeResponse("recall", ProfileResponse, response);
+      const profile = yield* decodeResponse("recall", ProfileResponse, profileResponse);
+      const search =
+        input.mode === "normal"
+          ? yield* sdk
+              .use("recall", (client, signal) =>
+                client.search(
+                  {
+                    containerTag,
+                    limit: 20,
+                    q: input.query,
+                    rerank: false,
+                    rewriteQuery: false,
+                    searchMode: "hybrid",
+                  },
+                  { signal },
+                ),
+              )
+              .pipe(
+                Effect.flatMap((response) =>
+                  decodeResponse("recall", HybridSearchResponse, response),
+                ),
+              )
+          : undefined;
+      const profileMemories = profile.searchResults?.results ?? [];
+      const hybridResults = search?.results ?? [];
+      const relevantMemories = [
+        ...profileMemories,
+        ...hybridResults.flatMap((result) =>
+          result.memory === undefined
+            ? []
+            : [
+                {
+                  id: result.id,
+                  memory: result.memory,
+                  similarity: result.similarity,
+                  updatedAt: result.updatedAt,
+                },
+              ],
+        ),
+      ];
       return {
         profile: {
-          dynamic: decoded.profile.dynamic ?? [],
-          static: decoded.profile.static ?? [],
+          dynamic: profile.profile.dynamic ?? [],
+          static: profile.profile.static ?? [],
         },
-        relevantMemories: decoded.searchResults.results.map((memory) => ({
+        relevantMemories: relevantMemories.map((memory) => ({
           content: memory.memory,
           id: MemoryProvider.KnowledgeMemoryId.make(memory.id),
           similarity: memory.similarity,
+          updatedAt: memory.updatedAt,
         })),
+        sourceChunks: hybridResults.flatMap((result) =>
+          result.chunk === undefined
+            ? []
+            : [
+                {
+                  content: result.chunk,
+                  id: MemoryProvider.SourceChunkId.make(result.id),
+                  similarity: result.similarity,
+                  updatedAt: result.updatedAt,
+                },
+              ],
+        ),
         usage: {
-          items: [
+          completedNonModelCost: [
             {
-              allowanceKind: "supermemoryRetrievals",
-              basis: "known_at_start",
-              quantity: 1n,
-            },
-            {
-              allowanceKind: "vendorUsdMicros",
-              basis: "known_at_start",
-              quantity: options.rateCard.retrievalUsdMicros,
+              activity: "conversationsAndMemory",
+              ratedCostUsdMicros:
+                options.rateCard.retrievalUsdMicros * (input.mode === "normal" ? 2n : 1n),
+              resourcePriceVersion: options.rateCard.version,
             },
           ],
-          rateCardVersion: options.rateCard.version,
         },
       } satisfies MemoryProvider.RecallResult;
     });
@@ -204,19 +350,13 @@ const make = (options: Options) =>
           ),
       );
       const usage = {
-        items: [
+        completedNonModelCost: [
           {
-            allowanceKind: "supermemoryIngestionTokens",
-            basis: "conservative",
-            quantity: ingestionTokens,
-          },
-          {
-            allowanceKind: "vendorUsdMicros",
-            basis: "conservative",
-            quantity: ingestionTokens * options.rateCard.ingestionTokenUsdMicros,
+            activity: "conversationsAndMemory",
+            ratedCostUsdMicros: ingestionTokens * options.rateCard.ingestionTokenUsdMicros,
+            resourcePriceVersion: options.rateCard.version,
           },
         ],
-        rateCardVersion: options.rateCard.version,
       } satisfies MemoryProvider.UsageEvidence;
       const processingStatus = yield* decodeConversationProcessingStatus(
         "saveConversation",
@@ -259,6 +399,37 @@ const make = (options: Options) =>
         } satisfies MemoryProvider.GetConversationStatusResult;
       },
     );
+
+    const checkConversationSearchability = Effect.fn(
+      "SupermemoryMemoryProvider.checkConversationSearchability",
+    )(function* (input: MemoryProvider.CheckConversationSearchabilityInput) {
+      const containerTag = yield* providerIdentity(
+        crypto,
+        "u",
+        input.userId,
+        "checkConversationSearchability",
+      );
+      const response = yield* sdk.use("checkConversationSearchability", (client, signal) =>
+        client.search(
+          {
+            containerTag,
+            limit: 20,
+            q: input.expectedSource,
+            rerank: false,
+            rewriteQuery: false,
+            searchMode: "documents",
+            threshold: 0,
+          },
+          { signal },
+        ),
+      );
+      const decoded = yield* decodeResponse(
+        "checkConversationSearchability",
+        ConversationSearchabilityResponse,
+        response,
+      );
+      return decoded.results.some(({ chunk }) => chunk.includes(input.expectedSource));
+    });
 
     const forgetKnowledge = Effect.fn("SupermemoryMemoryProvider.forgetKnowledge")(function* (
       input: MemoryProvider.ForgetKnowledgeInput,
@@ -340,6 +511,9 @@ const make = (options: Options) =>
     );
 
     return MemoryProvider.Service.of({
+      checkConversationSearchability,
+      configureOrganizationGuidance,
+      configureUserGuidance,
       deleteSessionConversation,
       deleteUserKnowledge,
       forgetKnowledge,
@@ -390,12 +564,7 @@ const providerRejected = (operation: MemoryProvider.MemoryProviderOperation) =>
     operation,
   });
 
-/**
- * Supermemory's documented pipeline treats every state before `done` as processing and says
- * `done` makes the document path ready for search. That is the qualified ordering-release
- * boundary; later memory dreaming remains outside this ingestion barrier.
- * https://supermemory.ai/docs/concepts/how-it-works#what-the-pipeline-does
- */
+/** Supermemory `done` ends processing but does not guarantee hybrid-search visibility. */
 const decodeConversationProcessingStatus = <E>(
   operation: MemoryProvider.MemoryProviderOperation,
   // oxlint-disable-next-line osfo/no-unknown-parameters -- Status is isolated from an otherwise valid provider identity before it is decoded.
