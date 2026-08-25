@@ -12,7 +12,7 @@ import {
 } from "@osfo/db/schema/user-lifecycle";
 import { webhookEvents } from "@osfo/db/schema/webhooks";
 import { eq, inArray, sql } from "drizzle-orm";
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 
 import type { Database } from "@osfo/db";
 import { AgentId, PlanPolicyVersion, UserId } from "../../domain";
@@ -137,43 +137,75 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
       }),
     );
   });
+  const updateIntegrationTargets = Effect.fn("AccountDeletionPostgres.updateIntegrationTargets")(
+    function* <A>(
+      operation: "confirmIntegrationTarget" | "stageIntegrationTargets",
+      candidate: AccountDeletion.PendingAccountDeletion,
+      mutate: (
+        retained: ReadonlyArray<AccountDeletion.IntegrationAuthorityTargetProgress>,
+      ) => Result.Result<IntegrationTargetProgressUpdate<A>, Error>,
+    ) {
+      const outcome = yield* attempt(operation, () =>
+        database.transaction(async (transaction) => {
+          const caseIdentity = sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
+            and ${deletionCases.user_id} = ${candidate.userId}`;
+          const [row] = await transaction
+            .select({ targets: deletionCases.integration_targets })
+            .from(deletionCases)
+            .where(caseIdentity)
+            .limit(1)
+            .for("update");
+          if (row === undefined) {
+            return {
+              _tag: "ProgressInvalid" as const,
+              cause: new Error("Deletion Case integration progress is missing"),
+            };
+          }
+          const decoded = Schema.decodeUnknownResult(
+            AccountDeletion.IntegrationAuthorityTargetProgresses,
+          )(row.targets);
+          if (Result.isFailure(decoded)) {
+            return { _tag: "ProgressInvalid" as const, cause: decoded.failure };
+          }
+          const update = mutate(decoded.success);
+          if (Result.isFailure(update)) {
+            return { _tag: "ProgressInvalid" as const, cause: update.failure };
+          }
+          await transaction
+            .update(deletionCases)
+            .set({ integration_targets: update.success.progress })
+            .where(caseIdentity);
+          return { _tag: "ProgressUpdated" as const, value: update.success.value };
+        }),
+      );
+      if (outcome._tag === "ProgressInvalid") {
+        return yield* new AccountDeletion.AccountDeletionUnavailable({
+          cause: outcome.cause,
+          message: "PostgreSQL Deletion Case integration progress is invalid",
+          operation,
+        });
+      }
+      return outcome.value;
+    },
+  );
   const stageIntegrationTargets = Effect.fn("AccountDeletionPostgres.stageIntegrationTargets")(
     function* (
       candidate: AccountDeletion.PendingAccountDeletion,
       discovered: ReadonlyArray<AccountDeletion.IntegrationAuthorityTarget>,
     ) {
-      return yield* attempt("stageIntegrationTargets", () =>
-        database.transaction(async (transaction) => {
-          const [row] = await transaction
-            .select({ targets: deletionCases.integration_targets })
-            .from(deletionCases)
-            .where(
-              sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
-                and ${deletionCases.user_id} = ${candidate.userId}`,
-            )
-            .limit(1)
-            .for("update");
-          if (row === undefined) throw new Error("Deletion Case integration progress is missing");
-          const retained = Schema.decodeUnknownSync(
-            AccountDeletion.IntegrationAuthorityTargetProgresses,
-          )(row.targets);
-          const targets = new Map(retained.map((target) => [target.connectionId, target]));
-          for (const target of discovered) {
-            targets.set(target.connectionId, { ...target, status: "pending" });
-          }
-          const progress = [...targets.values()];
-          await transaction
-            .update(deletionCases)
-            .set({ integration_targets: progress })
-            .where(
-              sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
-                and ${deletionCases.user_id} = ${candidate.userId}`,
-            );
-          return progress.flatMap(({ connectionId, status, userId }) =>
+      return yield* updateIntegrationTargets("stageIntegrationTargets", candidate, (retained) => {
+        const targets = new Map(retained.map((target) => [target.connectionId, target]));
+        for (const target of discovered) {
+          targets.set(target.connectionId, { ...target, status: "pending" });
+        }
+        const progress = [...targets.values()];
+        return Result.succeed({
+          progress,
+          value: progress.flatMap(({ connectionId, status, userId }) =>
             status === "pending" ? [{ connectionId, userId }] : [],
-          );
-        }),
-      );
+          ),
+        });
+      });
     },
   );
   const confirmIntegrationTarget = Effect.fn("AccountDeletionPostgres.confirmIntegrationTarget")(
@@ -181,43 +213,25 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
       candidate: AccountDeletion.PendingAccountDeletion,
       target: AccountDeletion.IntegrationAuthorityTarget,
     ) {
-      yield* attempt("confirmIntegrationTarget", () =>
-        database.transaction(async (transaction) => {
-          const [row] = await transaction
-            .select({ targets: deletionCases.integration_targets })
-            .from(deletionCases)
-            .where(
-              sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
-              and ${deletionCases.user_id} = ${candidate.userId}`,
-            )
-            .limit(1)
-            .for("update");
-          if (row === undefined) throw new Error("Deletion Case integration progress is missing");
-          const retained = Schema.decodeUnknownSync(
-            AccountDeletion.IntegrationAuthorityTargetProgresses,
-          )(row.targets);
-          let found = false;
-          const progress = retained.map((item) => {
-            if (item.connectionId !== target.connectionId || item.userId !== target.userId) {
-              return item;
-            }
-            found = true;
-            return {
-              connectionId: item.connectionId,
-              status: "confirmed" as const,
-              userId: item.userId,
-            };
-          });
-          if (!found) throw new Error("Integration target was not staged before confirmation");
-          await transaction
-            .update(deletionCases)
-            .set({ integration_targets: progress })
-            .where(
-              sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
-              and ${deletionCases.user_id} = ${candidate.userId}`,
-            );
-        }),
-      );
+      yield* updateIntegrationTargets("confirmIntegrationTarget", candidate, (retained) => {
+        const found = retained.some(
+          (item) => item.connectionId === target.connectionId && item.userId === target.userId,
+        );
+        if (!found) {
+          return Result.fail(new Error("Integration target was not staged before confirmation"));
+        }
+        const progress = retained.map((item) => {
+          if (item.connectionId !== target.connectionId || item.userId !== target.userId) {
+            return item;
+          }
+          return {
+            connectionId: item.connectionId,
+            status: "confirmed" as const,
+            userId: item.userId,
+          };
+        });
+        return Result.succeed({ progress, value: undefined });
+      });
     },
   );
   return {
@@ -227,6 +241,11 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
     stageIntegrationTargets,
   };
 };
+
+interface IntegrationTargetProgressUpdate<A> {
+  readonly progress: ReadonlyArray<AccountDeletion.IntegrationAuthorityTargetProgress>;
+  readonly value: A;
+}
 
 /** Read current facts only while the exact Deletion Case remains the durable authority. */
 export const inspectAuthorization = (

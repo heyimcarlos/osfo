@@ -11,8 +11,8 @@ import {
 } from "@osfo/db/schema/user-lifecycle";
 import { expect, it } from "@effect/vitest";
 import { BrowserCrypto } from "@effect/platform-browser";
-import { eq } from "drizzle-orm";
-import { DateTime, Effect, Layer } from "effect";
+import { eq, sql } from "drizzle-orm";
+import { DateTime, Effect, Layer, Result } from "effect";
 
 import { Db } from "../../src/db";
 import { PlanPolicyVersion, UserId } from "../../src/domain";
@@ -250,6 +250,39 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
         firstTarget,
         secondTarget,
       ]);
+      yield* Effect.promise(() =>
+        database
+          .update(deletionCases)
+          .set({ integration_targets: sql`'{"unexpected":true}'::jsonb` })
+          .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId)),
+      );
+      const malformedStage = yield* accountDeletion
+        .stageIntegrationTargets(candidate, [firstTarget])
+        .pipe(Effect.result);
+      const malformedConfirmation = yield* accountDeletion
+        .confirmIntegrationTarget(candidate, firstTarget)
+        .pipe(Effect.result);
+      expect(Result.isFailure(malformedStage)).toBe(true);
+      expect(Result.isFailure(malformedConfirmation)).toBe(true);
+      if (Result.isFailure(malformedStage) && Result.isFailure(malformedConfirmation)) {
+        expect(malformedStage.failure).toMatchObject({
+          _tag: "AccountDeletionUnavailable",
+          operation: "stageIntegrationTargets",
+        });
+        expect(malformedConfirmation.failure).toMatchObject({
+          _tag: "AccountDeletionUnavailable",
+          operation: "confirmIntegrationTarget",
+        });
+      }
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ targets: deletionCases.integration_targets })
+            .from(deletionCases)
+            .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId))
+            .limit(1),
+        ),
+      ).toEqual([{ targets: { unexpected: true } }]);
       expect(
         yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate),
       ).toMatchObject({ resourceOwnerUserId: userId });
