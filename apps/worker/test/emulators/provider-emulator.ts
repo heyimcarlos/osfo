@@ -1,6 +1,7 @@
 /* oxlint-disable effecttsgo/async-function, effecttsgo/global-date, effecttsgo/new-promise, effecttsgo/node-builtin-import -- Vitest global setup owns this Node HTTP boundary. */
 /* oxlint-disable osfo/no-runtime-typeof, osfo/no-unknown-parameters -- This test-only emulator decodes raw Node HTTP representations at its boundary. */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import { Option, Schema } from "effect";
 
 /** One observed Twilio Verify request. */
@@ -47,6 +48,9 @@ const TelegramRequest = Schema.Struct({
 });
 
 const TelegramRequestFromJson = Schema.fromJsonString(TelegramRequest);
+const SupermemorySeedRequestFromJson = Schema.fromJsonString(
+  Schema.Struct({ userId: Schema.String.check(Schema.isMinLength(1)) }),
+);
 
 /** Local HTTP providers and their request ledgers for composed Worker journeys. */
 export interface ProviderEmulator {
@@ -57,6 +61,7 @@ export interface ProviderEmulator {
 export const startProviderEmulator = (): Promise<ProviderEmulator> =>
   new Promise((resolve, reject) => {
     const stripeLedger: Array<StripeLedgerEntry> = [];
+    const supermemoryContainers = new Set<string>();
     const supermemoryLedger: Array<SupermemoryLedgerEntry> = [];
     const telegramLedger: Array<TelegramLedgerEntry> = [];
     const twilioLedger: Array<TwilioLedgerEntry> = [];
@@ -64,6 +69,7 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
       const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
       if (request.method === "POST" && pathname === "/_test/reset") {
         stripeLedger.length = 0;
+        supermemoryContainers.clear();
         supermemoryLedger.length = 0;
         telegramLedger.length = 0;
         twilioLedger.length = 0;
@@ -83,9 +89,23 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
         respondJson(response, 200, supermemoryLedger);
         return;
       }
+      if (request.method === "GET" && pathname === "/_test/supermemory/containers") {
+        respondJson(response, 200, [...supermemoryContainers].toSorted());
+        return;
+      }
+      if (request.method === "POST" && pathname === "/_test/supermemory/seed") {
+        handleSupermemorySeed(request, response, supermemoryContainers);
+        return;
+      }
       if (request.method === "DELETE" && pathname.startsWith("/v3/container-tags/")) {
         supermemoryLedger.push({ method: request.method, path: pathname });
-        respondJson(response, 200, { success: true });
+        const containerTag = decodeURIComponent(pathname.slice("/v3/container-tags/".length));
+        const removed = supermemoryContainers.delete(containerTag);
+        respondJson(
+          response,
+          removed ? 200 : 404,
+          removed ? { success: true } : { error: "absent" },
+        );
         return;
       }
       if (request.method === "GET" && pathname === "/_test/telegram/ledger") {
@@ -143,6 +163,21 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
       });
     });
   });
+
+const handleSupermemorySeed = (
+  request: IncomingMessage,
+  response: ServerResponse,
+  containers: Set<string>,
+): void => {
+  readTextBody(request)
+    .then(Schema.decodeUnknownPromise(SupermemorySeedRequestFromJson))
+    .then(({ userId }) => {
+      const containerTag = `u_${createHash("sha256").update(userId).digest("base64url")}`;
+      containers.add(containerTag);
+      respondJson(response, 201, { containerTag });
+    })
+    .catch((cause: unknown) => respondJson(response, 400, { error: String(cause) }));
+};
 
 const handleStripe = (
   request: IncomingMessage,

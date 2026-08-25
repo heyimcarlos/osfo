@@ -28,6 +28,8 @@ const StripeLedger = Schema.Array(
 const SupermemoryLedger = Schema.Array(
   Schema.Struct({ method: Schema.String, path: Schema.String }),
 );
+const SupermemoryContainers = Schema.Array(Schema.String);
+const SupermemorySeedResponse = Schema.Struct({ containerTag: Schema.String });
 
 const StoredAccountDeletion = Schema.Struct({
   agent_exists: Schema.Boolean,
@@ -78,6 +80,7 @@ type JsonRequestBody =
   | PhoneOtpRequest
   | PhoneOtpVerificationRequest
   | RegistrationProfile
+  | { readonly userId: string }
   | { readonly confirmation: "delete-my-account" };
 
 interface MintVerifiedUserOptions {
@@ -210,9 +213,22 @@ export const spawnApp = async () => {
       },
     },
     supermemory: {
+      containers: async () => {
+        const response = await fetch(`${context.providerOrigin}/_test/supermemory/containers`);
+        return Schema.decodeUnknownPromise(SupermemoryContainers)(await response.json());
+      },
       ledger: async () => {
         const response = await fetch(`${context.providerOrigin}/_test/supermemory/ledger`);
         return Schema.decodeUnknownPromise(SupermemoryLedger)(await response.json());
+      },
+      seedUser: async (userId: string) => {
+        const response = await fetch(`${context.providerOrigin}/_test/supermemory/seed`, {
+          body: JSON.stringify({ userId }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        });
+        await requireSuccessfulResponse(response, "Seed Supermemory User container");
+        return Schema.decodeUnknownPromise(SupermemorySeedResponse)(await response.json());
       },
     },
     dispose: () => {

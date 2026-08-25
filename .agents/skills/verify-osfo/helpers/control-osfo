@@ -15,11 +15,12 @@ usage() {
     '  control-osfo doctor <run-id>' \
     '  control-osfo identity <run-id>' \
     '  control-osfo journeys <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|billing> start' \
-    '  control-osfo record <run-id> <registration|channel-linking|billing> <action|result> <summary>' \
-    '  control-osfo observe <run-id> <registration|channel-linking|billing>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|billing|account-deletion> start' \
+    '  control-osfo record <run-id> <registration|channel-linking|billing|account-deletion> <action|result> <summary>' \
+    '  control-osfo observe <run-id> <registration|channel-linking|billing|account-deletion>' \
     '  control-osfo channel-invite <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|billing> finish' \
+    '  control-osfo seed-account-deletion <run-id>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|billing|account-deletion> finish' \
     '  control-osfo cleanup <run-id>'
 }
 
@@ -33,7 +34,7 @@ require_run_id() {
 
 require_feature() {
   case "${1:-}" in
-    registration|channel-linking|billing) ;;
+    registration|channel-linking|billing|account-deletion) ;;
     *)
       printf 'Unknown browser feature: %s\n' "${1:-}" >&2
       exit 2
@@ -585,6 +586,122 @@ channel_invite() {
   printf 'invite_ready url=%s author=%s\n' "$invite_url" "$telegram_author"
 }
 
+r2_object_exists() {
+  local state_dir bucket key
+  state_dir="$1"
+  bucket="$2"
+  key="$3"
+  "$repo_root/apps/worker/node_modules/.bin/wrangler" r2 object get "$bucket/$key" \
+    --config "$state_dir/wrangler.json" \
+    --local \
+    --persist-to "$state_dir/wrangler-state" \
+    --pipe >/dev/null 2>&1
+}
+
+put_r2_object() {
+  local state_dir bucket key content
+  state_dir="$1"
+  bucket="$2"
+  key="$3"
+  content="$4"
+  printf '%s' "$content" \
+    | "$repo_root/apps/worker/node_modules/.bin/wrangler" r2 object put "$bucket/$key" \
+      --config "$state_dir/wrangler.json" \
+      --force \
+      --local \
+      --persist-to "$state_dir/wrangler-state" \
+      --pipe >/dev/null
+}
+
+require_owned_identifier() {
+  local label value
+  label="$1"
+  value="$2"
+  if [[ ! "$value" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    printf 'Run-owned %s is not safe to inspect: %s\n' "$label" "$value" >&2
+    exit 1
+  fi
+}
+
+seed_account_deletion() {
+  local run_id state_dir container_id provider_origin phone seed_state user_id agent_id
+  local channel_link_id target_seed unrelated_seed target_tag unrelated_tag files_bucket
+  local target_key unrelated_key containers_json agent_storage
+  run_id="$1"
+  doctor_run "$run_id" >/dev/null
+  state_dir="$(state_dir_for "$run_id")"
+  if [[ -e "$state_dir/account-deletion-user-id" ]]; then
+    printf 'Account-deletion evidence is already seeded for run %s\n' "$run_id" >&2
+    exit 1
+  fi
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  seed_state="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userId', u.id,
+      'agentId', a.agent_id,
+      'channelLinkId', cl.channel_link_id
+    ) from users u
+    join agents a on a.user_id = u.id
+    join channel_links cl on cl.user_id = u.id
+    where u.phone_number = '$phone' and cl.channel_id = 'telegram' and cl.revoked_at is null;")"
+  if [[ -z "$seed_state" ]]; then
+    printf 'Complete registration and Telegram channel linking before deletion seeding\n' >&2
+    exit 1
+  fi
+  user_id="$(jq --exit-status --raw-output '.userId' <<<"$seed_state")"
+  agent_id="$(jq --exit-status --raw-output '.agentId' <<<"$seed_state")"
+  channel_link_id="$(jq --exit-status --raw-output '.channelLinkId' <<<"$seed_state")"
+  require_owned_identifier 'User ID' "$user_id"
+  require_owned_identifier 'Agent ID' "$agent_id"
+  require_owned_identifier 'Channel Link ID' "$channel_link_id"
+  printf '%s\n' "$user_id" >"$state_dir/account-deletion-user-id"
+  printf '%s\n' "$agent_id" >"$state_dir/account-deletion-agent-id"
+  printf '%s\n' "$channel_link_id" >"$state_dir/account-deletion-channel-link-id"
+
+  agent_storage="$(bun "$script_dir/inspect-agent-storage.mjs" \
+    "$state_dir/wrangler-state/v3/do" "$agent_id")"
+  jq --exit-status \
+    '.initializationCount == 1 and .registryCount == 1' <<<"$agent_storage" >/dev/null
+  jq . <<<"$agent_storage" >"$state_dir/account-deletion-agent-storage-before.json"
+
+  target_seed="$(curl --fail --silent --show-error \
+    --header 'content-type: application/json' \
+    --data "$(jq --null-input --compact-output --arg userId "$user_id" '{ userId: $userId }')" \
+    "$provider_origin/_test/supermemory/seed")"
+  unrelated_seed="$(curl --fail --silent --show-error \
+    --header 'content-type: application/json' \
+    --data "$(jq --null-input --compact-output --arg userId "unrelated-$run_id" '{ userId: $userId }')" \
+    "$provider_origin/_test/supermemory/seed")"
+  target_tag="$(jq --exit-status --raw-output '.containerTag' <<<"$target_seed")"
+  unrelated_tag="$(jq --exit-status --raw-output '.containerTag' <<<"$unrelated_seed")"
+  printf '%s\n' "$target_tag" >"$state_dir/account-deletion-target-provider-tag"
+  printf '%s\n' "$unrelated_tag" >"$state_dir/account-deletion-unrelated-provider-tag"
+  containers_json="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/supermemory/containers")"
+  jq --exit-status --arg target "$target_tag" --arg unrelated "$unrelated_tag" \
+    'index($target) != null and index($unrelated) != null' <<<"$containers_json" >/dev/null
+
+  files_bucket="$(jq --exit-status --raw-output \
+    '.r2_buckets[] | select(.binding == "FILES") | .bucket_name' "$state_dir/wrangler.json")"
+  target_key="users/$user_id/trusted-skill-evidence/$run_id.txt"
+  unrelated_key="users/unrelated-$run_id/trusted-skill-evidence/$run_id.txt"
+  printf '%s\n' "$files_bucket" >"$state_dir/account-deletion-files-bucket"
+  printf '%s\n' "$target_key" >"$state_dir/account-deletion-target-r2-key"
+  printf '%s\n' "$unrelated_key" >"$state_dir/account-deletion-unrelated-r2-key"
+  put_r2_object "$state_dir" "$files_bucket" "$target_key" \
+    "run-owned personal Skill evidence for $user_id"
+  put_r2_object "$state_dir" "$files_bucket" "$unrelated_key" \
+    "unrelated User sentinel for $run_id"
+  r2_object_exists "$state_dir" "$files_bucket" "$target_key"
+  r2_object_exists "$state_dir" "$files_bucket" "$unrelated_key"
+
+  printf 'deletion_seed_ready user=%s agent=%s channel_link=%s provider_target=%s r2_target=%s unrelated_sentinels=provider,r2\n' \
+    "$user_id" "$agent_id" "$channel_link_id" "$target_tag" "$target_key"
+}
+
 observe_channel_linking() {
   local run_id feature_dir container_id provider_origin phone telegram_author invite_url state_json
   run_id="$1"
@@ -677,6 +794,106 @@ observe_billing() {
   complete_observation "$run_id" "$feature_dir"
   printf 'observed billing state=%s provider=%s\n' \
     "$feature_dir/state.json" "$feature_dir/provider.json"
+}
+
+observe_account_deletion() {
+  local run_id state_dir feature_dir container_id provider_origin phone user_id agent_id
+  local channel_link_id target_tag unrelated_tag files_bucket target_key unrelated_key
+  local postgres_state agent_storage provider_ledger provider_containers target_exists unrelated_exists
+  run_id="$1"
+  state_dir="$(state_dir_for "$run_id")"
+  feature_dir="$(feature_artifact_dir_for "$run_id" account-deletion)"
+  begin_observation "$feature_dir"
+  container_id="$(state_value "$run_id" container-id)"
+  provider_origin="$(state_value "$run_id" provider-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  user_id="$(state_value "$run_id" account-deletion-user-id)"
+  agent_id="$(state_value "$run_id" account-deletion-agent-id)"
+  channel_link_id="$(state_value "$run_id" account-deletion-channel-link-id)"
+  target_tag="$(state_value "$run_id" account-deletion-target-provider-tag)"
+  unrelated_tag="$(state_value "$run_id" account-deletion-unrelated-provider-tag)"
+  files_bucket="$(state_value "$run_id" account-deletion-files-bucket)"
+  target_key="$(state_value "$run_id" account-deletion-target-r2-key)"
+  unrelated_key="$(state_value "$run_id" account-deletion-unrelated-r2-key)"
+  require_owned_identifier 'User ID' "$user_id"
+  require_owned_identifier 'Agent ID' "$agent_id"
+  require_owned_identifier 'Channel Link ID' "$channel_link_id"
+
+  postgres_state="$(docker exec --env PGPASSWORD=osfo "$container_id" \
+    psql --dbname osfo --username osfo --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --command "select json_build_object(
+      'userExists', exists(select 1 from users where id = '$user_id'),
+      'agentExists', exists(select 1 from agents where agent_id = '$agent_id'),
+      'authSessionExists', exists(select 1 from sessions where user_id = '$user_id'),
+      'deletionCaseExists', exists(select 1 from deletion_cases where user_id = '$user_id'),
+      'channelLinkExists', exists(select 1 from channel_links where channel_link_id = '$channel_link_id'),
+      'acceptedInviteExists', exists(select 1 from channel_link_invites where accepted_user_id = '$user_id'),
+      'channelAuditExists', exists(select 1 from channel_link_audit_events where user_id = '$user_id'),
+      'billingExists', exists(select 1 from billing_subscriptions where user_id = '$user_id'),
+      'allowanceExists', exists(select 1 from allowance_periods where user_id = '$user_id'),
+      'phoneVerificationExists', exists(select 1 from verifications where identifier = '$phone')
+    );")"
+  agent_storage="$(bun "$script_dir/inspect-agent-storage.mjs" \
+    "$state_dir/wrangler-state/v3/do" "$agent_id")"
+  if r2_object_exists "$state_dir" "$files_bucket" "$target_key"; then
+    target_exists=true
+  else
+    target_exists=false
+  fi
+  if r2_object_exists "$state_dir" "$files_bucket" "$unrelated_key"; then
+    unrelated_exists=true
+  else
+    unrelated_exists=false
+  fi
+  jq --null-input \
+    --argjson postgres "$postgres_state" \
+    --argjson agentStorage "$agent_storage" \
+    --argjson targetR2Exists "$target_exists" \
+    --argjson unrelatedR2Exists "$unrelated_exists" \
+    --arg targetR2Key "$target_key" \
+    --arg unrelatedR2Key "$unrelated_key" \
+    '$postgres + {
+      agentStorage: $agentStorage,
+      targetR2Exists: $targetR2Exists,
+      targetR2Key: $targetR2Key,
+      unrelatedR2Exists: $unrelatedR2Exists,
+      unrelatedR2Key: $unrelatedR2Key
+    }' >"$feature_dir/state.json"
+  cp "$state_dir/account-deletion-agent-storage-before.json" \
+    "$feature_dir/agent-storage-before.json"
+
+  provider_ledger="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/supermemory/ledger")"
+  provider_containers="$(curl --fail --silent --show-error \
+    "$provider_origin/_test/supermemory/containers")"
+  jq --null-input \
+    --argjson containers "$provider_containers" \
+    --argjson ledger "$provider_ledger" \
+    --arg targetTag "$target_tag" \
+    --arg unrelatedTag "$unrelated_tag" \
+    '{ containers: $containers, ledger: $ledger, targetTag: $targetTag, unrelatedTag: $unrelatedTag }' \
+    >"$feature_dir/provider.json"
+
+  jq --exit-status \
+    '(.userExists or .agentExists or .authSessionExists or .deletionCaseExists or
+      .channelLinkExists or .acceptedInviteExists or .channelAuditExists or
+      .billingExists or .allowanceExists or .phoneVerificationExists) == false and
+      .agentStorage.initializationCount == 0 and .agentStorage.registryCount == 0 and
+      .targetR2Exists == false and .unrelatedR2Exists == true' \
+    "$feature_dir/state.json" >/dev/null
+  jq --exit-status \
+    '.initializationCount == 1 and .registryCount == 1' \
+    "$feature_dir/agent-storage-before.json" >/dev/null
+  jq --exit-status --arg target "$target_tag" --arg unrelated "$unrelated_tag" \
+    '(.containers | index($target)) == null and
+      (.containers | index($unrelated)) != null and
+      [.ledger[] | select(.method == "DELETE")] == [
+        { method: "DELETE", path: ("/v3/container-tags/" + $target) }
+      ]' "$feature_dir/provider.json" >/dev/null
+  complete_observation "$run_id" "$feature_dir"
+  printf 'observed account-deletion state=%s provider=%s agent_before=%s\n' \
+    "$feature_dir/state.json" "$feature_dir/provider.json" \
+    "$feature_dir/agent-storage-before.json"
 }
 
 evidence_finish() {
@@ -784,11 +1001,16 @@ case "$command_name" in
       registration) observe_registration "$2" ;;
       channel-linking) observe_channel_linking "$2" ;;
       billing) observe_billing "$2" ;;
+      account-deletion) observe_account_deletion "$2" ;;
     esac
     ;;
   channel-invite)
     require_run_id "${2:-}"
     channel_invite "$2"
+    ;;
+  seed-account-deletion)
+    require_run_id "${2:-}"
+    seed_account_deletion "$2"
     ;;
   cleanup)
     require_run_id "${2:-}"

@@ -17,6 +17,13 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
     const identity = yield* registration.body === undefined
       ? Effect.die(new Error("Registration did not return an identity"))
       : Effect.succeed(registration.body);
+    const seededProvider = yield* Effect.promise(() => app.supermemory.seedUser(identity.userId));
+    const unrelatedProvider = yield* Effect.promise(() =>
+      app.supermemory.seedUser("unrelated-user-for-account-deletion"),
+    );
+    expect(yield* Effect.promise(app.supermemory.containers)).toEqual(
+      [seededProvider.containerTag, unrelatedProvider.containerTag].toSorted(),
+    );
 
     const response = yield* Effect.promise(app.account.delete);
     expect(response.status).toBe(200);
@@ -32,6 +39,9 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
         method: "DELETE",
         path: expect.stringMatching(/^\/v3\/container-tags\/u_[A-Za-z0-9_-]+$/u),
       },
+    ]);
+    expect(yield* Effect.promise(app.supermemory.containers)).toEqual([
+      unrelatedProvider.containerTag,
     ]);
 
     const session = yield* Effect.promise(app.auth.session);
