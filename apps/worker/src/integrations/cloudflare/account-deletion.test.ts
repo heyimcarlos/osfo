@@ -13,7 +13,7 @@ import {
   documentContentPrefix,
 } from "./document-storage-keys";
 
-it.effect("removes an interrupted document attempt without a retained artifact", () => {
+it.effect("uses an allowance period to remove legacy attempt evidence without a user id", () => {
   const deleted: Array<string> = [];
   const userId = UserId.make("user-1");
   const files = bucketStub({ deleted });
@@ -39,6 +39,71 @@ it.effect("removes an interrupted document attempt without a retained artifact",
       Effect.andThen(
         Effect.sync(() => {
           expect(deleted).toContain("document-attempts/orphaned-content");
+        }),
+      ),
+    );
+});
+
+it.effect("removes attempt evidence explicitly owned by the target user", () => {
+  const deleted: Array<string> = [];
+  const key = attemptKeyFor(ContentId.make("target-content"));
+  const files = bucketStub({ deleted });
+  const artifacts = bucketStub({
+    deleted,
+    objectsByPrefix: {
+      [documentAttemptPrefix]: [
+        {
+          customMetadata: {
+            osfo: JSON.stringify({
+              cost: { allowancePeriodId: "unrelated-period" },
+              userId: "user-1",
+            }),
+          },
+          key,
+        },
+      ],
+    },
+  });
+
+  return make(files, artifacts, () => Effect.succeed(new Set()))
+    .remove(UserId.make("user-1"), Effect.void)
+    .pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(deleted).toEqual([key]);
+        }),
+      ),
+    );
+});
+
+it.effect("fails closed when explicit ownership contradicts a target allowance", () => {
+  const deleted: Array<string> = [];
+  const files = bucketStub({ deleted });
+  const artifacts = bucketStub({
+    deleted,
+    objectsByPrefix: {
+      [documentAttemptPrefix]: [
+        {
+          customMetadata: {
+            osfo: JSON.stringify({
+              cost: { allowancePeriodId: "period-1" },
+              userId: "user-2",
+            }),
+          },
+          key: attemptKeyFor(ContentId.make("contradictory-content")),
+        },
+      ],
+    },
+  });
+
+  return make(files, artifacts, () => Effect.succeed(new Set([AllowancePeriodId.make("period-1")])))
+    .remove(UserId.make("user-1"), Effect.void)
+    .pipe(
+      Effect.result,
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          expect(Result.isFailure(result)).toBe(true);
+          expect(deleted).toEqual([]);
         }),
       ),
     );

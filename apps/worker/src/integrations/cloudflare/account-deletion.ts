@@ -125,11 +125,20 @@ const deleteAttemptEvidence: (
   );
   const keyGroups = yield* Effect.forEach(page.objects, (object) =>
     decodeAttemptMetadata(object).pipe(
-      Effect.map((metadata) =>
-        metadata.userId === userId || allowancePeriodIds.has(metadata.cost.allowancePeriodId)
-          ? [object.key]
-          : [],
-      ),
+      Effect.flatMap((metadata) => {
+        if (metadata.userId === userId) return Effect.succeed([object.key]);
+        if (metadata.userId !== undefined) {
+          if (!allowancePeriodIds.has(metadata.cost.allowancePeriodId)) {
+            return Effect.succeed([]);
+          }
+          return Effect.fail(
+            ambiguousObjectOwnership(object.key, "contradictory attempt ownership"),
+          );
+        }
+        return Effect.succeed(
+          allowancePeriodIds.has(metadata.cost.allowancePeriodId) ? [object.key] : [],
+        );
+      }),
     ),
   );
   const keys = keyGroups.flat();

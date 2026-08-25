@@ -95,7 +95,7 @@ it.effect("stops before Agent deletion when authority changes during object dele
   ]),
 );
 
-it.effect("keeps the case pending and local data intact when R2 ownership is ambiguous", () => {
+it.effect("keeps the case pending and local data intact when R2 ownership is contradictory", () => {
   const calls: Array<string> = [];
   const candidate = {
     _tag: "SelfService" as const,
@@ -119,7 +119,7 @@ it.effect("keeps the case pending and local data intact when R2 ownership is amb
           Effect.andThen(
             Effect.fail(
               new AccountDeletion.AccountDeletionUnavailable({
-                cause: "malformed metadata",
+                cause: "contradictory attempt ownership",
                 message: "R2 ownership evidence is invalid",
                 operation: "removeObjects",
               }),
