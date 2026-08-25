@@ -124,7 +124,7 @@ type AccountDeletionPresentation = AccountDeletionActionPresentation;
 
 const accountDeletionActionDefinition = {
   confirmation: "delete-my-account",
-  consequence: "Permanently delete this account and all of its data",
+  consequence: "Permanently delete this account and all of its data.",
   operation: "account.delete",
   title: "Delete Account",
 } as const;

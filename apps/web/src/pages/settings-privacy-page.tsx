@@ -167,7 +167,7 @@ export function DeleteAccountControl({
         <span className="min-w-0 flex-1">
           <span className="block font-semibold text-[#e54858]">Account Deletion</span>
           <span className="block text-xs text-[#687896]">
-            Permanently delete your account and its data
+            Permanently delete this account and all of its data.
           </span>
         </span>
         <button
@@ -185,7 +185,7 @@ export function DeleteAccountControl({
       {presentation !== null ? (
         <div className="mt-3 border-t border-red-100 pt-3">
           <p className="font-semibold text-[#7f2630]">{presentation.title}</p>
-          <p className="text-sm text-[#7f2630]">{presentation.consequence}.</p>
+          <p className="text-sm text-[#7f2630]">{presentation.consequence}</p>
           <div className="mt-3 flex gap-2">
             <button
               className="min-h-11 rounded-full bg-[#d63243] px-4 text-sm font-semibold text-white disabled:opacity-60"

@@ -21,6 +21,7 @@ it("keeps presentation versioning in the Worker while the API accepts bounded tr
 
   expect(Option.isSome(Schema.decodeOption(AccountDeletionRequest)(exact))).toBe(true);
   expect(Option.isSome(Schema.decodeOption(AccountDeletionRequest)(drifted))).toBe(true);
+  expect(expected.consequence).toBe("Permanently delete this account and all of its data.");
   expect(isExactApproval(exact, expected)).toBe(true);
   expect(isExactApproval(drifted, expected)).toBe(false);
   expect(isExactApproval({ ...exact, confirmation: "delete-account" }, expected)).toBe(false);

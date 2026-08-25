@@ -33,7 +33,7 @@ const SupermemorySeedResponse = Schema.Struct({ containerTag: Schema.String });
 const AccountDeletionPresentation = Schema.Struct({
   actionId: Schema.String,
   confirmation: Schema.Literal("delete-my-account"),
-  consequence: Schema.Literal("Permanently delete this account and all of its data"),
+  consequence: Schema.Literal("Permanently delete this account and all of its data."),
   operation: Schema.Literal("account.delete"),
   title: Schema.Literal("Delete Account"),
 });

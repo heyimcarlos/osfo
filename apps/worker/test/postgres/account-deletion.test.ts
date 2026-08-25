@@ -250,6 +250,66 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
         firstTarget,
         secondTarget,
       ]);
+      const retainedProgress = [
+        { ...firstTarget, status: "pending" as const },
+        { ...secondTarget, status: "pending" as const },
+      ];
+      yield* Effect.promise(() =>
+        database
+          .update(deletionCases)
+          .set({ reason: "Changed retained authority" })
+          .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId)),
+      );
+      const authorityDriftedStage = yield* accountDeletion
+        .stageIntegrationTargets(candidate, [
+          {
+            connectionId: AccountDeletion.IntegrationAuthorityTargetId.make("connection-3"),
+            userId,
+          },
+        ])
+        .pipe(Effect.result);
+      expect(Result.isFailure(authorityDriftedStage)).toBe(true);
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ targets: deletionCases.integration_targets })
+            .from(deletionCases)
+            .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId))
+            .limit(1),
+        ),
+      ).toEqual([{ targets: retainedProgress }]);
+      yield* Effect.promise(() =>
+        database
+          .update(deletionCases)
+          .set({ reason: candidate.reason })
+          .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId)),
+      );
+      const revokedAtBeforeConfirmation = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
+      yield* Effect.promise(() =>
+        database
+          .update(administrativeAuthorities)
+          .set({ revoked_at: revokedAtBeforeConfirmation })
+          .where(eq(administrativeAuthorities.admin_actor_id, candidate.adminActorId)),
+      );
+      const authorityDriftedConfirmation = yield* accountDeletion
+        .confirmIntegrationTarget(candidate, firstTarget)
+        .pipe(Effect.result);
+      expect(Result.isFailure(authorityDriftedConfirmation)).toBe(true);
+      expect(
+        yield* Effect.promise(() =>
+          database
+            .select({ targets: deletionCases.integration_targets })
+            .from(deletionCases)
+            .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId))
+            .limit(1),
+        ),
+      ).toEqual([{ targets: retainedProgress }]);
+      yield* Effect.promise(() =>
+        database
+          .update(administrativeAuthorities)
+          .set({ revoked_at: null })
+          .where(eq(administrativeAuthorities.admin_actor_id, candidate.adminActorId)),
+      );
       yield* Effect.promise(() =>
         database
           .update(deletionCases)

@@ -10,7 +10,7 @@ it("requires one explicit confirmation before deleting the account", async () =>
   const presentation: AccountDeletionActionPresentation = {
     actionId: "account-delete:session-1",
     confirmation: "delete-my-account",
-    consequence: "Permanently delete this account and all of its data",
+    consequence: "Permanently delete this account and all of its data.",
     operation: "account.delete",
     title: "Delete Account",
   };
@@ -28,7 +28,9 @@ it("requires one explicit confirmation before deleting the account", async () =>
   expect(present).toHaveBeenCalledOnce();
   expect(remove).not.toHaveBeenCalled();
   expect(screen.getAllByText("Delete Account")).toHaveLength(2);
-  expect(screen.getByText("Permanently delete this account and all of its data.")).toBeDefined();
+  expect(screen.getAllByText("Permanently delete this account and all of its data.")).toHaveLength(
+    2,
+  );
 
   await user.click(screen.getByRole("button", { name: "Confirm account deletion" }));
   expect(remove).toHaveBeenCalledExactlyOnceWith(presentation);

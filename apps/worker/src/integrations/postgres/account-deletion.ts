@@ -148,7 +148,8 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
       const outcome = yield* attempt(operation, () =>
         database.transaction(async (transaction) => {
           const caseIdentity = sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
-            and ${deletionCases.user_id} = ${candidate.userId}`;
+            and ${deletionCases.user_id} = ${candidate.userId}
+            and ${exactDeletionAuthority(candidate)}`;
           const [row] = await transaction
             .select({ targets: deletionCases.integration_targets })
             .from(deletionCases)
@@ -171,10 +172,17 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
           if (Result.isFailure(update)) {
             return { _tag: "ProgressInvalid" as const, cause: update.failure };
           }
-          await transaction
+          const updated = await transaction
             .update(deletionCases)
             .set({ integration_targets: update.success.progress })
-            .where(caseIdentity);
+            .where(caseIdentity)
+            .returning({ deletionCaseId: deletionCases.deletion_case_id });
+          if (updated.length !== 1) {
+            return {
+              _tag: "ProgressInvalid" as const,
+              cause: new Error("Deletion Case integration authority changed"),
+            };
+          }
           return { _tag: "ProgressUpdated" as const, value: update.success.value };
         }),
       );
@@ -252,19 +260,6 @@ export const inspectAuthorization = (
   database: Database,
 ): AccountDeletion.PortInterface["inspectAuthorization"] =>
   Effect.fn("AccountDeletionPostgres.inspectAuthorization")(function* (candidate) {
-    const exactAuthority =
-      candidate._tag === "SelfService"
-        ? sql`${deletionCases.requested_by_user_id} = ${candidate.userId}
-            and ${deletionCases.requested_by_admin_id} is null
-            and ${deletionCases.approval_action_id} = ${candidate.approvalActionId}
-            and ${deletionCases.approval_presentation} = ${candidate.approvalPresentation}`
-        : sql`${deletionCases.requested_by_admin_id} = ${candidate.adminActorId}
-            and ${deletionCases.requested_by_user_id} is null
-            and ${deletionCases.reason} = ${candidate.reason}
-            and ${deletionCases.approval_action_id} is null
-            and ${deletionCases.approval_presentation} is null
-            and ${administrativeAuthorities.admin_actor_id} = ${candidate.adminActorId}
-            and ${administrativeAuthorities.revoked_at} is null`;
     const rows = yield* attempt("recheckDeletionAuthority", () =>
       database
         .select({
@@ -290,7 +285,7 @@ export const inspectAuthorization = (
         .where(
           sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
             and ${deletionCases.user_id} = ${candidate.userId}
-            and ${exactAuthority}`,
+            and ${exactDeletionAuthority(candidate)}`,
         )
         .limit(1),
     );
@@ -316,6 +311,24 @@ export const inspectAuthorization = (
           : ({ _tag: "ActiveUser", userId } as const),
     };
   });
+
+const exactDeletionAuthority = (candidate: AccountDeletion.PendingAccountDeletion) =>
+  candidate._tag === "SelfService"
+    ? sql`${deletionCases.requested_by_user_id} = ${candidate.userId}
+        and ${deletionCases.requested_by_admin_id} is null
+        and ${deletionCases.approval_action_id} = ${candidate.approvalActionId}
+        and ${deletionCases.approval_presentation} = ${candidate.approvalPresentation}`
+    : sql`${deletionCases.requested_by_admin_id} = ${candidate.adminActorId}
+        and ${deletionCases.requested_by_user_id} is null
+        and ${deletionCases.reason} = ${candidate.reason}
+        and ${deletionCases.approval_action_id} is null
+        and ${deletionCases.approval_presentation} is null
+        and exists (
+          select 1
+          from ${administrativeAuthorities}
+          where ${administrativeAuthorities.admin_actor_id} = ${candidate.adminActorId}
+            and ${administrativeAuthorities.revoked_at} is null
+        )`;
 
 const attempt = <A>(operation: string, run: () => Promise<A>) =>
   Effect.tryPromise({
