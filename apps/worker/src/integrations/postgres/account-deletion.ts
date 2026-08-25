@@ -1,5 +1,5 @@
 import { agents } from "@osfo/db/schema/agents";
-import { sessions, users, verifications } from "@osfo/db/schema/auth";
+import { users, verifications } from "@osfo/db/schema/auth";
 import {
   billingCheckoutSessions,
   billingCustomers,
@@ -22,7 +22,7 @@ import { DeletionCaseId } from "../../domain/deletion-case";
 import { retainedCatalog } from "../../domain/plan-policy";
 import { AccountDeletion } from "../../services/account-deletion";
 import { ApprovalPresentation } from "../../services/authorization";
-import { exactDeletionAuthority } from "./deletion-case-authority";
+import { exactDeletionAuthority, fenceDeletionCaseAccess } from "./deletion-case-authority";
 
 /* oxlint-disable effecttsgo/async-function -- Drizzle transaction boundaries require async functions. */
 /* oxlint-disable eslint/no-underscore-dangle -- Durable candidate variants use the canonical _tag discriminator. */
@@ -90,25 +90,7 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
     candidate: AccountDeletion.PendingAccountDeletion,
   ) {
     const fenced = yield* attempt("ensureAccessFence", () =>
-      database.transaction(async (transaction) => {
-        const caseIdentity = sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
-          and ${deletionCases.user_id} = ${candidate.userId}
-          and ${exactDeletionAuthority(candidate)}`;
-        const [retained] = await transaction
-          .select({ deletionCaseId: deletionCases.deletion_case_id })
-          .from(deletionCases)
-          .where(caseIdentity)
-          .limit(1)
-          .for("update");
-        if (retained === undefined) return false;
-        await transaction.delete(sessions).where(eq(sessions.userId, candidate.userId));
-        const updated = await transaction
-          .update(deletionCases)
-          .set({ access_fenced_at: sql`clock_timestamp()` })
-          .where(caseIdentity)
-          .returning({ deletionCaseId: deletionCases.deletion_case_id });
-        return updated.length === 1;
-      }),
+      fenceDeletionCaseAccess(database, candidate),
     );
     if (!fenced) {
       return yield* new AccountDeletion.AccountDeletionUnavailable({
@@ -119,15 +101,42 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
     }
     return undefined;
   });
-  const removeUser = Effect.fn("AccountDeletionPostgres.removeUser")(function* (userId: UserId) {
-    yield* attempt("removeUser", () =>
+  const removeUser = Effect.fn("AccountDeletionPostgres.removeUser")(function* (
+    candidate: AccountDeletion.PendingAccountDeletion,
+  ) {
+    const removed = yield* attempt("removeUser", () =>
       database.transaction(async (transaction) => {
+        if (candidate._tag === "Administrative") {
+          // Hold current administrative authority until the User graph deletion commits.
+          const [administrator] = await transaction
+            .select({ adminActorId: administrativeAuthorities.admin_actor_id })
+            .from(administrativeAuthorities)
+            .where(
+              sql`${administrativeAuthorities.admin_actor_id} = ${candidate.adminActorId}
+                and ${administrativeAuthorities.revoked_at} is null`,
+            )
+            .limit(1)
+            .for("update");
+          if (administrator === undefined) return false;
+        }
+        const caseIdentity = sql`${deletionCases.deletion_case_id} = ${candidate.deletionCaseId}
+          and ${deletionCases.user_id} = ${candidate.userId}
+          and ${deletionCases.access_fenced_at} is not null
+          and ${exactDeletionAuthority(candidate)}`;
+        const [retained] = await transaction
+          .select({ deletionCaseId: deletionCases.deletion_case_id })
+          .from(deletionCases)
+          .where(caseIdentity)
+          .limit(1)
+          .for("update");
+        if (retained === undefined) return false;
         const [user] = await transaction
           .select({ email: users.email, phoneNumber: users.phoneNumber })
           .from(users)
-          .where(eq(users.id, userId))
-          .limit(1);
-        if (user === undefined) return;
+          .where(eq(users.id, candidate.userId))
+          .limit(1)
+          .for("update");
+        if (user === undefined) return false;
         const identifiers = [user.email, user.phoneNumber].filter(
           (identifier): identifier is string => identifier !== null,
         );
@@ -140,17 +149,17 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
           transaction
             .select({ stripeId: billingCustomers.stripe_customer_id })
             .from(billingCustomers)
-            .where(eq(billingCustomers.user_id, userId))
+            .where(eq(billingCustomers.user_id, candidate.userId))
             .limit(1),
           transaction
             .select({ stripeId: billingSubscriptions.stripe_subscription_id })
             .from(billingSubscriptions)
-            .where(eq(billingSubscriptions.user_id, userId))
+            .where(eq(billingSubscriptions.user_id, candidate.userId))
             .limit(1),
           transaction
             .select({ stripeId: billingCheckoutSessions.stripe_checkout_session_id })
             .from(billingCheckoutSessions)
-            .where(eq(billingCheckoutSessions.user_id, userId)),
+            .where(eq(billingCheckoutSessions.user_id, candidate.userId)),
         ]);
         const stripeObjectIds = [
           customer[0]?.stripeId,
@@ -167,9 +176,18 @@ export const make = (database: Database): AccountDeletion.PortInterface["persist
               ),
             );
         }
-        await transaction.delete(users).where(eq(users.id, userId));
+        await transaction.delete(users).where(eq(users.id, candidate.userId));
+        return true;
       }),
     );
+    if (!removed) {
+      return yield* new AccountDeletion.AccountDeletionUnavailable({
+        cause: candidate.deletionCaseId,
+        message: "The exact Deletion Case changed before PostgreSQL deletion",
+        operation: "removeUser",
+      });
+    }
+    return undefined;
   });
   const updateIntegrationTargets = Effect.fn("AccountDeletionPostgres.updateIntegrationTargets")(
     function* <A>(

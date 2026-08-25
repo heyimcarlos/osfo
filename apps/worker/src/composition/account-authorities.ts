@@ -22,7 +22,6 @@ export const make = Effect.gen(function* () {
   );
   const deletionPersistence = yield* DeletionCasePostgres.make;
   const deletionCases = yield* DeletionCase.make.pipe(
-    Effect.provideService(AuthSession.Service, authSessions),
     Effect.provideService(DeletionCase.Persistence, deletionPersistence),
   );
   const userSuspensionPersistence = yield* UserSuspensionPostgres.make;

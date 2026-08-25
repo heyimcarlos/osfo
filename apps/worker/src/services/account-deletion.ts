@@ -136,7 +136,9 @@ export interface PortInterface {
       candidate: PendingAccountDeletion,
       target: IntegrationAuthorityTarget,
     ) => Effect.Effect<void, AccountDeletionUnavailable>;
-    readonly removeUser: (userId: UserId) => Effect.Effect<void, AccountDeletionUnavailable>;
+    readonly removeUser: (
+      candidate: PendingAccountDeletion,
+    ) => Effect.Effect<void, AccountDeletionUnavailable>;
   };
 }
 
@@ -275,7 +277,7 @@ export const make = Effect.gen(function* () {
       yield* dependencies.agents.remove(candidate.agentId);
     }
     yield* requireCurrentAuthority("before PostgreSQL deletion");
-    yield* dependencies.persistence.removeUser(candidate.userId);
+    yield* dependencies.persistence.removeUser(candidate);
     return undefined;
   });
 

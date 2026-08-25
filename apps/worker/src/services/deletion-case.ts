@@ -5,8 +5,6 @@ import type { PlanPolicyVersion, UserId } from "../domain";
 import type { AdminActorId, AdminReason } from "../domain/account-administration";
 import type { AuthSessionId } from "../domain/auth-session";
 import { type DeletionAccessFact, DeletionCaseId } from "../domain/deletion-case";
-import type { AuthSessionUnavailable } from "./auth-session";
-import { AuthSession } from "./auth-session";
 import type { ActionId } from "../domain/action-execution";
 import type { ApprovalPresentation } from "./authorization";
 
@@ -82,7 +80,7 @@ export interface Interface {
     | { readonly _tag: "DeletionAuthorityChanged" }
     | { readonly _tag: "DeletionRequested"; readonly deletionCaseId: DeletionCaseId }
     | { readonly _tag: "UserMissing" },
-    AuthSessionUnavailable | DbUnavailable | DeletionCaseIdentityUnavailable
+    DbUnavailable | DeletionCaseIdentityUnavailable
   >;
   readonly requestSelf: (
     userId: UserId,
@@ -93,16 +91,15 @@ export interface Interface {
     | { readonly _tag: "DeletionAuthorityChanged" }
     | { readonly _tag: "DeletionRequested"; readonly deletionCaseId: DeletionCaseId }
     | { readonly _tag: "UserMissing" },
-    AuthSessionUnavailable | DbUnavailable | DeletionCaseIdentityUnavailable
+    DbUnavailable | DeletionCaseIdentityUnavailable
   >;
 }
 
 /** Trusted Deletion Case authority. */
 export class Service extends Context.Service<Service, Interface>()("@osfo/DeletionCase") {}
 
-/** Construct a durable Deletion Case authority that revokes AuthSessions after the access fence. */
+/** Construct a durable Deletion Case authority whose persistence owns the exact access fence. */
 export const make = Effect.gen(function* () {
-  const authSessions = yield* AuthSession.Service;
   const crypto = yield* Crypto.Crypto;
   const persistence = yield* Persistence;
   const secureId = Effect.mapError(
@@ -139,7 +136,6 @@ export const make = Effect.gen(function* () {
           return { _tag: "DeletionAuthorityChanged" } as const;
         }
         if (result._tag === "MissingUser") return { _tag: "UserMissing" } as const;
-        yield* authSessions.revokeAllForUser(command.userId);
         const retainedDeletionCaseId =
           result._tag === "Existing" ? result.deletionCaseId : deletionCaseId;
         const fence = yield* persistence.markAccessFenced(command, retainedDeletionCaseId);

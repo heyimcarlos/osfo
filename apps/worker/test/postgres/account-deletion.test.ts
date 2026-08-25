@@ -202,6 +202,7 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
       if (candidate === undefined || candidate._tag !== "SelfService") {
         return yield* Effect.die(new Error("Self-service Deletion Case missing"));
       }
+      yield* accountDeletion.ensureAccessFence(candidate);
       expect(
         yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate),
       ).toMatchObject({
@@ -241,7 +242,7 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
       );
       expect(yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate)).toBeNull();
 
-      yield* accountDeletion.removeUser(userId);
+      yield* accountDeletion.removeUser(candidate);
 
       const [remainingUsers, remainingAgents, remainingCases] = yield* Effect.promise(() =>
         Promise.all([
@@ -501,16 +502,116 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
       ).toBeNull();
       const revokedAt = yield* DateTime.now.pipe(Effect.map(DateTime.toDateUtc));
       yield* Effect.promise(() =>
-        database
-          .update(administrativeAuthorities)
-          .set({ revoked_at: revokedAt })
-          .where(eq(administrativeAuthorities.admin_actor_id, "admin-1")),
+        Promise.all([
+          database
+            .update(administrativeAuthorities)
+            .set({ revoked_at: revokedAt })
+            .where(eq(administrativeAuthorities.admin_actor_id, "admin-1")),
+          database.insert(sessions).values({
+            expiresAt: retrySessionExpiresAt,
+            id: "session-before-final-admin-delete",
+            token: "token-before-final-admin-delete",
+            updatedAt: retrySessionUpdatedAt,
+            userId,
+          }),
+        ]),
       );
       expect(yield* AccountDeletionPostgres.inspectAuthorization(database)(candidate)).toBeNull();
-      yield* accountDeletion.removeUser(userId);
+      const revokedRemoval = yield* accountDeletion.removeUser(candidate).pipe(Effect.result);
+      expect(Result.isFailure(revokedRemoval)).toBe(true);
+      expect(
+        yield* Effect.promise(() =>
+          Promise.all([
+            database.select().from(users).where(eq(users.id, userId)),
+            database.select().from(sessions).where(eq(sessions.userId, userId)),
+            database.select().from(deletionCases).where(eq(deletionCases.user_id, userId)),
+          ]),
+        ),
+      ).toEqual([
+        [expect.objectContaining({ id: userId })],
+        [expect.objectContaining({ id: "session-before-final-admin-delete" })],
+        [expect.objectContaining({ access_fenced_at: expect.any(Date) })],
+      ]);
+      yield* Effect.promise(() =>
+        Promise.all([
+          database
+            .update(administrativeAuthorities)
+            .set({ revoked_at: null })
+            .where(eq(administrativeAuthorities.admin_actor_id, candidate.adminActorId)),
+          database
+            .update(deletionCases)
+            .set({ reason: "Wrong final reason" })
+            .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId)),
+        ]),
+      );
+      expect(
+        Result.isFailure(yield* accountDeletion.removeUser(candidate).pipe(Effect.result)),
+      ).toBe(true);
+      expect(
+        yield* Effect.promise(() => database.select().from(users).where(eq(users.id, userId))),
+      ).toHaveLength(1);
+      yield* Effect.promise(() =>
+        database
+          .update(deletionCases)
+          .set({ reason: candidate.reason })
+          .where(eq(deletionCases.deletion_case_id, candidate.deletionCaseId)),
+      );
+      yield* accountDeletion.ensureAccessFence(candidate);
+      yield* accountDeletion.removeUser(candidate);
+      expect(
+        yield* Effect.promise(() => database.select().from(users).where(eq(users.id, userId))),
+      ).toEqual([]);
       return undefined;
     }).pipe(Effect.provide(Layer.merge(Db.layer({ db: env.DB }), BrowserCrypto.layer))),
   ),
+);
+
+it.effect(
+  "keeps an administrative request unfenced when authority revokes after case creation",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
+          Effect.promise(client.dispose),
+        );
+        const userId = yield* registerUser(app, "+15550002524");
+        const database = yield* Db.database;
+        const persistence = yield* DeletionCasePostgres.make;
+        const command = {
+          adminActorId: AdminActorId.make("admin-fence-race"),
+          reason: AdminReason.make("Required administrative erasure"),
+          userId,
+        };
+        const deletionCaseId = DeletionCaseId.make("admin-fence-race-case");
+        yield* Effect.promise(() =>
+          database.insert(administrativeAuthorities).values({
+            admin_actor_id: command.adminActorId,
+          }),
+        );
+        expect(yield* persistence.request(command, deletionCaseId)).toEqual({ _tag: "Created" });
+        yield* Effect.promise(() =>
+          database
+            .update(administrativeAuthorities)
+            .set({ revoked_at: retrySessionUpdatedAt })
+            .where(eq(administrativeAuthorities.admin_actor_id, command.adminActorId)),
+        );
+
+        expect(yield* persistence.markAccessFenced(command, deletionCaseId)).toEqual({
+          _tag: "AuthorityChanged",
+        });
+        expect(
+          yield* Effect.promise(() =>
+            Promise.all([
+              database.select().from(sessions).where(eq(sessions.userId, userId)),
+              database
+                .select({ accessFencedAt: deletionCases.access_fenced_at })
+                .from(deletionCases)
+                .where(eq(deletionCases.deletion_case_id, deletionCaseId)),
+            ]),
+          ),
+        ).toEqual([[expect.any(Object)], [{ accessFencedAt: null }]]);
+      }).pipe(Effect.provide(Layer.merge(Db.layer({ db: env.DB }), BrowserCrypto.layer))),
+    ),
 );
 
 const registerUser = (app: Awaited<ReturnType<typeof spawnApp>>, phoneNumber = "+15550002522") =>

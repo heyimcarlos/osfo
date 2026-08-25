@@ -3,13 +3,13 @@
 /* oxlint-disable eslint/no-underscore-dangle -- The assertion reads the domain outcome discriminator. */
 import { BrowserCrypto } from "@effect/platform-browser";
 import { expect, it } from "@effect/vitest";
-import { Effect, Result } from "effect";
+import { Effect } from "effect";
 
 import { PlanPolicyVersion, UserId } from "../domain";
 import { AdminActorId, AdminReason } from "../domain/account-administration";
 import { ActionId } from "../domain/action-execution";
 import { AuthSessionId } from "../domain/auth-session";
-import type { DeletionCaseId } from "../domain/deletion-case";
+import { DeletionCaseId } from "../domain/deletion-case";
 import { ApprovalPresentation } from "./authorization";
 import { AuthSession } from "./auth-session";
 import { DeletionCase } from "./deletion-case";
@@ -124,11 +124,10 @@ it.effect("leaves AuthSessions untouched when a retained self-service case is no
   );
 });
 
-it.effect("retries the AuthSession fence for a retained administrative Deletion Case", () => {
+it.effect("leaves AuthSessions to the exact administrative persistence fence", () => {
   const userId = UserId.make("user-1");
-  let retainedDeletionCaseId: DeletionCaseId | null = null;
-  let revocations = 0;
-  const fencedCases: Array<DeletionCaseId> = [];
+  const retainedDeletionCaseId = DeletionCaseId.make("retained-case");
+  const events: Array<string> = [];
   return Effect.gen(function* () {
     const service = yield* DeletionCase.make;
     const command = {
@@ -136,16 +135,8 @@ it.effect("retries the AuthSession fence for a retained administrative Deletion 
       reason: AdminReason.make("Required erasure"),
       userId,
     };
-    const first = yield* service.request(command).pipe(Effect.result);
-    expect(Result.isFailure(first)).toBe(true);
-
-    const second = yield* service.request(command);
-    expect(second).toEqual({
-      _tag: "DeletionAlreadyRequested",
-      deletionCaseId: retainedDeletionCaseId,
-    });
-    expect(revocations).toBe(2);
-    expect(fencedCases).toEqual([retainedDeletionCaseId]);
+    expect(yield* service.request(command)).toEqual({ _tag: "DeletionAuthorityChanged" });
+    expect(events).toEqual(["request", "fence"]);
   }).pipe(
     Effect.provide(BrowserCrypto.layer),
     Effect.provideService(
@@ -153,19 +144,7 @@ it.effect("retries the AuthSession fence for a retained administrative Deletion 
       AuthSession.Service.of({
         inspect: () => Effect.die(new Error("unexpected inspection")),
         revoke: () => Effect.die(new Error("unexpected single revocation")),
-        revokeAllForUser: () =>
-          Effect.suspend(() => {
-            revocations += 1;
-            return revocations === 1
-              ? Effect.fail(
-                  new AuthSession.AuthSessionUnavailable({
-                    cause: "temporary database failure",
-                    message: "AuthSession fence unavailable",
-                    operation: "revokeAll",
-                  }),
-                )
-              : Effect.void;
-          }),
+        revokeAllForUser: () => Effect.sync(() => events.push("external revoke")),
       }),
     ),
     Effect.provideService(
@@ -174,16 +153,14 @@ it.effect("retries the AuthSession fence for a retained administrative Deletion 
         inspect: () => Effect.succeed({ _tag: "DeletionAccessAvailable" }),
         markAccessFenced: (_command, deletionCaseId) =>
           Effect.sync(() => {
-            fencedCases.push(deletionCaseId);
-            return { _tag: "Fenced" as const };
+            expect(deletionCaseId).toBe(retainedDeletionCaseId);
+            events.push("fence");
+            return { _tag: "AuthorityChanged" as const };
           }),
-        request: (_command, deletionCaseId) =>
+        request: () =>
           Effect.sync(() => {
-            if (retainedDeletionCaseId !== null) {
-              return { _tag: "Existing" as const, deletionCaseId: retainedDeletionCaseId };
-            }
-            retainedDeletionCaseId = deletionCaseId;
-            return { _tag: "Created" as const };
+            events.push("request");
+            return { _tag: "Existing" as const, deletionCaseId: retainedDeletionCaseId };
           }),
         requestSelf: () => Effect.die(new Error("unexpected self-service request")),
       }),
