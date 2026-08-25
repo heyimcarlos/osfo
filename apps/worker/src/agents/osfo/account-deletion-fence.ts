@@ -22,4 +22,9 @@ export const makeAccountDeletionFence = () => {
   };
 };
 
+/** Reject a typed RPC failure returned as a value from an otherwise void quiescence call. */
+export const requireAccountDeletionQuiescence = (result: void | Error): void => {
+  if (result !== undefined) throw result;
+};
+
 export * as AccountDeletionFence from "./account-deletion-fence";

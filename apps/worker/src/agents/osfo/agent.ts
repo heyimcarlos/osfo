@@ -241,7 +241,10 @@ import {
   makeActionPresentationPersistence,
 } from "./action-presentation";
 import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-authorization";
-import { makeAccountDeletionFence } from "./account-deletion-fence";
+import {
+  makeAccountDeletionFence,
+  requireAccountDeletionQuiescence,
+} from "./account-deletion-fence";
 import { makeAgentSessionLifecycle } from "./session-lifecycle";
 import { deleteLocalSession } from "./session-deletion";
 import { correctForgottenKnowledge } from "./knowledge-deletion";
@@ -266,6 +269,7 @@ import {
   reconcileMemoryProviderOutbox,
   type ReconciliationOptions,
 } from "./memory-provider-reconciliation";
+import { makeProviderConversationSaveGate } from "./provider-conversation-save-gate";
 import { type DeletionAuthorization, DeletionActionUnavailable } from "./deletion-actions";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries, and Effect results use _tag. */
@@ -612,6 +616,7 @@ export class OsfoAgent extends Think<Env> {
       this.listSubmissions({ limit: 1, status: ["pending", "running"] }),
     ).pipe(Effect.map((submissions) => submissions.length > 0)),
   });
+  readonly #providerConversationSaveGate = makeProviderConversationSaveGate();
   readonly #migrationsReady = this.ctx.blockConcurrencyWhile(() =>
     Effect.runPromise(applyAgentMigrations(this.ctx.storage)),
   );
@@ -1706,68 +1711,72 @@ export class OsfoAgent extends Think<Env> {
     owner: UserId,
   ) {
     return runRpc(
-      deleteLocalSession(
-        {
-          replacementSessionId: SessionId.make(`session-delete-${deletionAuthorization.actionId}`),
-          sessionId: input.sessionId,
-        },
-        {
-          activateCurrentSession: Effect.tryPromise({
-            try: () => this.#activateCurrentSession(),
-            catch: sessionDeletionFailure("The replacement Session could not be activated"),
-          }),
-          authorizeDeletion: this.#managedActionAuthorization
-            .recheck(
-              deletionAuthorization.authorityIdentity,
-              { actionId: deletionAuthorization.actionId, kind: "session.delete" },
-              deletionAuthorization.presentation,
-            )
-            .pipe(
-              Effect.mapError(
-                sessionDeletionFailure("Session deletion authority could not be loaded"),
-              ),
-              Effect.flatMap((result) =>
-                Predicate.isTagged(result, "Denied") ? Effect.fail(result) : Effect.void,
-              ),
+      this.#providerConversationSaveGate.runSessionDeletion(
+        deleteLocalSession(
+          {
+            replacementSessionId: SessionId.make(
+              `session-delete-${deletionAuthorization.actionId}`,
             ),
-          clearMessages: (sessionId) =>
-            Effect.tryPromise({
-              try: () => Session.create(this).forSession(sessionId).clearMessages(),
-              catch: sessionDeletionFailure("Think Session history could not be deleted"),
+            sessionId: input.sessionId,
+          },
+          {
+            activateCurrentSession: Effect.tryPromise({
+              try: () => this.#activateCurrentSession(),
+              catch: sessionDeletionFailure("The replacement Session could not be activated"),
             }),
-          inspect: this.#store
-            .inspect()
-            .pipe(
-              Effect.mapError(sessionDeletionFailure("Current Session ownership is unavailable")),
-            ),
-          ownsSession: (sessionId) =>
-            this.#store
-              .ownsSession(sessionId)
-              .pipe(
-                Effect.mapError(sessionDeletionFailure("Session ownership could not be checked")),
-              ),
-          replacedAt: currentDbTimestamp,
-          replaceCurrentSession: (replacement) =>
-            this.#store
-              .replaceCurrentSession(replacement)
+            authorizeDeletion: this.#managedActionAuthorization
+              .recheck(
+                deletionAuthorization.authorityIdentity,
+                { actionId: deletionAuthorization.actionId, kind: "session.delete" },
+                deletionAuthorization.presentation,
+              )
               .pipe(
                 Effect.mapError(
-                  sessionDeletionFailure(
-                    "A replacement Session could not be created before deletion",
-                  ),
+                  sessionDeletionFailure("Session deletion authority could not be loaded"),
+                ),
+                Effect.flatMap((result) =>
+                  Predicate.isTagged(result, "Denied") ? Effect.fail(result) : Effect.void,
                 ),
               ),
-          settle: (sessionId) =>
-            Effect.promise(() =>
-              this.#settleDeletedSession(sessionId, deletionAuthorization, owner),
-            ).pipe(
-              Effect.flatMap((result) =>
-                Predicate.isTagged(result, "DeletionActionUnavailable")
-                  ? Effect.fail(result)
-                  : Effect.succeed(result),
+            clearMessages: (sessionId) =>
+              Effect.tryPromise({
+                try: () => Session.create(this).forSession(sessionId).clearMessages(),
+                catch: sessionDeletionFailure("Think Session history could not be deleted"),
+              }),
+            inspect: this.#store
+              .inspect()
+              .pipe(
+                Effect.mapError(sessionDeletionFailure("Current Session ownership is unavailable")),
               ),
-            ),
-        },
+            ownsSession: (sessionId) =>
+              this.#store
+                .ownsSession(sessionId)
+                .pipe(
+                  Effect.mapError(sessionDeletionFailure("Session ownership could not be checked")),
+                ),
+            replacedAt: currentDbTimestamp,
+            replaceCurrentSession: (replacement) =>
+              this.#store
+                .replaceCurrentSession(replacement)
+                .pipe(
+                  Effect.mapError(
+                    sessionDeletionFailure(
+                      "A replacement Session could not be created before deletion",
+                    ),
+                  ),
+                ),
+            settle: (sessionId) =>
+              Effect.promise(() =>
+                this.#settleDeletedSession(sessionId, deletionAuthorization, owner),
+              ).pipe(
+                Effect.flatMap((result) =>
+                  Predicate.isTagged(result, "DeletionActionUnavailable")
+                    ? Effect.fail(result)
+                    : Effect.succeed(result),
+                ),
+              ),
+          },
+        ),
       ),
     );
   }
@@ -1925,7 +1934,7 @@ export class OsfoAgent extends Think<Env> {
   async quiesceAccountDeletion(encodedUserId: string): Promise<void> {
     await this.#migrationsReady;
     const userId = await Effect.runPromise(Schema.decodeEffect(UserId)(encodedUserId));
-    await runRpc(
+    const quiescence = await runRpc(
       this.#sessionExecution.run(
         Effect.tryPromise({
           try: () => this.#cancelActiveSubmissionsForAccountDeletion(),
@@ -1938,6 +1947,7 @@ export class OsfoAgent extends Think<Env> {
         }).pipe(Effect.andThen(this.#accountDeletionFence.close)),
       ),
     );
+    requireAccountDeletionQuiescence(quiescence);
     await this.#reconcileMemoryProviderOutboxOrSchedule();
     const canSave = await Effect.runPromise(this.#canSaveProviderConversation(userId));
     if (canSave) throw new Error("Account deletion has not fenced provider conversation saves");
@@ -2978,6 +2988,7 @@ export class OsfoAgent extends Think<Env> {
           authorizeDeletion: (deletion) => this.#authorizeProviderDeletion(deletion),
           canSaveConversation: (userId) => this.#canSaveProviderConversation(userId),
           prepareDeletion: (claim) => this.#prepareProviderDeletion(claim),
+          runSaveConversation: this.#providerConversationSaveGate.runSave,
         };
         const options =
           conversationStatusRetryMilliseconds === undefined

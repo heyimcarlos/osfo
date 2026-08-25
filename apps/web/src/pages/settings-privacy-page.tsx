@@ -165,8 +165,10 @@ export function DeleteAccountControl({
       <div className="flex min-h-10 items-center gap-3">
         <PrivacyIcon icon={Trash2} />
         <span className="min-w-0 flex-1">
-          <span className="block font-semibold text-[#e54858]">Delete My Data</span>
-          <span className="block text-xs text-[#687896]">Permanently delete your data</span>
+          <span className="block font-semibold text-[#e54858]">Account Deletion</span>
+          <span className="block text-xs text-[#687896]">
+            Permanently delete your account and its data
+          </span>
         </span>
         <button
           className="min-h-11 rounded-full px-3 text-sm font-semibold text-[#c83242] hover:bg-red-50 focus-visible:ring-2 focus-visible:ring-[#e54858] focus-visible:outline-none"
@@ -174,7 +176,7 @@ export function DeleteAccountControl({
           type="button"
           onClick={begin}
         >
-          {busy && presentation === null ? "Preparing…" : "Delete My Data"}
+          {busy && presentation === null ? "Preparing…" : "Delete Account"}
         </button>
       </div>
       {presentation === null && error ? (

@@ -20,6 +20,7 @@ import { AccountDeletion } from "./services/account-deletion";
 export interface Bindings {
   readonly ARTIFACTS?: R2Bucket;
   readonly FILES?: R2Bucket;
+  readonly integrationAuthorityDeletion: AccountDeletionComposition.IntegrationAuthorityDeletionCapability;
   readonly DB: Pick<Hyperdrive, "connectionString">;
   readonly OSFO_DIRECTORY: Routes.Bindings["OSFO_DIRECTORY"];
   readonly routeOsfoAgentRequest: Routes.Bindings["routeOsfoAgentRequest"];
@@ -114,6 +115,7 @@ export const reconcileAccountDeletions = (env: CloudflareEnv) => {
 const adaptBindings = (env: CloudflareEnv): Bindings => ({
   ARTIFACTS: env.ARTIFACTS,
   FILES: env.FILES,
+  integrationAuthorityDeletion: AccountDeletionComposition.integrationAuthorityDeletionNotDelivered,
   DB: env.DB,
   OSFO_DIRECTORY: {
     getByName: () => {

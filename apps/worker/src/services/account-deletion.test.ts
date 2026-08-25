@@ -201,6 +201,49 @@ it.effect("does not delete provider knowledge when authority changes during quie
   }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
 });
 
+it.effect("does not advance when Agent quiescence fails", () => {
+  const calls: Array<string> = [];
+  const candidate = {
+    _tag: "SelfService" as const,
+    agentId: AgentId.make("agent-1"),
+    approvalActionId: ActionId.make("account-delete-1"),
+    approvalPresentation: ApprovalPresentation.make("Delete account"),
+    deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+    userId: UserId.make("user-1"),
+  };
+  const port = AccountDeletion.Port.of({
+    inspectAuthorization: () => Effect.succeed(activeFacts(candidate.userId)),
+    agents: {
+      quiesce: () =>
+        Effect.sync(() => calls.push("quiesce")).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new AccountDeletion.AccountDeletionUnavailable({
+                cause: { _tag: "ThinkSubmissionUnavailable" },
+                message: "Agent provider activity could not be quiesced",
+                operation: "quiesceAgentAccountDeletion",
+              }),
+            ),
+          ),
+        ),
+      remove: () => Effect.sync(() => calls.push("agent")),
+    },
+    integrations: { pending: () => Effect.succeed([]), revoke: () => Effect.void },
+    objects: { remove: () => Effect.sync(() => calls.push("objects")) },
+    persistence: {
+      pending: Effect.succeed([candidate]),
+      removeUser: () => Effect.sync(() => calls.push("postgres")),
+    },
+  });
+
+  return Effect.gen(function* () {
+    const deletion = yield* AccountDeletion.Service;
+    const result = yield* deletion.reconcileOne(candidate).pipe(Effect.result);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(calls).toEqual(["quiesce"]);
+  }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
+});
+
 it.effect(
   "retains per-connection progress and preserves another User's integration authority",
   () => {

@@ -38,6 +38,9 @@ export interface ReconciliationOptions {
     userId: MemoryProvider.SaveConversationInput["userId"],
   ) => Effect.Effect<boolean, ProviderSaveDeferred>;
   readonly conversationStatusRetryMilliseconds?: number;
+  readonly runSaveConversation?: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
 }
 
 /** Poll accepted conversation ingestion to a terminal provider status before User deletion. */
@@ -323,48 +326,58 @@ const processConversationClaim = Effect.fn("MemoryProviderOutbox.processConversa
     let acceptance = claim.providerAcceptance;
     let usage = claim.usage;
     if (acceptance === null) {
-      const permitted = yield* (
-        options.canSaveConversation?.(projection.userId) ?? Effect.succeed(true)
-      ).pipe(Effect.result);
-      if (Result.isFailure(permitted) || !permitted.success) {
-        return yield* retryClaim(
-          store,
-          claim,
-          Result.isFailure(permitted)
-            ? permitted.failure.message
-            : "Account deletion fences new provider conversation saves",
-          retryDelaySeconds,
-        );
-      }
-      const claimIsCurrent = yield* store.isClaimCurrent(claim);
-      if (!claimIsCurrent) return undefined;
-      const saved = yield* provider
-        .saveConversation({
-          conversation: projection.conversation,
-          sessionId: projection.sessionId,
-          userId: projection.userId,
-        })
-        .pipe(Effect.result);
-      if (Result.isFailure(saved)) {
-        if (Predicate.isTagged(saved.failure, "MemoryProviderAcceptanceStatusInvalid")) {
-          const acceptedAt = yield* DateTime.now;
-          yield* store.failProviderAcceptance(claim, saved.failure, toDbTimestamp(acceptedAt));
+      const saveAndSettle = Effect.gen(function* () {
+        const permitted = yield* (
+          options.canSaveConversation?.(projection.userId) ?? Effect.succeed(true)
+        ).pipe(Effect.result);
+        if (Result.isFailure(permitted) || !permitted.success) {
+          yield* retryClaim(
+            store,
+            claim,
+            Result.isFailure(permitted)
+              ? permitted.failure.message
+              : "Account deletion fences new provider conversation saves",
+            retryDelaySeconds,
+          );
           return undefined;
         }
-        return yield* settleProviderFailure(store, claim, saved.failure, false);
-      }
-      const acceptedAt = yield* DateTime.now;
-      const accepted = yield* store.markProviderAccepted(
-        claim,
-        saved.success,
-        toDbTimestamp(acceptedAt),
-      );
-      if (!accepted) return undefined;
-      acceptance = {
-        documentId: saved.success.documentId,
-        processingStatus: saved.success.processingStatus,
-      };
-      usage = saved.success.usage;
+        const claimIsCurrent = yield* store.isClaimCurrent(claim);
+        if (!claimIsCurrent) return undefined;
+        const saved = yield* provider
+          .saveConversation({
+            conversation: projection.conversation,
+            sessionId: projection.sessionId,
+            userId: projection.userId,
+          })
+          .pipe(Effect.result);
+        if (Result.isFailure(saved)) {
+          if (Predicate.isTagged(saved.failure, "MemoryProviderAcceptanceStatusInvalid")) {
+            const acceptedAt = yield* DateTime.now;
+            yield* store.failProviderAcceptance(claim, saved.failure, toDbTimestamp(acceptedAt));
+            return undefined;
+          }
+          yield* settleProviderFailure(store, claim, saved.failure, false);
+          return undefined;
+        }
+        const acceptedAt = yield* DateTime.now;
+        const accepted = yield* store.markProviderAccepted(
+          claim,
+          saved.success,
+          toDbTimestamp(acceptedAt),
+        );
+        if (!accepted) return undefined;
+        return {
+          acceptance: {
+            documentId: saved.success.documentId,
+            processingStatus: saved.success.processingStatus,
+          },
+          usage: saved.success.usage,
+        };
+      });
+      const saved = yield* options.runSaveConversation?.(saveAndSettle) ?? saveAndSettle;
+      if (saved === undefined) return undefined;
+      acceptance = saved.acceptance;
+      usage = saved.usage;
     }
 
     if (acceptance.processingStatus !== "done") {

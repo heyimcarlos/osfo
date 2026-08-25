@@ -2,7 +2,18 @@
 import { expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber } from "effect";
 
-import { makeAccountDeletionFence } from "./account-deletion-fence";
+import {
+  makeAccountDeletionFence,
+  requireAccountDeletionQuiescence,
+} from "./account-deletion-fence";
+
+it("rejects a Think quiescence failure returned through the RPC value channel", () => {
+  const failure = Object.assign(new Error("Think quiescence failed"), {
+    _tag: "ThinkSubmissionUnavailable" as const,
+  });
+  expect(() => requireAccountDeletionQuiescence(failure)).toThrow(failure);
+  expect(requireAccountDeletionQuiescence(undefined)).toBeUndefined();
+});
 
 it.effect("drains an in-flight document writer and prevents resurrection after R2 cleanup", () =>
   Effect.gen(function* () {

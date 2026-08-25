@@ -9,15 +9,31 @@ import { AccountDeletionCloudflare } from "../integrations/cloudflare/account-de
 import { AccountDeletionPostgres } from "../integrations/postgres/account-deletion";
 import { AccountDeletion } from "../services/account-deletion";
 
+/* oxlint-disable eslint/no-underscore-dangle -- Closed capability variants use the canonical _tag discriminator. */
+
 interface DirectoryDeletionStub {
   readonly deleteAgent: (agentId: string) => Promise<void>;
   readonly quiesceAgentAccountDeletion: (agentId: string, userId: string) => Promise<void>;
 }
 
+/** Closed runtime state for the not-yet-delivered integration-authority owner. */
+export type IntegrationAuthorityDeletionCapability =
+  | { readonly _tag: "NotDelivered" }
+  | {
+      readonly _tag: "Delivered";
+      readonly adapter: AccountDeletion.PortInterface["integrations"] | null;
+    };
+
+/** Current production truth: no integration connection persistence has been delivered. */
+export const integrationAuthorityDeletionNotDelivered: IntegrationAuthorityDeletionCapability = {
+  _tag: "NotDelivered",
+};
+
 /** Concrete bindings used by the broader account-deletion flow. */
 export interface Bindings {
   readonly ARTIFACTS?: R2Bucket;
   readonly FILES?: R2Bucket;
+  readonly integrationAuthorityDeletion: IntegrationAuthorityDeletionCapability;
   readonly OSFO_DIRECTORY: {
     readonly getByName: (identity: string) => DirectoryDeletionStub;
   };
@@ -55,19 +71,7 @@ const makePort = (bindings: Bindings) =>
               }),
           }),
       },
-      integrations: {
-        // No integration provider adapter or connected-account store exists in the current
-        // runtime. The port stays explicit so a delivered provider cannot be skipped silently.
-        pending: () => Effect.succeed([]),
-        revoke: (target) =>
-          Effect.fail(
-            new AccountDeletion.AccountDeletionUnavailable({
-              cause: target,
-              message: "Integration authority deletion is unavailable",
-              operation: "deleteIntegrationAuthority",
-            }),
-          ),
-      },
+      integrations: integrationDeletionPort(bindings.integrationAuthorityDeletion),
       objects:
         bindings.FILES === undefined || bindings.ARTIFACTS === undefined
           ? {
@@ -116,5 +120,28 @@ export const portLayer = (bindings: Bindings) =>
 /** Shared account-deletion capability used by HTTP and scheduled entry points. */
 export const layer = (bindings: Bindings) =>
   AccountDeletion.layerWithoutDependencies.pipe(Layer.provide(portLayer(bindings)));
+
+/** Resolve integration deletion only from an explicit delivered/not-delivered capability state. */
+export const integrationDeletionPort = (
+  capability: IntegrationAuthorityDeletionCapability,
+): AccountDeletion.PortInterface["integrations"] => {
+  if (capability._tag === "NotDelivered") {
+    return { pending: () => Effect.succeed([]), revoke: integrationDeletionUnavailable };
+  }
+  if (capability.adapter !== null) return capability.adapter;
+  return {
+    pending: () => integrationDeletionUnavailable("enabled integration authority discovery"),
+    revoke: (target) => integrationDeletionUnavailable(target),
+  };
+};
+
+const integrationDeletionUnavailable = (cause: unknown) =>
+  Effect.fail(
+    new AccountDeletion.AccountDeletionUnavailable({
+      cause,
+      message: "Integration authority deletion is unavailable",
+      operation: "deleteIntegrationAuthority",
+    }),
+  );
 
 export * as AccountDeletionComposition from "./account-deletion";

@@ -23,7 +23,8 @@ it("requires one explicit confirmation before deleting the account", async () =>
   const user = userEvent.setup();
   render(<DeleteAccountControl onDelete={remove} onPresent={present} />);
 
-  await user.click(screen.getByRole("button", { name: "Delete My Data" }));
+  expect(screen.getByText("Account Deletion")).toBeDefined();
+  await user.click(screen.getByRole("button", { name: "Delete Account" }));
   expect(present).toHaveBeenCalledOnce();
   expect(remove).not.toHaveBeenCalled();
   expect(screen.getByText("Permanently delete this account and all of its data.")).toBeDefined();
