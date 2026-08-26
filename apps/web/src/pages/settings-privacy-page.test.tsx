@@ -12,24 +12,11 @@ import { vi } from "vitest";
 import { AuthStateProvider } from "../auth-state";
 import { createAppRouter } from "../router";
 
-const apiClient = vi.hoisted(() => ({
-  presentAccountDeletion: vi.fn<() => Promise<AccountDeletionActionPresentation>>(),
-  requestAccountDeletion:
-    vi.fn<(presentation: AccountDeletionActionPresentation) => Promise<void>>(),
-}));
-
-// oxlint-disable-next-line osfo/no-module-mocking, effecttsgo/async-function -- The real route stays intact while this focused web test replaces only its async HTTP client boundary.
-vi.mock("../lib/api-client", async () => {
-  const { Effect: MockEffect } = await import("effect");
-  return {
-    presentAccountDeletion: MockEffect.promise(() => apiClient.presentAccountDeletion()),
-    requestAccountDeletion: (presentation: AccountDeletionActionPresentation) =>
-      MockEffect.promise(() => apiClient.requestAccountDeletion(presentation)),
-  };
-});
+const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   cleanup();
+  globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
 });
 
@@ -42,8 +29,21 @@ it.effect("requires one server-presented confirmation before deleting the accoun
       operation: "account.delete",
       title: "Delete Account",
     };
-    apiClient.presentAccountDeletion.mockImplementation(() => Promise.resolve(presentation));
-    apiClient.requestAccountDeletion.mockImplementation(() => Promise.resolve());
+    const requests: Array<Request> = [];
+    globalThis.fetch = vi.fn<typeof globalThis.fetch>((input, init) => {
+      const request = new Request(input, init);
+      requests.push(request.clone());
+      if (
+        request.method === "GET" &&
+        new URL(request.url).pathname === "/v1/account/deletion-action"
+      ) {
+        return Promise.resolve(Response.json(presentation));
+      }
+      if (request.method === "DELETE" && new URL(request.url).pathname === "/v1/account") {
+        return Promise.resolve(Response.json({ status: "deletion-pending" }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
     const assign = vi.spyOn(globalThis.location, "assign").mockImplementation(() => undefined);
     const user = userEvent.setup();
     const router = createAppRouter({
@@ -74,21 +74,26 @@ it.effect("requires one server-presented confirmation before deleting the accoun
     );
     expect(screen.getByText("Permanent account removal requires confirmation.")).toBeDefined();
     yield* Effect.promise(() => user.click(screen.getByRole("button", { name: "Delete Account" })));
-    yield* Effect.promise(() =>
-      waitFor(() => expect(apiClient.presentAccountDeletion).toHaveBeenCalledOnce()),
+    yield* Effect.promise(() => waitFor(() => expect(requests).toHaveLength(1)));
+    expect(requests[0]?.method).toBe("GET");
+    expect(new URL(requests[0]?.url ?? "https://invalid.test").pathname).toBe(
+      "/v1/account/deletion-action",
     );
-    expect(apiClient.requestAccountDeletion).not.toHaveBeenCalled();
     expect(screen.getAllByText("Delete Account")).toHaveLength(2);
     expect(screen.getAllByText(presentation.consequence)).toHaveLength(1);
 
     yield* Effect.promise(() =>
       user.click(screen.getByRole("button", { name: "Confirm account deletion" })),
     );
-    yield* Effect.promise(() =>
-      waitFor(() =>
-        expect(apiClient.requestAccountDeletion).toHaveBeenCalledExactlyOnceWith(presentation),
-      ),
-    );
+    yield* Effect.promise(() => waitFor(() => expect(requests).toHaveLength(2)));
+    const deleteRequest = yield* Effect.fromNullishOr(requests[1]).pipe(Effect.orDie);
+    expect(deleteRequest.method).toBe("DELETE");
+    expect(new URL(deleteRequest.url).pathname).toBe("/v1/account");
+    const payload = yield* Effect.promise(() => deleteRequest.clone().json());
+    expect(payload).toEqual({
+      approval: { decision: "approved", presentation },
+      confirmation: presentation.confirmation,
+    });
     expect(assign).toHaveBeenCalledExactlyOnceWith("/");
   }),
 );
