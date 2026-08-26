@@ -2174,6 +2174,92 @@ it.effect("rejects stale Session replacement generation after rollback and ABA r
   ),
 );
 
+it.effect(
+  "deletes an older historical Session while the route has a current deletion replacement",
+  () =>
+    withDatabase(({ database, storage }) =>
+      Effect.gen(function* () {
+        const store = makeAgentStore(makeAgentDb(asDurableObjectStorage(storage)));
+        const olderSessionId = SessionId.make("session-a");
+        const replacedSessionId = SessionId.make("session-b");
+        const currentSessionId = SessionId.make("session-delete-action-b");
+        const routeId = ConversationRouteId.make("route-1");
+        const firstReplacedAt = DbTimestamp.make("2026-08-24T11:00:00.000Z");
+        const secondReplacedAt = DbTimestamp.make("2026-08-24T12:00:00.000Z");
+        yield* store.initialize(AgentId.make("agent-1"), {
+          agentId: AgentId.make("agent-1"),
+          initializationId: AgentInitializationId.make("initialization-1"),
+          initializedAt: now,
+          routeId,
+          sessionId: olderSessionId,
+        });
+        yield* store.replaceCurrentSession({
+          expectedCurrentSessionId: olderSessionId,
+          replacedAt: firstReplacedAt,
+          replacementSessionId: replacedSessionId,
+          routeId,
+        });
+        yield* store.replaceCurrentSession({
+          expectedCurrentSessionId: replacedSessionId,
+          replacedAt: secondReplacedAt,
+          replacementSessionId: currentSessionId,
+          routeId,
+        });
+        const older = Session.create(thinkSqlProvider(database)).forSession(olderSessionId);
+        yield* seedThinkHistory(older, "older");
+
+        yield* deleteLocalSession(
+          {
+            replacementSessionId: SessionId.make("unused-replacement"),
+            sessionId: olderSessionId,
+          },
+          {
+            ...testSessionWriteSelection,
+            activateSession: () =>
+              Effect.die(new Error("Historical deletion activated a replacement")),
+            authorizeDeletion: () => Effect.void,
+            clearMessages: () => Effect.promise(() => older.clearMessages()),
+            inspectSession: (sessionId) =>
+              store.readSessionDeletionFacts(sessionId).pipe(Effect.orDie),
+            replacedAt: Effect.succeed(secondReplacedAt),
+            replaceCurrentSession: () =>
+              Effect.die(new Error("Historical deletion replaced the current Session")),
+            rollbackCurrentSessionReplacement: () =>
+              Effect.die(new Error("Historical deletion rolled back a replacement")),
+            settle: (sessionId, replacementGeneration) => {
+              expect(replacementGeneration).toBeUndefined();
+              return store
+                .deleteHistoricalSession({
+                  authorization: authorizedDeletion("delete-session-a", sessionId).payload
+                    .authorization,
+                  deletedAt: secondReplacedAt,
+                  outboxId: MemoryProviderOutboxId.make("delete-session-a"),
+                  sessionId,
+                  userId: UserId.make("user-1"),
+                })
+                .pipe(Effect.orDie);
+            },
+          },
+        );
+
+        expect(yield* store.readSessionIds).toEqual([replacedSessionId, currentSessionId]);
+        expect(thinkSessionCounts(database, olderSessionId)).toEqual({
+          compactions: 0,
+          fts: 0,
+          messages: 0,
+        });
+        expect(
+          database
+            .prepare(
+              `SELECT status FROM osfo_memory_provider_outbox
+                WHERE outbox_id = 'delete-session-a'`,
+            )
+            .get(),
+        ).toEqual({ status: "pending" });
+      }),
+    ),
+);
+
 it.effect("removes the exact replacement when current Session settlement fails", () =>
   withDatabase(({ storage }) =>
     Effect.gen(function* () {

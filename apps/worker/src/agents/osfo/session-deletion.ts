@@ -16,10 +16,13 @@ export interface LocalSessionDeletionDependencies<A, E, PreparedSession> {
   // oxlint-disable-next-line effecttsgo/lazy-effect -- Each destructive boundary must construct and execute a fresh current-authority recheck.
   readonly authorizeDeletion: () => Effect.Effect<void, E>;
   readonly clearMessages: (sessionId: SessionId) => Effect.Effect<void, E>;
-  readonly inspectSession: (
-    sessionId: SessionId,
-  ) => Effect.Effect<
-    { readonly currentSessionId: SessionId; readonly routeId: ConversationRouteId } | undefined,
+  readonly inspectSession: (sessionId: SessionId) => Effect.Effect<
+    | {
+        readonly currentReplacesTarget?: boolean;
+        readonly currentSessionId: SessionId;
+        readonly routeId: ConversationRouteId;
+      }
+    | undefined,
     E
   >;
   readonly prepareSession: (sessionId: SessionId) => Effect.Effect<PreparedSession, E>;
@@ -105,7 +108,7 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
     return settlement.success;
   }
   if (
-    isSessionDeletionReplacement(target.currentSessionId) &&
+    target.currentReplacesTarget === true &&
     target.currentSessionId !== input.replacementSessionId
   ) {
     return yield* new CurrentSessionReplacementConflict({
@@ -146,8 +149,5 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
   yield* dependencies.authorizeDeletion();
   return yield* dependencies.settle(input.sessionId);
 });
-
-const isSessionDeletionReplacement = (sessionId: SessionId) =>
-  sessionId.startsWith("session-delete-");
 
 export * as SessionDeletion from "./session-deletion";

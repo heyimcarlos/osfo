@@ -312,6 +312,7 @@ const RouteSessionRecord = Schema.Struct({
 });
 
 const SessionDeletionFactsRecord = Schema.Struct({
+  currentReplacesTarget: Schema.Boolean,
   currentSessionId: SessionId,
   routeId: ConversationRouteId,
 });
@@ -706,14 +707,17 @@ export const makeAgentStore = (db: AgentDb) => {
     const facts = yield* execute("readSessionOwnership", () =>
       db.transaction((transaction) => {
         const target = transaction
-          .select({ routeId: sessionOwnership.route_id })
+          .select({ replacedAt: sessionOwnership.replaced_at, routeId: sessionOwnership.route_id })
           .from(sessionOwnership)
           .where(eq(sessionOwnership.session_id, sessionId))
           .limit(1)
           .get();
         if (target === undefined) return undefined;
         const current = transaction
-          .select({ currentSessionId: sessionOwnership.session_id })
+          .select({
+            becameCurrentAt: sessionOwnership.became_current_at,
+            currentSessionId: sessionOwnership.session_id,
+          })
           .from(sessionOwnership)
           .where(
             and(
@@ -724,6 +728,9 @@ export const makeAgentStore = (db: AgentDb) => {
           .limit(1)
           .get();
         return {
+          currentReplacesTarget:
+            current?.currentSessionId.startsWith("session-delete-") === true &&
+            target.replacedAt === current.becameCurrentAt,
           currentSessionId: current?.currentSessionId ?? null,
           routeId: target.routeId,
         };
@@ -851,7 +858,11 @@ export const makeAgentStore = (db: AgentDb) => {
         }
         if (owned.replacedAt === null) return "Current";
         const current = transaction
-          .select({ routeId: sessionOwnership.route_id, sessionId: sessionOwnership.session_id })
+          .select({
+            becameCurrentAt: sessionOwnership.became_current_at,
+            routeId: sessionOwnership.route_id,
+            sessionId: sessionOwnership.session_id,
+          })
           .from(sessionOwnership)
           .where(
             and(eq(sessionOwnership.route_id, owned.routeId), isNull(sessionOwnership.replaced_at)),
@@ -861,6 +872,7 @@ export const makeAgentStore = (db: AgentDb) => {
         if (current === undefined) return "Invalid";
         if (
           current.sessionId.startsWith("session-delete-") &&
+          current.becameCurrentAt === owned.replacedAt &&
           input.replacementGeneration === undefined
         ) {
           return "Invalid";
