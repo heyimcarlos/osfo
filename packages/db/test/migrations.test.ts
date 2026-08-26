@@ -197,7 +197,7 @@ describe("Postgres migrations", () => {
                 ('action-case-1', 'action-user-1', 'action-admin', 'Required erasure'),
                 ('action-case-2', 'action-user-2', 'action-admin', 'Required erasure');
               INSERT INTO account_deletion_actions (
-                action_id, user_id, auth_session_id, replay_session_cookie_hash,
+                action_id, user_id, auth_session_id, replay_token_hash,
                 presentation, presentation_version,
                 expires_at, consumed_at, deletion_case_id
               ) VALUES (
@@ -206,7 +206,7 @@ describe("Postgres migrations", () => {
                 now() + interval '5 minutes', now(), 'action-case-1'
               );
               INSERT INTO account_deletion_actions (
-                action_id, user_id, auth_session_id, replay_session_cookie_hash,
+                action_id, user_id, auth_session_id, replay_token_hash,
                 presentation, presentation_version, expires_at
               ) VALUES (
                 'action-unconsumed', 'action-user-3', 'session-3', repeat('b', 64), '{}',
@@ -217,7 +217,7 @@ describe("Postgres migrations", () => {
 
             const rejectedStatements = [
               `INSERT INTO account_deletion_actions (
-               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               action_id, user_id, auth_session_id, replay_token_hash,
                presentation, presentation_version,
                expires_at, consumed_at, deletion_case_id
              ) VALUES (
@@ -225,7 +225,7 @@ describe("Postgres migrations", () => {
                'account-deletion-v1', now() + interval '5 minutes', now(), 'missing-case'
              )`,
               `INSERT INTO account_deletion_actions (
-               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               action_id, user_id, auth_session_id, replay_token_hash,
                presentation, presentation_version,
                expires_at, consumed_at, deletion_case_id
              ) VALUES (
@@ -233,7 +233,7 @@ describe("Postgres migrations", () => {
                'account-deletion-v1', now() + interval '5 minutes', now(), 'action-case-2'
              )`,
               `INSERT INTO account_deletion_actions (
-               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               action_id, user_id, auth_session_id, replay_token_hash,
                presentation, presentation_version,
                expires_at, consumed_at
              ) VALUES (
@@ -241,7 +241,7 @@ describe("Postgres migrations", () => {
                'account-deletion-v1', now() + interval '5 minutes', now()
              )`,
               `INSERT INTO account_deletion_actions (
-               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               action_id, user_id, auth_session_id, replay_token_hash,
                presentation, presentation_version,
                expires_at, consumed_at, deletion_case_id
              ) VALUES (
@@ -249,7 +249,7 @@ describe("Postgres migrations", () => {
                'account-deletion-v1', now() + interval '5 minutes', now(), '   '
              )`,
               `INSERT INTO account_deletion_actions (
-               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               action_id, user_id, auth_session_id, replay_token_hash,
                presentation, presentation_version,
                expires_at, deletion_case_id
              ) VALUES (
@@ -257,14 +257,14 @@ describe("Postgres migrations", () => {
                'account-deletion-v1', now() + interval '5 minutes', 'action-case-1'
              )`,
               `INSERT INTO account_deletion_actions (
-               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               action_id, user_id, auth_session_id, replay_token_hash,
                presentation, presentation_version, expires_at
              ) VALUES (
                'action-blank-user', '   ', 'session-blank-user', repeat('1', 64), '{}',
                'account-deletion-v1', now() + interval '5 minutes'
              )`,
               `INSERT INTO account_deletion_actions (
-               action_id, user_id, auth_session_id, replay_session_cookie_hash,
+               action_id, user_id, auth_session_id, replay_token_hash,
                presentation, presentation_version, expires_at
              ) VALUES (
                'action-bad-replay-hash', 'action-user-3', 'session-3', 'not-a-sha256', '{}',

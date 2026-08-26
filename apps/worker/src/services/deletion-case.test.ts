@@ -27,6 +27,7 @@ it.effect(
           actionId: ActionId.make("account-delete-1"),
           presentation: ApprovalPresentation.make("Delete Account"),
           presentationVersion: "account-deletion-v1",
+          replayTokenHash: DeletionCase.SelfDeletionReplayTokenHash.make("a".repeat(64)),
         },
         {
           authSessionId: AuthSessionId.make("session-1"),
@@ -61,6 +62,7 @@ it.effect(
                 actionId: "account-delete-1",
                 presentation: "Delete Account",
                 presentationVersion: "account-deletion-v1",
+                replayTokenHash: "a".repeat(64),
               });
               expect(authority).toEqual({
                 authSessionId: "session-1",
@@ -86,6 +88,7 @@ it.effect("leaves AuthSessions untouched when a retained self-service case is no
         actionId: ActionId.make("new-action"),
         presentation: ApprovalPresentation.make("new-presentation"),
         presentationVersion: "account-deletion-v1",
+        replayTokenHash: DeletionCase.SelfDeletionReplayTokenHash.make("a".repeat(64)),
       },
       {
         authSessionId: AuthSessionId.make("session-1"),

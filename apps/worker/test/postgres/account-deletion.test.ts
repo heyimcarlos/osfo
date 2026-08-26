@@ -52,7 +52,7 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
         actionId: ActionId.make("account-delete-1"),
         presentation: ApprovalPresentation.make("Delete Account"),
         presentationVersion: "account-deletion-v1",
-        replaySessionCookieHash,
+        replayTokenHash,
       };
       const authority = {
         authSessionId: AuthSessionId.make(authSession.id),
@@ -531,7 +531,7 @@ it.effect("consumes only one exact current server-owned self-service deletion Ac
       expect(
         yield* persistence.authenticateSelfReplay({
           ...exactApproval,
-          replaySessionCookieHash: DeletionCase.SelfDeletionReplayCookieHash.make("b".repeat(64)),
+          replayTokenHash: DeletionCase.SelfDeletionReplayTokenHash.make("b".repeat(64)),
         }),
       ).toEqual({ _tag: "Denied" });
       expect(
@@ -684,6 +684,7 @@ it.effect("discovers and rechecks an administrator-started deletion after fencin
             actionId: ActionId.make("self-action-over-admin-case"),
             presentation: ApprovalPresentation.make("Delete Account"),
             presentationVersion: "account-deletion-v1",
+            replayTokenHash,
           },
           {
             authSessionId: AuthSessionId.make("admin-case-self-session"),
@@ -990,10 +991,10 @@ const selfDeletionApproval = (identity: string) => ({
     }),
   ),
   presentationVersion: "account-deletion-v1",
-  replaySessionCookieHash,
+  replayTokenHash,
 });
 
-const replaySessionCookieHash = DeletionCase.SelfDeletionReplayCookieHash.make("a".repeat(64));
+const replayTokenHash = DeletionCase.SelfDeletionReplayTokenHash.make("a".repeat(64));
 
 const suspendedBeforeCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:00:00.000Z"));
 const restoredBeforeCaseAt = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-25T12:01:00.000Z"));

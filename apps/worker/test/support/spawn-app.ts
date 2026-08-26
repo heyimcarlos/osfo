@@ -38,6 +38,13 @@ const AccountDeletionPresentation = Schema.Struct({
   title: Schema.Literal("Delete Account"),
 });
 type AccountDeletionPresentation = typeof AccountDeletionPresentation.Type;
+const AccountDeletionAction = Schema.Struct({
+  presentation: AccountDeletionPresentation,
+  replayToken: Schema.String,
+});
+type AccountDeletionAction = AccountDeletionPresentation & {
+  readonly replayToken: string;
+};
 
 const StoredAccountDeletion = Schema.Struct({
   agent_exists: Schema.Boolean,
@@ -95,6 +102,7 @@ type JsonRequestBody =
         readonly presentation: AccountDeletionPresentation;
       };
       readonly confirmation: "delete-my-account";
+      readonly replayToken: string;
     };
 
 interface MintVerifiedUserOptions {
@@ -157,22 +165,37 @@ export const spawnApp = async () => {
   return {
     fetch: request,
     account: {
-      delete: (presentation: AccountDeletionPresentation) =>
+      delete: (action: AccountDeletionAction) =>
         jsonRequest(request, "/v1/account", "DELETE", {
-          approval: { decision: "approved", presentation },
+          approval: {
+            decision: "approved",
+            presentation: {
+              actionId: action.actionId,
+              confirmation: action.confirmation,
+              consequence: action.consequence,
+              operation: action.operation,
+              title: action.title,
+            },
+          },
           confirmation: "delete-my-account",
+          replayToken: action.replayToken,
         }),
       present: async () => {
         const response = await request("/v1/account/deletion-action");
         return {
           body: response.ok
-            ? await Schema.decodeUnknownPromise(AccountDeletionPresentation)(await response.json())
+            ? await Schema.decodeUnknownPromise(AccountDeletionAction)(await response.json()).then(
+                ({ presentation, replayToken }) => ({ ...presentation, replayToken }),
+              )
             : undefined,
           response,
         };
       },
     },
     auth: {
+      clearCookie: () => {
+        cookie = "";
+      },
       mintVerifiedUser,
       session: () => request("/auth/get-session"),
       sendPhoneOtp,

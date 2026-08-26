@@ -19,6 +19,7 @@ const request = {
     },
   },
   confirmation: "DELETE ACCOUNT",
+  replayToken: "a".repeat(43),
 };
 
 beforeEach(() => {

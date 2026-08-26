@@ -41,7 +41,7 @@ export const make = Effect.gen(function* () {
               eq(accountDeletionActions.action_id, replay.actionId),
               eq(accountDeletionActions.presentation, replay.presentation),
               eq(accountDeletionActions.presentation_version, replay.presentationVersion),
-              eq(accountDeletionActions.replay_session_cookie_hash, replay.replaySessionCookieHash),
+              eq(accountDeletionActions.replay_token_hash, replay.replayTokenHash),
               isNotNull(accountDeletionActions.consumed_at),
               isNull(accountDeletionActions.invalidated_at),
               isNotNull(deletionCases.access_fenced_at),
@@ -112,7 +112,7 @@ export const make = Effect.gen(function* () {
           expires_at: action.expiresAt,
           presentation: action.presentation,
           presentation_version: action.presentationVersion,
-          replay_session_cookie_hash: action.replaySessionCookieHash,
+          replay_token_hash: action.replayTokenHash,
           user_id: userId,
         });
         return { _tag: "Presented" } as const;
@@ -149,6 +149,7 @@ export const make = Effect.gen(function* () {
               eq(accountDeletionActions.auth_session_id, authority.authSessionId),
               eq(accountDeletionActions.presentation, approval.presentation),
               eq(accountDeletionActions.presentation_version, approval.presentationVersion),
+              eq(accountDeletionActions.replay_token_hash, approval.replayTokenHash),
               isNull(accountDeletionActions.invalidated_at),
             ),
           )

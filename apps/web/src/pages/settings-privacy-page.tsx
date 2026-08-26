@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import type { AccountDeletionActionPresentation } from "@osfo/api";
+import type { AccountDeletionAction } from "@osfo/api";
 import { BriefcaseBusiness, Database, Download, ShieldCheck, Trash2 } from "lucide-react";
 import { Effect } from "effect";
 import { useState } from "react";
@@ -125,7 +125,7 @@ function SettingsPrivacyContent() {
 
 /** One explicit confirmation before the irreversible account deletion request. */
 function DeleteAccountControl() {
-  const [presentation, setPresentation] = useState<AccountDeletionActionPresentation | null>(null);
+  const [action, setAction] = useState<AccountDeletionAction | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const begin = () => {
@@ -133,7 +133,7 @@ function DeleteAccountControl() {
     setError(false);
     void presentDeletion()
       .then((presented) => {
-        setPresentation(presented);
+        setAction(presented);
         setBusy(false);
       })
       .catch(() => {
@@ -142,8 +142,8 @@ function DeleteAccountControl() {
       });
   };
   const remove = () => {
-    if (presentation === null) return;
-    const request = accountDeletionRequestFor(presentation);
+    if (action === null) return;
+    const request = accountDeletionRequestFor(action);
     setBusy(true);
     setError(false);
     try {
@@ -179,16 +179,16 @@ function DeleteAccountControl() {
           type="button"
           onClick={begin}
         >
-          {busy && presentation === null ? "Preparing..." : "Delete Account"}
+          {busy && action === null ? "Preparing..." : "Delete Account"}
         </button>
       </div>
-      {presentation === null && error ? (
+      {action === null && error ? (
         <p role="alert">Account deletion could not be presented. Please try again.</p>
       ) : null}
-      {presentation !== null ? (
+      {action !== null ? (
         <div className="mt-3 border-t border-red-100 pt-3">
-          <p className="font-semibold text-[#7f2630]">{presentation.title}</p>
-          <p className="text-sm text-[#7f2630]">{presentation.consequence}</p>
+          <p className="font-semibold text-[#7f2630]">{action.presentation.title}</p>
+          <p className="text-sm text-[#7f2630]">{action.presentation.consequence}</p>
           <div className="mt-3 flex gap-2">
             <button
               className="min-h-11 rounded-full bg-[#d63243] px-4 text-sm font-semibold text-white disabled:opacity-60"
@@ -202,7 +202,7 @@ function DeleteAccountControl() {
               className="min-h-11 rounded-full px-4 text-sm font-semibold"
               disabled={busy}
               type="button"
-              onClick={() => setPresentation(null)}
+              onClick={() => setAction(null)}
             >
               Cancel
             </button>

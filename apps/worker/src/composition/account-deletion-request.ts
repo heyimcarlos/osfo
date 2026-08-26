@@ -1,7 +1,7 @@
-import type { AccountDeletionActionPresentation } from "@osfo/api";
+import { type AccountDeletionActionPresentation, AccountDeletionReplayToken } from "@osfo/api";
 import { billingSubscriptions } from "@osfo/db/schema/billing";
 import { eq } from "drizzle-orm";
-import { Crypto, DateTime, Effect, Option, Predicate, Schema, type Redacted } from "effect";
+import { Crypto, DateTime, Effect, Encoding, Option, Predicate, Redacted, Schema } from "effect";
 
 import { Db } from "../db";
 import { PlanPolicyVersion, UserId } from "../domain";
@@ -27,7 +27,6 @@ export const make = Effect.gen(function* () {
   const deletion = yield* AccountDeletion.Service;
   const present = Effect.fn("AccountDeletionRequest.present")(function* (input: {
     readonly authSessionId: string;
-    readonly replaySessionCookie: Redacted.Redacted;
     readonly userId: string;
   }) {
     const userId = UserId.make(input.userId);
@@ -38,6 +37,11 @@ export const make = Effect.gen(function* () {
       )}`,
     );
     const presentation = accountDeletionPresentation(actionId);
+    const replayToken = yield* crypto.randomBytes(32).pipe(
+      Effect.map((bytes) => Encoding.encodeBase64Url(bytes)),
+      Effect.map((encoded) => AccountDeletionReplayToken.make(encoded)),
+      Effect.mapError(() => unavailable("presentIdentity")),
+    );
     const now = yield* DateTime.now;
     const result = yield* authorities.deletionCases.presentSelf(userId, {
       actionId,
@@ -45,13 +49,10 @@ export const make = Effect.gen(function* () {
       expiresAt: DateTime.toDateUtc(DateTime.add(now, { minutes: 5 })),
       presentation: ApprovalPresentation.make(encodeAccountDeletionPresentation(presentation)),
       presentationVersion: accountDeletionPresentationVersion,
-      replaySessionCookieHash: yield* DeletionCase.hashReplaySessionCookie(
-        crypto,
-        input.replaySessionCookie,
-      ),
+      replayTokenHash: yield* DeletionCase.hashReplayToken(crypto, Redacted.make(replayToken)),
     });
     if (!Predicate.isTagged(result, "Presented")) return yield* unavailable("presentAuthority");
-    return presentation;
+    return { presentation, replayToken };
   });
   const request = Effect.fn("AccountDeletionRequest.request")(function* (input: {
     readonly approval: {
@@ -60,6 +61,7 @@ export const make = Effect.gen(function* () {
     };
     readonly authSessionId: string;
     readonly confirmation: string;
+    readonly replayToken: string;
     readonly userId: string;
   }) {
     const userId = UserId.make(input.userId);
@@ -125,6 +127,10 @@ export const make = Effect.gen(function* () {
         actionId: operation.actionId,
         presentation,
         presentationVersion: accountDeletionPresentationVersion,
+        replayTokenHash: yield* DeletionCase.hashReplayToken(
+          crypto,
+          Redacted.make(input.replayToken),
+        ),
       },
       {
         authSessionId,
@@ -197,11 +203,13 @@ export const isExactApproval = (received: {
 export const replayApproval = (received: {
   readonly approval: { readonly presentation: AccountDeletionPresentation };
   readonly confirmation: string;
+  readonly replayToken: string;
 }) =>
   Option.map(decodeExactPresentation(received.approval.presentation), (presentation) => ({
     actionId: ActionId.make(presentation.actionId),
     presentation: ApprovalPresentation.make(encodeAccountDeletionPresentation(presentation)),
     presentationVersion: accountDeletionPresentationVersion,
+    replayToken: received.replayToken,
   })).pipe(
     Option.filter(() => received.confirmation === accountDeletionActionDefinition.confirmation),
   );

@@ -28,32 +28,30 @@ export interface SelfDeletionApproval {
   readonly actionId: ActionId;
   readonly presentation: ApprovalPresentation;
   readonly presentationVersion: string;
+  readonly replayTokenHash: SelfDeletionReplayTokenHash;
 }
 
 /** Retained server-owned Action that can approve one exact self-service deletion. */
 export interface SelfDeletionAction extends SelfDeletionApproval {
   readonly authSessionId: AuthSessionId;
   readonly expiresAt: Date;
-  readonly replaySessionCookieHash: SelfDeletionReplayCookieHash;
 }
 
-/** SHA-256 identity of the exact signed session cookie that received a deletion Action. */
-export const SelfDeletionReplayCookieHash = Schema.String.check(
+/** SHA-256 identity of the dedicated retained account-deletion replay bearer. */
+export const SelfDeletionReplayTokenHash = Schema.String.check(
   Schema.isPattern(/^[0-9a-f]{64}$/u),
-).pipe(Schema.brand("SelfDeletionReplayCookieHash"));
+).pipe(Schema.brand("SelfDeletionReplayTokenHash"));
 
-/** SHA-256 identity of the exact signed session cookie that received a deletion Action. */
-export type SelfDeletionReplayCookieHash = typeof SelfDeletionReplayCookieHash.Type;
+/** SHA-256 identity of the dedicated retained account-deletion replay bearer. */
+export type SelfDeletionReplayTokenHash = typeof SelfDeletionReplayTokenHash.Type;
 
 /** Exact retained credential allowed to acknowledge a consumed self-service deletion. */
-export interface SelfDeletionReplay extends SelfDeletionApproval {
-  readonly replaySessionCookieHash: SelfDeletionReplayCookieHash;
-}
+export type SelfDeletionReplay = SelfDeletionApproval;
 
-/** Reduce the signed Better Auth cookie to retained non-bearer replay evidence. */
-export const hashReplaySessionCookie = (crypto: Crypto.Crypto, cookie: Redacted.Redacted) =>
-  crypto.digest("SHA-256", new TextEncoder().encode(Redacted.value(cookie))).pipe(
-    Effect.map((digest) => SelfDeletionReplayCookieHash.make(Encoding.encodeHex(digest))),
+/** Reduce the dedicated replay bearer to its retained lookup identity. */
+export const hashReplayToken = (crypto: Crypto.Crypto, token: Redacted.Redacted) =>
+  crypto.digest("SHA-256", new TextEncoder().encode(Redacted.value(token))).pipe(
+    Effect.map((digest) => SelfDeletionReplayTokenHash.make(Encoding.encodeHex(digest))),
     Effect.mapError(
       (cause) =>
         new DeletionCaseIdentityUnavailable({

@@ -1,6 +1,6 @@
 import {
   Api,
-  type AccountDeletionActionPresentation,
+  type AccountDeletionAction,
   type AccountDeletionRequest,
   type BillingReconciliationRequest,
   ChannelLinkInviteToken,
@@ -98,8 +98,9 @@ export const requestAccountDeletion = (request: AccountDeletionRequest) =>
 
 /** Build the only caller decision accepted for one exact server-owned presentation. */
 export const accountDeletionRequestFor = (
-  presentation: AccountDeletionActionPresentation,
+  action: AccountDeletionAction,
 ): AccountDeletionRequest => ({
-  approval: { decision: "approved", presentation },
-  confirmation: presentation.confirmation,
+  approval: { decision: "approved", presentation: action.presentation },
+  confirmation: action.presentation.confirmation,
+  replayToken: action.replayToken,
 });

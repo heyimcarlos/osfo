@@ -52,6 +52,7 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
         confirmation: "delete-my-account",
         consequence: "Permanently delete this account and all of its data.",
         operation: "account.delete",
+        replayToken: "a".repeat(43),
         title: "Delete Account",
       }),
     );
@@ -84,6 +85,10 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       app.account.delete({ ...presentation, actionId: `${presentation.actionId}:changed` }),
     );
     expect(staleApproval.status).toBe(503);
+    const guessedReplayBearer = yield* Effect.promise(() =>
+      app.account.delete({ ...presentation, replayToken: "z".repeat(43) }),
+    );
+    expect(guessedReplayBearer.status).toBe(503);
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
       agent_exists: true,
       auth_session_exists: true,
@@ -101,12 +106,17 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       user_exists: true,
     });
     expect(yield* Effect.promise(app.supermemory.ledger)).toEqual([]);
+    app.auth.clearCookie();
     const fencedOrdinaryEndpoint = yield* Effect.promise(() => app.billing.checkout());
     expect(fencedOrdinaryEndpoint.response.status).toBe(401);
     const mismatchedReplay = yield* Effect.promise(() =>
       app.account.delete({ ...presentation, actionId: `${presentation.actionId}:changed` }),
     );
     expect(mismatchedReplay.status).toBe(401);
+    const mismatchedReplayBearer = yield* Effect.promise(() =>
+      app.account.delete({ ...presentation, replayToken: "z".repeat(43) }),
+    );
+    expect(mismatchedReplayBearer.status).toBe(401);
     yield* Effect.promise(() =>
       app.database.expireAccountDeletionAction(identity.userId, presentation.actionId),
     );

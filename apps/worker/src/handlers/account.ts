@@ -1,7 +1,5 @@
 import { AccountDeletionCaller, AccountDeletionUnavailable, Api, CurrentUser } from "@osfo/api";
-import { getSessionCookie } from "better-auth/cookies";
-import { Effect, Layer, Redacted } from "effect";
-import { HttpServerRequest } from "effect/unstable/http";
+import { Effect, Layer } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { AccountDeletionRequest } from "../composition/account-deletion-request";
@@ -17,22 +15,8 @@ export const layer = Layer.unwrap(
         .handle("presentAccountDeletion", () =>
           Effect.gen(function* () {
             const currentUser = yield* CurrentUser;
-            const request = yield* HttpServerRequest.HttpServerRequest;
-            const source = request.source;
-            if (!(source instanceof Request)) {
-              return yield* new AccountDeletionUnavailable({
-                message: "Account deletion could not be presented",
-              });
-            }
-            const replaySessionCookie = getSessionCookie(source);
-            if (replaySessionCookie === null) {
-              return yield* new AccountDeletionUnavailable({
-                message: "Account deletion could not be presented",
-              });
-            }
             return yield* deletion.present({
               authSessionId: currentUser.authSessionId,
-              replaySessionCookie: Redacted.make(replaySessionCookie),
               userId: currentUser.userId,
             });
           }).pipe(
@@ -55,6 +39,7 @@ export const layer = Layer.unwrap(
               approval: payload.approval,
               authSessionId: caller.authSessionId,
               confirmation: payload.confirmation,
+              replayToken: payload.replayToken,
               userId: caller.userId,
             });
             return { status: "deletion-pending" as const };

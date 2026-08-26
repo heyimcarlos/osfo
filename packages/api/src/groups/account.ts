@@ -39,6 +39,19 @@ export const AccountDeletionActionPresentation = Schema.Struct({
 /** Bounded wire representation of a server-owned account-deletion Action. */
 export type AccountDeletionActionPresentation = typeof AccountDeletionActionPresentation.Type;
 
+/** Opaque bearer retained only to resume the exact consumed deletion Action while its Case exists. */
+export const AccountDeletionReplayToken = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9_-]{43}$/u),
+);
+export type AccountDeletionReplayToken = typeof AccountDeletionReplayToken.Type;
+
+/** Exact presented Action plus its opaque retained-replay bearer. */
+export const AccountDeletionAction = Schema.Struct({
+  presentation: AccountDeletionActionPresentation,
+  replayToken: AccountDeletionReplayToken,
+});
+export type AccountDeletionAction = typeof AccountDeletionAction.Type;
+
 /** Exact caller decision over the last server-owned account-deletion presentation. */
 export const AccountDeletionRequest = Schema.Struct({
   approval: Schema.Struct({
@@ -46,6 +59,7 @@ export const AccountDeletionRequest = Schema.Struct({
     presentation: AccountDeletionActionPresentation,
   }),
   confirmation: BoundedActionText,
+  replayToken: AccountDeletionReplayToken,
 });
 export type AccountDeletionRequest = typeof AccountDeletionRequest.Type;
 
@@ -66,7 +80,7 @@ export const AccountGroup = HttpApiGroup.make("account")
   .add(
     HttpApiEndpoint.get("presentAccountDeletion", "/v1/account/deletion-action", {
       error: AccountDeletionUnavailable,
-      success: AccountDeletionActionPresentation,
+      success: AccountDeletionAction,
     })
       .middleware(Auth)
       .annotateMerge(

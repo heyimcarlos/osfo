@@ -10,6 +10,7 @@ it("keeps presentation versioning in the Worker while the API accepts bounded tr
   const exact = {
     approval: { decision: "approved" as const, presentation: expected },
     confirmation: expected.confirmation,
+    replayToken: "a".repeat(43),
   };
   const drifted = {
     ...exact,
@@ -20,6 +21,15 @@ it("keeps presentation versioning in the Worker while the API accepts bounded tr
   };
 
   expect(Option.isSome(Schema.decodeOption(AccountDeletionRequest)(exact))).toBe(true);
+  const withoutReplayToken = { approval: exact.approval, confirmation: exact.confirmation };
+  expect(
+    Option.isNone(Schema.decodeUnknownOption(AccountDeletionRequest)(withoutReplayToken)),
+  ).toBe(true);
+  expect(
+    Option.isNone(
+      Schema.decodeOption(AccountDeletionRequest)({ ...exact, replayToken: "guessable" }),
+    ),
+  ).toBe(true);
   expect(Option.isSome(Schema.decodeOption(AccountDeletionRequest)(drifted))).toBe(true);
   expect(expected.consequence).toBe("Permanently delete this account and all of its data.");
   expect(isExactApproval(exact)).toBe(true);

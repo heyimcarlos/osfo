@@ -91,7 +91,7 @@ export const accountDeletionActions = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     auth_session_id: text().notNull(),
-    replay_session_cookie_hash: text().notNull(),
+    replay_token_hash: text().notNull(),
     presentation: text().notNull(),
     presentation_version: text().notNull(),
     expires_at: timestamp({ withTimezone: true }).notNull(),
@@ -109,7 +109,7 @@ export const accountDeletionActions = pgTable(
     }),
     check(
       "account_deletion_actions_identity_check",
-      sql`length(btrim(${table.action_id})) > 0 and length(btrim(${table.user_id})) > 0 and length(btrim(${table.auth_session_id})) > 0 and ${table.replay_session_cookie_hash} ~ '^[0-9a-f]{64}$'`,
+      sql`length(btrim(${table.action_id})) > 0 and length(btrim(${table.user_id})) > 0 and length(btrim(${table.auth_session_id})) > 0 and ${table.replay_token_hash} ~ '^[0-9a-f]{64}$'`,
     ),
     check(
       "account_deletion_actions_presentation_check",

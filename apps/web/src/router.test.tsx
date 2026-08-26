@@ -217,6 +217,7 @@ describe("Osfo route tree", () => {
         },
       },
       confirmation: "DELETE ACCOUNT",
+      replayToken: "a".repeat(43),
     });
 
     const { router } = renderAt("/settings/privacy", signedOut);

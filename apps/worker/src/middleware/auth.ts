@@ -5,7 +5,6 @@ import {
   CurrentUser,
   Unauthorized,
 } from "@osfo/api/middleware/auth";
-import { getSessionCookie } from "better-auth/cookies";
 import { Crypto, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 
@@ -103,8 +102,6 @@ const retainedDeletionReplay = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const source = request.source;
   if (!(source instanceof Request)) return yield* new Unauthorized({});
-  const replaySessionCookie = getSessionCookie(source.headers);
-  if (replaySessionCookie === null) return yield* new Unauthorized({});
   const payload = yield* Effect.tryPromise({
     try: () => source.clone().json(),
     catch: () => new Unauthorized({}),
@@ -114,10 +111,11 @@ const retainedDeletionReplay = Effect.gen(function* () {
   );
   const approval = replayApproval(payload);
   if (Option.isNone(approval)) return yield* new Unauthorized({});
+  const { replayToken, ...retainedApproval } = approval.value;
   const crypto = yield* Crypto.Crypto;
-  const replaySessionCookieHash = yield* DeletionCase.hashReplaySessionCookie(
+  const replayTokenHash = yield* DeletionCase.hashReplayToken(
     crypto,
-    Redacted.make(replaySessionCookie),
+    Redacted.make(replayToken),
   ).pipe(
     Effect.mapError(
       () =>
@@ -128,7 +126,7 @@ const retainedDeletionReplay = Effect.gen(function* () {
   );
   const authorities = yield* AccountAuthorities.make;
   const authenticated = yield* authorities.deletionCases
-    .authenticateSelfReplay({ ...approval.value, replaySessionCookieHash })
+    .authenticateSelfReplay({ ...retainedApproval, replayTokenHash })
     .pipe(
       Effect.mapError(
         () =>
