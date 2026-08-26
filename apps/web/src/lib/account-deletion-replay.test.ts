@@ -1,14 +1,20 @@
 // @vitest-environment happy-dom
 /* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
-import { beforeEach, expect, it } from "@effect/vitest";
+import { afterEach, beforeEach, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 import {
+  accessBrowserAccountDeletionReplayStorage,
+  clearBrowserAccountDeletionReplay,
   clearAccountDeletionReplay,
   loadAccountDeletionReplay,
+  loadBrowserAccountDeletionReplay,
   prepareAccountDeletionSubmission,
+  prepareBrowserAccountDeletionSubmission,
   saveAccountDeletionReplay,
 } from "./account-deletion-replay";
+
+const localStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 
 const request = {
   approval: {
@@ -28,6 +34,14 @@ const request = {
 
 beforeEach(() => {
   localStorage.clear();
+});
+
+afterEach(() => {
+  if (localStorageDescriptor === undefined) {
+    Reflect.deleteProperty(globalThis, "localStorage");
+    return;
+  }
+  Object.defineProperty(globalThis, "localStorage", localStorageDescriptor);
 });
 
 it("round-trips one immutable versioned account deletion replay request", () => {
@@ -177,5 +191,42 @@ it.effect("does not let a post-success replay clear failure override deletion", 
     expect(yield* submission.effect).toEqual({ status: "deletion-pending" });
     expect(submissions).toBe(1);
     expect(signedOut).toBe(true);
+  }),
+);
+
+it.effect("submits and signs out when the browser storage getter is blocked", () =>
+  Effect.gen(function* () {
+    let getterReads = 0;
+    let signedOut = false;
+    let submissions = 0;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get: () => {
+        getterReads += 1;
+        throw new Error("localStorage getter blocked");
+      },
+    });
+
+    const storage = accessBrowserAccountDeletionReplayStorage();
+    const submission = prepareBrowserAccountDeletionSubmission(
+      storage,
+      request,
+      () =>
+        Effect.sync(() => {
+          submissions += 1;
+          return { status: "deletion-pending" as const };
+        }),
+      () => {
+        signedOut = true;
+      },
+    );
+
+    expect(storage).toEqual({ status: "unavailable" });
+    expect(loadBrowserAccountDeletionReplay(storage)).toEqual({ status: "unavailable" });
+    expect(clearBrowserAccountDeletionReplay(storage)).toBe("unavailable");
+    expect(yield* submission.effect).toEqual({ status: "deletion-pending" });
+    expect(submissions).toBe(1);
+    expect(signedOut).toBe(true);
+    expect(getterReads).toBe(1);
   }),
 );

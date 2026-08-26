@@ -9,7 +9,10 @@ import {
   presentAccountDeletion,
   requestAccountDeletion,
 } from "../lib/api-client";
-import { prepareAccountDeletionSubmission } from "../lib/account-deletion-replay";
+import {
+  accessBrowserAccountDeletionReplayStorage,
+  prepareBrowserAccountDeletionSubmission,
+} from "../lib/account-deletion-replay";
 
 const privacyPreferences = [
   {
@@ -143,8 +146,9 @@ function DeleteAccountControl() {
     const request = accountDeletionRequestFor(action);
     setBusy(true);
     setError(false);
-    const submission = prepareAccountDeletionSubmission(
-      globalThis.localStorage,
+    const storage = accessBrowserAccountDeletionReplayStorage();
+    const submission = prepareBrowserAccountDeletionSubmission(
+      storage,
       request,
       requestAccountDeletion,
       () => globalThis.location.assign("/"),

@@ -4,19 +4,21 @@ import { useState } from "react";
 
 import { requestAccountDeletion } from "../lib/api-client";
 import {
-  clearAccountDeletionReplay,
+  accessBrowserAccountDeletionReplayStorage,
+  clearBrowserAccountDeletionReplay,
   loadBrowserAccountDeletionReplay,
   type AccountDeletionReplay,
 } from "../lib/account-deletion-replay";
 
 /** Public, deletion-only recovery for one exact retained request after normal access is fenced. */
 export function AccountDeletionRecoveryPage() {
-  const [replay, setReplay] = useState(loadBrowserAccountDeletionReplay);
+  const [storage] = useState(accessBrowserAccountDeletionReplayStorage);
+  const [replay, setReplay] = useState(() => loadBrowserAccountDeletionReplay(storage));
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
 
   const clear = () => {
-    if (clearAccountDeletionReplay(globalThis.localStorage) === "cleared") {
+    if (clearBrowserAccountDeletionReplay(storage) === "cleared") {
       setReplay({ status: "missing" });
       setFailed(false);
       return;
@@ -28,7 +30,7 @@ export function AccountDeletionRecoveryPage() {
     setFailed(false);
     void Effect.runPromise(requestAccountDeletion(available.request))
       .then(() => {
-        clearAccountDeletionReplay(globalThis.localStorage);
+        clearBrowserAccountDeletionReplay(storage);
         globalThis.location.assign("/");
       })
       .catch(() => {

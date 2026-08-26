@@ -25,6 +25,26 @@ export interface PreparedAccountDeletionSubmission<A, E, R> {
   readonly replayAvailable: boolean;
 }
 
+type AccountDeletionReplayStorage = Pick<Storage, "getItem" | "removeItem" | "setItem">;
+
+export type BrowserAccountDeletionReplayStorage =
+  | { readonly status: "available"; readonly storage: AccountDeletionReplayStorage }
+  | { readonly status: "unavailable" };
+
+/** Acquire browser replay storage once without trusting that its global getter is readable. */
+export const accessBrowserAccountDeletionReplayStorage = (): BrowserAccountDeletionReplayStorage =>
+  Effect.runSync(
+    Effect.try({
+      try: () => globalThis.localStorage,
+      catch: () => new AccountDeletionReplayStorageUnavailable(),
+    }).pipe(
+      Effect.map((storage) => ({ status: "available" as const, storage })),
+      Effect.catchTag("AccountDeletionReplayStorageUnavailable", () =>
+        Effect.succeed({ status: "unavailable" } as const),
+      ),
+    ),
+  );
+
 /** Read one exact retained deletion request without repairing or accepting malformed data. */
 export const loadAccountDeletionReplay = (
   storage: Pick<Storage, "getItem">,
@@ -51,17 +71,18 @@ export const loadAccountDeletionReplay = (
   );
 
 /** Read the retained request from the current browser without assuming storage is available. */
-export const loadBrowserAccountDeletionReplay = (): AccountDeletionReplay =>
-  Effect.runSync(
-    Effect.try({
-      try: () => loadAccountDeletionReplay(globalThis.localStorage),
-      catch: () => new AccountDeletionReplayStorageUnavailable(),
-    }).pipe(
-      Effect.catchTag("AccountDeletionReplayStorageUnavailable", () =>
-        Effect.succeed({ status: "unavailable" } as const),
-      ),
-    ),
-  );
+export const loadBrowserAccountDeletionReplay = (
+  access = accessBrowserAccountDeletionReplayStorage(),
+): AccountDeletionReplay =>
+  access.status === "available"
+    ? loadAccountDeletionReplay(access.storage)
+    : { status: "unavailable" };
+
+/** Clear the captured browser replay storage without reading its global getter again. */
+export const clearBrowserAccountDeletionReplay = (
+  access: BrowserAccountDeletionReplayStorage,
+): "cleared" | "unavailable" =>
+  access.status === "available" ? clearAccountDeletionReplay(access.storage) : "unavailable";
 
 /** Persist the immutable exact request before its first destructive HTTP attempt. */
 export const saveAccountDeletionReplay = (
@@ -109,6 +130,22 @@ export const prepareAccountDeletionSubmission = <A, E, R>(
   ),
   replayAvailable: saveAccountDeletionReplay(storage, request) === "saved",
 });
+
+/** Prepare primary deletion from one captured browser-storage lookup. */
+export const prepareBrowserAccountDeletionSubmission = <A, E, R>(
+  access: BrowserAccountDeletionReplayStorage,
+  request: AccountDeletionReplayRequest,
+  submit: (request: AccountDeletionReplayRequest) => Effect.Effect<A, E, R>,
+  onSuccess: () => void,
+): PreparedAccountDeletionSubmission<A, E, R> =>
+  access.status === "available"
+    ? prepareAccountDeletionSubmission(access.storage, request, submit, onSuccess)
+    : {
+        effect: Effect.suspend(() => submit(request)).pipe(
+          Effect.tap(() => Effect.sync(onSuccess)),
+        ),
+        replayAvailable: false,
+      };
 
 class AccountDeletionReplayStorageUnavailable extends Data.TaggedError(
   "AccountDeletionReplayStorageUnavailable",
