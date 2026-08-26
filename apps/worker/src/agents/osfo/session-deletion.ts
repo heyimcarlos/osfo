@@ -12,6 +12,7 @@ export interface SessionReplacementGeneration {
 }
 
 export interface LocalSessionDeletionDependencies<A, E, PreparedSession> {
+  readonly activeRouteId: ConversationRouteId | undefined;
   readonly activateSession: (sessionId: SessionId) => Effect.Effect<void, E>;
   // oxlint-disable-next-line effecttsgo/lazy-effect -- Each destructive boundary must construct and execute a fresh current-authority recheck.
   readonly authorizeDeletion: () => Effect.Effect<void, E>;
@@ -66,10 +67,13 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
   const target = yield* dependencies.inspectSession(input.sessionId);
   if (target === undefined) return yield* dependencies.settle(input.sessionId);
   if (target.currentSessionId === input.sessionId) {
-    const [historicalSession, replacementSession] = yield* Effect.all([
-      dependencies.prepareSession(input.sessionId),
-      dependencies.prepareSession(input.replacementSessionId),
-    ]);
+    const ownsActiveRuntime = target.routeId === dependencies.activeRouteId;
+    const activeSessions = ownsActiveRuntime
+      ? yield* Effect.all({
+          historical: dependencies.prepareSession(input.sessionId),
+          replacement: dependencies.prepareSession(input.replacementSessionId),
+        })
+      : undefined;
     const replacedAt = yield* dependencies.replacedAt;
     yield* dependencies.authorizeDeletion();
     const replacement = {
@@ -79,26 +83,27 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
       routeId: target.routeId,
     };
     yield* dependencies.replaceCurrentSession(replacement);
-    // Think's base writers dereference the mutable Session at write time. Select the
-    // exact replacement synchronously after SQLite commits so this turn cannot append
-    // its failure or assistant output to the now-historical Session.
-    yield* dependencies.selectSessionForWrites(replacementSession);
-    const rollbackAfter = (failure: E) =>
-      Effect.gen(function* () {
-        yield* dependencies.authorizeDeletion();
-        yield* dependencies.rollbackCurrentSessionReplacement(replacement);
-        // SQLite is now safely resumable even if authority changes before Think can follow it.
-        yield* dependencies.authorizeDeletion();
-        yield* dependencies.selectSessionForWrites(historicalSession);
-        yield* dependencies.activateSession(input.sessionId);
-        return yield* Effect.fail(failure);
-      });
+    if (activeSessions !== undefined) {
+      // Think's base writers dereference the active route's mutable Session at write time.
+      // Another route's replacement remains storage-only until that route next activates.
+      yield* dependencies.selectSessionForWrites(activeSessions.replacement);
+      const rollbackAfter = (failure: E) =>
+        Effect.gen(function* () {
+          yield* dependencies.authorizeDeletion();
+          yield* dependencies.rollbackCurrentSessionReplacement(replacement);
+          // SQLite is now safely resumable even if authority changes before Think can follow it.
+          yield* dependencies.authorizeDeletion();
+          yield* dependencies.selectSessionForWrites(activeSessions.historical);
+          yield* dependencies.activateSession(input.sessionId);
+          return yield* Effect.fail(failure);
+        });
 
-    yield* dependencies.authorizeDeletion();
-    const activation = yield* dependencies
-      .activateSession(input.replacementSessionId)
-      .pipe(Effect.result);
-    if (Result.isFailure(activation)) return yield* rollbackAfter(activation.failure);
+      yield* dependencies.authorizeDeletion();
+      const activation = yield* dependencies
+        .activateSession(input.replacementSessionId)
+        .pipe(Effect.result);
+      if (Result.isFailure(activation)) return yield* rollbackAfter(activation.failure);
+    }
 
     yield* dependencies.authorizeDeletion();
     yield* dependencies.retainIntent(input.sessionId, replacement);
@@ -136,10 +141,12 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
       input.sessionId,
       input.replacementSessionId,
     );
-    const replacementSession = yield* dependencies.prepareSession(input.replacementSessionId);
-    yield* dependencies.selectSessionForWrites(replacementSession);
-    yield* dependencies.authorizeDeletion();
-    yield* dependencies.activateSession(input.replacementSessionId);
+    if (target.routeId === dependencies.activeRouteId) {
+      const replacementSession = yield* dependencies.prepareSession(input.replacementSessionId);
+      yield* dependencies.selectSessionForWrites(replacementSession);
+      yield* dependencies.authorizeDeletion();
+      yield* dependencies.activateSession(input.replacementSessionId);
+    }
     yield* dependencies.authorizeDeletion();
     yield* dependencies.retainIntent(input.sessionId, replacementGeneration);
     yield* dependencies.authorizeDeletion();

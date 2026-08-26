@@ -54,6 +54,7 @@ import { deleteLocalSession, type SessionReplacementGeneration } from "../sessio
  */
 
 const testSessionWriteSelection = {
+  activeRouteId: ConversationRouteId.make("route-1"),
   prepareSession: (sessionId: SessionId) => Effect.succeed(sessionId),
   retainIntent: () => Effect.void,
   selectSessionForWrites: () => Effect.void,
@@ -1702,10 +1703,11 @@ it.effect("rechecks before replacing, clearing, and settling the current Session
   ),
 );
 
-it.effect("replaces the target route current Session without treating it as historical", () =>
+it.effect("deletes another route's current Session without redirecting active-route writes", () =>
   withDatabase(({ database, storage }) =>
     Effect.gen(function* () {
       const store = makeAgentStore(makeAgentDb(asDurableObjectStorage(storage)));
+      const activeRouteId = ConversationRouteId.make("route-1");
       const primarySessionId = SessionId.make("session-primary");
       const targetSessionId = SessionId.make("session-route-2");
       const replacementSessionId = SessionId.make("session-delete-route-2");
@@ -1734,11 +1736,13 @@ it.effect("replaces the target route current Session without treating it as hist
       yield* seedThinkHistory(primary, "primary");
       yield* seedThinkHistory(target, "target");
       const activated: Array<SessionId> = [];
+      let selectedSessionId = primarySessionId;
 
       yield* deleteLocalSession(
         { replacementSessionId, sessionId: targetSessionId },
         {
           ...testSessionWriteSelection,
+          activeRouteId,
           activateSession: (sessionId) =>
             Effect.sync(() => {
               activated.push(sessionId);
@@ -1755,6 +1759,10 @@ it.effect("replaces the target route current Session without treating it as hist
             store.replaceCurrentSession(replacement).pipe(Effect.orDie),
           rollbackCurrentSessionReplacement: (replacement) =>
             store.rollbackCurrentSessionReplacement(replacement).pipe(Effect.asVoid, Effect.orDie),
+          selectSessionForWrites: (sessionId) =>
+            Effect.sync(() => {
+              selectedSessionId = sessionId;
+            }),
           settle: (sessionId, replacementGeneration) => {
             if (replacementGeneration === undefined) {
               return Effect.die(new Error("Current target route lost replacement generation"));
@@ -1774,7 +1782,27 @@ it.effect("replaces the target route current Session without treating it as hist
         },
       );
 
-      expect(activated).toEqual([replacementSessionId]);
+      yield* Effect.promise(() =>
+        Session.create(thinkSqlProvider(database))
+          .forSession(selectedSessionId)
+          .appendMessage({
+            id: "direct-active-route",
+            parts: [{ text: "direct active-route write", type: "text" }],
+            role: "assistant",
+          }),
+      );
+      yield* Effect.promise(() =>
+        Session.create(thinkSqlProvider(database))
+          .forSession(selectedSessionId)
+          .appendMessage({
+            id: "normal-active-route",
+            parts: [{ text: "normal active-route write", type: "text" }],
+            role: "assistant",
+          }),
+      );
+
+      expect(activated).toEqual([]);
+      expect(selectedSessionId).toBe(primarySessionId);
       expect(yield* store.inspect()).toMatchObject({ currentSessionId: primarySessionId });
       expect(yield* store.readRoute(targetRouteId)).toMatchObject({
         currentSessionId: replacementSessionId,
@@ -1782,14 +1810,22 @@ it.effect("replaces the target route current Session without treating it as hist
       });
       expect(thinkSessionCounts(database, primarySessionId)).toEqual({
         compactions: 1,
-        fts: 2,
-        messages: 2,
+        fts: 4,
+        messages: 4,
       });
       expect(thinkSessionCounts(database, targetSessionId)).toEqual({
         compactions: 0,
         fts: 0,
         messages: 0,
       });
+      expect(
+        database
+          .prepare(
+            `SELECT operation_type, status FROM osfo_memory_provider_outbox
+             WHERE outbox_id = 'delete-session-route-2'`,
+          )
+          .get(),
+      ).toEqual({ operation_type: "deleteSessionConversation", status: "pending" });
     }),
   ),
 );

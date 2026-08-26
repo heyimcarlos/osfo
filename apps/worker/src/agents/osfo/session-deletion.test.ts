@@ -357,6 +357,55 @@ it.effect(
   },
 );
 
+it.effect("resumes another route's replacement without selecting its runtime", () => {
+  const events: Array<string> = [];
+  const deletedSessionId = SessionId.make("session-route-b");
+  const replacementSessionId = SessionId.make("session-delete-route-b");
+  const routeId = ConversationRouteId.make("route-b");
+  const replacementGeneration = {
+    expectedCurrentSessionId: deletedSessionId,
+    replacedAt: DbTimestamp.make("2026-08-25T12:00:00.000Z"),
+    replacementSessionId,
+    routeId,
+  };
+
+  return deleteLocalSession(
+    { replacementSessionId, sessionId: deletedSessionId },
+    {
+      activeRouteId: ConversationRouteId.make("route-a"),
+      activateSession: () => Effect.die(new Error("Inactive route was activated")),
+      authorizeDeletion: () => record(events, "recheck"),
+      clearMessages: () => record(events, "clear"),
+      inspectSession: () => Effect.succeed({ currentSessionId: replacementSessionId, routeId }),
+      prepareSession: () => Effect.die(new Error("Inactive route runtime was prepared")),
+      readReplacementGeneration: () => Effect.succeed(replacementGeneration),
+      replacedAt: Effect.die(new Error("Existing replacement requested a new timestamp")),
+      retainIntent: (_sessionId, generation) =>
+        Effect.sync(() => {
+          expect(generation).toEqual(replacementGeneration);
+          events.push("retain");
+        }),
+      replaceCurrentSession: () => Effect.die(new Error("Existing replacement was recreated")),
+      rollbackCurrentSessionReplacement: () =>
+        Effect.die(new Error("Inactive route replacement was rolled back")),
+      selectSessionForWrites: () => Effect.die(new Error("Inactive route was selected")),
+      settle: (_sessionId, generation) =>
+        Effect.sync(() => {
+          expect(generation).toEqual(replacementGeneration);
+          events.push("settle");
+          return "settled" as const;
+        }),
+    },
+  ).pipe(
+    Effect.tap((result) => Effect.sync(() => expect(result).toBe("settled"))),
+    Effect.tap(() =>
+      Effect.sync(() =>
+        expect(events).toEqual(["recheck", "retain", "recheck", "clear", "recheck", "settle"]),
+      ),
+    ),
+  );
+});
+
 it.effect("keeps the current replacement after durable settlement fails", () => {
   const events: Array<string> = [];
   const deletedSessionId = SessionId.make("session-1");
@@ -470,6 +519,7 @@ it.effect(
       deleteLocalSession(
         { replacementSessionId, sessionId: historicalSessionId },
         {
+          activeRouteId: routeId,
           activateSession: () => Effect.void,
           authorizeDeletion: () =>
             Effect.suspend(() => {
@@ -523,6 +573,7 @@ it.effect(
 );
 
 const testSessionWriteSelection = {
+  activeRouteId: ConversationRouteId.make("route-1"),
   prepareSession: (sessionId: SessionId) => Effect.succeed(sessionId),
   retainIntent: () => Effect.void,
   selectSessionForWrites: () => Effect.void,

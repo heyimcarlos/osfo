@@ -1823,7 +1823,12 @@ export class OsfoAgent extends Think<Env> {
       operation: "session.delete",
       presentation: current.presentation,
     };
-    const deleted = await this.#deleteSessionLocally(input, deletionAuthorization, owner);
+    const deleted = await this.#deleteSessionLocally(
+      input,
+      deletionAuthorization,
+      owner,
+      recheck.routeId,
+    );
     this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
     if (
       Predicate.isTagged(deleted, "DeletionActionUnavailable") ||
@@ -1844,6 +1849,7 @@ export class OsfoAgent extends Think<Env> {
     input: SessionDeleteInput,
     deletionAuthorization: DeletionAuthorization,
     owner: UserId,
+    activeRouteId: ConversationRouteId | undefined,
   ) {
     return runRpc(
       this.#providerConversationSaveGate.runSessionDeletion(
@@ -1855,6 +1861,7 @@ export class OsfoAgent extends Think<Env> {
             sessionId: input.sessionId,
           },
           {
+            activeRouteId,
             activateSession: (sessionId) =>
               Effect.tryPromise({
                 try: () => this.#activateSession(sessionId),
@@ -2120,6 +2127,7 @@ export class OsfoAgent extends Think<Env> {
                   ? {
                       _tag: "DeletionPermitted" as const,
                       authorityIdentity: metadata.authorityIdentity,
+                      routeId: metadata.routeId,
                     }
                   : result,
               ),
@@ -2358,6 +2366,7 @@ export class OsfoAgent extends Think<Env> {
             { sessionId: payload.sessionId },
             deletionAuthorization,
             payload.userId,
+            undefined,
           ),
         catch: (cause) =>
           new ProviderDeletionDeferred({
