@@ -209,6 +209,77 @@ write_wrangler_config() {
     "$run_id" "$postgres_url" "$provider_origin" "$worker_origin" "$web_origin"
 }
 
+start_worker_process() {
+  local run_id state_dir artifact_dir worker_origin worker_port inspector_port worker_pid
+  run_id="$1"
+  state_dir="$(state_dir_for "$run_id")"
+  artifact_dir="$(artifact_dir_for "$run_id")"
+  worker_origin="$(state_value "$run_id" worker-origin)"
+  worker_port="${worker_origin##*:}"
+  inspector_port="$(pick_port)"
+  setsid env OSFO_VERIFICATION_RUN_ID="$run_id" \
+    "$repo_root/apps/worker/node_modules/.bin/wrangler" dev \
+    --config "$state_dir/wrangler.json" \
+    --ip 127.0.0.1 \
+    --port "$worker_port" \
+    --inspector-port "$inspector_port" \
+    --persist-to "$state_dir/wrangler-state" \
+    --show-interactive-dev-session false \
+    >>"$artifact_dir/logs/worker.log" 2>&1 &
+  worker_pid="$!"
+  record_process "$state_dir" worker "$worker_pid"
+  wait_for_url "$worker_origin/auth/get-session" 'Worker' "$worker_pid"
+}
+
+inspect_agent_runtime() {
+  local run_id agent_id state_dir artifact_dir observer_origin observer_port inspector_port
+  local observer_pid observation status
+  run_id="$1"
+  agent_id="$2"
+  state_dir="$(state_dir_for "$run_id")"
+  artifact_dir="$(artifact_dir_for "$run_id")"
+  observer_port="$(pick_port)"
+  inspector_port="$(pick_port)"
+  observer_origin="http://127.0.0.1:$observer_port"
+
+  stop_process "$state_dir" worker
+  setsid env OSFO_VERIFICATION_RUN_ID="$run_id" \
+    "$repo_root/apps/worker/node_modules/.bin/wrangler" dev \
+    "$repo_root/apps/worker/test/support/agent-runtime-observer.ts" \
+    --config "$state_dir/wrangler.json" \
+    --ip 127.0.0.1 \
+    --port "$observer_port" \
+    --inspector-port "$inspector_port" \
+    --persist-to "$state_dir/wrangler-state" \
+    --show-interactive-dev-session false \
+    >>"$artifact_dir/logs/agent-runtime-observer.log" 2>&1 &
+  observer_pid="$!"
+  record_process "$state_dir" agent-observer "$observer_pid"
+
+  status=0
+  if ! wait_for_url "$observer_origin/health" 'Agent runtime observer' "$observer_pid"; then
+    status=1
+  fi
+  observation=''
+  if [[ "$status" == '0' ]] && \
+    ! observation="$(curl --fail --silent --show-error --get \
+      --data-urlencode "agentId=$agent_id" "$observer_origin/agent")"; then
+    status=1
+  fi
+  if ! stop_process "$state_dir" agent-observer; then
+    status=1
+  fi
+  if ! start_worker_process "$run_id"; then
+    status=1
+  fi
+  if [[ "$status" != '0' ]]; then
+    printf 'Agent runtime observation failed; see %s\n' \
+      "$artifact_dir/logs/agent-runtime-observer.log" >&2
+    return 1
+  fi
+  printf '%s\n' "$observation"
+}
+
 wait_for_file() {
   local path label attempt
   path="$1"
@@ -281,8 +352,8 @@ write_identity() {
 
 start_run() {
   local run_id state_dir artifact_dir container_id postgres_port postgres_url
-  local provider_origin worker_port web_port inspector_port worker_origin web_origin
-  local provider_pid worker_pid web_pid identity_lock_fd launch_checkout
+  local provider_origin worker_port web_port worker_origin web_origin
+  local provider_pid web_pid identity_lock_fd launch_checkout
   run_id="$1"
   doctor_tools
   state_dir="$(state_dir_for "$run_id")"
@@ -342,7 +413,6 @@ start_run() {
 
   worker_port="$(pick_port)"
   web_port="$(pick_port)"
-  inspector_port="$(pick_port)"
   worker_origin="http://127.0.0.1:$worker_port"
   web_origin="http://127.0.0.1:$web_port"
   printf '%s\n' "$worker_origin" >"$state_dir/worker-origin"
@@ -350,17 +420,7 @@ start_run() {
   write_wrangler_config \
     "$run_id" "$state_dir" "$postgres_url" "$provider_origin" "$worker_origin" "$web_origin"
 
-  setsid env OSFO_VERIFICATION_RUN_ID="$run_id" \
-    "$repo_root/apps/worker/node_modules/.bin/wrangler" dev \
-    --config "$state_dir/wrangler.json" \
-    --ip 127.0.0.1 \
-    --port "$worker_port" \
-    --inspector-port "$inspector_port" \
-    --persist-to "$state_dir/wrangler-state" \
-    --show-interactive-dev-session false \
-    >"$artifact_dir/logs/worker.log" 2>&1 &
-  worker_pid="$!"
-  record_process "$state_dir" worker "$worker_pid"
+  start_worker_process "$run_id"
 
   setsid env --chdir="$repo_root/apps/web" \
     OSFO_VERIFICATION_RUN_ID="$run_id" VITE_API_URL="$worker_origin" \
@@ -370,7 +430,6 @@ start_run() {
   web_pid="$!"
   record_process "$state_dir" web "$web_pid"
 
-  wait_for_url "$worker_origin/auth/get-session" 'Worker' "$worker_pid"
   wait_for_url "$web_origin/get-started" 'Web UI' "$web_pid"
   printf 'run_id=%s\nlaunch_commit=%s\nlaunch_checkout=%s\nstarted_at=%s\nworker_origin=%s\nweb_origin=%s\n' \
     "$run_id" "$(<"$state_dir/commit")" "$launch_checkout" \
@@ -626,7 +685,7 @@ require_owned_identifier() {
 seed_account_deletion() {
   local run_id state_dir container_id provider_origin phone seed_state user_id agent_id
   local channel_link_id target_seed unrelated_seed target_tag unrelated_tag files_bucket
-  local target_key unrelated_key containers_json agent_storage
+  local target_key unrelated_key containers_json agent_runtime
   run_id="$1"
   doctor_run "$run_id" >/dev/null
   state_dir="$(state_dir_for "$run_id")"
@@ -661,11 +720,10 @@ seed_account_deletion() {
   printf '%s\n' "$agent_id" >"$state_dir/account-deletion-agent-id"
   printf '%s\n' "$channel_link_id" >"$state_dir/account-deletion-channel-link-id"
 
-  agent_storage="$(bun "$script_dir/inspect-agent-storage.mjs" \
-    "$state_dir/wrangler-state/v3/do" "$agent_id")"
+  agent_runtime="$(inspect_agent_runtime "$run_id" "$agent_id")"
   jq --exit-status \
-    '.initializationCount == 1 and .registryCount == 1' <<<"$agent_storage" >/dev/null
-  jq . <<<"$agent_storage" >"$state_dir/account-deletion-agent-storage-before.json"
+    '.inspectable == true and .registered == true' <<<"$agent_runtime" >/dev/null
+  jq . <<<"$agent_runtime" >"$state_dir/account-deletion-agent-runtime-before.json"
 
   target_seed="$(curl --fail --silent --show-error \
     --header 'content-type: application/json' \
@@ -799,7 +857,7 @@ observe_billing() {
 observe_account_deletion() {
   local run_id state_dir feature_dir container_id provider_origin phone user_id agent_id
   local channel_link_id target_tag unrelated_tag files_bucket target_key unrelated_key
-  local postgres_state agent_storage provider_ledger provider_containers target_exists unrelated_exists
+  local postgres_state agent_runtime provider_ledger provider_containers target_exists unrelated_exists
   local worker_log account_http
   run_id="$1"
   state_dir="$(state_dir_for "$run_id")"
@@ -835,8 +893,7 @@ observe_account_deletion() {
       'allowanceExists', exists(select 1 from allowance_periods where user_id = '$user_id'),
       'phoneVerificationExists', exists(select 1 from verifications where identifier = '$phone')
     );")"
-  agent_storage="$(bun "$script_dir/inspect-agent-storage.mjs" \
-    "$state_dir/wrangler-state/v3/do" "$agent_id")"
+  agent_runtime="$(inspect_agent_runtime "$run_id" "$agent_id")"
   if r2_object_exists "$state_dir" "$files_bucket" "$target_key"; then
     target_exists=true
   else
@@ -850,22 +907,22 @@ observe_account_deletion() {
   account_http="$("$script_dir/inspect-account-http-log" "$worker_log")"
   jq --null-input \
     --argjson postgres "$postgres_state" \
-    --argjson agentStorage "$agent_storage" \
+    --argjson agentRuntime "$agent_runtime" \
     --argjson targetR2Exists "$target_exists" \
     --argjson unrelatedR2Exists "$unrelated_exists" \
     --argjson accountHttp "$account_http" \
     --arg targetR2Key "$target_key" \
     --arg unrelatedR2Key "$unrelated_key" \
     '$postgres + {
-      agentStorage: $agentStorage,
+      agentRuntime: $agentRuntime,
       accountHttp: $accountHttp,
       targetR2Exists: $targetR2Exists,
       targetR2Key: $targetR2Key,
       unrelatedR2Exists: $unrelatedR2Exists,
       unrelatedR2Key: $unrelatedR2Key
     }' >"$feature_dir/state.json"
-  cp "$state_dir/account-deletion-agent-storage-before.json" \
-    "$feature_dir/agent-storage-before.json"
+  cp "$state_dir/account-deletion-agent-runtime-before.json" \
+    "$feature_dir/agent-runtime-before.json"
 
   provider_ledger="$(curl --fail --silent --show-error \
     "$provider_origin/_test/supermemory/ledger")"
@@ -883,15 +940,15 @@ observe_account_deletion() {
     '(.userExists or .agentExists or .authSessionExists or .deletionCaseExists or
       .channelLinkExists or .acceptedInviteExists or .channelAuditExists or
       .billingExists or .allowanceExists or .phoneVerificationExists) == false and
-      .agentStorage.initializationCount == 0 and .agentStorage.registryCount == 0 and
+      .agentRuntime.inspectable == false and .agentRuntime.registered == false and
       .accountHttp.presentationRequests == 1 and
       .accountHttp.presentationSuccesses == 1 and
       .accountHttp.deleteRequests == 1 and .accountHttp.deleteSuccesses == 1 and
       .targetR2Exists == false and .unrelatedR2Exists == true' \
     "$feature_dir/state.json" >/dev/null
   jq --exit-status \
-    '.initializationCount == 1 and .registryCount == 1' \
-    "$feature_dir/agent-storage-before.json" >/dev/null
+    '.inspectable == true and .registered == true' \
+    "$feature_dir/agent-runtime-before.json" >/dev/null
   jq --exit-status --arg target "$target_tag" --arg unrelated "$unrelated_tag" \
     '(.containers | index($target)) == null and
       (.containers | index($unrelated)) != null and
@@ -901,7 +958,7 @@ observe_account_deletion() {
   complete_observation "$run_id" "$feature_dir"
   printf 'observed account-deletion state=%s provider=%s agent_before=%s\n' \
     "$feature_dir/state.json" "$feature_dir/provider.json" \
-    "$feature_dir/agent-storage-before.json"
+    "$feature_dir/agent-runtime-before.json"
 }
 
 evidence_finish() {
