@@ -19,6 +19,16 @@ export const CoreMemoryReplacement = Schema.Struct({
 });
 export type CoreMemoryReplacement = typeof CoreMemoryReplacement.Type;
 
+/** At least one exact local correction that must commit before provider forgetting. */
+export const CoreMemoryCorrections = Schema.NonEmptyArray(CoreMemoryReplacement).check(
+  Schema.isMaxLength(2),
+  Schema.makeFilter(
+    (replacements) =>
+      new Set(replacements.map(({ block }) => block)).size === replacements.length ||
+      "must replace each Core Memory block at most once",
+  ),
+);
+
 /** Exact approval and originating authority retained beside delayed provider deletion. */
 export const DeletionAuthorization = Schema.Struct({
   actionId: ActionId,
@@ -30,14 +40,7 @@ export type DeletionAuthorization = typeof DeletionAuthorization.Type;
 
 /** Exact provider memories and immediate Native Memory corrections to apply together. */
 export const ForgetKnowledgeInput = Schema.Struct({
-  coreMemory: Schema.Array(CoreMemoryReplacement).check(
-    Schema.isMaxLength(2),
-    Schema.makeFilter(
-      (replacements) =>
-        new Set(replacements.map(({ block }) => block)).size === replacements.length ||
-        "must replace each Core Memory block at most once",
-    ),
-  ),
+  coreMemory: CoreMemoryCorrections,
   memoryIds: Schema.NonEmptyArray(MemoryProvider.KnowledgeMemoryId),
 });
 

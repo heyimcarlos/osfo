@@ -2123,7 +2123,7 @@ export class OsfoAgent extends Think<Env> {
 
   #prepareProviderDeletion(claim: ClaimedMemoryProviderWork) {
     const payload = claim.payload;
-    if (payload._tag === "ForgetKnowledge" && payload.coreMemory !== undefined) {
+    if (payload._tag === "ForgetKnowledge") {
       return Effect.tryPromise({
         try: () => this.#activateCurrentSession(),
         catch: (cause) =>

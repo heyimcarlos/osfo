@@ -516,6 +516,33 @@ it.effect("retains per-target deletion progress across claim retry and Agent res
   ),
 );
 
+it.effect("rejects retained Knowledge forgetting without a Core Memory correction", () =>
+  withDatabase(({ database, storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const outbox = makeMemoryProviderOutboxStore(db);
+      const valid = forgetKnowledgeDeletion("forget-empty-correction");
+      yield* outbox.enqueueDeletion(valid);
+      database
+        .prepare(
+          `UPDATE osfo_memory_provider_outbox
+            SET payload_json = json_set(payload_json, '$.coreMemory', json('[]'))
+            WHERE outbox_id = ?`,
+        )
+        .run(valid.outboxId);
+
+      const claimed = yield* outbox
+        .claimNext(now, liveLease, "claim-empty-correction")
+        .pipe(Effect.result);
+
+      expect(Result.isFailure(claimed)).toBe(true);
+      if (Result.isFailure(claimed)) {
+        expect(claimed.failure._tag).toBe("AgentStoreRecordInvalid");
+      }
+    }),
+  ),
+);
+
 it.effect("keeps Knowledge deletion leased until immediate Core Memory correction commits", () =>
   withDatabase(({ storage }) =>
     Effect.gen(function* () {
@@ -2590,6 +2617,9 @@ const forgetKnowledgeDeletion = (outboxId: string) => {
         operation: "memory.forgetKnowledge" as const,
         presentation: ApprovalPresentation.make("Forget memory-1 and memory-2"),
       },
+      coreMemory: [
+        { block: "userContext" as const, content: "Forget selected knowledge" },
+      ] as const,
       memoryIds: [
         MemoryProvider.KnowledgeMemoryId.make("memory-1"),
         MemoryProvider.KnowledgeMemoryId.make("memory-2"),

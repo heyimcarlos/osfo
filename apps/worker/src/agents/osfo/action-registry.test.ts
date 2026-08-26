@@ -1,13 +1,18 @@
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Result, Schema } from "effect";
 
-import { ActionPresentationId, type PendingThinkAction } from "./think-action-approvals";
+import {
+  ActionPresentationId,
+  ActionPresentationUnavailable,
+  type PendingThinkAction,
+} from "./think-action-approvals";
 import {
   hasExactActionInput,
   hasExactForgetKnowledgeInput,
   hasExactSessionDeleteInput,
   presentOsfoAction,
 } from "./action-presentation";
+import { ForgetKnowledgeInput } from "./deletion-actions";
 
 /* oxlint-disable vitest/no-standalone-expect -- Assertion executes inside the @effect/vitest Effect callback. */
 
@@ -85,6 +90,38 @@ it.effect("projects the exact Knowledge deletion and Core Memory correction", ()
         memoryIds: ["memory-1", "memory-2"],
       }),
     ).toBe(false);
+  }),
+);
+
+it.effect("rejects Knowledge forgetting without an exact Core Memory correction", () =>
+  Effect.gen(function* () {
+    const input = {
+      coreMemory: [],
+      memoryIds: ["memory-1"],
+    };
+    const decoded = yield* Schema.decodeUnknownEffect(ForgetKnowledgeInput)(input).pipe(
+      Effect.result,
+    );
+    const presented = yield* presentOsfoAction({
+      descriptor: {
+        action: "osfoForgetKnowledge",
+        input,
+        kind: "durable-pause",
+        permissions: ["memory:delete"],
+        requestId: "request-empty-correction",
+        risk: "high",
+        summary: "Forget selected knowledge",
+        toolCallId: "tool-call-empty-correction",
+      },
+      executionId: ActionPresentationId.make("execution-empty-correction"),
+      source: "action",
+    }).pipe(Effect.result);
+
+    expect(Result.isFailure(decoded)).toBe(true);
+    expect(Result.isFailure(presented)).toBe(true);
+    if (Result.isFailure(presented)) {
+      expect(presented.failure).toBeInstanceOf(ActionPresentationUnavailable);
+    }
   }),
 );
 

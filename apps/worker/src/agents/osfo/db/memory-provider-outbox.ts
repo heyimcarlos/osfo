@@ -6,7 +6,11 @@ import type { AllowancePeriodId, AssistantMessageId } from "../../../domain";
 import type { DbTimestamp } from "../../../db";
 import { UsageActivity } from "../../../domain/usage";
 import { MemoryProvider } from "../../../services/memory-provider";
-import { CoreMemoryReplacement, DeletionAuthorization } from "../deletion-actions";
+import {
+  CoreMemoryCorrections,
+  CoreMemoryReplacement,
+  DeletionAuthorization,
+} from "../deletion-actions";
 import { ConversationSnapshotProjection } from "../memory-provider-projection";
 import type { ConversationSnapshotProjection as ConversationSnapshotProjectionType } from "../memory-provider-projection";
 import type { AgentDb } from "./client";
@@ -34,7 +38,7 @@ export const DeleteUserKnowledgePayload = Schema.TaggedStruct("DeleteUserKnowled
 });
 export const ForgetKnowledgePayload = Schema.TaggedStruct("ForgetKnowledge", {
   authorization: DeletionAuthorization,
-  coreMemory: Schema.optionalKey(Schema.Array(CoreMemoryReplacement)),
+  coreMemory: CoreMemoryCorrections,
   memoryIds: Schema.NonEmptyArray(MemoryProvider.KnowledgeMemoryId),
   userId: UserId,
 });
