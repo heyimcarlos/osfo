@@ -15,6 +15,7 @@ usage() {
     '  control-osfo doctor <run-id>' \
     '  control-osfo identity <run-id>' \
     '  control-osfo journeys <run-id>' \
+    '  control-osfo account-deletion-envelope-journey <run-id>' \
     '  control-osfo evidence <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay> start' \
     '  control-osfo record <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay> <action|result> <summary>' \
     '  control-osfo observe <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay>' \
@@ -490,10 +491,21 @@ show_identity() {
     "$twilio_code" "$(state_value "$run_id" web-origin)"
 }
 
-qualify_journeys() {
+qualify_account_deletion_envelope() {
   local run_id postgres_port
   run_id="$1"
   doctor_run "$run_id" >/dev/null
+  postgres_port="$(state_value "$run_id" postgres-port)"
+  OSFO_TEST_WORKER_URL="$(state_value "$run_id" worker-origin)" \
+    OSFO_TEST_DATABASE_URL="postgres://osfo:osfo@127.0.0.1:$postgres_port/osfo" \
+    OSFO_TEST_PHONE_NUMBER="$(state_value "$run_id" phone-e164)" \
+    bun run --cwd "$repo_root/apps/worker" test:journeys:account-deletion-envelope
+}
+
+qualify_journeys() {
+  local run_id postgres_port
+  run_id="$1"
+  qualify_account_deletion_envelope "$run_id"
   postgres_port="$(state_value "$run_id" postgres-port)"
   OSFO_TEST_POSTGRES_URL="postgres://osfo:osfo@127.0.0.1:$postgres_port/postgres" \
     bun run --cwd "$repo_root/apps/worker" test:journeys
@@ -1097,6 +1109,10 @@ case "$command_name" in
   journeys)
     require_run_id "${2:-}"
     qualify_journeys "$2"
+    ;;
+  account-deletion-envelope-journey)
+    require_run_id "${2:-}"
+    qualify_account_deletion_envelope "$2"
     ;;
   evidence)
     require_run_id "${2:-}"

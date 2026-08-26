@@ -89,13 +89,19 @@ If HEAD changes after launch, discard the run as stale and repeat. A screenshot 
 
 `start` records whether the checkout was clean. A run launched dirty remains a draft even if the checkout is later restored. `evidence finish` records PASS only when the run launched clean, HEAD is unchanged, the checkout is still clean, and the observer wrote its post-assertion marker. Commit the implementation, start a fresh run, and repeat the proof before handoff.
 
-The composed Worker journeys remain useful isolation tests. Run them against the run-owned PostgreSQL maintenance database without copying its dynamic port:
+The composed Worker journeys remain useful isolation tests. The standard command derives the run-owned Worker, PostgreSQL, and disposable phone details from run state. It first proves that the live account-deletion endpoint rejects one edited retained envelope without consuming it, accepts the untouched request, and reaches terminal scheduled deletion; then it runs the remaining Worker journeys:
 
 ```sh
 ./.agents/skills/verify-osfo/helpers/control-osfo journeys "$RUN_ID"
 ```
 
 Report them as Worker qualification. They do not replace the Chrome evidence above.
+
+To repeat only the live edited-envelope proof, use the standard subcommand. It creates a fresh User for the run-owned phone and terminally removes the User, Action, Deletion Case, fence, and sessions before returning, including through its failure finalizer:
+
+```sh
+./.agents/skills/verify-osfo/helpers/control-osfo account-deletion-envelope-journey "$RUN_ID"
+```
 
 ## Cleanup
 
