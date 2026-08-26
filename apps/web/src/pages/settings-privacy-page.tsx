@@ -9,10 +9,7 @@ import {
   presentAccountDeletion,
   requestAccountDeletion,
 } from "../lib/api-client";
-import {
-  clearAccountDeletionReplay,
-  saveAccountDeletionReplay,
-} from "../lib/account-deletion-replay";
+import { prepareAccountDeletionSubmission } from "../lib/account-deletion-replay";
 
 const privacyPreferences = [
   {
@@ -146,22 +143,21 @@ function DeleteAccountControl() {
     const request = accountDeletionRequestFor(action);
     setBusy(true);
     setError(false);
-    try {
-      saveAccountDeletionReplay(globalThis.localStorage, request);
-    } catch {
-      setBusy(false);
-      setError(true);
-      return;
-    }
-    void Effect.runPromise(requestAccountDeletion(request))
-      .then(() => {
-        try {
-          clearAccountDeletionReplay(globalThis.localStorage);
-        } finally {
-          globalThis.location.assign("/");
+    const submission = prepareAccountDeletionSubmission(
+      globalThis.localStorage,
+      request,
+      requestAccountDeletion,
+    );
+    void Effect.runPromise(submission.effect)
+      .then(() => globalThis.location.assign("/"))
+      .catch(() => {
+        if (submission.replayAvailable) {
+          globalThis.location.assign("/account-deletion/recovery");
+          return;
         }
-      })
-      .catch(() => globalThis.location.assign("/account-deletion/recovery"));
+        setBusy(false);
+        setError(true);
+      });
   };
   return (
     <div className="rounded-2xl border border-white/80 bg-white/68 px-3 py-3">

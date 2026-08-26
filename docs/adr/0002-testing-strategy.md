@@ -141,6 +141,14 @@ credentials.
 5. Built-artifact smoke tests remain a later release gate, not a substitute for
    composed journeys.
 
+The edited retained account-deletion envelope is additionally exercised in CI
+against the run-owned real Wrangler Worker and PostgreSQL started by the verifier.
+Workerd has an unstable malformed-response path for this case, so the stable proof
+uses the same production entrypoint, authentication, transaction, and scheduled
+reconciliation path through Wrangler. The verifier owns a fresh disposable identity
+and terminal cleanup for every invocation; this focused proof does not replace the
+remaining composed Worker journeys.
+
 ## Browser evidence
 
 Playwright belongs in a separate browser tier when a journey drives the rendered

@@ -16,24 +16,20 @@ export function AccountDeletionRecoveryPage() {
   const [failed, setFailed] = useState(false);
 
   const clear = () => {
-    try {
-      clearAccountDeletionReplay(globalThis.localStorage);
+    if (clearAccountDeletionReplay(globalThis.localStorage) === "cleared") {
       setReplay({ status: "missing" });
       setFailed(false);
-    } catch {
-      setReplay({ status: "unavailable" });
+      return;
     }
+    setReplay({ status: "unavailable" });
   };
   const retry = (available: Extract<AccountDeletionReplay, { readonly status: "available" }>) => {
     setBusy(true);
     setFailed(false);
     void Effect.runPromise(requestAccountDeletion(available.request))
       .then(() => {
-        try {
-          clearAccountDeletionReplay(globalThis.localStorage);
-        } finally {
-          globalThis.location.assign("/");
-        }
+        clearAccountDeletionReplay(globalThis.localStorage);
+        globalThis.location.assign("/");
       })
       .catch(() => {
         setBusy(false);

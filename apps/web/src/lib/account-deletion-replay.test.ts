@@ -1,9 +1,12 @@
 // @vitest-environment happy-dom
+/* oxlint-disable vitest/no-standalone-expect -- Assertions execute inside the Effect returned directly to it.effect. */
 import { beforeEach, expect, it } from "@effect/vitest";
+import { Effect } from "effect";
 
 import {
   clearAccountDeletionReplay,
   loadAccountDeletionReplay,
+  prepareAccountDeletionSubmission,
   saveAccountDeletionReplay,
 } from "./account-deletion-replay";
 
@@ -109,3 +112,54 @@ it("leaves opaque Action identity and bearer authentication to the Worker", () =
     status: "available",
   });
 });
+
+it.effect("submits exactly once when replay storage is entirely unavailable", () =>
+  Effect.gen(function* () {
+    let submissions = 0;
+    const unavailableStorage = {
+      getItem: () => {
+        throw new Error("getItem blocked");
+      },
+      removeItem: () => {
+        throw new Error("removeItem blocked");
+      },
+      setItem: () => {
+        throw new Error("setItem blocked");
+      },
+    };
+    const submission = prepareAccountDeletionSubmission(unavailableStorage, request, (submitted) =>
+      Effect.sync(() => {
+        submissions += 1;
+        expect(submitted).toEqual(request);
+        return { status: "deletion-pending" as const };
+      }),
+    );
+
+    expect(submission.replayAvailable).toBe(false);
+    expect(loadAccountDeletionReplay(unavailableStorage)).toEqual({ status: "unavailable" });
+    expect(yield* submission.effect).toEqual({ status: "deletion-pending" });
+    expect(submissions).toBe(1);
+  }),
+);
+
+it.effect("does not let a post-success replay clear failure override deletion", () =>
+  Effect.gen(function* () {
+    let submissions = 0;
+    const storage = {
+      removeItem: () => {
+        throw new Error("removeItem blocked");
+      },
+      setItem: () => undefined,
+    };
+    const submission = prepareAccountDeletionSubmission(storage, request, () =>
+      Effect.sync(() => {
+        submissions += 1;
+        return { status: "deletion-pending" as const };
+      }),
+    );
+
+    expect(submission.replayAvailable).toBe(true);
+    expect(yield* submission.effect).toEqual({ status: "deletion-pending" });
+    expect(submissions).toBe(1);
+  }),
+);

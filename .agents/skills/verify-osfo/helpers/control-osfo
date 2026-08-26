@@ -357,7 +357,6 @@ start_run() {
   local provider_origin worker_port web_port worker_origin web_origin
   local provider_pid web_pid identity_lock_fd launch_checkout
   run_id="$1"
-  doctor_tools
   state_dir="$(state_dir_for "$run_id")"
   artifact_dir="$(artifact_dir_for "$run_id")"
   mkdir -p "$state_parent"
@@ -367,6 +366,11 @@ start_run() {
     printf 'Run state already exists: %s\n' "$state_dir" >&2
     exit 1
   fi
+  if [[ -e "$artifact_dir" ]]; then
+    printf 'Preserved evidence already exists for run %s. Choose a fresh run ID.\n' "$run_id" >&2
+    exit 1
+  fi
+  doctor_tools
   mkdir -p "$state_dir" "$artifact_dir/logs"
   printf '%s\n' "$(git -C "$repo_root" rev-parse HEAD)" >"$state_dir/commit"
   if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]]; then

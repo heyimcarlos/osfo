@@ -20,6 +20,11 @@ export type AccountDeletionReplay =
   | { readonly status: "missing" }
   | { readonly status: "unavailable" };
 
+export interface PreparedAccountDeletionSubmission<A, E, R> {
+  readonly effect: Effect.Effect<A, E, R>;
+  readonly replayAvailable: boolean;
+}
+
 /** Read one exact retained deletion request without repairing or accepting malformed data. */
 export const loadAccountDeletionReplay = (
   storage: Pick<Storage, "getItem">,
@@ -62,22 +67,46 @@ export const loadBrowserAccountDeletionReplay = (): AccountDeletionReplay =>
 export const saveAccountDeletionReplay = (
   storage: Pick<Storage, "setItem">,
   request: AccountDeletionReplayRequest,
-) =>
+): "saved" | "unavailable" =>
   Effect.runSync(
     Effect.try({
       try: () => storage.setItem(storageKey, encodeStoredReplay({ request, version: 2 })),
       catch: () => new AccountDeletionReplayStorageUnavailable(),
-    }),
+    }).pipe(
+      Effect.as("saved" as const),
+      Effect.catchTag("AccountDeletionReplayStorageUnavailable", () =>
+        Effect.succeed("unavailable" as const),
+      ),
+    ),
   );
 
 /** Remove a retained request only after success or an explicit User clear action. */
-export const clearAccountDeletionReplay = (storage: Pick<Storage, "removeItem">) =>
+export const clearAccountDeletionReplay = (
+  storage: Pick<Storage, "removeItem">,
+): "cleared" | "unavailable" =>
   Effect.runSync(
     Effect.try({
       try: () => storage.removeItem(storageKey),
       catch: () => new AccountDeletionReplayStorageUnavailable(),
-    }),
+    }).pipe(
+      Effect.as("cleared" as const),
+      Effect.catchTag("AccountDeletionReplayStorageUnavailable", () =>
+        Effect.succeed("unavailable" as const),
+      ),
+    ),
   );
+
+/** Prepare one primary deletion submission with optional browser replay retention. */
+export const prepareAccountDeletionSubmission = <A, E, R>(
+  storage: Pick<Storage, "removeItem" | "setItem">,
+  request: AccountDeletionReplayRequest,
+  submit: (request: AccountDeletionReplayRequest) => Effect.Effect<A, E, R>,
+): PreparedAccountDeletionSubmission<A, E, R> => ({
+  effect: Effect.suspend(() => submit(request)).pipe(
+    Effect.tap(() => Effect.sync(() => clearAccountDeletionReplay(storage))),
+  ),
+  replayAvailable: saveAccountDeletionReplay(storage, request) === "saved",
+});
 
 class AccountDeletionReplayStorageUnavailable extends Data.TaggedError(
   "AccountDeletionReplayStorageUnavailable",

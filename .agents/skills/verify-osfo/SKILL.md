@@ -89,6 +89,11 @@ If HEAD changes after launch, discard the run as stale and repeat. A screenshot 
 
 `start` records whether the checkout was clean. A run launched dirty remains a draft even if the checkout is later restored. `evidence finish` records PASS only when the run launched clean, HEAD is unchanged, the checkout is still clean, and the observer wrote its post-assertion marker. Commit the implementation, start a fresh run, and repeat the proof before handoff.
 
+Run IDs are single-use evidence identities. `start` fails if either active scratch
+state or a preserved artifact directory already exists. Cleanup removes only scratch
+state and keeps evidence, so always choose a fresh run ID instead of appending to an
+earlier run's logs.
+
 The composed Worker journeys remain useful isolation tests. The standard command derives the run-owned Worker, PostgreSQL, and disposable phone details from run state. It first proves that the live account-deletion endpoint rejects one edited retained envelope without consuming it, accepts the untouched request, and reaches terminal scheduled deletion; then it runs the remaining Worker journeys:
 
 ```sh
