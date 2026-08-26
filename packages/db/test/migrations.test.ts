@@ -183,6 +183,27 @@ describe("Postgres migrations", () => {
                'action-wrong-user', 'action-user-1', 'session-1', '{}',
                'account-deletion-v1', now() + interval '5 minutes', now(), 'action-case-2'
              )`,
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, presentation, presentation_version,
+               expires_at, consumed_at
+             ) VALUES (
+               'action-consumed-without-case', 'action-user-3', 'session-3', '{}',
+               'account-deletion-v1', now() + interval '5 minutes', now()
+             )`,
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, presentation, presentation_version,
+               expires_at, consumed_at, deletion_case_id
+             ) VALUES (
+               'action-consumed-blank-case', 'action-user-3', 'session-3', '{}',
+               'account-deletion-v1', now() + interval '5 minutes', now(), '   '
+             )`,
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, presentation, presentation_version,
+               expires_at, deletion_case_id
+             ) VALUES (
+               'action-unconsumed-with-case', 'action-user-3', 'session-3', '{}',
+               'account-deletion-v1', now() + interval '5 minutes', 'action-case-1'
+             )`,
             ];
 
             for (const statement of rejectedStatements) {
@@ -401,6 +422,27 @@ describe("Postgres migrations", () => {
               `INSERT INTO deletion_cases
                (deletion_case_id, user_id, requested_by_admin_id, reason)
              VALUES ('deletion-case-duplicate', 'user-1', 'admin-1', 'Duplicate')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_user_id, reason)
+             VALUES ('self-case-null-action', 'user-2', 'user-2', 'User request')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, approval_action_id, approval_presentation, reason)
+             VALUES ('self-case-null-requester', 'user-2',
+                     'account-delete:null-requester', '{}', 'User request')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_user_id, approval_action_id,
+                approval_presentation, reason)
+             VALUES ('self-case-null-presentation', 'user-2', 'user-2',
+                     'account-delete:null-presentation', NULL, 'User request')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_user_id, approval_action_id,
+                approval_presentation, reason)
+             VALUES ('self-case-blank-action', 'user-2', 'user-2', '   ', '{}', 'User request')`,
+              `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_user_id, approval_action_id,
+                approval_presentation, reason)
+             VALUES ('self-case-blank-presentation', 'user-2', 'user-2',
+                     'account-delete:blank-presentation', '   ', 'User request')`,
             ];
 
             for (const statement of rejectedStatements) {

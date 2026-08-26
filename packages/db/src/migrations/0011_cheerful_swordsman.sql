@@ -16,7 +16,7 @@ CREATE TABLE "account_deletion_actions" (
         and ("account_deletion_actions"."invalidated_at" is null or "account_deletion_actions"."invalidated_at" >= "account_deletion_actions"."created_at")
         and ("account_deletion_actions"."consumed_at" is null or "account_deletion_actions"."invalidated_at" is null)
         and (("account_deletion_actions"."consumed_at" is null and "account_deletion_actions"."deletion_case_id" is null)
-          or ("account_deletion_actions"."consumed_at" is not null and length(btrim("account_deletion_actions"."deletion_case_id")) > 0)))
+          or ("account_deletion_actions"."consumed_at" is not null and "account_deletion_actions"."deletion_case_id" is not null and length(btrim("account_deletion_actions"."deletion_case_id")) > 0)))
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX "deletion_cases_identity_unique" ON "deletion_cases" USING btree ("deletion_case_id","user_id");--> statement-breakpoint

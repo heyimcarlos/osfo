@@ -90,9 +90,15 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       user_exists: true,
     });
 
-    const response = yield* Effect.promise(() => app.account.delete(presentation));
+    const [response, lostResponseRetry] = yield* Effect.promise(() =>
+      Promise.all([app.account.delete(presentation), app.account.delete(presentation)]),
+    );
     expect(response.status).toBe(200);
     expect(yield* Effect.promise(() => response.json())).toEqual({ status: "deletion-pending" });
+    expect(lostResponseRetry.status).toBe(200);
+    expect(yield* Effect.promise(() => lostResponseRetry.json())).toEqual({
+      status: "deletion-pending",
+    });
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toBeNull();
     expect(yield* Effect.promise(app.supermemory.ledger)).toEqual([
       {

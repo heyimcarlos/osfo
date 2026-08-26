@@ -6,7 +6,7 @@ import {
   deletionCases,
   userSuspensionEvents,
 } from "@osfo/db/schema/user-lifecycle";
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 
 import { Db } from "../../db";
@@ -89,6 +89,53 @@ export const make = Effect.gen(function* () {
           .for("update")
           .limit(1);
         if (user === undefined) return { _tag: "MissingUser" } as const;
+        const [retainedAction] = await transaction
+          .select({
+            actionId: accountDeletionActions.action_id,
+            consumedAt: accountDeletionActions.consumed_at,
+            deletionCaseId: accountDeletionActions.deletion_case_id,
+            isUnexpired: sql<boolean>`${accountDeletionActions.expires_at} > clock_timestamp()`,
+          })
+          .from(accountDeletionActions)
+          .where(
+            and(
+              eq(accountDeletionActions.action_id, approval.actionId),
+              eq(accountDeletionActions.user_id, userId),
+              eq(accountDeletionActions.auth_session_id, authority.authSessionId),
+              eq(accountDeletionActions.presentation, approval.presentation),
+              eq(accountDeletionActions.presentation_version, approval.presentationVersion),
+              isNull(accountDeletionActions.invalidated_at),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (retainedAction === undefined) return { _tag: "AuthorityChanged" } as const;
+        if (retainedAction.consumedAt !== null) {
+          if (retainedAction.deletionCaseId === null) return { _tag: "AuthorityChanged" } as const;
+          const [exactCase] = await transaction
+            .select({ deletionCaseId: deletionCases.deletion_case_id })
+            .from(deletionCases)
+            .where(
+              and(
+                eq(deletionCases.deletion_case_id, retainedAction.deletionCaseId),
+                eq(deletionCases.user_id, userId),
+                eq(deletionCases.requested_by_user_id, userId),
+                isNull(deletionCases.requested_by_admin_id),
+                eq(deletionCases.approval_action_id, approval.actionId),
+                eq(deletionCases.approval_presentation, approval.presentation),
+                isNotNull(deletionCases.access_fenced_at),
+              ),
+            )
+            .for("update")
+            .limit(1);
+          return exactCase === undefined
+            ? ({ _tag: "AuthorityChanged" } as const)
+            : ({
+                _tag: "Existing",
+                deletionCaseId: DeletionCaseId.make(exactCase.deletionCaseId),
+              } as const);
+        }
+        if (!retainedAction.isUnexpired) return { _tag: "AuthorityChanged" } as const;
         const [[authSession], [subscription], [latestSuspension]] = await Promise.all([
           transaction
             .select({ id: sessions.id })
@@ -127,24 +174,6 @@ export const make = Effect.gen(function* () {
         ) {
           return { _tag: "AuthorityChanged" } as const;
         }
-        const [retainedAction] = await transaction
-          .select({ actionId: accountDeletionActions.action_id })
-          .from(accountDeletionActions)
-          .where(
-            and(
-              eq(accountDeletionActions.action_id, approval.actionId),
-              eq(accountDeletionActions.user_id, userId),
-              eq(accountDeletionActions.auth_session_id, authority.authSessionId),
-              eq(accountDeletionActions.presentation, approval.presentation),
-              eq(accountDeletionActions.presentation_version, approval.presentationVersion),
-              gt(accountDeletionActions.expires_at, sql`clock_timestamp()`),
-              isNull(accountDeletionActions.consumed_at),
-              isNull(accountDeletionActions.invalidated_at),
-            ),
-          )
-          .for("update")
-          .limit(1);
-        if (retainedAction === undefined) return { _tag: "AuthorityChanged" } as const;
         const [existing] = await transaction
           .select({ deletionCaseId: deletionCases.deletion_case_id })
           .from(deletionCases)

@@ -162,7 +162,10 @@ it.effect("retains a valid self-service fence and atomically removes the User gr
           approval,
           authority,
         ),
-      ).toEqual({ _tag: "AuthorityChanged" });
+      ).toEqual({
+        _tag: "Existing",
+        deletionCaseId: DeletionCaseId.make("self-delete-case-1"),
+      });
       expect(
         yield* Effect.promise(() =>
           database.select().from(sessions).where(eq(sessions.userId, userId)),
@@ -475,13 +478,13 @@ it.effect("consumes only one exact current server-owned self-service deletion Ac
         [
           persistence.requestSelf(
             userId,
-            DeletionCaseId.make("exact-case-a"),
+            DeletionCaseId.make("exact-case"),
             exactApproval,
             currentAuthority,
           ),
           persistence.requestSelf(
             userId,
-            DeletionCaseId.make("exact-case-b"),
+            DeletionCaseId.make("exact-case"),
             exactApproval,
             currentAuthority,
           ),
@@ -489,7 +492,10 @@ it.effect("consumes only one exact current server-owned self-service deletion Ac
         { concurrency: "unbounded" },
       );
       expect(concurrent.filter(({ _tag }) => _tag === "Created")).toHaveLength(1);
-      expect(concurrent.filter(({ _tag }) => _tag === "AuthorityChanged")).toHaveLength(1);
+      expect(concurrent).toContainEqual({
+        _tag: "Existing",
+        deletionCaseId: DeletionCaseId.make("exact-case"),
+      });
       expect(
         yield* Effect.promise(() =>
           database.select().from(sessions).where(eq(sessions.userId, userId)),
@@ -513,12 +519,47 @@ it.effect("consumes only one exact current server-owned self-service deletion Ac
         deletionCaseId: retainedCase?.deletion_case_id,
       });
 
+      yield* Effect.promise(() =>
+        database.insert(sessions).values({
+          expiresAt: retrySessionExpiresAt,
+          id: "lost-response-retry-session",
+          token: "lost-response-retry-token",
+          updatedAt: retrySessionUpdatedAt,
+          userId,
+        }),
+      );
+      expect(
+        yield* persistence.requestSelf(
+          userId,
+          DeletionCaseId.make("exact-case"),
+          exactApproval,
+          currentAuthority,
+        ),
+      ).toEqual({
+        _tag: "Existing",
+        deletionCaseId: DeletionCaseId.make("exact-case"),
+      });
+      expect(
+        yield* Effect.promise(() =>
+          database.select({ id: sessions.id }).from(sessions).where(eq(sessions.userId, userId)),
+        ),
+      ).toEqual([{ id: "lost-response-retry-session" }]);
+      yield* Effect.promise(() =>
+        database.delete(sessions).where(eq(sessions.id, "lost-response-retry-session")),
+      );
+
       const accountDeletion = AccountDeletionPostgres.make(database);
       const candidate = (yield* accountDeletion.pending).find((item) => item.userId === userId);
       if (candidate === undefined) {
         return yield* Effect.die(new Error("Durable self-service Deletion Case missing"));
       }
       yield* accountDeletion.ensureAccessFence(candidate);
+      yield* Effect.promise(() =>
+        database
+          .update(deletionCases)
+          .set({ approval_presentation: "changed-retained-presentation" })
+          .where(eq(deletionCases.deletion_case_id, DeletionCaseId.make("exact-case"))),
+      );
       expect(
         yield* persistence.requestSelf(
           userId,

@@ -131,6 +131,7 @@ export const make = Effect.gen(function* () {
       Predicate.isTagged(requested, "DeletionAuthorityChanged")
     )
       return yield* unavailable("fence");
+    if (Predicate.isTagged(requested, "DeletionAlreadyRequested")) return undefined;
     yield* deletion
       .reconcileUser(userId)
       .pipe(
