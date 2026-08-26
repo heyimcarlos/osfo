@@ -15,9 +15,9 @@ count_matches() {
 }
 
 presentation_requests="$(count_matches '^\[wrangler:info\] GET /v1/account/deletion-action [0-9]{3}( |$)')"
-presentation_successes="$(count_matches '^\[wrangler:info\] GET /v1/account/deletion-action 200 OK$')"
+presentation_successes="$(count_matches '^\[wrangler:info\] GET /v1/account/deletion-action 200 OK( \([0-9]+ms\))?$')"
 delete_requests="$(count_matches '^\[wrangler:info\] DELETE /v1/account [0-9]{3}( |$)')"
-delete_successes="$(count_matches '^\[wrangler:info\] DELETE /v1/account 200 OK$')"
+delete_successes="$(count_matches '^\[wrangler:info\] DELETE /v1/account 200 OK( \([0-9]+ms\))?$')"
 
 counts="$(jq --null-input \
   --argjson presentationRequests "$presentation_requests" \

@@ -1,4 +1,4 @@
-[wrangler:info] GET /v1/account/deletion-action 503 Service Unavailable
-[wrangler:info] GET /v1/account/deletion-action 200 OK
-[wrangler:info] DELETE /v1/account 503 Service Unavailable
-[wrangler:info] DELETE /v1/account 200 OK
+[wrangler:info] GET /v1/account/deletion-action 503 Service Unavailable (11ms)
+[wrangler:info] GET /v1/account/deletion-action 200 OK (42ms)
+[wrangler:info] DELETE /v1/account 503 Service Unavailable (17ms)
+[wrangler:info] DELETE /v1/account 200 OK (104ms)
