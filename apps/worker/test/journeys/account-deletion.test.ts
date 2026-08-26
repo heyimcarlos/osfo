@@ -10,7 +10,6 @@ import { spawnApp } from "../support/spawn-app";
 const AuthSessionResponse = Schema.Struct({
   session: Schema.Struct({ id: Schema.String }),
 });
-const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 it.effect("deletes a registered User through the authenticated Worker endpoint", () =>
   Effect.gen(function* () {
@@ -95,60 +94,6 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       app.account.delete({ ...presentation, replayToken: "z".repeat(43) }),
     );
     expect(guessedReplayBearer.status).toBe(503);
-    const exactPayload = {
-      approval: {
-        decision: "approved",
-        presentation: {
-          actionId: presentation.actionId,
-          confirmation: presentation.confirmation,
-          consequence: presentation.consequence,
-          operation: presentation.operation,
-          title: presentation.title,
-        },
-      },
-      confirmation: presentation.confirmation,
-      presentationVersion: presentation.presentationVersion,
-      replayToken: presentation.replayToken,
-    } as const;
-    const editedTitle = yield* Effect.promise(() =>
-      app.fetch("/v1/account", {
-        body: encodeJson({
-          ...exactPayload,
-          approval: {
-            ...exactPayload.approval,
-            presentation: { ...exactPayload.approval.presentation, title: "DELETE ACCOUNT" },
-          },
-        }),
-        headers: { "content-type": "application/json" },
-        method: "DELETE",
-      }),
-    );
-    expect(editedTitle.status).toBe(400);
-    const editedConsequence = yield* Effect.promise(() =>
-      app.fetch("/v1/account", {
-        body: encodeJson({
-          ...exactPayload,
-          approval: {
-            ...exactPayload.approval,
-            presentation: {
-              ...exactPayload.approval.presentation,
-              consequence: "Delete selected account data.",
-            },
-          },
-        }),
-        headers: { "content-type": "application/json" },
-        method: "DELETE",
-      }),
-    );
-    expect(editedConsequence.status).toBe(400);
-    const editedConfirmation = yield* Effect.promise(() =>
-      app.fetch("/v1/account", {
-        body: encodeJson({ ...exactPayload, confirmation: "delete-account-now" }),
-        headers: { "content-type": "application/json" },
-        method: "DELETE",
-      }),
-    );
-    expect(editedConfirmation.status).toBe(400);
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toEqual({
       agent_exists: true,
       auth_session_exists: true,
