@@ -190,7 +190,7 @@ import {
   type AgentRequestOperation,
   AgentStateNotFound,
   type AgentStoreRecordInvalid,
-  type AgentStoreUnavailable,
+  AgentStoreUnavailable,
   CommittedTurnConflict,
   ThinkSessionReadUnavailable,
   ThinkSessionRecordInvalid,
@@ -222,7 +222,7 @@ import {
   DecideActionApprovalRequest,
   makeThinkActionApprovalAdapter,
   ReadActionPresentationRequest,
-  type ThinkApprovalUnavailable,
+  ThinkApprovalUnavailable,
 } from "./think-action-approvals";
 import {
   coreMemoryClearActionName,
@@ -1465,24 +1465,36 @@ export class OsfoAgent extends Think<Env> {
     | Denied
   > {
     await this.#migrationsReady;
-    await this.#activateCurrentSession();
-    const session = this.session;
-    const applyBound = (parsed: BoundCoreMemoryInput) => boundCoreMemory(session, this, parsed);
-    const outcome = await runRpc(
-      Effect.gen(function* () {
-        const parsed = yield* Schema.decodeEffect(BoundCoreMemoryInput)(input).pipe(
-          Effect.mapError(() => invalidRequest("boundCoreMemory")),
-        );
-        const admission = authorization.admit(parsed.authorization, {
-          actionId: parsed.actionId,
-          kind: "memory.correct",
-        });
-        if (!Predicate.isTagged(admission, "Admitted")) return admission;
-        return yield* applyBound(parsed);
-      }),
+    const activateCurrentSession = () => this.#activateCurrentSession();
+    const applyBound = (parsed: BoundCoreMemoryInput) =>
+      boundCoreMemory(this.session, this, parsed);
+    return runRpc(
+      this.#accountDeletionFencedSessionExecution.run(
+        Effect.promise(activateCurrentSession).pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              const parsed = yield* Schema.decodeEffect(BoundCoreMemoryInput)(input).pipe(
+                Effect.mapError(() => invalidRequest("boundCoreMemory")),
+              );
+              const admission = authorization.admit(parsed.authorization, {
+                actionId: parsed.actionId,
+                kind: "memory.correct",
+              });
+              if (!Predicate.isTagged(admission, "Admitted")) return admission;
+              const outcome = yield* applyBound(parsed);
+              yield* Effect.promise(activateCurrentSession);
+              return outcome;
+            }),
+          ),
+        ),
+        () =>
+          new CoreMemoryUnavailable({
+            cause: "account deletion fence",
+            message: "Core Memory budgets are unavailable while account deletion is pending",
+            operation: "bound",
+          }),
+      ),
     );
-    if (Predicate.isTagged(outcome, "CoreMemoryBound")) await this.#activateCurrentSession();
-    return outcome;
   }
 
   /** Inspect Agent-wide User Context and Agent Notes before or after any turn. */
@@ -1492,20 +1504,32 @@ export class OsfoAgent extends Think<Env> {
     AgentRequestInvalid | ApprovalRequired | CoreMemoryInspected | CoreMemoryUnavailable | Denied
   > {
     await this.#migrationsReady;
-    await this.#activateCurrentSession();
-    const session = this.session;
+    const activateCurrentSession = () => this.#activateCurrentSession();
+    const inspectCurrent = () => inspectCoreMemory(this.session);
     return runRpc(
-      Effect.gen(function* () {
-        const parsed = yield* Schema.decodeEffect(InspectCoreMemoryInput)(input).pipe(
-          Effect.mapError(() => invalidRequest("inspectCoreMemory")),
-        );
-        const admission = authorization.admit(parsed.authorization, {
-          actionId: parsed.actionId,
-          kind: "memory.inspect",
-        });
-        if (!Predicate.isTagged(admission, "Admitted")) return admission;
-        return yield* inspectCoreMemory(session);
-      }),
+      this.#accountDeletionFencedSessionExecution.run(
+        Effect.promise(activateCurrentSession).pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              const parsed = yield* Schema.decodeEffect(InspectCoreMemoryInput)(input).pipe(
+                Effect.mapError(() => invalidRequest("inspectCoreMemory")),
+              );
+              const admission = authorization.admit(parsed.authorization, {
+                actionId: parsed.actionId,
+                kind: "memory.inspect",
+              });
+              if (!Predicate.isTagged(admission, "Admitted")) return admission;
+              return yield* inspectCurrent();
+            }),
+          ),
+        ),
+        () =>
+          new CoreMemoryUnavailable({
+            cause: "account deletion fence",
+            message: "Core Memory inspection is unavailable while account deletion is pending",
+            operation: "inspect",
+          }),
+      ),
     );
   }
 
@@ -1521,20 +1545,33 @@ export class OsfoAgent extends Think<Env> {
     | Denied
   > {
     await this.#migrationsReady;
-    await this.#activateCurrentSession();
-    const session = this.session;
+    const activateCurrentSession = () => this.#activateCurrentSession();
+    const applyCorrection = (parsed: CorrectCoreMemoryInput) =>
+      correctCoreMemory(this.session, parsed);
     return runRpc(
-      Effect.gen(function* () {
-        const parsed = yield* Schema.decodeEffect(CorrectCoreMemoryInput)(input).pipe(
-          Effect.mapError(() => invalidRequest("correctCoreMemory")),
-        );
-        const admission = authorization.admit(parsed.authorization, {
-          actionId: parsed.actionId,
-          kind: "memory.correct",
-        });
-        if (!Predicate.isTagged(admission, "Admitted")) return admission;
-        return yield* correctCoreMemory(session, parsed);
-      }),
+      this.#accountDeletionFencedSessionExecution.run(
+        Effect.promise(activateCurrentSession).pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              const parsed = yield* Schema.decodeEffect(CorrectCoreMemoryInput)(input).pipe(
+                Effect.mapError(() => invalidRequest("correctCoreMemory")),
+              );
+              const admission = authorization.admit(parsed.authorization, {
+                actionId: parsed.actionId,
+                kind: "memory.correct",
+              });
+              if (!Predicate.isTagged(admission, "Admitted")) return admission;
+              return yield* applyCorrection(parsed);
+            }),
+          ),
+        ),
+        () =>
+          new CoreMemoryUnavailable({
+            cause: "account deletion fence",
+            message: "Core Memory correction is unavailable while account deletion is pending",
+            operation: "correct",
+          }),
+      ),
     );
   }
 
@@ -2436,20 +2473,31 @@ export class OsfoAgent extends Think<Env> {
   > {
     await this.#migrationsReady;
     const agentName = this.name;
+    const activateCurrentSession = () => this.#activateCurrentSession();
     const store = this.#store;
-    const outcome = await runRpc(
-      Effect.gen(function* () {
-        const namedAgentId = yield* Schema.decodeEffect(AgentId)(agentName).pipe(
-          Effect.mapError(() => invalidRequest("initialize")),
-        );
-        const parsed = yield* Schema.decodeEffect(AgentInitializationInput)(input).pipe(
-          Effect.mapError(() => invalidRequest("initialize")),
-        );
-        return yield* store.initialize(namedAgentId, parsed);
-      }),
+    return runRpc(
+      this.#accountDeletionFencedSessionExecution.run(
+        Effect.gen(function* () {
+          const namedAgentId = yield* Schema.decodeEffect(AgentId)(agentName).pipe(
+            Effect.mapError(() => invalidRequest("initialize")),
+          );
+          const parsed = yield* Schema.decodeEffect(AgentInitializationInput)(input).pipe(
+            Effect.mapError(() => invalidRequest("initialize")),
+          );
+          const outcome = yield* store.initialize(namedAgentId, parsed);
+          if ("currentSessionId" in outcome) {
+            yield* Effect.promise(activateCurrentSession);
+          }
+          return outcome;
+        }),
+        () =>
+          new AgentStoreUnavailable({
+            cause: "account deletion fence",
+            message: "Agent initialization is unavailable while account deletion is pending",
+            operation: "initialize",
+          }),
+      ),
     );
-    if ("currentSessionId" in outcome) await this.#activateCurrentSession();
-    return outcome;
   }
 
   /** Authorize and durably enqueue one server-routed managed conversation turn. */
@@ -2672,44 +2720,54 @@ export class OsfoAgent extends Think<Env> {
   > {
     await this.#migrationsReady;
     return runRpc(
-      Schema.decodeEffect(DecideActionApprovalRequest)(input).pipe(
-        Effect.mapError(
-          () =>
-            new ActionApprovalRequestInvalid({
-              message: "The Action Approval decision is invalid",
-              operation: "decideActionApproval",
-            }),
-        ),
-        Effect.flatMap((parsed) =>
-          this.#actionApprovals.read(parsed.actor, parsed.presentationId).pipe(
-            Effect.flatMap((found) => {
-              const actionId = found.presentation.actionId;
-              if (
-                parsed.decision === "approve" &&
-                (found.presentation.operation === "memory.clear" ||
-                  found.presentation.operation === "file.delete" ||
-                  found.presentation.operation === "memory.forgetKnowledge" ||
-                  found.presentation.operation === "session.delete")
-              ) {
-                this.#currentApprovedActions.set(actionId, {
-                  actionPresentation: found.presentation,
-                  operation: found.presentation.operation,
-                  presentation: approvalPresentationFor(found.presentation),
-                });
-              }
-              return this.#actionApprovals
-                .dispatch(
-                  parsed.actor,
-                  parsed.presentationId,
-                  parsed.decision === "approve" ? "approved" : "rejected",
-                  parsed.reason,
-                )
-                .pipe(
-                  Effect.ensuring(Effect.sync(() => this.#currentApprovedActions.delete(actionId))),
-                );
-            }),
+      this.#accountDeletionFence.run(
+        Schema.decodeEffect(DecideActionApprovalRequest)(input).pipe(
+          Effect.mapError(
+            () =>
+              new ActionApprovalRequestInvalid({
+                message: "The Action Approval decision is invalid",
+                operation: "decideActionApproval",
+              }),
+          ),
+          Effect.flatMap((parsed) =>
+            this.#actionApprovals.read(parsed.actor, parsed.presentationId).pipe(
+              Effect.flatMap((found) => {
+                const actionId = found.presentation.actionId;
+                if (
+                  parsed.decision === "approve" &&
+                  (found.presentation.operation === "memory.clear" ||
+                    found.presentation.operation === "file.delete" ||
+                    found.presentation.operation === "memory.forgetKnowledge" ||
+                    found.presentation.operation === "session.delete")
+                ) {
+                  this.#currentApprovedActions.set(actionId, {
+                    actionPresentation: found.presentation,
+                    operation: found.presentation.operation,
+                    presentation: approvalPresentationFor(found.presentation),
+                  });
+                }
+                return this.#actionApprovals
+                  .dispatch(
+                    parsed.actor,
+                    parsed.presentationId,
+                    parsed.decision === "approve" ? "approved" : "rejected",
+                    parsed.reason,
+                  )
+                  .pipe(
+                    Effect.ensuring(
+                      Effect.sync(() => this.#currentApprovedActions.delete(actionId)),
+                    ),
+                  );
+              }),
+            ),
           ),
         ),
+        () =>
+          new ThinkApprovalUnavailable({
+            cause: "account deletion fence",
+            message: "Action Approval is unavailable while account deletion is pending",
+            operation: "decideActionApproval",
+          }),
       ),
     );
   }

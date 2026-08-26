@@ -332,3 +332,72 @@ for (const operation of ["analyzeFile", "deleteFile"] as const) {
     }),
   );
 }
+
+for (const operation of ["boundCoreMemory", "correctCoreMemory"] as const) {
+  it.effect(`${operation} rejects after close before Session activation or mutation`, () =>
+    Effect.gen(function* () {
+      const fence = makeAccountDeletionFence();
+      const sessionExecution = makeSessionExecution({ hasPendingOrRunning: Effect.succeed(false) });
+      const execution = makeAccountDeletionFencedSessionExecution(sessionExecution, fence);
+      const authenticated = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      const mutations = new Array<string>();
+
+      const request = yield* Deferred.succeed(authenticated, undefined).pipe(
+        Effect.andThen(Deferred.await(resume)),
+        Effect.andThen(
+          execution.run(
+            Effect.sync(() => {
+              mutations.push("activate", "sqlite", "provider", "refresh");
+            }),
+            () => "account deletion fenced" as const,
+          ),
+        ),
+        Effect.flip,
+        Effect.forkChild,
+      );
+
+      yield* Deferred.await(authenticated);
+      yield* execution.close;
+      yield* Deferred.succeed(resume, undefined);
+
+      const result = yield* Fiber.join(request);
+      expect(result).toBe("account deletion fenced");
+      expect(mutations).toEqual([]);
+    }),
+  );
+
+  it.effect(`${operation} drains admitted activation and mutation without deadlock`, () =>
+    Effect.gen(function* () {
+      const fence = makeAccountDeletionFence();
+      const sessionExecution = makeSessionExecution({ hasPendingOrRunning: Effect.succeed(false) });
+      const execution = makeAccountDeletionFencedSessionExecution(sessionExecution, fence);
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const events = new Array<string>();
+      const request = yield* execution
+        .run(
+          Effect.sync(() => events.push("activate")).pipe(
+            Effect.andThen(Deferred.succeed(started, undefined)),
+            Effect.andThen(Deferred.await(release)),
+            Effect.andThen(Effect.sync(() => events.push("mutate", "refresh"))),
+          ),
+          () => "account deletion fenced" as const,
+        )
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(started);
+      const closing = yield* execution.close.pipe(
+        Effect.andThen(Effect.sync(() => events.push("closed"))),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      expect(events).toEqual(["activate"]);
+
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(request);
+      yield* Fiber.join(closing);
+      expect(events).toEqual(["activate", "mutate", "refresh", "closed"]);
+    }),
+  );
+}
