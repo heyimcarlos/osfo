@@ -463,6 +463,11 @@ const prepareDeletionClaim = Effect.fn("MemoryProviderOutbox.prepareDeletionClai
       if (!retained) return false;
     }
   }
+  // Local Session settlement releases the retained preparation to a new pending claim in the
+  // same SQLite transaction that clears ownership. The preparation claim must stop here so
+  // provider erasure cannot begin until a later claim observes that committed local settlement.
+  const preparationClaimIsCurrent = yield* store.isClaimCurrent(claim);
+  if (!preparationClaimIsCurrent) return false;
   const finalCheck = yield* options.authorizeDeletion(authorization).pipe(Effect.result);
   if (Result.isFailure(finalCheck) || Predicate.isTagged(finalCheck.success, "Denied")) {
     yield* retryClaim(

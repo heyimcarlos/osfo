@@ -31,6 +31,10 @@ export interface LocalSessionDeletionDependencies<A, E, PreparedSession> {
     replacementSessionId: SessionId,
   ) => Effect.Effect<SessionReplacementGeneration, E>;
   readonly replacedAt: Effect.Effect<DbTimestamp, E>;
+  readonly retainIntent: (
+    sessionId: SessionId,
+    replacementGeneration?: SessionReplacementGeneration,
+  ) => Effect.Effect<void, E>;
   readonly replaceCurrentSession: (input: {
     readonly expectedCurrentSessionId: SessionId;
     readonly replacedAt: DbTimestamp;
@@ -97,15 +101,12 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
     if (Result.isFailure(activation)) return yield* rollbackAfter(activation.failure);
 
     yield* dependencies.authorizeDeletion();
-    const clearing = yield* dependencies.clearMessages(input.sessionId).pipe(Effect.result);
-    if (Result.isFailure(clearing)) return yield* rollbackAfter(clearing.failure);
+    yield* dependencies.retainIntent(input.sessionId, replacement);
+    yield* dependencies.authorizeDeletion();
+    yield* dependencies.clearMessages(input.sessionId);
 
     yield* dependencies.authorizeDeletion();
-    const settlement = yield* dependencies.settle(input.sessionId, replacement).pipe(Effect.result);
-    if (Result.isFailure(settlement)) {
-      return yield* rollbackAfter(settlement.failure);
-    }
-    return settlement.success;
+    return yield* dependencies.settle(input.sessionId, replacement);
   }
   if (
     target.currentReplacesTarget === true &&
@@ -140,10 +141,14 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
     yield* dependencies.authorizeDeletion();
     yield* dependencies.activateSession(input.replacementSessionId);
     yield* dependencies.authorizeDeletion();
+    yield* dependencies.retainIntent(input.sessionId, replacementGeneration);
+    yield* dependencies.authorizeDeletion();
     yield* dependencies.clearMessages(input.sessionId);
     yield* dependencies.authorizeDeletion();
     return yield* dependencies.settle(input.sessionId, replacementGeneration);
   }
+  yield* dependencies.authorizeDeletion();
+  yield* dependencies.retainIntent(input.sessionId);
   yield* dependencies.authorizeDeletion();
   yield* dependencies.clearMessages(input.sessionId);
   yield* dependencies.authorizeDeletion();

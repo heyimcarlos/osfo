@@ -143,11 +143,10 @@ it.effect("leaves the replacement resumable when authority changes before compen
   });
 });
 
-it.effect("does not reactivate the restored Session when authority changes after rollback", () => {
+it.effect("leaves the exact replacement resumable after a retained local clear failure", () => {
   const events: Array<string> = [];
   const deletedSessionId = SessionId.make("session-1");
   const replacementSessionId = SessionId.make("session-2");
-  let checks = 0;
   let clearAttempts = 0;
   let currentSessionId = deletedSessionId;
 
@@ -158,12 +157,7 @@ it.effect("does not reactivate the restored Session when authority changes after
         {
           ...testSessionWriteSelection,
           activateSession: (sessionId) => record(events, `activate-${sessionId}`),
-          authorizeDeletion: () =>
-            Effect.suspend(() => {
-              events.push("recheck");
-              checks += 1;
-              return checks === 5 ? Effect.fail(new TestAuthorityChanged()) : Effect.void;
-            }),
+          authorizeDeletion: () => record(events, "recheck"),
           clearMessages: () =>
             Effect.suspend(() => {
               events.push("clear");
@@ -180,6 +174,13 @@ it.effect("does not reactivate the restored Session when authority changes after
               routeId: ConversationRouteId.make("route-1"),
             }),
           replacedAt: Effect.succeed(DbTimestamp.make("2026-08-25T12:00:00.000Z")),
+          readReplacementGeneration: () =>
+            Effect.succeed({
+              expectedCurrentSessionId: deletedSessionId,
+              replacedAt: DbTimestamp.make("2026-08-25T12:00:00.000Z"),
+              replacementSessionId,
+              routeId: ConversationRouteId.make("route-1"),
+            }),
           replaceCurrentSession: () =>
             Effect.sync(() => {
               currentSessionId = replacementSessionId;
@@ -197,27 +198,24 @@ it.effect("does not reactivate the restored Session when authority changes after
 
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isSuccess(result)) return;
-    expect(result.failure).toBeInstanceOf(TestAuthorityChanged);
-    expect(currentSessionId).toBe(deletedSessionId);
+    expect(result.failure).toBeInstanceOf(TestLocalClearUnavailable);
+    expect(currentSessionId).toBe(replacementSessionId);
     expect(events).toEqual([
       "recheck",
       "replace",
       "recheck",
       "activate-session-2",
       "recheck",
+      "recheck",
       "clear",
-      "recheck",
-      "rollback",
-      "recheck",
     ]);
 
     yield* run();
     expect(currentSessionId).toBe(replacementSessionId);
-    expect(events.slice(-8)).toEqual([
-      "recheck",
-      "replace",
+    expect(events.slice(-7)).toEqual([
       "recheck",
       "activate-session-2",
+      "recheck",
       "recheck",
       "clear",
       "recheck",
@@ -279,7 +277,7 @@ it.effect("rolls back the replacement when activation fails", () => {
 });
 
 it.effect(
-  "rolls back and retries a retained current Session deletion after local clear fails",
+  "resumes a retained current Session deletion after local clear fails without rollback",
   () => {
     const events: Array<string> = [];
     const deletedSessionId = SessionId.make("session-1");
@@ -308,6 +306,13 @@ it.effect(
               routeId: ConversationRouteId.make("route-1"),
             })),
           replacedAt: Effect.succeed(DbTimestamp.make("2026-08-25T12:00:00.000Z")),
+          readReplacementGeneration: () =>
+            Effect.succeed({
+              expectedCurrentSessionId: deletedSessionId,
+              replacedAt: DbTimestamp.make("2026-08-25T12:00:00.000Z"),
+              replacementSessionId,
+              routeId: ConversationRouteId.make("route-1"),
+            }),
           replaceCurrentSession: () =>
             Effect.sync(() => {
               currentSessionId = replacementSessionId;
@@ -338,15 +343,11 @@ it.effect(
         "recheck-retained-authorization",
         "activate",
         "recheck-retained-authorization",
+        "recheck-retained-authorization",
         "clear-1",
         "recheck-retained-authorization",
-        "rollback",
-        "recheck-retained-authorization",
         "activate",
         "recheck-retained-authorization",
-        "replace",
-        "recheck-retained-authorization",
-        "activate",
         "recheck-retained-authorization",
         "clear-2",
         "recheck-retained-authorization",
@@ -356,7 +357,7 @@ it.effect(
   },
 );
 
-it.effect("rolls back the current Session replacement when durable settlement fails", () => {
+it.effect("keeps the current replacement after durable settlement fails", () => {
   const events: Array<string> = [];
   const deletedSessionId = SessionId.make("session-1");
   const replacementSessionId = SessionId.make("session-2");
@@ -394,20 +395,17 @@ it.effect("rolls back the current Session replacement when durable settlement fa
     ).pipe(Effect.result);
 
     expect(Result.isFailure(result)).toBe(true);
-    expect(currentSessionId).toBe(deletedSessionId);
+    expect(currentSessionId).toBe(replacementSessionId);
     expect(events).toEqual([
       "recheck",
       "replace",
       "recheck",
       "activate",
       "recheck",
+      "recheck",
       "clear",
       "recheck",
       "settle",
-      "recheck",
-      "rollback",
-      "recheck",
-      "activate",
     ]);
   });
 });
@@ -448,7 +446,7 @@ it.effect("retains Session ownership when authority changes after history cleari
     ).pipe(Effect.result);
 
     expect(Result.isFailure(result)).toBe(true);
-    expect(events).toEqual(["recheck", "clear", "recheck"]);
+    expect(events).toEqual(["recheck", "recheck", "clear", "recheck"]);
   });
 });
 
@@ -491,6 +489,7 @@ it.effect(
               routeId,
             }),
           replacedAt: Effect.succeed(replacedAt),
+          retainIntent: () => Effect.void,
           replaceCurrentSession: () =>
             Effect.sync(() => {
               currentSessionId = replacementSessionId;
@@ -525,6 +524,7 @@ it.effect(
 
 const testSessionWriteSelection = {
   prepareSession: (sessionId: SessionId) => Effect.succeed(sessionId),
+  retainIntent: () => Effect.void,
   selectSessionForWrites: () => Effect.void,
 };
 

@@ -42,6 +42,7 @@ import {
   enqueueConversationSnapshotTransaction,
   enqueueMemoryProviderDeletionTransaction,
   inspectConversationSnapshotTransaction,
+  settleMemoryProviderDeletionPreparationTransaction,
   type MemoryProviderDeletionProgress,
   type MemoryProviderOutboxId,
   type MemoryProviderDeletionPayload,
@@ -980,7 +981,7 @@ export const makeAgentStore = (db: AgentDb) => {
           .delete(sessionOwnership)
           .where(eq(sessionOwnership.session_id, input.sessionId))
           .run();
-        return enqueueMemoryProviderDeletionTransaction(transaction, {
+        return settleMemoryProviderDeletionPreparationTransaction(transaction, {
           deletionProgress,
           enqueuedAt: input.deletedAt,
           outboxId: input.outboxId,
@@ -1072,12 +1073,21 @@ export const makeAgentStore = (db: AgentDb) => {
 
 const deleteSessionPayload = (
   input: DeleteHistoricalSessionInput,
-): MemoryProviderDeletionPayload => ({
-  _tag: "DeleteSessionConversation" as const,
-  authorization: input.authorization,
-  sessionId: input.sessionId,
-  userId: input.userId,
-});
+): MemoryProviderDeletionPayload =>
+  input.replacementGeneration === undefined
+    ? {
+        _tag: "DeleteSessionConversation" as const,
+        authorization: input.authorization,
+        sessionId: input.sessionId,
+        userId: input.userId,
+      }
+    : {
+        _tag: "DeleteSessionConversation" as const,
+        authorization: input.authorization,
+        replacementGeneration: input.replacementGeneration,
+        sessionId: input.sessionId,
+        userId: input.userId,
+      };
 
 const inspectRetainedSessionDeletionTransaction = (
   transaction: AgentTransaction,

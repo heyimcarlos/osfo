@@ -1824,6 +1824,7 @@ export class OsfoAgent extends Think<Env> {
       presentation: current.presentation,
     };
     const deleted = await this.#deleteSessionLocally(input, deletionAuthorization, owner);
+    this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
     if (
       Predicate.isTagged(deleted, "DeletionActionUnavailable") ||
       Predicate.isTagged(deleted, "Denied") ||
@@ -1836,7 +1837,6 @@ export class OsfoAgent extends Think<Env> {
             operation: "deleteSession",
           })
         : deleted;
-    this.ctx.waitUntil(this.#reconcileMemoryProviderOutboxOrSchedule());
     return { _tag: "SessionDeletionPending", sessionId: input.sessionId } as const;
   }
 
@@ -1906,6 +1906,28 @@ export class OsfoAgent extends Think<Env> {
                   ),
                 ),
             replacedAt: currentDbTimestamp,
+            retainIntent: (sessionId, replacementGeneration) =>
+              Effect.tryPromise({
+                try: () =>
+                  this.#retainSessionDeletionIntent(
+                    sessionId,
+                    deletionAuthorization,
+                    owner,
+                    replacementGeneration,
+                  ),
+                catch: (cause) =>
+                  new DeletionActionUnavailable({
+                    cause,
+                    message: "Session deletion intent could not be retained",
+                    operation: "deleteSession",
+                  }),
+              }).pipe(
+                Effect.flatMap((result) =>
+                  Predicate.isTagged(result, "DeletionActionUnavailable")
+                    ? Effect.fail(result)
+                    : Effect.void,
+                ),
+              ),
             replaceCurrentSession: (replacement) =>
               this.#store
                 .replaceCurrentSession(replacement)
@@ -1963,6 +1985,60 @@ export class OsfoAgent extends Think<Env> {
         ),
       ),
     );
+  }
+
+  async #retainSessionDeletionIntent(
+    sessionId: SessionId,
+    deletionAuthorization: DeletionAuthorization,
+    owner: UserId,
+    replacementGeneration?: SessionReplacementGeneration,
+  ) {
+    const preparationStartedAt = await Effect.runPromise(DateTime.now);
+    const enqueuedAt = Db.DbTimestamp.make(DateTime.toDateUtc(preparationStartedAt).toISOString());
+    const claimExpiresAt = Db.DbTimestamp.make(
+      DateTime.toDateUtc(
+        DateTime.add(preparationStartedAt, {
+          milliseconds: memoryProviderClaimLeaseMilliseconds,
+        }),
+      ).toISOString(),
+    );
+    const payload =
+      replacementGeneration === undefined
+        ? {
+            _tag: "DeleteSessionConversation" as const,
+            authorization: deletionAuthorization,
+            sessionId,
+            userId: owner,
+          }
+        : {
+            _tag: "DeleteSessionConversation" as const,
+            authorization: deletionAuthorization,
+            replacementGeneration,
+            sessionId,
+            userId: owner,
+          };
+    const retained = await runRpc(
+      this.#memoryProviderOutbox
+        .retainDeletionPreparation({
+          claimExpiresAt,
+          claimToken: `initial-session-deletion:${deletionAuthorization.actionId}`,
+          enqueuedAt,
+          outboxId: MemoryProviderOutboxId.make(`delete-session:${deletionAuthorization.actionId}`),
+          payload,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new DeletionActionUnavailable({
+                cause,
+                message: "Session deletion intent could not be retained for local preparation",
+                operation: "deleteSession",
+              }),
+          ),
+        ),
+    );
+    if (Predicate.isTagged(retained, "DeletionActionUnavailable")) return retained;
+    return undefined;
   }
 
   async #settleDeletedSession(

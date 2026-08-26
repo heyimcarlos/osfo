@@ -1,9 +1,9 @@
 import { and, asc, desc, eq, isNull, max, ne, or, sql } from "drizzle-orm";
 import { Array, Effect, Option, Result, Schema } from "effect";
 
-import { ResourcePriceVersion, SessionId, UserId } from "../../../domain";
+import { ConversationRouteId, ResourcePriceVersion, SessionId, UserId } from "../../../domain";
 import type { AllowancePeriodId, AssistantMessageId } from "../../../domain";
-import type { DbTimestamp } from "../../../db";
+import { DbTimestamp } from "../../../db";
 import { UsageActivity } from "../../../domain/usage";
 import { MemoryProvider } from "../../../services/memory-provider";
 import {
@@ -28,8 +28,15 @@ export type MemoryProviderOutboxId = typeof MemoryProviderOutboxId.Type;
 export const SaveConversationPayload = Schema.TaggedStruct("SaveConversation", {
   projection: ConversationSnapshotProjection,
 });
+export const SessionReplacementGeneration = Schema.Struct({
+  expectedCurrentSessionId: SessionId,
+  replacedAt: DbTimestamp,
+  replacementSessionId: SessionId,
+  routeId: ConversationRouteId,
+});
 export const DeleteSessionConversationPayload = Schema.TaggedStruct("DeleteSessionConversation", {
   authorization: DeletionAuthorization,
+  replacementGeneration: Schema.optionalKey(SessionReplacementGeneration),
   sessionId: SessionId,
   userId: UserId,
 });
@@ -66,6 +73,7 @@ const StoredMemoryProviderOutboxPayload = Schema.Union([
   SaveConversationPayload,
   Schema.TaggedStruct("DeleteSessionConversation", {
     authorization: Schema.optionalKey(DeletionAuthorization),
+    replacementGeneration: Schema.optionalKey(SessionReplacementGeneration),
     sessionId: SessionId,
     userId: UserId,
   }),
@@ -950,7 +958,7 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
             .get();
           if (current?.status !== "claimed" || current.claimToken !== claim.claimToken)
             return false;
-          if (claim.payload._tag !== "SaveConversation") return false;
+          if (claim.payload._tag !== "SaveConversation") return true;
           const session = transaction
             .select({ sessionId: sessionOwnership.session_id })
             .from(sessionOwnership)
@@ -1082,6 +1090,54 @@ export const enqueueMemoryProviderDeletionTransaction = (
     outboxId: input.outboxId,
     payload: input.payload,
   });
+
+/**
+ * Atomically release an exact retained deletion preparation after its local destructive
+ * preconditions have committed. A preparation may acquire its initial provider targets during
+ * that same transaction, but it may never replace progress already recorded by reconciliation.
+ */
+export const settleMemoryProviderDeletionPreparationTransaction = (
+  transaction: AgentTransaction,
+  input: EnqueueMemoryProviderDeletion,
+) => {
+  const payloadJson = JSON.stringify(input.payload);
+  const deletionProgressJson = encodeOptionalDeletionProgress(input.deletionProgress);
+  const existing = transaction
+    .select({
+      deletionProgressJson: memoryProviderOutbox.deletion_progress_json,
+      operationType: memoryProviderOutbox.operation_type,
+      orderingKey: memoryProviderOutbox.ordering_key,
+      payloadJson: memoryProviderOutbox.payload_json,
+    })
+    .from(memoryProviderOutbox)
+    .where(eq(memoryProviderOutbox.outbox_id, input.outboxId))
+    .limit(1)
+    .get();
+  if (existing === undefined) return enqueueMemoryProviderDeletionTransaction(transaction, input);
+  if (
+    existing.operationType !== operationType(input.payload) ||
+    existing.orderingKey !== userOrderingKey(input.payload.userId) ||
+    existing.payloadJson !== payloadJson ||
+    (existing.deletionProgressJson !== null &&
+      existing.deletionProgressJson !== deletionProgressJson)
+  ) {
+    return false;
+  }
+  transaction
+    .update(memoryProviderOutbox)
+    .set({
+      available_at: input.enqueuedAt,
+      claim_expires_at: null,
+      claim_token: null,
+      completed_at: null,
+      deletion_progress_json: deletionProgressJson,
+      last_error: null,
+      status: "pending",
+    })
+    .where(eq(memoryProviderOutbox.outbox_id, input.outboxId))
+    .run();
+  return true;
+};
 
 const operationTypes = {
   DeleteSessionConversation: "deleteSessionConversation",
