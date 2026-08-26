@@ -5,7 +5,7 @@ const storageKey = "osfo-account-deletion-replay";
 
 const StoredAccountDeletionReplay = Schema.Struct({
   request: AccountDeletionRequest,
-  version: Schema.Literal(1),
+  version: Schema.Literal(2),
 });
 const encodeStoredReplay = Schema.encodeSync(Schema.fromJsonString(StoredAccountDeletionReplay));
 const decodeStoredReplay = Schema.decodeUnknownOption(
@@ -62,7 +62,7 @@ export const saveAccountDeletionReplay = (
 ) =>
   Effect.runSync(
     Effect.try({
-      try: () => storage.setItem(storageKey, encodeStoredReplay({ request, version: 1 })),
+      try: () => storage.setItem(storageKey, encodeStoredReplay({ request, version: 2 })),
       catch: () => new AccountDeletionReplayStorageUnavailable(),
     }),
   );

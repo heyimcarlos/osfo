@@ -40,9 +40,11 @@ const AccountDeletionPresentation = Schema.Struct({
 type AccountDeletionPresentation = typeof AccountDeletionPresentation.Type;
 const AccountDeletionAction = Schema.Struct({
   presentation: AccountDeletionPresentation,
+  presentationVersion: Schema.String,
   replayToken: Schema.String,
 });
 type AccountDeletionAction = AccountDeletionPresentation & {
+  readonly presentationVersion: string;
   readonly replayToken: string;
 };
 
@@ -102,6 +104,7 @@ type JsonRequestBody =
         readonly presentation: AccountDeletionPresentation;
       };
       readonly confirmation: "delete-my-account";
+      readonly presentationVersion: string;
       readonly replayToken: string;
     };
 
@@ -178,6 +181,7 @@ export const spawnApp = async () => {
             },
           },
           confirmation: "delete-my-account",
+          presentationVersion: action.presentationVersion,
           replayToken: action.replayToken,
         }),
       present: async () => {
@@ -185,7 +189,11 @@ export const spawnApp = async () => {
         return {
           body: response.ok
             ? await Schema.decodeUnknownPromise(AccountDeletionAction)(await response.json()).then(
-                ({ presentation, replayToken }) => ({ ...presentation, replayToken }),
+                ({ presentation, presentationVersion, replayToken }) => ({
+                  ...presentation,
+                  presentationVersion,
+                  replayToken,
+                }),
               )
             : undefined,
           response,
@@ -212,6 +220,21 @@ export const spawnApp = async () => {
           },
         );
         await requireSuccessfulResponse(response, "Expire account deletion Action");
+      },
+      versionAccountDeletionAction: async (
+        userId: string,
+        actionId: string,
+        presentationVersion: string,
+      ) => {
+        const response = await fetch(
+          `${context.databaseObserverOrigin}/version-account-deletion-action`,
+          {
+            body: JSON.stringify({ actionId, presentationVersion, userId }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          },
+        );
+        await requireSuccessfulResponse(response, "Version account deletion Action");
       },
       accountDeletion: async (userId: string) => {
         const response = await fetch(`${context.databaseObserverOrigin}/account-deletion`, {

@@ -15,6 +15,7 @@ it.effect("does not replace the current Session when authority changes before re
         sessionId: SessionId.make("session-1"),
       },
       {
+        ...testSessionWriteSelection,
         activateSession: () => record(events, "activate"),
         authorizeDeletion: () =>
           record(events, "recheck").pipe(Effect.andThen(Effect.fail(new TestAuthorityChanged()))),
@@ -50,6 +51,7 @@ it.effect("leaves the replacement resumable when authority changes before activa
     const result = yield* deleteLocalSession(
       { replacementSessionId, sessionId: deletedSessionId },
       {
+        ...testSessionWriteSelection,
         activateSession: () => record(events, "activate"),
         authorizeDeletion: () =>
           Effect.suspend(() => {
@@ -97,6 +99,7 @@ it.effect("leaves the replacement resumable when authority changes before compen
     const result = yield* deleteLocalSession(
       { replacementSessionId, sessionId: deletedSessionId },
       {
+        ...testSessionWriteSelection,
         activateSession: () =>
           record(events, "activate").pipe(
             Effect.andThen(
@@ -153,6 +156,7 @@ it.effect("does not reactivate the restored Session when authority changes after
       deleteLocalSession(
         { replacementSessionId, sessionId: deletedSessionId },
         {
+          ...testSessionWriteSelection,
           activateSession: (sessionId) => record(events, `activate-${sessionId}`),
           authorizeDeletion: () =>
             Effect.suspend(() => {
@@ -232,6 +236,7 @@ it.effect("rolls back the replacement when activation fails", () => {
     const result = yield* deleteLocalSession(
       { replacementSessionId, sessionId: deletedSessionId },
       {
+        ...testSessionWriteSelection,
         activateSession: () =>
           record(events, "activate").pipe(
             Effect.andThen(Effect.fail(new TestActivationUnavailable())),
@@ -286,6 +291,7 @@ it.effect(
       deleteLocalSession(
         { replacementSessionId, sessionId: deletedSessionId },
         {
+          ...testSessionWriteSelection,
           activateSession: () => record(events, "activate"),
           authorizeDeletion: () => record(events, "recheck-retained-authorization"),
           clearMessages: () =>
@@ -360,6 +366,7 @@ it.effect("rolls back the current Session replacement when durable settlement fa
     const result = yield* deleteLocalSession(
       { replacementSessionId, sessionId: deletedSessionId },
       {
+        ...testSessionWriteSelection,
         activateSession: () => record(events, "activate"),
         authorizeDeletion: () => record(events, "recheck"),
         clearMessages: () => record(events, "clear"),
@@ -415,6 +422,7 @@ it.effect("retains Session ownership when authority changes after history cleari
         sessionId: SessionId.make("session-1"),
       },
       {
+        ...testSessionWriteSelection,
         activateSession: () => Effect.die(new Error("Historical Session was activated")),
         authorizeDeletion: () =>
           Effect.suspend(() => {
@@ -443,6 +451,82 @@ it.effect("retains Session ownership when authority changes after history cleari
     expect(events).toEqual(["recheck", "clear", "recheck"]);
   });
 });
+
+it.effect(
+  "selects the replacement for direct and turn writes before activation can be denied",
+  () => {
+    const historicalSessionId = SessionId.make("session-1");
+    const replacementSessionId = SessionId.make("session-delete-action-1");
+    const routeId = ConversationRouteId.make("route-1");
+    const replacedAt = DbTimestamp.make("2026-08-25T12:00:00.000Z");
+    const written = new Map<SessionId, Array<string>>();
+    let selectedSessionId = historicalSessionId;
+    let currentSessionId = historicalSessionId;
+    let denyActivation = true;
+    let checks = 0;
+    const write = (message: string) =>
+      Effect.sync(() => {
+        written.set(selectedSessionId, [...(written.get(selectedSessionId) ?? []), message]);
+      });
+    const run = () =>
+      deleteLocalSession(
+        { replacementSessionId, sessionId: historicalSessionId },
+        {
+          activateSession: () => Effect.void,
+          authorizeDeletion: () =>
+            Effect.suspend(() => {
+              checks += 1;
+              return denyActivation && checks === 2
+                ? Effect.fail(new TestAuthorityChanged())
+                : Effect.void;
+            }),
+          clearMessages: () => Effect.void,
+          inspectSession: () => Effect.succeed({ currentSessionId, routeId }),
+          prepareSession: (sessionId) => Effect.succeed(sessionId),
+          readReplacementGeneration: () =>
+            Effect.succeed({
+              expectedCurrentSessionId: historicalSessionId,
+              replacedAt,
+              replacementSessionId,
+              routeId,
+            }),
+          replacedAt: Effect.succeed(replacedAt),
+          replaceCurrentSession: () =>
+            Effect.sync(() => {
+              currentSessionId = replacementSessionId;
+            }),
+          rollbackCurrentSessionReplacement: () => Effect.void,
+          selectSessionForWrites: (sessionId) =>
+            Effect.sync(() => {
+              selectedSessionId = sessionId;
+            }),
+          settle: () => Effect.succeed("settled" as const),
+        },
+      );
+
+    return Effect.gen(function* () {
+      const denied = yield* run().pipe(Effect.result);
+      expect(Result.isFailure(denied)).toBe(true);
+      yield* write("direct-base-writer");
+      yield* write("normal-turn-output");
+
+      expect(written.get(historicalSessionId)).toBeUndefined();
+      expect(written.get(replacementSessionId)).toEqual([
+        "direct-base-writer",
+        "normal-turn-output",
+      ]);
+
+      denyActivation = false;
+      expect(yield* run()).toBe("settled");
+      expect(selectedSessionId).toBe(replacementSessionId);
+    });
+  },
+);
+
+const testSessionWriteSelection = {
+  prepareSession: (sessionId: SessionId) => Effect.succeed(sessionId),
+  selectSessionForWrites: () => Effect.void,
+};
 
 const record = (events: Array<string>, event: string) =>
   Effect.sync(() => {

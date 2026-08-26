@@ -53,6 +53,11 @@ import { deleteLocalSession } from "../session-deletion";
  * settlement cannot be observed through the public Worker without a forbidden test-only DO route.
  */
 
+const testSessionWriteSelection = {
+  prepareSession: (sessionId: SessionId) => Effect.succeed(sessionId),
+  selectSessionForWrites: () => Effect.void,
+};
+
 const now = DbTimestamp.make("2026-08-23T12:00:00.000Z");
 const past = DbTimestamp.make("1960-01-01T00:00:00.000Z");
 const liveLease = DbTimestamp.make("2026-08-23T12:01:00.000Z");
@@ -796,6 +801,7 @@ it.effect("terminalizes claimed append work while deleting historical Session ow
           sessionId: SessionId.make("session-1"),
         },
         {
+          ...testSessionWriteSelection,
           activateSession: () => Effect.die(new Error("Historical deletion activated Session")),
           authorizeDeletion: () => Effect.void,
           clearMessages: () => Effect.promise(() => historical.clearMessages()),
@@ -945,6 +951,7 @@ it.effect("does not save a claimed append after historical Session deletion term
           sessionId: SessionId.make("session-1"),
         },
         {
+          ...testSessionWriteSelection,
           activateSession: () => Effect.die(new Error("Historical deletion activated Session")),
           authorizeDeletion: () => Effect.void,
           clearMessages: () => Effect.void,
@@ -1062,6 +1069,7 @@ it.effect("drains an in-flight provider save before terminalizing Session append
                 sessionId: SessionId.make("session-1"),
               },
               {
+                ...testSessionWriteSelection,
                 activateSession: () =>
                   Effect.die(new Error("Historical deletion activated Session")),
                 authorizeDeletion: () => Effect.void,
@@ -1624,6 +1632,7 @@ it.effect("rechecks before replacing, clearing, and settling the current Session
           sessionId: SessionId.make("session-1"),
         },
         {
+          ...testSessionWriteSelection,
           activateSession: () => Effect.sync(() => events.push("activate")).pipe(Effect.asVoid),
           authorizeDeletion: () => Effect.sync(() => events.push("recheck")),
           clearMessages: () =>
@@ -1713,6 +1722,7 @@ it.effect("replaces the target route current Session without treating it as hist
       yield* deleteLocalSession(
         { replacementSessionId, sessionId: targetSessionId },
         {
+          ...testSessionWriteSelection,
           activateSession: (sessionId) =>
             Effect.sync(() => {
               activated.push(sessionId);
@@ -1786,6 +1796,7 @@ it.effect("retains the exact replacement when authority changes before activatio
           sessionId: SessionId.make("session-1"),
         },
         {
+          ...testSessionWriteSelection,
           activateSession: () =>
             Effect.die(new Error("Authority-changed replacement was activated")),
           authorizeDeletion: () =>
@@ -1842,6 +1853,7 @@ it.effect("removes a failed replacement and recreates it on current Session dele
             sessionId: SessionId.make("session-1"),
           },
           {
+            ...testSessionWriteSelection,
             activateSession: () => Effect.void,
             authorizeDeletion: () => Effect.void,
             clearMessages: () =>
@@ -1916,6 +1928,7 @@ it.effect(
             sessionId: SessionId.make("session-1"),
           },
           {
+            ...testSessionWriteSelection,
             activateSession: () =>
               Effect.die(new Error("Crashed replacement was unexpectedly activated")),
             authorizeDeletion: () => Effect.void,
@@ -1946,6 +1959,7 @@ it.effect(
             sessionId: SessionId.make("session-1"),
           },
           {
+            ...testSessionWriteSelection,
             activateSession: () => Effect.void,
             authorizeDeletion: () => Effect.void,
             clearMessages: () =>
@@ -1979,6 +1993,7 @@ it.effect(
             sessionId: SessionId.make("session-1"),
           },
           {
+            ...testSessionWriteSelection,
             activateSession: () => Effect.void,
             authorizeDeletion: () => Effect.void,
             clearMessages: () => Effect.void,
@@ -2168,6 +2183,7 @@ it.effect("removes the exact replacement when current Session settlement fails",
           sessionId: SessionId.make("session-1"),
         },
         {
+          ...testSessionWriteSelection,
           activateSession: () => Effect.void,
           authorizeDeletion: () => Effect.void,
           clearMessages: () => Effect.void,
@@ -2225,6 +2241,7 @@ it.effect("retains SQLite Session ownership when authority changes after history
             sessionId: SessionId.make("session-1"),
           },
           {
+            ...testSessionWriteSelection,
             activateSession: () => Effect.die(new Error("Historical Session was activated")),
             authorizeDeletion,
             clearMessages: () => Effect.promise(() => historical.clearMessages()),
@@ -3209,6 +3226,7 @@ const productionSessionDeletionOptions = (store: ReturnType<typeof makeAgentStor
         sessionId: payload.sessionId,
       },
       {
+        ...testSessionWriteSelection,
         activateSession: () =>
           Effect.die(new Error("Already-deleted Session preparation activated a Session")),
         authorizeDeletion: () => Effect.void,

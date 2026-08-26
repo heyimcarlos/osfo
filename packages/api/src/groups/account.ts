@@ -48,6 +48,7 @@ export type AccountDeletionReplayToken = typeof AccountDeletionReplayToken.Type;
 /** Exact presented Action plus its opaque retained-replay bearer. */
 export const AccountDeletionAction = Schema.Struct({
   presentation: AccountDeletionActionPresentation,
+  presentationVersion: BoundedActionText,
   replayToken: AccountDeletionReplayToken,
 });
 export type AccountDeletionAction = typeof AccountDeletionAction.Type;
@@ -59,6 +60,7 @@ export const AccountDeletionRequest = Schema.Struct({
     presentation: AccountDeletionActionPresentation,
   }),
   confirmation: BoundedActionText,
+  presentationVersion: BoundedActionText,
   replayToken: AccountDeletionReplayToken,
 });
 export type AccountDeletionRequest = typeof AccountDeletionRequest.Type;

@@ -52,6 +52,7 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
         confirmation: "delete-my-account",
         consequence: "Permanently delete this account and all of its data.",
         operation: "account.delete",
+        presentationVersion: "account-deletion-v1",
         replayToken: "a".repeat(43),
         title: "Delete Account",
       }),
@@ -85,6 +86,10 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       app.account.delete({ ...presentation, actionId: `${presentation.actionId}:changed` }),
     );
     expect(staleApproval.status).toBe(503);
+    const wrongPresentationVersion = yield* Effect.promise(() =>
+      app.account.delete({ ...presentation, presentationVersion: "account-deletion-v3" }),
+    );
+    expect(wrongPresentationVersion.status).toBe(503);
     const guessedReplayBearer = yield* Effect.promise(() =>
       app.account.delete({ ...presentation, replayToken: "z".repeat(43) }),
     );
@@ -117,6 +122,10 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       app.account.delete({ ...presentation, replayToken: "z".repeat(43) }),
     );
     expect(mismatchedReplayBearer.status).toBe(401);
+    const mismatchedReplayVersion = yield* Effect.promise(() =>
+      app.account.delete({ ...presentation, presentationVersion: "account-deletion-v3" }),
+    );
+    expect(mismatchedReplayVersion.status).toBe(401);
     yield* Effect.promise(() =>
       app.database.expireAccountDeletionAction(identity.userId, presentation.actionId),
     );
@@ -194,6 +203,44 @@ it.effect("completes a fenced deletion through the production scheduled entry po
         path: `/v3/container-tags/${encodeURIComponent(seededProvider.containerTag)}`,
       },
     ]);
+    return undefined;
+  }),
+);
+
+it.effect("submits a retained v1 presentation after the Worker advances to v2", () =>
+  Effect.gen(function* () {
+    const app = yield* Effect.acquireRelease(Effect.promise(spawnApp), (client) =>
+      Effect.promise(client.dispose),
+    );
+    const identity = yield* Effect.promise(() =>
+      app.auth.mintVerifiedUser({ phoneNumber: "+15550001922" }),
+    );
+    const presented = yield* Effect.promise(app.account.present);
+    if (presented.body === undefined) {
+      return yield* Effect.die(new Error("Rollover deletion Action was not presented"));
+    }
+    const currentV2 = presented.body;
+    expect(currentV2.presentationVersion).toBe("account-deletion-v2");
+    yield* Effect.promise(() =>
+      app.database.versionAccountDeletionAction(
+        identity.userId,
+        currentV2.actionId,
+        "account-deletion-v1",
+      ),
+    );
+
+    const retainedV1 = { ...currentV2, presentationVersion: "account-deletion-v1" };
+    const accepted = yield* Effect.promise(() => app.account.delete(retainedV1));
+    expect(accepted.status).toBe(200);
+    expect(yield* Effect.promise(() => accepted.json())).toEqual({ status: "deletion-pending" });
+    app.auth.clearCookie();
+    yield* Effect.promise(() =>
+      app.database.expireAccountDeletionAction(identity.userId, retainedV1.actionId),
+    );
+    const replayed = yield* Effect.promise(() => app.account.delete(retainedV1));
+    expect(replayed.status).toBe(200);
+    expect(yield* Effect.promise(() => replayed.json())).toEqual({ status: "deletion-pending" });
+    expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toBeNull();
     return undefined;
   }),
 );

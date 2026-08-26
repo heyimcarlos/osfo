@@ -102,5 +102,6 @@ export const accountDeletionRequestFor = (
 ): AccountDeletionRequest => ({
   approval: { decision: "approved", presentation: action.presentation },
   confirmation: action.presentation.confirmation,
+  presentationVersion: action.presentationVersion,
   replayToken: action.replayToken,
 });

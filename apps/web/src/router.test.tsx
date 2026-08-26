@@ -217,6 +217,7 @@ describe("Osfo route tree", () => {
         },
       },
       confirmation: "DELETE ACCOUNT",
+      presentationVersion: "account-deletion-v1",
       replayToken: "a".repeat(43),
     });
 

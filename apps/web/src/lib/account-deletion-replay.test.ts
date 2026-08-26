@@ -19,6 +19,7 @@ const request = {
     },
   },
   confirmation: "DELETE ACCOUNT",
+  presentationVersion: "account-deletion-v1",
   replayToken: "a".repeat(43),
 };
 
@@ -36,9 +37,25 @@ it("fails altered replay records closed and lets the User clear them", () => {
   saveAccountDeletionReplay(localStorage, request);
   const key = localStorage.key(0);
   expect(key).not.toBeNull();
-  localStorage.setItem(key ?? "missing", '{"version":1,"request":{"confirmation":"ALTERED"}}');
+  localStorage.setItem(key ?? "missing", '{"version":2,"request":{"confirmation":"ALTERED"}}');
 
   expect(loadAccountDeletionReplay(localStorage)).toEqual({ status: "invalid" });
   clearAccountDeletionReplay(localStorage);
   expect(loadAccountDeletionReplay(localStorage)).toEqual({ status: "missing" });
+});
+
+it("fails a legacy v1 replay without the exact presented server version closed", () => {
+  localStorage.setItem(
+    "osfo-account-deletion-replay",
+    JSON.stringify({
+      request: {
+        approval: request.approval,
+        confirmation: request.confirmation,
+        replayToken: request.replayToken,
+      },
+      version: 1,
+    }),
+  );
+
+  expect(loadAccountDeletionReplay(localStorage)).toEqual({ status: "invalid" });
 });

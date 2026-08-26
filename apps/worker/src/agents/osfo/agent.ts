@@ -1888,6 +1888,13 @@ export class OsfoAgent extends Think<Env> {
                     sessionDeletionFailure("Target Session ownership is unavailable"),
                   ),
                 ),
+            prepareSession: (sessionId) =>
+              Effect.tryPromise({
+                try: () => this.#configureSession(Session.create(this), sessionId),
+                catch: sessionDeletionFailure(
+                  "The exact Session write selection could not be prepared",
+                ),
+              }),
             readReplacementGeneration: (historicalSessionId, replacementSessionId) =>
               this.#store
                 .readSessionReplacementGeneration(historicalSessionId, replacementSessionId)
@@ -1926,6 +1933,10 @@ export class OsfoAgent extends Think<Env> {
                       ),
                 ),
               ),
+            selectSessionForWrites: (prepared) =>
+              Effect.sync(() => {
+                this.session = prepared;
+              }),
             settle: (sessionId, replacementGeneration) =>
               Effect.tryPromise({
                 try: () =>

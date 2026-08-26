@@ -52,7 +52,11 @@ export const make = Effect.gen(function* () {
       replayTokenHash: yield* DeletionCase.hashReplayToken(crypto, Redacted.make(replayToken)),
     });
     if (!Predicate.isTagged(result, "Presented")) return yield* unavailable("presentAuthority");
-    return { presentation, replayToken };
+    return {
+      presentation,
+      presentationVersion: accountDeletionPresentationVersion,
+      replayToken,
+    };
   });
   const request = Effect.fn("AccountDeletionRequest.request")(function* (input: {
     readonly approval: {
@@ -61,6 +65,7 @@ export const make = Effect.gen(function* () {
     };
     readonly authSessionId: string;
     readonly confirmation: string;
+    readonly presentationVersion: string;
     readonly replayToken: string;
     readonly userId: string;
   }) {
@@ -126,7 +131,7 @@ export const make = Effect.gen(function* () {
       {
         actionId: operation.actionId,
         presentation,
-        presentationVersion: accountDeletionPresentationVersion,
+        presentationVersion: input.presentationVersion,
         replayTokenHash: yield* DeletionCase.hashReplayToken(
           crypto,
           Redacted.make(input.replayToken),
@@ -173,7 +178,7 @@ const accountDeletionActionDefinition = {
   title: "Delete Account",
 } as const;
 
-export const accountDeletionPresentationVersion = "account-deletion-v1";
+export const accountDeletionPresentationVersion = "account-deletion-v2";
 
 const ExactAccountDeletionActionPresentation = Schema.Struct({
   actionId: Schema.String,
@@ -195,20 +200,23 @@ export const accountDeletionPresentation = (actionId: ActionId) => ({
 export const isExactApproval = (received: {
   readonly approval: { readonly presentation: AccountDeletionPresentation };
   readonly confirmation: string;
+  readonly presentationVersion: string;
 }) =>
   received.confirmation === accountDeletionActionDefinition.confirmation &&
+  received.presentationVersion === accountDeletionPresentationVersion &&
   Option.isSome(decodeExactPresentation(received.approval.presentation));
 
 /** Decode the exact retained approval fields allowed to authenticate a post-revocation retry. */
 export const replayApproval = (received: {
   readonly approval: { readonly presentation: AccountDeletionPresentation };
   readonly confirmation: string;
+  readonly presentationVersion: string;
   readonly replayToken: string;
 }) =>
   Option.map(decodeExactPresentation(received.approval.presentation), (presentation) => ({
     actionId: ActionId.make(presentation.actionId),
     presentation: ApprovalPresentation.make(encodeAccountDeletionPresentation(presentation)),
-    presentationVersion: accountDeletionPresentationVersion,
+    presentationVersion: received.presentationVersion,
     replayToken: received.replayToken,
   })).pipe(
     Option.filter(() => received.confirmation === accountDeletionActionDefinition.confirmation),

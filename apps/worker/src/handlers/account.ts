@@ -39,6 +39,7 @@ export const layer = Layer.unwrap(
               approval: payload.approval,
               authSessionId: caller.authSessionId,
               confirmation: payload.confirmation,
+              presentationVersion: payload.presentationVersion,
               replayToken: payload.replayToken,
               userId: caller.userId,
             });

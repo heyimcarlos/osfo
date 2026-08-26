@@ -28,6 +28,15 @@ export const startDatabaseObserver = (
           .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
         return;
       }
+      if (request.method === "POST" && path === "/version-account-deletion-action") {
+        readVersionedAccountDeletionAction(request)
+          .then(({ actionId, presentationVersion, userId }) =>
+            versionAccountDeletionAction(options, userId, actionId, presentationVersion),
+          )
+          .then(() => respondJson(response, 200, { status: "versioned" }))
+          .catch((cause: unknown) => respondJson(response, 500, { error: String(cause) }));
+        return;
+      }
       const query =
         path === "/registration"
           ? findRegistration
@@ -77,6 +86,26 @@ const expireAccountDeletionAction = async (
     return row;
   });
   if (expired === null) throw new Error("Consumed account deletion Action was not found");
+};
+
+const versionAccountDeletionAction = async (
+  options: DatabaseObserverOptions,
+  userId: string,
+  actionId: string,
+  presentationVersion: string,
+) => {
+  const versioned = await findJourneyRow(options, async (client) => {
+    const [row] = await client`
+      update account_deletion_actions
+      set presentation_version = ${presentationVersion}
+      where user_id = ${userId}
+        and action_id = ${actionId}
+        and consumed_at is null
+      returning action_id
+    `;
+    return row;
+  });
+  if (versioned === null) throw new Error("Unconsumed account deletion Action was not found");
 };
 
 const findBillingCheckout = async (options: DatabaseObserverOptions, userId: string) =>
@@ -184,6 +213,30 @@ const readAccountDeletionAction = async (
     return { actionId: String(body.actionId), userId: String(body.userId) };
   }
   throw new Error("Account deletion Action fixture requires an actionId and userId");
+};
+
+const readVersionedAccountDeletionAction = async (
+  request: IncomingMessage,
+): Promise<{
+  readonly actionId: string;
+  readonly presentationVersion: string;
+  readonly userId: string;
+}> => {
+  const body: unknown = JSON.parse(await readTextBody(request));
+  if (
+    typeof body === "object" &&
+    body !== null &&
+    "actionId" in body &&
+    "presentationVersion" in body &&
+    "userId" in body
+  ) {
+    return {
+      actionId: String(body.actionId),
+      presentationVersion: String(body.presentationVersion),
+      userId: String(body.userId),
+    };
+  }
+  throw new Error("Account deletion Action fixture requires an actionId, version, and userId");
 };
 
 const readTextBody = (request: IncomingMessage): Promise<string> =>
