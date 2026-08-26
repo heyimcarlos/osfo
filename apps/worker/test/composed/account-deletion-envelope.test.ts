@@ -80,7 +80,7 @@ const toExactRequest = (action: AccountDeletionAction) =>
     replayToken: action.replayToken,
   }) satisfies AccountDeletionRequest;
 
-it.effect("rejects one edited retained envelope without consuming its Action", () =>
+it.effect("rejects an edited envelope and terminally removes the disposable identity", () =>
   Effect.gen(function* () {
     const workerOrigin = yield* Config.string("OSFO_TEST_WORKER_URL");
     const databaseUrl = yield* Config.string("OSFO_TEST_DATABASE_URL");

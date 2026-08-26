@@ -492,14 +492,18 @@ show_identity() {
 }
 
 qualify_account_deletion_envelope() {
-  local run_id postgres_port
+  local run_id postgres_port worker_origin phone
   run_id="$1"
   doctor_run "$run_id" >/dev/null
   postgres_port="$(state_value "$run_id" postgres-port)"
-  OSFO_TEST_WORKER_URL="$(state_value "$run_id" worker-origin)" \
+  worker_origin="$(state_value "$run_id" worker-origin)"
+  phone="$(state_value "$run_id" phone-e164)"
+  OSFO_TEST_WORKER_URL="$worker_origin" \
     OSFO_TEST_DATABASE_URL="postgres://osfo:osfo@127.0.0.1:$postgres_port/osfo" \
-    OSFO_TEST_PHONE_NUMBER="$(state_value "$run_id" phone-e164)" \
+    OSFO_TEST_PHONE_NUMBER="$phone" \
     bun run --cwd "$repo_root/apps/worker" test:journeys:account-deletion-envelope
+  printf 'account_deletion_envelope_qualified run=%s worker=%s phone=%s terminal_cleanup=confirmed\n' \
+    "$run_id" "$worker_origin" "$phone"
 }
 
 qualify_journeys() {
