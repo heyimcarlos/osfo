@@ -131,6 +131,72 @@ describe("Postgres migrations", () => {
     ),
   );
 
+  it.effect(
+    "binds consumed account deletion actions to a deletion case owned by the same User",
+    () =>
+      Effect.acquireUseRelease(
+        makeTestDatabase,
+        ({ client }) =>
+          Effect.gen(function* () {
+            yield* applyMigrations(client);
+            yield* Effect.promise(() =>
+              client.exec(`
+              INSERT INTO users (id, name, email, updated_at)
+              VALUES ('action-user-1', 'Action User 1', 'action-1@example.test', now()),
+                     ('action-user-2', 'Action User 2', 'action-2@example.test', now()),
+                     ('action-user-3', 'Action User 3', 'action-3@example.test', now());
+              INSERT INTO administrative_authorities (admin_actor_id)
+              VALUES ('action-admin');
+              INSERT INTO deletion_cases (
+                deletion_case_id, user_id, requested_by_admin_id, reason
+              ) VALUES
+                ('action-case-1', 'action-user-1', 'action-admin', 'Required erasure'),
+                ('action-case-2', 'action-user-2', 'action-admin', 'Required erasure');
+              INSERT INTO account_deletion_actions (
+                action_id, user_id, auth_session_id, presentation, presentation_version,
+                expires_at, consumed_at, deletion_case_id
+              ) VALUES (
+                'action-exact', 'action-user-1', 'session-1', '{}', 'account-deletion-v1',
+                now() + interval '5 minutes', now(), 'action-case-1'
+              );
+              INSERT INTO account_deletion_actions (
+                action_id, user_id, auth_session_id, presentation, presentation_version, expires_at
+              ) VALUES (
+                'action-unconsumed', 'action-user-3', 'session-3', '{}',
+                'account-deletion-v1', now() + interval '5 minutes'
+              );
+            `),
+            );
+
+            const rejectedStatements = [
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, presentation, presentation_version,
+               expires_at, consumed_at, deletion_case_id
+             ) VALUES (
+               'action-missing-case', 'action-user-3', 'session-3', '{}',
+               'account-deletion-v1', now() + interval '5 minutes', now(), 'missing-case'
+             )`,
+              `INSERT INTO account_deletion_actions (
+               action_id, user_id, auth_session_id, presentation, presentation_version,
+               expires_at, consumed_at, deletion_case_id
+             ) VALUES (
+               'action-wrong-user', 'action-user-1', 'session-1', '{}',
+               'account-deletion-v1', now() + interval '5 minutes', now(), 'action-case-2'
+             )`,
+            ];
+
+            for (const statement of rejectedStatements) {
+              const result = yield* Effect.tryPromise({
+                try: () => client.exec(statement),
+                catch: (cause) => new MigrationConstraintRejected({ cause }),
+              }).pipe(Effect.exit);
+              expect(Exit.isFailure(result)).toBe(true);
+            }
+          }),
+        closeTestDatabase,
+      ),
+  );
+
   it.effect("enforces Channel Link lifecycle and active-address invariants", () =>
     Effect.acquireUseRelease(
       makeTestDatabase,

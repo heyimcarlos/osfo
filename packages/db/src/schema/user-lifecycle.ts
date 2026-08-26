@@ -1,5 +1,14 @@
 import { sql } from "drizzle-orm";
-import { check, index, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import {
+  check,
+  foreignKey,
+  index,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 
 import { users } from "./auth";
 
@@ -44,45 +53,6 @@ export const userSuspensionEvents = pgTable(
   ],
 );
 
-/** One expiring server-owned capability for approving self-service account deletion. */
-export const accountDeletionActions = pgTable(
-  "account_deletion_actions",
-  {
-    action_id: text().primaryKey(),
-    user_id: text()
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    auth_session_id: text().notNull(),
-    presentation: text().notNull(),
-    presentation_version: text().notNull(),
-    expires_at: timestamp({ withTimezone: true }).notNull(),
-    consumed_at: timestamp({ withTimezone: true }),
-    deletion_case_id: text(),
-    invalidated_at: timestamp({ withTimezone: true }),
-    created_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    index("account_deletion_actions_user_index").on(table.user_id),
-    check(
-      "account_deletion_actions_identity_check",
-      sql`length(btrim(${table.action_id})) > 0 and length(btrim(${table.auth_session_id})) > 0`,
-    ),
-    check(
-      "account_deletion_actions_presentation_check",
-      sql`length(btrim(${table.presentation})) > 0 and length(btrim(${table.presentation_version})) > 0`,
-    ),
-    check(
-      "account_deletion_actions_lifecycle_check",
-      sql`${table.expires_at} > ${table.created_at}
-        and (${table.consumed_at} is null or ${table.consumed_at} >= ${table.created_at})
-        and (${table.invalidated_at} is null or ${table.invalidated_at} >= ${table.created_at})
-        and (${table.consumed_at} is null or ${table.invalidated_at} is null)
-        and ((${table.consumed_at} is null and ${table.deletion_case_id} is null)
-          or (${table.consumed_at} is not null and length(btrim(${table.deletion_case_id})) > 0))`,
-    ),
-  ],
-);
-
 /** One User- or administrator-requested deletion that immediately ends User access. */
 export const deletionCases = pgTable(
   "deletion_cases",
@@ -102,11 +72,56 @@ export const deletionCases = pgTable(
   },
   (table) => [
     uniqueIndex("deletion_cases_user_unique").on(table.user_id),
+    uniqueIndex("deletion_cases_identity_unique").on(table.deletion_case_id, table.user_id),
     check(
       "deletion_cases_actor_check",
       sql`(${table.requested_by_admin_id} is not null and length(btrim(${table.requested_by_admin_id})) > 0 and ${table.requested_by_user_id} is null and ${table.approval_action_id} is null and ${table.approval_presentation} is null)
         or (${table.requested_by_admin_id} is null and ${table.requested_by_user_id} = ${table.user_id} and length(btrim(${table.approval_action_id})) > 0 and length(btrim(${table.approval_presentation})) > 0)`,
     ),
     check("deletion_cases_reason_check", sql`length(btrim(${table.reason})) > 0`),
+  ],
+);
+
+/** One expiring server-owned capability for approving self-service account deletion. */
+export const accountDeletionActions = pgTable(
+  "account_deletion_actions",
+  {
+    action_id: text().primaryKey(),
+    user_id: text()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    auth_session_id: text().notNull(),
+    presentation: text().notNull(),
+    presentation_version: text().notNull(),
+    expires_at: timestamp({ withTimezone: true }).notNull(),
+    consumed_at: timestamp({ withTimezone: true }),
+    deletion_case_id: text(),
+    invalidated_at: timestamp({ withTimezone: true }),
+    created_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("account_deletion_actions_user_index").on(table.user_id),
+    foreignKey({
+      columns: [table.deletion_case_id, table.user_id],
+      foreignColumns: [deletionCases.deletion_case_id, deletionCases.user_id],
+      name: "account_deletion_actions_case_user_fk",
+    }),
+    check(
+      "account_deletion_actions_identity_check",
+      sql`length(btrim(${table.action_id})) > 0 and length(btrim(${table.auth_session_id})) > 0`,
+    ),
+    check(
+      "account_deletion_actions_presentation_check",
+      sql`length(btrim(${table.presentation})) > 0 and length(btrim(${table.presentation_version})) > 0`,
+    ),
+    check(
+      "account_deletion_actions_lifecycle_check",
+      sql`${table.expires_at} > ${table.created_at}
+        and (${table.consumed_at} is null or ${table.consumed_at} >= ${table.created_at})
+        and (${table.invalidated_at} is null or ${table.invalidated_at} >= ${table.created_at})
+        and (${table.consumed_at} is null or ${table.invalidated_at} is null)
+        and ((${table.consumed_at} is null and ${table.deletion_case_id} is null)
+          or (${table.consumed_at} is not null and length(btrim(${table.deletion_case_id})) > 0))`,
+    ),
   ],
 );
