@@ -541,6 +541,7 @@ const memoryLayerWithRecall = (recall: MemoryProvider.Interface["recall"]) =>
       recall,
       saveConversation: () => Effect.die(new Error("unexpected conversation save")),
       verifySessionConversation: () => Effect.die(new Error("unexpected Session verification")),
+      verifyUserKnowledge: () => Effect.die(new Error("unexpected User verification")),
     }),
   );
 

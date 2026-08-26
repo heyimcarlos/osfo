@@ -116,6 +116,16 @@ export const startProviderEmulator = (): Promise<ProviderEmulator> =>
           .catch((cause: unknown) => respondJson(response, 400, { error: String(cause) }));
         return;
       }
+      if (request.method === "GET" && pathname.startsWith("/v3/container-tags/")) {
+        supermemoryLedger.push({ method: request.method, path: pathname });
+        const containerTag = decodeURIComponent(pathname.slice("/v3/container-tags/".length));
+        if (!supermemoryContainers.has(containerTag)) {
+          respondJson(response, 404, { error: "absent" });
+          return;
+        }
+        respondJson(response, 200, { containerTag });
+        return;
+      }
       if (request.method === "DELETE" && pathname.startsWith("/v3/container-tags/")) {
         supermemoryLedger.push({ method: request.method, path: pathname });
         if (supermemoryDeleteFailuresRemaining > 0) {

@@ -126,12 +126,16 @@ it.effect("deletes a registered User through the authenticated Worker endpoint",
       status: "deletion-pending",
     });
     expect(yield* Effect.promise(() => app.database.accountDeletion(identity.userId))).toBeNull();
-    expect(yield* Effect.promise(app.supermemory.ledger)).toEqual(
-      Array.from({ length: 1 }, () => ({
+    expect(yield* Effect.promise(app.supermemory.ledger)).toEqual([
+      {
         method: "DELETE",
         path: `/v3/container-tags/${encodeURIComponent(seededProvider.containerTag)}`,
-      })),
-    );
+      },
+      {
+        method: "GET",
+        path: `/v3/container-tags/${encodeURIComponent(seededProvider.containerTag)}`,
+      },
+    ]);
     expect(yield* Effect.promise(app.supermemory.containers)).toEqual([
       unrelatedProvider.containerTag,
     ]);
@@ -183,6 +187,10 @@ it.effect("completes a fenced deletion through the production scheduled entry po
     expect(yield* Effect.promise(app.supermemory.ledger)).toEqual([
       {
         method: "DELETE",
+        path: `/v3/container-tags/${encodeURIComponent(seededProvider.containerTag)}`,
+      },
+      {
+        method: "GET",
         path: `/v3/container-tags/${encodeURIComponent(seededProvider.containerTag)}`,
       },
     ]);

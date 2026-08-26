@@ -222,6 +222,11 @@ export interface DeleteUserKnowledgeInput {
   readonly userId: UserId;
 }
 
+/** Current provider proof for the exact User container after deletion. */
+export type UserKnowledgeVerification =
+  | { readonly _tag: "AlreadyAbsent" }
+  | { readonly _tag: "Verified" };
+
 /** Confirmed live absence after a provider deletion operation. */
 export type DeletionResult = { readonly _tag: "AlreadyAbsent" } | { readonly _tag: "Deleted" };
 
@@ -320,6 +325,9 @@ export interface Interface {
   readonly deleteUserKnowledge: (
     input: DeleteUserKnowledgeInput,
   ) => Effect.Effect<DeletionResult, MemoryProviderRejected | MemoryProviderUnavailable>;
+  readonly verifyUserKnowledge: (
+    input: DeleteUserKnowledgeInput,
+  ) => Effect.Effect<UserKnowledgeVerification, MemoryProviderRejected | MemoryProviderUnavailable>;
   readonly forgetKnowledge: (
     input: ForgetKnowledgeInput,
   ) => Effect.Effect<DeletionResult, MemoryProviderRejected | MemoryProviderUnavailable>;

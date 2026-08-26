@@ -58,6 +58,7 @@ it.effect("keeps local data pending until provider deletion confirms permanent a
       "provider",
       "recheck",
       "recheck",
+      "recheck",
       "objects",
       "recheck",
       "agent",
@@ -73,6 +74,99 @@ it.effect("keeps local data pending until provider deletion confirms permanent a
     ),
   );
 });
+
+it.effect(
+  "retries an accepted provider delete until a later read proves the User container absent",
+  () => {
+    const calls: Array<string> = [];
+    const candidate = {
+      _tag: "SelfService" as const,
+      agentId: AgentId.make("agent-1"),
+      approvalActionId: ActionId.make("account-delete-1"),
+      approvalPresentation: ApprovalPresentation.make("Delete Account"),
+      deletionCaseId: DeletionCaseId.make("deletion-case-1"),
+      userId: UserId.make("user-1"),
+    };
+    let verificationAttempts = 0;
+    const port = AccountDeletion.Port.of({
+      inspectAuthorization: () =>
+        Effect.sync(() => calls.push("recheck")).pipe(Effect.as(activeFacts(candidate.userId))),
+      agents: {
+        quiesce: () => Effect.sync(() => calls.push("quiesce")),
+        remove: () => Effect.sync(() => calls.push("agent")),
+      },
+      integrations: {
+        pending: () => Effect.succeed([]),
+        revoke: () => Effect.die(new Error("Unexpected integration target")),
+      },
+      objects: {
+        remove: (_, authorizeDelete) =>
+          authorizeDelete.pipe(Effect.andThen(Effect.sync(() => calls.push("objects")))),
+      },
+      persistence: {
+        ...passthroughIntegrationProgress,
+        pending: Effect.succeed([candidate]),
+        removeUser: () => Effect.sync(() => calls.push("postgres")),
+      },
+    });
+    const provider = MemoryProvider.Service.of({
+      ...unexpectedMemoryProvider,
+      deleteUserKnowledge: () =>
+        Effect.sync(() => calls.push("provider-delete")).pipe(
+          Effect.as({ _tag: "Deleted" as const }),
+        ),
+      verifyUserKnowledge: () =>
+        Effect.sync(() => {
+          calls.push("provider-verify");
+          verificationAttempts += 1;
+          return verificationAttempts === 1
+            ? ({ _tag: "Verified" } as const)
+            : ({ _tag: "AlreadyAbsent" } as const);
+        }),
+    });
+
+    return Effect.gen(function* () {
+      const deletion = yield* AccountDeletion.Service;
+      const result = yield* deletion.reconcileOne(candidate).pipe(Effect.result);
+      expect(Result.isFailure(result)).toBe(true);
+      expect(calls).toEqual([
+        "recheck",
+        "quiesce",
+        "recheck",
+        "provider-delete",
+        "recheck",
+        "provider-verify",
+      ]);
+      yield* deletion.reconcileOne(candidate);
+      expect(calls.slice(-13)).toEqual([
+        "recheck",
+        "quiesce",
+        "recheck",
+        "provider-delete",
+        "recheck",
+        "provider-verify",
+        "recheck",
+        "recheck",
+        "objects",
+        "recheck",
+        "agent",
+        "recheck",
+        "postgres",
+      ]);
+    }).pipe(
+      Effect.provide(
+        AccountDeletion.layerWithoutDependencies.pipe(
+          Layer.provide(
+            Layer.merge(
+              Layer.succeed(AccountDeletion.Port, port),
+              Layer.succeed(MemoryProvider.Service, provider),
+            ),
+          ),
+        ),
+      ),
+    );
+  },
+);
 
 it.effect(
   "does not begin destructive reconciliation until the exact access fence is durable",
@@ -137,6 +231,7 @@ it.effect(
         "quiesce",
         "recheck",
         "provider",
+        "recheck",
         "recheck",
         "recheck",
         "objects",
@@ -215,6 +310,7 @@ it.effect("stops before Agent deletion when authority changes during object dele
     "provider",
     "recheck",
     "recheck",
+    "recheck",
     "objects",
     "recheck",
   ]),
@@ -264,7 +360,15 @@ it.effect("keeps the case pending and local data intact when R2 ownership is con
     const result = yield* deletion.reconcileOne(candidate).pipe(Effect.result);
     expect(Result.isFailure(result)).toBe(true);
     expect(yield* port.persistence.pending).toEqual([candidate]);
-    expect(calls).toEqual(["recheck", "quiesce", "recheck", "provider", "recheck", "objects"]);
+    expect(calls).toEqual([
+      "recheck",
+      "quiesce",
+      "recheck",
+      "provider",
+      "recheck",
+      "recheck",
+      "objects",
+    ]);
   }).pipe(Effect.provide(accountDeletionLayer(port, calls, () => "deleted")));
 });
 
@@ -274,6 +378,7 @@ it.effect("stops before PostgreSQL deletion when authority changes during Agent 
     "quiesce",
     "recheck",
     "provider",
+    "recheck",
     "recheck",
     "recheck",
     "objects",
@@ -595,6 +700,7 @@ it.effect("rechecks a retained administrative case through every protected stage
       "provider",
       "recheck",
       "recheck",
+      "recheck",
       "objects",
       "recheck",
       "agent",
@@ -713,5 +819,22 @@ const providerLayer = (result: () => "deleted" | "unavailable", calls: Array<str
       recall: () => Effect.die(new Error("unexpected recall")),
       saveConversation: () => Effect.die(new Error("unexpected conversation save")),
       verifySessionConversation: () => Effect.die(new Error("unexpected Session verification")),
+      verifyUserKnowledge: () => Effect.succeed({ _tag: "AlreadyAbsent" as const }),
     }),
   );
+
+const unexpectedMemoryProvider = {
+  checkConversationSearchability: () =>
+    Effect.die(new Error("unexpected conversation searchability check")),
+  configureOrganizationGuidance: Effect.die(
+    new Error("unexpected organization guidance configuration"),
+  ),
+  configureUserGuidance: () => Effect.die(new Error("unexpected User guidance configuration")),
+  deleteSessionConversation: () => Effect.die(new Error("unexpected Session deletion")),
+  findSessionConversation: () => Effect.die(new Error("unexpected Session discovery")),
+  forgetKnowledge: () => Effect.die(new Error("unexpected forgetting")),
+  getConversationStatus: () => Effect.die(new Error("unexpected status read")),
+  recall: () => Effect.die(new Error("unexpected recall")),
+  saveConversation: () => Effect.die(new Error("unexpected conversation save")),
+  verifySessionConversation: () => Effect.die(new Error("unexpected Session verification")),
+};

@@ -242,6 +242,26 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
+    yield* requireCurrentAuthority("before provider knowledge absence verification");
+    const providerKnowledge = yield* provider
+      .verifyUserKnowledge({ userId: candidate.userId })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new AccountDeletionUnavailable({
+              cause,
+              message: "Provider knowledge absence verification remains pending",
+              operation: "deleteProviderKnowledge",
+            }),
+        ),
+      );
+    if (providerKnowledge._tag !== "AlreadyAbsent") {
+      return yield* new AccountDeletionUnavailable({
+        cause: candidate.userId,
+        message: "Provider knowledge deletion has not reached permanent absence",
+        operation: "deleteProviderKnowledge",
+      });
+    }
     yield* requireCurrentAuthority("before integration authority discovery");
     const discoveredIntegrationTargets = yield* dependencies.integrations.pending(candidate.userId);
     for (const target of discoveredIntegrationTargets) {

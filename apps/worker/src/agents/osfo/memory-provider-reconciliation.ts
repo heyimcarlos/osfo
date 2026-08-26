@@ -148,6 +148,7 @@ const processDeletionClaim = Effect.fn("MemoryProviderOutbox.processDeletionClai
       completed.add(memoryId);
       const retained = yield* store.recordDeletionProgress(claim, {
         _tag: "ForgetKnowledge",
+        coreMemoryState: "refreshed",
         completedMemoryIds: [...completed],
       });
       if (!retained) return false;
@@ -439,13 +440,27 @@ const prepareDeletionClaim = Effect.fn("MemoryProviderOutbox.prepareDeletionClai
     );
     return false;
   }
-  const correctionAlreadyCommitted =
-    claim.payload._tag === "ForgetKnowledge" && claim.deletionProgress?._tag === "ForgetKnowledge";
-  if (!correctionAlreadyCommitted) {
+  const correctionAlreadyRefreshed =
+    claim.payload._tag === "ForgetKnowledge" &&
+    claim.deletionProgress?._tag === "ForgetKnowledge" &&
+    claim.deletionProgress.coreMemoryState === "refreshed";
+  if (!correctionAlreadyRefreshed) {
     const preparation = yield* options.prepareDeletion(claim).pipe(Effect.result);
     if (Result.isFailure(preparation)) {
       yield* retryClaim(store, claim, preparation.failure.message, retryDelaySeconds);
       return false;
+    }
+    if (claim.payload._tag === "ForgetKnowledge") {
+      const progress =
+        claim.deletionProgress?._tag === "ForgetKnowledge"
+          ? claim.deletionProgress.completedMemoryIds
+          : [];
+      const retained = yield* store.recordDeletionProgress(claim, {
+        _tag: "ForgetKnowledge",
+        coreMemoryState: "refreshed",
+        completedMemoryIds: progress,
+      });
+      if (!retained) return false;
     }
   }
   const finalCheck = yield* options.authorizeDeletion(authorization).pipe(Effect.result);

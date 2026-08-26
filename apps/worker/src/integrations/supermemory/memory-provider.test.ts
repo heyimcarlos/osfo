@@ -914,6 +914,93 @@ it.effect("deletes every Knowledge Base item in one User container", () =>
   ),
 );
 
+it.effect(
+  "keeps an asynchronously deleted User container live until a fresh read proves absence",
+  () =>
+    withProvider(({ requests, origin, respondWith }) =>
+      Effect.gen(function* () {
+        respondWith(
+          {
+            body: {
+              containerTag: "u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs",
+              deletedDocumentsCount: 2,
+              deletedMemoriesCount: 3,
+              success: true,
+            },
+            status: 200,
+          },
+          {
+            body: {
+              containerTag: "u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs",
+              documentCount: 2,
+              memoryCount: 3,
+            },
+            status: 200,
+          },
+          { body: { error: "Container not found" }, status: 404 },
+        );
+        const memory = yield* MemoryProvider.Service;
+        const deleted = yield* memory.deleteUserKnowledge({ userId: UserId.make("user-1") });
+        const stillPresent = yield* memory.verifyUserKnowledge({ userId: UserId.make("user-1") });
+        const absent = yield* memory.verifyUserKnowledge({ userId: UserId.make("user-1") });
+
+        expect(deleted).toEqual({ _tag: "Deleted" });
+        expect(stillPresent).toEqual({ _tag: "Verified" });
+        expect(absent).toEqual({ _tag: "AlreadyAbsent" });
+        expect(requests.map(({ method, path }) => ({ method, path }))).toEqual([
+          {
+            method: "DELETE",
+            path: "/v3/container-tags/u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs",
+          },
+          {
+            method: "GET",
+            path: "/v3/container-tags/u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs",
+          },
+          {
+            method: "GET",
+            path: "/v3/container-tags/u_xsKJ5J6cBbIUWGA4e3O8sY30P7CaHkpKlxPHbIi7VBs",
+          },
+        ]);
+      }).pipe(Effect.provide(providerLayer(origin))),
+    ),
+);
+
+it.effect("fails closed when the post-delete User container read names another owner", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({ body: { containerTag: "u_unrelated" }, status: 200 });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .verifyUserKnowledge({ userId: UserId.make("user-1") })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        diagnostic: "identityMismatch",
+        operation: "deleteUserKnowledge",
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
+it.effect("keeps User deletion pending when the post-delete absence read is unavailable", () =>
+  withProvider(({ origin, respondWith }) =>
+    Effect.gen(function* () {
+      respondWith({ body: { error: "temporarily unavailable" }, status: 503 });
+      const memory = yield* MemoryProvider.Service;
+      const failure = yield* memory
+        .verifyUserKnowledge({ userId: UserId.make("user-1") })
+        .pipe(Effect.flip);
+
+      expect(failure).toMatchObject({
+        _tag: "MemoryProviderUnavailable",
+        operation: "deleteUserKnowledge",
+        status: 503,
+      });
+    }).pipe(Effect.provide(providerLayer(origin))),
+  ),
+);
+
 it.effect("keeps account deletion pending when provider confirmation names another User", () =>
   withProvider(({ origin, respondWith }) =>
     Effect.gen(function* () {

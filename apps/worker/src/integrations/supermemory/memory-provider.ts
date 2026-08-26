@@ -69,6 +69,9 @@ const DeleteUserKnowledgeResponse = Schema.Struct({
   deletedMemoriesCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   success: Schema.Literal(true),
 });
+const UserKnowledgeContainer = Schema.Struct({
+  containerTag: NonEmptyString,
+});
 const ProfileResponse = Schema.Struct({
   profile: Schema.Struct({
     dynamic: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -602,6 +605,42 @@ const make = (options: Options) =>
       },
     );
 
+    const verifyUserKnowledge = Effect.fn("SupermemoryMemoryProvider.verifyUserKnowledge")(
+      function* (input: MemoryProvider.DeleteUserKnowledgeInput) {
+        const containerTag = yield* providerIdentity(
+          crypto,
+          "u",
+          input.userId,
+          "deleteUserKnowledge",
+        );
+        const request = HttpClientRequest.get(
+          `${apiBaseURL}/v3/container-tags/${encodeURIComponent(containerTag)}`,
+        ).pipe(HttpClientRequest.bearerToken(options.apiKey));
+        const response = yield* httpClient.execute(request).pipe(
+          Effect.mapError(
+            () =>
+              new MemoryProvider.MemoryProviderUnavailable({
+                message: "The MemoryProvider is unavailable",
+                operation: "deleteUserKnowledge",
+              }),
+          ),
+        );
+        if (response.status === 404) return { _tag: "AlreadyAbsent" } as const;
+        if (response.status >= 200 && response.status < 300) {
+          const container = yield* HttpClientResponse.schemaBodyJson(UserKnowledgeContainer)(
+            response,
+          ).pipe(
+            Effect.mapError(() => providerUnavailable("deleteUserKnowledge", "responseDecoding")),
+          );
+          if (container.containerTag !== containerTag) {
+            return yield* providerUnavailable("deleteUserKnowledge", "identityMismatch");
+          }
+          return { _tag: "Verified" } as const;
+        }
+        return yield* providerStatusFailure("deleteUserKnowledge", response.status);
+      },
+    );
+
     return MemoryProvider.Service.of({
       checkConversationSearchability,
       configureOrganizationGuidance,
@@ -614,6 +653,7 @@ const make = (options: Options) =>
       recall,
       saveConversation,
       verifySessionConversation,
+      verifyUserKnowledge,
     });
   });
 

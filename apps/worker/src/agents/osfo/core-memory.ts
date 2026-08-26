@@ -312,6 +312,7 @@ export const replaceCoreMemoryBlocks = <E, R>(
   storage: CoreMemoryBatchStorage,
   replacements: ReadonlyArray<{ readonly block: CoreMemoryBlockName; readonly content: string }>,
   authorizeReplacement: Effect.Effect<void, E, R>,
+  markCorrectionCommitted: () => void,
 ): Effect.Effect<
   ReadonlyArray<CoreMemoryCorrected>,
   CoreMemoryBudgetExceeded | CoreMemoryUnavailable | E,
@@ -355,6 +356,7 @@ export const replaceCoreMemoryBlocks = <E, R>(
               replacement.content,
             );
           }
+          markCorrectionCommitted();
         }),
       catch: (cause) =>
         new CoreMemoryUnavailable({
@@ -363,16 +365,20 @@ export const replaceCoreMemoryBlocks = <E, R>(
           operation: "correct",
         }),
     });
-    yield* Effect.tryPromise({
-      try: () => session.refreshSystemPrompt(),
-      catch: (cause) =>
-        new CoreMemoryUnavailable({
-          cause,
-          message: "Corrected Core Memory could not be refreshed",
-          operation: "correct",
-        }),
-    });
+    yield* refreshCoreMemoryPrompt(session);
     return corrected;
+  });
+
+/** Refresh the active prompt after an atomic Core Memory correction already committed. */
+export const refreshCoreMemoryPrompt = (session: CoreMemoryBatchSession) =>
+  Effect.tryPromise({
+    try: () => session.refreshSystemPrompt(),
+    catch: (cause) =>
+      new CoreMemoryUnavailable({
+        cause,
+        message: "Corrected Core Memory could not be refreshed",
+        operation: "correct",
+      }),
   });
 
 /** Persist one User-selected block budget when its current content fits. */

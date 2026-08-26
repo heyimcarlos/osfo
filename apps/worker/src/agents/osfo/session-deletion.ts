@@ -47,13 +47,19 @@ export const deleteLocalSession = Effect.fn("SessionDeletion.deleteLocalSession"
       routeId: agent.routeId,
     };
     yield* dependencies.replaceCurrentSession(replacement);
-    const activation = yield* dependencies
-      .authorizeDeletion()
-      .pipe(Effect.andThen(dependencies.activateCurrentSession), Effect.result);
-    if (Result.isFailure(activation)) {
+    const deletion = yield* Effect.gen(function* () {
+      yield* dependencies.authorizeDeletion();
+      yield* dependencies.activateCurrentSession;
+      yield* dependencies.authorizeDeletion();
+      yield* dependencies.clearMessages(input.sessionId);
+      yield* dependencies.authorizeDeletion();
+      return yield* dependencies.settle(input.sessionId);
+    }).pipe(Effect.result);
+    if (Result.isFailure(deletion)) {
       yield* dependencies.rollbackCurrentSessionReplacement(replacement);
-      return yield* Effect.fail(activation.failure);
+      return yield* Effect.fail(deletion.failure);
     }
+    return deletion.success;
   }
   yield* dependencies.authorizeDeletion();
   yield* dependencies.clearMessages(input.sessionId);

@@ -144,6 +144,7 @@ import {
   inspectCoreMemory,
   InspectCoreMemoryInput,
   type InspectCoreMemoryEncoded,
+  refreshCoreMemoryPrompt,
   replaceCoreMemoryBlocks,
 } from "./core-memory";
 import { Allowances } from "../../services/allowances";
@@ -1683,26 +1684,54 @@ export class OsfoAgent extends Think<Env> {
           : Effect.void,
       ),
     );
+    const priorCorrectionState =
+      retained.value.deletionProgress?._tag === "ForgetKnowledge"
+        ? retained.value.deletionProgress.coreMemoryState
+        : undefined;
+    const activateForKnowledgeCorrection = Effect.tryPromise({
+      try: () => this.#activateCurrentSession(),
+      catch: (cause) =>
+        new DeletionActionUnavailable({
+          cause,
+          message: "Current Session could not be activated for Knowledge forgetting",
+          operation: "forgetKnowledge",
+        }),
+    });
+    const noCorrections: ReadonlyArray<CoreMemoryCorrected> = [];
+    const correct =
+      priorCorrectionState === "refreshed"
+        ? Effect.succeed(noCorrections)
+        : activateForKnowledgeCorrection.pipe(
+            Effect.andThen(
+              priorCorrectionState === "committed"
+                ? refreshCoreMemoryPrompt(this.session).pipe(Effect.as(noCorrections))
+                : correctForgottenKnowledge(
+                    input.coreMemory,
+                    authorizeReplacement,
+                    (replacements, authorize) =>
+                      replaceCoreMemoryBlocks(
+                        this.session,
+                        this.ctx.storage,
+                        replacements,
+                        authorize,
+                        () => {
+                          if (
+                            !this.#memoryProviderOutbox.markForgetKnowledgeCorrectionCommitted(
+                              retained.value,
+                            )
+                          ) {
+                            throw new Error(
+                              "Knowledge forgetting lost its exact local preparation claim",
+                            );
+                          }
+                        },
+                      ),
+                  ),
+            ),
+          );
     const prepared = await runRpc(
       completeKnowledgeDeletionPreparation({
-        correct: Effect.tryPromise({
-          try: () => this.#activateCurrentSession(),
-          catch: (cause) =>
-            new DeletionActionUnavailable({
-              cause,
-              message: "Current Session could not be activated for Knowledge forgetting",
-              operation: "forgetKnowledge",
-            }),
-        }).pipe(
-          Effect.andThen(
-            correctForgottenKnowledge(
-              input.coreMemory,
-              authorizeReplacement,
-              (replacements, authorize) =>
-                replaceCoreMemoryBlocks(this.session, this.ctx.storage, replacements, authorize),
-            ),
-          ),
-        ),
+        correct,
         release: this.#memoryProviderOutbox.releaseDeletionPreparation(retained.value, enqueuedAt),
       }).pipe(
         Effect.mapError(
@@ -2127,6 +2156,9 @@ export class OsfoAgent extends Think<Env> {
   #prepareProviderDeletion(claim: ClaimedMemoryProviderWork) {
     const payload = claim.payload;
     if (payload._tag === "ForgetKnowledge") {
+      const correctionCommitted =
+        claim.deletionProgress?._tag === "ForgetKnowledge" &&
+        claim.deletionProgress.coreMemoryState === "committed";
       return Effect.tryPromise({
         try: () => this.#activateCurrentSession(),
         catch: (cause) =>
@@ -2136,23 +2168,37 @@ export class OsfoAgent extends Think<Env> {
           }),
       }).pipe(
         Effect.andThen(
-          correctForgottenKnowledge(
-            payload.coreMemory,
-            this.#authorizeProviderDeletion(payload.authorization).pipe(
-              Effect.flatMap((result) =>
-                Predicate.isTagged(result, "Denied")
-                  ? Effect.fail(
-                      new ProviderDeletionDeferred({
-                        cause: result,
-                        message: "Core Memory correction authority changed",
-                      }),
-                    )
-                  : Effect.void,
-              ),
-            ),
-            (replacements, authorize) =>
-              replaceCoreMemoryBlocks(this.session, this.ctx.storage, replacements, authorize),
-          ).pipe(Effect.asVoid),
+          correctionCommitted
+            ? refreshCoreMemoryPrompt(this.session)
+            : correctForgottenKnowledge(
+                payload.coreMemory,
+                this.#authorizeProviderDeletion(payload.authorization).pipe(
+                  Effect.flatMap((result) =>
+                    Predicate.isTagged(result, "Denied")
+                      ? Effect.fail(
+                          new ProviderDeletionDeferred({
+                            cause: result,
+                            message: "Core Memory correction authority changed",
+                          }),
+                        )
+                      : Effect.void,
+                  ),
+                ),
+                (replacements, authorize) =>
+                  replaceCoreMemoryBlocks(
+                    this.session,
+                    this.ctx.storage,
+                    replacements,
+                    authorize,
+                    () => {
+                      if (
+                        !this.#memoryProviderOutbox.markForgetKnowledgeCorrectionCommitted(claim)
+                      ) {
+                        throw new Error("Knowledge forgetting lost its exact reconciliation claim");
+                      }
+                    },
+                  ),
+              ).pipe(Effect.asVoid),
         ),
         Effect.mapError(
           (cause) =>

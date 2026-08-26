@@ -125,30 +125,98 @@ it.effect("rolls back the replacement when activation fails", () => {
   });
 });
 
-it.effect("retries a retained Session deletion after the initial local clear fails", () => {
+it.effect(
+  "rolls back and retries a retained current Session deletion after local clear fails",
+  () => {
+    const events: Array<string> = [];
+    const deletedSessionId = SessionId.make("session-1");
+    const replacementSessionId = SessionId.make("session-2");
+    let currentSessionId = deletedSessionId;
+    let clearAttempts = 0;
+    let owned = true;
+    const run = () =>
+      deleteLocalSession(
+        { replacementSessionId, sessionId: deletedSessionId },
+        {
+          activateCurrentSession: record(events, "activate"),
+          authorizeDeletion: () => record(events, "recheck-retained-authorization"),
+          clearMessages: () =>
+            Effect.suspend(() => {
+              clearAttempts += 1;
+              events.push(`clear-${clearAttempts}`);
+              return clearAttempts === 1
+                ? Effect.fail(new TestLocalClearUnavailable())
+                : Effect.void;
+            }),
+          inspect: Effect.sync(() => ({
+            currentSessionId,
+            routeId: ConversationRouteId.make("route-1"),
+          })),
+          ownsSession: () => Effect.sync(() => owned),
+          replacedAt: Effect.succeed(DbTimestamp.make("2026-08-25T12:00:00.000Z")),
+          replaceCurrentSession: () =>
+            Effect.sync(() => {
+              currentSessionId = replacementSessionId;
+              events.push("replace");
+            }),
+          rollbackCurrentSessionReplacement: () =>
+            Effect.sync(() => {
+              currentSessionId = deletedSessionId;
+              events.push("rollback");
+            }),
+          settle: () =>
+            Effect.sync(() => {
+              owned = false;
+              events.push("settle");
+            }),
+        },
+      );
+
+    return Effect.gen(function* () {
+      const first = yield* run().pipe(Effect.result);
+      expect(Result.isFailure(first)).toBe(true);
+      yield* run();
+
+      expect(owned).toBe(false);
+      expect(events).toEqual([
+        "recheck-retained-authorization",
+        "replace",
+        "recheck-retained-authorization",
+        "activate",
+        "recheck-retained-authorization",
+        "clear-1",
+        "rollback",
+        "recheck-retained-authorization",
+        "replace",
+        "recheck-retained-authorization",
+        "activate",
+        "recheck-retained-authorization",
+        "clear-2",
+        "recheck-retained-authorization",
+        "settle",
+      ]);
+    });
+  },
+);
+
+it.effect("rolls back the current Session replacement when durable settlement fails", () => {
   const events: Array<string> = [];
   const deletedSessionId = SessionId.make("session-1");
   const replacementSessionId = SessionId.make("session-2");
   let currentSessionId = deletedSessionId;
-  let clearAttempts = 0;
-  let owned = true;
-  const run = () =>
-    deleteLocalSession(
+
+  return Effect.gen(function* () {
+    const result = yield* deleteLocalSession(
       { replacementSessionId, sessionId: deletedSessionId },
       {
         activateCurrentSession: record(events, "activate"),
-        authorizeDeletion: () => record(events, "recheck-retained-authorization"),
-        clearMessages: () =>
-          Effect.suspend(() => {
-            clearAttempts += 1;
-            events.push(`clear-${clearAttempts}`);
-            return clearAttempts === 1 ? Effect.fail(new TestLocalClearUnavailable()) : Effect.void;
-          }),
-        inspect: Effect.sync(() => ({
+        authorizeDeletion: () => record(events, "recheck"),
+        clearMessages: () => record(events, "clear"),
+        inspect: Effect.succeed({
           currentSessionId,
           routeId: ConversationRouteId.make("route-1"),
-        })),
-        ownsSession: () => Effect.sync(() => owned),
+        }),
+        ownsSession: () => Effect.succeed(true),
         replacedAt: Effect.succeed(DbTimestamp.make("2026-08-25T12:00:00.000Z")),
         replaceCurrentSession: () =>
           Effect.sync(() => {
@@ -156,32 +224,29 @@ it.effect("retries a retained Session deletion after the initial local clear fai
             events.push("replace");
           }),
         rollbackCurrentSessionReplacement: () =>
-          Effect.die(new Error("A successful replacement was rolled back")),
-        settle: () =>
           Effect.sync(() => {
-            owned = false;
-            events.push("settle");
+            currentSessionId = deletedSessionId;
+            events.push("rollback");
           }),
+        settle: () =>
+          record(events, "settle").pipe(
+            Effect.andThen(Effect.fail(new TestSettlementUnavailable())),
+          ),
       },
-    );
+    ).pipe(Effect.result);
 
-  return Effect.gen(function* () {
-    const first = yield* run().pipe(Effect.result);
-    expect(Result.isFailure(first)).toBe(true);
-    yield* run();
-
-    expect(owned).toBe(false);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(currentSessionId).toBe(deletedSessionId);
     expect(events).toEqual([
-      "recheck-retained-authorization",
+      "recheck",
       "replace",
-      "recheck-retained-authorization",
+      "recheck",
       "activate",
-      "recheck-retained-authorization",
-      "clear-1",
-      "recheck-retained-authorization",
-      "clear-2",
-      "recheck-retained-authorization",
+      "recheck",
+      "clear",
+      "recheck",
       "settle",
+      "rollback",
     ]);
   });
 });
@@ -242,5 +307,10 @@ class TestLocalClearUnavailable extends Schema.TaggedError<TestLocalClearUnavail
 
 class TestActivationUnavailable extends Schema.TaggedError<TestActivationUnavailable>()(
   "TestActivationUnavailable",
+  {},
+) {}
+
+class TestSettlementUnavailable extends Schema.TaggedError<TestSettlementUnavailable>()(
+  "TestSettlementUnavailable",
   {},
 ) {}

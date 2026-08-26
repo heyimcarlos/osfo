@@ -387,7 +387,12 @@ it.effect("persists each forgotten memory before rechecking authority for the ne
           "authorize:4",
         ]);
         expect(deletionProgress).toEqual([
-          { _tag: "ForgetKnowledge", completedMemoryIds: ["memory-1"] },
+          { _tag: "ForgetKnowledge", coreMemoryState: "refreshed", completedMemoryIds: [] },
+          {
+            _tag: "ForgetKnowledge",
+            coreMemoryState: "refreshed",
+            completedMemoryIds: ["memory-1"],
+          },
         ]);
         expect(retried).toEqual([claim.outboxId]);
         expect(completed).toEqual([]);
@@ -399,7 +404,11 @@ it.effect("persists each forgotten memory before rechecking authority for the ne
 it.effect("does not repeat a durably completed Core Memory correction on provider retry", () => {
   const claim: ClaimedMemoryProviderWork = {
     ...authorizedForgetKnowledgeClaim(),
-    deletionProgress: { _tag: "ForgetKnowledge", completedMemoryIds: [] },
+    deletionProgress: {
+      _tag: "ForgetKnowledge",
+      coreMemoryState: "refreshed",
+      completedMemoryIds: [],
+    },
   };
   let coreMemory = "A newer User edit after the original correction";
   const { completed, store } = testStore(claim);
@@ -427,6 +436,60 @@ it.effect("does not repeat a durably completed Core Memory correction on provide
     ),
   );
 });
+
+it.effect(
+  "retries prompt refresh after correction commit without applying retained rows again",
+  () => {
+    const claim: ClaimedMemoryProviderWork = {
+      ...authorizedForgetKnowledgeClaim(),
+      deletionProgress: {
+        _tag: "ForgetKnowledge",
+        coreMemoryState: "committed",
+        completedMemoryIds: [],
+      },
+    };
+    const coreMemory = "A newer User edit after the atomic correction committed";
+    let refreshAttempts = 0;
+    const { completed, deletionProgress, store } = testStore(claim);
+    const provider = providerStub({
+      forgetKnowledge: () => Effect.succeed({ _tag: "Deleted" as const }),
+    });
+
+    return Effect.scoped(
+      reconcileMemoryProviderOutbox(store, {
+        authorizeDeletion: permittedDeletionOptions.authorizeDeletion,
+        prepareDeletion: () =>
+          Effect.sync(() => {
+            refreshAttempts += 1;
+          }),
+      }),
+    ).pipe(
+      Effect.provideService(MemoryProvider.Service, provider),
+      Effect.provideService(Db.Service, unavailableDatabase),
+      Effect.provide(BrowserCrypto.layer),
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(coreMemory).toBe("A newer User edit after the atomic correction committed");
+          expect(refreshAttempts).toBe(1);
+          expect(deletionProgress).toEqual([
+            { _tag: "ForgetKnowledge", coreMemoryState: "refreshed", completedMemoryIds: [] },
+            {
+              _tag: "ForgetKnowledge",
+              coreMemoryState: "refreshed",
+              completedMemoryIds: ["memory-1"],
+            },
+            {
+              _tag: "ForgetKnowledge",
+              coreMemoryState: "refreshed",
+              completedMemoryIds: ["memory-1", "memory-2"],
+            },
+          ]);
+          expect(completed).toEqual([claim.outboxId]);
+        }),
+      ),
+    );
+  },
+);
 
 it.effect("retries Core Memory correction when legacy progress does not prove completion", () => {
   const claim = authorizedForgetKnowledgeClaim();
@@ -478,7 +541,9 @@ it.effect("does not complete forgotten Knowledge when provider identity confirma
     Effect.andThen(
       Effect.sync(() => {
         expect(completed).toEqual([]);
-        expect(deletionProgress).toEqual([]);
+        expect(deletionProgress).toEqual([
+          { _tag: "ForgetKnowledge", coreMemoryState: "refreshed", completedMemoryIds: [] },
+        ]);
         expect(retried).toEqual([claim.outboxId]);
       }),
     ),
@@ -1111,6 +1176,7 @@ const testStore = (
     inspectConfiguration: () => Effect.succeed(Option.none()),
     isClaimCurrent: () => Effect.succeed(true),
     markProviderAccepted: () => Effect.succeed(options.providerAccepted ?? true),
+    markForgetKnowledgeCorrectionCommitted: () => true,
     markProviderStatus: () => Effect.succeed(true),
     readRecentTurnBridge: () => Effect.succeed([]),
     releaseDeletionPreparation: () => Effect.succeed(false),
@@ -1154,6 +1220,7 @@ const providerStub = (overrides: Partial<MemoryProvider.Interface>): MemoryProvi
   recall: () => Effect.die(new Error("Unexpected recall")),
   saveConversation: () => Effect.die(new Error("Unexpected conversation save")),
   verifySessionConversation: () => Effect.succeed({ _tag: "Verified" }),
+  verifyUserKnowledge: () => Effect.die(new Error("Unexpected User verification")),
   ...overrides,
 });
 
