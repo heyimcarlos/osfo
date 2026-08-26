@@ -21,4 +21,4 @@ ALTER TABLE "channel_link_invites" ADD CONSTRAINT "channel_link_invites_accepted
 ALTER TABLE "channel_links" ADD CONSTRAINT "channel_links_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deletion_cases" ADD CONSTRAINT "deletion_cases_requested_by_user_id_users_id_fk" FOREIGN KEY ("requested_by_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deletion_cases" ADD CONSTRAINT "deletion_cases_actor_check" CHECK (("deletion_cases"."requested_by_admin_id" is not null and length(btrim("deletion_cases"."requested_by_admin_id")) > 0 and "deletion_cases"."requested_by_user_id" is null)
-        or ("deletion_cases"."requested_by_admin_id" is null and "deletion_cases"."requested_by_user_id" = "deletion_cases"."user_id"));
+        or ("deletion_cases"."requested_by_admin_id" is null and "deletion_cases"."requested_by_user_id" is not null and length(btrim("deletion_cases"."requested_by_user_id")) > 0 and "deletion_cases"."requested_by_user_id" = "deletion_cases"."user_id"));

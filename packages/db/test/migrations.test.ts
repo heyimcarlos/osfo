@@ -131,6 +131,49 @@ describe("Postgres migrations", () => {
     ),
   );
 
+  it.effect("rejects malformed deletion actors before the approval migration", () =>
+    Effect.acquireUseRelease(
+      makeTestDatabase,
+      ({ client }) =>
+        Effect.gen(function* () {
+          const migrations = yield* readMigrations;
+          yield* applyMigrations(
+            client,
+            migrations.filter(({ name }) => name <= "0006_milky_bishop.sql"),
+          );
+          yield* Effect.promise(() =>
+            client.exec(`
+              INSERT INTO users (id, name, email, updated_at)
+              VALUES ('staged-user', 'Staged User', 'staged-user@example.test', now()),
+                     ('   ', 'Blank User', 'blank-staged-user@example.test', now());
+              INSERT INTO deletion_cases (
+                deletion_case_id, user_id, requested_by_user_id, reason
+              ) VALUES (
+                'staged-valid-self-case', 'staged-user', 'staged-user', 'User request'
+              );
+            `),
+          );
+
+          const malformedStatements = [
+            `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_admin_id, requested_by_user_id, reason)
+             VALUES ('staged-null-actors', 'staged-user', NULL, NULL, 'User request')`,
+            `INSERT INTO deletion_cases
+               (deletion_case_id, user_id, requested_by_user_id, reason)
+             VALUES ('staged-blank-requester', '   ', '   ', 'User request')`,
+          ];
+          for (const statement of malformedStatements) {
+            const result = yield* Effect.tryPromise({
+              try: () => client.exec(statement),
+              catch: (cause) => new MigrationConstraintRejected({ cause }),
+            }).pipe(Effect.exit);
+            expect(Exit.isFailure(result)).toBe(true);
+          }
+        }),
+      closeTestDatabase,
+    ),
+  );
+
   it.effect(
     "binds consumed account deletion actions to a deletion case owned by the same User",
     () =>

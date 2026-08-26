@@ -47,6 +47,7 @@ const deletePrefix: (
   authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
   cursor?: string,
 ) {
+  yield* authorizeDelete;
   const page = yield* attempt("removeObjects", () =>
     bucket.list(cursor === undefined ? { prefix } : { cursor, prefix }),
   );
@@ -70,16 +71,17 @@ const deleteArtifacts: (
   allowancePeriodIds: ReadonlySet<AllowancePeriodId>,
   authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
 ) {
-  const targetArtifacts = yield* discoverArtifacts(bucket, userId);
+  const targetArtifacts = yield* discoverArtifacts(bucket, userId, authorizeDelete);
   const pairedAttemptKeys = new Set(targetArtifacts.map(({ attemptKey }) => attemptKey));
   const targetAttemptKeys = yield* discoverAttemptEvidence(
     bucket,
     userId,
     allowancePeriodIds,
     pairedAttemptKeys,
+    authorizeDelete,
   );
   const contentKeys = yield* Effect.forEach(targetArtifacts, ({ contentKey }) =>
-    verifyConcreteObject(bucket, contentKey, (object) =>
+    verifyConcreteObject(bucket, contentKey, authorizeDelete, (object) =>
       decodeArtifactMetadata(object).pipe(
         Effect.flatMap((metadata) =>
           metadata.userId === userId
@@ -92,7 +94,7 @@ const deleteArtifacts: (
     ),
   );
   const attemptKeys = yield* Effect.forEach(targetAttemptKeys, (key) =>
-    verifyConcreteObject(bucket, key, (object) =>
+    verifyConcreteObject(bucket, key, authorizeDelete, (object) =>
       selectAttemptEvidence(object, userId, allowancePeriodIds, pairedAttemptKeys).pipe(
         Effect.flatMap((owned) =>
           owned
@@ -116,6 +118,7 @@ const deleteArtifacts: (
 const discoverArtifacts: (
   bucket: R2Bucket,
   userId: UserId,
+  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
   cursor?: string,
 ) => Effect.Effect<
   ReadonlyArray<{ readonly attemptKey: string; readonly contentKey: string }>,
@@ -123,8 +126,10 @@ const discoverArtifacts: (
 > = Effect.fn("AccountDeletionCloudflare.discoverArtifacts")(function* (
   bucket: R2Bucket,
   userId: UserId,
+  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
   cursor?: string,
 ) {
+  yield* authorizeDelete;
   const page = yield* attempt("removeObjects", () =>
     bucket.list(
       cursor === undefined
@@ -146,7 +151,10 @@ const discoverArtifacts: (
   );
   const targets = targetGroups.flat();
   if (page.truncated) {
-    return [...targets, ...(yield* discoverArtifacts(bucket, userId, page.cursor))];
+    return [
+      ...targets,
+      ...(yield* discoverArtifacts(bucket, userId, authorizeDelete, page.cursor)),
+    ];
   }
   return targets;
 });
@@ -156,6 +164,7 @@ const discoverAttemptEvidence: (
   userId: UserId,
   allowancePeriodIds: ReadonlySet<AllowancePeriodId>,
   pairedAttemptKeys: ReadonlySet<string>,
+  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
   cursor?: string,
 ) => Effect.Effect<ReadonlyArray<string>, AccountDeletion.AccountDeletionUnavailable> = Effect.fn(
   "AccountDeletionCloudflare.discoverAttemptEvidence",
@@ -164,8 +173,10 @@ const discoverAttemptEvidence: (
   userId: UserId,
   allowancePeriodIds: ReadonlySet<AllowancePeriodId>,
   pairedAttemptKeys: ReadonlySet<string>,
+  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
   cursor?: string,
 ) {
+  yield* authorizeDelete;
   const page = yield* attempt("removeObjects", () =>
     bucket.list(
       cursor === undefined
@@ -187,6 +198,7 @@ const discoverAttemptEvidence: (
         userId,
         allowancePeriodIds,
         pairedAttemptKeys,
+        authorizeDelete,
         page.cursor,
       )),
     ];
@@ -218,9 +230,11 @@ const selectAttemptEvidence = (
 const verifyConcreteObject = <E>(
   bucket: R2Bucket,
   key: string,
+  authorizeDelete: Effect.Effect<void, AccountDeletion.AccountDeletionUnavailable>,
   validate: (object: R2Object) => Effect.Effect<void, E>,
 ) =>
-  attempt("removeObjects", () => bucket.head(key)).pipe(
+  authorizeDelete.pipe(
+    Effect.andThen(attempt("removeObjects", () => bucket.head(key))),
     Effect.flatMap((object) =>
       object === null ? Effect.succeed([]) : validate(object).pipe(Effect.as([key])),
     ),

@@ -240,10 +240,11 @@ it.effect("fails closed on malformed attempt ownership metadata", () =>
 
 it.effect("rechecks authority before every paginated R2 delete", () => {
   const deleted: Array<string> = [];
+  const listed: Array<string | undefined> = [];
   const userId = UserId.make("user-1");
   let authorized = true;
   let checks = 0;
-  const files = paginatedBucketStub(deleted, () => {
+  const files = paginatedBucketStub(deleted, listed, () => {
     authorized = false;
   });
   const artifacts = bucketStub({ deleted });
@@ -267,10 +268,63 @@ it.effect("rechecks authority before every paginated R2 delete", () => {
     )
     .pipe(
       Effect.result,
-      Effect.andThen(
+      Effect.tap((result) =>
         Effect.sync(() => {
-          expect(checks).toBe(2);
+          expect(Result.isFailure(result)).toBe(true);
+          expect(checks).toBe(3);
+          expect(listed).toEqual([undefined]);
           expect(deleted).toEqual([`users/${userId}/page-1`]);
+        }),
+      ),
+    );
+});
+
+it.effect("rechecks authority before each concrete R2 head verification", () => {
+  const calls: Array<string> = [];
+  const userId = UserId.make("user-1");
+  const contentId = ContentId.make("head-drift-content");
+  let authorized = true;
+  const files = bucketStub({ deleted: [] });
+  const artifacts = authorityDriftArtifactBucketStub(calls, contentId, () => {
+    authorized = false;
+  });
+
+  return make(files, artifacts, () => Effect.succeed(new Set()))
+    .remove(
+      userId,
+      revocableAuthority(userId, () => authorized),
+    )
+    .pipe(
+      Effect.result,
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          expect(Result.isFailure(result)).toBe(true);
+          expect(calls).toEqual([`list:${documentContentPrefix}`, `list:${documentAttemptPrefix}`]);
+        }),
+      ),
+    );
+});
+
+it.effect("rechecks authority after R2 discovery and before delete", () => {
+  const calls: Array<string> = [];
+  const userId = UserId.make("user-1");
+  let authorized = true;
+  const files = authorityDriftFilesBucketStub(calls, userId, () => {
+    authorized = false;
+  });
+  const artifacts = bucketStub({ deleted: [] });
+
+  return make(files, artifacts, () => Effect.succeed(new Set()))
+    .remove(
+      userId,
+      revocableAuthority(userId, () => authorized),
+    )
+    .pipe(
+      Effect.result,
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          expect(Result.isFailure(result)).toBe(true);
+          expect(calls).toEqual(["list"]);
         }),
       ),
     );
@@ -357,15 +411,33 @@ const expectPairedOwnershipFailure = (input: {
     );
 };
 
-const paginatedBucketStub = (deleted: Array<string>, afterFirstDelete: () => void) => {
+const revocableAuthority = (userId: UserId, authorized: () => boolean) =>
+  Effect.suspend(() =>
+    authorized()
+      ? Effect.void
+      : Effect.fail(
+          new AccountDeletion.AccountDeletionUnavailable({
+            cause: userId,
+            message: "authority changed",
+            operation: "recheckDeletionAuthority",
+          }),
+        ),
+  );
+
+const paginatedBucketStub = (
+  deleted: Array<string>,
+  listed: Array<string | undefined>,
+  afterFirstDelete: () => void,
+) => {
   const bucket = {
     delete: (keys: string | Array<string>) => {
       deleted.push(...(Array.isArray(keys) ? keys : [keys]));
       if (deleted.length === 1) afterFirstDelete();
       return Promise.resolve();
     },
-    list: ({ cursor, prefix }: R2ListOptions) =>
-      Promise.resolve(
+    list: ({ cursor, prefix }: R2ListOptions) => {
+      listed.push(cursor);
+      return Promise.resolve(
         cursor === undefined
           ? {
               cursor: "page-2",
@@ -378,7 +450,69 @@ const paginatedBucketStub = (deleted: Array<string>, afterFirstDelete: () => voi
               objects: [{ key: `${prefix}page-2` }],
               truncated: false as const,
             },
-      ),
+      );
+    },
+  };
+  // SAFETY: Account deletion uses only the list and delete methods supplied above.
+  // oxlint-disable-next-line osfo/no-chained-type-assertions, typescript/no-unsafe-type-assertion -- The fake intentionally implements this test's narrow R2 seam only.
+  return bucket as unknown as R2Bucket;
+};
+
+const authorityDriftArtifactBucketStub = (
+  calls: Array<string>,
+  contentId: ContentId,
+  afterAttemptDiscovery: () => void,
+) => {
+  const contentKey = contentKeyFor(contentId);
+  const bucket = {
+    delete: (keys: string | Array<string>) => {
+      calls.push(`delete:${Array.isArray(keys) ? keys.join(",") : keys}`);
+      return Promise.resolve();
+    },
+    head: (key: string) => {
+      calls.push(`head:${key}`);
+      return Promise.resolve({
+        customMetadata: { osfo: JSON.stringify({ userId: "user-1" }) },
+        key,
+      });
+    },
+    list: ({ prefix }: R2ListOptions) => {
+      calls.push(`list:${prefix}`);
+      if (prefix === documentAttemptPrefix) afterAttemptDiscovery();
+      return Promise.resolve({
+        delimitedPrefixes: [],
+        objects:
+          prefix === documentContentPrefix
+            ? [{ customMetadata: { osfo: JSON.stringify({ userId: "user-1" }) }, key: contentKey }]
+            : [],
+        truncated: false as const,
+      });
+    },
+  };
+  // SAFETY: Account deletion uses only the head, list, and delete methods supplied above.
+  // oxlint-disable-next-line osfo/no-chained-type-assertions, typescript/no-unsafe-type-assertion -- The fake intentionally implements this test's narrow R2 seam only.
+  return bucket as unknown as R2Bucket;
+};
+
+const authorityDriftFilesBucketStub = (
+  calls: Array<string>,
+  userId: UserId,
+  afterDiscovery: () => void,
+) => {
+  const bucket = {
+    delete: () => {
+      calls.push("delete");
+      return Promise.resolve();
+    },
+    list: () => {
+      calls.push("list");
+      afterDiscovery();
+      return Promise.resolve({
+        delimitedPrefixes: [],
+        objects: [{ key: `users/${userId}/target` }],
+        truncated: false as const,
+      });
+    },
   };
   // SAFETY: Account deletion uses only the list and delete methods supplied above.
   // oxlint-disable-next-line osfo/no-chained-type-assertions, typescript/no-unsafe-type-assertion -- The fake intentionally implements this test's narrow R2 seam only.
