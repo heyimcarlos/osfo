@@ -2,6 +2,7 @@
 set -euo pipefail
 
 worker_log="${1:-}"
+proof_shape="${2:-one-click}"
 if [[ ! -f "$worker_log" ]]; then
   printf 'Worker log does not exist: %s\n' "$worker_log" >&2
   exit 1
@@ -31,11 +32,24 @@ counts="$(jq --null-input \
     deleteSuccesses: $deleteSuccesses
   }')"
 
-if ! jq --exit-status '
+case "$proof_shape" in
+  one-click)
+    expected_delete_requests=1
+    ;;
+  retained-replay)
+    expected_delete_requests=2
+    ;;
+  *)
+    printf 'Unknown account deletion proof shape: %s\n' "$proof_shape" >&2
+    exit 2
+    ;;
+esac
+
+if ! jq --exit-status --argjson deletes "$expected_delete_requests" '
   .presentationRequests == 1 and .presentationSuccesses == 1 and
-  .deleteRequests == 1 and .deleteSuccesses == 1
+  .deleteRequests == $deletes and .deleteSuccesses == $deletes
 ' <<<"$counts" >/dev/null; then
-  printf 'Account deletion HTTP evidence is not exact-once: %s\n' \
+  printf 'Account deletion HTTP evidence does not match %s proof: %s\n' "$proof_shape" \
     "$(jq --compact-output . <<<"$counts")" >&2
   exit 1
 fi

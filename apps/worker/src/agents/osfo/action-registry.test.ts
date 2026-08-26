@@ -125,6 +125,32 @@ it.effect("rejects Knowledge forgetting without an exact Core Memory correction"
   }),
 );
 
+it.effect("presents and exactly verifies a near-maximum Core Memory correction", () =>
+  Effect.gen(function* () {
+    const input = {
+      coreMemory: [{ block: "userContext" as const, content: "x".repeat(9_900) }] as const,
+      memoryIds: ["memory-near-limit"] as const,
+    };
+    const presentation = yield* presentOsfoAction({
+      descriptor: {
+        action: "osfoForgetKnowledge",
+        input,
+        kind: "durable-pause",
+        permissions: ["memory:delete"],
+        requestId: "request-near-limit",
+        risk: "high",
+        summary: "Forget selected knowledge",
+        toolCallId: "tool-call-near-limit",
+      },
+      executionId: ActionPresentationId.make("execution-near-limit"),
+      source: "action",
+    });
+
+    expect(presentation.fields.every(({ value }) => value.length <= 2_000)).toBe(true);
+    expect(hasExactForgetKnowledgeInput(presentation, input)).toBe(true);
+  }),
+);
+
 it.effect("projects the exact Session deletion", () =>
   Effect.gen(function* () {
     const pending: PendingThinkAction = {

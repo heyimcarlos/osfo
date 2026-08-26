@@ -768,14 +768,35 @@ export const makeMemoryProviderOutboxStore = (db: AgentDb) => {
   );
 
   const releaseDeletionPreparation = Effect.fn("MemoryProviderOutbox.releaseDeletionPreparation")(
-    (claim: ClaimedMemoryProviderWork, availableAt: DbTimestamp) =>
-      updateClaim("retryMemoryProviderOutbox", claim, {
+    function* (claim: ClaimedMemoryProviderWork, availableAt: DbTimestamp) {
+      const progress = claim.deletionProgress;
+      if (
+        claim.payload._tag === "ForgetKnowledge" &&
+        progress !== null &&
+        progress !== undefined &&
+        progress._tag !== "ForgetKnowledge"
+      ) {
+        return yield* invalidRecord();
+      }
+      const release = {
         available_at: availableAt,
         claim_expires_at: null,
         claim_token: null,
         last_error: null,
         status: "pending" as const,
-      }),
+      };
+      if (claim.payload._tag !== "ForgetKnowledge") {
+        return yield* updateClaim("retryMemoryProviderOutbox", claim, release);
+      }
+      return yield* updateClaim("retryMemoryProviderOutbox", claim, {
+        ...release,
+        deletion_progress_json: encodeDeletionProgress(
+          progress?._tag === "ForgetKnowledge"
+            ? progress
+            : { _tag: "ForgetKnowledge", completedMemoryIds: [] },
+        ),
+      });
+    },
   );
 
   const cancelDeletionPreparation = Effect.fn("MemoryProviderOutbox.cancelDeletionPreparation")(

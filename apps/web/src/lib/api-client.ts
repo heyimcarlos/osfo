@@ -1,6 +1,7 @@
 import {
   Api,
   type AccountDeletionActionPresentation,
+  type AccountDeletionRequest,
   type BillingReconciliationRequest,
   ChannelLinkInviteToken,
   type HelpArea,
@@ -89,13 +90,16 @@ export const presentAccountDeletion = Effect.gen(function* () {
 });
 
 /** Consume the caller's exact Approval and start permanent account deletion. */
-export const requestAccountDeletion = (presentation: AccountDeletionActionPresentation) =>
+export const requestAccountDeletion = (request: AccountDeletionRequest) =>
   Effect.gen(function* () {
     const client = yield* apiClient;
-    return yield* client.account.deleteAccount({
-      payload: {
-        approval: { decision: "approved", presentation },
-        confirmation: presentation.confirmation,
-      },
-    });
+    return yield* client.account.deleteAccount({ payload: request });
   });
+
+/** Build the only caller decision accepted for one exact server-owned presentation. */
+export const accountDeletionRequestFor = (
+  presentation: AccountDeletionActionPresentation,
+): AccountDeletionRequest => ({
+  approval: { decision: "approved", presentation },
+  confirmation: presentation.confirmation,
+});

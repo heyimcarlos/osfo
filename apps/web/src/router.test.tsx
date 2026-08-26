@@ -7,6 +7,7 @@ import { DateTime } from "effect";
 
 import { AuthStateProvider, type AuthState } from "./auth-state";
 import { parseBillingReturnSearch, parseBillingReturnSearchString } from "./lib/billing-return";
+import { saveAccountDeletionReplay } from "./lib/account-deletion-replay";
 import { createAppRouter } from "./router";
 
 /* oxlint-disable effecttsgo/async-function -- Router navigation and Testing Library own browser Promises. */
@@ -39,6 +40,7 @@ const registrationIncomplete: AuthState = {
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
 });
 
 const renderAt = (path: string, authState: AuthState = signedOut) => {
@@ -200,6 +202,31 @@ describe("Osfo route tree", () => {
 
     renderAt(first.router.state.location.href, signedIn);
     await waitFor(() => expect(screen.getByRole("heading", { name: "Privacy" })).toBeTruthy());
+  });
+
+  it("routes a signed-out protected refresh to the exact retained deletion recovery", async () => {
+    saveAccountDeletionReplay(localStorage, {
+      approval: {
+        decision: "approved",
+        presentation: {
+          actionId: "account-delete:retained-action",
+          confirmation: "DELETE ACCOUNT",
+          consequence: "Permanently delete this account and all of its data.",
+          operation: "account.delete",
+          title: "Delete Account",
+        },
+      },
+      confirmation: "DELETE ACCOUNT",
+    });
+
+    const { router } = renderAt("/settings/privacy", signedOut);
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Account Deletion Recovery" })).toBeTruthy(),
+    );
+    expect(router.state.location.pathname).toBe("/account-deletion/recovery");
+    expect(screen.getByText("Permanently delete this account and all of its data.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry Account Deletion" })).toBeTruthy();
   });
 
   it("renders a responsive master-detail shell with normal mobile back navigation", async () => {

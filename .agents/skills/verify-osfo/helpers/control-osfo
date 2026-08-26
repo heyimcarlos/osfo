@@ -15,12 +15,12 @@ usage() {
     '  control-osfo doctor <run-id>' \
     '  control-osfo identity <run-id>' \
     '  control-osfo journeys <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|billing|account-deletion> start' \
-    '  control-osfo record <run-id> <registration|channel-linking|billing|account-deletion> <action|result> <summary>' \
-    '  control-osfo observe <run-id> <registration|channel-linking|billing|account-deletion>' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay> start' \
+    '  control-osfo record <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay> <action|result> <summary>' \
+    '  control-osfo observe <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay>' \
     '  control-osfo channel-invite <run-id>' \
     '  control-osfo seed-account-deletion <run-id>' \
-    '  control-osfo evidence <run-id> <registration|channel-linking|billing|account-deletion> finish' \
+    '  control-osfo evidence <run-id> <registration|channel-linking|billing|account-deletion|account-deletion-replay> finish' \
     '  control-osfo cleanup <run-id>'
 }
 
@@ -34,7 +34,7 @@ require_run_id() {
 
 require_feature() {
   case "${1:-}" in
-    registration|channel-linking|billing|account-deletion) ;;
+    registration|channel-linking|billing|account-deletion|account-deletion-replay) ;;
     *)
       printf 'Unknown browser feature: %s\n' "${1:-}" >&2
       exit 2
@@ -858,10 +858,16 @@ observe_account_deletion() {
   local run_id state_dir feature_dir container_id provider_origin phone user_id agent_id
   local channel_link_id target_tag unrelated_tag files_bucket target_key unrelated_key
   local postgres_state agent_runtime provider_ledger provider_containers target_exists unrelated_exists
-  local worker_log account_http
+  local worker_log account_http feature proof_shape
   run_id="$1"
+  feature="$2"
+  if [[ "$feature" == account-deletion-replay ]]; then
+    proof_shape=retained-replay
+  else
+    proof_shape=one-click
+  fi
   state_dir="$(state_dir_for "$run_id")"
-  feature_dir="$(feature_artifact_dir_for "$run_id" account-deletion)"
+  feature_dir="$(feature_artifact_dir_for "$run_id" "$feature")"
   begin_observation "$feature_dir"
   container_id="$(state_value "$run_id" container-id)"
   provider_origin="$(state_value "$run_id" provider-origin)"
@@ -904,7 +910,7 @@ observe_account_deletion() {
   else
     unrelated_exists=false
   fi
-  account_http="$("$script_dir/inspect-account-http-log" "$worker_log")"
+  account_http="$("$script_dir/inspect-account-http-log" "$worker_log" "$proof_shape")"
   jq --null-input \
     --argjson postgres "$postgres_state" \
     --argjson agentRuntime "$agent_runtime" \
@@ -937,13 +943,15 @@ observe_account_deletion() {
     >"$feature_dir/provider.json"
 
   jq --exit-status \
+    --argjson deleteRequests "$([[ "$proof_shape" == retained-replay ]] && printf 2 || printf 1)" \
     '(.userExists or .agentExists or .authSessionExists or .deletionCaseExists or
       .channelLinkExists or .acceptedInviteExists or .channelAuditExists or
       .billingExists or .allowanceExists or .phoneVerificationExists) == false and
       .agentRuntime.inspectable == false and .agentRuntime.registered == false and
       .accountHttp.presentationRequests == 1 and
       .accountHttp.presentationSuccesses == 1 and
-      .accountHttp.deleteRequests == 1 and .accountHttp.deleteSuccesses == 1 and
+      .accountHttp.deleteRequests == $deleteRequests and
+      .accountHttp.deleteSuccesses == $deleteRequests and
       .targetR2Exists == false and .unrelatedR2Exists == true' \
     "$feature_dir/state.json" >/dev/null
   jq --exit-status \
@@ -956,7 +964,7 @@ observe_account_deletion() {
         { method: "DELETE", path: ("/v3/container-tags/" + $target) }
       ]' "$feature_dir/provider.json" >/dev/null
   complete_observation "$run_id" "$feature_dir"
-  printf 'observed account-deletion state=%s provider=%s agent_before=%s\n' \
+  printf 'observed %s state=%s provider=%s agent_before=%s\n' "$feature" \
     "$feature_dir/state.json" "$feature_dir/provider.json" \
     "$feature_dir/agent-runtime-before.json"
 }
@@ -1004,6 +1012,14 @@ evidence_finish() {
       ! rg --fixed-strings --quiet 'Sign in and Get started' \
         "$feature_dir/browser-actions.txt"; }; then
     printf 'Account-deletion evidence needs the generic prefetch, one exact server consequence, and signed-out result\n' >&2
+    exit 1
+  fi
+  if [[ "$feature" == account-deletion-replay ]] && \
+    { ! rg --fixed-strings --quiet 'exact retained request after refresh' \
+        "$feature_dir/browser-actions.txt" || \
+      ! rg --fixed-strings --quiet 'Sign in and Get started' \
+        "$feature_dir/browser-actions.txt"; }; then
+    printf 'Account-deletion replay evidence needs the exact retained request after refresh and signed-out result\n' >&2
     exit 1
   fi
   printf 'completed_at=%s\nresult=PASS\ncommit=%s\n' \
@@ -1078,7 +1094,7 @@ case "$command_name" in
       registration) observe_registration "$2" ;;
       channel-linking) observe_channel_linking "$2" ;;
       billing) observe_billing "$2" ;;
-      account-deletion) observe_account_deletion "$2" ;;
+      account-deletion|account-deletion-replay) observe_account_deletion "$2" "$3" ;;
     esac
     ;;
   channel-invite)

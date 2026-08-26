@@ -39,6 +39,14 @@ const loginRoute = createRoute({
   path: "login",
   component: lazyRouteComponent(() => import("./pages/login-page"), "LoginPage"),
 });
+const accountDeletionRecoveryRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "account-deletion/recovery",
+  component: lazyRouteComponent(
+    () => import("./pages/account-deletion-recovery-page"),
+    "AccountDeletionRecoveryPage",
+  ),
+});
 const getStartedRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "get-started",
@@ -149,6 +157,7 @@ const legacyBillingReturnRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   homeRoute,
   loginRoute,
+  accountDeletionRecoveryRoute,
   getStartedRoute,
   channelLinkRoute,
   privacyRoute,

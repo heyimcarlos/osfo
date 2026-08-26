@@ -47,6 +47,7 @@ export const AccountDeletionRequest = Schema.Struct({
   }),
   confirmation: BoundedActionText,
 });
+export type AccountDeletionRequest = typeof AccountDeletionRequest.Type;
 
 /** Accepted account deletion that has already fenced normal access. */
 export const AccountDeletionResponse = Schema.Struct({
@@ -85,7 +86,8 @@ export const AccountGroup = HttpApiGroup.make("account")
       .middleware(AccountDeletionAuth)
       .annotateMerge(
         OpenApi.annotations({
-          description: "Fence normal access and permanently delete the authenticated account.",
+          description:
+            "Fence and delete an account from a current session, or resume one exact retained lost-response request after that session is revoked.",
           identifier: "account.delete",
           summary: "Delete Account",
         }),

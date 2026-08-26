@@ -109,10 +109,12 @@ export const hasExactForgetKnowledgeInput = (
   presentation: ActionPresentation,
   input: typeof ForgetKnowledgeInput.Encoded,
 ): boolean =>
-  hasExactFields(presentation, "memory.forgetKnowledge", "osfo-forget-knowledge-v1", [
-    { name: "memoryIds", value: JSON.stringify(input.memoryIds) },
-    { name: "coreMemory", value: JSON.stringify(input.coreMemory) },
-  ]);
+  hasExactFields(
+    presentation,
+    "memory.forgetKnowledge",
+    "osfo-forget-knowledge-v1",
+    forgetKnowledgePresentationFields(input),
+  );
 
 /** Verify the exact Session selected for deletion. */
 export const hasExactSessionDeleteInput = (
@@ -192,7 +194,7 @@ const presentForgetKnowledgeAction = Effect.fn("ActionPresentation.presentForget
     const coreMemoryConsequences = input.coreMemory.map(
       ({ block }) => `Immediately replace the ${coreMemoryLabelFor(block)} Core Memory block.`,
     );
-    return ActionPresentation.make({
+    return yield* ActionPresentation.makeEffect({
       actionDefinitionVersion: "osfo-forget-knowledge-v1",
       actionId: ActionId.make(pending.descriptor.toolCallId),
       consequences: [
@@ -201,20 +203,19 @@ const presentForgetKnowledgeAction = Effect.fn("ActionPresentation.presentForget
         "Keep the original Session transcript.",
       ],
       description: "Apply the exact Native Memory correction and provider forgetting shown here.",
-      fields: [
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Approval fields retain canonical JSON for exact array comparison.
-        { label: "Provider memories", name: "memoryIds", value: JSON.stringify(input.memoryIds) },
-        {
-          label: "Core Memory replacements",
-          name: "coreMemory",
-          // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Approval fields retain canonical JSON for exact array comparison.
-          value: JSON.stringify(input.coreMemory),
-        },
-      ],
+      fields: forgetKnowledgePresentationFields(input),
       operation: "memory.forgetKnowledge",
       presentationId: ActionPresentationId.make(pending.executionId),
       title: "Forget selected knowledge",
-    });
+    }).pipe(
+      Effect.mapError(
+        () =>
+          new ActionPresentationUnavailable({
+            action: pending.descriptor.action,
+            message: "The Knowledge deletion presentation could not be bounded safely",
+          }),
+      ),
+    );
   },
 );
 
@@ -262,6 +263,32 @@ const hasExactFields = (
       presentation.fields[index]?.name === field.name &&
       presentation.fields[index]?.value === field.value,
   );
+
+const presentationFieldValueLimit = 2_000;
+
+const forgetKnowledgePresentationFields = (input: typeof ForgetKnowledgeInput.Encoded) => [
+  // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Approval fields retain canonical JSON for exact array comparison.
+  ...splitExactPresentationField("Provider memories", "memoryIds", JSON.stringify(input.memoryIds)),
+  // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Approval fields retain canonical JSON for exact array comparison.
+  ...splitExactPresentationField(
+    "Core Memory replacements",
+    "coreMemory",
+    JSON.stringify(input.coreMemory),
+  ),
+];
+
+const splitExactPresentationField = (label: string, name: string, value: string) => {
+  const partCount = Math.ceil(value.length / presentationFieldValueLimit);
+  if (partCount === 1) return [{ label, name, value }];
+  return Array.from({ length: partCount }, (_, index) => ({
+    label: `${label} (${index + 1}/${partCount})`,
+    name: `${name}.${index + 1}-of-${partCount}`,
+    value: value.slice(
+      index * presentationFieldValueLimit,
+      (index + 1) * presentationFieldValueLimit,
+    ),
+  }));
+};
 
 const actionPresentationStorageKey = (presentationId: ActionPresentationId) =>
   `osfo:action-presentation:${presentationId}`;

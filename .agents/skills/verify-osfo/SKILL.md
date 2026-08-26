@@ -1,6 +1,6 @@
 ---
 name: verify-osfo
-description: Verify Osfo registration, SMS phone authentication, Telegram channel linking, the Free billing summary, or permanent account deletion in Chrome with a disposable verified User, local provider boundaries, committed state, and durable evidence. Use after implementing or reviewing one of those browser paths.
+description: Verify Osfo registration, SMS phone authentication, Telegram channel linking, the Free billing summary, permanent account deletion, or retained deletion replay in Chrome with a disposable verified User, local provider boundaries, committed state, and durable evidence. Use after implementing or reviewing one of those browser paths.
 ---
 
 # Verify Osfo
@@ -55,11 +55,12 @@ Open the selected feature file for its only authoritative drive and completion c
 - [channel linking](features/channel-linking.md)
 - [Free billing summary](features/billing.md)
 - [account deletion](features/account-deletion.md)
+- [account deletion replay](features/account-deletion-replay.md)
 
 For any mapped feature, start evidence before its first action. Save `action.png` when the named action is ready and `result.png` only after the named result appears. Record both visible facts, observe committed state, and finish:
 
 ```sh
-FEATURE=registration # registration, channel-linking, billing, or account-deletion
+FEATURE=registration # registration, channel-linking, billing, account-deletion, or account-deletion-replay
 ./.agents/skills/verify-osfo/helpers/control-osfo evidence "$RUN_ID" "$FEATURE" start
 # Save Chrome screenshots to the exact action.png and result.png paths printed above.
 ./.agents/skills/verify-osfo/helpers/control-osfo record "$RUN_ID" "$FEATURE" action \

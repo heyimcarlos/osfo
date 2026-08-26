@@ -261,6 +261,67 @@ it.effect("persists each forgotten memory before rechecking authority for the ne
   );
 });
 
+it.effect("does not repeat a durably completed Core Memory correction on provider retry", () => {
+  const claim: ClaimedMemoryProviderWork = {
+    ...authorizedForgetKnowledgeClaim(),
+    deletionProgress: { _tag: "ForgetKnowledge", completedMemoryIds: [] },
+  };
+  let coreMemory = "A newer User edit after the original correction";
+  const { completed, store } = testStore(claim);
+  const provider = providerStub({
+    forgetKnowledge: () => Effect.succeed({ _tag: "Deleted" as const }),
+  });
+
+  return Effect.scoped(
+    reconcileMemoryProviderOutbox(store, {
+      authorizeDeletion: permittedDeletionOptions.authorizeDeletion,
+      prepareDeletion: () =>
+        Effect.sync(() => {
+          coreMemory = "The older retained correction";
+        }),
+    }),
+  ).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(coreMemory).toBe("A newer User edit after the original correction");
+        expect(completed).toEqual([claim.outboxId]);
+      }),
+    ),
+  );
+});
+
+it.effect("retries Core Memory correction when legacy progress does not prove completion", () => {
+  const claim = authorizedForgetKnowledgeClaim();
+  let correctionAttempts = 0;
+  const { completed, store } = testStore(claim);
+  const provider = providerStub({
+    forgetKnowledge: () => Effect.succeed({ _tag: "Deleted" as const }),
+  });
+
+  return Effect.scoped(
+    reconcileMemoryProviderOutbox(store, {
+      authorizeDeletion: permittedDeletionOptions.authorizeDeletion,
+      prepareDeletion: () =>
+        Effect.sync(() => {
+          correctionAttempts += 1;
+        }),
+    }),
+  ).pipe(
+    Effect.provideService(MemoryProvider.Service, provider),
+    Effect.provideService(Db.Service, unavailableDatabase),
+    Effect.provide(BrowserCrypto.layer),
+    Effect.andThen(
+      Effect.sync(() => {
+        expect(correctionAttempts).toBe(1);
+        expect(completed).toEqual([claim.outboxId]);
+      }),
+    ),
+  );
+});
+
 it.effect("does not complete forgotten Knowledge when provider identity confirmation fails", () => {
   const claim = authorizedForgetKnowledgeClaim();
   const { completed, deletionProgress, retried, store } = testStore(claim);

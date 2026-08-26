@@ -4,7 +4,15 @@ import { BriefcaseBusiness, Database, Download, ShieldCheck, Trash2 } from "luci
 import { Effect } from "effect";
 import { useState } from "react";
 
-import { presentAccountDeletion, requestAccountDeletion } from "../lib/api-client";
+import {
+  accountDeletionRequestFor,
+  presentAccountDeletion,
+  requestAccountDeletion,
+} from "../lib/api-client";
+import {
+  clearAccountDeletionReplay,
+  saveAccountDeletionReplay,
+} from "../lib/account-deletion-replay";
 
 const privacyPreferences = [
   {
@@ -35,11 +43,6 @@ export function SettingsPrivacyPage() {
 }
 
 const presentDeletion = () => Effect.runPromise(presentAccountDeletion);
-
-const deleteAccount = (presentation: AccountDeletionActionPresentation) =>
-  Effect.runPromise(requestAccountDeletion(presentation)).then(() => {
-    globalThis.location.assign("/");
-  });
 
 function SettingsPrivacyContent() {
   return (
@@ -140,12 +143,25 @@ function DeleteAccountControl() {
   };
   const remove = () => {
     if (presentation === null) return;
+    const request = accountDeletionRequestFor(presentation);
     setBusy(true);
     setError(false);
-    void deleteAccount(presentation).catch(() => {
+    try {
+      saveAccountDeletionReplay(globalThis.localStorage, request);
+    } catch {
       setBusy(false);
       setError(true);
-    });
+      return;
+    }
+    void Effect.runPromise(requestAccountDeletion(request))
+      .then(() => {
+        try {
+          clearAccountDeletionReplay(globalThis.localStorage);
+        } finally {
+          globalThis.location.assign("/");
+        }
+      })
+      .catch(() => globalThis.location.assign("/account-deletion/recovery"));
   };
   return (
     <div className="rounded-2xl border border-white/80 bg-white/68 px-3 py-3">

@@ -583,6 +583,32 @@ it.effect("keeps Knowledge deletion leased until immediate Core Memory correctio
   ),
 );
 
+it.effect("atomically marks Core Memory correction complete when preparation is released", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const db = makeAgentDb(asDurableObjectStorage(storage));
+      const outbox = makeMemoryProviderOutboxStore(db);
+      const preparation = Option.getOrThrow(
+        yield* outbox.retainDeletionPreparation({
+          ...forgetKnowledgeDeletion("forget-correction-complete"),
+          claimExpiresAt: liveLease,
+          claimToken: "initial-correction",
+        }),
+      );
+
+      expect(yield* outbox.releaseDeletionPreparation(preparation, now)).toBe(true);
+
+      const providerClaim = Option.getOrThrow(
+        yield* outbox.claimNext(now, extendedLease, "provider-after-correction"),
+      );
+      expect(providerClaim.deletionProgress).toEqual({
+        _tag: "ForgetKnowledge",
+        completedMemoryIds: [],
+      });
+    }),
+  ),
+);
+
 it.effect("cancels untouched Knowledge deletion when immediate correction fails", () =>
   withDatabase(({ storage }) =>
     Effect.gen(function* () {

@@ -417,10 +417,14 @@ const prepareDeletionClaim = Effect.fn("MemoryProviderOutbox.prepareDeletionClai
     );
     return false;
   }
-  const preparation = yield* options.prepareDeletion(claim).pipe(Effect.result);
-  if (Result.isFailure(preparation)) {
-    yield* retryClaim(store, claim, preparation.failure.message, retryDelaySeconds);
-    return false;
+  const correctionAlreadyCommitted =
+    claim.payload._tag === "ForgetKnowledge" && claim.deletionProgress?._tag === "ForgetKnowledge";
+  if (!correctionAlreadyCommitted) {
+    const preparation = yield* options.prepareDeletion(claim).pipe(Effect.result);
+    if (Result.isFailure(preparation)) {
+      yield* retryClaim(store, claim, preparation.failure.message, retryDelaySeconds);
+      return false;
+    }
   }
   const finalCheck = yield* options.authorizeDeletion(authorization).pipe(Effect.result);
   if (Result.isFailure(finalCheck) || Predicate.isTagged(finalCheck.success, "Denied")) {
