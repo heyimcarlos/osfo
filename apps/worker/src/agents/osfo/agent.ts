@@ -816,42 +816,22 @@ export class OsfoAgent extends Think<Env> {
       }
       return { admission, currentAuthorization };
     });
-    const result = await Effect.runPromiseExit(
-      message.text.trim() === "/new"
-        ? this.#sessionExecution.runWhenIdle(operation)
-        : this.#sessionExecution.run(operation),
-    );
-    if (Exit.isFailure(result)) {
-      const failureTag = Option.match(Cause.findErrorOption(result.cause), {
-        onNone: () => "DefectOrInterruption",
-        onSome: (value) => value._tag,
-      });
-      await Effect.runPromise(
-        Effect.logError("Messenger authorization failed").pipe(Effect.annotateLogs({ failureTag })),
-      );
-      await this.#completeMessengerPolicyReply(
-        callback,
-        context,
-        "I could not authorize that message right now. Please try again.",
-      );
-      return;
-    }
-    if (Predicate.isTagged(result.value.admission, "ManagedConversationDenied")) {
-      await this.#completeMessengerPolicyReply(
-        callback,
-        context,
-        "Your current Osfo allowance does not permit this request.",
-      );
-      return;
-    }
-    const admission: ManagedConversationAdmitted | ManagedSessionReplacementAdmitted =
-      result.value.admission;
-    const continuation = (signal: AbortSignal) =>
+    const continuation = (result: Effect.Success<typeof operation>, signal: AbortSignal) =>
       Effect.tryPromise({
         try: async () => {
+          if (Predicate.isTagged(result.admission, "ManagedConversationDenied")) {
+            await this.#completeMessengerPolicyReply(
+              callback,
+              context,
+              "Your current Osfo allowance does not permit this request.",
+            );
+            return;
+          }
+          const admission: ManagedConversationAdmitted | ManagedSessionReplacementAdmitted =
+            result.admission;
           if (Predicate.isTagged(admission, "ManagedSessionReplacementAdmitted")) {
             const recorded = await this.#recordMessengerAcceptedMessage(
-              result.value.currentAuthorization,
+              result.currentAuthorization,
               provider,
               message.providerMessageId,
             );
@@ -875,7 +855,7 @@ export class OsfoAgent extends Think<Env> {
           const recorded =
             admission.metadata.executionMode === "exhaustedConversation" ||
             (await this.#recordMessengerAcceptedMessage(
-              result.value.currentAuthorization,
+              result.currentAuthorization,
               provider,
               message.providerMessageId,
             ));
@@ -900,16 +880,17 @@ export class OsfoAgent extends Think<Env> {
             operation: "chatWithMessengerContext",
           }),
       });
+    const onClosed = () =>
+      new ThinkSubmissionUnavailable({
+        cause: submissionId,
+        message: "Account deletion fenced this messenger turn",
+        operation: "chatWithMessengerContext",
+      });
+    const execution = this.#accountDeletionFencedSessionExecution;
     const continued = await Effect.runPromiseExit(
-      this.#accountDeletionFence.runTracked(
-        continuation,
-        () =>
-          new ThinkSubmissionUnavailable({
-            cause: admission,
-            message: "Account deletion fenced this messenger turn",
-            operation: "chatWithMessengerContext",
-          }),
-      ),
+      message.text.trim() === "/new"
+        ? execution.runTrackedWhenIdle(() => operation, continuation, onClosed)
+        : execution.runTracked(() => operation, continuation, onClosed),
     );
     if (Exit.isSuccess(continued)) return;
     const failureTag = Option.match(Cause.findErrorOption(continued.cause), {
@@ -919,10 +900,25 @@ export class OsfoAgent extends Think<Env> {
     await Effect.runPromise(
       Effect.logError("Messenger continuation failed").pipe(Effect.annotateLogs({ failureTag })),
     );
-    await this.#completeMessengerPolicyReply(
-      callback,
-      context,
-      "I could not authorize that message right now. Please try again.",
+    await Effect.runPromiseExit(
+      this.#accountDeletionFence.runTracked(
+        () =>
+          Effect.tryPromise({
+            try: () =>
+              this.#completeMessengerPolicyReply(
+                callback,
+                context,
+                "I could not authorize that message right now. Please try again.",
+              ),
+            catch: (cause) =>
+              new ThinkSubmissionUnavailable({
+                cause,
+                message: "The messenger policy reply could not be sent",
+                operation: "chatWithMessengerContext",
+              }),
+          }),
+        onClosed,
+      ),
     );
   }
 
@@ -2586,17 +2582,25 @@ export class OsfoAgent extends Think<Env> {
   async analyzeFile(input: AnalyzeFileRequest) {
     await this.#migrationsReady;
     return runRpc(
-      Schema.decodeEffect(AnalyzeFileRequest)(input).pipe(
-        Effect.mapError(() => invalidRequest("analyzeFile")),
-        Effect.flatMap((parsed) =>
-          this.#files.analyze({
-            actionId: parsed.actionId,
-            analysisId: parsed.analysisId,
-            context: parsed.authorization,
-            fileId: parsed.fileId,
-            prompt: parsed.prompt,
-          }),
+      this.#accountDeletionFence.run(
+        Schema.decodeEffect(AnalyzeFileRequest)(input).pipe(
+          Effect.mapError(() => invalidRequest("analyzeFile")),
+          Effect.flatMap((parsed) =>
+            this.#files.analyze({
+              actionId: parsed.actionId,
+              analysisId: parsed.analysisId,
+              context: parsed.authorization,
+              fileId: parsed.fileId,
+              prompt: parsed.prompt,
+            }),
+          ),
         ),
+        () =>
+          new FileCapabilityUnavailable({
+            cause: "account deletion fence",
+            message: "File analysis is unavailable while account deletion is pending",
+            operation: "analyzeFile",
+          }),
       ),
     );
   }
@@ -2605,15 +2609,23 @@ export class OsfoAgent extends Think<Env> {
   async deleteFile(input: DeleteFileRequest) {
     await this.#migrationsReady;
     return runRpc(
-      Schema.decodeEffect(DeleteFileRequest)(input).pipe(
-        Effect.mapError(() => invalidRequest("deleteFile")),
-        Effect.flatMap((parsed) =>
-          this.#files.remove({
-            actionId: parsed.actionId,
-            context: parsed.authorization,
-            fileId: parsed.fileId,
-          }),
+      this.#accountDeletionFence.run(
+        Schema.decodeEffect(DeleteFileRequest)(input).pipe(
+          Effect.mapError(() => invalidRequest("deleteFile")),
+          Effect.flatMap((parsed) =>
+            this.#files.remove({
+              actionId: parsed.actionId,
+              context: parsed.authorization,
+              fileId: parsed.fileId,
+            }),
+          ),
         ),
+        () =>
+          new FileCapabilityUnavailable({
+            cause: "account deletion fence",
+            message: "File deletion is unavailable while account deletion is pending",
+            operation: "deleteFile",
+          }),
       ),
     );
   }

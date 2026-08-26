@@ -210,3 +210,125 @@ it.effect("drains a managed request already inside the fence before quiescence c
     expect(events).toEqual(["request-complete", "fence-closed"]);
   }),
 );
+
+it.effect("fences messenger /new admission and continuation as one tracked execution", () =>
+  Effect.gen(function* () {
+    const fence = makeAccountDeletionFence();
+    const sessionExecution = makeSessionExecution({ hasPendingOrRunning: Effect.succeed(false) });
+    const execution = makeAccountDeletionFencedSessionExecution(sessionExecution, fence);
+    const authenticated = yield* Deferred.make<void>();
+    const resume = yield* Deferred.make<void>();
+    const events = new Array<string>();
+    const request = yield* Deferred.succeed(authenticated, undefined).pipe(
+      Effect.andThen(Deferred.await(resume)),
+      Effect.andThen(
+        execution.runTrackedWhenIdle(
+          () => Effect.sync(() => events.push("replacement")),
+          (_admission, _signal) => Effect.sync(() => events.push("provider-send")),
+          () => "account deletion fenced" as const,
+        ),
+      ),
+      Effect.flip,
+      Effect.forkChild,
+    );
+
+    yield* Deferred.await(authenticated);
+    yield* execution.close;
+    yield* Deferred.succeed(resume, undefined);
+
+    expect(yield* Fiber.join(request)).toBe("account deletion fenced");
+    expect(events).toEqual([]);
+  }),
+);
+
+it.effect(
+  "drains an admitted messenger /new continuation without reentrant fence acquisition",
+  () =>
+    Effect.gen(function* () {
+      const fence = makeAccountDeletionFence();
+      const sessionExecution = makeSessionExecution({ hasPendingOrRunning: Effect.succeed(false) });
+      const execution = makeAccountDeletionFencedSessionExecution(sessionExecution, fence);
+      const continuationStarted = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const events = new Array<string>();
+      const request = yield* execution
+        .runTrackedWhenIdle(
+          () => Effect.sync(() => events.push("replacement")),
+          (_admission, signal) =>
+            Deferred.succeed(continuationStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.andThen(
+                Effect.sync(() => {
+                  events.push(signal.aborted ? "provider-aborted" : "provider-send");
+                }),
+              ),
+            ),
+          () => "account deletion fenced" as const,
+        )
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(continuationStarted);
+      const closing = yield* execution.close.pipe(
+        Effect.andThen(Effect.sync(() => events.push("closed"))),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      expect(events).toEqual(["replacement"]);
+
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(request);
+      yield* Fiber.join(closing);
+      expect(events).toEqual(["replacement", "provider-aborted", "closed"]);
+    }),
+);
+
+for (const operation of ["analyzeFile", "deleteFile"] as const) {
+  it.effect(`${operation} rejects after close without mutating Agent, R2, compute, or outbox`, () =>
+    Effect.gen(function* () {
+      const fence = makeAccountDeletionFence();
+      const mutations = new Array<string>();
+
+      yield* fence.close;
+      const result = yield* fence
+        .run(
+          Effect.sync(() => mutations.push("mutation")),
+          () => "account deletion fenced" as const,
+        )
+        .pipe(Effect.flip);
+
+      expect(result).toBe("account deletion fenced");
+      expect(mutations).toEqual([]);
+    }),
+  );
+
+  it.effect(`${operation} drains in-flight work before account deletion closes`, () =>
+    Effect.gen(function* () {
+      const fence = makeAccountDeletionFence();
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const events = new Array<string>();
+      const request = yield* fence
+        .run(
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.andThen(Effect.sync(() => events.push(`${operation}-complete`))),
+          ),
+          () => "account deletion fenced" as const,
+        )
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(started);
+      const closing = yield* fence.close.pipe(
+        Effect.andThen(Effect.sync(() => events.push("closed"))),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      expect(events).toEqual([]);
+
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(request);
+      yield* Fiber.join(closing);
+      expect(events).toEqual([`${operation}-complete`, "closed"]);
+    }),
+  );
+}
