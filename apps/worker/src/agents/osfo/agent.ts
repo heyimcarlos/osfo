@@ -229,17 +229,18 @@ import {
   documentDeleteActionName,
   type ForgetKnowledgeInput,
   makeOsfoActions,
-  presentOsfoAction,
   RetainedDocumentInput,
   sanitizePendingApproval,
   type SessionDeleteInput,
 } from "./action-registry";
 import {
+  approvedForgetKnowledgeCorrections,
   approvalPresentationFor,
   hasExactActionInput,
   hasExactForgetKnowledgeInput,
   hasExactSessionDeleteInput,
   makeActionPresentationPersistence,
+  presentOsfoAction,
 } from "./action-presentation";
 import { CoreMemoryAuthorizationSnapshot } from "../../domain/core-memory-authorization";
 import {
@@ -247,7 +248,7 @@ import {
   requireAccountDeletionQuiescence,
 } from "./account-deletion-fence";
 import { makeAgentSessionLifecycle } from "./session-lifecycle";
-import { deleteLocalSession } from "./session-deletion";
+import { deleteLocalSession, type SessionReplacementGeneration } from "./session-deletion";
 import {
   completeKnowledgeDeletionPreparation,
   correctForgottenKnowledge,
@@ -275,7 +276,11 @@ import {
   type ReconciliationOptions,
 } from "./memory-provider-reconciliation";
 import { makeProviderConversationSaveGate } from "./provider-conversation-save-gate";
-import { type DeletionAuthorization, DeletionActionUnavailable } from "./deletion-actions";
+import {
+  type ApprovedCoreMemoryReplacement,
+  type DeletionAuthorization,
+  DeletionActionUnavailable,
+} from "./deletion-actions";
 
 /* oxlint-disable effecttsgo/async-function, eslint/no-underscore-dangle -- Cloudflare Agent RPC and lifecycle hooks require Promise boundaries, and Effect results use _tag. */
 
@@ -292,6 +297,8 @@ const capabilityActionNames = [
   "deleteDocument",
   "generateDocument",
   "osfoClearCoreMemory",
+  "osfoDeleteSession",
+  "osfoForgetKnowledge",
 ] as const satisfies ReadonlyArray<Capabilities.RegisteredToolName>;
 type AgentFilePersistenceError =
   | FileAnalysisConflict
@@ -589,7 +596,7 @@ export class OsfoAgent extends Think<Env> {
       },
     }),
     now: DateTime.now.pipe(Effect.map(DateTime.toDateUtc)),
-    present: presentOsfoAction,
+    present: (pending) => presentOsfoAction(pending, inspectCoreMemory(this.session)),
     presentations: makeActionPresentationPersistence(this.ctx.storage),
   });
   readonly #modelCallUsagePersistence = makeModelCallUsageStore(this.#db);
@@ -1599,6 +1606,13 @@ export class OsfoAgent extends Think<Env> {
       Predicate.isTagged(recheck, "Denied")
     )
       return recheck;
+    const approvedCoreMemory = approvedForgetKnowledgeCorrections(
+      current.actionPresentation,
+      input,
+    );
+    if (Option.isNone(approvedCoreMemory)) {
+      return deletionApprovalUnavailable(actionId, "forgetKnowledge");
+    }
     const owner = await this.#resolveOwnerUserId("forgetKnowledge");
     if (Predicate.isTagged(owner, "DeletionActionUnavailable")) return owner;
     const deletionAuthorization: DeletionAuthorization = {
@@ -1608,12 +1622,22 @@ export class OsfoAgent extends Think<Env> {
       presentation: current.presentation,
     };
     return this.#serializeMemoryProviderWork(() =>
-      this.#retainAndCorrectForgottenKnowledge(input, actionId, owner, deletionAuthorization),
+      this.#retainAndCorrectForgottenKnowledge(
+        input,
+        approvedCoreMemory.value,
+        actionId,
+        owner,
+        deletionAuthorization,
+      ),
     );
   }
 
   async #retainAndCorrectForgottenKnowledge(
     input: ForgetKnowledgeInput,
+    approvedCoreMemory: readonly [
+      ApprovedCoreMemoryReplacement,
+      ...ReadonlyArray<ApprovedCoreMemoryReplacement>,
+    ],
     actionId: ActionId,
     owner: UserId,
     deletionAuthorization: DeletionAuthorization,
@@ -1637,7 +1661,7 @@ export class OsfoAgent extends Think<Env> {
           payload: {
             _tag: "ForgetKnowledge",
             authorization: deletionAuthorization,
-            coreMemory: input.coreMemory,
+            coreMemory: approvedCoreMemory,
             memoryIds: input.memoryIds,
             userId: owner,
           },
@@ -1706,7 +1730,7 @@ export class OsfoAgent extends Think<Env> {
               priorCorrectionState === "committed"
                 ? refreshCoreMemoryPrompt(this.session).pipe(Effect.as(noCorrections))
                 : correctForgottenKnowledge(
-                    input.coreMemory,
+                    approvedCoreMemory,
                     authorizeReplacement,
                     (replacements, authorize) =>
                       replaceCoreMemoryBlocks(
@@ -1866,6 +1890,16 @@ export class OsfoAgent extends Think<Env> {
                 .pipe(
                   Effect.mapError(sessionDeletionFailure("Session ownership could not be checked")),
                 ),
+            readReplacementGeneration: (historicalSessionId, replacementSessionId) =>
+              this.#store
+                .readSessionReplacementGeneration(historicalSessionId, replacementSessionId)
+                .pipe(
+                  Effect.mapError(
+                    sessionDeletionFailure(
+                      "The exact replacement Session generation could not be loaded",
+                    ),
+                  ),
+                ),
             replacedAt: currentDbTimestamp,
             replaceCurrentSession: (replacement) =>
               this.#store
@@ -1899,9 +1933,15 @@ export class OsfoAgent extends Think<Env> {
                       ),
                 ),
               ),
-            settle: (sessionId) =>
+            settle: (sessionId, replacementGeneration) =>
               Effect.tryPromise({
-                try: () => this.#settleDeletedSession(sessionId, deletionAuthorization, owner),
+                try: () =>
+                  this.#settleDeletedSession(
+                    sessionId,
+                    deletionAuthorization,
+                    owner,
+                    replacementGeneration,
+                  ),
                 catch: (cause) =>
                   new DeletionActionUnavailable({
                     cause,
@@ -1925,27 +1965,41 @@ export class OsfoAgent extends Think<Env> {
     sessionId: SessionId,
     deletionAuthorization: DeletionAuthorization,
     owner: UserId,
+    replacementGeneration?: SessionReplacementGeneration,
   ) {
     const deletedAt = await Effect.runPromise(currentDbTimestamp);
+    const deletionInput =
+      replacementGeneration === undefined
+        ? {
+            authorization: deletionAuthorization,
+            deletedAt,
+            outboxId: MemoryProviderOutboxId.make(
+              `delete-session:${deletionAuthorization.actionId}`,
+            ),
+            sessionId,
+            userId: owner,
+          }
+        : {
+            authorization: deletionAuthorization,
+            deletedAt,
+            outboxId: MemoryProviderOutboxId.make(
+              `delete-session:${deletionAuthorization.actionId}`,
+            ),
+            replacementGeneration,
+            sessionId,
+            userId: owner,
+          };
     return runRpc(
-      this.#store
-        .deleteHistoricalSession({
-          authorization: deletionAuthorization,
-          deletedAt,
-          outboxId: MemoryProviderOutboxId.make(`delete-session:${deletionAuthorization.actionId}`),
-          sessionId,
-          userId: owner,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new DeletionActionUnavailable({
-                cause,
-                message: "Session deletion could not be retained for provider retry",
-                operation: "deleteSession",
-              }),
-          ),
+      this.#store.deleteHistoricalSession(deletionInput).pipe(
+        Effect.mapError(
+          (cause) =>
+            new DeletionActionUnavailable({
+              cause,
+              message: "Session deletion could not be retained for provider retry",
+              operation: "deleteSession",
+            }),
         ),
+      ),
     );
   }
 

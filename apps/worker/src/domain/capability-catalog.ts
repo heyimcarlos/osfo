@@ -6,6 +6,8 @@ const capabilityIdValues = [
   "conversation",
   "core-memory",
   "memory-clear",
+  "knowledge-forget",
+  "session-delete",
   "session-recall",
   "file-read",
   "file-analysis",

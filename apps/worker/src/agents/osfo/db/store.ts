@@ -48,6 +48,7 @@ import {
 } from "./memory-provider-outbox";
 import type { UserId } from "../../../domain";
 import type { DeletionAuthorization } from "../deletion-actions";
+import type { SessionReplacementGeneration } from "../session-deletion";
 
 const sqliteCurrentTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u;
 
@@ -66,6 +67,7 @@ interface DeleteHistoricalSessionInput {
   readonly outboxId: MemoryProviderOutboxId;
   readonly sessionId: SessionId;
   readonly userId: UserId;
+  readonly replacementGeneration?: SessionReplacementGeneration;
 }
 
 type AgentTransaction = Parameters<Parameters<AgentDb["transaction"]>[0]>[0];
@@ -631,7 +633,7 @@ export const makeAgentStore = (db: AgentDb) => {
       // The Durable SQLite driver implements this exact compare-and-replace with transactionSync.
       db.transaction((transaction) => {
         const current = transaction
-          .select({ sessionId: sessionOwnership.session_id })
+          .select({ routeId: sessionOwnership.route_id, sessionId: sessionOwnership.session_id })
           .from(sessionOwnership)
           .where(
             and(eq(sessionOwnership.route_id, input.routeId), isNull(sessionOwnership.replaced_at)),
@@ -692,6 +694,52 @@ export const makeAgentStore = (db: AgentDb) => {
           : decodeSessionId("readSessionOwnership", row).pipe(Effect.as(true)),
       ),
     );
+
+  const readSessionReplacementGeneration = Effect.fn("AgentStore.readSessionReplacementGeneration")(
+    function* (historicalSessionId: SessionId, replacementSessionId: SessionId) {
+      const generation = yield* execute("readSessionOwnership", () => {
+        const replacement = db
+          .select({ routeId: sessionOwnership.route_id })
+          .from(sessionOwnership)
+          .where(
+            and(
+              eq(sessionOwnership.session_id, replacementSessionId),
+              isNull(sessionOwnership.replaced_at),
+            ),
+          )
+          .limit(1)
+          .get();
+        if (replacement === undefined) return undefined;
+        const historical = db
+          .select({ replacedAt: sessionOwnership.replaced_at })
+          .from(sessionOwnership)
+          .where(
+            and(
+              eq(sessionOwnership.route_id, replacement.routeId),
+              eq(sessionOwnership.session_id, historicalSessionId),
+              isNotNull(sessionOwnership.replaced_at),
+            ),
+          )
+          .limit(1)
+          .get();
+        return historical?.replacedAt === null || historical === undefined
+          ? undefined
+          : {
+              expectedCurrentSessionId: historicalSessionId,
+              replacedAt: historical.replacedAt,
+              replacementSessionId,
+              routeId: replacement.routeId,
+            };
+      });
+      if (generation === undefined) {
+        return yield* new AgentStateNotFound({
+          message: "The exact Session deletion replacement generation is unavailable",
+          subject: "session",
+        });
+      }
+      return generation;
+    },
+  );
 
   const readSessionIds = execute("readSessionOwnership", () =>
     db
@@ -763,12 +811,27 @@ export const makeAgentStore = (db: AgentDb) => {
         }
         if (owned.replacedAt === null) return "Current";
         const current = transaction
-          .select({ sessionId: sessionOwnership.session_id })
+          .select({ routeId: sessionOwnership.route_id, sessionId: sessionOwnership.session_id })
           .from(sessionOwnership)
           .where(isNull(sessionOwnership.replaced_at))
           .limit(1)
           .get();
         if (current === undefined) return "Invalid";
+        if (
+          current.sessionId.startsWith("session-delete-") &&
+          input.replacementGeneration === undefined
+        ) {
+          return "Invalid";
+        }
+        if (
+          input.replacementGeneration !== undefined &&
+          (current.sessionId !== input.replacementGeneration.replacementSessionId ||
+            current.routeId !== input.replacementGeneration.routeId ||
+            input.sessionId !== input.replacementGeneration.expectedCurrentSessionId ||
+            owned.replacedAt !== input.replacementGeneration.replacedAt)
+        ) {
+          return "Invalid";
+        }
         transaction
           .update(agentInitialization)
           .set({ initial_session_id: current.sessionId })
@@ -945,6 +1008,7 @@ export const makeAgentStore = (db: AgentDb) => {
     readRoute,
     readRouteSessionPage,
     readSessionIds,
+    readSessionReplacementGeneration,
     recordCommittedTurn,
     replaceCurrentSession,
     rollbackCurrentSessionReplacement,

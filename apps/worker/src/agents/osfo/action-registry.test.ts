@@ -33,7 +33,7 @@ it.effect("projects the exact retained-document deletion presented for Approval"
       source: "action",
     };
 
-    const presentation = yield* presentOsfoAction(pending);
+    const presentation = yield* presentOsfoAction(pending, currentCoreMemory("Old preference"));
 
     expect(presentation).toEqual({
       actionDefinitionVersion: "osfo-delete-generated-document-v1",
@@ -70,7 +70,7 @@ it.effect("projects the exact Knowledge deletion and Core Memory correction", ()
       source: "action",
     };
 
-    const presentation = yield* presentOsfoAction(pending);
+    const presentation = yield* presentOsfoAction(pending, currentCoreMemory("Old preference"));
 
     expect(presentation.operation).toBe("memory.forgetKnowledge");
     expect(presentation.consequences).toEqual([
@@ -102,20 +102,23 @@ it.effect("rejects Knowledge forgetting without an exact Core Memory correction"
     const decoded = yield* Schema.decodeUnknownEffect(ForgetKnowledgeInput)(input).pipe(
       Effect.result,
     );
-    const presented = yield* presentOsfoAction({
-      descriptor: {
-        action: "osfoForgetKnowledge",
-        input,
-        kind: "durable-pause",
-        permissions: ["memory:delete"],
-        requestId: "request-empty-correction",
-        risk: "high",
-        summary: "Forget selected knowledge",
-        toolCallId: "tool-call-empty-correction",
+    const presented = yield* presentOsfoAction(
+      {
+        descriptor: {
+          action: "osfoForgetKnowledge",
+          input,
+          kind: "durable-pause",
+          permissions: ["memory:delete"],
+          requestId: "request-empty-correction",
+          risk: "high",
+          summary: "Forget selected knowledge",
+          toolCallId: "tool-call-empty-correction",
+        },
+        executionId: ActionPresentationId.make("execution-empty-correction"),
+        source: "action",
       },
-      executionId: ActionPresentationId.make("execution-empty-correction"),
-      source: "action",
-    }).pipe(Effect.result);
+      currentCoreMemory("Old preference"),
+    ).pipe(Effect.result);
 
     expect(Result.isFailure(decoded)).toBe(true);
     expect(Result.isFailure(presented)).toBe(true);
@@ -131,25 +134,35 @@ it.effect("presents and exactly verifies a near-maximum Core Memory correction",
       coreMemory: [{ block: "userContext" as const, content: "x".repeat(9_900) }] as const,
       memoryIds: ["memory-near-limit"] as const,
     };
-    const presentation = yield* presentOsfoAction({
-      descriptor: {
-        action: "osfoForgetKnowledge",
-        input,
-        kind: "durable-pause",
-        permissions: ["memory:delete"],
-        requestId: "request-near-limit",
-        risk: "high",
-        summary: "Forget selected knowledge",
-        toolCallId: "tool-call-near-limit",
+    const presentation = yield* presentOsfoAction(
+      {
+        descriptor: {
+          action: "osfoForgetKnowledge",
+          input,
+          kind: "durable-pause",
+          permissions: ["memory:delete"],
+          requestId: "request-near-limit",
+          risk: "high",
+          summary: "Forget selected knowledge",
+          toolCallId: "tool-call-near-limit",
+        },
+        executionId: ActionPresentationId.make("execution-near-limit"),
+        source: "action",
       },
-      executionId: ActionPresentationId.make("execution-near-limit"),
-      source: "action",
-    });
+      currentCoreMemory("prior".repeat(2_000)),
+    );
 
     expect(presentation.fields.every(({ value }) => value.length <= 2_000)).toBe(true);
     expect(hasExactForgetKnowledgeInput(presentation, input)).toBe(true);
   }),
 );
+
+const currentCoreMemory = (userContext: string) =>
+  Effect.succeed({
+    _tag: "CoreMemoryInspected" as const,
+    agentNotes: { content: "Current agent notes", maxTokens: 800, tokens: 3 },
+    userContext: { content: userContext, maxTokens: 1_200, tokens: 3 },
+  });
 
 it.effect("projects the exact Session deletion", () =>
   Effect.gen(function* () {

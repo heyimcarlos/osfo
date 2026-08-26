@@ -140,6 +140,19 @@ const governedCapabilitiesV1Entries = (policyCatalog: CapabilityCatalog) => {
       availabilityRequirements: ["native-memory"],
       toolRequirements: ["osfoClearCoreMemory"],
     }),
+    entry(
+      "knowledge-forget",
+      "Correct Core Memory and forget selected provider Knowledge after Approval.",
+      "memory.forgetKnowledge",
+      {
+        availabilityRequirements: ["native-memory"],
+        toolRequirements: ["osfoForgetKnowledge"],
+      },
+    ),
+    entry("session-delete", "Delete an owned Session after Approval.", "session.delete", {
+      availabilityRequirements: ["session-history"],
+      toolRequirements: ["osfoDeleteSession"],
+    }),
     entry("session-recall", "Recall exact text from owned Sessions.", "session.recall", {
       availabilityRequirements: ["session-history"],
       toolRequirements: ["sessionRecall"],

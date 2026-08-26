@@ -1773,16 +1773,20 @@ it.effect("removes a failed replacement and recreates it on current Session dele
                 Effect.asVoid,
                 Effect.orDie,
               ),
-            settle: (sessionId) =>
-              currentStore
-                .deleteHistoricalSession({
-                  authorization: authorizedDeletion("action-1", sessionId).payload.authorization,
-                  deletedAt: now,
-                  outboxId: MemoryProviderOutboxId.make("delete-session-retry"),
-                  sessionId,
-                  userId: UserId.make("user-1"),
-                })
-                .pipe(Effect.orDie),
+            settle: (sessionId, replacementGeneration) =>
+              replacementGeneration === undefined
+                ? Effect.die(new Error("Current deletion lost its replacement generation"))
+                : currentStore
+                    .deleteHistoricalSession({
+                      authorization: authorizedDeletion("action-1", sessionId).payload
+                        .authorization,
+                      deletedAt: now,
+                      outboxId: MemoryProviderOutboxId.make("delete-session-retry"),
+                      replacementGeneration,
+                      sessionId,
+                      userId: UserId.make("user-1"),
+                    })
+                    .pipe(Effect.orDie),
           },
         );
 
@@ -1859,6 +1863,10 @@ it.effect(
               }),
             inspect: restarted.inspect().pipe(Effect.orDie),
             ownsSession: (sessionId) => restarted.ownsSession(sessionId).pipe(Effect.orDie),
+            readReplacementGeneration: (historicalSessionId, replacementSessionId) =>
+              restarted
+                .readSessionReplacementGeneration(historicalSessionId, replacementSessionId)
+                .pipe(Effect.orDie),
             replacedAt: Effect.succeed(DbTimestamp.make("2026-08-24T12:00:00.000Z")),
             replaceCurrentSession: () =>
               Effect.die(new Error("Mismatched retry must not replace the current Session")),
@@ -1885,19 +1893,26 @@ it.effect(
             clearMessages: () => Effect.void,
             inspect: restarted.inspect().pipe(Effect.orDie),
             ownsSession: (sessionId) => restarted.ownsSession(sessionId).pipe(Effect.orDie),
+            readReplacementGeneration: (historicalSessionId, replacementSessionId) =>
+              restarted
+                .readSessionReplacementGeneration(historicalSessionId, replacementSessionId)
+                .pipe(Effect.orDie),
             replacedAt: Effect.succeed(DbTimestamp.make("2026-08-24T12:00:00.000Z")),
             replaceCurrentSession: () =>
               Effect.die(new Error("Exact restart must resume the committed replacement")),
             rollbackCurrentSessionReplacement: () =>
               Effect.die(new Error("Exact restart must not compensate successful settlement")),
-            settle: (sessionId) =>
-              restarted.deleteHistoricalSession({
-                authorization: authorizedDeletion("action-1", sessionId).payload.authorization,
-                deletedAt: DbTimestamp.make("2026-08-24T12:00:00.000Z"),
-                outboxId: MemoryProviderOutboxId.make("delete-session-restart"),
-                sessionId,
-                userId: UserId.make("user-1"),
-              }),
+            settle: (sessionId, replacementGeneration) =>
+              replacementGeneration === undefined
+                ? Effect.die(new Error("Restart lost its replacement generation"))
+                : restarted.deleteHistoricalSession({
+                    authorization: authorizedDeletion("action-1", sessionId).payload.authorization,
+                    deletedAt: DbTimestamp.make("2026-08-24T12:00:00.000Z"),
+                    outboxId: MemoryProviderOutboxId.make("delete-session-restart"),
+                    replacementGeneration,
+                    sessionId,
+                    userId: UserId.make("user-1"),
+                  }),
           },
         );
 
@@ -1983,6 +1998,66 @@ it.effect(
         ).toEqual({ status: "completed" });
       }),
     ),
+);
+
+it.effect("rejects stale Session replacement generation after rollback and ABA recreation", () =>
+  withDatabase(({ storage }) =>
+    Effect.gen(function* () {
+      const store = makeAgentStore(makeAgentDb(asDurableObjectStorage(storage)));
+      const historicalSessionId = SessionId.make("session-1");
+      const replacementSessionId = SessionId.make("session-delete-action-1");
+      const routeId = ConversationRouteId.make("route-1");
+      const firstReplacedAt = DbTimestamp.make("2026-08-24T11:00:00.000Z");
+      const secondReplacedAt = DbTimestamp.make("2026-08-24T12:00:00.000Z");
+      yield* store.initialize(AgentId.make("agent-1"), {
+        agentId: AgentId.make("agent-1"),
+        initializationId: AgentInitializationId.make("initialization-1"),
+        initializedAt: now,
+        routeId,
+        sessionId: historicalSessionId,
+      });
+      const first = {
+        expectedCurrentSessionId: historicalSessionId,
+        replacedAt: firstReplacedAt,
+        replacementSessionId,
+        routeId,
+      };
+      yield* store.replaceCurrentSession(first);
+      const staleGeneration = yield* store.readSessionReplacementGeneration(
+        historicalSessionId,
+        replacementSessionId,
+      );
+      expect(yield* store.rollbackCurrentSessionReplacement(first)).toBe(true);
+      yield* store.replaceCurrentSession({ ...first, replacedAt: secondReplacedAt });
+
+      const stale = yield* store
+        .deleteHistoricalSession({
+          authorization: authorizedDeletion("action-1", historicalSessionId).payload.authorization,
+          deletedAt: secondReplacedAt,
+          outboxId: MemoryProviderOutboxId.make("delete-session-aba"),
+          replacementGeneration: staleGeneration,
+          sessionId: historicalSessionId,
+          userId: UserId.make("user-1"),
+        })
+        .pipe(Effect.result);
+      expect(Result.isFailure(stale)).toBe(true);
+      expect(yield* store.readSessionIds).toEqual([historicalSessionId, replacementSessionId]);
+
+      const currentGeneration = yield* store.readSessionReplacementGeneration(
+        historicalSessionId,
+        replacementSessionId,
+      );
+      yield* store.deleteHistoricalSession({
+        authorization: authorizedDeletion("action-1", historicalSessionId).payload.authorization,
+        deletedAt: secondReplacedAt,
+        outboxId: MemoryProviderOutboxId.make("delete-session-aba"),
+        replacementGeneration: currentGeneration,
+        sessionId: historicalSessionId,
+        userId: UserId.make("user-1"),
+      });
+      expect(yield* store.readSessionIds).toEqual([replacementSessionId]);
+    }),
+  ),
 );
 
 it.effect("removes the exact replacement when current Session settlement fails", () =>
@@ -3012,7 +3087,11 @@ const forgetKnowledgeDeletion = (outboxId: string) => {
         presentation: ApprovalPresentation.make("Forget memory-1 and memory-2"),
       },
       coreMemory: [
-        { block: "userContext" as const, content: "Forget selected knowledge" },
+        {
+          block: "userContext" as const,
+          content: "Forget selected knowledge",
+          expectedContent: "Old selected knowledge",
+        },
       ] as const,
       memoryIds: [
         MemoryProvider.KnowledgeMemoryId.make("memory-1"),

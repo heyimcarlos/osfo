@@ -18,7 +18,10 @@ interface CoreMemoryBatchSession {
 
 interface CoreMemoryBatchStorage {
   readonly sql: {
-    readonly exec: (query: string, ...bindings: ReadonlyArray<string>) => void;
+    readonly exec: (
+      query: string,
+      ...bindings: ReadonlyArray<string>
+    ) => { readonly toArray: () => ReadonlyArray<{ readonly content?: string | null }> };
   };
   readonly transactionSync: <A>(transaction: () => A) => A;
 }
@@ -310,7 +313,11 @@ export const replaceCoreMemoryBlock = (
 export const replaceCoreMemoryBlocks = <E, R>(
   session: CoreMemoryBatchSession,
   storage: CoreMemoryBatchStorage,
-  replacements: ReadonlyArray<{ readonly block: CoreMemoryBlockName; readonly content: string }>,
+  replacements: ReadonlyArray<{
+    readonly block: CoreMemoryBlockName;
+    readonly content: string;
+    readonly expectedContent: string;
+  }>,
   authorizeReplacement: Effect.Effect<void, E, R>,
   markCorrectionCommitted: () => void,
 ): Effect.Effect<
@@ -346,7 +353,19 @@ export const replaceCoreMemoryBlocks = <E, R>(
         storage.transactionSync(() => {
           // The installed AgentContextProvider owns these exact rows but exposes only one-block
           // writes. Use its version-matched schema here so one approved correction is atomic.
-          for (const replacement of replacements) {
+          const current = replacements.map((replacement) => {
+            const [row] = storage.sql
+              .exec(
+                "SELECT content FROM cf_agents_context_blocks WHERE label = ? LIMIT 1",
+                coreMemoryStorageKeyFor(replacement.block),
+              )
+              .toArray();
+            return { replacement, content: row?.content ?? "" };
+          });
+          if (current.some(({ content, replacement }) => content !== replacement.expectedContent)) {
+            throw new Error("Core Memory changed after the deletion Action was presented");
+          }
+          for (const { replacement } of current) {
             storage.sql.exec(
               `INSERT INTO cf_agents_context_blocks (label, content)
                VALUES (?, ?)

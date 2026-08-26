@@ -1080,7 +1080,13 @@ const authorizedForgetKnowledgeClaim = (): ClaimedMemoryProviderWork => {
     payload: {
       _tag: "ForgetKnowledge",
       authorization: authorization.authorization,
-      coreMemory: [{ block: "userContext", content: "Forget selected knowledge" }],
+      coreMemory: [
+        {
+          block: "userContext",
+          content: "Forget selected knowledge",
+          expectedContent: "Old selected knowledge",
+        },
+      ],
       memoryIds: [
         MemoryProvider.KnowledgeMemoryId.make("memory-1"),
         MemoryProvider.KnowledgeMemoryId.make("memory-2"),

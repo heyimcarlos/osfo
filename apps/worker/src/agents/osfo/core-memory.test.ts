@@ -11,8 +11,8 @@ it.effect("commits every exact Core Memory replacement in one storage transactio
     fixture.session,
     fixture.storage,
     [
-      { block: "userContext", content: "New User Context" },
-      { block: "agentNotes", content: "New Agent Notes" },
+      { block: "userContext", content: "New User Context", expectedContent: "Old User Context" },
+      { block: "agentNotes", content: "New Agent Notes", expectedContent: "Old Agent Notes" },
     ],
     Effect.void,
     () => {
@@ -44,8 +44,8 @@ it.effect("rolls back every Core Memory replacement when a later write fails", (
     fixture.session,
     fixture.storage,
     [
-      { block: "userContext", content: "New User Context" },
-      { block: "agentNotes", content: "New Agent Notes" },
+      { block: "userContext", content: "New User Context", expectedContent: "Old User Context" },
+      { block: "agentNotes", content: "New Agent Notes", expectedContent: "Old Agent Notes" },
     ],
     Effect.void,
     () => {
@@ -68,14 +68,43 @@ it.effect("rolls back every Core Memory replacement when a later write fails", (
   );
 });
 
+it.effect("rejects a delayed Approval when any exact Core Memory preimage changed", () => {
+  const fixture = batchFixture();
+  fixture.rows.set("osfo_core_memory_agent_notes", "A newer User edit");
+  return replaceCoreMemoryBlocks(
+    fixture.session,
+    fixture.storage,
+    [
+      { block: "userContext", content: "New User Context", expectedContent: "Old User Context" },
+      { block: "agentNotes", content: "New Agent Notes", expectedContent: "Old Agent Notes" },
+    ],
+    Effect.void,
+    () => {
+      throw new Error("A stale correction must not commit its durable marker");
+    },
+  ).pipe(
+    Effect.flip,
+    Effect.tap(() =>
+      Effect.sync(() => {
+        expect(fixture.rows).toEqual(
+          new Map([
+            ["osfo_core_memory_user_context", "Old User Context"],
+            ["osfo_core_memory_agent_notes", "A newer User edit"],
+          ]),
+        );
+      }),
+    ),
+  );
+});
+
 it.effect("rolls back every Core Memory replacement when the durable marker cannot commit", () => {
   const fixture = batchFixture();
   return replaceCoreMemoryBlocks(
     fixture.session,
     fixture.storage,
     [
-      { block: "userContext", content: "New User Context" },
-      { block: "agentNotes", content: "New Agent Notes" },
+      { block: "userContext", content: "New User Context", expectedContent: "Old User Context" },
+      { block: "agentNotes", content: "New Agent Notes", expectedContent: "Old Agent Notes" },
     ],
     Effect.void,
     () => {
@@ -106,8 +135,16 @@ it.effect(
         fixture.session,
         fixture.storage,
         [
-          { block: "userContext", content: "Approved User Context" },
-          { block: "agentNotes", content: "Approved Agent Notes" },
+          {
+            block: "userContext",
+            content: "Approved User Context",
+            expectedContent: "Old User Context",
+          },
+          {
+            block: "agentNotes",
+            content: "Approved Agent Notes",
+            expectedContent: "Old Agent Notes",
+          },
         ],
         Effect.void,
         () => {
@@ -138,11 +175,14 @@ const batchFixture = (failAtWrite?: number, failRefreshAt?: number) => {
   let refreshAttempts = 0;
   const storage = {
     sql: {
-      exec: (_query: string, label: string, content: string) => {
+      exec: (query: string, label: string, content?: string) => {
+        if (query.startsWith("SELECT")) {
+          return { toArray: () => [{ content: rows.get(label) ?? "" }] };
+        }
         writes += 1;
         if (writes === failAtWrite) throw new Error("Injected later Core Memory write failure");
-        rows.set(label, content);
-        return [];
+        rows.set(label, content ?? "");
+        return { toArray: () => [] };
       },
     },
     transactionSync: <A>(transaction: () => A) => {

@@ -16,8 +16,8 @@ it.effect("corrects Core Memory while preserving the source Session transcript",
 
   return correctForgottenKnowledge(
     [
-      { block: "userContext", content: "Corrected preference" },
-      { block: "agentNotes", content: "" },
+      { block: "userContext", content: "Corrected preference", expectedContent: "Old preference" },
+      { block: "agentNotes", content: "", expectedContent: "Old note" },
     ],
     Effect.void,
     (replacements, authorize) =>
@@ -53,8 +53,8 @@ it.effect("rechecks authority immediately before the atomic Core Memory replacem
 
   return correctForgottenKnowledge(
     [
-      { block: "userContext", content: "Corrected preference" },
-      { block: "agentNotes", content: "" },
+      { block: "userContext", content: "Corrected preference", expectedContent: "Old preference" },
+      { block: "agentNotes", content: "", expectedContent: "Old note" },
     ],
     Effect.suspend(() => {
       checks += 1;
@@ -111,8 +111,12 @@ it.effect("leaves every Core Memory block unchanged when the atomic replacement 
   return completeKnowledgeDeletionPreparation({
     correct: correctForgottenKnowledge(
       [
-        { block: "userContext", content: "Corrected preference" },
-        { block: "agentNotes", content: "" },
+        {
+          block: "userContext",
+          content: "Corrected preference",
+          expectedContent: "Old preference",
+        },
+        { block: "agentNotes", content: "", expectedContent: "Old note" },
       ],
       Effect.void,
       (_replacements, authorize) =>

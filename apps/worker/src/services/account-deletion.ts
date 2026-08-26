@@ -273,6 +273,7 @@ export const make = Effect.gen(function* () {
         });
       }
     }
+    yield* requireCurrentAuthority("before retaining integration authority targets");
     const integrationTargets = yield* dependencies.persistence.stageIntegrationTargets(
       candidate,
       discoveredIntegrationTargets,
@@ -287,6 +288,7 @@ export const make = Effect.gen(function* () {
       }
       yield* requireCurrentAuthority("before an integration authority deletion");
       yield* dependencies.integrations.revoke(target);
+      yield* requireCurrentAuthority("before confirming an integration authority deletion");
       yield* dependencies.persistence.confirmIntegrationTarget(candidate, target);
     }
     yield* dependencies.objects.remove(

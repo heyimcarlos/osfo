@@ -7,7 +7,7 @@ import type { DbTimestamp } from "../../../db";
 import { UsageActivity } from "../../../domain/usage";
 import { MemoryProvider } from "../../../services/memory-provider";
 import {
-  CoreMemoryCorrections,
+  ApprovedCoreMemoryCorrections,
   CoreMemoryReplacement,
   DeletionAuthorization,
 } from "../deletion-actions";
@@ -38,7 +38,7 @@ export const DeleteUserKnowledgePayload = Schema.TaggedStruct("DeleteUserKnowled
 });
 export const ForgetKnowledgePayload = Schema.TaggedStruct("ForgetKnowledge", {
   authorization: DeletionAuthorization,
-  coreMemory: CoreMemoryCorrections,
+  coreMemory: ApprovedCoreMemoryCorrections,
   memoryIds: Schema.NonEmptyArray(MemoryProvider.KnowledgeMemoryId),
   userId: UserId,
 });

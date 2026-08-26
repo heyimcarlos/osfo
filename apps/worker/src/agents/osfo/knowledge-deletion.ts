@@ -1,14 +1,14 @@
 import { Effect, Result } from "effect";
 
-import type { CoreMemoryReplacement } from "./deletion-actions";
+import type { ApprovedCoreMemoryReplacement } from "./deletion-actions";
 
 /** Apply the exact Core Memory replacements without touching the source Session transcript. */
 export const correctForgottenKnowledge = Effect.fn("KnowledgeDeletion.correctForgottenKnowledge")(
   function* <A, E, E2, R>(
-    replacements: ReadonlyArray<CoreMemoryReplacement>,
+    replacements: ReadonlyArray<ApprovedCoreMemoryReplacement>,
     authorizeReplacement: Effect.Effect<void, E2, R>,
     replace: (
-      replacements: ReadonlyArray<CoreMemoryReplacement>,
+      replacements: ReadonlyArray<ApprovedCoreMemoryReplacement>,
       authorize: Effect.Effect<void, E2, R>,
     ) => Effect.Effect<A, E | E2, R>,
   ) {

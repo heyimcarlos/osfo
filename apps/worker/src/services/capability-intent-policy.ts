@@ -83,6 +83,20 @@ export const capabilityIntentPolicy = {
     ),
     taskKinds: ["memory"],
   },
+  "knowledge-forget": {
+    matches: everyIntentGroup(
+      ["delete", "erase", "forget", "remove", "wipe"],
+      ["knowledge", "memories", "memory", "remembered knowledge", "remember about me"],
+    ),
+    taskKinds: ["memory"],
+  },
+  "session-delete": {
+    matches: everyIntentGroup(
+      ["clear", "delete", "erase", "remove", "wipe"],
+      ["chat history", "conversation history", "current session", "session"],
+    ),
+    taskKinds: ["memory"],
+  },
   "session-recall": {
     matches: anyIntentPhrase(
       "did i tell you",

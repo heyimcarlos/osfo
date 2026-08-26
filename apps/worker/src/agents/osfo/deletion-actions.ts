@@ -19,8 +19,27 @@ export const CoreMemoryReplacement = Schema.Struct({
 });
 export type CoreMemoryReplacement = typeof CoreMemoryReplacement.Type;
 
+/** Exact server-observed preimage paired with one approved Core Memory replacement. */
+export const ApprovedCoreMemoryReplacement = Schema.Struct({
+  ...CoreMemoryReplacement.fields,
+  expectedContent: Schema.String.check(Schema.isMaxLength(10_000)),
+});
+export type ApprovedCoreMemoryReplacement = typeof ApprovedCoreMemoryReplacement.Type;
+
 /** At least one exact local correction that must commit before provider forgetting. */
 export const CoreMemoryCorrections = Schema.NonEmptyArray(CoreMemoryReplacement).check(
+  Schema.isMaxLength(2),
+  Schema.makeFilter(
+    (replacements) =>
+      new Set(replacements.map(({ block }) => block)).size === replacements.length ||
+      "must replace each Core Memory block at most once",
+  ),
+);
+
+/** At least one replacement bound to the exact Core Memory content shown for Approval. */
+export const ApprovedCoreMemoryCorrections = Schema.NonEmptyArray(
+  ApprovedCoreMemoryReplacement,
+).check(
   Schema.isMaxLength(2),
   Schema.makeFilter(
     (replacements) =>
